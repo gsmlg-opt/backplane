@@ -26,7 +26,7 @@ defmodule Backplane.Application do
   defp register_native_tools do
     alias Backplane.Registry.{Tool, ToolRegistry}
 
-    tool_modules = [Backplane.Tools.Skill, Backplane.Tools.Docs]
+    tool_modules = [Backplane.Tools.Skill, Backplane.Tools.Docs, Backplane.Tools.Git]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
