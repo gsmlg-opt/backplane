@@ -94,8 +94,35 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "notifications" do
-    test "returns 202 for notifications (no id)" do
+    test "returns 202 for notifications/initialized (no id)" do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+
+    test "returns 202 for notifications/cancelled" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "notifications/cancelled",
+          "params" => %{"requestId" => 42, "reason" => "timeout"}
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+
+    test "returns 202 for unknown notification method" do
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "custom/notification"})
 
       conn =
         Plug.Test.conn(:post, "/mcp", body)

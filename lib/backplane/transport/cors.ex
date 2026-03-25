@@ -35,13 +35,17 @@ defmodule Backplane.Transport.CORS do
   end
 
   defp add_cors_headers(conn) do
-    origin = get_allowed_origin(conn)
+    case get_allowed_origin(conn) do
+      nil ->
+        conn
 
-    conn
-    |> put_resp_header("access-control-allow-origin", origin)
-    |> put_resp_header("access-control-allow-methods", @allowed_methods)
-    |> put_resp_header("access-control-allow-headers", @allowed_headers)
-    |> put_resp_header("access-control-max-age", "86400")
+      origin ->
+        conn
+        |> put_resp_header("access-control-allow-origin", origin)
+        |> put_resp_header("access-control-allow-methods", @allowed_methods)
+        |> put_resp_header("access-control-allow-headers", @allowed_headers)
+        |> put_resp_header("access-control-max-age", "86400")
+    end
   end
 
   defp get_allowed_origin(conn) do
@@ -55,7 +59,7 @@ defmodule Backplane.Transport.CORS do
         |> get_req_header("origin")
         |> List.first("")
 
-      if request_origin in allowed, do: request_origin, else: ""
+      if request_origin in allowed, do: request_origin, else: nil
     end
   end
 

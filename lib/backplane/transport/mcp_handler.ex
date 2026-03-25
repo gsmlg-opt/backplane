@@ -261,6 +261,16 @@ defmodule Backplane.Transport.McpHandler do
     json_rpc_error(conn, id, -32_601, "Method not found")
   end
 
+  defp dispatch_notification(conn, "notifications/initialized", _params) do
+    # Client acknowledges initialization — no action needed for stateless server
+    send_resp(conn, 202, "")
+  end
+
+  defp dispatch_notification(conn, "notifications/cancelled", _params) do
+    # Client requests cancellation — stateless per-request, so just acknowledge
+    send_resp(conn, 202, "")
+  end
+
   defp dispatch_notification(conn, _method, _params) do
     send_resp(conn, 202, "")
   end

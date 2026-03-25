@@ -42,7 +42,7 @@ defmodule Backplane.Transport.CORSTest do
         |> CORS.call([])
         |> Plug.Conn.send_resp(200, "ok")
 
-      assert get_header(conn, "access-control-allow-origin") == ""
+      assert get_header(conn, "access-control-allow-origin") == nil
     end
 
     test "allows matching configured origin" do
