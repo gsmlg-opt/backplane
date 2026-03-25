@@ -270,6 +270,57 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert hd(responses)["id"] == 1
     end
 
+    test "batch processes initialize and tools/list together" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "initialize", "id" => 1},
+        %{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 2}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 2
+
+      init_resp = Enum.find(responses, &(&1["id"] == 1))
+      assert init_resp["result"]["protocolVersion"]
+      assert init_resp["result"]["capabilities"]
+
+      tools_resp = Enum.find(responses, &(&1["id"] == 2))
+      assert is_list(tools_resp["result"]["tools"])
+    end
+
+    test "batch returns method not found for unknown methods" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "nonexistent", "id" => 1}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert [resp] = responses
+      assert resp["error"]["code"] == -32_601
+    end
+
+    test "batch with all notifications returns 202" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "notifications/initialized"},
+        %{"jsonrpc" => "2.0", "method" => "notifications/cancelled"}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+
     test "handles invalid entries in batch" do
       batch = [
         %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
