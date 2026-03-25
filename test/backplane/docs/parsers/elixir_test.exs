@@ -149,5 +149,220 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       assert [chunk] = chunks
       assert chunk.function == "check/0"
     end
+
+    test "extracts typedoc from heredoc" do
+      code = ~S'''
+      defmodule MyApp.Types do
+        @typedoc """
+        A complex type
+        with multiline docs.
+        """
+        @type complex :: {atom(), integer()}
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/types.ex")
+      assert [chunk] = chunks
+      assert chunk.chunk_type == "typespec"
+      assert chunk.content =~ "A complex type"
+      assert chunk.content =~ "with multiline docs"
+      assert chunk.content =~ "@type complex"
+    end
+
+    test "handles @typep with typedoc" do
+      code = ~S'''
+      defmodule MyApp.Types do
+        @typedoc "Private state type"
+        @typep state :: map()
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/types.ex")
+      assert [chunk] = chunks
+      assert chunk.chunk_type == "typespec"
+      assert chunk.content =~ "Private state type"
+      assert chunk.content =~ "@typep state"
+    end
+
+    test "handles @opaque with typedoc" do
+      code = ~S'''
+      defmodule MyApp.Types do
+        @typedoc "Opaque handle"
+        @opaque handle :: reference()
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/types.ex")
+      assert [chunk] = chunks
+      assert chunk.chunk_type == "typespec"
+      assert chunk.content =~ "Opaque handle"
+      assert chunk.content =~ "@opaque handle"
+    end
+
+    test "skips @type without typedoc" do
+      code = ~S'''
+      defmodule MyApp.Types do
+        @type simple :: atom()
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/types.ex")
+      assert chunks == []
+    end
+
+    test "skips function without @doc" do
+      code = ~S'''
+      defmodule MyApp.Internal do
+        def helper(x), do: x + 1
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/internal.ex")
+      assert chunks == []
+    end
+
+    test "clears @spec when function has no @doc" do
+      code = ~S'''
+      defmodule MyApp.Math do
+        @spec secret(integer()) :: integer()
+        def secret(x), do: x * 2
+
+        @doc "Public function"
+        def public(x), do: x + 1
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/math.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "public/1"
+      # spec from secret/1 should not leak into public/1
+      refute chunk.content =~ "secret"
+    end
+
+    test "extracts defmacro doc" do
+      code = ~S'''
+      defmodule MyApp.Macros do
+        @doc "A useful macro"
+        defmacro my_macro(expr), do: expr
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/macros.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "my_macro/1"
+      assert chunk.content =~ "A useful macro"
+    end
+
+    test "extracts defmacrop doc" do
+      code = ~S'''
+      defmodule MyApp.Macros do
+        @doc "Private macro"
+        defmacrop helper(x), do: x
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/macros.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "helper/1"
+    end
+
+    test "counts args with nested brackets correctly" do
+      code = ~S'''
+      defmodule MyApp.Complex do
+        @doc "Complex args"
+        def process(%{key: val}, [a, b], {c, d}), do: {val, a, b, c, d}
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/complex.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "process/3"
+    end
+
+    test "handles multiple functions with interleaved docs" do
+      code = ~S'''
+      defmodule MyApp.Multi do
+        @doc "First function"
+        def first(a), do: a
+
+        @doc "Second function"
+        @spec second(integer(), integer()) :: integer()
+        def second(a, b), do: a + b
+
+        def undocumented(x), do: x
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/multi.ex")
+      assert length(chunks) == 2
+
+      first = Enum.find(chunks, &(&1.function == "first/1"))
+      assert first.content == "First function"
+
+      second = Enum.find(chunks, &(&1.function == "second/2"))
+      assert second.content =~ "@spec second"
+      assert second.content =~ "Second function"
+    end
+
+    test "handles heredoc that reaches EOF without closing triple-quote" do
+      code = ~S'''
+      defmodule MyApp.Broken do
+        @doc """
+        This doc never closes
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/broken.ex")
+      assert is_list(chunks)
+    end
+
+    test "module name is nil outside defmodule" do
+      code = ~S'''
+      @doc "Orphan doc"
+      def orphan, do: :ok
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/orphan.ex")
+      assert [chunk] = chunks
+      assert chunk.module == nil
+    end
+
+    test "handles defp with doc" do
+      code = ~S'''
+      defmodule MyApp.Private do
+        @doc "Private but documented"
+        defp internal(x), do: x
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/private.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "internal/1"
+    end
+
+    test "handles function with question mark in name" do
+      code = ~S'''
+      defmodule MyApp.Check do
+        @doc "Checks validity"
+        def valid?(x), do: is_binary(x)
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/check.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "valid?/1"
+    end
+
+    test "handles function with bang in name" do
+      code = ~S'''
+      defmodule MyApp.Fetch do
+        @doc "Fetches or raises"
+        def fetch!(id), do: id
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/fetch.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "fetch!/1"
+    end
   end
 end
