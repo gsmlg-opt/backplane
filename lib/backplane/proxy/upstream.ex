@@ -363,33 +363,37 @@ defmodule Backplane.Proxy.Upstream do
 
     case String.split(buffer, "\n", parts: 2) do
       [complete, rest] ->
-        state = %{state | buffer: rest}
-
-        case Jason.decode(complete) do
-          {:ok, %{"id" => id} = response} ->
-            case Map.pop(state.pending_requests, id) do
-              {nil, _} ->
-                state
-
-              {from, pending} ->
-                result =
-                  case response do
-                    %{"result" => result} -> {:ok, result}
-                    %{"error" => error} -> {:error, error["message"]}
-                  end
-
-                GenServer.reply(from, result)
-                %{state | pending_requests: pending}
-            end
-
-          _ ->
-            state
-        end
+        %{state | buffer: rest} |> process_stdio_message(complete)
 
       [_incomplete] ->
         %{state | buffer: buffer}
     end
   end
+
+  defp process_stdio_message(state, message) do
+    case Jason.decode(message) do
+      {:ok, %{"id" => id} = response} ->
+        dispatch_stdio_response(state, id, response)
+
+      _ ->
+        state
+    end
+  end
+
+  defp dispatch_stdio_response(state, id, response) do
+    case Map.pop(state.pending_requests, id) do
+      {nil, _} ->
+        state
+
+      {from, pending} ->
+        result = parse_jsonrpc_result(response)
+        GenServer.reply(from, result)
+        %{state | pending_requests: pending}
+    end
+  end
+
+  defp parse_jsonrpc_result(%{"result" => result}), do: {:ok, result}
+  defp parse_jsonrpc_result(%{"error" => error}), do: {:error, error["message"]}
 
   # Helpers
 

@@ -286,57 +286,48 @@ defmodule Backplane.Tools.Git do
     {:error, "Unknown git tool handler: #{inspect(args)}"}
   end
 
+  @provider_modules %{
+    github: Backplane.Git.Providers.GitHub,
+    gitlab: Backplane.Git.Providers.GitLab
+  }
+
   # Search repos across all configured providers
   defp search_all_providers(query) do
-    providers = Application.get_env(:backplane, :git_providers, %{})
-
     results =
-      Enum.flat_map([:github, :gitlab], fn type ->
-        module =
-          case type do
-            :github -> Backplane.Git.Providers.GitHub
-            :gitlab -> Backplane.Git.Providers.GitLab
-          end
-
-        instances = Map.get(providers, type, [])
-
-        Enum.flat_map(instances, fn instance ->
-          config = %{token: instance.token, api_url: instance.api_url}
-
-          case module.list_repos(config: config, query: query) do
-            {:ok, repos} -> repos
-            {:error, _} -> []
-          end
-        end)
+      for_each_provider_instance(fn module, config ->
+        case module.list_repos(config: config, query: query) do
+          {:ok, repos} -> repos
+          {:error, _} -> []
+        end
       end)
 
     {:ok, results}
   end
 
   defp search_code_all_providers(query, language) do
-    providers = Application.get_env(:backplane, :git_providers, %{})
-
     results =
-      Enum.flat_map([:github, :gitlab], fn type ->
-        module =
-          case type do
-            :github -> Backplane.Git.Providers.GitHub
-            :gitlab -> Backplane.Git.Providers.GitLab
-          end
-
-        instances = Map.get(providers, type, [])
-
-        Enum.flat_map(instances, fn instance ->
-          config = %{token: instance.token, api_url: instance.api_url}
-
-          case module.search_code(query, config: config, language: language) do
-            {:ok, items} -> items
-            {:error, _} -> []
-          end
-        end)
+      for_each_provider_instance(fn module, config ->
+        case module.search_code(query, config: config, language: language) do
+          {:ok, items} -> items
+          {:error, _} -> []
+        end
       end)
 
     {:ok, results}
+  end
+
+  defp for_each_provider_instance(callback) do
+    providers = Application.get_env(:backplane, :git_providers, %{})
+
+    Enum.flat_map([:github, :gitlab], fn type ->
+      module = Map.fetch!(@provider_modules, type)
+      instances = Map.get(providers, type, [])
+
+      Enum.flat_map(instances, fn instance ->
+        config = %{token: instance.token, api_url: instance.api_url}
+        callback.(module, config)
+      end)
+    end)
   end
 
   defp maybe_add(opts, _key, nil), do: opts

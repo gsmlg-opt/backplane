@@ -45,38 +45,42 @@ defmodule Backplane.Skills.Sync do
     incoming_ids = MapSet.new(entries, & &1.id)
 
     # Insert or update
-    Enum.each(entries, fn entry ->
-      case Map.get(existing, entry.id) do
-        nil ->
-          # New skill
-          %Skill{}
-          |> Skill.changeset(Map.merge(entry, %{inserted_at: now, updated_at: now}))
-          |> Repo.insert!()
-
-        existing_skill ->
-          if existing_skill.content_hash != entry.content_hash do
-            existing_skill
-            |> Skill.update_changeset(
-              Map.merge(entry, %{content_hash: entry.content_hash, updated_at: now})
-            )
-            |> Repo.update!()
-          end
-
-          # Same hash — skip
-      end
-    end)
+    Enum.each(entries, &upsert_skill(&1, existing, now))
 
     # Disable removed skills
-    existing
-    |> Enum.each(fn {id, skill} ->
-      if skill.enabled and not MapSet.member?(incoming_ids, id) do
-        skill
-        |> Skill.update_changeset(%{enabled: false, updated_at: now})
-        |> Repo.update!()
-      end
-    end)
+    Enum.each(existing, &maybe_disable_skill(&1, incoming_ids, now))
 
     :ok
+  end
+
+  defp upsert_skill(entry, existing, now) do
+    case Map.get(existing, entry.id) do
+      nil ->
+        %Skill{}
+        |> Skill.changeset(Map.merge(entry, %{inserted_at: now, updated_at: now}))
+        |> Repo.insert!()
+
+      existing_skill ->
+        maybe_update_skill(existing_skill, entry, now)
+    end
+  end
+
+  defp maybe_update_skill(existing_skill, entry, now) do
+    if existing_skill.content_hash != entry.content_hash do
+      existing_skill
+      |> Skill.update_changeset(
+        Map.merge(entry, %{content_hash: entry.content_hash, updated_at: now})
+      )
+      |> Repo.update!()
+    end
+  end
+
+  defp maybe_disable_skill({id, skill}, incoming_ids, now) do
+    if skill.enabled and not MapSet.member?(incoming_ids, id) do
+      skill
+      |> Skill.update_changeset(%{enabled: false, updated_at: now})
+      |> Repo.update!()
+    end
   end
 
   defp get_source([]), do: ""
