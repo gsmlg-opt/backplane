@@ -2,6 +2,9 @@ defmodule Backplane.Application do
   @moduledoc false
 
   use Application
+  require Logger
+
+  @drain_timeout 15_000
 
   @impl true
   def start(_type, _args) do
@@ -12,7 +15,10 @@ defmodule Backplane.Application do
       Backplane.Skills.Registry,
       Backplane.Proxy.Pool,
       Backplane.Config.Watcher,
-      {Bandit, plug: Backplane.Transport.Router, port: port()}
+      {Bandit,
+       plug: Backplane.Transport.Router,
+       port: port(),
+       thousand_island_options: [shutdown_timeout: @drain_timeout]}
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
@@ -25,6 +31,18 @@ defmodule Backplane.Application do
     start_configured_upstreams()
 
     result
+  end
+
+  @impl true
+  def prep_stop(state) do
+    Logger.info("Shutting down — draining connections (#{@drain_timeout}ms timeout)")
+
+    # Pause Oban to stop picking up new jobs; running jobs finish naturally
+    Oban.pause_all_queues(Oban)
+
+    state
+  rescue
+    _ -> state
   end
 
   defp register_native_tools do
