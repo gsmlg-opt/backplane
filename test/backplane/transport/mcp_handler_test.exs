@@ -524,5 +524,118 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert is_map(resp["result"]["capabilities"]["completions"])
     end
+
+    test "returns completions for skill_id argument" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "skill::load"},
+          "argument" => %{"name" => "skill_id", "value" => ""}
+        })
+
+      assert is_list(resp["result"]["completion"]["values"])
+    end
+
+    test "returns completions for repo argument" do
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{
+          id: "comp-repo-proj",
+          repo: "https://github.com/test/comp.git",
+          ref: "main"
+        },
+        on_conflict: :nothing
+      )
+
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "git::repo-tree"},
+          "argument" => %{"name" => "repo", "value" => "https://"}
+        })
+
+      values = resp["result"]["completion"]["values"]
+      assert is_list(values)
+    end
+
+    test "returns empty for unknown ref type" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/unknown", "name" => "something"},
+          "argument" => %{"name" => "arg", "value" => ""}
+        })
+
+      assert resp["result"]["completion"]["values"] == []
+    end
+  end
+
+  describe "resources/list with data" do
+    test "returns resource entries for indexed doc chunks" do
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "res-list-proj", repo: "test/repo", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+        project_id: "res-list-proj",
+        source_path: "lib/example.ex",
+        content: "Example content",
+        chunk_type: "module_doc",
+        content_hash: "reslist123"
+      })
+
+      resp = mcp_request("resources/list")
+      resources = resp["result"]["resources"]
+      assert Enum.any?(resources, fn r -> String.contains?(r["name"], "res-list-proj") end)
+    end
+  end
+
+  describe "prompts/get with inserted skill" do
+    test "returns prompt messages for a skill that exists" do
+      content = "# Test Skill\nFollow these instructions."
+      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+      %Backplane.Skills.Skill{}
+      |> Backplane.Skills.Skill.changeset(%{
+        id: "prompt/test-skill",
+        name: "test-prompt-skill",
+        description: "A skill for prompt testing",
+        tags: ["test"],
+        content: content,
+        content_hash: hash,
+        source: "db",
+        enabled: true
+      })
+      |> Backplane.Repo.insert!()
+
+      Backplane.Skills.Registry.refresh()
+
+      resp = mcp_request("prompts/get", %{"name" => "test-prompt-skill"})
+
+      assert is_list(resp["result"]["messages"])
+      [message] = resp["result"]["messages"]
+      assert message["role"] == "user"
+      assert message["content"]["text"] =~ "Test Skill"
+    end
+  end
+
+  describe "batch with resource/prompt methods" do
+    test "batch can process resources/list and prompts/list together" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "resources/list", "id" => 1},
+        %{"jsonrpc" => "2.0", "method" => "prompts/list", "id" => 2}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 2
+
+      res_resp = Enum.find(responses, &(&1["id"] == 1))
+      assert is_list(res_resp["result"]["resources"])
+
+      prompt_resp = Enum.find(responses, &(&1["id"] == 2))
+      assert is_list(prompt_resp["result"]["prompts"])
+    end
   end
 end
