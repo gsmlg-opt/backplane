@@ -19,6 +19,8 @@ defmodule Backplane.Proxy.Upstream do
   @refresh_interval 300_000
   @health_ping_interval 60_000
   @max_consecutive_failures 3
+  @initial_backoff_ms 1_000
+  @max_backoff_ms 60_000
 
   # Client API
 
@@ -62,7 +64,8 @@ defmodule Backplane.Proxy.Upstream do
       initialized: false,
       last_ping_at: nil,
       last_pong_at: nil,
-      consecutive_ping_failures: 0
+      consecutive_ping_failures: 0,
+      reconnect_attempts: 0
     }
 
     {:ok, state, {:continue, :connect}}
@@ -76,7 +79,7 @@ defmodule Backplane.Proxy.Upstream do
           {:ok, state} ->
             schedule_refresh()
             schedule_health_ping()
-            {:noreply, %{state | status: :connected}}
+            {:noreply, %{state | status: :connected, reconnect_attempts: 0}}
 
           {:error, reason, state} ->
             Logger.warning("Failed to discover tools",
@@ -84,8 +87,10 @@ defmodule Backplane.Proxy.Upstream do
               reason: inspect(reason)
             )
 
-            schedule_reconnect()
-            {:noreply, %{state | status: :degraded}}
+            schedule_reconnect(state.reconnect_attempts)
+
+            {:noreply,
+             %{state | status: :degraded, reconnect_attempts: state.reconnect_attempts + 1}}
         end
 
       {:error, reason, state} ->
@@ -94,8 +99,10 @@ defmodule Backplane.Proxy.Upstream do
           reason: inspect(reason)
         )
 
-        schedule_reconnect()
-        {:noreply, %{state | status: :disconnected}}
+        schedule_reconnect(state.reconnect_attempts)
+
+        {:noreply,
+         %{state | status: :disconnected, reconnect_attempts: state.reconnect_attempts + 1}}
     end
   end
 
@@ -206,8 +213,16 @@ defmodule Backplane.Proxy.Upstream do
     )
 
     ToolRegistry.deregister_upstream(state.prefix)
-    schedule_reconnect()
-    {:noreply, %{state | status: :disconnected, port: nil, tools: []}}
+    schedule_reconnect(state.reconnect_attempts)
+
+    {:noreply,
+     %{
+       state
+       | status: :disconnected,
+         port: nil,
+         tools: [],
+         reconnect_attempts: state.reconnect_attempts + 1
+     }}
   end
 
   @impl true
@@ -469,8 +484,12 @@ defmodule Backplane.Proxy.Upstream do
     Process.send_after(self(), :refresh, @refresh_interval)
   end
 
-  defp schedule_reconnect do
-    Process.send_after(self(), :reconnect, 5_000)
+  defp schedule_reconnect(attempt \\ 0) do
+    base_delay = min(@initial_backoff_ms * Integer.pow(2, attempt), @max_backoff_ms)
+    # Add jitter: 75-125% of base delay
+    jitter = div(base_delay, 4)
+    delay = base_delay - jitter + :rand.uniform(max(jitter * 2, 1))
+    Process.send_after(self(), :reconnect, delay)
   end
 
   defp schedule_health_ping do
