@@ -45,7 +45,7 @@ defmodule Backplane.Tools.Docs do
             },
             "max_tokens" => %{
               "type" => "integer",
-              "description" => "Maximum token budget for results (default 4000)"
+              "description" => "Maximum token budget for results (default 8000)"
             },
             "chunk_type" => %{
               "type" => "string",

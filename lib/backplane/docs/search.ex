@@ -8,14 +8,14 @@ defmodule Backplane.Docs.Search do
   alias Backplane.Repo
 
   @default_limit 20
-  @default_max_tokens 4000
+  @default_max_tokens 8000
 
   @doc """
   Search doc chunks for a project using full-text search.
 
   Options:
     - :limit — max results (default 20)
-    - :max_tokens — token budget (default 4000)
+    - :max_tokens — token budget (default 8000)
     - :chunk_type — filter by chunk type
   """
   def query(project_id, search_query, opts \\ []) do

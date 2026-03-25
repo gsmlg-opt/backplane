@@ -11,14 +11,16 @@ defmodule Backplane.Docs.Parsers.Elixir do
 
   @behaviour Backplane.Docs.Parser
 
+  require Logger
+
   @impl true
   def parse(content, source_path) do
-    try do
-      chunks = extract_chunks(content, source_path)
-      {:ok, chunks}
-    rescue
-      _ -> {:ok, []}
-    end
+    chunks = extract_chunks(content, source_path)
+    {:ok, chunks}
+  rescue
+    e ->
+      Logger.warning("Failed to parse #{source_path}: #{Exception.message(e)}")
+      {:ok, []}
   end
 
   defp extract_chunks(content, source_path) do
