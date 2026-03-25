@@ -33,7 +33,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
       tool = sample_tool()
       ToolRegistry.register_native(tool)
 
-      assert {:native, TestModule} = ToolRegistry.resolve("test::example")
+      assert {:native, TestModule, _handler} = ToolRegistry.resolve("test::example")
     end
   end
 
@@ -54,9 +54,9 @@ defmodule Backplane.Registry.ToolRegistryTest do
   end
 
   describe "resolve/1" do
-    test "returns {:native, module} for native tool" do
+    test "returns {:native, module, handler} for native tool" do
       ToolRegistry.register_native(sample_tool())
-      assert {:native, TestModule} = ToolRegistry.resolve("test::example")
+      assert {:native, TestModule, _handler} = ToolRegistry.resolve("test::example")
     end
 
     test "returns :not_found for unregistered name" do

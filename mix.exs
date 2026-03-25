@@ -33,6 +33,7 @@ defmodule Backplane.MixProject do
       {:postgrex, "~> 0.19"},
       {:oban, "~> 2.18"},
       {:toml, "~> 0.7"},
+      {:yaml_elixir, "~> 2.9"},
       {:file_system, "~> 1.0"},
 
       # Dev/Test

@@ -90,8 +90,9 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch_tool_call(name, args) do
     case Backplane.Registry.ToolRegistry.resolve(name) do
-      {:native, module} ->
-        module.call(args)
+      {:native, module, handler} ->
+        call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
+        module.call(call_args)
 
       {:upstream, upstream_pid, original_tool_name} ->
         Backplane.Proxy.Upstream.forward(upstream_pid, original_tool_name, args)

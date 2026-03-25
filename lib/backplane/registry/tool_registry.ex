@@ -66,8 +66,8 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Resolve a tool name to its handler."
   def resolve(name) do
     case :ets.lookup(@table, name) do
-      [{^name, %{origin: :native, module: module}}] ->
-        {:native, module}
+      [{^name, %{origin: :native, module: module, handler: handler}}] ->
+        {:native, module, handler}
 
       [{^name, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original}}] ->
         {:upstream, pid, original}

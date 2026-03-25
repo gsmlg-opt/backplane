@@ -6,30 +6,14 @@ defmodule Backplane.Proxy.PoolTest do
   setup do
     :ets.delete_all_objects(:backplane_tools)
 
-    # Ensure Pool is not running from previous test
-    if pid = Process.whereis(Pool) do
-      try do
-        GenServer.stop(pid, :normal, 5_000)
-      catch
-        :exit, _ -> :ok
-      end
-
-      Process.sleep(50)
-    end
-
-    {:ok, pid} = Pool.start_link([])
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        try do
-          GenServer.stop(pid, :normal, 5_000)
-        catch
-          :exit, _ -> :ok
-        end
-      end
+    # Pool is started by the Application supervisor, so just clean its children
+    Pool
+    |> DynamicSupervisor.which_children()
+    |> Enum.each(fn {_, pid, _, _} ->
+      if is_pid(pid), do: DynamicSupervisor.terminate_child(Pool, pid)
     end)
 
-    %{pool: pid}
+    :ok
   end
 
   describe "start_link/1" do

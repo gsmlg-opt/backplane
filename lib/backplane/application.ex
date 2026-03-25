@@ -9,11 +9,35 @@ defmodule Backplane.Application do
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
       Backplane.Registry.ToolRegistry,
+      Backplane.Skills.Registry,
+      Backplane.Proxy.Pool,
       {Bandit, plug: Backplane.Transport.Router, port: port()}
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # Register native tools after supervisor starts
+    register_native_tools()
+
+    result
+  end
+
+  defp register_native_tools do
+    alias Backplane.Registry.{Tool, ToolRegistry}
+
+    for tool_def <- Backplane.Tools.Skill.tools() do
+      tool = %Tool{
+        name: tool_def.name,
+        description: tool_def.description,
+        input_schema: tool_def.input_schema,
+        origin: :native,
+        module: tool_def.module,
+        handler: tool_def.handler
+      }
+
+      ToolRegistry.register_native(tool)
+    end
   end
 
   defp port do

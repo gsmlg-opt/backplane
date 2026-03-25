@@ -18,10 +18,14 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "tools/list" do
-    test "returns empty tools array when no tools registered" do
+    test "returns tools array including native skill tools" do
       resp = mcp_request("tools/list")
 
-      assert resp["result"]["tools"] == []
+      tools = resp["result"]["tools"]
+      assert is_list(tools)
+      names = Enum.map(tools, & &1["name"])
+      assert "skill::search" in names
+      assert "skill::list" in names
     end
   end
 

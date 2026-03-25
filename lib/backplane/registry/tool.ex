@@ -4,7 +4,16 @@ defmodule Backplane.Registry.Tool do
   """
 
   @enforce_keys [:name, :description, :input_schema, :origin]
-  defstruct [:name, :description, :input_schema, :origin, :module, :upstream_pid, :original_name]
+  defstruct [
+    :name,
+    :description,
+    :input_schema,
+    :origin,
+    :module,
+    :handler,
+    :upstream_pid,
+    :original_name
+  ]
 
   @type t :: %__MODULE__{
           name: String.t(),
@@ -12,6 +21,7 @@ defmodule Backplane.Registry.Tool do
           input_schema: map(),
           origin: :native | {:upstream, String.t()},
           module: module() | nil,
+          handler: atom() | nil,
           upstream_pid: pid() | nil,
           original_name: String.t() | nil
         }
