@@ -110,5 +110,61 @@ defmodule Backplane.Hub.DiscoverTest do
       assert Map.has_key?(results, :docs)
       assert Map.has_key?(results, :repos)
     end
+
+    test "search_repos returns matching projects by id" do
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "discover-repo-test",
+          repo: "https://github.com/test/discover-repo.git",
+          ref: "main",
+          description: "A test project for discovery"
+        },
+        on_conflict: :nothing
+      )
+
+      {:ok, results} = Discover.search("discover-repo", scope: ["repos"])
+      assert Enum.any?(results.repos, fn r -> r.id == "discover-repo-test" end)
+    end
+
+    test "search_repos returns matching projects by description" do
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "desc-search-proj",
+          repo: "https://github.com/test/desc.git",
+          ref: "main",
+          description: "Unique searchable description for hub discovery"
+        },
+        on_conflict: :nothing
+      )
+
+      {:ok, results} = Discover.search("Unique searchable description", scope: ["repos"])
+      assert Enum.any?(results.repos, fn r -> r.id == "desc-search-proj" end)
+    end
+
+    test "search_repos maps project fields correctly" do
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "field-map-proj",
+          repo: "https://github.com/test/fields.git",
+          ref: "main",
+          description: "Field mapping test"
+        },
+        on_conflict: :nothing
+      )
+
+      {:ok, results} = Discover.search("field-map-proj", scope: ["repos"])
+      [proj | _] = results.repos
+      assert Map.has_key?(proj, :id)
+      assert Map.has_key?(proj, :repo)
+      assert Map.has_key?(proj, :description)
+    end
+
+    test "search with multiple scopes returns data for each" do
+      {:ok, results} = Discover.search("skill", scope: ["tools", "skills"])
+      assert is_list(results.tools)
+      assert is_list(results.skills)
+      assert results.docs == []
+      assert results.repos == []
+    end
   end
 end

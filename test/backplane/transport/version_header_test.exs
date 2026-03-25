@@ -52,4 +52,19 @@ defmodule Backplane.Transport.VersionHeaderTest do
     header_names = Enum.map(conn.resp_headers, fn {k, _} -> k end)
     assert "x-backplane-version" in header_names
   end
+
+  describe "plug unit tests" do
+    test "init/1 passes options through" do
+      assert Backplane.Transport.VersionHeader.init(foo: :bar) == [foo: :bar]
+    end
+
+    test "call/2 sets both headers on a bare conn" do
+      conn =
+        Plug.Test.conn(:get, "/")
+        |> Backplane.Transport.VersionHeader.call([])
+
+      assert Plug.Conn.get_resp_header(conn, "x-backplane-version") |> length() == 1
+      assert Plug.Conn.get_resp_header(conn, "x-mcp-protocol-version") |> length() == 1
+    end
+  end
 end
