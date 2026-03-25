@@ -26,10 +26,10 @@ defmodule Backplane.Transport.McpHandler do
 
       %{"method" => _method} ->
         # Missing jsonrpc field
-        json_rpc_error(conn, nil, -32600, "Invalid Request: missing jsonrpc field")
+        json_rpc_error(conn, nil, -32_600, "Invalid Request: missing jsonrpc field")
 
       _ ->
-        json_rpc_error(conn, nil, -32600, "Invalid Request")
+        json_rpc_error(conn, nil, -32_600, "Invalid Request")
     end
   end
 
@@ -80,12 +80,12 @@ defmodule Backplane.Transport.McpHandler do
           })
       end
     else
-      json_rpc_error(conn, id, -32602, "Invalid params: 'name' is required")
+      json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
     end
   end
 
   defp dispatch(conn, "tools/call", id, _params) do
-    json_rpc_error(conn, id, -32602, "Invalid params: 'params' object is required")
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'params' object is required")
   end
 
   defp dispatch(conn, "ping", id, _params) do
@@ -93,7 +93,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch(conn, _method, id, _params) do
-    json_rpc_error(conn, id, -32601, "Method not found")
+    json_rpc_error(conn, id, -32_601, "Method not found")
   end
 
   defp dispatch_notification(conn, _method, _params) do

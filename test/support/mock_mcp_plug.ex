@@ -68,7 +68,7 @@ defmodule Backplane.Test.MockMcpPlug do
           %{
             "jsonrpc" => "2.0",
             "id" => request["id"],
-            "error" => %{"code" => -32601, "message" => "Method not found"}
+            "error" => %{"code" => -32_601, "message" => "Method not found"}
           }
       end
 

@@ -40,14 +40,14 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns -32602 for missing tool name" do
       resp = mcp_request("tools/call", %{"arguments" => %{}})
 
-      assert resp["error"]["code"] == -32602
+      assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "name"
     end
 
     test "returns -32602 for nil params" do
       resp = mcp_request("tools/call")
 
-      assert resp["error"]["code"] == -32602
+      assert resp["error"]["code"] == -32_602
     end
   end
 
@@ -86,13 +86,13 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns -32600 for missing jsonrpc field" do
       resp = raw_mcp_request(%{"method" => "initialize", "id" => 1})
 
-      assert resp["error"]["code"] == -32600
+      assert resp["error"]["code"] == -32_600
     end
 
     test "returns -32601 for unknown method" do
       resp = mcp_request("nonexistent/method")
 
-      assert resp["error"]["code"] == -32601
+      assert resp["error"]["code"] == -32_601
       assert resp["error"]["message"] =~ "Method not found"
     end
   end

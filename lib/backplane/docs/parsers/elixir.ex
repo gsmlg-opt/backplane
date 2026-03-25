@@ -43,93 +43,114 @@ defmodule Backplane.Docs.Parsers.Elixir do
   defp process_lines([line | rest], source_path, state) do
     trimmed = String.trim(line)
 
-    cond do
-      # @moduledoc false
-      trimmed == "@moduledoc false" ->
-        process_lines(rest, source_path, %{state | current_doc: nil})
-
-      # @moduledoc """
-      String.starts_with?(trimmed, "@moduledoc \"\"\"") ->
-        {doc, remaining} = collect_heredoc(rest)
-        current_module = current_module_name(state.module_stack)
-
-        chunk = %{
-          source_path: source_path,
-          module: current_module,
-          function: nil,
-          chunk_type: "moduledoc",
-          content: doc
-        }
-
-        process_lines(remaining, source_path, %{state | chunks: [chunk | state.chunks]})
-
-      # @moduledoc "single line"
-      String.starts_with?(trimmed, "@moduledoc \"") ->
-        doc = extract_single_line_string(trimmed, "@moduledoc ")
-        current_module = current_module_name(state.module_stack)
-
-        chunk = %{
-          source_path: source_path,
-          module: current_module,
-          function: nil,
-          chunk_type: "moduledoc",
-          content: doc
-        }
-
-        process_lines(rest, source_path, %{state | chunks: [chunk | state.chunks]})
-
-      # @doc false
-      trimmed == "@doc false" ->
-        process_lines(rest, source_path, %{state | current_doc: nil})
-
-      # @doc """
-      String.starts_with?(trimmed, "@doc \"\"\"") ->
-        {doc, remaining} = collect_heredoc(rest)
-        process_lines(remaining, source_path, %{state | current_doc: doc})
-
-      # @doc "single line"
-      String.starts_with?(trimmed, "@doc \"") ->
-        doc = extract_single_line_string(trimmed, "@doc ")
-        process_lines(rest, source_path, %{state | current_doc: doc})
-
-      # @typedoc """
-      String.starts_with?(trimmed, "@typedoc \"\"\"") ->
-        {doc, remaining} = collect_heredoc(rest)
-        process_lines(remaining, source_path, %{state | current_typedoc: doc})
-
-      # @typedoc "single line"
-      String.starts_with?(trimmed, "@typedoc \"") ->
-        doc = extract_single_line_string(trimmed, "@typedoc ")
-        process_lines(rest, source_path, %{state | current_typedoc: doc})
-
-      # @spec
-      String.starts_with?(trimmed, "@spec ") ->
-        spec = String.trim_leading(trimmed, "@spec ")
-        process_lines(rest, source_path, %{state | current_spec: spec})
-
-      # @type or @typep or @opaque
-      String.starts_with?(trimmed, "@type ") or String.starts_with?(trimmed, "@typep ") or
-          String.starts_with?(trimmed, "@opaque ") ->
-        handle_type(trimmed, rest, source_path, state)
-
-      # defmodule
-      match_defmodule(trimmed) != nil ->
-        mod_name = match_defmodule(trimmed)
-        module_stack = [mod_name | state.module_stack]
-        process_lines(rest, source_path, %{state | module_stack: module_stack})
-
-      # def/defp/defmacro/defmacrop
-      match_function(trimmed) != nil ->
-        handle_function(trimmed, rest, source_path, state)
-
-      # end - pop module stack (only when at top-level indentation or stack is non-empty)
-      trimmed == "end" and state.module_stack != [] ->
-        module_stack = tl(state.module_stack)
-        process_lines(rest, source_path, %{state | module_stack: module_stack})
-
-      true ->
-        process_lines(rest, source_path, state)
+    if trimmed == "end" and state.module_stack != [] do
+      process_lines(rest, source_path, %{state | module_stack: tl(state.module_stack)})
+    else
+      process_line(classify_line(trimmed), trimmed, rest, source_path, state)
     end
+  end
+
+  defp process_line(:moduledoc_false, _trimmed, rest, source_path, state),
+    do: process_lines(rest, source_path, %{state | current_doc: nil})
+
+  defp process_line(:moduledoc_heredoc, _trimmed, rest, source_path, state),
+    do: handle_moduledoc_heredoc(rest, source_path, state)
+
+  defp process_line(:moduledoc_single, trimmed, rest, source_path, state),
+    do: handle_moduledoc_single(trimmed, rest, source_path, state)
+
+  defp process_line(:doc_false, _trimmed, rest, source_path, state),
+    do: process_lines(rest, source_path, %{state | current_doc: nil})
+
+  defp process_line(:doc_heredoc, _trimmed, rest, source_path, state) do
+    {doc, remaining} = collect_heredoc(rest)
+    process_lines(remaining, source_path, %{state | current_doc: doc})
+  end
+
+  defp process_line(:doc_single, trimmed, rest, source_path, state) do
+    doc = extract_single_line_string(trimmed, "@doc ")
+    process_lines(rest, source_path, %{state | current_doc: doc})
+  end
+
+  defp process_line(:typedoc_heredoc, _trimmed, rest, source_path, state) do
+    {doc, remaining} = collect_heredoc(rest)
+    process_lines(remaining, source_path, %{state | current_typedoc: doc})
+  end
+
+  defp process_line(:typedoc_single, trimmed, rest, source_path, state) do
+    doc = extract_single_line_string(trimmed, "@typedoc ")
+    process_lines(rest, source_path, %{state | current_typedoc: doc})
+  end
+
+  defp process_line(:spec, trimmed, rest, source_path, state) do
+    spec = String.trim_leading(trimmed, "@spec ")
+    process_lines(rest, source_path, %{state | current_spec: spec})
+  end
+
+  defp process_line(:type_definition, trimmed, rest, source_path, state),
+    do: handle_type(trimmed, rest, source_path, state)
+
+  defp process_line(:defmodule, trimmed, rest, source_path, state) do
+    mod_name = match_defmodule(trimmed)
+    process_lines(rest, source_path, %{state | module_stack: [mod_name | state.module_stack]})
+  end
+
+  defp process_line(:function_def, trimmed, rest, source_path, state),
+    do: handle_function(trimmed, rest, source_path, state)
+
+  defp process_line(:other, _trimmed, rest, source_path, state),
+    do: process_lines(rest, source_path, state)
+
+  defp classify_line("@moduledoc false"), do: :moduledoc_false
+  defp classify_line("@moduledoc \"\"\"" <> _), do: :moduledoc_heredoc
+  defp classify_line("@moduledoc \"" <> _), do: :moduledoc_single
+  defp classify_line("@doc false"), do: :doc_false
+  defp classify_line("@doc \"\"\"" <> _), do: :doc_heredoc
+  defp classify_line("@doc \"" <> _), do: :doc_single
+  defp classify_line("@typedoc \"\"\"" <> _), do: :typedoc_heredoc
+  defp classify_line("@typedoc \"" <> _), do: :typedoc_single
+  defp classify_line("@spec " <> _), do: :spec
+
+  defp classify_line("@type " <> _), do: :type_definition
+  defp classify_line("@typep " <> _), do: :type_definition
+  defp classify_line("@opaque " <> _), do: :type_definition
+
+  defp classify_line(line) do
+    cond do
+      match_defmodule(line) != nil -> :defmodule
+      match_function(line) != nil -> :function_def
+      true -> :other
+    end
+  end
+
+  defp handle_moduledoc_heredoc(rest, source_path, state) do
+    {doc, remaining} = collect_heredoc(rest)
+    current_module = current_module_name(state.module_stack)
+
+    chunk = %{
+      source_path: source_path,
+      module: current_module,
+      function: nil,
+      chunk_type: "moduledoc",
+      content: doc
+    }
+
+    process_lines(remaining, source_path, %{state | chunks: [chunk | state.chunks]})
+  end
+
+  defp handle_moduledoc_single(trimmed, rest, source_path, state) do
+    doc = extract_single_line_string(trimmed, "@moduledoc ")
+    current_module = current_module_name(state.module_stack)
+
+    chunk = %{
+      source_path: source_path,
+      module: current_module,
+      function: nil,
+      chunk_type: "moduledoc",
+      content: doc
+    }
+
+    process_lines(rest, source_path, %{state | chunks: [chunk | state.chunks]})
   end
 
   defp collect_heredoc(lines) do

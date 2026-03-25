@@ -35,7 +35,7 @@ defmodule Backplane.Git.Providers.GitHubTest do
              "html_url" => "https://github.com/elixir-lang/elixir",
              "default_branch" => "main",
              "language" => "Elixir",
-             "stargazers_count" => 23000,
+             "stargazers_count" => 23_000,
              "updated_at" => "2026-01-01T00:00:00Z"
            }
          ]
@@ -193,7 +193,7 @@ defmodule Backplane.Git.Providers.GitHubTest do
     assert repo.full_name == "elixir-lang/elixir"
     assert repo.id == "1234"
     assert repo.language == "Elixir"
-    assert repo.stars == 23000
+    assert repo.stars == 23_000
   end
 
   # fetch_tree
