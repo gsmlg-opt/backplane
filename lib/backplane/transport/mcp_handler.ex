@@ -10,6 +10,7 @@ defmodule Backplane.Transport.McpHandler do
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Telemetry
+  alias Backplane.Transport.SSE
 
   @protocol_version "2025-03-26"
   @server_name "backplane"
@@ -67,17 +68,10 @@ defmodule Backplane.Transport.McpHandler do
     arguments = params["arguments"] || %{}
 
     if is_binary(name) and name != "" do
-      case dispatch_tool_call(name, arguments) do
-        {:ok, result} ->
-          json_rpc_result(conn, id, %{
-            content: [%{type: "text", text: format_result(result)}]
-          })
-
-        {:error, message} ->
-          json_rpc_result(conn, id, %{
-            content: [%{type: "text", text: to_string(message)}],
-            isError: true
-          })
+      if SSE.streaming_requested?(conn) do
+        dispatch_tool_call_sse(conn, id, name, arguments)
+      else
+        dispatch_tool_call_json(conn, id, name, arguments)
       end
     else
       json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
@@ -98,6 +92,38 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch_notification(conn, _method, _params) do
     send_resp(conn, 202, "")
+  end
+
+  defp dispatch_tool_call_json(conn, id, name, arguments) do
+    case dispatch_tool_call(name, arguments) do
+      {:ok, result} ->
+        json_rpc_result(conn, id, %{
+          content: [%{type: "text", text: format_result(result)}]
+        })
+
+      {:error, message} ->
+        json_rpc_result(conn, id, %{
+          content: [%{type: "text", text: to_string(message)}],
+          isError: true
+        })
+    end
+  end
+
+  defp dispatch_tool_call_sse(conn, id, name, arguments) do
+    conn = SSE.start_stream(conn)
+
+    case dispatch_tool_call(name, arguments) do
+      {:ok, result} ->
+        SSE.send_event(conn, id, %{
+          content: [%{type: "text", text: format_result(result)}]
+        })
+
+      {:error, message} ->
+        SSE.send_event(conn, id, %{
+          content: [%{type: "text", text: to_string(message)}],
+          isError: true
+        })
+    end
   end
 
   defp dispatch_tool_call(name, args) do
