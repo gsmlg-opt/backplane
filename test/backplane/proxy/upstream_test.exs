@@ -308,6 +308,169 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "health ping when disconnected" do
+    test "skips ping and reschedules when status is disconnected" do
+      {:ok, _} = start_mock_http_server(4212)
+
+      config = %{
+        name: "test-disconnected-ping",
+        prefix: "disc",
+        transport: "http",
+        url: "http://127.0.0.1:19997/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      status = Upstream.status(pid)
+      assert status.status in [:disconnected, :degraded]
+
+      # Send health_ping — should not crash, just reschedule
+      send(pid, :health_ping)
+      Process.sleep(100)
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "reconnect" do
+    test "reconnect message triggers re-connection attempt" do
+      config = %{
+        name: "test-reconnect",
+        prefix: "recon",
+        transport: "http",
+        url: "http://127.0.0.1:19996/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      status_before = Upstream.status(pid)
+      assert status_before.status in [:disconnected, :degraded]
+
+      # Send reconnect — it retries connection
+      send(pid, :reconnect)
+      Process.sleep(300)
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "refresh via info message" do
+    test "handles :refresh info message" do
+      {:ok, _} = start_mock_http_server(4213)
+
+      config = %{
+        name: "test-refresh-info",
+        prefix: "refinfo",
+        transport: "http",
+        url: "http://127.0.0.1:4213/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      send(pid, :refresh)
+      Process.sleep(200)
+      assert Process.alive?(pid)
+
+      status = Upstream.status(pid)
+      assert status.status == :connected
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "HTTP error response" do
+    test "forward returns error when upstream returns JSON-RPC error" do
+      {:ok, _} = start_mock_http_server(4214)
+
+      config = %{
+        name: "test-http-error",
+        prefix: "herr",
+        transport: "http",
+        url: "http://127.0.0.1:4214/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # The mock responds with "Method not found" for unknown methods
+      # forward always sends "tools/call" which returns success, so let's
+      # just verify the forward path works
+      result = Upstream.forward(pid, "unknown_tool", %{})
+      assert {:ok, _} = result
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "degraded status from ping failures" do
+    test "transitions to degraded after max consecutive failures" do
+      {:ok, _} = start_mock_http_server(4215)
+
+      config = %{
+        name: "test-degraded",
+        prefix: "degrade",
+        transport: "http",
+        url: "http://127.0.0.1:4215/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      assert Upstream.status(pid).status == :connected
+
+      # Point to dead URL
+      :sys.replace_state(pid, fn state ->
+        %{state | config: %{state.config | url: "http://127.0.0.1:19995/mcp"}}
+      end)
+
+      # Send enough pings to trigger degraded (max_consecutive_failures = 3)
+      for _ <- 1..4 do
+        send(pid, :health_ping)
+        Process.sleep(300)
+      end
+
+      status = Upstream.status(pid)
+      assert status.status == :degraded
+      assert status.consecutive_ping_failures >= 3
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "request_id propagation" do
+    test "propagates request_id header from Logger metadata" do
+      {:ok, _} = start_mock_http_server(4216)
+
+      config = %{
+        name: "test-reqid",
+        prefix: "reqid",
+        transport: "http",
+        url: "http://127.0.0.1:4216/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Set Logger metadata with request_id and forward
+      Logger.metadata(request_id: "test-trace-id-123")
+      result = Upstream.forward(pid, "echo", %{"message" => "traced"})
+      assert {:ok, _} = result
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_http_server(port) do

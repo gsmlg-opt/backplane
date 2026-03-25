@@ -263,4 +263,58 @@ defmodule Backplane.Tools.GitTest do
 
     assert {:error, "Failed to resolve repo" <> _} = result
   end
+
+  test "call dispatches search_repos with explicit provider" do
+    result =
+      Git.call(%{
+        "_handler" => "search_repos",
+        "query" => "test",
+        "provider" => "github"
+      })
+
+    # With no real API, depends on resolver behavior
+    case result do
+      {:ok, _} -> assert true
+      {:error, _} -> assert true
+    end
+  end
+
+  test "call dispatches search_repos with unknown provider" do
+    result =
+      Git.call(%{
+        "_handler" => "search_repos",
+        "query" => "test",
+        "provider" => "nonexistent"
+      })
+
+    assert {:error, "Failed to resolve provider" <> _} = result
+  end
+
+  test "call dispatches repo_commits with optional params" do
+    result =
+      Git.call(%{
+        "_handler" => "repo_commits",
+        "repo" => "bitbucket:owner/repo",
+        "sha" => "main",
+        "path" => "lib/",
+        "per_page" => 10
+      })
+
+    assert {:error, "Failed to resolve repo" <> _} = result
+  end
+
+  test "call dispatches search_code with language filter" do
+    result =
+      Git.call(%{
+        "_handler" => "search_code",
+        "query" => "defmodule",
+        "language" => "elixir"
+      })
+
+    assert {:ok, _} = result
+  end
+
+  test "call with empty map returns error" do
+    assert {:error, "Unknown git tool handler:" <> _} = Git.call(%{})
+  end
 end

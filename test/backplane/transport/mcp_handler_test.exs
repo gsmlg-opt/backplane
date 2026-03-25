@@ -683,4 +683,92 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert is_list(prompt_resp["result"]["prompts"])
     end
   end
+
+  describe "tools/call validation" do
+    test "returns error when name is missing" do
+      resp = mcp_request("tools/call", %{})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "name"
+    end
+
+    test "returns error for nonexistent tool" do
+      resp = mcp_request("tools/call", %{"name" => "nonexistent::tool"})
+      # Should return error content or dispatch error
+      result = resp["result"]
+      assert result["isError"] == true or resp["error"] != nil
+    end
+
+    test "calls a native tool successfully" do
+      resp = mcp_request("tools/call", %{"name" => "skill::list"})
+      result = resp["result"]
+      assert result != nil
+      assert is_list(result["content"])
+    end
+
+    test "passes arguments to tool" do
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "skill::search",
+          "arguments" => %{"query" => "test"}
+        })
+
+      result = resp["result"]
+      assert result != nil
+      assert is_list(result["content"])
+    end
+  end
+
+  describe "resources/read validation" do
+    test "returns error when uri is missing" do
+      resp = mcp_request("resources/read", %{})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "uri"
+    end
+
+    test "returns error for nonexistent resource" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/nonexistent/99999"})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "not found" or resp["error"]["message"] =~ "Resource"
+    end
+  end
+
+  describe "prompts/get validation" do
+    test "returns error when name is missing" do
+      resp = mcp_request("prompts/get", %{})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "name"
+    end
+
+    test "returns error for nonexistent prompt" do
+      resp = mcp_request("prompts/get", %{"name" => "nonexistent-skill"})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "not found" or resp["error"]["message"] =~ "Prompt"
+    end
+  end
+
+  describe "completion/complete validation" do
+    test "returns error when ref is missing" do
+      resp = mcp_request("completion/complete", %{})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "ref"
+    end
+
+    test "returns error when argument is missing" do
+      resp = mcp_request("completion/complete", %{"ref" => %{"type" => "ref/resource"}})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "ref"
+    end
+  end
+
+  describe "invalid request format" do
+    test "returns error for request without jsonrpc field" do
+      resp = raw_mcp_request(%{"method" => "ping", "id" => 1})
+      assert resp["error"]["code"] == -32_600
+    end
+
+    test "returns error for request with wrong jsonrpc version" do
+      resp = raw_mcp_request(%{"jsonrpc" => "1.0", "method" => "ping", "id" => 1})
+      assert resp["error"]["code"] == -32_600
+    end
+  end
 end

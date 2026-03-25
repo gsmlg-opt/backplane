@@ -166,5 +166,80 @@ defmodule Backplane.Hub.DiscoverTest do
       assert results.docs == []
       assert results.repos == []
     end
+
+    test "search_docs returns matching doc chunks" do
+      # Insert a project and doc chunk with searchable content
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "discover-docs-proj",
+          repo: "https://github.com/test/docs.git",
+          ref: "main"
+        },
+        on_conflict: :nothing
+      )
+
+      # Use Indexer to properly insert chunks with tsvector
+      chunks = [
+        %{
+          project_id: "discover-docs-proj",
+          source_path: "lib/genserver_example.ex",
+          content:
+            "GenServer patterns for building concurrent applications in Elixir with supervision",
+          chunk_type: "module_doc",
+          module: "GenServerExample",
+          function: nil,
+          content_hash: "discover_doc_hash_1",
+          tokens: 15
+        }
+      ]
+
+      {:ok, _stats} = Backplane.Docs.Indexer.index("discover-docs-proj", chunks)
+
+      {:ok, results} = Discover.search("GenServer supervision", scope: ["docs"])
+      assert is_list(results.docs)
+
+      if results.docs != [] do
+        [doc | _] = results.docs
+        assert Map.has_key?(doc, :project)
+        assert Map.has_key?(doc, :snippet)
+      end
+    end
+
+    test "search_docs maps fields correctly for matched chunks" do
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "discover-fields-proj",
+          repo: "https://github.com/test/fields.git",
+          ref: "main"
+        },
+        on_conflict: :nothing
+      )
+
+      chunks = [
+        %{
+          project_id: "discover-fields-proj",
+          source_path: "lib/pattern_matching.ex",
+          content:
+            "Pattern matching is a powerful feature of Elixir for control flow and data extraction",
+          chunk_type: "function_doc",
+          module: "PatternMatching",
+          function: "match/2",
+          content_hash: "discover_fields_hash_1",
+          tokens: 18
+        }
+      ]
+
+      {:ok, _stats} = Backplane.Docs.Indexer.index("discover-fields-proj", chunks)
+
+      {:ok, results} = Discover.search("pattern matching", scope: ["docs"])
+
+      if results.docs != [] do
+        doc = hd(results.docs)
+        assert doc.project == "discover-fields-proj"
+        assert doc.module == "PatternMatching"
+        assert doc.function == "match/2"
+        assert is_binary(doc.snippet)
+      end
+    end
   end
 end

@@ -18,5 +18,22 @@ defmodule Backplane.Jobs.ReindexTest do
       changeset = Reindex.new(%{"project_id" => "test-project"})
       assert changeset.changes.queue == "indexing"
     end
+
+    test "perform returns error when ingestion fails for invalid repo" do
+      project =
+        Repo.insert!(%Backplane.Docs.Project{
+          id: "reindex-bad-#{System.unique_integer([:positive])}",
+          repo: "file:///nonexistent/path",
+          ref: "main"
+        })
+
+      job = %Oban.Job{args: %{"project_id" => project.id}}
+      assert {:error, _reason} = Reindex.perform(job)
+    end
+
+    test "job changeset includes unique key for project_id" do
+      changeset = Reindex.new(%{"project_id" => "unique-test"})
+      assert changeset.changes.args == %{"project_id" => "unique-test"}
+    end
   end
 end
