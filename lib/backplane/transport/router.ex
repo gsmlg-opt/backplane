@@ -8,6 +8,7 @@ defmodule Backplane.Transport.Router do
   alias Backplane.Jobs.WebhookHandler
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
+  plug(Plug.RequestId)
   plug(:match)
   plug(Backplane.Transport.Compression)
   plug(Backplane.Transport.RequestLogger)
