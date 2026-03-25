@@ -91,5 +91,36 @@ defmodule Backplane.Transport.RateLimiterTest do
       assert result.status == 429
       assert Jason.decode!(result.resp_body) == %{"error" => "Too many requests"}
     end
+
+    test "X-Forwarded-For with multiple IPs uses first" do
+      conn_fn = fn ->
+        build_conn()
+        |> Plug.Conn.put_req_header("x-forwarded-for", "198.51.100.1, 203.0.113.50, 10.0.0.1")
+      end
+
+      for _ <- 1..3 do
+        refute RateLimiter.call(conn_fn.(), []).halted
+      end
+
+      # Should be rate-limited based on first IP (198.51.100.1)
+      assert RateLimiter.call(conn_fn.(), []).halted
+    end
+
+    test "stale entries don't count toward the limit" do
+      ip = {192, 168, 99, 1}
+
+      # Manually insert stale timestamps in the ETS table
+      if :ets.info(@table) == :undefined do
+        :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
+      end
+
+      stale_time = System.monotonic_time(:millisecond) - 120_000
+      :ets.insert(@table, {~c"192.168.99.1", [stale_time, stale_time, stale_time]})
+
+      # New request should pass even though there are 3 stale entries
+      conn = build_conn(ip)
+      result = RateLimiter.call(conn, [])
+      refute result.halted
+    end
   end
 end

@@ -108,6 +108,33 @@ defmodule Backplane.Tools.SkillTest do
 
       assert String.contains?(msg, "non-database")
     end
+
+    test "returns error for nonexistent skill update" do
+      {:error, msg} =
+        SkillTool.call(%{
+          "_handler" => "update",
+          "skill_id" => "nonexistent/id",
+          "content" => "nope"
+        })
+
+      assert msg =~ "not found"
+    end
+  end
+
+  describe "skill::search with limit" do
+    test "respects limit parameter" do
+      {:ok, results} =
+        SkillTool.call(%{"_handler" => "search", "query" => "guide", "limit" => 1})
+
+      assert length(results) <= 1
+    end
+  end
+
+  describe "unknown handler" do
+    test "returns error for unknown handler" do
+      {:error, msg} = SkillTool.call(%{"unknown" => "handler"})
+      assert msg =~ "Unknown skill tool handler"
+    end
   end
 
   defp insert_skill(id, name, description, tags, source) do
