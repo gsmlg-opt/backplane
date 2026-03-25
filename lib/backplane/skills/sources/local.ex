@@ -11,8 +11,13 @@ defmodule Backplane.Skills.Sources.Local do
 
   @impl true
   def list do
-    list(%__MODULE__{})
+    case get_config() do
+      nil -> {:ok, []}
+      config -> list(config)
+    end
   end
+
+  def list(%__MODULE__{path: nil}), do: {:ok, []}
 
   def list(%__MODULE__{name: name, path: path}) do
     if File.dir?(path) do
@@ -47,7 +52,10 @@ defmodule Backplane.Skills.Sources.Local do
 
   @impl true
   def fetch(skill_id) do
-    fetch(%__MODULE__{}, skill_id)
+    case get_config() do
+      nil -> {:error, :not_configured}
+      config -> fetch(config, skill_id)
+    end
   end
 
   def fetch(%__MODULE__{} = config, skill_id) do
@@ -57,6 +65,16 @@ defmodule Backplane.Skills.Sources.Local do
     else
       nil -> {:error, :not_found}
       {:error, _} = error -> error
+    end
+  end
+
+  defp get_config do
+    case Application.get_env(:backplane, :local_skills) do
+      %{path: path} = cfg ->
+        %__MODULE__{name: Map.get(cfg, :name), path: path}
+
+      _ ->
+        nil
     end
   end
 end
