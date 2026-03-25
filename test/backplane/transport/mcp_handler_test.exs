@@ -59,6 +59,29 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "notifications" do
+    test "returns 202 for notifications (no id)" do
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+  end
+
+  describe "successful tool call" do
+    test "calls skill::list and returns results" do
+      resp = mcp_request("tools/call", %{"name" => "skill::list", "arguments" => %{}})
+
+      refute resp["result"]["isError"]
+      content = hd(resp["result"]["content"])
+      assert content["type"] == "text"
+    end
+  end
+
   describe "invalid request" do
     test "returns -32600 for missing jsonrpc field" do
       resp = raw_mcp_request(%{"method" => "initialize", "id" => 1})
