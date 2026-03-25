@@ -5,31 +5,43 @@ defmodule Backplane.Transport.AuthPlug do
   When `backplane.auth_token` is configured, requests must include
   `Authorization: Bearer <token>`. When not configured, all requests pass through.
 
-  The /health endpoint always passes without auth.
+  Supports token rotation by accepting a list of valid tokens:
+
+      config :backplane, auth_token: "single-token"
+      config :backplane, auth_tokens: ["current-token", "previous-token"]
+
+  The /health and /metrics endpoints always pass without auth.
   """
 
   import Plug.Conn
   @behaviour Plug
 
+  @public_paths ["/health", "/metrics"]
+
   @impl true
   def init(opts), do: opts
 
   @impl true
-  def call(%{request_path: "/health"} = conn, _opts), do: conn
+  def call(%{request_path: path} = conn, _opts) when path in @public_paths, do: conn
 
   def call(conn, _opts) do
-    case get_auth_token() do
-      nil -> conn
-      expected_token -> verify_token(conn, expected_token)
+    case get_valid_tokens() do
+      [] -> conn
+      valid_tokens -> verify_token(conn, valid_tokens)
     end
   end
 
-  defp verify_token(conn, expected_token) do
-    with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
-         true <- Plug.Crypto.secure_compare(token, expected_token) do
-      conn
-    else
-      _ -> reject(conn)
+  defp verify_token(conn, valid_tokens) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] ->
+        if Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
+          conn
+        else
+          reject(conn)
+        end
+
+      _ ->
+        reject(conn)
     end
   end
 
@@ -40,7 +52,14 @@ defmodule Backplane.Transport.AuthPlug do
     |> halt()
   end
 
-  defp get_auth_token do
-    Application.get_env(:backplane, :auth_token)
+  defp get_valid_tokens do
+    tokens = Application.get_env(:backplane, :auth_tokens, [])
+    single = Application.get_env(:backplane, :auth_token)
+
+    case {tokens, single} do
+      {list, _} when is_list(list) and list != [] -> list
+      {_, token} when is_binary(token) -> [token]
+      _ -> []
+    end
   end
 end
