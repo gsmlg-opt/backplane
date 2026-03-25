@@ -196,6 +196,26 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "resources/list pagination" do
+    test "returns resources without nextCursor when under page size" do
+      resp = mcp_request("resources/list")
+      refute Map.has_key?(resp["result"], "nextCursor")
+    end
+
+    test "accepts cursor parameter" do
+      # Even with no data matching the cursor, should return empty
+      resp =
+        mcp_request("resources/list", %{"cursor" => Base.url_encode64("999999", padding: false)})
+
+      assert is_list(resp["result"]["resources"])
+    end
+
+    test "accepts nil params" do
+      resp = mcp_request("resources/list")
+      assert is_list(resp["result"]["resources"])
+    end
+  end
+
   describe "resources/read" do
     test "returns error for invalid URI" do
       resp = mcp_request("resources/read", %{"uri" => "invalid://uri"})

@@ -96,7 +96,7 @@ defmodule Backplane.Transport.McpHandler do
        serverInfo: %{name: @server_name, version: @server_version},
        capabilities: %{
          tools: %{listChanged: true},
-         resources: %{},
+         resources: %{listChanged: false},
          prompts: %{},
          completions: %{},
          logging: %{}
@@ -137,8 +137,13 @@ defmodule Backplane.Transport.McpHandler do
     {:error, -32_602, "Invalid params: 'name' is required"}
   end
 
-  defp compute_result("resources/list", _id, _params),
-    do: {:result, %{resources: list_resources()}}
+  defp compute_result("resources/list", _id, params) do
+    cursor = if is_map(params), do: params["cursor"]
+    {resources, next_cursor} = list_resources(cursor)
+    result = %{resources: resources}
+    result = if next_cursor, do: Map.put(result, :nextCursor, next_cursor), else: result
+    {:result, result}
+  end
 
   defp compute_result("resources/read", _id, %{"uri" => uri}) when is_binary(uri) do
     case read_resource(uri) do
@@ -252,9 +257,12 @@ defmodule Backplane.Transport.McpHandler do
     json_rpc_error(conn, id, -32_602, "Invalid params: 'params' object is required")
   end
 
-  defp dispatch(conn, "resources/list", id, _params) do
-    resources = list_resources()
-    json_rpc_result(conn, id, %{resources: resources})
+  defp dispatch(conn, "resources/list", id, params) do
+    cursor = if is_map(params), do: params["cursor"]
+    {resources, next_cursor} = list_resources(cursor)
+    result = %{resources: resources}
+    result = if next_cursor, do: Map.put(result, :nextCursor, next_cursor), else: result
+    json_rpc_result(conn, id, result)
   end
 
   defp dispatch(conn, "resources/read", id, %{"uri" => uri}) when is_binary(uri) do
@@ -417,24 +425,59 @@ defmodule Backplane.Transport.McpHandler do
 
   # Resources: doc chunks as MCP resources
 
-  defp list_resources do
-    DocChunk
-    |> select([c], %{
-      project_id: c.project_id,
-      source_path: c.source_path,
-      chunk_type: c.chunk_type,
-      id: c.id
-    })
-    |> limit(500)
-    |> Repo.all()
-    |> Enum.map(fn chunk ->
-      %{
-        uri: resource_uri(chunk.project_id, chunk.id),
-        name: "#{chunk.project_id}/#{chunk.source_path}",
-        description: "#{chunk.chunk_type} from #{chunk.source_path}",
-        mimeType: "text/plain"
-      }
-    end)
+  @page_size 100
+
+  defp list_resources(cursor) do
+    query =
+      DocChunk
+      |> select([c], %{
+        project_id: c.project_id,
+        source_path: c.source_path,
+        chunk_type: c.chunk_type,
+        id: c.id
+      })
+      |> order_by([c], asc: c.id)
+
+    query = if cursor, do: where(query, [c], c.id > ^decode_cursor(cursor)), else: query
+
+    chunks =
+      query
+      |> limit(^(@page_size + 1))
+      |> Repo.all()
+
+    {page, has_more} =
+      if length(chunks) > @page_size do
+        {Enum.take(chunks, @page_size), true}
+      else
+        {chunks, false}
+      end
+
+    resources =
+      Enum.map(page, fn chunk ->
+        %{
+          uri: resource_uri(chunk.project_id, chunk.id),
+          name: "#{chunk.project_id}/#{chunk.source_path}",
+          description: "#{chunk.chunk_type} from #{chunk.source_path}",
+          mimeType: "text/plain"
+        }
+      end)
+
+    next_cursor =
+      if has_more do
+        last = List.last(page)
+        encode_cursor(last.id)
+      end
+
+    {resources, next_cursor}
+  end
+
+  defp encode_cursor(id), do: Base.url_encode64(to_string(id), padding: false)
+
+  defp decode_cursor(cursor) do
+    case Base.url_decode64(cursor, padding: false) do
+      {:ok, id_str} -> String.to_integer(id_str)
+      :error -> 0
+    end
   end
 
   defp read_resource(uri) do
