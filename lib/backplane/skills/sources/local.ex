@@ -16,39 +16,32 @@ defmodule Backplane.Skills.Sources.Local do
 
   def list(%__MODULE__{name: name, path: path}) do
     if File.dir?(path) do
+      source_label = if name, do: "local:#{name}", else: "local"
+
       entries =
         path
         |> File.ls!()
         |> Enum.filter(&String.ends_with?(&1, ".md"))
-        |> Enum.flat_map(fn filename ->
-          filepath = Path.join(path, filename)
-
-          if File.regular?(filepath) do
-            content = File.read!(filepath)
-
-            case Loader.parse(content) do
-              {:ok, entry} ->
-                skill_name = Path.rootname(filename)
-                source_label = if name, do: "local:#{name}", else: "local"
-
-                [
-                  Map.merge(entry, %{
-                    id: "#{source_label}/#{skill_name}",
-                    source: source_label
-                  })
-                ]
-
-              {:error, _} ->
-                []
-            end
-          else
-            []
-          end
-        end)
+        |> Enum.map(&Path.join(path, &1))
+        |> Enum.filter(&File.regular?/1)
+        |> Enum.flat_map(&parse_skill_file(&1, source_label))
 
       {:ok, entries}
     else
       {:error, :directory_not_found}
+    end
+  end
+
+  defp parse_skill_file(filepath, source_label) do
+    content = File.read!(filepath)
+    skill_name = filepath |> Path.basename() |> Path.rootname()
+
+    case Loader.parse(content) do
+      {:ok, entry} ->
+        [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
+
+      {:error, _} ->
+        []
     end
   end
 
@@ -58,15 +51,12 @@ defmodule Backplane.Skills.Sources.Local do
   end
 
   def fetch(%__MODULE__{} = config, skill_id) do
-    case list(config) do
-      {:ok, entries} ->
-        case Enum.find(entries, fn e -> e.id == skill_id end) do
-          nil -> {:error, :not_found}
-          entry -> {:ok, entry}
-        end
-
-      error ->
-        error
+    with {:ok, entries} <- list(config),
+         entry when not is_nil(entry) <- Enum.find(entries, fn e -> e.id == skill_id end) do
+      {:ok, entry}
+    else
+      nil -> {:error, :not_found}
+      {:error, _} = error -> error
     end
   end
 end

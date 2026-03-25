@@ -121,7 +121,7 @@ defmodule Backplane.Docs.Parsers.Elixir do
         handle_function(trimmed, rest, source_path, state)
 
       # end - pop module stack (only when at top-level indentation or stack is non-empty)
-      trimmed == "end" and length(state.module_stack) > 0 ->
+      trimmed == "end" and state.module_stack != [] ->
         module_stack = tl(state.module_stack)
         process_lines(rest, source_path, %{state | module_stack: module_stack})
 

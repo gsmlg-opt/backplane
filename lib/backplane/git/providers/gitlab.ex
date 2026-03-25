@@ -200,34 +200,38 @@ defmodule Backplane.Git.Providers.GitLab do
     repo = Keyword.get(opts, :repo)
 
     if repo do
-      encoded_id = encode_project_id(repo)
-
-      case Req.get(client(config),
-             url: "/projects/#{encoded_id}/search",
-             params: [scope: "blobs", search: query]
-           ) do
-        {:ok, %{status: 200, body: body}} ->
-          results =
-            Enum.map(body, fn item ->
-              %{
-                name: item["filename"],
-                path: item["filename"],
-                sha: item["id"],
-                url: nil,
-                repository: repo
-              }
-            end)
-
-          {:ok, results}
-
-        {:ok, %{status: status, body: body}} ->
-          {:error, %{status: status, message: error_message(body)}}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      do_search_code(query, repo, config)
     else
       {:error, "GitLab code search requires a repo parameter"}
+    end
+  end
+
+  defp do_search_code(query, repo, config) do
+    encoded_id = encode_project_id(repo)
+
+    case Req.get(client(config),
+           url: "/projects/#{encoded_id}/search",
+           params: [scope: "blobs", search: query]
+         ) do
+      {:ok, %{status: 200, body: body}} ->
+        results =
+          Enum.map(body, fn item ->
+            %{
+              name: item["filename"],
+              path: item["filename"],
+              sha: item["id"],
+              url: nil,
+              repository: repo
+            }
+          end)
+
+        {:ok, results}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, %{status: status, message: error_message(body)}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

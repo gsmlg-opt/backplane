@@ -87,33 +87,30 @@ defmodule Backplane.Docs.Ingestion do
     chunks =
       repo_path
       |> walk_files()
-      |> Enum.flat_map(fn file_path ->
-        relative_path = Path.relative_to(file_path, repo_path)
-
-        case File.read(file_path) do
-          {:ok, content} ->
-            parser = Parser.parser_for(file_path)
-
-            case parser.parse(content, relative_path) do
-              {:ok, parsed_chunks} ->
-                parsed_chunks
-
-              other ->
-                Logger.warning(
-                  "Parse error for #{relative_path} in #{project_id}: #{inspect(other)}"
-                )
-
-                []
-            end
-
-          {:error, reason} ->
-            Logger.warning("Read error for #{relative_path}: #{inspect(reason)}")
-            []
-        end
-      end)
+      |> Enum.flat_map(&parse_file(&1, repo_path, project_id))
       |> Chunker.process()
 
     {:ok, chunks}
+  end
+
+  defp parse_file(file_path, repo_path, project_id) do
+    relative_path = Path.relative_to(file_path, repo_path)
+
+    with {:ok, content} <- File.read(file_path),
+         {:ok, parsed_chunks} <- Parser.parser_for(file_path).parse(content, relative_path) do
+      parsed_chunks
+    else
+      {:error, reason} ->
+        Logger.warning("Error processing #{relative_path} in #{project_id}: #{inspect(reason)}")
+        []
+
+      other ->
+        Logger.warning(
+          "Unexpected result for #{relative_path} in #{project_id}: #{inspect(other)}"
+        )
+
+        []
+    end
   end
 
   defp ensure_repo(project) do

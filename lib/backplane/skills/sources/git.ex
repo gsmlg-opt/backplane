@@ -21,42 +21,34 @@ defmodule Backplane.Skills.Sources.Git do
 
     with :ok <- ensure_clone(repo, clone_dir, ref) do
       scan_dir = if subdir, do: Path.join(clone_dir, subdir), else: clone_dir
+      source_label = "git:#{name}"
 
       if File.dir?(scan_dir) do
         entries =
           scan_dir
           |> File.ls!()
           |> Enum.filter(&String.ends_with?(&1, ".md"))
-          |> Enum.flat_map(fn filename ->
-            filepath = Path.join(scan_dir, filename)
-
-            if File.regular?(filepath) do
-              content = File.read!(filepath)
-
-              case Loader.parse(content) do
-                {:ok, entry} ->
-                  skill_name = Path.rootname(filename)
-                  source_label = "git:#{name}"
-
-                  [
-                    Map.merge(entry, %{
-                      id: "#{source_label}/#{skill_name}",
-                      source: source_label
-                    })
-                  ]
-
-                {:error, _} ->
-                  []
-              end
-            else
-              []
-            end
-          end)
+          |> Enum.map(&Path.join(scan_dir, &1))
+          |> Enum.filter(&File.regular?/1)
+          |> Enum.flat_map(&parse_skill_file(&1, source_label))
 
         {:ok, entries}
       else
         {:ok, []}
       end
+    end
+  end
+
+  defp parse_skill_file(filepath, source_label) do
+    content = File.read!(filepath)
+    skill_name = filepath |> Path.basename() |> Path.rootname()
+
+    case Loader.parse(content) do
+      {:ok, entry} ->
+        [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
+
+      {:error, _} ->
+        []
     end
   end
 
@@ -66,15 +58,12 @@ defmodule Backplane.Skills.Sources.Git do
   end
 
   def fetch(%__MODULE__{} = config, skill_id) do
-    case list(config) do
-      {:ok, entries} ->
-        case Enum.find(entries, fn e -> e.id == skill_id end) do
-          nil -> {:error, :not_found}
-          entry -> {:ok, entry}
-        end
-
-      error ->
-        error
+    with {:ok, entries} <- list(config),
+         entry when not is_nil(entry) <- Enum.find(entries, fn e -> e.id == skill_id end) do
+      {:ok, entry}
+    else
+      nil -> {:error, :not_found}
+      {:error, _} = error -> error
     end
   end
 

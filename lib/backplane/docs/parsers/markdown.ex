@@ -48,63 +48,59 @@ defmodule Backplane.Docs.Parsers.Markdown do
   end
 
   defp build_sections(lines, source_path) do
-    {sections, current} =
-      Enum.reduce(lines, {[], nil}, fn line, {sections, current} ->
-        trimmed = String.trim(line)
-
-        cond do
-          # ## heading starts a new section
-          String.starts_with?(trimmed, "## ") and not String.starts_with?(trimmed, "### ") ->
-            heading = String.trim_leading(trimmed, "## ")
-            sections = maybe_finalize(sections, current)
-            {sections, %{heading: heading, lines: []}}
-
-          # # top-level heading also starts a section
-          String.starts_with?(trimmed, "# ") and not String.starts_with?(trimmed, "##") ->
-            heading = String.trim_leading(trimmed, "# ")
-            sections = maybe_finalize(sections, current)
-            {sections, %{heading: heading, lines: []}}
-
-          # Content lines
-          current != nil ->
-            {sections, %{current | lines: [line | current.lines]}}
-
-          # Lines before first heading — collect as preamble
-          true ->
-            case sections do
-              [] ->
-                {sections, %{heading: nil, lines: [line]}}
-
-              _ ->
-                {sections, current}
-            end
-        end
-      end)
-
+    {sections, current} = Enum.reduce(lines, {[], nil}, &classify_line/2)
     sections = maybe_finalize(sections, current)
 
     sections
     |> Enum.reverse()
-    |> Enum.map(fn section ->
-      content_lines = Enum.reverse(section.lines)
-      body = Enum.join(content_lines, "\n") |> String.trim()
-
-      content =
-        if section.heading do
-          "## #{section.heading}\n\n#{body}"
-        else
-          body
-        end
-
-      %{
-        source_path: source_path,
-        module: nil,
-        function: nil,
-        chunk_type: "guide",
-        content: String.trim(content)
-      }
-    end)
+    |> Enum.map(&section_to_chunk(&1, source_path))
     |> Enum.reject(fn chunk -> chunk.content == "" end)
+  end
+
+  defp classify_line(line, {sections, current}) do
+    trimmed = String.trim(line)
+
+    cond do
+      heading_level_2?(trimmed) ->
+        heading = String.trim_leading(trimmed, "## ")
+        {maybe_finalize(sections, current), %{heading: heading, lines: []}}
+
+      heading_level_1?(trimmed) ->
+        heading = String.trim_leading(trimmed, "# ")
+        {maybe_finalize(sections, current), %{heading: heading, lines: []}}
+
+      current != nil ->
+        {sections, %{current | lines: [line | current.lines]}}
+
+      sections == [] ->
+        {sections, %{heading: nil, lines: [line]}}
+
+      true ->
+        {sections, current}
+    end
+  end
+
+  defp heading_level_2?(line),
+    do: String.starts_with?(line, "## ") and not String.starts_with?(line, "### ")
+
+  defp heading_level_1?(line),
+    do: String.starts_with?(line, "# ") and not String.starts_with?(line, "##")
+
+  defp section_to_chunk(section, source_path) do
+    body = section.lines |> Enum.reverse() |> Enum.join("\n") |> String.trim()
+
+    content =
+      if section.heading,
+        do: "## #{section.heading}\n\n#{body}",
+        else: body
+
+    %{
+      source_path: source_path,
+      module: nil,
+      function: nil,
+      chunk_type: "guide",
+      content: String.trim(content)
+    }
   end
 
   defp maybe_finalize(sections, nil), do: sections
