@@ -26,6 +26,7 @@ defmodule Backplane.Docs.Parser do
     case Path.extname(path) do
       ext when ext in [".ex", ".exs"] -> Backplane.Docs.Parsers.Elixir
       ".md" -> Backplane.Docs.Parsers.Markdown
+      ext when ext in [".html", ".htm"] -> Backplane.Docs.Parsers.HexDocs
       _ -> Backplane.Docs.Parsers.Generic
     end
   end
