@@ -23,6 +23,22 @@ defmodule Backplane.Transport.Router do
     McpHandler.handle(conn)
   end
 
+  delete "/mcp" do
+    # MCP Streamable HTTP session termination
+    # Backplane is stateless per-request, so we just acknowledge
+    send_resp(conn, 200, "")
+  end
+
+  get "/mcp" do
+    # MCP Streamable HTTP server-to-client SSE stream
+    # Used for server-initiated notifications (e.g., tools/list_changed)
+    conn
+    |> put_resp_content_type("text/event-stream")
+    |> put_resp_header("cache-control", "no-cache")
+    |> put_resp_header("connection", "keep-alive")
+    |> send_resp(200, "")
+  end
+
   post "/webhook/github" do
     handle_webhook(conn, :github)
   end

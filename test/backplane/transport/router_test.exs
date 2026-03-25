@@ -21,6 +21,23 @@ defmodule Backplane.Transport.RouterTest do
     assert body["error"] == "Not found"
   end
 
+  test "DELETE /mcp returns 200 for session termination" do
+    conn =
+      Plug.Test.conn(:delete, "/mcp")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 200
+  end
+
+  test "GET /mcp returns 200 with SSE content type" do
+    conn =
+      Plug.Test.conn(:get, "/mcp")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 200
+    assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
+  end
+
   test "POST /mcp with valid JSON-RPC returns 200" do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
