@@ -38,6 +38,9 @@ defmodule Backplane.Transport.RateLimiter do
     max_requests = config(:max_requests, @default_max_requests)
     cutoff = now - window_ms
 
+    # Probabilistic cleanup: ~1% of requests trigger a full sweep
+    if :rand.uniform(100) == 1, do: sweep_stale(cutoff)
+
     # Clean old entries and count current window
     clean_and_count(ip, cutoff, now, max_requests, conn)
   end
@@ -77,6 +80,17 @@ defmodule Backplane.Transport.RateLimiter do
     |> put_resp_content_type("application/json")
     |> send_resp(429, Jason.encode!(%{error: "Too many requests"}))
     |> halt()
+  end
+
+  defp sweep_stale(cutoff) do
+    @table
+    |> :ets.tab2list()
+    |> Enum.each(fn {ip, timestamps} ->
+      case Enum.filter(timestamps, &(&1 > cutoff)) do
+        [] -> :ets.delete(@table, ip)
+        current -> :ets.insert(@table, {ip, current})
+      end
+    end)
   end
 
   defp config(key, default) do
