@@ -70,6 +70,31 @@ defmodule Backplane.Skills.Sources.LocalTest do
       {:ok, skills} = Local.list(config)
       assert Enum.all?(skills, fn s -> s.source == "local:experiments" end)
     end
+
+    test "returns error for nonexistent directory" do
+      config = %Local{name: "test", path: "/tmp/nonexistent_skill_dir_999999"}
+      assert {:error, :directory_not_found} = Local.list(config)
+    end
+
+    test "returns empty list when path is nil" do
+      config = %Local{name: "test", path: nil}
+      assert {:ok, []} = Local.list(config)
+    end
+
+    test "uses 'local' as source when name is nil", %{dir: dir} do
+      config = %Local{name: nil, path: dir}
+      {:ok, skills} = Local.list(config)
+      assert Enum.all?(skills, fn s -> s.source == "local" end)
+    end
+
+    test "list/0 returns empty when no config set" do
+      old = Application.get_env(:backplane, :local_skills)
+      Application.delete_env(:backplane, :local_skills)
+
+      assert {:ok, []} = Local.list()
+
+      if old, do: Application.put_env(:backplane, :local_skills, old)
+    end
   end
 
   describe "fetch/1" do
@@ -82,6 +107,15 @@ defmodule Backplane.Skills.Sources.LocalTest do
     test "returns error for nonexistent skill", %{dir: dir} do
       config = %Local{name: "test", path: dir}
       assert {:error, :not_found} = Local.fetch(config, "local:test/nonexistent")
+    end
+
+    test "fetch/1 returns not_configured when no config" do
+      old = Application.get_env(:backplane, :local_skills)
+      Application.delete_env(:backplane, :local_skills)
+
+      assert {:error, :not_configured} = Local.fetch("some-id")
+
+      if old, do: Application.put_env(:backplane, :local_skills, old)
     end
   end
 end

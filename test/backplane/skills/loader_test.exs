@@ -95,5 +95,77 @@ defmodule Backplane.Skills.LoaderTest do
 
       assert {:error, :malformed_frontmatter} = Loader.parse(bad)
     end
+
+    test "returns error when YAML parses to non-map (e.g. a list)" do
+      bad = """
+      ---
+      - item1
+      - item2
+      ---
+
+      Content.
+      """
+
+      assert {:error, :malformed_frontmatter} = Loader.parse(bad)
+    end
+
+    test "returns error when name is missing from frontmatter" do
+      bad = """
+      ---
+      description: No name provided
+      tags: [test]
+      ---
+
+      Content.
+      """
+
+      assert {:error, :missing_frontmatter} = Loader.parse(bad)
+    end
+
+    test "returns error when text before frontmatter delimiters" do
+      bad = "Some text before\n---\nname: test\n---\nContent."
+      assert {:error, :missing_frontmatter} = Loader.parse(bad)
+    end
+
+    test "handles tags as non-list (string) gracefully" do
+      skill = """
+      ---
+      name: string-tags
+      tags: not-a-list
+      ---
+
+      Content.
+      """
+
+      {:ok, entry} = Loader.parse(skill)
+      assert entry.tags == []
+    end
+
+    test "handles whitespace before first --- delimiter" do
+      skill = """
+        \n---
+      name: whitespace-test
+      ---
+
+      Content.
+      """
+
+      {:ok, entry} = Loader.parse(skill)
+      assert entry.name == "whitespace-test"
+    end
+
+    test "version is converted to string when given as number" do
+      skill = """
+      ---
+      name: version-num
+      version: 2
+      ---
+
+      Content.
+      """
+
+      {:ok, entry} = Loader.parse(skill)
+      assert entry.version == "2"
+    end
   end
 end
