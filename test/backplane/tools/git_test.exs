@@ -1,5 +1,5 @@
 defmodule Backplane.Tools.GitTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.Tools.Git
 
