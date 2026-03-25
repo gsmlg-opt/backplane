@@ -74,6 +74,59 @@ defmodule Backplane.Skills.SyncTest do
     test "handles empty source gracefully" do
       assert :ok = Sync.sync_entries([])
     end
+
+    test "does not disable already-disabled skills" do
+      insert_skill("sync:disabled/s1", "sync:disabled", "content")
+      # Manually disable
+      Repo.get!(Skill, "sync:disabled/s1")
+      |> Skill.update_changeset(%{enabled: false})
+      |> Repo.update!()
+
+      entries = [skill_entry("sync:disabled/s2", "sync:disabled")]
+      Sync.sync_entries(entries)
+
+      s1 = Repo.get!(Skill, "sync:disabled/s1")
+      refute s1.enabled
+    end
+  end
+
+  describe "perform/1" do
+    test "raises for disallowed source module" do
+      job = %Oban.Job{
+        args: %{"source_module" => "Elixir.SomeEvil.Module", "name" => "bad"}
+      }
+
+      assert_raise RuntimeError, ~r/Disallowed source module/, fn ->
+        Sync.perform(job)
+      end
+    end
+
+    test "perform with Local source module processes entries" do
+      # Create a temp dir with a SKILL.md
+      dir = "/tmp/backplane_sync_test_#{System.unique_integer([:positive])}"
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, "SKILL.md"), """
+      ---
+      name: sync-local-test
+      description: A test skill from local source
+      tags: [test, sync]
+      ---
+      # Test Skill Content
+      """)
+
+      job = %Oban.Job{
+        args: %{
+          "source_module" => "Elixir.Backplane.Skills.Sources.Local",
+          "name" => "sync-local",
+          "path" => dir
+        }
+      }
+
+      assert :ok = Sync.perform(job)
+
+      File.rm_rf!(dir)
+    end
   end
 
   defp skill_entry(id, source, opts \\ []) do

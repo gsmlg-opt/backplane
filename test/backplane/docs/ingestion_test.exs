@@ -91,6 +91,63 @@ defmodule Backplane.Docs.IngestionTest do
 
       File.rm_rf!(empty_dir)
     end
+
+    test "skips _build and deps directories", %{test_dir: dir, project: project} do
+      build_dir = Path.join(dir, "_build/dev")
+      deps_dir = Path.join(dir, "deps/some_dep")
+      File.mkdir_p!(build_dir)
+      File.mkdir_p!(deps_dir)
+      File.write!(Path.join(build_dir, "compiled.ex"), "defmodule Compiled do\nend")
+      File.write!(Path.join(deps_dir, "dep.ex"), "defmodule Dep do\nend")
+
+      {:ok, chunks} = Ingestion.process_files(dir, project.id)
+
+      refute Enum.any?(chunks, fn c ->
+               String.contains?(c.source_path, "_build") or
+                 String.contains?(c.source_path, "deps")
+             end)
+    end
+
+    test "skips node_modules directory", %{test_dir: dir, project: project} do
+      nm_dir = Path.join(dir, "node_modules/pkg")
+      File.mkdir_p!(nm_dir)
+      File.write!(Path.join(nm_dir, "index.md"), "# Package")
+
+      {:ok, chunks} = Ingestion.process_files(dir, project.id)
+      refute Enum.any?(chunks, fn c -> String.contains?(c.source_path, "node_modules") end)
+    end
+
+    test "handles unreadable file gracefully", %{test_dir: dir, project: project} do
+      bad_path = Path.join(dir, "lib/unreadable.ex")
+      File.write!(bad_path, "content")
+      File.chmod!(bad_path, 0o000)
+
+      {:ok, chunks} = Ingestion.process_files(dir, project.id)
+      # Should still return chunks from other files without crashing
+      assert is_list(chunks)
+
+      File.chmod!(bad_path, 0o644)
+    end
+
+    test "only processes recognized doc extensions", %{test_dir: dir, project: project} do
+      File.write!(Path.join(dir, "lib/image.png"), "binary")
+      File.write!(Path.join(dir, "lib/data.csv"), "a,b,c")
+
+      {:ok, chunks} = Ingestion.process_files(dir, project.id)
+
+      refute Enum.any?(chunks, fn c ->
+               String.ends_with?(c.source_path, ".png") or
+                 String.ends_with?(c.source_path, ".csv")
+             end)
+    end
+
+    test "processes YAML files", %{test_dir: dir, project: project} do
+      File.write!(Path.join(dir, "config.yml"), "key: value\nlist:\n  - item1\n  - item2")
+
+      {:ok, chunks} = Ingestion.process_files(dir, project.id)
+      yml_chunks = Enum.filter(chunks, &String.ends_with?(&1.source_path, ".yml"))
+      assert yml_chunks != []
+    end
   end
 
   describe "run/1" do
