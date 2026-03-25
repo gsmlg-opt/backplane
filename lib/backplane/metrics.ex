@@ -72,7 +72,9 @@ defmodule Backplane.Metrics do
         [:backplane, :tool_call, :stop],
         [:backplane, :tool_call, :exception],
         [:backplane, :sse_stream, :start],
-        [:backplane, :sse_stream, :stop]
+        [:backplane, :sse_stream, :stop],
+        [:oban, :job, :stop],
+        [:oban, :job, :exception]
       ],
       &handle_event/4,
       nil
@@ -110,5 +112,21 @@ defmodule Backplane.Metrics do
   def handle_event([:backplane, :sse_stream, :stop], measurements, _metadata, _config) do
     duration_us = System.convert_time_unit(measurements.duration, :native, :microsecond)
     record_timing("sse_stream_duration", duration_us)
+  end
+
+  def handle_event([:oban, :job, :stop], measurements, metadata, _config) do
+    queue = to_string(metadata.queue)
+    worker = to_string(metadata.worker)
+    inc("oban_jobs_completed")
+    inc("oban_jobs.#{queue}")
+    inc("oban_workers.#{worker}")
+    duration_us = System.convert_time_unit(measurements.duration, :native, :microsecond)
+    record_timing("oban_job_duration", duration_us)
+  end
+
+  def handle_event([:oban, :job, :exception], _measurements, metadata, _config) do
+    queue = to_string(metadata.queue)
+    inc("oban_jobs_failed")
+    inc("oban_jobs_failed.#{queue}")
   end
 end
