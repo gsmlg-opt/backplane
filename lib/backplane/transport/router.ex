@@ -9,6 +9,7 @@ defmodule Backplane.Transport.Router do
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
   plug(:match)
+  plug(Backplane.Transport.Compression)
   plug(Backplane.Transport.RequestLogger)
   plug(Backplane.Transport.RateLimiter)
   plug(Backplane.Transport.AuthPlug)
