@@ -19,6 +19,7 @@ defmodule Backplane.Transport.McpHandler do
   def handle(conn) do
     case conn.body_params do
       %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
+        Telemetry.emit_mcp_request(method)
         dispatch(conn, method, id, params["params"])
 
       %{"jsonrpc" => "2.0", "method" => method} = params when is_map(params) ->
@@ -114,20 +115,27 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch_tool_call_sse(conn, id, name, arguments) do
+    start_time = System.monotonic_time()
+    Telemetry.emit_sse_start(name)
     conn = SSE.start_stream(conn)
 
-    case dispatch_tool_call(name, arguments) do
-      {:ok, result} ->
-        SSE.send_event(conn, id, %{
-          content: [%{type: "text", text: format_result(result)}]
-        })
+    conn =
+      case dispatch_tool_call(name, arguments) do
+        {:ok, result} ->
+          SSE.send_event(conn, id, %{
+            content: [%{type: "text", text: format_result(result)}]
+          })
 
-      {:error, message} ->
-        SSE.send_event(conn, id, %{
-          content: [%{type: "text", text: to_string(message)}],
-          isError: true
-        })
-    end
+        {:error, message} ->
+          SSE.send_event(conn, id, %{
+            content: [%{type: "text", text: to_string(message)}],
+            isError: true
+          })
+      end
+
+    duration = System.monotonic_time() - start_time
+    Telemetry.emit_sse_stop(name, duration)
+    conn
   end
 
   defp dispatch_tool_call(name, args) do

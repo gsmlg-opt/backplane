@@ -6,6 +6,10 @@ defmodule Backplane.Telemetry do
     - [:backplane, :tool_call, :start]
     - [:backplane, :tool_call, :stop]
     - [:backplane, :tool_call, :exception]
+    - [:backplane, :mcp_request, :start]
+    - [:backplane, :mcp_request, :stop]
+    - [:backplane, :sse_stream, :start]
+    - [:backplane, :sse_stream, :stop]
   """
 
   @doc "Execute a tool call with telemetry instrumentation."
@@ -49,5 +53,32 @@ defmodule Backplane.Telemetry do
 
         reraise e, __STACKTRACE__
     end
+  end
+
+  @doc "Emit an MCP request telemetry event."
+  def emit_mcp_request(method, metadata \\ %{}) do
+    :telemetry.execute(
+      [:backplane, :mcp_request, :start],
+      %{system_time: System.system_time()},
+      Map.put(metadata, :method, method)
+    )
+  end
+
+  @doc "Emit an SSE stream start event."
+  def emit_sse_start(tool_name) do
+    :telemetry.execute(
+      [:backplane, :sse_stream, :start],
+      %{system_time: System.system_time()},
+      %{tool: tool_name}
+    )
+  end
+
+  @doc "Emit an SSE stream stop event."
+  def emit_sse_stop(tool_name, duration) do
+    :telemetry.execute(
+      [:backplane, :sse_stream, :stop],
+      %{duration: duration},
+      %{tool: tool_name}
+    )
   end
 end
