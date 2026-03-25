@@ -83,17 +83,22 @@ defmodule Backplane.Hub.Discover do
     end
   end
 
-  defp search_repos(_query, _limit) do
-    # Repos come from config, not a searchable DB
-    # Return configured projects as available repos
+  defp search_repos(query, limit) do
     import Ecto.Query
 
     try do
+      downcased = String.downcase(query)
+      pattern = "%#{downcased}%"
+
       Project
-      |> limit(10)
+      |> where(
+        [p],
+        ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or ilike(p.description, ^pattern)
+      )
+      |> limit(^limit)
       |> Repo.all()
       |> Enum.map(fn p ->
-        %{repo: p.repo, description: p.description}
+        %{id: p.id, repo: p.repo, description: p.description}
       end)
     rescue
       e ->
