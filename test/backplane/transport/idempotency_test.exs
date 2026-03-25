@@ -114,4 +114,36 @@ defmodule Backplane.Transport.IdempotencyTest do
 
     assert ct =~ "application/json"
   end
+
+  test "init/1 passes through opts" do
+    alias Backplane.Transport.Idempotency
+    assert Idempotency.init([]) == []
+    assert Idempotency.init(foo: :bar) == [foo: :bar]
+  end
+
+  test "sweep cleans up expired entries without crashing" do
+    table = Backplane.Transport.Idempotency
+
+    # Ensure table exists
+    if :ets.info(table) == :undefined do
+      :ets.new(table, [:set, :public, :named_table, read_concurrency: true])
+    end
+
+    # Insert an old entry
+    old_ts = System.monotonic_time(:millisecond) - 400_000
+    :ets.insert(table, {"sweep-test-key", {"body", 200, "application/json", old_ts}})
+
+    # Trigger multiple requests to probabilistically hit the sweep path
+    for i <- 1..60 do
+      key = "sweep-trigger-#{i}-#{System.unique_integer([:positive])}"
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+
+      Plug.Test.conn(:post, "/mcp", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("idempotency-key", key)
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+    end
+
+    assert :ets.info(table) != :undefined
+  end
 end

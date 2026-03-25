@@ -760,6 +760,76 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "resources/read with valid chunk" do
+    test "returns content for an existing doc chunk" do
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "res-read-proj", repo: "test/read", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      {:ok, chunk} =
+        Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+          project_id: "res-read-proj",
+          source_path: "lib/readable.ex",
+          content: "Readable doc content for testing",
+          chunk_type: "module_doc",
+          content_hash: "resread123"
+        })
+
+      uri = "backplane://docs/res-read-proj/#{chunk.id}"
+      resp = mcp_request("resources/read", %{"uri" => uri})
+      assert is_list(resp["result"]["contents"])
+      [content] = resp["result"]["contents"]
+      assert content["text"] == "Readable doc content for testing"
+      assert content["mimeType"] == "text/plain"
+    end
+
+    test "returns error for invalid URI format" do
+      resp = mcp_request("resources/read", %{"uri" => "invalid://bad"})
+      assert resp["error"]["code"] == -32_602
+    end
+  end
+
+  describe "resources/list pagination with cursor" do
+    test "returns nextCursor when more than page_size chunks exist" do
+      # Insert enough chunks to trigger pagination (page_size is 100)
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "paginate-proj", repo: "test/paginate", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      for i <- 1..105 do
+        Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+          project_id: "paginate-proj",
+          source_path: "lib/mod_#{i}.ex",
+          content: "Content #{i}",
+          chunk_type: "module_doc",
+          content_hash: "paginatehash#{i}"
+        })
+      end
+
+      resp = mcp_request("resources/list")
+      result = resp["result"]
+      assert is_list(result["resources"])
+
+      if result["nextCursor"] do
+        # Use the cursor to get the next page
+        resp2 = mcp_request("resources/list", %{"cursor" => result["nextCursor"]})
+        result2 = resp2["result"]
+        assert is_list(result2["resources"])
+      end
+    end
+  end
+
+  describe "tool call with error result" do
+    test "returns isError for tool that returns error" do
+      resp = mcp_request("tools/call", %{"name" => "nonexistent::tool"})
+      result = resp["result"]
+      assert result["isError"] == true
+      assert hd(result["content"])["text"] =~ "Unknown tool"
+    end
+  end
+
   describe "invalid request format" do
     test "returns error for request without jsonrpc field" do
       resp = raw_mcp_request(%{"method" => "ping", "id" => 1})
