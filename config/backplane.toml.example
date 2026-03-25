@@ -1,0 +1,57 @@
+[backplane]
+host = "0.0.0.0"
+port = 4100
+# Optional: require bearer token from MCP clients
+# auth_token = "your-backplane-secret"
+
+[database]
+url = "postgres://localhost/backplane_dev"
+
+# --- Git Platform Credentials ---
+
+[github]
+token = "ghp_..."
+api_url = "https://api.github.com"
+
+[gitlab]
+token = "glpat-..."
+api_url = "https://gitlab.com/api/v4"
+
+# --- Projects to Index ---
+
+# [[projects]]
+# id = "my-project"
+# repo = "github:org/repo"
+# ref = "main"
+# parsers = ["elixir", "markdown"]
+# reindex_interval = "1h"
+
+# --- Upstream MCP Servers to Proxy ---
+
+# [[upstream]]
+# name = "filesystem"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@anthropic/mcp-filesystem"]
+# prefix = "fs"
+
+# [[upstream]]
+# name = "postgres-mcp"
+# transport = "http"
+# url = "http://localhost:4200/mcp"
+# prefix = "pg"
+
+# --- Skill Sources ---
+
+# [[skills]]
+# name = "my-skills"
+# source = "git"
+# repo = "github:org/skills"
+# path = "/"
+# ref = "main"
+# sync_interval = "1h"
+
+# [[skills]]
+# name = "local-skills"
+# source = "local"
+# path = "/path/to/skills"

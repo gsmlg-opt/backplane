@@ -33,6 +33,13 @@ in {
   languages.javascript.bun.enable = true;
   languages.javascript.bun.package = pkgs-stable.bun;
 
+  services.postgres.enable = true;
+  services.postgres.package = pkgs-stable.postgresql_17;
+  services.postgres.initialDatabases = [
+    { name = "backplane_dev"; }
+    { name = "backplane_test"; }
+  ];
+
   scripts.hello.exec = ''
     figlet -w 120 $GREET | lolcat
   '';
