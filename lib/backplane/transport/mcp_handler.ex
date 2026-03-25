@@ -35,6 +35,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch(conn, "initialize", id, _params) do
+    session_id = generate_session_id()
+
     result = %{
       protocolVersion: @protocol_version,
       serverInfo: %{
@@ -46,7 +48,9 @@ defmodule Backplane.Transport.McpHandler do
       }
     }
 
-    json_rpc_result(conn, id, result)
+    conn
+    |> put_resp_header("mcp-session-id", session_id)
+    |> json_rpc_result(id, result)
   end
 
   defp dispatch(conn, "tools/list", id, _params) do
@@ -143,6 +147,10 @@ defmodule Backplane.Transport.McpHandler do
 
   defp execute_tool(:not_found, _args) do
     {:error, "Unknown tool"}
+  end
+
+  defp generate_session_id do
+    :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
   end
 
   defp format_result(result) when is_binary(result), do: result

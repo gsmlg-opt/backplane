@@ -15,6 +15,20 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["result"]["capabilities"]["tools"]["listChanged"] == true
     end
+
+    test "returns Mcp-Session-Id header" do
+      conn = mcp_request_conn("initialize")
+
+      session_ids =
+        conn.resp_headers
+        |> Enum.filter(fn {k, _v} -> k == "mcp-session-id" end)
+        |> Enum.map(fn {_k, v} -> v end)
+
+      assert length(session_ids) == 1
+      [session_id] = session_ids
+      assert is_binary(session_id)
+      assert String.length(session_id) > 10
+    end
   end
 
   describe "tools/list" do
