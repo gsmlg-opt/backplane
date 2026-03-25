@@ -103,7 +103,7 @@ defmodule Backplane.Docs.Parsers.HexDocsTest do
       html = "<p>Preface</p><h1>Title</h1><p>Body</p>"
       sections = HexDocs.split_html_sections(html)
 
-      assert length(sections) >= 1
+      assert sections != []
     end
   end
 end
