@@ -113,5 +113,46 @@ defmodule Backplane.Tools.HubTest do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
       assert is_integer(result.total_skills)
     end
+
+    test "doc_projects includes chunk counts" do
+      Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "hub-status-proj",
+          repo: "https://github.com/t/r.git",
+          ref: "main"
+        },
+        on_conflict: :nothing
+      )
+
+      Repo.insert!(%Backplane.Docs.DocChunk{
+        project_id: "hub-status-proj",
+        source_path: "lib/mod.ex",
+        content: "content",
+        chunk_type: "module_doc",
+        content_hash: "hubstatus1"
+      })
+
+      {:ok, result} = Hub.call(%{"_handler" => "status"})
+      proj = Enum.find(result.doc_projects, &(&1.id == "hub-status-proj"))
+      assert proj
+      assert proj.chunk_count >= 1
+    end
+
+    test "skill_sources groups by source" do
+      {:ok, result} = Hub.call(%{"_handler" => "status"})
+      assert Enum.any?(result.skill_sources, fn s -> s.name == "db" end)
+    end
+  end
+
+  describe "unknown handler" do
+    test "returns error for unknown handler" do
+      {:error, msg} = Hub.call(%{"_handler" => "unknown"})
+      assert msg =~ "Unknown hub tool handler"
+    end
+
+    test "returns error for missing handler" do
+      {:error, msg} = Hub.call(%{})
+      assert msg =~ "Unknown hub tool handler"
+    end
   end
 end
