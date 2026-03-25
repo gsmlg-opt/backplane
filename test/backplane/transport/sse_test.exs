@@ -35,6 +35,65 @@ defmodule Backplane.Transport.SSETest do
     end
   end
 
+  describe "start_stream/1" do
+    test "sets SSE headers and returns chunked conn" do
+      conn =
+        Plug.Test.conn(:post, "/mcp")
+        |> SSE.start_stream()
+
+      assert conn.status == 200
+      assert conn.state == :chunked
+      assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
+      assert {"cache-control", "no-cache"} in conn.resp_headers
+      assert {"connection", "keep-alive"} in conn.resp_headers
+    end
+  end
+
+  describe "send_event/3" do
+    test "sends SSE event with JSON-RPC result" do
+      conn =
+        Plug.Test.conn(:post, "/mcp")
+        |> SSE.start_stream()
+        |> SSE.send_event(42, %{tools: []})
+
+      body = IO.iodata_to_binary(conn.resp_body)
+      assert body =~ "event: message\n"
+
+      [data_line] =
+        body
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "data: "))
+
+      parsed = Jason.decode!(String.trim_leading(data_line, "data: "))
+      assert parsed["jsonrpc"] == "2.0"
+      assert parsed["id"] == 42
+      assert parsed["result"] == %{"tools" => []}
+    end
+  end
+
+  describe "send_error_event/4" do
+    test "sends SSE event with JSON-RPC error" do
+      conn =
+        Plug.Test.conn(:post, "/mcp")
+        |> SSE.start_stream()
+        |> SSE.send_error_event(7, -32_601, "Method not found")
+
+      body = IO.iodata_to_binary(conn.resp_body)
+      assert body =~ "event: message\n"
+
+      [data_line] =
+        body
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "data: "))
+
+      parsed = Jason.decode!(String.trim_leading(data_line, "data: "))
+      assert parsed["jsonrpc"] == "2.0"
+      assert parsed["id"] == 7
+      assert parsed["error"]["code"] == -32_601
+      assert parsed["error"]["message"] == "Method not found"
+    end
+  end
+
   describe "SSE tool call integration" do
     test "returns SSE stream when Accept: text/event-stream is set" do
       body =
@@ -72,6 +131,39 @@ defmodule Backplane.Transport.SSETest do
       assert parsed["jsonrpc"] == "2.0"
       assert parsed["id"] == 1
       assert is_map(parsed["result"])
+    end
+
+    test "returns SSE error event for unknown tool" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{"name" => "nonexistent::tool", "arguments" => %{}}
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("accept", "text/event-stream")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 200
+      assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
+
+      body_text = IO.iodata_to_binary(conn.resp_body)
+      assert body_text =~ "event: message"
+
+      [data_line] =
+        body_text
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "data: "))
+
+      parsed = Jason.decode!(String.trim_leading(data_line, "data: "))
+      assert parsed["jsonrpc"] == "2.0"
+      assert parsed["id"] == 1
+      # Unknown tool returns isError in result, not a JSON-RPC error
+      assert parsed["result"]["isError"] == true
     end
 
     test "returns regular JSON when Accept header is not SSE" do
