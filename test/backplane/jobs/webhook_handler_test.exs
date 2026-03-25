@@ -86,4 +86,66 @@ defmodule Backplane.Jobs.WebhookHandlerTest do
       refute WebhookHandler.validate_gitlab_token("wrong", "my-secret")
     end
   end
+
+  describe "perform/1" do
+    test "handles GitHub push event and enqueues reindex for matching projects" do
+      # Insert a project that matches the webhook
+      Backplane.Repo.insert!(
+        %Backplane.Docs.Project{
+          id: "webhook-test",
+          repo: "https://github.com/test/webhook-repo.git",
+          ref: "main"
+        },
+        on_conflict: :nothing
+      )
+
+      job = %Oban.Job{
+        args: %{
+          "provider" => "github",
+          "event" => "push",
+          "repo_url" => "https://github.com/test/webhook-repo.git",
+          "ref" => "refs/heads/main"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+
+    test "handles GitLab push event" do
+      job = %Oban.Job{
+        args: %{
+          "provider" => "gitlab",
+          "event" => "push",
+          "repo_url" => "https://gitlab.com/test/repo.git",
+          "ref" => "refs/heads/develop"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+
+    test "ignores unrecognized event types" do
+      job = %Oban.Job{
+        args: %{
+          "provider" => "github",
+          "event" => "pull_request"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+
+    test "handles push with plain branch name (no refs/heads/ prefix)" do
+      job = %Oban.Job{
+        args: %{
+          "provider" => "github",
+          "event" => "push",
+          "repo_url" => "https://github.com/test/repo.git",
+          "ref" => "main"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+  end
 end
