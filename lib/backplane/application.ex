@@ -21,6 +21,9 @@ defmodule Backplane.Application do
     # Register native tools after supervisor starts
     register_native_tools()
 
+    # Start configured upstream MCP connections
+    start_configured_upstreams()
+
     result
   end
 
@@ -48,9 +51,17 @@ defmodule Backplane.Application do
     end
   end
 
+  defp start_configured_upstreams do
+    upstreams = Application.get_env(:backplane, :upstreams, [])
+
+    for upstream <- upstreams do
+      Backplane.Proxy.Pool.start_upstream(upstream)
+    end
+  end
+
   defp port do
     case System.get_env("BACKPLANE_PORT") do
-      nil -> 4100
+      nil -> Application.get_env(:backplane, :port, 4100)
       port -> String.to_integer(port)
     end
   end
