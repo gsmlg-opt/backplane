@@ -18,7 +18,8 @@ defmodule Backplane.Transport.Router do
   plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
-    json_decoder: Jason
+    json_decoder: Jason,
+    length: 1_000_000
   )
 
   plug(:dispatch)
@@ -120,5 +121,8 @@ defmodule Backplane.Transport.Router do
   rescue
     Plug.Parsers.ParseError ->
       send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
+
+    Plug.Parsers.RequestTooLargeError ->
+      send_resp(conn, 413, Jason.encode!(%{error: "Request body too large"}))
   end
 end

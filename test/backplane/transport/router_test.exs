@@ -47,6 +47,19 @@ defmodule Backplane.Transport.RouterTest do
     assert conn.status == 400
   end
 
+  test "POST /mcp with oversized body returns 413" do
+    large_body = String.duplicate("x", 2_000_000)
+
+    conn =
+      Plug.Test.conn(:post, "/mcp", large_body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 413
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"] =~ "too large"
+  end
+
   test "POST /mcp with valid JSON-RPC returns 200" do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
