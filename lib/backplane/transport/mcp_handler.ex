@@ -94,7 +94,12 @@ defmodule Backplane.Transport.McpHandler do
      %{
        protocolVersion: @protocol_version,
        serverInfo: %{name: @server_name, version: @server_version},
-       capabilities: %{tools: %{listChanged: true}, resources: %{}, prompts: %{}}
+       capabilities: %{
+         tools: %{listChanged: true},
+         resources: %{},
+         prompts: %{},
+         completions: %{}
+       }
      }}
   end
 
@@ -158,6 +163,16 @@ defmodule Backplane.Transport.McpHandler do
     {:error, -32_602, "Invalid params: 'name' is required"}
   end
 
+  defp compute_result("completion/complete", _id, %{"ref" => ref, "argument" => argument})
+       when is_map(ref) and is_map(argument) do
+    completions = compute_completions(ref, argument)
+    {:result, %{completion: %{values: completions, hasMore: false, total: length(completions)}}}
+  end
+
+  defp compute_result("completion/complete", _id, _params) do
+    {:error, -32_602, "Invalid params: 'ref' and 'argument' are required"}
+  end
+
   defp compute_result("ping", _id, _params), do: {:result, %{}}
 
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
@@ -174,7 +189,8 @@ defmodule Backplane.Transport.McpHandler do
       capabilities: %{
         tools: %{listChanged: true},
         resources: %{},
-        prompts: %{}
+        prompts: %{},
+        completions: %{}
       }
     }
 
@@ -260,6 +276,19 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "prompts/get", id, _params) do
     json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
+  end
+
+  defp dispatch(conn, "completion/complete", id, %{"ref" => ref, "argument" => argument})
+       when is_map(ref) and is_map(argument) do
+    completions = compute_completions(ref, argument)
+
+    json_rpc_result(conn, id, %{
+      completion: %{values: completions, hasMore: false, total: length(completions)}
+    })
+  end
+
+  defp dispatch(conn, "completion/complete", id, _params) do
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'ref' and 'argument' are required")
   end
 
   defp dispatch(conn, "ping", id, _params) do
@@ -448,6 +477,65 @@ defmodule Backplane.Transport.McpHandler do
     Enum.map(tools, fn tool ->
       %{name: tool, description: "Tool required: #{tool}", required: false}
     end)
+  end
+
+  # Completion: provide auto-complete values for tool/prompt arguments
+  defp compute_completions(
+         %{"type" => "ref/tool", "name" => tool_name},
+         %{"name" => arg_name} = arg
+       ) do
+    value = arg["value"] || ""
+    complete_tool_argument(tool_name, arg_name, value)
+  end
+
+  defp compute_completions(
+         %{"type" => "ref/prompt", "name" => prompt_name},
+         %{"name" => _arg_name} = arg
+       ) do
+    value = arg["value"] || ""
+    complete_prompt_argument(prompt_name, value)
+  end
+
+  defp compute_completions(_ref, _argument), do: []
+
+  defp complete_tool_argument(tool_name, arg_name, prefix) do
+    case {tool_name, arg_name} do
+      {_, "project_id"} ->
+        DocChunk
+        |> select([c], c.project_id)
+        |> distinct(true)
+        |> Repo.all()
+        |> filter_by_prefix(prefix)
+
+      {_, "repo"} ->
+        Backplane.Docs.Project
+        |> select([p], p.repo)
+        |> Repo.all()
+        |> filter_by_prefix(prefix)
+
+      {_, "skill_id"} ->
+        SkillsRegistry.list()
+        |> Enum.map(& &1.id)
+        |> filter_by_prefix(prefix)
+
+      {_, "tool_name"} ->
+        ToolRegistry.list_all()
+        |> Enum.map(& &1.name)
+        |> filter_by_prefix(prefix)
+
+      _ ->
+        []
+    end
+  end
+
+  defp complete_prompt_argument(_prompt_name, _prefix), do: []
+
+  defp filter_by_prefix(values, ""), do: Enum.take(values, 20)
+
+  defp filter_by_prefix(values, prefix) do
+    values
+    |> Enum.filter(&String.starts_with?(&1, prefix))
+    |> Enum.take(20)
   end
 
   defp tools_etag(tools) do

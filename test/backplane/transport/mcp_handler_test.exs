@@ -447,4 +447,82 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert invalid["error"]["code"] == -32_600
     end
   end
+
+  describe "completion/complete" do
+    test "returns completion values for project_id argument" do
+      # Insert a project so there's something to complete
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "comp-test-project", repo: "test/repo", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+        project_id: "comp-test-project",
+        source_path: "test.md",
+        content: "test",
+        chunk_type: "markdown",
+        content_hash: "comp123"
+      })
+
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "docs::query-docs"},
+          "argument" => %{"name" => "project_id", "value" => "comp"}
+        })
+
+      assert is_map(resp["result"]["completion"])
+      assert is_list(resp["result"]["completion"]["values"])
+      assert resp["result"]["completion"]["hasMore"] == false
+    end
+
+    test "returns completion values for tool_name argument" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
+          "argument" => %{"name" => "tool_name", "value" => "skill::"}
+        })
+
+      values = resp["result"]["completion"]["values"]
+      assert is_list(values)
+      assert Enum.any?(values, &String.starts_with?(&1, "skill::"))
+    end
+
+    test "returns empty completions for unknown argument" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "docs::query-docs"},
+          "argument" => %{"name" => "unknown_arg", "value" => ""}
+        })
+
+      assert resp["result"]["completion"]["values"] == []
+    end
+
+    test "returns empty completions for prompt ref" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/prompt", "name" => "some-prompt"},
+          "argument" => %{"name" => "arg", "value" => ""}
+        })
+
+      assert resp["result"]["completion"]["values"] == []
+    end
+
+    test "returns error for missing params" do
+      resp = mcp_request("completion/complete", %{})
+
+      assert resp["error"]["code"] == -32_602
+    end
+
+    test "returns error for nil params" do
+      resp = mcp_request("completion/complete")
+
+      assert resp["error"]["code"] == -32_602
+    end
+
+    test "advertises completions capability in initialize" do
+      resp = mcp_request("initialize")
+
+      assert is_map(resp["result"]["capabilities"]["completions"])
+    end
+  end
 end
