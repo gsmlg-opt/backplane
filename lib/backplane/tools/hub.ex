@@ -103,8 +103,10 @@ defmodule Backplane.Tools.Hub do
   def call(_args), do: {:error, "Unknown hub tool handler"}
 
   defp find_tool(name) do
-    ToolRegistry.list_all()
-    |> Enum.find(fn t -> t.name == name end)
+    case :ets.lookup(:backplane_tools, name) do
+      [{^name, tool}] -> tool
+      [] -> nil
+    end
   end
 
   defp get_upstream_status do
@@ -155,9 +157,7 @@ defmodule Backplane.Tools.Hub do
     end
   end
 
-  defp format_origin(:native), do: "native"
-  defp format_origin({:upstream, prefix}), do: "upstream:#{prefix}"
+  defp format_origin(origin), do: Backplane.Utils.format_origin(origin)
 
-  defp maybe_add(opts, _key, nil), do: opts
-  defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
 end

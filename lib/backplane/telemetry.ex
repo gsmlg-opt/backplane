@@ -23,10 +23,17 @@ defmodule Backplane.Telemetry do
       result = fun.()
       duration = System.monotonic_time() - start_time
 
+      result_status =
+        case result do
+          {:ok, _} -> :ok
+          {:error, _} -> :error
+          _ -> :ok
+        end
+
       :telemetry.execute(
         [:backplane, :tool_call, :stop],
         %{duration: duration},
-        Map.put(metadata, :result, :ok)
+        Map.put(metadata, :result, result_status)
       )
 
       result

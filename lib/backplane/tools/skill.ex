@@ -173,10 +173,17 @@ defmodule Backplane.Tools.Skill do
   def call(%{"_handler" => "update"} = args) do
     skill_id = args["skill_id"]
 
+    allowed_keys = %{
+      "content" => :content,
+      "description" => :description,
+      "tags" => :tags,
+      "enabled" => :enabled
+    }
+
     attrs =
       args
-      |> Map.take(["content", "description", "tags", "enabled"])
-      |> Map.new(fn {k, v} -> {String.to_atom(k), v} end)
+      |> Map.take(Map.keys(allowed_keys))
+      |> Map.new(fn {k, v} -> {Map.fetch!(allowed_keys, k), v} end)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
@@ -201,6 +208,5 @@ defmodule Backplane.Tools.Skill do
     {:error, "Unknown skill tool handler: #{inspect(args)}"}
   end
 
-  defp maybe_add(opts, _key, nil), do: opts
-  defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
 end

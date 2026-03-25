@@ -320,6 +320,5 @@ defmodule Backplane.Git.Providers.GitLab do
   defp error_message(body) when is_binary(body), do: body
   defp error_message(_), do: "Unknown error"
 
-  defp maybe_add_param(params, _key, nil), do: params
-  defp maybe_add_param(params, key, value), do: Keyword.put(params, key, value)
+  defp maybe_add_param(params, key, value), do: Backplane.Utils.maybe_put(params, key, value)
 end

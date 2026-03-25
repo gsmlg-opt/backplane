@@ -113,6 +113,5 @@ defmodule Backplane.Tools.Docs do
     {:error, "Unknown docs tool handler: #{inspect(args)}"}
   end
 
-  defp maybe_add(opts, _key, nil), do: opts
-  defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
 end

@@ -24,16 +24,24 @@ defmodule Backplane.Transport.AuthPlug do
 
       expected_token ->
         case get_req_header(conn, "authorization") do
-          ["Bearer " <> token] when token == expected_token ->
-            conn
+          ["Bearer " <> token] ->
+            if Plug.Crypto.secure_compare(token, expected_token) do
+              conn
+            else
+              reject(conn)
+            end
 
           _ ->
-            conn
-            |> put_resp_content_type("application/json")
-            |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
-            |> halt()
+            reject(conn)
         end
     end
+  end
+
+  defp reject(conn) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
+    |> halt()
   end
 
   defp get_auth_token do

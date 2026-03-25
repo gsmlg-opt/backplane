@@ -91,6 +91,5 @@ defmodule Backplane.Hub.Discover do
     end
   end
 
-  defp format_origin(:native), do: "native"
-  defp format_origin({:upstream, prefix}), do: "upstream:#{prefix}"
+  defp format_origin(origin), do: Backplane.Utils.format_origin(origin)
 end
