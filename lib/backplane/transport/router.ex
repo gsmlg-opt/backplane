@@ -113,4 +113,12 @@ defmodule Backplane.Transport.Router do
       _ -> {:error, :invalid_signature}
     end
   end
+
+  @doc false
+  def call(conn, opts) do
+    super(conn, opts)
+  rescue
+    Plug.Parsers.ParseError ->
+      send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
+  end
 end

@@ -38,6 +38,15 @@ defmodule Backplane.Transport.RouterTest do
     assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
   end
 
+  test "POST /mcp with malformed JSON returns 400" do
+    conn =
+      Plug.Test.conn(:post, "/mcp", "not valid json{")
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 400
+  end
+
   test "POST /mcp with valid JSON-RPC returns 200" do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
