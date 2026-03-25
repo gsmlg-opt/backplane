@@ -114,4 +114,69 @@ defmodule Backplane.Config.ValidatorTest do
     config = [backplane: %{port: 4100}, upstream: [], projects: []]
     assert :ok = Validator.validate!(config)
   end
+
+  test "validate! passes (no transport warning) for upstream with no transport field" do
+    # L50: check_upstream_transport catch-all clause — upstream has no :transport key at all.
+    # The function simply returns warnings unchanged (no clause matches a missing key).
+    config = %{
+      backplane: %{port: 4100},
+      upstream: [%{name: "no-transport", prefix: "nt"}],
+      projects: []
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok = Validator.validate!(config)
+      end)
+
+    # check_required warns about the missing :transport field but the
+    # catch-all check_upstream_transport/2 clause does not add an extra warning
+    assert log =~ "missing required field 'transport'"
+    refute log =~ "unknown transport"
+  end
+
+  test "validate! passes when backplane section is absent" do
+    # L69: validate_port catch-all clause — no :backplane key in config at all.
+    config = %{upstream: [], projects: []}
+
+    log =
+      capture_log(fn ->
+        assert :ok = Validator.validate!(config)
+      end)
+
+    # No port warning should be emitted when the section is entirely absent
+    refute log =~ "invalid port"
+  end
+
+  test "validate! warns when upstream name is an empty string" do
+    # L74: check_required/4 branch for empty string value.
+    config = %{
+      backplane: %{port: 4100},
+      upstream: [%{name: "", prefix: "t", transport: "http", url: "http://localhost/mcp"}],
+      projects: []
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok = Validator.validate!(config)
+      end)
+
+    assert log =~ "'name' cannot be empty"
+  end
+
+  test "validate! warns when upstream prefix is an empty string" do
+    # L74: same empty string branch for a different required field.
+    config = %{
+      backplane: %{port: 4100},
+      upstream: [%{name: "myup", prefix: "", transport: "http", url: "http://localhost/mcp"}],
+      projects: []
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok = Validator.validate!(config)
+      end)
+
+    assert log =~ "'prefix' cannot be empty"
+  end
 end

@@ -117,5 +117,71 @@ defmodule Backplane.Skills.Sources.LocalTest do
 
       if old, do: Application.put_env(:backplane, :local_skills, old)
     end
+
+    test "fetch/1 delegates to fetch(config, skill_id) when Application env is set", %{dir: dir} do
+      # L57: the `config -> fetch(config, skill_id)` branch in the zero-arity fetch/1.
+      old = Application.get_env(:backplane, :local_skills)
+
+      Application.put_env(:backplane, :local_skills, %{name: "env-test", path: dir})
+
+      result = Local.fetch("local:env-test/elixir-patterns")
+      assert {:ok, skill} = result
+      assert skill.name == "elixir-patterns"
+
+      if old do
+        Application.put_env(:backplane, :local_skills, old)
+      else
+        Application.delete_env(:backplane, :local_skills)
+      end
+    end
+
+    test "fetch/1 propagates error from list when directory does not exist", %{dir: _dir} do
+      # L67: the `{:error, _} = error -> error` branch in fetch/2.
+      # fetch/2 calls list/1 first; if it returns {:error, _} that is propagated.
+      config = %Local{
+        name: "ghost",
+        path: "/tmp/nonexistent_local_skill_dir_#{System.unique_integer([:positive])}"
+      }
+
+      assert {:error, :directory_not_found} = Local.fetch(config, "local:ghost/anything")
+    end
+  end
+
+  describe "list/0 with Application config" do
+    test "list/0 delegates to list(config) when Application env has a path", %{dir: dir} do
+      # L16: the `config -> list(config)` branch when get_config/0 returns a struct.
+      old = Application.get_env(:backplane, :local_skills)
+
+      Application.put_env(:backplane, :local_skills, %{path: dir})
+
+      {:ok, skills} = Local.list()
+      names = Enum.map(skills, & &1.name)
+      assert "elixir-patterns" in names
+
+      if old do
+        Application.put_env(:backplane, :local_skills, old)
+      else
+        Application.delete_env(:backplane, :local_skills)
+      end
+    end
+
+    test "get_config/0 uses name from Application env when present", %{dir: dir} do
+      # L74: the branch `%{path: path} = cfg ->` where cfg also has a :name key,
+      # so `Map.get(cfg, :name)` returns a non-nil value.
+      old = Application.get_env(:backplane, :local_skills)
+
+      Application.put_env(:backplane, :local_skills, %{name: "named-src", path: dir})
+
+      {:ok, skills} = Local.list()
+      # All returned skills should use source "local:named-src" because the
+      # config has an explicit name.
+      assert Enum.all?(skills, fn s -> s.source == "local:named-src" end)
+
+      if old do
+        Application.put_env(:backplane, :local_skills, old)
+      else
+        Application.delete_env(:backplane, :local_skills)
+      end
+    end
   end
 end
