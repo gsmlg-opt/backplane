@@ -198,6 +198,66 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "resources/read with valid resource" do
+    test "reads an existing doc chunk resource" do
+      # Insert a test doc chunk
+      # First ensure the project exists
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "test-res-project", repo: "test/repo", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      {:ok, chunk} =
+        Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+          project_id: "test-res-project",
+          source_path: "test.md",
+          content: "Hello from test chunk",
+          chunk_type: "markdown",
+          content_hash: "abc123"
+        })
+
+      uri = "backplane://docs/test-project/#{chunk.id}"
+      resp = mcp_request("resources/read", %{"uri" => uri})
+
+      assert is_list(resp["result"]["contents"])
+      [content] = resp["result"]["contents"]
+      assert content["text"] == "Hello from test chunk"
+      assert content["mimeType"] == "text/plain"
+    end
+  end
+
+  describe "prompts/get with valid prompt" do
+    test "returns prompt messages for existing skill" do
+      # List prompts first to find a valid name
+      list_resp = mcp_request("prompts/list")
+      prompts = list_resp["result"]["prompts"]
+
+      if prompts != [] do
+        name = hd(prompts)["name"]
+        resp = mcp_request("prompts/get", %{"name" => name})
+
+        assert is_list(resp["result"]["messages"])
+        [message] = resp["result"]["messages"]
+        assert message["role"] == "user"
+        assert is_map(message["content"])
+      end
+    end
+  end
+
+  describe "tools/call with nil params" do
+    test "returns -32602 when params is nil (no params key)" do
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 1})
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      resp = Jason.decode!(conn.resp_body)
+      assert resp["error"]["code"] == -32_602
+    end
+  end
+
   describe "initialize capabilities" do
     test "advertises resources and prompts capabilities" do
       resp = mcp_request("initialize")
