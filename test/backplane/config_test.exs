@@ -144,4 +144,128 @@ defmodule Backplane.ConfigTest do
       end
     end
   end
+
+  describe "edge cases" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "backplane_config_edge_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      %{dir: dir}
+    end
+
+    test "config with no github/gitlab sections returns empty lists", %{dir: dir} do
+      path = Path.join(dir, "no_git.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:github] == []
+      assert config[:gitlab] == []
+    end
+
+    test "config with non-list projects section returns empty list", %{dir: dir} do
+      path = Path.join(dir, "bad_projects.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [projects]
+      id = "single"
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:projects] == []
+    end
+
+    test "config with non-list upstream section returns empty list", %{dir: dir} do
+      path = Path.join(dir, "bad_upstream.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [upstream]
+      name = "single"
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:upstream] == []
+    end
+
+    test "config with non-list skills section returns empty list", %{dir: dir} do
+      path = Path.join(dir, "bad_skills.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [skills]
+      name = "single"
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:skills] == []
+    end
+
+    test "upstream with unknown transport type uses base config", %{dir: dir} do
+      path = Path.join(dir, "unknown_transport.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "custom"
+      prefix = "cust"
+      transport = "grpc"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.name == "custom"
+      assert upstream.transport == "grpc"
+    end
+
+    test "skill with unknown source type uses base config", %{dir: dir} do
+      path = Path.join(dir, "unknown_skill_source.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[skills]]
+      name = "remote"
+      source = "s3"
+      """)
+
+      config = Backplane.Config.load!(path)
+      skill = hd(config[:skills])
+      assert skill.name == "remote"
+      assert skill.source == "s3"
+    end
+
+    test "database section is parsed", %{dir: dir} do
+      path = Path.join(dir, "with_db.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [database]
+      url = "postgres://localhost/backplane_test"
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:database].url == "postgres://localhost/backplane_test"
+    end
+  end
 end

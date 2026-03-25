@@ -133,5 +133,30 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert :ok = InputValidator.validate(%{"data" => 42}, schema)
       assert :ok = InputValidator.validate(%{"data" => "str"}, schema)
     end
+
+    test "rejects boolean when string expected and reports boolean type" do
+      args = %{"query" => true}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "got boolean"
+    end
+
+    test "rejects map when string expected and reports object type" do
+      args = %{"query" => %{"nested" => "value"}}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "got object"
+    end
+
+    test "rejects list when string expected and reports array type" do
+      args = %{"query" => [1, 2, 3]}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "got array"
+    end
+
+    test "nil passes validation for required fields with nil value" do
+      # InputValidator allows nil for any type (line 58) - this is by design
+      # Required field check passes because key exists, type check passes because nil is allowed
+      args = %{"query" => nil}
+      assert :ok = InputValidator.validate(args, @schema)
+    end
   end
 end
