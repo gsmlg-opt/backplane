@@ -1,5 +1,5 @@
 defmodule Backplane.Transport.RouterTest do
-  use Backplane.ConnCase, async: true
+  use Backplane.ConnCase, async: false
 
   test "GET /health returns 200 with status" do
     conn =
@@ -68,6 +68,64 @@ defmodule Backplane.Transport.RouterTest do
     assert conn.status == 200
     body = Jason.decode!(conn.resp_body)
     assert is_map(body)
+  end
+
+  describe "webhook endpoints" do
+    test "POST /webhook/github accepts valid payload without secret" do
+      body = Jason.encode!(%{"action" => "push", "ref" => "refs/heads/main"})
+
+      conn =
+        Plug.Test.conn(:post, "/webhook/github", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["status"] == "accepted"
+    end
+
+    test "POST /webhook/gitlab accepts valid payload without token" do
+      body = Jason.encode!(%{"event_type" => "push", "ref" => "refs/heads/main"})
+
+      conn =
+        Plug.Test.conn(:post, "/webhook/gitlab", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["status"] == "accepted"
+    end
+
+    test "POST /webhook/github rejects with invalid signature when secret configured" do
+      Application.put_env(:backplane, :github_webhook_secret, "test-secret")
+      on_exit(fn -> Application.delete_env(:backplane, :github_webhook_secret) end)
+
+      body = Jason.encode!(%{"action" => "push"})
+
+      conn =
+        Plug.Test.conn(:post, "/webhook/github", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("x-hub-signature-256", "sha256=invalid")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 401
+    end
+
+    test "POST /webhook/gitlab rejects with wrong token when token configured" do
+      Application.put_env(:backplane, :gitlab_webhook_token, "correct-token")
+      on_exit(fn -> Application.delete_env(:backplane, :gitlab_webhook_token) end)
+
+      body = Jason.encode!(%{"event_type" => "push"})
+
+      conn =
+        Plug.Test.conn(:post, "/webhook/gitlab", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("x-gitlab-token", "wrong-token")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 401
+    end
   end
 
   test "POST /mcp with valid JSON-RPC returns 200" do
