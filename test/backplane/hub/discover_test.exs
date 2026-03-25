@@ -5,7 +5,6 @@ defmodule Backplane.Hub.DiscoverTest do
   alias Backplane.Skills.{Skill, Registry}
 
   setup do
-    # Clear tool registry (app registers tools on boot, so they're there)
     # Insert a skill for search
     content = "# Elixir GenServer patterns and best practices"
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
@@ -25,6 +24,30 @@ defmodule Backplane.Hub.DiscoverTest do
 
     if :ets.whereis(:backplane_skills) != :undefined do
       Registry.refresh()
+    end
+
+    # Ensure native tools are registered in the tool registry
+    if :ets.whereis(:backplane_tools) != :undefined do
+      alias Backplane.Registry.{Tool, ToolRegistry}
+
+      for module <- [
+            Backplane.Tools.Skill,
+            Backplane.Tools.Docs,
+            Backplane.Tools.Git,
+            Backplane.Tools.Hub
+          ],
+          tool_def <- module.tools() do
+        tool = %Tool{
+          name: tool_def.name,
+          description: tool_def.description,
+          input_schema: tool_def.input_schema,
+          origin: :native,
+          module: tool_def.module,
+          handler: tool_def.handler
+        }
+
+        ToolRegistry.register_native(tool)
+      end
     end
 
     :ok

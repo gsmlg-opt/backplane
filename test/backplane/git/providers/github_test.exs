@@ -13,7 +13,7 @@ defmodule Backplane.Git.Providers.GitHubTest do
     def init(opts), do: opts
 
     def call(conn, _opts) do
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      {:ok, _body, conn} = Plug.Conn.read_body(conn)
       path = conn.request_path
       query = conn.query_string
 

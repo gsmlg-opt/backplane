@@ -1,5 +1,5 @@
 defmodule Backplane.Git.ResolverTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.Git.Resolver
   alias Backplane.Git.Providers.{GitHub, GitLab}

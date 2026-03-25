@@ -98,9 +98,9 @@ defmodule Backplane.Docs.Ingestion do
               {:ok, parsed_chunks} ->
                 parsed_chunks
 
-              {:error, reason} ->
+              other ->
                 Logger.warning(
-                  "Parse error for #{relative_path} in #{project_id}: #{inspect(reason)}"
+                  "Parse error for #{relative_path} in #{project_id}: #{inspect(other)}"
                 )
 
                 []

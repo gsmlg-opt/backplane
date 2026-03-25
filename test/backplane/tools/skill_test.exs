@@ -1,7 +1,7 @@
 defmodule Backplane.Tools.SkillTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.Skills.{Skill, Registry}
+  alias Backplane.Skills.Registry
   alias Backplane.Tools.Skill, as: SkillTool
   alias Backplane.Repo
 
