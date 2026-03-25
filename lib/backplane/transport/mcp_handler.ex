@@ -89,17 +89,19 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch_tool_call(name, args) do
-    case Backplane.Registry.ToolRegistry.resolve(name) do
-      {:native, module, handler} ->
-        call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
-        module.call(call_args)
+    Backplane.Telemetry.span_tool_call(name, fn ->
+      case Backplane.Registry.ToolRegistry.resolve(name) do
+        {:native, module, handler} ->
+          call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
+          module.call(call_args)
 
-      {:upstream, upstream_pid, original_tool_name} ->
-        Backplane.Proxy.Upstream.forward(upstream_pid, original_tool_name, args)
+        {:upstream, upstream_pid, original_tool_name} ->
+          Backplane.Proxy.Upstream.forward(upstream_pid, original_tool_name, args)
 
-      :not_found ->
-        {:error, "Unknown tool: #{name}"}
-    end
+        :not_found ->
+          {:error, "Unknown tool: #{name}"}
+      end
+    end)
   end
 
   defp format_result(result) when is_binary(result), do: result

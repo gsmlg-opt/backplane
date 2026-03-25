@@ -70,3 +70,4 @@ Mnesia.nonode@nohost/
 
 # Mix install cache
 /.mix/
+.loki/

@@ -29,7 +29,11 @@ defmodule Backplane.Transport.Router do
   end
 
   get "/health" do
-    send_resp(conn, 200, Jason.encode!(%{status: "ok"}))
+    health = Backplane.Transport.HealthCheck.check()
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(health))
   end
 
   match _ do
