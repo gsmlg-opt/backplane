@@ -73,13 +73,21 @@ defmodule Backplane.Proxy.Upstream do
             {:noreply, %{state | status: :connected}}
 
           {:error, reason, state} ->
-            Logger.warning("Failed to discover tools from #{state.name}: #{inspect(reason)}")
+            Logger.warning("Failed to discover tools",
+              upstream: state.name,
+              reason: inspect(reason)
+            )
+
             schedule_reconnect()
             {:noreply, %{state | status: :degraded}}
         end
 
       {:error, reason, state} ->
-        Logger.warning("Failed to connect to upstream #{state.name}: #{inspect(reason)}")
+        Logger.warning("Failed to connect to upstream",
+          upstream: state.name,
+          reason: inspect(reason)
+        )
+
         schedule_reconnect()
         {:noreply, %{state | status: :disconnected}}
     end
@@ -151,7 +159,11 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.warning("Upstream #{state.name} stdio process exited with status #{status}")
+    Logger.warning("Upstream stdio process exited",
+      upstream: state.name,
+      exit_status: status
+    )
+
     ToolRegistry.deregister_upstream(state.prefix)
     schedule_reconnect()
     {:noreply, %{state | status: :disconnected, port: nil, tools: []}}

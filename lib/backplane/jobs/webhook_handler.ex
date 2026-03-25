@@ -30,7 +30,7 @@ defmodule Backplane.Jobs.WebhookHandler do
   end
 
   def perform(%Oban.Job{args: args}) do
-    Logger.debug("Ignoring webhook event: #{inspect(args)}")
+    Logger.debug("Ignoring webhook event", event: args["event"], provider: args["provider"])
     :ok
   end
 

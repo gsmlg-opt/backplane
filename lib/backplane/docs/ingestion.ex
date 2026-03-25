@@ -57,7 +57,10 @@ defmodule Backplane.Docs.Ingestion do
         {:ok, stats}
       else
         {:error, reason} = error ->
-          Logger.error("Ingestion failed for #{project.id}: #{inspect(reason)}")
+          Logger.error("Ingestion failed",
+            project_id: project.id,
+            reason: inspect(reason)
+          )
 
           Indexer.update_reindex_state(project.id, %{
             status: "failed",
@@ -68,7 +71,10 @@ defmodule Backplane.Docs.Ingestion do
       end
     rescue
       e ->
-        Logger.error("Ingestion crashed for #{project.id}: #{Exception.message(e)}")
+        Logger.error("Ingestion crashed",
+          project_id: project.id,
+          error: Exception.message(e)
+        )
 
         Indexer.update_reindex_state(project.id, %{
           status: "failed",
@@ -101,12 +107,19 @@ defmodule Backplane.Docs.Ingestion do
       parsed_chunks
     else
       {:error, reason} ->
-        Logger.warning("Error processing #{relative_path} in #{project_id}: #{inspect(reason)}")
+        Logger.warning("Error processing file",
+          path: relative_path,
+          project_id: project_id,
+          reason: inspect(reason)
+        )
+
         []
 
       other ->
-        Logger.warning(
-          "Unexpected result for #{relative_path} in #{project_id}: #{inspect(other)}"
+        Logger.warning("Unexpected parse result",
+          path: relative_path,
+          project_id: project_id,
+          result: inspect(other)
         )
 
         []

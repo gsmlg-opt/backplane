@@ -13,6 +13,22 @@ config :backplane, Oban,
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id]
+  metadata: [
+    :request_id,
+    :method,
+    :path,
+    :status,
+    :duration_us,
+    :remote_ip,
+    :rpc_method,
+    :upstream,
+    :reason,
+    :exit_status,
+    :project_id,
+    :error,
+    :event,
+    :provider,
+    :result
+  ]
 
 import_config "#{config_env()}.exs"
