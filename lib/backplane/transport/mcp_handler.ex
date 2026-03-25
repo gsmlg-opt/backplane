@@ -8,7 +8,7 @@ defmodule Backplane.Transport.McpHandler do
   import Plug.Conn
 
   alias Backplane.Proxy.Upstream
-  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Telemetry
   alias Backplane.Transport.SSE
 
@@ -68,19 +68,18 @@ defmodule Backplane.Transport.McpHandler do
     json_rpc_result(conn, id, %{tools: tools})
   end
 
-  defp dispatch(conn, "tools/call", id, params) when is_map(params) do
-    name = params["name"]
+  defp dispatch(conn, "tools/call", id, %{"name" => name} = params)
+       when is_binary(name) and name != "" do
     arguments = params["arguments"] || %{}
 
-    if is_binary(name) and name != "" do
-      if SSE.streaming_requested?(conn) do
-        dispatch_tool_call_sse(conn, id, name, arguments)
-      else
-        dispatch_tool_call_json(conn, id, name, arguments)
-      end
-    else
-      json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
+    case validate_tool_args(name, arguments) do
+      :ok -> dispatch_validated_tool_call(conn, id, name, arguments)
+      {:error, reason} -> json_rpc_error(conn, id, -32_602, "Invalid params: #{reason}")
     end
+  end
+
+  defp dispatch(conn, "tools/call", id, %{}) do
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
   end
 
   defp dispatch(conn, "tools/call", id, _params) do
@@ -97,6 +96,14 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch_notification(conn, _method, _params) do
     send_resp(conn, 202, "")
+  end
+
+  defp dispatch_validated_tool_call(conn, id, name, arguments) do
+    if SSE.streaming_requested?(conn) do
+      dispatch_tool_call_sse(conn, id, name, arguments)
+    else
+      dispatch_tool_call_json(conn, id, name, arguments)
+    end
   end
 
   defp dispatch_tool_call_json(conn, id, name, arguments) do
@@ -136,6 +143,16 @@ defmodule Backplane.Transport.McpHandler do
     duration = System.monotonic_time() - start_time
     Telemetry.emit_sse_stop(name, duration)
     conn
+  end
+
+  defp validate_tool_args(name, arguments) do
+    case ToolRegistry.lookup(name) do
+      %{input_schema: schema} when is_map(schema) ->
+        InputValidator.validate(arguments, schema)
+
+      _ ->
+        :ok
+    end
   end
 
   defp dispatch_tool_call(name, args) do

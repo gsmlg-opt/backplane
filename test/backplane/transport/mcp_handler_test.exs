@@ -63,6 +63,26 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["error"]["code"] == -32_602
     end
+
+    test "returns -32602 for missing required arguments" do
+      resp = mcp_request("tools/call", %{"name" => "docs::query-docs", "arguments" => %{}})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "Missing required arguments"
+      assert resp["error"]["message"] =~ "project_id"
+    end
+
+    test "returns -32602 for wrong argument type" do
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "docs::query-docs",
+          "arguments" => %{"project_id" => 123, "query" => "test"}
+        })
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "project_id"
+      assert resp["error"]["message"] =~ "string"
+    end
   end
 
   describe "ping" do

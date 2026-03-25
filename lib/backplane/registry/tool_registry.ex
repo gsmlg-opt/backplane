@@ -77,6 +77,14 @@ defmodule Backplane.Registry.ToolRegistry do
     end
   end
 
+  @doc "Look up a tool by name, returning the full tool struct or nil."
+  def lookup(name) do
+    case :ets.lookup(@table, name) do
+      [{^name, tool}] -> tool
+      [] -> nil
+    end
+  end
+
   @doc "Search tools by name or description substring."
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
