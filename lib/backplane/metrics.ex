@@ -18,21 +18,38 @@ defmodule Backplane.Metrics do
 
   @doc "Return all metrics as a map."
   def snapshot do
-    @table
-    |> :ets.tab2list()
-    |> Enum.reduce(%{}, fn
-      {{:counter, name}, count}, acc ->
-        put_in(acc, [Access.key(:counters, %{}), name], count)
+    base =
+      @table
+      |> :ets.tab2list()
+      |> Enum.reduce(%{}, fn
+        {{:counter, name}, count}, acc ->
+          put_in(acc, [Access.key(:counters, %{}), name], count)
 
-      {{:timing, name}, count, total_us}, acc ->
-        avg_us = if count > 0, do: div(total_us, count), else: 0
+        {{:timing, name}, count, total_us}, acc ->
+          avg_us = if count > 0, do: div(total_us, count), else: 0
 
-        put_in(acc, [Access.key(:timings, %{}), name], %{
-          count: count,
-          total_us: total_us,
-          avg_us: avg_us
-        })
+          put_in(acc, [Access.key(:timings, %{}), name], %{
+            count: count,
+            total_us: total_us,
+            avg_us: avg_us
+          })
+      end)
+
+    Map.put(base, :upstreams, upstream_status())
+  end
+
+  defp upstream_status do
+    Backplane.Proxy.Pool.list_upstreams()
+    |> Enum.map(fn u ->
+      %{
+        name: u.name,
+        status: u.status,
+        tool_count: u.tool_count,
+        consecutive_ping_failures: u[:consecutive_ping_failures] || 0
+      }
     end)
+  rescue
+    _ -> []
   end
 
   @doc "Increment a named counter."
