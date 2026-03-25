@@ -116,6 +116,72 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "resources/list" do
+    test "returns resources array" do
+      resp = mcp_request("resources/list")
+
+      assert is_list(resp["result"]["resources"])
+    end
+  end
+
+  describe "resources/read" do
+    test "returns error for invalid URI" do
+      resp = mcp_request("resources/read", %{"uri" => "invalid://uri"})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "invalid URI"
+    end
+
+    test "returns error for missing uri param" do
+      resp = mcp_request("resources/read", %{})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "uri"
+    end
+
+    test "returns error for non-existent resource" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/fake/999999"})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "not found"
+    end
+  end
+
+  describe "prompts/list" do
+    test "returns prompts array" do
+      resp = mcp_request("prompts/list")
+
+      assert is_list(resp["result"]["prompts"])
+    end
+  end
+
+  describe "prompts/get" do
+    test "returns error for non-existent prompt" do
+      resp = mcp_request("prompts/get", %{"name" => "nonexistent"})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "not found"
+    end
+
+    test "returns error for missing name param" do
+      resp = mcp_request("prompts/get", %{})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "name"
+    end
+  end
+
+  describe "initialize capabilities" do
+    test "advertises resources and prompts capabilities" do
+      resp = mcp_request("initialize")
+
+      capabilities = resp["result"]["capabilities"]
+      assert is_map(capabilities["resources"])
+      assert is_map(capabilities["prompts"])
+      assert is_map(capabilities["tools"])
+    end
+  end
+
   describe "invalid request" do
     test "returns -32600 for missing jsonrpc field" do
       resp = raw_mcp_request(%{"method" => "initialize", "id" => 1})

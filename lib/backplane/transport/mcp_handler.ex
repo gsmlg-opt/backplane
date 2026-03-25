@@ -7,10 +7,15 @@ defmodule Backplane.Transport.McpHandler do
 
   import Plug.Conn
 
+  alias Backplane.Docs.DocChunk
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
+  alias Backplane.Repo
+  alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Telemetry
   alias Backplane.Transport.SSE
+
+  import Ecto.Query
 
   @protocol_version "2025-03-26"
   @server_name "backplane"
@@ -45,7 +50,9 @@ defmodule Backplane.Transport.McpHandler do
         version: @server_version
       },
       capabilities: %{
-        tools: %{listChanged: true}
+        tools: %{listChanged: true},
+        resources: %{},
+        prompts: %{}
       }
     }
 
@@ -84,6 +91,44 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "tools/call", id, _params) do
     json_rpc_error(conn, id, -32_602, "Invalid params: 'params' object is required")
+  end
+
+  defp dispatch(conn, "resources/list", id, _params) do
+    resources = list_resources()
+    json_rpc_result(conn, id, %{resources: resources})
+  end
+
+  defp dispatch(conn, "resources/read", id, %{"uri" => uri}) when is_binary(uri) do
+    case read_resource(uri) do
+      {:ok, contents} ->
+        json_rpc_result(conn, id, %{contents: contents})
+
+      {:error, reason} ->
+        json_rpc_error(conn, id, -32_602, "Resource not found: #{reason}")
+    end
+  end
+
+  defp dispatch(conn, "resources/read", id, _params) do
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'uri' is required")
+  end
+
+  defp dispatch(conn, "prompts/list", id, _params) do
+    prompts = list_prompts()
+    json_rpc_result(conn, id, %{prompts: prompts})
+  end
+
+  defp dispatch(conn, "prompts/get", id, %{"name" => name}) when is_binary(name) do
+    case get_prompt(name) do
+      {:ok, prompt} ->
+        json_rpc_result(conn, id, prompt)
+
+      {:error, reason} ->
+        json_rpc_error(conn, id, -32_602, "Prompt not found: #{reason}")
+    end
+  end
+
+  defp dispatch(conn, "prompts/get", id, _params) do
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
   end
 
   defp dispatch(conn, "ping", id, _params) do
@@ -172,6 +217,96 @@ defmodule Backplane.Transport.McpHandler do
 
   defp execute_tool(:not_found, _args) do
     {:error, "Unknown tool"}
+  end
+
+  # Resources: doc chunks as MCP resources
+
+  defp list_resources do
+    DocChunk
+    |> select([c], %{
+      project_id: c.project_id,
+      source_path: c.source_path,
+      chunk_type: c.chunk_type,
+      id: c.id
+    })
+    |> limit(500)
+    |> Repo.all()
+    |> Enum.map(fn chunk ->
+      %{
+        uri: resource_uri(chunk.project_id, chunk.id),
+        name: "#{chunk.project_id}/#{chunk.source_path}",
+        description: "#{chunk.chunk_type} from #{chunk.source_path}",
+        mimeType: "text/plain"
+      }
+    end)
+  end
+
+  defp read_resource(uri) do
+    case parse_resource_uri(uri) do
+      {:ok, chunk_id} ->
+        case Repo.get(DocChunk, chunk_id) do
+          nil -> {:error, "not found"}
+          chunk -> {:ok, [%{uri: uri, mimeType: "text/plain", text: chunk.content}]}
+        end
+
+      :error ->
+        {:error, "invalid URI format"}
+    end
+  end
+
+  defp resource_uri(project_id, chunk_id) do
+    "backplane://docs/#{project_id}/#{chunk_id}"
+  end
+
+  defp parse_resource_uri("backplane://docs/" <> rest) do
+    case String.split(rest, "/", parts: 2) do
+      [_project_id, chunk_id] -> {:ok, chunk_id}
+      _ -> :error
+    end
+  end
+
+  defp parse_resource_uri(_), do: :error
+
+  # Prompts: skills as MCP prompts
+
+  defp list_prompts do
+    SkillsRegistry.list()
+    |> Enum.map(fn skill ->
+      %{
+        name: skill.name,
+        description: skill.description,
+        arguments: build_prompt_arguments(skill)
+      }
+    end)
+  end
+
+  defp get_prompt(name) do
+    skills = SkillsRegistry.list()
+
+    case Enum.find(skills, &(&1.name == name)) do
+      nil ->
+        {:error, "not found"}
+
+      skill ->
+        {:ok,
+         %{
+           description: skill.description,
+           messages: [
+             %{
+               role: "user",
+               content: %{type: "text", text: skill.content || ""}
+             }
+           ]
+         }}
+    end
+  end
+
+  defp build_prompt_arguments(skill) do
+    tools = skill[:tools] || []
+
+    Enum.map(tools, fn tool ->
+      %{name: tool, description: "Tool required: #{tool}", required: false}
+    end)
   end
 
   defp generate_session_id do
