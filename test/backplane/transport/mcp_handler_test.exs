@@ -43,6 +43,51 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "tools/list ETag" do
+    test "includes ETag header in tools/list response" do
+      conn = mcp_request_conn("tools/list")
+
+      etags =
+        conn.resp_headers
+        |> Enum.filter(fn {k, _} -> k == "etag" end)
+        |> Enum.map(fn {_, v} -> v end)
+
+      assert [etag] = etags
+      assert etag =~ ~r/^"bp-tools-/
+    end
+
+    test "returns 304 when client sends matching If-None-Match" do
+      # First request to get the ETag
+      conn1 = mcp_request_conn("tools/list")
+      [{_, etag}] = Enum.filter(conn1.resp_headers, fn {k, _} -> k == "etag" end)
+
+      # Second request with the ETag
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+
+      conn2 =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("if-none-match", etag)
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn2.status == 304
+    end
+
+    test "returns full response when ETag does not match" do
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("if-none-match", "\"stale-etag\"")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 200
+      resp = Jason.decode!(conn.resp_body)
+      assert is_list(resp["result"]["tools"])
+    end
+  end
+
   describe "tools/call" do
     test "returns error for unknown tool name" do
       resp = mcp_request("tools/call", %{"name" => "nonexistent::tool", "arguments" => %{}})

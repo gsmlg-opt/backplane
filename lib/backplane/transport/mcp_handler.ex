@@ -194,7 +194,16 @@ defmodule Backplane.Transport.McpHandler do
         }
       end)
 
-    json_rpc_result(conn, id, %{tools: tools})
+    etag = tools_etag(tools)
+    client_etag = get_req_header(conn, "if-none-match")
+
+    if client_etag == [etag] do
+      send_resp(conn, 304, "")
+    else
+      conn
+      |> put_resp_header("etag", etag)
+      |> json_rpc_result(id, %{tools: tools})
+    end
   end
 
   defp dispatch(conn, "tools/call", id, %{"name" => name} = params)
@@ -439,6 +448,11 @@ defmodule Backplane.Transport.McpHandler do
     Enum.map(tools, fn tool ->
       %{name: tool, description: "Tool required: #{tool}", required: false}
     end)
+  end
+
+  defp tools_etag(tools) do
+    hash = :erlang.phash2(tools)
+    "\"bp-tools-#{hash}\""
   end
 
   defp generate_session_id do
