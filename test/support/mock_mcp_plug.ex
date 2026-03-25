@@ -64,6 +64,13 @@ defmodule Backplane.Test.MockMcpPlug do
             }
           }
 
+        "ping" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{}
+          }
+
         _ ->
           %{
             "jsonrpc" => "2.0",

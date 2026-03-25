@@ -17,6 +17,8 @@ defmodule Backplane.Proxy.Upstream do
 
   @default_timeout 30_000
   @refresh_interval 300_000
+  @health_ping_interval 60_000
+  @max_consecutive_failures 3
 
   # Client API
 
@@ -57,7 +59,10 @@ defmodule Backplane.Proxy.Upstream do
       buffer: "",
       pending_requests: %{},
       next_id: 1,
-      initialized: false
+      initialized: false,
+      last_ping_at: nil,
+      last_pong_at: nil,
+      consecutive_ping_failures: 0
     }
 
     {:ok, state, {:continue, :connect}}
@@ -70,6 +75,7 @@ defmodule Backplane.Proxy.Upstream do
         case discover_tools(state) do
           {:ok, state} ->
             schedule_refresh()
+            schedule_health_ping()
             {:noreply, %{state | status: :connected}}
 
           {:error, reason, state} ->
@@ -125,7 +131,10 @@ defmodule Backplane.Proxy.Upstream do
       prefix: state.prefix,
       transport: state.transport,
       status: state.status,
-      tool_count: length(state.tools)
+      tool_count: length(state.tools),
+      last_ping_at: state.last_ping_at,
+      last_pong_at: state.last_pong_at,
+      consecutive_ping_failures: state.consecutive_ping_failures
     }
 
     {:reply, info, state}
@@ -151,6 +160,38 @@ defmodule Backplane.Proxy.Upstream do
 
   def handle_info(:reconnect, state) do
     {:noreply, state, {:continue, :connect}}
+  end
+
+  def handle_info(:health_ping, %{status: status} = state)
+      when status in [:disconnected, :connecting] do
+    # Don't ping if not connected, just reschedule
+    schedule_health_ping()
+    {:noreply, state}
+  end
+
+  def handle_info(:health_ping, state) do
+    now = System.system_time(:second)
+    state = %{state | last_ping_at: now}
+
+    case send_ping(state) do
+      :ok ->
+        schedule_health_ping()
+
+        {:noreply, %{state | last_pong_at: now, consecutive_ping_failures: 0, status: :connected}}
+
+      {:error, reason} ->
+        failures = state.consecutive_ping_failures + 1
+
+        Logger.warning("Health ping failed",
+          upstream: state.name,
+          reason: inspect(reason),
+          consecutive_failures: failures
+        )
+
+        new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+        schedule_health_ping()
+        {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
+    end
   end
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
@@ -430,6 +471,35 @@ defmodule Backplane.Proxy.Upstream do
 
   defp schedule_reconnect do
     Process.send_after(self(), :reconnect, 5_000)
+  end
+
+  defp schedule_health_ping do
+    Process.send_after(self(), :health_ping, @health_ping_interval)
+  end
+
+  defp send_ping(%{transport: "http"} = state) do
+    request = jsonrpc_request("ping", %{})
+
+    case http_request(state, request) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp send_ping(%{transport: "stdio", port: nil}), do: {:error, :not_connected}
+
+  defp send_ping(%{transport: "stdio"} = state) do
+    request = jsonrpc_request("ping", %{})
+
+    case send_stdio(state.port, request) do
+      :ok ->
+        # For stdio, we just verify the send succeeded
+        # Response will come async via handle_info
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp find_executable(command) do

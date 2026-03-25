@@ -34,7 +34,14 @@ defmodule Backplane.Transport.HealthCheck do
   defp get_upstreams do
     Pool.list_upstreams()
     |> Enum.map(fn u ->
-      %{name: u.name, status: u.status, tool_count: u.tool_count}
+      %{
+        name: u.name,
+        status: u.status,
+        tool_count: u.tool_count,
+        last_ping_at: u[:last_ping_at],
+        last_pong_at: u[:last_pong_at],
+        consecutive_ping_failures: u[:consecutive_ping_failures] || 0
+      }
     end)
   rescue
     e ->

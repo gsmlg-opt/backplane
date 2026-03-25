@@ -165,6 +165,89 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "health ping" do
+    test "status includes health ping fields after connection" do
+      {:ok, _} = start_mock_http_server(4207)
+
+      config = %{
+        name: "test-health-ping",
+        prefix: "health",
+        transport: "http",
+        url: "http://127.0.0.1:4207/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert status.status == :connected
+      assert Map.has_key?(status, :last_ping_at)
+      assert Map.has_key?(status, :last_pong_at)
+      assert status.consecutive_ping_failures == 0
+
+      GenServer.stop(pid)
+    end
+
+    test "health ping updates last_pong_at on success" do
+      {:ok, _} = start_mock_http_server(4208)
+
+      config = %{
+        name: "test-health-pong",
+        prefix: "pong",
+        transport: "http",
+        url: "http://127.0.0.1:4208/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Trigger a health ping manually
+      send(pid, :health_ping)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert status.last_ping_at != nil
+      assert status.last_pong_at != nil
+      assert status.consecutive_ping_failures == 0
+
+      GenServer.stop(pid)
+    end
+
+    test "health ping increments failures on error" do
+      # Connect to a working server first, then point to a dead one
+      {:ok, _} = start_mock_http_server(4209)
+
+      config = %{
+        name: "test-health-fail",
+        prefix: "hfail",
+        transport: "http",
+        url: "http://127.0.0.1:4209/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      assert Upstream.status(pid).status == :connected
+
+      # Change the URL to a dead port by updating state directly
+      :sys.replace_state(pid, fn state ->
+        %{state | config: %{state.config | url: "http://127.0.0.1:19998/mcp"}}
+      end)
+
+      # Send health pings that will fail
+      send(pid, :health_ping)
+      Process.sleep(500)
+
+      status = Upstream.status(pid)
+      assert status.consecutive_ping_failures >= 1
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_http_server(port) do
