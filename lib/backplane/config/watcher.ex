@@ -54,14 +54,18 @@ defmodule Backplane.Config.Watcher do
   end
 
   defp apply_config(config) do
-    # Update auth token
-    if token = config[:auth_token] do
+    # Update auth token from [backplane] section
+    if token = get_in(config, [:backplane, :auth_token]) do
       Application.put_env(:backplane, :auth_token, token)
     end
 
-    # Update git providers
-    if providers = config[:git_providers] do
-      Application.put_env(:backplane, :git_providers, providers)
+    # Update git providers (separate :github and :gitlab keys)
+    if github = config[:github] do
+      Application.put_env(:backplane, :github_providers, github)
+    end
+
+    if gitlab = config[:gitlab] do
+      Application.put_env(:backplane, :gitlab_providers, gitlab)
     end
 
     # Note: existing upstream connections are NOT restarted.

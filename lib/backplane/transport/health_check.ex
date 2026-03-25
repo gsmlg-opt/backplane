@@ -3,6 +3,8 @@ defmodule Backplane.Transport.HealthCheck do
   Health check endpoint logic. Returns status of all engines.
   """
 
+  require Logger
+
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
@@ -35,7 +37,9 @@ defmodule Backplane.Transport.HealthCheck do
       %{name: u.name, status: u.status, tool_count: u.tool_count}
     end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("Failed to get upstreams: #{Exception.message(e)}")
+      []
   end
 
   defp get_docs_summary do
@@ -43,6 +47,8 @@ defmodule Backplane.Transport.HealthCheck do
     chunk_count = Repo.aggregate(DocChunk, :count)
     %{projects: project_count, chunks: chunk_count}
   rescue
-    _ -> %{projects: 0, chunks: 0}
+    e ->
+      Logger.warning("Failed to get docs summary: #{Exception.message(e)}")
+      %{projects: 0, chunks: 0}
   end
 end

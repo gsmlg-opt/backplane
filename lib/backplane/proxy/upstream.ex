@@ -363,7 +363,9 @@ defmodule Backplane.Proxy.Upstream do
 
     case String.split(buffer, "\n", parts: 2) do
       [complete, rest] ->
-        %{state | buffer: rest} |> process_stdio_message(complete)
+        state = %{state | buffer: ""} |> process_stdio_message(complete)
+        # Recurse to handle any additional complete messages in the remainder
+        handle_stdio_data(state, rest)
 
       [_incomplete] ->
         %{state | buffer: buffer}

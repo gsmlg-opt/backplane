@@ -3,6 +3,8 @@ defmodule Backplane.Tools.Hub do
   Native MCP tools for hub-level discovery and introspection.
   """
 
+  require Logger
+
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Hub.Discover
   alias Backplane.Proxy.Pool
@@ -121,7 +123,9 @@ defmodule Backplane.Tools.Hub do
       %{name: u.name, status: u.status, tool_count: u.tool_count}
     end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("Failed to get upstream status: #{Exception.message(e)}")
+      []
   end
 
   defp get_skill_sources do
@@ -134,23 +138,28 @@ defmodule Backplane.Tools.Hub do
       %{name: source, skill_count: length(skills)}
     end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("Failed to get skill sources: #{Exception.message(e)}")
+      []
   end
 
   defp get_doc_projects do
+    chunk_counts =
+      DocChunk
+      |> group_by([c], c.project_id)
+      |> select([c], {c.project_id, count(c.id)})
+      |> Repo.all()
+      |> Map.new()
+
     Project
     |> Repo.all()
     |> Enum.map(fn p ->
-      chunk_count =
-        DocChunk
-        |> where([c], c.project_id == ^p.id)
-        |> select([c], count(c.id))
-        |> Repo.one()
-
-      %{id: p.id, chunk_count: chunk_count, last_indexed: p.last_indexed_at}
+      %{id: p.id, chunk_count: Map.get(chunk_counts, p.id, 0), last_indexed: p.last_indexed_at}
     end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("Failed to get doc projects: #{Exception.message(e)}")
+      []
   end
 
   defp format_origin(origin), do: Backplane.Utils.format_origin(origin)

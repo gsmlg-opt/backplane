@@ -9,9 +9,17 @@ defmodule Backplane.Skills.Sync do
   alias Backplane.Repo
   alias Backplane.Skills.Skill
 
+  @allowed_source_modules %{
+    "Elixir.Backplane.Skills.Sources.Local" => Backplane.Skills.Sources.Local,
+    "Elixir.Backplane.Skills.Sources.Git" => Backplane.Skills.Sources.Git
+  }
+
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"source_module" => source_module} = args}) do
-    module = String.to_existing_atom(source_module)
+    module =
+      Map.get(@allowed_source_modules, source_module) ||
+        raise "Disallowed source module: #{source_module}"
+
     config = build_config(module, args)
 
     case module.list(config) do

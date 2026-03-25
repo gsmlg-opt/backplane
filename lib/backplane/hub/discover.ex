@@ -3,6 +3,8 @@ defmodule Backplane.Hub.Discover do
   Cross-cutting discovery across tools, skills, docs, and repos.
   """
 
+  require Logger
+
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -75,7 +77,9 @@ defmodule Backplane.Hub.Discover do
         }
       end)
     rescue
-      _ -> []
+      e ->
+        Logger.warning("Failed to search docs: #{Exception.message(e)}")
+        []
     end
   end
 
@@ -92,7 +96,9 @@ defmodule Backplane.Hub.Discover do
         %{repo: p.repo, description: p.description}
       end)
     rescue
-      _ -> []
+      e ->
+        Logger.warning("Failed to search repos: #{Exception.message(e)}")
+        []
     end
   end
 
