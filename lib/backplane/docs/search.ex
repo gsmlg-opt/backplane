@@ -4,8 +4,8 @@ defmodule Backplane.Docs.Search do
   """
 
   import Ecto.Query
-  alias Backplane.Repo
   alias Backplane.Docs.DocChunk
+  alias Backplane.Repo
 
   @default_limit 20
   @default_max_tokens 4000

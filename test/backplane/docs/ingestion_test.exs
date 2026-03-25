@@ -1,7 +1,7 @@
 defmodule Backplane.Docs.IngestionTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Docs.{Ingestion, Project, DocChunk}
+  alias Backplane.Docs.{DocChunk, Ingestion, Project}
 
   @test_dir "/tmp/backplane_test_repo_#{System.unique_integer([:positive])}"
 

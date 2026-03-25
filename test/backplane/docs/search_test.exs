@@ -1,7 +1,7 @@
 defmodule Backplane.Docs.SearchTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Docs.{Search, Project, DocChunk, Chunker}
+  alias Backplane.Docs.{Chunker, DocChunk, Project, Search}
 
   setup do
     project =

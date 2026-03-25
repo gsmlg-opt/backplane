@@ -6,8 +6,8 @@ defmodule Backplane.Docs.Ingestion do
 
   require Logger
 
+  alias Backplane.Docs.{Chunker, Indexer, Parser, Project}
   alias Backplane.Repo
-  alias Backplane.Docs.{Parser, Chunker, Indexer, Project}
 
   @doc_extensions ~w(.ex .exs .md .txt .rst .json .yml .yaml)
 

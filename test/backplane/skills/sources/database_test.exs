@@ -1,9 +1,9 @@
 defmodule Backplane.Skills.Sources.DatabaseTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Skills.Sources.Database
-  alias Backplane.Skills.Skill
   alias Backplane.Repo
+  alias Backplane.Skills.Skill
+  alias Backplane.Skills.Sources.Database
 
   describe "list/0" do
     test "returns all enabled skills with source db" do

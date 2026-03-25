@@ -7,8 +7,8 @@ defmodule Backplane.Docs.Indexer do
   """
 
   import Ecto.Query
-  alias Backplane.Repo
   alias Backplane.Docs.{DocChunk, ReindexState}
+  alias Backplane.Repo
 
   @doc """
   Index a set of processed chunks for a project.

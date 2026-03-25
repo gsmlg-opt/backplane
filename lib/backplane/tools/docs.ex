@@ -4,7 +4,7 @@ defmodule Backplane.Tools.Docs do
   Registers: docs::resolve-project, docs::query-docs
   """
 
-  alias Backplane.Docs.{Search, Project}
+  alias Backplane.Docs.{Project, Search}
   alias Backplane.Repo
 
   import Ecto.Query

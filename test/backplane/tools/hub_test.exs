@@ -1,8 +1,8 @@
 defmodule Backplane.Tools.HubTest do
   use Backplane.DataCase, async: false
 
+  alias Backplane.Skills.{Registry, Skill}
   alias Backplane.Tools.Hub
-  alias Backplane.Skills.{Skill, Registry}
 
   setup do
     content = "# Test skill content"

@@ -1,8 +1,8 @@
 defmodule Backplane.Skills.SearchTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Skills.{Search, Skill}
   alias Backplane.Repo
+  alias Backplane.Skills.{Search, Skill}
 
   setup do
     insert_skill(

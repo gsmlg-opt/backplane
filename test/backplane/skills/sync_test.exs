@@ -1,8 +1,8 @@
 defmodule Backplane.Skills.SyncTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.Skills.{Sync, Skill}
   alias Backplane.Repo
+  alias Backplane.Skills.{Skill, Sync}
 
   setup do
     # Ensure skills registry ETS table exists

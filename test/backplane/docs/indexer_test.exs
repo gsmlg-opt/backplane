@@ -1,7 +1,7 @@
 defmodule Backplane.Docs.IndexerTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Docs.{Indexer, Project, DocChunk}
+  alias Backplane.Docs.{DocChunk, Indexer, Project}
 
   setup do
     project =

@@ -1,8 +1,8 @@
 defmodule Backplane.Tools.DocsTest do
   use Backplane.DataCase, async: true
 
+  alias Backplane.Docs.{Chunker, DocChunk, Project}
   alias Backplane.Tools.Docs
-  alias Backplane.Docs.{Project, DocChunk, Chunker}
 
   setup do
     project =

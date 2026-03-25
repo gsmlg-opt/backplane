@@ -1,8 +1,8 @@
 defmodule Backplane.Proxy.UpstreamTest do
   use ExUnit.Case
 
-  alias Backplane.Registry.ToolRegistry
   alias Backplane.Proxy.Upstream
+  alias Backplane.Registry.ToolRegistry
 
   setup do
     :ets.delete_all_objects(:backplane_tools)

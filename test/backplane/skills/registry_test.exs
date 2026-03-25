@@ -1,8 +1,8 @@
 defmodule Backplane.Skills.RegistryTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.Skills.{Registry, Skill}
   alias Backplane.Repo
+  alias Backplane.Skills.{Registry, Skill}
 
   setup do
     # Clear ETS

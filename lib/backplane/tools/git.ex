@@ -202,12 +202,9 @@ defmodule Backplane.Tools.Git do
     path = args["path"] || ""
     ref = args["ref"] || "main"
 
-    with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo) do
+    with_resolved_repo(repo, fn module, config, repo_id ->
       module.fetch_tree(repo_id, ref, path, config: config)
-    else
-      {:error, reason} ->
-        {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
-    end
+    end)
   end
 
   def call(%{"_handler" => "repo_file"} = args) do
@@ -215,30 +212,24 @@ defmodule Backplane.Tools.Git do
     path = args["path"]
     ref = args["ref"] || "main"
 
-    with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo) do
+    with_resolved_repo(repo, fn module, config, repo_id ->
       module.fetch_file(repo_id, path, ref, config: config)
-    else
-      {:error, reason} ->
-        {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
-    end
+    end)
   end
 
   def call(%{"_handler" => "repo_issues"} = args) do
     repo = args["repo"]
     state = args["state"] || "open"
 
-    with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo) do
+    with_resolved_repo(repo, fn module, config, repo_id ->
       module.fetch_issues(repo_id, config: config, state: state)
-    else
-      {:error, reason} ->
-        {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
-    end
+    end)
   end
 
   def call(%{"_handler" => "repo_commits"} = args) do
     repo = args["repo"]
 
-    with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo) do
+    with_resolved_repo(repo, fn module, config, repo_id ->
       opts =
         [config: config]
         |> maybe_add(:sha, args["sha"])
@@ -246,22 +237,16 @@ defmodule Backplane.Tools.Git do
         |> maybe_add(:per_page, args["per_page"])
 
       module.fetch_commits(repo_id, opts)
-    else
-      {:error, reason} ->
-        {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
-    end
+    end)
   end
 
   def call(%{"_handler" => "repo_merge_requests"} = args) do
     repo = args["repo"]
     state = args["state"] || "open"
 
-    with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo) do
+    with_resolved_repo(repo, fn module, config, repo_id ->
       module.fetch_merge_requests(repo_id, config: config, state: state)
-    else
-      {:error, reason} ->
-        {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
-    end
+    end)
   end
 
   def call(%{"_handler" => "search_code"} = args) do
@@ -270,14 +255,10 @@ defmodule Backplane.Tools.Git do
     language = args["language"]
 
     if repo_string do
-      with {:ok, {module, config, repo_id}} <- Resolver.resolve(repo_string) do
+      with_resolved_repo(repo_string, fn module, config, repo_id ->
         module.search_code(query, config: config, repo: repo_id, language: language)
-      else
-        {:error, reason} ->
-          {:error, "Failed to resolve repo '#{repo_string}': #{inspect(reason)}"}
-      end
+      end)
     else
-      # Search across all providers
       search_code_all_providers(query, language)
     end
   end
@@ -328,6 +309,13 @@ defmodule Backplane.Tools.Git do
         callback.(module, config)
       end)
     end)
+  end
+
+  defp with_resolved_repo(repo, fun) do
+    case Resolver.resolve(repo) do
+      {:ok, {module, config, repo_id}} -> fun.(module, config, repo_id)
+      {:error, reason} -> {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
+    end
   end
 
   defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)

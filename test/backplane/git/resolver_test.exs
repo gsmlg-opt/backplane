@@ -1,8 +1,8 @@
 defmodule Backplane.Git.ResolverTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.Git.Resolver
   alias Backplane.Git.Providers.{GitHub, GitLab}
+  alias Backplane.Git.Resolver
 
   setup do
     # Set up test provider config

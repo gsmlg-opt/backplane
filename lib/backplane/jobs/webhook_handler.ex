@@ -8,8 +8,8 @@ defmodule Backplane.Jobs.WebhookHandler do
 
   require Logger
 
-  alias Backplane.Repo
   alias Backplane.Docs.Project
+  alias Backplane.Repo
 
   import Ecto.Query
 

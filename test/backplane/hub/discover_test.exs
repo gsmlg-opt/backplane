@@ -2,7 +2,7 @@ defmodule Backplane.Hub.DiscoverTest do
   use Backplane.DataCase, async: false
 
   alias Backplane.Hub.Discover
-  alias Backplane.Skills.{Skill, Registry}
+  alias Backplane.Skills.{Registry, Skill}
 
   setup do
     # Insert a skill for search
