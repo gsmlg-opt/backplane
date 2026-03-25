@@ -12,7 +12,8 @@ defmodule Backplane.Registry.Tool do
     :module,
     :handler,
     :upstream_pid,
-    :original_name
+    :original_name,
+    timeout: 30_000
   ]
 
   @type t :: %__MODULE__{
@@ -23,6 +24,7 @@ defmodule Backplane.Registry.Tool do
           module: module() | nil,
           handler: atom() | nil,
           upstream_pid: pid() | nil,
-          original_name: String.t() | nil
+          original_name: String.t() | nil,
+          timeout: pos_integer()
         }
 end

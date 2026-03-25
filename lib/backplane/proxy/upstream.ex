@@ -28,11 +28,16 @@ defmodule Backplane.Proxy.Upstream do
     GenServer.start_link(__MODULE__, config)
   end
 
-  @doc "Forward a tool call to this upstream server."
-  def forward(pid, tool_name, arguments) do
-    GenServer.call(pid, {:tools_call, tool_name, arguments}, @default_timeout)
+  @doc """
+  Forward a tool call to this upstream server.
+
+  The optional `timeout` parameter overrides the default 30s GenServer call
+  timeout. This is used by per-tool timeout configuration.
+  """
+  def forward(pid, tool_name, arguments, timeout \\ @default_timeout) do
+    GenServer.call(pid, {:tools_call, tool_name, arguments}, timeout)
   catch
-    :exit, {:timeout, _} -> {:error, "Upstream timeout after #{@default_timeout}ms"}
+    :exit, {:timeout, _} -> {:error, "Upstream timeout after #{timeout}ms"}
     :exit, reason -> {:error, "Upstream error: #{inspect(reason)}"}
   end
 
@@ -327,14 +332,19 @@ defmodule Backplane.Proxy.Upstream do
   defp register_tools(state, raw_tools) do
     # Deregister old tools first
     ToolRegistry.deregister_upstream(state.prefix)
+    tool_timeouts = state.config[:tool_timeouts] || %{}
 
     tools =
       Enum.map(raw_tools, fn raw ->
+        tool_name = raw["name"]
+        timeout = Map.get(tool_timeouts, tool_name, @default_timeout)
+
         %Tool{
-          name: raw["name"],
+          name: tool_name,
           description: raw["description"] || "",
           input_schema: raw["inputSchema"] || %{},
-          origin: {:upstream, state.prefix}
+          origin: {:upstream, state.prefix},
+          timeout: timeout
         }
       end)
 

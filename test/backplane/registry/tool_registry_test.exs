@@ -103,7 +103,24 @@ defmodule Backplane.Registry.ToolRegistryTest do
       pid = self()
       ToolRegistry.register_upstream("pg", pid, upstream_tools)
 
-      assert {:upstream, ^pid, "query"} = ToolRegistry.resolve("pg::query")
+      assert {:upstream, ^pid, "query", _timeout} = ToolRegistry.resolve("pg::query")
+    end
+
+    test "resolve includes tool timeout in returned tuple" do
+      upstream_tools = [
+        %Tool{
+          name: "slow_op",
+          description: "Slow operation",
+          input_schema: %{},
+          origin: :native,
+          timeout: 60_000
+        }
+      ]
+
+      pid = self()
+      ToolRegistry.register_upstream("custom", pid, upstream_tools)
+
+      assert {:upstream, ^pid, "slow_op", 60_000} = ToolRegistry.resolve("custom::slow_op")
     end
 
     test "stores original tool name for stripping" do
@@ -114,7 +131,8 @@ defmodule Backplane.Registry.ToolRegistryTest do
       pid = self()
       ToolRegistry.register_upstream("slack", pid, upstream_tools)
 
-      assert {:upstream, ^pid, "send_message"} = ToolRegistry.resolve("slack::send_message")
+      assert {:upstream, ^pid, "send_message", _timeout} =
+               ToolRegistry.resolve("slack::send_message")
     end
   end
 
@@ -146,7 +164,7 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
       ToolRegistry.deregister_upstream("a")
       assert ToolRegistry.count() == 1
-      assert {:upstream, ^pid, "t1"} = ToolRegistry.resolve("b::t1")
+      assert {:upstream, ^pid, "t1", _timeout} = ToolRegistry.resolve("b::t1")
     end
   end
 

@@ -248,6 +248,66 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "per-tool timeout" do
+    test "registers tools with configured timeouts" do
+      {:ok, _} = start_mock_http_server(4210)
+
+      config = %{
+        name: "test-timeout",
+        prefix: "tout",
+        transport: "http",
+        url: "http://127.0.0.1:4210/mcp",
+        headers: %{},
+        tool_timeouts: %{"echo" => 5_000}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # echo tool should have custom timeout
+      echo_tool = ToolRegistry.lookup("tout::echo")
+      assert echo_tool != nil
+      assert echo_tool.timeout == 5_000
+
+      # Other tools should have default timeout
+      tools = ToolRegistry.list_all()
+
+      non_echo =
+        Enum.find(tools, fn t ->
+          String.starts_with?(t.name, "tout::") and t.name != "tout::echo"
+        end)
+
+      if non_echo do
+        assert non_echo.timeout == 30_000
+      end
+
+      GenServer.stop(pid)
+    end
+
+    test "uses default timeout when tool_timeouts not configured" do
+      {:ok, _} = start_mock_http_server(4211)
+
+      config = %{
+        name: "test-no-timeout",
+        prefix: "notime",
+        transport: "http",
+        url: "http://127.0.0.1:4211/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      tools = ToolRegistry.list_all()
+      notime_tools = Enum.filter(tools, fn t -> String.starts_with?(t.name, "notime::") end)
+
+      assert notime_tools != []
+      assert Enum.all?(notime_tools, fn t -> t.timeout == 30_000 end)
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_http_server(port) do

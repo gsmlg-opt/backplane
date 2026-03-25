@@ -33,7 +33,8 @@ defmodule Backplane.Registry.ToolRegistry do
         input_schema: tool.input_schema,
         origin: {:upstream, prefix},
         upstream_pid: upstream_pid,
-        original_name: tool.name
+        original_name: tool.name,
+        timeout: tool.timeout
       }
 
       :ets.insert(@table, {namespaced, entry})
@@ -69,8 +70,8 @@ defmodule Backplane.Registry.ToolRegistry do
       [{^name, %{origin: :native, module: module, handler: handler}}] ->
         {:native, module, handler}
 
-      [{^name, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original}}] ->
-        {:upstream, pid, original}
+      [{^name, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original} = tool}] ->
+        {:upstream, pid, original, tool.timeout}
 
       [] ->
         :not_found

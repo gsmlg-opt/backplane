@@ -343,8 +343,8 @@ defmodule Backplane.Transport.McpHandler do
     module.call(call_args)
   end
 
-  defp execute_tool({:upstream, upstream_pid, original_tool_name}, args) do
-    Upstream.forward(upstream_pid, original_tool_name, args)
+  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, args) do
+    Upstream.forward(upstream_pid, original_tool_name, args, timeout)
   end
 
   defp execute_tool(:not_found, _args) do
