@@ -60,6 +60,16 @@ defmodule Backplane.Transport.RouterTest do
     assert body["error"] =~ "too large"
   end
 
+  test "GET /metrics returns 200 with JSON metrics" do
+    conn =
+      Plug.Test.conn(:get, "/metrics")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert is_map(body)
+  end
+
   test "POST /mcp with valid JSON-RPC returns 200" do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 

@@ -14,6 +14,7 @@ defmodule Backplane.Application do
       Backplane.Registry.ToolRegistry,
       Backplane.Skills.Registry,
       Backplane.Proxy.Pool,
+      Backplane.Metrics,
       Backplane.Config.Watcher,
       {Bandit,
        plug: Backplane.Transport.Router,

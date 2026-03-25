@@ -61,6 +61,14 @@ defmodule Backplane.Transport.Router do
     |> send_resp(200, Jason.encode!(health))
   end
 
+  get "/metrics" do
+    metrics = Backplane.Metrics.snapshot()
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(metrics))
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{error: "Not found"}))
   end
