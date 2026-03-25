@@ -830,6 +830,251 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "batch tools/call and resources/read" do
+    test "batch tools/call dispatches native tool" do
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{"name" => "skill::list"}
+        },
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 2,
+          "params" => %{"name" => "nonexistent::tool"}
+        }
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 2
+
+      ok_resp = Enum.find(responses, &(&1["id"] == 1))
+      assert is_list(ok_resp["result"]["content"])
+
+      err_resp = Enum.find(responses, &(&1["id"] == 2))
+      assert err_resp["result"]["isError"] == true
+    end
+
+    test "batch tools/call with missing name" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 1, "params" => %{}}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      [resp] = Jason.decode!(conn.resp_body)
+      assert resp["error"]["code"] == -32_602
+    end
+
+    test "batch resources/read with valid chunk" do
+      Backplane.Repo.insert(
+        %Backplane.Docs.Project{id: "batch-read-proj", repo: "test/batch", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      {:ok, chunk} =
+        Backplane.Repo.insert(%Backplane.Docs.DocChunk{
+          project_id: "batch-read-proj",
+          source_path: "lib/batch.ex",
+          content: "Batch read content",
+          chunk_type: "module_doc",
+          content_hash: "batchread123"
+        })
+
+      uri = "backplane://docs/batch-read-proj/#{chunk.id}"
+
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "resources/read",
+          "id" => 1,
+          "params" => %{"uri" => uri}
+        },
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "resources/read",
+          "id" => 2,
+          "params" => %{"uri" => "backplane://docs/fake/99999"}
+        },
+        %{"jsonrpc" => "2.0", "method" => "resources/read", "id" => 3, "params" => %{}}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 3
+
+      ok_resp = Enum.find(responses, &(&1["id"] == 1))
+      assert is_list(ok_resp["result"]["contents"])
+
+      not_found = Enum.find(responses, &(&1["id"] == 2))
+      assert not_found["error"]["code"] == -32_602
+
+      missing_uri = Enum.find(responses, &(&1["id"] == 3))
+      assert missing_uri["error"]["code"] == -32_602
+    end
+
+    test "batch prompts/get with valid and missing name" do
+      content = "# Batch Skill\nInstructions here."
+      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+      %Backplane.Skills.Skill{}
+      |> Backplane.Skills.Skill.changeset(%{
+        id: "batch/prompt-skill",
+        name: "batch-prompt-skill",
+        description: "Batch test skill",
+        tags: ["test"],
+        content: content,
+        content_hash: hash,
+        source: "db",
+        enabled: true
+      })
+      |> Backplane.Repo.insert!()
+
+      Backplane.Skills.Registry.refresh()
+
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "prompts/get",
+          "id" => 1,
+          "params" => %{"name" => "batch-prompt-skill"}
+        },
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "prompts/get",
+          "id" => 2,
+          "params" => %{"name" => "nonexistent"}
+        },
+        %{"jsonrpc" => "2.0", "method" => "prompts/get", "id" => 3, "params" => %{}}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 3
+
+      ok_resp = Enum.find(responses, &(&1["id"] == 1))
+      assert is_list(ok_resp["result"]["messages"])
+
+      not_found = Enum.find(responses, &(&1["id"] == 2))
+      assert not_found["error"]["code"] == -32_602
+
+      missing_name = Enum.find(responses, &(&1["id"] == 3))
+      assert missing_name["error"]["code"] == -32_602
+    end
+
+    test "batch completion/complete and logging/setLevel" do
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "completion/complete",
+          "id" => 1,
+          "params" => %{
+            "ref" => %{"type" => "ref/tool", "name" => "skill::search"},
+            "argument" => %{"name" => "query", "value" => ""}
+          }
+        },
+        %{"jsonrpc" => "2.0", "method" => "completion/complete", "id" => 2, "params" => %{}},
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "logging/setLevel",
+          "id" => 3,
+          "params" => %{"level" => "debug"}
+        },
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "logging/setLevel",
+          "id" => 4,
+          "params" => %{"level" => "invalid"}
+        }
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 4
+
+      complete_ok = Enum.find(responses, &(&1["id"] == 1))
+      assert is_map(complete_ok["result"]["completion"])
+
+      complete_err = Enum.find(responses, &(&1["id"] == 2))
+      assert complete_err["error"]["code"] == -32_602
+
+      log_ok = Enum.find(responses, &(&1["id"] == 3))
+      assert log_ok["result"] == %{}
+
+      log_err = Enum.find(responses, &(&1["id"] == 4))
+      assert log_err["error"]["code"] == -32_602
+    end
+  end
+
+  describe "notification handling" do
+    test "notifications/initialized returns 202" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "notifications/initialized"
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+
+    test "notifications/cancelled returns 202" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "notifications/cancelled"
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+
+    test "unknown notification returns 202" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "notifications/unknown"
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+    end
+  end
+
   describe "invalid request format" do
     test "returns error for request without jsonrpc field" do
       resp = raw_mcp_request(%{"method" => "ping", "id" => 1})
