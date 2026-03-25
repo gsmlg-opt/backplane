@@ -616,6 +616,31 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
+  describe "logging/setLevel" do
+    test "accepts valid log level" do
+      for level <- ~w(debug info notice warning error critical alert emergency) do
+        resp = mcp_request("logging/setLevel", %{"level" => level})
+        assert resp["result"] == %{}, "Expected empty result for level #{level}"
+      end
+    end
+
+    test "rejects invalid log level" do
+      resp = mcp_request("logging/setLevel", %{"level" => "invalid"})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "level"
+    end
+
+    test "rejects missing level param" do
+      resp = mcp_request("logging/setLevel", %{})
+      assert resp["error"]["code"] == -32_602
+    end
+
+    test "logging capability advertised in initialize" do
+      resp = mcp_request("initialize")
+      assert is_map(resp["result"]["capabilities"]["logging"])
+    end
+  end
+
   describe "batch with resource/prompt methods" do
     test "batch can process resources/list and prompts/list together" do
       batch = [

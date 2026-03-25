@@ -98,7 +98,8 @@ defmodule Backplane.Transport.McpHandler do
          tools: %{listChanged: true},
          resources: %{},
          prompts: %{},
-         completions: %{}
+         completions: %{},
+         logging: %{}
        }
      }}
   end
@@ -173,6 +174,16 @@ defmodule Backplane.Transport.McpHandler do
     {:error, -32_602, "Invalid params: 'ref' and 'argument' are required"}
   end
 
+  defp compute_result("logging/setLevel", _id, %{"level" => level})
+       when level in ~w(debug info notice warning error critical alert emergency) do
+    {:result, %{}}
+  end
+
+  defp compute_result("logging/setLevel", _id, _params) do
+    {:error, -32_602,
+     "Invalid params: 'level' must be one of: debug, info, notice, warning, error, critical, alert, emergency"}
+  end
+
   defp compute_result("ping", _id, _params), do: {:result, %{}}
 
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
@@ -190,7 +201,8 @@ defmodule Backplane.Transport.McpHandler do
         tools: %{listChanged: true},
         resources: %{},
         prompts: %{},
-        completions: %{}
+        completions: %{},
+        logging: %{}
       }
     }
 
@@ -289,6 +301,20 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "completion/complete", id, _params) do
     json_rpc_error(conn, id, -32_602, "Invalid params: 'ref' and 'argument' are required")
+  end
+
+  defp dispatch(conn, "logging/setLevel", id, %{"level" => level})
+       when level in ~w(debug info notice warning error critical alert emergency) do
+    json_rpc_result(conn, id, %{})
+  end
+
+  defp dispatch(conn, "logging/setLevel", id, _params) do
+    json_rpc_error(
+      conn,
+      id,
+      -32_602,
+      "Invalid params: 'level' must be one of: debug, info, notice, warning, error, critical, alert, emergency"
+    )
   end
 
   defp dispatch(conn, "ping", id, _params) do
