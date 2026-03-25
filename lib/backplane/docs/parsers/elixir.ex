@@ -1,0 +1,255 @@
+defmodule Backplane.Docs.Parsers.Elixir do
+  @moduledoc """
+  Parser for Elixir .ex/.exs files.
+
+  Extracts:
+  - @moduledoc as "moduledoc" chunks
+  - @doc + function signature as "function_doc" chunks
+  - @typedoc + @type as "typespec" chunks
+  - Handles nested modules
+  """
+
+  @behaviour Backplane.Docs.Parser
+
+  @impl true
+  def parse(content, source_path) do
+    try do
+      chunks = extract_chunks(content, source_path)
+      {:ok, chunks}
+    rescue
+      _ -> {:ok, []}
+    end
+  end
+
+  defp extract_chunks(content, source_path) do
+    lines = String.split(content, "\n")
+
+    state = %{
+      module_stack: [],
+      current_doc: nil,
+      current_spec: nil,
+      current_typedoc: nil,
+      chunks: []
+    }
+
+    final_state = process_lines(lines, source_path, state)
+    Enum.reverse(final_state.chunks)
+  end
+
+  defp process_lines([], _source_path, state), do: state
+
+  defp process_lines([line | rest], source_path, state) do
+    trimmed = String.trim(line)
+
+    cond do
+      # @moduledoc false
+      trimmed == "@moduledoc false" ->
+        process_lines(rest, source_path, %{state | current_doc: nil})
+
+      # @moduledoc """
+      String.starts_with?(trimmed, "@moduledoc \"\"\"") ->
+        {doc, remaining} = collect_heredoc(rest)
+        current_module = current_module_name(state.module_stack)
+
+        chunk = %{
+          source_path: source_path,
+          module: current_module,
+          function: nil,
+          chunk_type: "moduledoc",
+          content: doc
+        }
+
+        process_lines(remaining, source_path, %{state | chunks: [chunk | state.chunks]})
+
+      # @moduledoc "single line"
+      String.starts_with?(trimmed, "@moduledoc \"") ->
+        doc = extract_single_line_string(trimmed, "@moduledoc ")
+        current_module = current_module_name(state.module_stack)
+
+        chunk = %{
+          source_path: source_path,
+          module: current_module,
+          function: nil,
+          chunk_type: "moduledoc",
+          content: doc
+        }
+
+        process_lines(rest, source_path, %{state | chunks: [chunk | state.chunks]})
+
+      # @doc false
+      trimmed == "@doc false" ->
+        process_lines(rest, source_path, %{state | current_doc: nil})
+
+      # @doc """
+      String.starts_with?(trimmed, "@doc \"\"\"") ->
+        {doc, remaining} = collect_heredoc(rest)
+        process_lines(remaining, source_path, %{state | current_doc: doc})
+
+      # @doc "single line"
+      String.starts_with?(trimmed, "@doc \"") ->
+        doc = extract_single_line_string(trimmed, "@doc ")
+        process_lines(rest, source_path, %{state | current_doc: doc})
+
+      # @typedoc """
+      String.starts_with?(trimmed, "@typedoc \"\"\"") ->
+        {doc, remaining} = collect_heredoc(rest)
+        process_lines(remaining, source_path, %{state | current_typedoc: doc})
+
+      # @typedoc "single line"
+      String.starts_with?(trimmed, "@typedoc \"") ->
+        doc = extract_single_line_string(trimmed, "@typedoc ")
+        process_lines(rest, source_path, %{state | current_typedoc: doc})
+
+      # @spec
+      String.starts_with?(trimmed, "@spec ") ->
+        spec = String.trim_leading(trimmed, "@spec ")
+        process_lines(rest, source_path, %{state | current_spec: spec})
+
+      # @type or @typep or @opaque
+      String.starts_with?(trimmed, "@type ") or String.starts_with?(trimmed, "@typep ") or
+          String.starts_with?(trimmed, "@opaque ") ->
+        handle_type(trimmed, rest, source_path, state)
+
+      # defmodule
+      match_defmodule(trimmed) != nil ->
+        mod_name = match_defmodule(trimmed)
+        module_stack = [mod_name | state.module_stack]
+        process_lines(rest, source_path, %{state | module_stack: module_stack})
+
+      # def/defp/defmacro/defmacrop
+      match_function(trimmed) != nil ->
+        handle_function(trimmed, rest, source_path, state)
+
+      # end - pop module stack (only when at top-level indentation or stack is non-empty)
+      trimmed == "end" and length(state.module_stack) > 0 ->
+        module_stack = tl(state.module_stack)
+        process_lines(rest, source_path, %{state | module_stack: module_stack})
+
+      true ->
+        process_lines(rest, source_path, state)
+    end
+  end
+
+  defp collect_heredoc(lines) do
+    collect_heredoc(lines, [])
+  end
+
+  defp collect_heredoc([], acc) do
+    {acc |> Enum.reverse() |> Enum.join("\n"), []}
+  end
+
+  defp collect_heredoc([line | rest], acc) do
+    if String.trim(line) == "\"\"\"" do
+      {acc |> Enum.reverse() |> Enum.join("\n"), rest}
+    else
+      collect_heredoc(rest, [String.trim(line) | acc])
+    end
+  end
+
+  defp handle_function(trimmed, rest, source_path, state) do
+    func_sig = match_function(trimmed)
+    current_module = current_module_name(state.module_stack)
+
+    if state.current_doc do
+      content =
+        if state.current_spec do
+          "@spec #{state.current_spec}\n\n#{state.current_doc}"
+        else
+          state.current_doc
+        end
+
+      chunk = %{
+        source_path: source_path,
+        module: current_module,
+        function: func_sig,
+        chunk_type: "function_doc",
+        content: content
+      }
+
+      state = %{state | current_doc: nil, current_spec: nil, chunks: [chunk | state.chunks]}
+      process_lines(rest, source_path, state)
+    else
+      state = %{state | current_doc: nil, current_spec: nil}
+      process_lines(rest, source_path, state)
+    end
+  end
+
+  defp handle_type(trimmed, rest, source_path, state) do
+    current_module = current_module_name(state.module_stack)
+
+    if state.current_typedoc do
+      content = "#{trimmed}\n\n#{state.current_typedoc}"
+
+      chunk = %{
+        source_path: source_path,
+        module: current_module,
+        function: nil,
+        chunk_type: "typespec",
+        content: content
+      }
+
+      state = %{state | current_typedoc: nil, chunks: [chunk | state.chunks]}
+      process_lines(rest, source_path, state)
+    else
+      process_lines(rest, source_path, %{state | current_typedoc: nil})
+    end
+  end
+
+  defp match_defmodule(line) do
+    case Regex.run(~r/^defmodule\s+([\w.]+)/, line) do
+      [_, name] -> name
+      _ -> nil
+    end
+  end
+
+  defp match_function(line) do
+    case Regex.run(~r/^(def|defp|defmacro|defmacrop)\s+([\w?!]+)(\(.*?\))?/, line) do
+      [_, _kind, name, args] ->
+        arity = count_args(args)
+        "#{name}/#{arity}"
+
+      [_, _kind, name] ->
+        "#{name}/0"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp count_args("()"), do: 0
+
+  defp count_args("(" <> rest) do
+    rest = String.trim_trailing(rest, ")")
+
+    if String.trim(rest) == "" do
+      0
+    else
+      rest
+      |> String.graphemes()
+      |> Enum.reduce({0, 0}, fn
+        "(", {depth, count} -> {depth + 1, count}
+        "[", {depth, count} -> {depth + 1, count}
+        "{", {depth, count} -> {depth + 1, count}
+        ")", {depth, count} -> {max(depth - 1, 0), count}
+        "]", {depth, count} -> {max(depth - 1, 0), count}
+        "}", {depth, count} -> {max(depth - 1, 0), count}
+        ",", {0, count} -> {0, count + 1}
+        _, acc -> acc
+      end)
+      |> elem(1)
+      |> Kernel.+(1)
+    end
+  end
+
+  defp count_args(_), do: 0
+
+  defp current_module_name([]), do: nil
+  defp current_module_name(stack), do: stack |> Enum.reverse() |> Enum.join(".")
+
+  defp extract_single_line_string(line, prefix) do
+    line
+    |> String.trim_leading(prefix)
+    |> String.trim_leading("\"")
+    |> String.trim_trailing("\"")
+  end
+end

@@ -1,0 +1,79 @@
+defmodule Backplane.Docs.Parsers.MarkdownTest do
+  use ExUnit.Case, async: true
+
+  alias Backplane.Docs.Parsers.Markdown
+
+  describe "parse/2" do
+    test "splits on ## headings" do
+      content = """
+      ## Installation
+
+      Run `mix deps.get`
+
+      ## Usage
+
+      Call the function.
+      """
+
+      {:ok, chunks} = Markdown.parse(content, "README.md")
+      assert length(chunks) == 2
+
+      assert Enum.at(chunks, 0).content =~ "Installation"
+      assert Enum.at(chunks, 0).content =~ "mix deps.get"
+      assert Enum.at(chunks, 1).content =~ "Usage"
+    end
+
+    test "all chunks have guide type" do
+      content = "## Section\n\nSome content."
+      {:ok, chunks} = Markdown.parse(content, "guide.md")
+
+      Enum.each(chunks, fn chunk ->
+        assert chunk.chunk_type == "guide"
+      end)
+    end
+
+    test "handles document with no headings as single chunk" do
+      content = "Just some text without any headings.\n\nAnother paragraph."
+      {:ok, chunks} = Markdown.parse(content, "notes.md")
+      assert length(chunks) == 1
+      assert hd(chunks).content =~ "Just some text"
+    end
+
+    test "handles empty document" do
+      {:ok, chunks} = Markdown.parse("", "empty.md")
+      assert chunks == []
+    end
+
+    test "preserves heading text in content" do
+      content = "## My Heading\n\nBody text here."
+      {:ok, chunks} = Markdown.parse(content, "doc.md")
+      assert [chunk] = chunks
+      assert chunk.content =~ "## My Heading"
+      assert chunk.content =~ "Body text here"
+    end
+
+    test "handles # top-level heading" do
+      content = """
+      # Title
+
+      Some intro text.
+
+      ## Section
+
+      Section content.
+      """
+
+      {:ok, chunks} = Markdown.parse(content, "README.md")
+      assert length(chunks) >= 2
+    end
+
+    test "sets source_path correctly" do
+      content = "## Test\n\nContent."
+      {:ok, chunks} = Markdown.parse(content, "docs/guide.md")
+
+      Enum.each(chunks, fn chunk ->
+        assert chunk.source_path == "docs/guide.md"
+      end)
+    end
+  end
+end
