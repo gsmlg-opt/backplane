@@ -196,4 +196,72 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["message"] =~ "Method not found"
     end
   end
+
+  describe "batch requests" do
+    test "processes multiple requests and returns array" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
+        %{"jsonrpc" => "2.0", "method" => "ping", "id" => 2}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert is_list(responses)
+      assert length(responses) == 2
+      assert Enum.all?(responses, fn r -> r["jsonrpc"] == "2.0" end)
+      assert Enum.map(responses, & &1["id"]) == [1, 2]
+    end
+
+    test "returns error for empty batch" do
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!([]))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      resp = Jason.decode!(conn.resp_body)
+      assert resp["error"]["code"] == -32_600
+    end
+
+    test "handles mixed requests and notifications" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
+        %{"jsonrpc" => "2.0", "method" => "notifications/initialized"}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      # Only the request with id gets a response, notification is silent
+      assert length(responses) == 1
+      assert hd(responses)["id"] == 1
+    end
+
+    test "handles invalid entries in batch" do
+      batch = [
+        %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
+        %{"invalid" => "garbage"}
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      responses = Jason.decode!(conn.resp_body)
+      assert length(responses) == 2
+
+      valid = Enum.find(responses, &(&1["id"] == 1))
+      assert valid["result"] == %{}
+
+      invalid = Enum.find(responses, &(&1["id"] == nil))
+      assert invalid["error"]["code"] == -32_600
+    end
+  end
 end

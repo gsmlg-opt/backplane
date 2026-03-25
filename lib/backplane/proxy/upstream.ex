@@ -484,7 +484,7 @@ defmodule Backplane.Proxy.Upstream do
     Process.send_after(self(), :refresh, @refresh_interval)
   end
 
-  defp schedule_reconnect(attempt \\ 0) do
+  defp schedule_reconnect(attempt) do
     base_delay = min(@initial_backoff_ms * Integer.pow(2, attempt), @max_backoff_ms)
     # Add jitter: 75-125% of base delay
     jitter = div(base_delay, 4)

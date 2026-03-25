@@ -23,6 +23,9 @@ defmodule Backplane.Transport.McpHandler do
 
   def handle(conn) do
     case conn.body_params do
+      %{"_json" => batch} when is_list(batch) ->
+        handle_batch(conn, batch)
+
       %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
         Telemetry.emit_mcp_request(method)
         dispatch(conn, method, id, params["params"])
@@ -39,6 +42,125 @@ defmodule Backplane.Transport.McpHandler do
         json_rpc_error(conn, nil, -32_600, "Invalid Request")
     end
   end
+
+  defp handle_batch(conn, []) do
+    json_rpc_error(conn, nil, -32_600, "Invalid Request: empty batch")
+  end
+
+  defp handle_batch(conn, requests) do
+    responses =
+      Enum.reduce(requests, [], fn request, acc ->
+        case request do
+          %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
+            Telemetry.emit_mcp_request(method)
+            result = dispatch_single(method, id, params["params"])
+            [result | acc]
+
+          %{"jsonrpc" => "2.0", "method" => _method} ->
+            # Notification in batch — no response
+            acc
+
+          _ ->
+            [
+              %{jsonrpc: "2.0", id: nil, error: %{code: -32_600, message: "Invalid Request"}}
+              | acc
+            ]
+        end
+      end)
+      |> Enum.reverse()
+
+    case responses do
+      [] ->
+        # All notifications — just acknowledge
+        send_resp(conn, 202, "")
+
+      _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(responses))
+    end
+  end
+
+  # Batch dispatch: returns a JSON-RPC response map (no conn)
+  defp dispatch_single(method, id, params) do
+    case compute_result(method, id, params) do
+      {:result, result} -> %{jsonrpc: "2.0", id: id, result: result}
+      {:error, code, message} -> %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
+    end
+  end
+
+  defp compute_result("initialize", _id, _params) do
+    {:result,
+     %{
+       protocolVersion: @protocol_version,
+       serverInfo: %{name: @server_name, version: @server_version},
+       capabilities: %{tools: %{listChanged: true}, resources: %{}, prompts: %{}}
+     }}
+  end
+
+  defp compute_result("tools/list", _id, _params) do
+    tools =
+      ToolRegistry.list_all()
+      |> Enum.map(fn tool ->
+        %{name: tool.name, description: tool.description, inputSchema: tool.input_schema}
+      end)
+
+    {:result, %{tools: tools}}
+  end
+
+  defp compute_result("tools/call", _id, %{"name" => name} = params)
+       when is_binary(name) and name != "" do
+    arguments = params["arguments"] || %{}
+
+    case validate_tool_args(name, arguments) do
+      :ok ->
+        case dispatch_tool_call(name, arguments) do
+          {:ok, result} ->
+            {:result, %{content: [%{type: "text", text: format_result(result)}]}}
+
+          {:error, message} ->
+            {:result, %{content: [%{type: "text", text: to_string(message)}], isError: true}}
+        end
+
+      {:error, reason} ->
+        {:error, -32_602, "Invalid params: #{reason}"}
+    end
+  end
+
+  defp compute_result("tools/call", _id, _params) do
+    {:error, -32_602, "Invalid params: 'name' is required"}
+  end
+
+  defp compute_result("resources/list", _id, _params),
+    do: {:result, %{resources: list_resources()}}
+
+  defp compute_result("resources/read", _id, %{"uri" => uri}) when is_binary(uri) do
+    case read_resource(uri) do
+      {:ok, contents} -> {:result, %{contents: contents}}
+      {:error, reason} -> {:error, -32_602, "Resource not found: #{reason}"}
+    end
+  end
+
+  defp compute_result("resources/read", _id, _params) do
+    {:error, -32_602, "Invalid params: 'uri' is required"}
+  end
+
+  defp compute_result("prompts/list", _id, _params), do: {:result, %{prompts: list_prompts()}}
+
+  defp compute_result("prompts/get", _id, %{"name" => name}) when is_binary(name) do
+    case get_prompt(name) do
+      {:ok, prompt} -> {:result, prompt}
+      {:error, reason} -> {:error, -32_602, "Prompt not found: #{reason}"}
+    end
+  end
+
+  defp compute_result("prompts/get", _id, _params) do
+    {:error, -32_602, "Invalid params: 'name' is required"}
+  end
+
+  defp compute_result("ping", _id, _params), do: {:result, %{}}
+
+  defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
 
   defp dispatch(conn, "initialize", id, _params) do
     session_id = generate_session_id()
