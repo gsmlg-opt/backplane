@@ -86,4 +86,79 @@ defmodule Backplane.MetricsTest do
     assert snapshot.counters["tool_calls_success"] >= 1
     assert snapshot.timings["tool_call_duration"].count >= 1
   end
+
+  test "tool_call error result increments error counter" do
+    :telemetry.execute(
+      [:backplane, :tool_call, :stop],
+      %{duration: System.convert_time_unit(1000, :microsecond, :native)},
+      %{tool: "test::error-tool", result: :error}
+    )
+
+    snapshot = Metrics.snapshot()
+    assert snapshot.counters["tool_calls_errors"] >= 1
+  end
+
+  test "tool_call start increments total counter" do
+    before = Metrics.snapshot()
+    before_count = get_in(before, [:counters, "tool_calls_total"]) || 0
+
+    :telemetry.execute(
+      [:backplane, :tool_call, :start],
+      %{system_time: System.system_time()},
+      %{tool: "test::start-tool"}
+    )
+
+    after_snap = Metrics.snapshot()
+    after_count = get_in(after_snap, [:counters, "tool_calls_total"]) || 0
+    assert after_count > before_count
+  end
+
+  test "tool_call exception increments exception counter" do
+    :telemetry.execute(
+      [:backplane, :tool_call, :exception],
+      %{duration: System.convert_time_unit(500, :microsecond, :native)},
+      %{tool: "test::crash-tool", kind: :error, reason: %RuntimeError{}}
+    )
+
+    snapshot = Metrics.snapshot()
+    assert snapshot.counters["tool_calls_exceptions"] >= 1
+  end
+
+  test "SSE stream start increments counter" do
+    :telemetry.execute(
+      [:backplane, :sse_stream, :start],
+      %{system_time: System.system_time()},
+      %{tool: "test::sse-tool"}
+    )
+
+    snapshot = Metrics.snapshot()
+    assert snapshot.counters["sse_streams_started"] >= 1
+  end
+
+  test "SSE stream stop records timing" do
+    :telemetry.execute(
+      [:backplane, :sse_stream, :stop],
+      %{duration: System.convert_time_unit(3000, :microsecond, :native)},
+      %{tool: "test::sse-tool"}
+    )
+
+    snapshot = Metrics.snapshot()
+    assert snapshot.timings["sse_stream_duration"].count >= 1
+  end
+
+  test "mcp_request handler also increments per-method counter" do
+    :telemetry.execute(
+      [:backplane, :mcp_request, :start],
+      %{system_time: System.system_time()},
+      %{method: "initialize"}
+    )
+
+    snapshot = Metrics.snapshot()
+    assert snapshot.counters["mcp_requests.initialize"] >= 1
+  end
+
+  test "snapshot includes upstreams list" do
+    snapshot = Metrics.snapshot()
+    assert is_list(snapshot.upstreams)
+  end
 end

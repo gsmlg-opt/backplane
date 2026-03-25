@@ -73,4 +73,45 @@ defmodule Backplane.Transport.IdempotencyTest do
     refute conn1.halted
     refute conn2.halted
   end
+
+  test "empty idempotency key header is ignored" do
+    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+
+    conn =
+      Plug.Test.conn(:post, "/mcp", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("idempotency-key", "")
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn.status == 200
+    refute conn.halted
+  end
+
+  test "cached response preserves status code and content type" do
+    key = "test-key-status-#{System.unique_integer([:positive])}"
+    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+
+    # First request
+    conn1 =
+      Plug.Test.conn(:post, "/mcp", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("idempotency-key", key)
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    # Second request with same key
+    conn2 =
+      Plug.Test.conn(:post, "/mcp", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("idempotency-key", key)
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+    assert conn2.status == conn1.status
+
+    ct =
+      conn2.resp_headers
+      |> Enum.find(fn {k, _} -> k == "content-type" end)
+      |> elem(1)
+
+    assert ct =~ "application/json"
+  end
 end
