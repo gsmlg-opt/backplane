@@ -3,8 +3,14 @@ defmodule Backplane.Tools.Hub do
   Native MCP tools for hub-level discovery and introspection.
   """
 
+  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Hub.Discover
+  alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
+  alias Backplane.Repo
+  alias Backplane.Skills.{Registry, Skill}
+
+  import Ecto.Query
 
   def tools do
     [
@@ -96,7 +102,7 @@ defmodule Backplane.Tools.Hub do
        skill_sources: skill_sources,
        doc_projects: doc_projects,
        total_tools: ToolRegistry.count(),
-       total_skills: Backplane.Skills.Registry.count()
+       total_skills: Registry.count()
      }}
   end
 
@@ -110,51 +116,41 @@ defmodule Backplane.Tools.Hub do
   end
 
   defp get_upstream_status do
-    try do
-      Backplane.Proxy.Pool.list_upstreams()
-      |> Enum.map(fn u ->
-        %{name: u.name, status: u.status, tool_count: u.tool_count}
-      end)
-    rescue
-      _ -> []
-    end
+    Pool.list_upstreams()
+    |> Enum.map(fn u ->
+      %{name: u.name, status: u.status, tool_count: u.tool_count}
+    end)
+  rescue
+    _ -> []
   end
 
   defp get_skill_sources do
-    import Ecto.Query
-
-    try do
-      Backplane.Skills.Skill
-      |> where([s], s.enabled == true)
-      |> select([s], %{source: s.source})
-      |> Backplane.Repo.all()
-      |> Enum.group_by(& &1.source)
-      |> Enum.map(fn {source, skills} ->
-        %{name: source, skill_count: length(skills)}
-      end)
-    rescue
-      _ -> []
-    end
+    Skill
+    |> where([s], s.enabled == true)
+    |> select([s], %{source: s.source})
+    |> Repo.all()
+    |> Enum.group_by(& &1.source)
+    |> Enum.map(fn {source, skills} ->
+      %{name: source, skill_count: length(skills)}
+    end)
+  rescue
+    _ -> []
   end
 
   defp get_doc_projects do
-    import Ecto.Query
+    Project
+    |> Repo.all()
+    |> Enum.map(fn p ->
+      chunk_count =
+        DocChunk
+        |> where([c], c.project_id == ^p.id)
+        |> select([c], count(c.id))
+        |> Repo.one()
 
-    try do
-      Backplane.Docs.Project
-      |> Backplane.Repo.all()
-      |> Enum.map(fn p ->
-        chunk_count =
-          Backplane.Docs.DocChunk
-          |> where([c], c.project_id == ^p.id)
-          |> select([c], count(c.id))
-          |> Backplane.Repo.one()
-
-        %{id: p.id, chunk_count: chunk_count, last_indexed: p.last_indexed_at}
-      end)
-    rescue
-      _ -> []
-    end
+      %{id: p.id, chunk_count: chunk_count, last_indexed: p.last_indexed_at}
+    end)
+  rescue
+    _ -> []
   end
 
   defp format_origin(origin), do: Backplane.Utils.format_origin(origin)

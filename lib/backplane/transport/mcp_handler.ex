@@ -7,6 +7,10 @@ defmodule Backplane.Transport.McpHandler do
 
   import Plug.Conn
 
+  alias Backplane.Proxy.Upstream
+  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Telemetry
+
   @protocol_version "2025-03-26"
   @server_name "backplane"
   @server_version "0.1.0"
@@ -46,7 +50,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "tools/list", id, _params) do
     tools =
-      Backplane.Registry.ToolRegistry.list_all()
+      ToolRegistry.list_all()
       |> Enum.map(fn tool ->
         %{
           name: tool.name,
@@ -97,8 +101,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch_tool_call(name, args) do
-    Backplane.Telemetry.span_tool_call(name, fn ->
-      name |> Backplane.Registry.ToolRegistry.resolve() |> execute_tool(args)
+    Telemetry.span_tool_call(name, fn ->
+      name |> ToolRegistry.resolve() |> execute_tool(args)
     end)
   end
 
@@ -108,7 +112,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp execute_tool({:upstream, upstream_pid, original_tool_name}, args) do
-    Backplane.Proxy.Upstream.forward(upstream_pid, original_tool_name, args)
+    Upstream.forward(upstream_pid, original_tool_name, args)
   end
 
   defp execute_tool(:not_found, _args) do

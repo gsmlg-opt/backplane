@@ -5,6 +5,8 @@ defmodule Backplane.Proxy.Pool do
 
   use DynamicSupervisor
 
+  alias Backplane.Proxy.Upstream
+
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -25,7 +27,7 @@ defmodule Backplane.Proxy.Pool do
     __MODULE__
     |> DynamicSupervisor.which_children()
     |> Enum.map(fn {_, pid, _, _} ->
-      if is_pid(pid), do: Backplane.Proxy.Upstream.status(pid), else: nil
+      if is_pid(pid), do: Upstream.status(pid), else: nil
     end)
     |> Enum.reject(&is_nil/1)
   end

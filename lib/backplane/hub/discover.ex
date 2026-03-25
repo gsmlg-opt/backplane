@@ -3,6 +3,11 @@ defmodule Backplane.Hub.Discover do
   Cross-cutting discovery across tools, skills, docs, and repos.
   """
 
+  alias Backplane.Docs.{DocChunk, Project}
+  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Repo
+  alias Backplane.Skills.Registry, as: SkillsRegistry
+
   @default_limit 5
   @all_scopes ["tools", "skills", "docs", "repos"]
 
@@ -28,7 +33,7 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_tools(query, limit) do
-    Backplane.Registry.ToolRegistry.search(query, limit: limit)
+    ToolRegistry.search(query, limit: limit)
     |> Enum.map(fn tool ->
       %{
         name: tool.name,
@@ -39,7 +44,7 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_skills(query, limit) do
-    Backplane.Skills.Registry.search(query, limit: limit)
+    SkillsRegistry.search(query, limit: limit)
     |> Enum.map(fn skill ->
       %{
         id: skill.id,
@@ -54,13 +59,13 @@ defmodule Backplane.Hub.Discover do
     import Ecto.Query
 
     try do
-      Backplane.Docs.DocChunk
+      DocChunk
       |> where([c], fragment("search_vector @@ plainto_tsquery('english', ?)", ^query))
       |> order_by([c],
         desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^query)
       )
       |> limit(^limit)
-      |> Backplane.Repo.all()
+      |> Repo.all()
       |> Enum.map(fn chunk ->
         %{
           project: chunk.project_id,
@@ -80,9 +85,9 @@ defmodule Backplane.Hub.Discover do
     import Ecto.Query
 
     try do
-      Backplane.Docs.Project
+      Project
       |> limit(10)
-      |> Backplane.Repo.all()
+      |> Repo.all()
       |> Enum.map(fn p ->
         %{repo: p.repo, description: p.description}
       end)

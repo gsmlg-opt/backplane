@@ -9,6 +9,7 @@ defmodule Backplane.Jobs.WebhookHandler do
   require Logger
 
   alias Backplane.Docs.Project
+  alias Backplane.Jobs.Reindex
   alias Backplane.Repo
 
   import Ecto.Query
@@ -90,7 +91,7 @@ defmodule Backplane.Jobs.WebhookHandler do
 
     Enum.each(projects, fn project ->
       %{"project_id" => project.id}
-      |> Backplane.Jobs.Reindex.new()
+      |> Reindex.new()
       |> Oban.insert()
     end)
 

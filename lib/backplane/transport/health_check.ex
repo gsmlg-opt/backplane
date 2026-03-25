@@ -3,6 +3,12 @@ defmodule Backplane.Transport.HealthCheck do
   Health check endpoint logic. Returns status of all engines.
   """
 
+  alias Backplane.Docs.{DocChunk, Project}
+  alias Backplane.Proxy.Pool
+  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Repo
+  alias Backplane.Skills.Registry, as: SkillsRegistry
+
   def check do
     upstreams = get_upstreams()
     degraded = Enum.any?(upstreams, fn u -> u.status != :connected end)
@@ -12,10 +18,10 @@ defmodule Backplane.Transport.HealthCheck do
       engines: %{
         proxy: %{
           upstreams: upstreams,
-          total_tools: Backplane.Registry.ToolRegistry.count()
+          total_tools: ToolRegistry.count()
         },
         skills: %{
-          total: Backplane.Skills.Registry.count()
+          total: SkillsRegistry.count()
         },
         docs: get_docs_summary(),
         git: %{status: "ok"}
@@ -24,23 +30,19 @@ defmodule Backplane.Transport.HealthCheck do
   end
 
   defp get_upstreams do
-    try do
-      Backplane.Proxy.Pool.list_upstreams()
-      |> Enum.map(fn u ->
-        %{name: u.name, status: u.status, tool_count: u.tool_count}
-      end)
-    rescue
-      _ -> []
-    end
+    Pool.list_upstreams()
+    |> Enum.map(fn u ->
+      %{name: u.name, status: u.status, tool_count: u.tool_count}
+    end)
+  rescue
+    _ -> []
   end
 
   defp get_docs_summary do
-    try do
-      project_count = Backplane.Repo.aggregate(Backplane.Docs.Project, :count)
-      chunk_count = Backplane.Repo.aggregate(Backplane.Docs.DocChunk, :count)
-      %{projects: project_count, chunks: chunk_count}
-    rescue
-      _ -> %{projects: 0, chunks: 0}
-    end
+    project_count = Repo.aggregate(Project, :count)
+    chunk_count = Repo.aggregate(DocChunk, :count)
+    %{projects: project_count, chunks: chunk_count}
+  rescue
+    _ -> %{projects: 0, chunks: 0}
   end
 end

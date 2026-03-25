@@ -5,6 +5,9 @@ defmodule Backplane.Transport.Router do
 
   use Plug.Router
 
+  alias Backplane.Jobs.WebhookHandler
+  alias Backplane.Transport.{HealthCheck, McpHandler}
+
   plug(:match)
   plug(Backplane.Transport.AuthPlug)
 
@@ -17,7 +20,7 @@ defmodule Backplane.Transport.Router do
   plug(:dispatch)
 
   post "/mcp" do
-    Backplane.Transport.McpHandler.handle(conn)
+    McpHandler.handle(conn)
   end
 
   post "/webhook/github" do
@@ -29,7 +32,7 @@ defmodule Backplane.Transport.Router do
   end
 
   get "/health" do
-    health = Backplane.Transport.HealthCheck.check()
+    health = HealthCheck.check()
 
     conn
     |> put_resp_content_type("application/json")
@@ -41,7 +44,7 @@ defmodule Backplane.Transport.Router do
   end
 
   defp handle_webhook(conn, provider) do
-    case Backplane.Jobs.WebhookHandler.enqueue(provider, conn.body_params) do
+    case WebhookHandler.enqueue(provider, conn.body_params) do
       {:ok, _} ->
         send_resp(conn, 202, Jason.encode!(%{status: "accepted"}))
 
