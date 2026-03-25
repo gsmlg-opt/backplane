@@ -29,7 +29,9 @@ config :logger, :console,
     :event,
     :provider,
     :result,
-    :consecutive_failures
+    :consecutive_failures,
+    :tool,
+    :duration_ms
   ]
 
 import_config "#{config_env()}.exs"

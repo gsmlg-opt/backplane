@@ -43,6 +43,15 @@ defmodule Backplane.Telemetry do
         Map.put(metadata, :result, result_status)
       )
 
+      duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+      Logger.info("Tool call completed",
+        tool: tool_name,
+        result: result_status,
+        duration_ms: duration_ms,
+        request_id: request_id
+      )
+
       result
     rescue
       e ->
@@ -52,6 +61,15 @@ defmodule Backplane.Telemetry do
           [:backplane, :tool_call, :exception],
           %{duration: duration},
           Map.merge(metadata, %{kind: :error, reason: e})
+        )
+
+        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+        Logger.error("Tool call exception",
+          tool: tool_name,
+          error: Exception.message(e),
+          duration_ms: duration_ms,
+          request_id: request_id
         )
 
         reraise e, __STACKTRACE__
@@ -65,6 +83,8 @@ defmodule Backplane.Telemetry do
       %{system_time: System.system_time()},
       Map.put(metadata, :method, method)
     )
+
+    Logger.info("MCP request", method: method, request_id: Logger.metadata()[:request_id])
   end
 
   @doc "Emit an SSE stream start event."
