@@ -15,6 +15,7 @@ defmodule Backplane.Transport.Router do
   plug(Backplane.Transport.RequestLogger)
   plug(Backplane.Transport.RateLimiter)
   plug(Backplane.Transport.AuthPlug)
+  plug(Backplane.Transport.Idempotency)
 
   plug(Plug.Parsers,
     parsers: [:json],
