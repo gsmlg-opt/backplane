@@ -36,6 +36,19 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["result"]["isError"] == true
       assert hd(resp["result"]["content"])["text"] =~ "Unknown tool"
     end
+
+    test "returns -32602 for missing tool name" do
+      resp = mcp_request("tools/call", %{"arguments" => %{}})
+
+      assert resp["error"]["code"] == -32602
+      assert resp["error"]["message"] =~ "name"
+    end
+
+    test "returns -32602 for nil params" do
+      resp = mcp_request("tools/call")
+
+      assert resp["error"]["code"] == -32602
+    end
   end
 
   describe "ping" do

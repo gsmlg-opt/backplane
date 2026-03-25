@@ -58,22 +58,30 @@ defmodule Backplane.Transport.McpHandler do
     json_rpc_result(conn, id, %{tools: tools})
   end
 
-  defp dispatch(conn, "tools/call", id, params) do
+  defp dispatch(conn, "tools/call", id, params) when is_map(params) do
     name = params["name"]
     arguments = params["arguments"] || %{}
 
-    case dispatch_tool_call(name, arguments) do
-      {:ok, result} ->
-        json_rpc_result(conn, id, %{
-          content: [%{type: "text", text: format_result(result)}]
-        })
+    if is_binary(name) and name != "" do
+      case dispatch_tool_call(name, arguments) do
+        {:ok, result} ->
+          json_rpc_result(conn, id, %{
+            content: [%{type: "text", text: format_result(result)}]
+          })
 
-      {:error, message} ->
-        json_rpc_result(conn, id, %{
-          content: [%{type: "text", text: message}],
-          isError: true
-        })
+        {:error, message} ->
+          json_rpc_result(conn, id, %{
+            content: [%{type: "text", text: to_string(message)}],
+            isError: true
+          })
+      end
+    else
+      json_rpc_error(conn, id, -32602, "Invalid params: 'name' is required")
     end
+  end
+
+  defp dispatch(conn, "tools/call", id, _params) do
+    json_rpc_error(conn, id, -32602, "Invalid params: 'params' object is required")
   end
 
   defp dispatch(conn, "ping", id, _params) do
