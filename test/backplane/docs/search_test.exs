@@ -58,14 +58,14 @@ defmodule Backplane.Docs.SearchTest do
   describe "query/3" do
     test "returns matching results for keyword search", %{project: project} do
       results = Search.query(project.id, "GenServer")
-      assert length(results) > 0
+      assert results != []
       assert Enum.all?(results, fn r -> r.content =~ "GenServer" end)
     end
 
     test "returns results sorted by relevance", %{project: project} do
       results = Search.query(project.id, "GenServer")
       # Module/function matches should rank higher due to weight A
-      assert length(results) >= 1
+      assert results != []
     end
 
     test "respects max_tokens budget", %{project: project} do

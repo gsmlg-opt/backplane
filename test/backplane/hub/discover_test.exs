@@ -64,7 +64,7 @@ defmodule Backplane.Hub.DiscoverTest do
 
     test "scopes to tools only when scope: [tools]" do
       {:ok, results} = Discover.search("skill", scope: ["tools"])
-      assert length(results.tools) > 0
+      assert results.tools != []
       assert results.skills == []
       assert results.docs == []
       assert results.repos == []
@@ -73,7 +73,7 @@ defmodule Backplane.Hub.DiscoverTest do
     test "scopes to skills only when scope: [skills]" do
       {:ok, results} = Discover.search("elixir", scope: ["skills"])
       assert results.tools == []
-      assert length(results.skills) > 0
+      assert results.skills != []
     end
 
     test "scopes to docs only when scope: [docs]" do

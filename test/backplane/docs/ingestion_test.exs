@@ -54,13 +54,13 @@ defmodule Backplane.Docs.IngestionTest do
     test "processes Elixir files", %{project: project, test_dir: dir} do
       {:ok, chunks} = Ingestion.process_files(dir, project.id)
       elixir_chunks = Enum.filter(chunks, &String.ends_with?(&1.source_path, ".ex"))
-      assert length(elixir_chunks) > 0
+      assert elixir_chunks != []
     end
 
     test "processes Markdown files", %{test_dir: dir, project: project} do
       {:ok, chunks} = Ingestion.process_files(dir, project.id)
       md_chunks = Enum.filter(chunks, &String.ends_with?(&1.source_path, ".md"))
-      assert length(md_chunks) > 0
+      assert md_chunks != []
     end
 
     test "adds content_hash to all chunks", %{test_dir: dir, project: project} do

@@ -114,18 +114,7 @@ defmodule Backplane.Git.Providers.GitHub do
 
     case Req.get(client(config), url: url_path, params: [ref: ref]) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
-        case body["encoding"] do
-          "base64" ->
-            content =
-              body["content"]
-              |> String.replace(~r/\s/, "")
-              |> Base.decode64!()
-
-            {:ok, content}
-
-          _ ->
-            {:ok, body["content"] || ""}
-        end
+        {:ok, decode_file_content(body)}
 
       {:ok, %{status: 404, body: body}} ->
         {:error, %{status: 404, message: body["message"] || "Not found"}}
@@ -137,6 +126,13 @@ defmodule Backplane.Git.Providers.GitHub do
         {:error, reason}
     end
   end
+
+  defp decode_file_content(%{"encoding" => "base64", "content" => content}) do
+    content |> String.replace(~r/\s/, "") |> Base.decode64!()
+  end
+
+  defp decode_file_content(%{"content" => content}) when is_binary(content), do: content
+  defp decode_file_content(_), do: ""
 
   @impl true
   def fetch_issues(repo_id, opts \\ []) do

@@ -54,7 +54,7 @@ defmodule Backplane.Proxy.PoolTest do
       Process.sleep(300)
 
       upstreams = Pool.list_upstreams()
-      assert length(upstreams) >= 1
+      assert upstreams != []
       assert Enum.any?(upstreams, fn u -> u.name == "pool-test" end)
     end
   end

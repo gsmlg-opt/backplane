@@ -19,21 +19,17 @@ defmodule Backplane.Transport.AuthPlug do
 
   def call(conn, _opts) do
     case get_auth_token() do
-      nil ->
-        conn
+      nil -> conn
+      expected_token -> verify_token(conn, expected_token)
+    end
+  end
 
-      expected_token ->
-        case get_req_header(conn, "authorization") do
-          ["Bearer " <> token] ->
-            if Plug.Crypto.secure_compare(token, expected_token) do
-              conn
-            else
-              reject(conn)
-            end
-
-          _ ->
-            reject(conn)
-        end
+  defp verify_token(conn, expected_token) do
+    with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
+         true <- Plug.Crypto.secure_compare(token, expected_token) do
+      conn
+    else
+      _ -> reject(conn)
     end
   end
 
