@@ -84,5 +84,54 @@ defmodule Backplane.Registry.InputValidatorTest do
     test "handles non-map args gracefully" do
       assert :ok = InputValidator.validate("not a map", @schema)
     end
+
+    test "validates object type" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"config" => %{"type" => "object"}},
+        "required" => []
+      }
+
+      assert :ok = InputValidator.validate(%{"config" => %{"key" => "val"}}, schema)
+      assert {:error, msg} = InputValidator.validate(%{"config" => "not_object"}, schema)
+      assert msg =~ "object"
+    end
+
+    test "validates array type" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"tags" => %{"type" => "array"}},
+        "required" => []
+      }
+
+      assert :ok = InputValidator.validate(%{"tags" => ["a", "b"]}, schema)
+      assert {:error, msg} = InputValidator.validate(%{"tags" => "not_array"}, schema)
+      assert msg =~ "array"
+    end
+
+    test "rejects wrong type for number" do
+      args = %{"query" => "hi", "threshold" => "high"}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "threshold"
+      assert msg =~ "number"
+    end
+
+    test "rejects float when integer expected" do
+      args = %{"query" => "hi", "limit" => 3.5}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "limit"
+      assert msg =~ "integer"
+    end
+
+    test "properties without type spec pass validation" do
+      schema = %{
+        "type" => "object",
+        "properties" => %{"data" => %{"description" => "any data"}},
+        "required" => []
+      }
+
+      assert :ok = InputValidator.validate(%{"data" => 42}, schema)
+      assert :ok = InputValidator.validate(%{"data" => "str"}, schema)
+    end
   end
 end
