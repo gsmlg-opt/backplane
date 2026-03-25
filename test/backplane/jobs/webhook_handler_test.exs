@@ -60,5 +60,30 @@ defmodule Backplane.Jobs.WebhookHandlerTest do
 
       assert WebhookHandler.validate_github_signature(payload, expected, secret)
     end
+
+    test "rejects incorrect signature" do
+      payload = ~s({"test": true})
+      secret = "webhook-secret"
+
+      refute WebhookHandler.validate_github_signature(payload, "sha256=wrong", secret)
+    end
+
+    test "rejects signature with wrong prefix" do
+      payload = ~s({"test": true})
+      secret = "webhook-secret"
+
+      hmac = :crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower)
+      refute WebhookHandler.validate_github_signature(payload, "sha1=#{hmac}", secret)
+    end
+  end
+
+  describe "validate_gitlab_token/2" do
+    test "validates matching token" do
+      assert WebhookHandler.validate_gitlab_token("my-secret", "my-secret")
+    end
+
+    test "rejects non-matching token" do
+      refute WebhookHandler.validate_gitlab_token("wrong", "my-secret")
+    end
   end
 end
