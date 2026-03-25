@@ -9,6 +9,7 @@ defmodule Backplane.Transport.Router do
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
   plug(Plug.RequestId)
+  plug(Backplane.Transport.VersionHeader)
   plug(Backplane.Transport.CORS)
   plug(:match)
   plug(Backplane.Transport.Compression)
