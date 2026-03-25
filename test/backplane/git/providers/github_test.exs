@@ -172,8 +172,57 @@ defmodule Backplane.Git.Providers.GitHubTest do
        }}
     end
 
+    defp route("GET", "/repos/owner/repo/contents/single-file.txt", _query) do
+      # GitHub returns a map (not a list) when the path resolves to a single file
+      {200,
+       %{
+         "name" => "single-file.txt",
+         "path" => "single-file.txt",
+         "type" => "file",
+         "size" => 42,
+         "sha" => "singlesha"
+       }}
+    end
+
+    defp route("GET", "/repos/owner/repo/contents/plain.txt", _query) do
+      # File with no "base64" encoding — raw content in "content" field
+      {200,
+       %{
+         "name" => "plain.txt",
+         "path" => "plain.txt",
+         "type" => "file",
+         "size" => 5,
+         "sha" => "plainsha",
+         "content" => "hello"
+       }}
+    end
+
+    defp route("GET", "/repos/owner/repo/contents/nocontent.bin", _query) do
+      # File body with no "content" key at all
+      {200,
+       %{
+         "name" => "nocontent.bin",
+         "path" => "nocontent.bin",
+         "type" => "file",
+         "size" => 0,
+         "sha" => "nocontentsha"
+       }}
+    end
+
     defp route("GET", "/repos/owner/errored/contents/", _query) do
       {500, %{"message" => "Internal Server Error"}}
+    end
+
+    defp route("GET", "/repos/owner/errored/issues", _query) do
+      {503, %{"message" => "Service Unavailable"}}
+    end
+
+    defp route("GET", "/repos/owner/errored/pulls", _query) do
+      {422, %{"message" => "Invalid state value"}}
+    end
+
+    defp route("GET", "/repos/owner/errored/commits", _query) do
+      {500, %{"message" => "Internal error"}}
     end
 
     defp route(_, _, _) do
@@ -299,5 +348,96 @@ defmodule Backplane.Git.Providers.GitHubTest do
       Enum.find(req.headers, fn {k, _v} -> k == "authorization" end)
 
     assert auth_header == nil
+  end
+
+  # fetch_tree single-file branch
+
+  test "fetch_tree wraps single-file map response in a list", %{config: config} do
+    assert {:ok, [entry]} =
+             GitHub.fetch_tree("owner/repo", "main", "single-file.txt", config: config)
+
+    assert entry.name == "single-file.txt"
+    assert entry.path == "single-file.txt"
+    assert entry.type == "file"
+    assert entry.size == 42
+    assert entry.sha == "singlesha"
+  end
+
+  # decode_file_content edge cases exercised through fetch_file
+
+  test "fetch_file returns plain content when encoding is not base64", %{config: config} do
+    assert {:ok, content} =
+             GitHub.fetch_file("owner/repo", "plain.txt", "main", config: config)
+
+    assert content == "hello"
+  end
+
+  test "fetch_file returns empty string when body has no content key", %{config: config} do
+    assert {:ok, content} =
+             GitHub.fetch_file("owner/repo", "nocontent.bin", "main", config: config)
+
+    assert content == ""
+  end
+
+  # search_code with repo and language parameters
+
+  test "search_code with repo and language builds compound query", %{config: config} do
+    # The mock returns the same canned result regardless of the full query string
+    # (route matches /search/code with _query); what we verify is that the call
+    # succeeds and the result is normalised correctly, i.e. both filters were
+    # accepted without raising.
+    assert {:ok, [result]} =
+             GitHub.search_code("defmodule",
+               config: config,
+               repo: "owner/repo",
+               language: "Elixir"
+             )
+
+    assert result.name == "app.ex"
+    assert result.repository == "owner/repo"
+  end
+
+  # fetch_issues only keeps real issues, not PRs
+
+  test "fetch_issues count confirms pull request items are rejected", %{config: config} do
+    # The mock endpoint returns 2 items: 1 issue + 1 PR.
+    # After filtering, only 1 should remain.
+    assert {:ok, issues} = GitHub.fetch_issues("owner/repo", config: config)
+    assert length(issues) == 1
+    refute Enum.any?(issues, fn i -> i.number == 43 end)
+  end
+
+  # Error responses for remaining endpoints
+
+  test "fetch_issues returns error on non-200 response", %{config: config} do
+    assert {:error, %{status: 503, message: "Service Unavailable"}} =
+             GitHub.fetch_issues("owner/errored", config: config)
+  end
+
+  test "fetch_merge_requests returns error on non-200 response", %{config: config} do
+    assert {:error, %{status: 422, message: "Invalid state value"}} =
+             GitHub.fetch_merge_requests("owner/errored", config: config)
+  end
+
+  test "fetch_commits returns error on non-200 response", %{config: config} do
+    assert {:error, %{status: 500, message: "Internal error"}} =
+             GitHub.fetch_commits("owner/errored", config: config)
+  end
+
+  defmodule SearchErrorPlug do
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(503, Jason.encode!(%{"message" => "Search unavailable"}))
+    end
+  end
+
+  test "search_code returns error on non-200 response" do
+    config = config_with_plug({SearchErrorPlug, []})
+
+    assert {:error, %{status: 503, message: "Search unavailable"}} =
+             GitHub.search_code("missing", config: config, repo: "owner/repo")
   end
 end

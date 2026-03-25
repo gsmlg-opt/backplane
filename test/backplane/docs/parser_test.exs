@@ -21,5 +21,13 @@ defmodule Backplane.Docs.ParserTest do
       assert Parser.parser_for("readme.txt") == Backplane.Docs.Parsers.Generic
       assert Parser.parser_for("data.yml") == Backplane.Docs.Parsers.Generic
     end
+
+    test "selects HexDocs parser for .html files" do
+      assert Parser.parser_for("docs/index.html") == Backplane.Docs.Parsers.HexDocs
+    end
+
+    test "selects HexDocs parser for .htm files" do
+      assert Parser.parser_for("docs/index.htm") == Backplane.Docs.Parsers.HexDocs
+    end
   end
 end

@@ -29,7 +29,7 @@ defmodule Backplane.Git.Providers.GitHub do
   defp maybe_attach_test_options(req, config) do
     case config[:plug] do
       nil -> req
-      plug -> Req.merge(req, plug: plug)
+      plug -> Req.merge(req, plug: plug, retry: false)
     end
   end
 
