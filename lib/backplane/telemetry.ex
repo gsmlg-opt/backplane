@@ -12,9 +12,12 @@ defmodule Backplane.Telemetry do
     - [:backplane, :sse_stream, :stop]
   """
 
+  require Logger
+
   @doc "Execute a tool call with telemetry instrumentation."
   def span_tool_call(tool_name, fun) do
-    metadata = %{tool: tool_name}
+    request_id = Logger.metadata()[:request_id]
+    metadata = %{tool: tool_name, request_id: request_id}
     start_time = System.monotonic_time()
 
     :telemetry.execute(

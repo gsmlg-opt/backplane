@@ -376,6 +376,13 @@ defmodule Backplane.Proxy.Upstream do
     config = state.config
     headers = Map.to_list(config[:headers] || %{})
 
+    # Propagate request ID from Logger metadata for distributed tracing
+    headers =
+      case Logger.metadata()[:request_id] do
+        nil -> headers
+        req_id -> [{"x-request-id", req_id} | headers]
+      end
+
     opts = [
       url: config.url,
       method: :post,
