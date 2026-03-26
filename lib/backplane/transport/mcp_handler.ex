@@ -206,17 +206,8 @@ defmodule Backplane.Transport.McpHandler do
     |> json_rpc_result(id, initialize_result())
   end
 
-  defp dispatch(conn, "tools/list", id, _params) do
-    tools =
-      ToolRegistry.list_all()
-      |> Enum.map(fn tool ->
-        %{
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.input_schema
-        }
-      end)
-
+  defp dispatch(conn, "tools/list", id, params) do
+    {:result, %{tools: tools} = result} = compute_result("tools/list", id, params)
     etag = tools_etag(tools)
     client_etag = get_req_header(conn, "if-none-match")
 
@@ -225,7 +216,7 @@ defmodule Backplane.Transport.McpHandler do
     else
       conn
       |> put_resp_header("etag", etag)
-      |> json_rpc_result(id, %{tools: tools})
+      |> json_rpc_result(id, result)
     end
   end
 
@@ -237,14 +228,6 @@ defmodule Backplane.Transport.McpHandler do
       :ok -> dispatch_validated_tool_call(conn, id, name, arguments)
       {:error, reason} -> json_rpc_error(conn, id, -32_602, "Invalid params: #{reason}")
     end
-  end
-
-  defp dispatch(conn, "tools/call", id, %{}) do
-    json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
-  end
-
-  defp dispatch(conn, "tools/call", id, _params) do
-    json_rpc_error(conn, id, -32_602, "Invalid params: 'params' object is required")
   end
 
   # All remaining methods delegate to compute_result to avoid duplication
