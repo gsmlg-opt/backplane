@@ -23,6 +23,7 @@ defmodule Backplane.Application do
     children = [
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
+      Backplane.Notifications,
       ToolRegistry,
       SkillsRegistry,
       Pool,

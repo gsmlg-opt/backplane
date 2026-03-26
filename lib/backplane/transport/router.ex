@@ -9,6 +9,7 @@ defmodule Backplane.Transport.Router do
 
   alias Backplane.Jobs.WebhookHandler
   alias Backplane.Metrics
+  alias Backplane.Notifications
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
   plug(Plug.RequestId)
@@ -43,12 +44,14 @@ defmodule Backplane.Transport.Router do
 
   get "/mcp" do
     # MCP Streamable HTTP server-to-client SSE stream
-    # Used for server-initiated notifications (e.g., tools/list_changed)
+    # Holds the connection open and forwards server-initiated notifications
+    # (tools/list_changed, resources/list_changed, prompts/list_changed)
     conn
     |> put_resp_content_type("text/event-stream")
     |> put_resp_header("cache-control", "no-cache")
     |> put_resp_header("connection", "keep-alive")
-    |> send_resp(200, "")
+    |> send_chunked(200)
+    |> sse_notification_loop()
   end
 
   post "/webhook/github" do
@@ -77,6 +80,37 @@ defmodule Backplane.Transport.Router do
 
   match _ do
     send_resp(conn, 404, Jason.encode!(%{error: "Not found"}))
+  end
+
+  # Hold SSE connection open, forwarding server notifications until client disconnects.
+  # Uses a 30s keepalive ping to detect dead connections.
+  @sse_keepalive_ms 30_000
+
+  defp sse_notification_loop(conn) do
+    Notifications.subscribe()
+    sse_loop(conn)
+  after
+    Notifications.unsubscribe()
+  end
+
+  defp sse_loop(conn) do
+    receive do
+      {:mcp_notification, notification} ->
+        data = Jason.encode!(notification)
+        chunk_data = "event: message\ndata: #{data}\n\n"
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> sse_loop(conn)
+          {:error, _} -> conn
+        end
+    after
+      @sse_keepalive_ms ->
+        # Send SSE comment as keepalive
+        case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+          {:ok, conn} -> sse_loop(conn)
+          {:error, _} -> conn
+        end
+    end
   end
 
   defp handle_webhook(conn, provider) do

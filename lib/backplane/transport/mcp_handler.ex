@@ -24,9 +24,9 @@ defmodule Backplane.Transport.McpHandler do
 
   defp server_capabilities do
     %{
-      tools: %{listChanged: false},
-      resources: %{listChanged: false},
-      prompts: %{listChanged: false},
+      tools: %{listChanged: true},
+      resources: %{listChanged: true},
+      prompts: %{listChanged: true},
       completions: %{},
       logging: %{}
     }

@@ -22,6 +22,7 @@ defmodule Backplane.Registry.ToolRegistry do
   @spec register_native(Tool.t()) :: :ok
   def register_native(%Tool{origin: :native} = tool) do
     :ets.insert(@table, {tool.name, tool})
+    Backplane.Notifications.tools_changed()
     :ok
   end
 
@@ -47,6 +48,7 @@ defmodule Backplane.Registry.ToolRegistry do
 
     # Bulk insert — atomic from readers' perspective
     :ets.insert(@table, rows)
+    Backplane.Notifications.tools_changed()
     :ok
   end
 
@@ -61,6 +63,7 @@ defmodule Backplane.Registry.ToolRegistry do
     ]
 
     :ets.select_delete(@table, match_spec)
+    Backplane.Notifications.tools_changed()
     :ok
   end
 

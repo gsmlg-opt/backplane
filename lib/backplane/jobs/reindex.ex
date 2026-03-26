@@ -13,8 +13,12 @@ defmodule Backplane.Jobs.Reindex do
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"project_id" => project_id}}) do
     case Ingestion.run(project_id) do
-      {:ok, _stats} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, _stats} ->
+        Backplane.Notifications.resources_changed()
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end
