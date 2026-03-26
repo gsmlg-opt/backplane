@@ -102,9 +102,16 @@ defmodule Backplane.Skills.Registry do
          }}
       end)
 
-    # Atomic: delete + bulk insert minimizes the window where the table is empty
-    :ets.delete_all_objects(@table)
+    # Insert first, then remove stale keys — avoids an empty-table window
+    # where concurrent readers would see zero skills
+    new_ids = MapSet.new(rows, fn {id, _} -> id end)
     :ets.insert(@table, rows)
+
+    @table
+    |> :ets.tab2list()
+    |> Enum.each(fn {id, _} ->
+      unless MapSet.member?(new_ids, id), do: :ets.delete(@table, id)
+    end)
 
     :ok
   end

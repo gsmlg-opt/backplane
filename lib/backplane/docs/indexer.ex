@@ -109,13 +109,12 @@ defmodule Backplane.Docs.Indexer do
         }
       end)
 
-    # Insert in batches to avoid huge queries
+    # Insert in batches to avoid huge queries; sum actual DB-reported counts
     entries
     |> Enum.chunk_every(500)
-    |> Enum.each(fn batch ->
-      Repo.insert_all(DocChunk, batch)
+    |> Enum.reduce(0, fn batch, acc ->
+      {count, _} = Repo.insert_all(DocChunk, batch)
+      acc + count
     end)
-
-    length(entries)
   end
 end

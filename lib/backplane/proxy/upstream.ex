@@ -76,7 +76,8 @@ defmodule Backplane.Proxy.Upstream do
       last_pong_at: nil,
       consecutive_ping_failures: 0,
       consecutive_call_failures: 0,
-      reconnect_attempts: 0
+      reconnect_attempts: 0,
+      pending_ping_id: nil
     }
 
     {:ok, state, {:continue, :connect}}
@@ -188,7 +189,7 @@ defmodule Backplane.Proxy.Upstream do
     {:noreply, state}
   end
 
-  def handle_info(:health_ping, state) do
+  def handle_info(:health_ping, %{transport: "http"} = state) do
     now = System.system_time(:second)
     state = %{state | last_ping_at: now}
 
@@ -199,18 +200,50 @@ defmodule Backplane.Proxy.Upstream do
         {:noreply, %{state | last_pong_at: now, consecutive_ping_failures: 0, status: :connected}}
 
       {:error, reason} ->
-        failures = state.consecutive_ping_failures + 1
-
-        Logger.warning("Health ping failed",
-          upstream: state.name,
-          reason: inspect(reason),
-          consecutive_failures: failures
-        )
-
-        new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-        schedule_health_ping()
-        {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
+        handle_ping_failure(state, reason)
     end
+  end
+
+  def handle_info(:health_ping, %{transport: "stdio"} = state) do
+    now = System.system_time(:second)
+    state = %{state | last_ping_at: now}
+
+    # If the previous ping never got a response, count as failure
+    state =
+      if state.pending_ping_id != nil do
+        failures = state.consecutive_ping_failures + 1
+        new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+        %{state | consecutive_ping_failures: failures, status: new_status, pending_ping_id: nil}
+      else
+        state
+      end
+
+    {id, state} = next_request_id(state)
+    state = %{state | pending_ping_id: id}
+
+    case send_ping(state) do
+      :ok ->
+        schedule_health_ping()
+        {:noreply, state}
+
+      {:error, reason} ->
+        state = %{state | pending_ping_id: nil}
+        handle_ping_failure(state, reason)
+    end
+  end
+
+  defp handle_ping_failure(state, reason) do
+    failures = state.consecutive_ping_failures + 1
+
+    Logger.warning("Health ping failed",
+      upstream: state.name,
+      reason: inspect(reason),
+      consecutive_failures: failures
+    )
+
+    new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+    schedule_health_ping()
+    {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
   end
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
@@ -239,6 +272,7 @@ defmodule Backplane.Proxy.Upstream do
          port: nil,
          tools: [],
          pending_requests: %{},
+         pending_ping_id: nil,
          reconnect_attempts: state.reconnect_attempts + 1
      }}
   end
@@ -502,6 +536,19 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
+  defp dispatch_stdio_response(%{pending_ping_id: ping_id} = state, id, _response)
+       when id == ping_id and not is_nil(ping_id) do
+    now = System.system_time(:second)
+
+    %{
+      state
+      | pending_ping_id: nil,
+        last_pong_at: now,
+        consecutive_ping_failures: 0,
+        status: :connected
+    }
+  end
+
   defp dispatch_stdio_response(state, id, response) do
     case Map.pop(state.pending_requests, id) do
       {nil, _} ->
@@ -575,16 +622,17 @@ defmodule Backplane.Proxy.Upstream do
   defp send_ping(%{transport: "stdio", port: nil}), do: {:error, :not_connected}
 
   defp send_ping(%{transport: "stdio"} = state) do
-    request = jsonrpc_request("ping", %{})
+    # Use the pending_ping_id so the async response can be matched
+    request = %{
+      "jsonrpc" => "2.0",
+      "method" => "ping",
+      "id" => state.pending_ping_id,
+      "params" => %{}
+    }
 
     case send_stdio(state.port, request) do
-      :ok ->
-        # For stdio, we just verify the send succeeded
-        # Response will come async via handle_info
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
