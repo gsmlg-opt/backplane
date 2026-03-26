@@ -19,6 +19,8 @@ defmodule Backplane.Proxy.Upstream do
   @refresh_interval 300_000
   @health_ping_interval 60_000
   @max_consecutive_failures 3
+  # 10 MB — drop buffer and log if a misbehaving upstream streams without newlines
+  @max_buffer_size 10_000_000
   @initial_backoff_ms 1_000
   @max_backoff_ms 60_000
 
@@ -454,16 +456,29 @@ defmodule Backplane.Proxy.Upstream do
   defp handle_stdio_data(state, data) do
     buffer = state.buffer <> data
 
+    if byte_size(buffer) > @max_buffer_size do
+      Logger.warning("Stdio buffer exceeded #{@max_buffer_size} bytes, dropping",
+        upstream: state.name
+      )
+
+      %{state | buffer: ""}
+    else
+      split_and_process(state, buffer)
+    end
+  end
+
+  defp split_and_process(state, buffer) do
     case String.split(buffer, "\n", parts: 2) do
       [complete, rest] ->
         state = %{state | buffer: ""} |> process_stdio_message(complete)
-        # Recurse to handle any additional complete messages in the remainder
         handle_stdio_data(state, rest)
 
       [_incomplete] ->
         %{state | buffer: buffer}
     end
   end
+
+  defp process_stdio_message(state, message) when byte_size(message) == 0, do: state
 
   defp process_stdio_message(state, message) do
     case Jason.decode(message) do

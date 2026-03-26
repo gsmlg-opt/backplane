@@ -18,7 +18,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns tools capability with listChanged" do
       resp = mcp_request("initialize")
 
-      assert resp["result"]["capabilities"]["tools"]["listChanged"] == true
+      assert resp["result"]["capabilities"]["tools"]["listChanged"] == false
     end
 
     test "returns Mcp-Session-Id header" do
