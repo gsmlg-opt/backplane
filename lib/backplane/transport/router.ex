@@ -8,6 +8,7 @@ defmodule Backplane.Transport.Router do
   require Logger
 
   alias Backplane.Jobs.WebhookHandler
+  alias Backplane.Metrics
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
   plug(Plug.RequestId)
@@ -66,7 +67,7 @@ defmodule Backplane.Transport.Router do
   end
 
   get "/metrics" do
-    metrics = Backplane.Metrics.snapshot()
+    metrics = Metrics.snapshot()
 
     conn
     |> put_resp_content_type("application/json")

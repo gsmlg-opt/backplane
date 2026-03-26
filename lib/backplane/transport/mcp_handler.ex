@@ -469,7 +469,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_completions(
          %{"type" => "ref/prompt", "name" => prompt_name},
-         %{"name" => _arg_name} = arg
+         %{"name" => _} = arg
        ) do
     value = arg["value"] || ""
     complete_prompt_argument(prompt_name, value)

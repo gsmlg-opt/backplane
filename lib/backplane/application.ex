@@ -4,8 +4,13 @@ defmodule Backplane.Application do
   use Application
   require Logger
 
+  alias Backplane.Config.Watcher
+  alias Backplane.Metrics
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Skills.Registry, as: SkillsRegistry
+  alias Backplane.Tools.{Docs, Git, Hub, Skill}
+  alias Backplane.Transport.Router
 
   @drain_timeout 15_000
 
@@ -14,15 +19,13 @@ defmodule Backplane.Application do
     children = [
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
-      Backplane.Registry.ToolRegistry,
-      Backplane.Skills.Registry,
-      Backplane.Proxy.Pool,
-      Backplane.Metrics,
-      Backplane.Config.Watcher,
+      ToolRegistry,
+      SkillsRegistry,
+      Pool,
+      Metrics,
+      Watcher,
       {Bandit,
-       plug: Backplane.Transport.Router,
-       port: port(),
-       thousand_island_options: [shutdown_timeout: @drain_timeout]}
+       plug: Router, port: port(), thousand_island_options: [shutdown_timeout: @drain_timeout]}
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
@@ -52,12 +55,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [
-      Backplane.Tools.Skill,
-      Backplane.Tools.Docs,
-      Backplane.Tools.Git,
-      Backplane.Tools.Hub
-    ]
+    tool_modules = [Skill, Docs, Git, Hub]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{

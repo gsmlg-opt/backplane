@@ -8,6 +8,9 @@ defmodule Backplane.Skills.Registry do
 
   import Ecto.Query
 
+  alias Backplane.Repo
+  alias Backplane.Skills.Skill
+
   @table :backplane_skills
 
   def start_link(opts) do
@@ -61,7 +64,7 @@ defmodule Backplane.Skills.Registry do
 
   @doc "Reload the ETS table from the database."
   def refresh do
-    skills = Backplane.Repo.all(from(s in Backplane.Skills.Skill, where: s.enabled == true))
+    skills = Repo.all(from(s in Skill, where: s.enabled == true))
 
     rows =
       Enum.map(skills, fn skill ->
