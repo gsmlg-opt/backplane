@@ -57,6 +57,18 @@ defmodule Backplane.Git.RateLimitCache do
     |> Enum.map(fn {key, info, _ts} -> {key, info} end)
   end
 
+  @doc "Check if a provider is currently rate-limited (remaining == 0 and reset in the future)."
+  @spec rate_limited?(String.t()) :: boolean()
+  def rate_limited?(provider_key) when is_binary(provider_key) do
+    case get(provider_key) do
+      %{remaining: 0, reset: reset} when is_integer(reset) ->
+        System.system_time(:second) < reset
+
+      _ ->
+        false
+    end
+  end
+
   defp init_if_needed do
     if :ets.whereis(@table) == :undefined do
       init()

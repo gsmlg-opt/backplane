@@ -553,6 +553,28 @@ defmodule Backplane.Git.Providers.GitHubTest do
     end
   end
 
+  test "returns 429 error when provider is rate-limited" do
+    alias Backplane.Git.RateLimitCache
+    RateLimitCache.init()
+
+    # Simulate a rate-limited provider
+    RateLimitCache.put("github", %{
+      remaining: 0,
+      limit: 5000,
+      reset: System.system_time(:second) + 3600
+    })
+
+    config = config_with_plug({RateLimitPlug, []})
+
+    assert {:error, %{status: 429, message: msg}} =
+             GitHub.list_repos(config: config, query: "test")
+
+    assert msg =~ "Rate limited"
+
+    # Clean up so other tests aren't affected
+    RateLimitCache.delete("github")
+  end
+
   test "caches rate limit headers after API call" do
     alias Backplane.Git.RateLimitCache
     RateLimitCache.init()

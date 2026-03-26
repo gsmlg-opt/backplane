@@ -348,9 +348,17 @@ defmodule Backplane.Git.Providers.GitLab do
 
   @doc false
   def get_with_rate_limit(config, opts) do
-    result = Req.get(client(config), opts)
-    cache_rate_limit(config, result)
-    result
+    key = provider_key(config)
+
+    if RateLimitCache.rate_limited?(key) do
+      info = RateLimitCache.get(key)
+      reset_in = (info[:reset] || 0) - System.system_time(:second)
+      {:error, %{status: 429, message: "Rate limited. Resets in #{max(reset_in, 0)}s."}}
+    else
+      result = Req.get(client(config), opts)
+      cache_rate_limit(config, result)
+      result
+    end
   end
 
   defp cache_rate_limit(config, {:ok, %{headers: headers}}) do

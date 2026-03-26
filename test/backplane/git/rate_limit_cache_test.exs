@@ -43,6 +43,42 @@ defmodule Backplane.Git.RateLimitCacheTest do
     end
   end
 
+  describe "rate_limited?/1" do
+    test "returns true when remaining is 0 and reset in the future" do
+      RateLimitCache.put("github", %{
+        remaining: 0,
+        limit: 5000,
+        reset: System.system_time(:second) + 3600
+      })
+
+      assert RateLimitCache.rate_limited?("github")
+    end
+
+    test "returns false when remaining is 0 but reset in the past" do
+      RateLimitCache.put("github", %{
+        remaining: 0,
+        limit: 5000,
+        reset: System.system_time(:second) - 60
+      })
+
+      refute RateLimitCache.rate_limited?("github")
+    end
+
+    test "returns false when remaining > 0" do
+      RateLimitCache.put("github", %{
+        remaining: 100,
+        limit: 5000,
+        reset: System.system_time(:second) + 3600
+      })
+
+      refute RateLimitCache.rate_limited?("github")
+    end
+
+    test "returns false for unknown provider" do
+      refute RateLimitCache.rate_limited?("unknown-provider-xyz")
+    end
+  end
+
   describe "all/0" do
     test "returns all stored entries" do
       RateLimitCache.put("github", %{remaining: 100, limit: 5000, reset: 100})
