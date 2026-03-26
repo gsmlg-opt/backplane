@@ -6,6 +6,7 @@ defmodule Backplane.Git.Providers.GitLab do
 
   @behaviour Backplane.Git.Provider
 
+  alias Backplane.Git.RateLimitCache
   alias Backplane.Utils
 
   @default_api_url "https://gitlab.com/api/v4"
@@ -44,7 +45,7 @@ defmodule Backplane.Git.Providers.GitLab do
     config = Keyword.get(opts, :config, %{})
     query = Keyword.get(opts, :query, "")
 
-    case Req.get(client(config), url: "/projects", params: [search: query]) do
+    case get_with_rate_limit(config, url: "/projects", params: [search: query]) do
       {:ok, %{status: 200, body: body}} ->
         repos = Enum.map(body, &normalize_repo/1)
         {:ok, repos}
@@ -70,7 +71,10 @@ defmodule Backplane.Git.Providers.GitLab do
       [ref: ref]
       |> then(fn p -> if path != "" and path != nil, do: Keyword.put(p, :path, path), else: p end)
 
-    case Req.get(client(config), url: "/projects/#{encoded_id}/repository/tree", params: params) do
+    case get_with_rate_limit(config,
+           url: "/projects/#{encoded_id}/repository/tree",
+           params: params
+         ) do
       {:ok, %{status: 200, body: body}} ->
         entries =
           Enum.map(body, fn item ->
@@ -106,7 +110,7 @@ defmodule Backplane.Git.Providers.GitLab do
     encoded_id = encode_project_id(repo_id)
     encoded_path = URI.encode_www_form(path)
 
-    case Req.get(client(config),
+    case get_with_rate_limit(config,
            url: "/projects/#{encoded_id}/repository/files/#{encoded_path}/raw",
            params: [ref: ref]
          ) do
@@ -135,7 +139,7 @@ defmodule Backplane.Git.Providers.GitLab do
       |> maybe_add_param(:search, Keyword.get(opts, :query))
       |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config), url: "/projects/#{encoded_id}/issues", params: params) do
+    case get_with_rate_limit(config, url: "/projects/#{encoded_id}/issues", params: params) do
       {:ok, %{status: 200, body: body}} ->
         issues = Enum.map(body, &normalize_issue/1)
         {:ok, issues}
@@ -159,7 +163,7 @@ defmodule Backplane.Git.Providers.GitLab do
       |> maybe_add_param(:path, Keyword.get(opts, :path))
       |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config),
+    case get_with_rate_limit(config,
            url: "/projects/#{encoded_id}/repository/commits",
            params: params
          ) do
@@ -185,7 +189,7 @@ defmodule Backplane.Git.Providers.GitLab do
       [state: normalize_mr_state_for_api(state)]
       |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config),
+    case get_with_rate_limit(config,
            url: "/projects/#{encoded_id}/merge_requests",
            params: params
          ) do
@@ -216,7 +220,7 @@ defmodule Backplane.Git.Providers.GitLab do
   defp do_search_code(query, repo, config) do
     encoded_id = encode_project_id(repo)
 
-    case Req.get(client(config),
+    case get_with_rate_limit(config,
            url: "/projects/#{encoded_id}/search",
            params: [scope: "blobs", search: query]
          ) do
@@ -328,4 +332,65 @@ defmodule Backplane.Git.Providers.GitLab do
   defp error_message(_), do: "Unknown error"
 
   defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)
+
+  @doc false
+  def get_with_rate_limit(config, opts) do
+    result = Req.get(client(config), opts)
+    cache_rate_limit(config, result)
+    result
+  end
+
+  defp cache_rate_limit(config, {:ok, %{headers: headers}}) do
+    remaining = get_header(headers, "ratelimit-remaining")
+    limit = get_header(headers, "ratelimit-limit")
+    reset = get_header(headers, "ratelimit-reset")
+
+    if remaining do
+      key = provider_key(config)
+
+      RateLimitCache.put(key, %{
+        remaining: parse_int(remaining),
+        limit: parse_int(limit),
+        reset: parse_int(reset)
+      })
+    end
+  end
+
+  defp cache_rate_limit(_config, _error), do: :ok
+
+  defp get_header(headers, name) when is_list(headers) do
+    case List.keyfind(headers, name, 0) do
+      {_, value} -> value
+      nil -> nil
+    end
+  end
+
+  defp get_header(headers, name) when is_map(headers) do
+    case Map.get(headers, name) do
+      [v | _] -> v
+      v -> v
+    end
+  end
+
+  defp get_header(_, _), do: nil
+
+  defp parse_int(nil), do: nil
+  defp parse_int(val) when is_integer(val), do: val
+
+  defp parse_int(val) when is_binary(val) do
+    case Integer.parse(val) do
+      {n, _} -> n
+      :error -> nil
+    end
+  end
+
+  defp provider_key(config) do
+    api_url = config[:api_url] || @default_api_url
+
+    if api_url == @default_api_url do
+      "gitlab"
+    else
+      "gitlab.#{URI.parse(api_url).host}"
+    end
+  end
 end

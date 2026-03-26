@@ -537,4 +537,33 @@ defmodule Backplane.Git.Providers.GitHubTest do
     assert {:error, %{status: 500, message: "Server error"}} =
              GitHub.list_repos(config: config, query: "test")
   end
+
+  # Rate limit header caching
+
+  defmodule RateLimitPlug do
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      conn
+      |> Plug.Conn.put_resp_header("x-ratelimit-remaining", "4567")
+      |> Plug.Conn.put_resp_header("x-ratelimit-limit", "5000")
+      |> Plug.Conn.put_resp_header("x-ratelimit-reset", "1700000000")
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(%{"items" => []}))
+    end
+  end
+
+  test "caches rate limit headers after API call" do
+    alias Backplane.Git.RateLimitCache
+    RateLimitCache.init()
+
+    config = config_with_plug({RateLimitPlug, []})
+    assert {:ok, []} = GitHub.list_repos(config: config, query: "test")
+
+    info = RateLimitCache.get("github")
+    assert info != nil
+    assert info.remaining == 4567
+    assert info.limit == 5000
+    assert info.reset == 1_700_000_000
+  end
 end

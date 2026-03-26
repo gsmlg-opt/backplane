@@ -6,6 +6,7 @@ defmodule Backplane.Git.Providers.GitHub do
 
   @behaviour Backplane.Git.Provider
 
+  alias Backplane.Git.RateLimitCache
   alias Backplane.Utils
 
   @default_api_url "https://api.github.com"
@@ -40,7 +41,7 @@ defmodule Backplane.Git.Providers.GitHub do
     config = Keyword.get(opts, :config, %{})
     query = Keyword.get(opts, :query, "")
 
-    case Req.get(client(config), url: "/search/repositories", params: [q: query]) do
+    case get_with_rate_limit(config, url: "/search/repositories", params: [q: query]) do
       {:ok, %{status: 200, body: body}} ->
         repos =
           (body["items"] || [])
@@ -65,7 +66,7 @@ defmodule Backplane.Git.Providers.GitHub do
     config = Keyword.get(opts, :config, %{})
     url_path = "/repos/#{repo_id}/contents/#{path}"
 
-    case Req.get(client(config), url: url_path, params: [ref: ref]) do
+    case get_with_rate_limit(config, url: url_path, params: [ref: ref]) do
       {:ok, %{status: 200, body: body}} when is_list(body) ->
         entries =
           body
@@ -114,7 +115,7 @@ defmodule Backplane.Git.Providers.GitHub do
     config = Keyword.get(opts, :config, %{})
     url_path = "/repos/#{repo_id}/contents/#{path}"
 
-    case Req.get(client(config), url: url_path, params: [ref: ref]) do
+    case get_with_rate_limit(config, url: url_path, params: [ref: ref]) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, decode_file_content(body)}
 
@@ -164,7 +165,7 @@ defmodule Backplane.Git.Providers.GitHub do
       |> maybe_add_param(:path, Keyword.get(opts, :path))
       |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config), url: "/repos/#{repo_id}/commits", params: params) do
+    case get_with_rate_limit(config, url: "/repos/#{repo_id}/commits", params: params) do
       {:ok, %{status: 200, body: body}} ->
         commits = Enum.map(body, &normalize_commit/1)
         {:ok, commits}
@@ -186,7 +187,7 @@ defmodule Backplane.Git.Providers.GitHub do
       [state: state]
       |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config), url: "/repos/#{repo_id}/pulls", params: params) do
+    case get_with_rate_limit(config, url: "/repos/#{repo_id}/pulls", params: params) do
       {:ok, %{status: 200, body: body}} ->
         prs = Enum.map(body, &normalize_pull_request/1)
         {:ok, prs}
@@ -210,7 +211,7 @@ defmodule Backplane.Git.Providers.GitHub do
       |> Enum.reject(&is_nil/1)
       |> Enum.join("+")
 
-    case Req.get(client(config), url: "/search/code", params: [q: q]) do
+    case get_with_rate_limit(config, url: "/search/code", params: [q: q]) do
       {:ok, %{status: 200, body: body}} ->
         results =
           (body["items"] || [])
@@ -294,7 +295,7 @@ defmodule Backplane.Git.Providers.GitHub do
   end
 
   defp fetch_issues_list(config, repo_id, params) do
-    case Req.get(client(config), url: "/repos/#{repo_id}/issues", params: params) do
+    case get_with_rate_limit(config, url: "/repos/#{repo_id}/issues", params: params) do
       {:ok, %{status: 200, body: body}} ->
         issues =
           body
@@ -323,7 +324,7 @@ defmodule Backplane.Git.Providers.GitHub do
       [q: q]
       |> maybe_add_param(:per_page, per_page)
 
-    case Req.get(client(config), url: "/search/issues", params: search_params) do
+    case get_with_rate_limit(config, url: "/search/issues", params: search_params) do
       {:ok, %{status: 200, body: body}} ->
         issues =
           (body["items"] || [])
@@ -340,4 +341,65 @@ defmodule Backplane.Git.Providers.GitHub do
   end
 
   defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)
+
+  @doc false
+  def get_with_rate_limit(config, opts) do
+    result = Req.get(client(config), opts)
+    cache_rate_limit(config, result)
+    result
+  end
+
+  defp cache_rate_limit(config, {:ok, %{headers: headers}}) do
+    remaining = get_header(headers, "x-ratelimit-remaining")
+    limit = get_header(headers, "x-ratelimit-limit")
+    reset = get_header(headers, "x-ratelimit-reset")
+
+    if remaining do
+      key = provider_key(config)
+
+      RateLimitCache.put(key, %{
+        remaining: parse_int(remaining),
+        limit: parse_int(limit),
+        reset: parse_int(reset)
+      })
+    end
+  end
+
+  defp cache_rate_limit(_config, _error), do: :ok
+
+  defp get_header(headers, name) when is_list(headers) do
+    case List.keyfind(headers, name, 0) do
+      {_, value} -> value
+      nil -> nil
+    end
+  end
+
+  defp get_header(headers, name) when is_map(headers) do
+    case Map.get(headers, name) do
+      [v | _] -> v
+      v -> v
+    end
+  end
+
+  defp get_header(_, _), do: nil
+
+  defp parse_int(nil), do: nil
+  defp parse_int(val) when is_integer(val), do: val
+
+  defp parse_int(val) when is_binary(val) do
+    case Integer.parse(val) do
+      {n, _} -> n
+      :error -> nil
+    end
+  end
+
+  defp provider_key(config) do
+    api_url = config[:api_url] || @default_api_url
+
+    if api_url == @default_api_url do
+      "github"
+    else
+      "github.#{URI.parse(api_url).host}"
+    end
+  end
 end

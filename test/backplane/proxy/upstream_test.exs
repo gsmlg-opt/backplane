@@ -870,6 +870,30 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "malformed HTTP response body" do
+    test "forward returns error for response without result or error keys" do
+      {:ok, _} = start_mock_malformed_server(4223)
+
+      config = %{
+        name: "test-malformed",
+        prefix: "malform",
+        transport: "http",
+        url: "http://127.0.0.1:4223/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      assert Upstream.status(pid).status == :connected
+      result = Upstream.forward(pid, "echo", %{"message" => "test"})
+      assert {:error, msg} = result
+      assert msg =~ "Malformed upstream response"
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_http_server(port) do
@@ -891,6 +915,14 @@ defmodule Backplane.Proxy.UpstreamTest do
   defp start_mock_non200_server(port) do
     Bandit.start_link(
       plug: MockMcpNon200Plug,
+      port: port,
+      ip: {127, 0, 0, 1}
+    )
+  end
+
+  defp start_mock_malformed_server(port) do
+    Bandit.start_link(
+      plug: MockMcpMalformedPlug,
       port: port,
       ip: {127, 0, 0, 1}
     )
@@ -966,5 +998,65 @@ defmodule MockMcpNon200Plug do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(500, Jason.encode!(%{"error" => "Internal Server Error"}))
+  end
+end
+
+defmodule MockMcpMalformedPlug do
+  @moduledoc false
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    request = Jason.decode!(body)
+
+    response =
+      case request["method"] do
+        "initialize" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{
+              "protocolVersion" => "2025-03-26",
+              "serverInfo" => %{"name" => "mock-malformed", "version" => "0.1.0"},
+              "capabilities" => %{}
+            }
+          }
+
+        "tools/list" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{
+              "tools" => [
+                %{
+                  "name" => "echo",
+                  "description" => "Echo tool",
+                  "inputSchema" => %{"type" => "object"}
+                }
+              ]
+            }
+          }
+
+        "tools/call" ->
+          # Return a body without "result" or "error" keys — triggers malformed path
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "data" => "unexpected_format"
+          }
+
+        _ ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{}
+          }
+      end
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(response))
   end
 end

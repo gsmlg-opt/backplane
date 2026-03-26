@@ -8,6 +8,7 @@ defmodule Backplane.Tools.Hub do
   require Logger
 
   alias Backplane.Docs.{DocChunk, Project}
+  alias Backplane.Git.RateLimitCache
   alias Backplane.Hub.Discover
   alias Backplane.Metrics
   alias Backplane.Proxy.Pool
@@ -172,22 +173,27 @@ defmodule Backplane.Tools.Hub do
 
     Enum.flat_map([:github, :gitlab], fn type ->
       instances = Map.get(providers, type, [])
-
-      Enum.map(instances, fn instance ->
-        %{
-          name:
-            "#{type}#{if instance.name != to_string(type), do: ".#{instance.name}", else: ""}",
-          type: to_string(type),
-          api_url: instance.api_url,
-          status: "ok",
-          rate_remaining: nil
-        }
-      end)
+      Enum.map(instances, &format_provider_instance(type, &1))
     end)
   rescue
     e ->
       Logger.warning("Failed to get git providers: #{Exception.message(e)}")
       []
+  end
+
+  defp format_provider_instance(type, instance) do
+    provider_name =
+      "#{type}#{if instance.name != to_string(type), do: ".#{instance.name}", else: ""}"
+
+    rate_info = RateLimitCache.get(provider_name)
+
+    %{
+      name: provider_name,
+      type: to_string(type),
+      api_url: instance.api_url,
+      status: "ok",
+      rate_remaining: if(rate_info, do: rate_info.remaining)
+    }
   end
 
   defp format_origin(origin), do: Utils.format_origin(origin)
