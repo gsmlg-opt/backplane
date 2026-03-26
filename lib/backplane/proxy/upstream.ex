@@ -543,7 +543,15 @@ defmodule Backplane.Proxy.Upstream do
       {:ok, %{"id" => id} = response} ->
         dispatch_stdio_response(state, id, response)
 
-      _ ->
+      {:ok, decoded} ->
+        Logger.debug("Upstream #{state.prefix}: received message without id: #{inspect(decoded)}")
+        state
+
+      {:error, _} ->
+        Logger.warning(
+          "Upstream #{state.prefix}: failed to decode stdio message: #{String.slice(message, 0, 200)}"
+        )
+
         state
     end
   end

@@ -33,8 +33,10 @@ defmodule Backplane.Proxy.Pool do
   @spec list_upstreams() :: [map()]
   def list_upstreams do
     for {_, pid, _, _} <- DynamicSupervisor.which_children(__MODULE__),
-        is_pid(pid) do
-      Upstream.status(pid)
+        is_pid(pid),
+        status = safe_status(pid),
+        status != nil do
+      status
     end
   end
 
@@ -42,8 +44,17 @@ defmodule Backplane.Proxy.Pool do
   @spec list_upstream_pids() :: [{pid(), map()}]
   def list_upstream_pids do
     for {_, pid, _, _} <- DynamicSupervisor.which_children(__MODULE__),
-        is_pid(pid) do
-      {pid, Upstream.status(pid)}
+        is_pid(pid),
+        status = safe_status(pid),
+        status != nil do
+      {pid, status}
     end
+  end
+
+  # Upstream may exit between which_children and status call
+  defp safe_status(pid) do
+    Upstream.status(pid)
+  catch
+    :exit, _ -> nil
   end
 end
