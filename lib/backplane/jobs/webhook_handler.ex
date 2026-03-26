@@ -30,6 +30,8 @@ defmodule Backplane.Jobs.WebhookHandler do
   @doc """
   Enqueue a webhook event for processing.
   """
+  @spec enqueue(:github | :gitlab, map()) ::
+          {:ok, Oban.Job.t()} | {:ok, :ignored} | {:error, Ecto.Changeset.t()}
   def enqueue(provider, params) when provider in [:github, :gitlab] do
     case extract_push(provider, params) do
       {:ok, attrs} ->
@@ -47,6 +49,7 @@ defmodule Backplane.Jobs.WebhookHandler do
   @doc """
   Validate a GitHub webhook signature.
   """
+  @spec validate_github_signature(binary(), String.t(), String.t()) :: boolean()
   def validate_github_signature(payload, signature, secret) do
     expected =
       "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower))
@@ -57,6 +60,7 @@ defmodule Backplane.Jobs.WebhookHandler do
   @doc """
   Validate a GitLab webhook token.
   """
+  @spec validate_gitlab_token(String.t(), String.t()) :: boolean()
   def validate_gitlab_token(token, expected) do
     Plug.Crypto.secure_compare(token, expected)
   end

@@ -35,6 +35,7 @@ defmodule Backplane.Skills.Skill do
     |> validate_required(@required_fields)
   end
 
+  @spec update_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def update_changeset(skill, attrs) do
     skill
     |> cast(attrs, ~w(content content_hash description tags tools model version enabled)a)
