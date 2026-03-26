@@ -114,6 +114,11 @@ defmodule Backplane.Tools.HubTest do
       assert is_integer(result.total_skills)
     end
 
+    test "returns git_providers list" do
+      {:ok, result} = Hub.call(%{"_handler" => "status"})
+      assert is_list(result.git_providers)
+    end
+
     test "doc_projects includes chunk counts" do
       Repo.insert!(
         %Backplane.Docs.Project{
