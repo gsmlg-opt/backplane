@@ -243,21 +243,37 @@ defmodule Backplane.Docs.Ingestion do
     end
   end
 
-  defp walk_files(dir) do
-    dir
-    |> Path.join("**/*")
-    |> Path.wildcard()
-    |> Enum.filter(fn path ->
-      File.regular?(path) and Path.extname(path) in @doc_extensions
-    end)
-    |> Enum.reject(fn path ->
-      # Skip common non-doc directories
-      parts = Path.split(path)
+  @skip_dirs MapSet.new(~w(.git _build deps node_modules .elixir_ls))
 
-      Enum.any?(parts, fn part ->
-        part in ~w(.git _build deps node_modules .elixir_ls)
-      end)
-    end)
+  defp walk_files(dir) do
+    walk_files_recursive(dir, [])
+    |> Enum.reverse()
+  end
+
+  defp walk_files_recursive(dir, acc) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        Enum.reduce(entries, acc, fn entry, inner_acc ->
+          full_path = Path.join(dir, entry)
+
+          cond do
+            entry in @skip_dirs ->
+              inner_acc
+
+            File.dir?(full_path) ->
+              walk_files_recursive(full_path, inner_acc)
+
+            File.regular?(full_path) and Path.extname(entry) in @doc_extensions ->
+              [full_path | inner_acc]
+
+            true ->
+              inner_acc
+          end
+        end)
+
+      {:error, _} ->
+        acc
+    end
   end
 
   defp clone_path(project_id) do
