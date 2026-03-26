@@ -55,6 +55,11 @@ defmodule Backplane.Tools.Docs do
               "type" => "string",
               "description" =>
                 "Filter by chunk type: moduledoc, function_doc, typespec, guide, code"
+            },
+            "version" => %{
+              "type" => "string",
+              "description" =>
+                "Git ref to query. Defaults to the project's configured ref. (Reserved for multi-version support)"
             }
           },
           "required" => ["project_id", "query"]
