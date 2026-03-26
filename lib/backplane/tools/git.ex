@@ -8,6 +8,8 @@ defmodule Backplane.Tools.Git do
 
   @behaviour Backplane.Tools.ToolModule
 
+  require Logger
+
   alias Backplane.Git.Providers.{GitHub, GitLab}
   alias Backplane.Git.Resolver
   alias Backplane.Utils
@@ -305,8 +307,12 @@ defmodule Backplane.Tools.Git do
     results =
       for_each_provider_instance(fn module, config ->
         case module.list_repos(config: config, query: query) do
-          {:ok, repos} -> repos
-          {:error, _} -> []
+          {:ok, repos} ->
+            repos
+
+          {:error, reason} ->
+            Logger.warning("Failed to search repos via #{inspect(module)}: #{inspect(reason)}")
+            []
         end
       end)
 
@@ -317,8 +323,12 @@ defmodule Backplane.Tools.Git do
     results =
       for_each_provider_instance(fn module, config ->
         case module.search_code(query, config: config, language: language) do
-          {:ok, items} -> items
-          {:error, _} -> []
+          {:ok, items} ->
+            items
+
+          {:error, reason} ->
+            Logger.warning("Failed to search code via #{inspect(module)}: #{inspect(reason)}")
+            []
         end
       end)
 
