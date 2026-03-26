@@ -19,6 +19,24 @@ defmodule Backplane.Transport.McpHandler do
 
   @server_name "backplane"
 
+  defp server_capabilities do
+    %{
+      tools: %{listChanged: true},
+      resources: %{listChanged: false},
+      prompts: %{listChanged: false},
+      completions: %{},
+      logging: %{}
+    }
+  end
+
+  defp initialize_result do
+    %{
+      protocolVersion: Backplane.protocol_version(),
+      serverInfo: %{name: @server_name, version: Backplane.version()},
+      capabilities: server_capabilities()
+    }
+  end
+
   def handle(conn) do
     case conn.body_params do
       %{"_json" => batch} when is_list(batch) ->
@@ -88,18 +106,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp compute_result("initialize", _id, _params) do
-    {:result,
-     %{
-       protocolVersion: Backplane.protocol_version(),
-       serverInfo: %{name: @server_name, version: Backplane.version()},
-       capabilities: %{
-         tools: %{listChanged: true},
-         resources: %{listChanged: false},
-         prompts: %{},
-         completions: %{},
-         logging: %{}
-       }
-     }}
+    {:result, initialize_result()}
   end
 
   defp compute_result("tools/list", _id, _params) do
@@ -194,24 +201,9 @@ defmodule Backplane.Transport.McpHandler do
   defp dispatch(conn, "initialize", id, _params) do
     session_id = generate_session_id()
 
-    result = %{
-      protocolVersion: Backplane.protocol_version(),
-      serverInfo: %{
-        name: @server_name,
-        version: Backplane.version()
-      },
-      capabilities: %{
-        tools: %{listChanged: true},
-        resources: %{},
-        prompts: %{},
-        completions: %{},
-        logging: %{}
-      }
-    }
-
     conn
     |> put_resp_header("mcp-session-id", session_id)
-    |> json_rpc_result(id, result)
+    |> json_rpc_result(id, initialize_result())
   end
 
   defp dispatch(conn, "tools/list", id, _params) do
