@@ -4,6 +4,7 @@ defmodule Backplane.MetricsTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Metrics
+  alias Backplane.Proxy.Pool
 
   test "inc increments a counter" do
     Metrics.inc("test_counter_1")
@@ -287,7 +288,7 @@ defmodule Backplane.MetricsTest do
       headers: %{}
     }
 
-    {:ok, upstream_pid} = Backplane.Proxy.Pool.start_upstream(config)
+    {:ok, upstream_pid} = Pool.start_upstream(config)
     Process.sleep(300)
 
     snap = Metrics.snapshot()

@@ -1,7 +1,7 @@
 defmodule Backplane.Transport.VersionHeaderTest do
   use Backplane.ConnCase, async: true
 
-  alias Backplane.Transport.Router
+  alias Backplane.Transport.{Router, VersionHeader}
 
   test "responses include X-Backplane-Version header" do
     conn =
@@ -57,13 +57,13 @@ defmodule Backplane.Transport.VersionHeaderTest do
 
   describe "plug unit tests" do
     test "init/1 passes options through" do
-      assert Backplane.Transport.VersionHeader.init(foo: :bar) == [foo: :bar]
+      assert VersionHeader.init(foo: :bar) == [foo: :bar]
     end
 
     test "call/2 sets both headers on a bare conn" do
       conn =
         conn(:get, "/")
-        |> Backplane.Transport.VersionHeader.call([])
+        |> VersionHeader.call([])
 
       assert get_resp_header(conn, "x-backplane-version") |> length() == 1
       assert get_resp_header(conn, "x-mcp-protocol-version") |> length() == 1

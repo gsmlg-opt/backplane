@@ -1,9 +1,10 @@
 defmodule Backplane.Hub.DiscoverTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.Docs.Project
+  alias Backplane.Docs.{Indexer, Project}
   alias Backplane.Hub.Discover
   alias Backplane.Skills.{Registry, Skill}
+  alias Ecto.Adapters.SQL.Sandbox
 
   setup do
     # Insert a skill for search
@@ -194,7 +195,7 @@ defmodule Backplane.Hub.DiscoverTest do
         }
       ]
 
-      {:ok, _stats} = Backplane.Docs.Indexer.index("discover-docs-proj", chunks)
+      {:ok, _stats} = Indexer.index("discover-docs-proj", chunks)
 
       {:ok, results} = Discover.search("GenServer supervision", scope: ["docs"])
       assert is_list(results.docs)
@@ -207,23 +208,23 @@ defmodule Backplane.Hub.DiscoverTest do
     end
 
     test "search_docs rescue returns empty list on DB error" do
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+      Sandbox.mode(Repo, :manual)
 
       task = Task.async(fn -> Discover.search("anything", scope: ["docs"]) end)
       {:ok, results} = Task.await(task)
       assert results.docs == []
 
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+      Sandbox.mode(Repo, {:shared, self()})
     end
 
     test "search_repos rescue returns empty list on DB error" do
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+      Sandbox.mode(Repo, :manual)
 
       task = Task.async(fn -> Discover.search("anything", scope: ["repos"]) end)
       {:ok, results} = Task.await(task)
       assert results.repos == []
 
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+      Sandbox.mode(Repo, {:shared, self()})
     end
 
     test "search_docs maps fields correctly for matched chunks" do
@@ -250,7 +251,7 @@ defmodule Backplane.Hub.DiscoverTest do
         }
       ]
 
-      {:ok, _stats} = Backplane.Docs.Indexer.index("discover-fields-proj", chunks)
+      {:ok, _stats} = Indexer.index("discover-fields-proj", chunks)
 
       {:ok, results} = Discover.search("pattern matching", scope: ["docs"])
 

@@ -2,7 +2,9 @@ defmodule Backplane.Transport.HealthCheckTest do
   use Backplane.DataCase, async: false
   import Plug.Test
 
+  alias Backplane.Proxy.Pool
   alias Backplane.Transport.Router
+  alias Ecto.Adapters.SQL.Sandbox
 
   describe "GET /health" do
     test "returns 200 when all engines healthy" do
@@ -87,7 +89,7 @@ defmodule Backplane.Transport.HealthCheckTest do
         headers: %{}
       }
 
-      {:ok, upstream_pid} = Backplane.Proxy.Pool.start_upstream(config)
+      {:ok, upstream_pid} = Pool.start_upstream(config)
       Process.sleep(300)
 
       result = HealthCheck.check()
@@ -150,7 +152,7 @@ defmodule Backplane.Transport.HealthCheckTest do
 
     test "get_docs_summary rescue returns zero counts on DB error" do
       # Switch sandbox to manual mode so spawned tasks can't use the connection
-      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :manual)
+      Sandbox.mode(Repo, :manual)
 
       task =
         Task.async(fn ->
@@ -162,7 +164,7 @@ defmodule Backplane.Transport.HealthCheckTest do
       assert result.engines.docs.chunks == 0
 
       # Restore shared mode for remaining tests
-      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, {:shared, self()})
+      Sandbox.mode(Repo, {:shared, self()})
     end
 
     # Verifies get_docs_summary/0 rescue branch produces valid zero counts:

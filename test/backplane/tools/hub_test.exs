@@ -207,6 +207,7 @@ defmodule Backplane.Tools.HubDbRescueTest do
   use Backplane.DataCase, async: false
 
   alias Backplane.Tools.Hub
+  alias Ecto.Adapters.SQL.Sandbox
 
   # Switch the sandbox to :manual mode so that Hub.call, when run in a
   # spawned Task, cannot obtain a DB connection. Repo.all() then raises
@@ -214,12 +215,12 @@ defmodule Backplane.Tools.HubDbRescueTest do
   # blocks in get_skill_sources and get_doc_projects. After the test we
   # restore {:shared, self()} so other tests are unaffected.
   defp with_db_unavailable(fun) do
-    Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :manual)
+    Sandbox.mode(Repo, :manual)
 
     try do
       fun.()
     after
-      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, {:shared, self()})
+      Sandbox.mode(Repo, {:shared, self()})
     end
   end
 
