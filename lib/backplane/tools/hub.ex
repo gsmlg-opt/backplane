@@ -131,11 +131,11 @@ defmodule Backplane.Tools.Hub do
   defp get_skill_sources do
     Skill
     |> where([s], s.enabled == true)
-    |> select([s], %{source: s.source})
+    |> group_by([s], s.source)
+    |> select([s], {s.source, count(s.id)})
     |> Repo.all()
-    |> Enum.group_by(& &1.source)
-    |> Enum.map(fn {source, skills} ->
-      %{name: source, skill_count: length(skills)}
+    |> Enum.map(fn {source, count} ->
+      %{name: source, skill_count: count}
     end)
   rescue
     e ->
