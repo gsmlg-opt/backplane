@@ -34,19 +34,21 @@ defmodule Backplane.Config.Watcher do
     path = config_path()
 
     if File.exists?(path) do
-      try do
-        config = Backplane.Config.load!(path)
-        apply_config(config)
-        Logger.info("Configuration reloaded successfully")
-        :ok
-      rescue
-        e ->
-          Logger.error("Failed to reload configuration: #{inspect(e)}")
-          {:error, :reload_failed}
-      end
+      do_reload(path)
     else
       {:error, :not_found}
     end
+  end
+
+  defp do_reload(path) do
+    config = Backplane.Config.load!(path)
+    apply_config(config)
+    Logger.info("Configuration reloaded successfully")
+    :ok
+  rescue
+    e ->
+      Logger.error("Failed to reload configuration: #{inspect(e)}")
+      {:error, :reload_failed}
   end
 
   defp config_path do
