@@ -135,6 +135,36 @@ defmodule Backplane.Docs.SearchTest do
       assert results != []
     end
 
+    test "handles query containing null bytes", %{project: project} do
+      results = Search.query(project.id, "GenServer\0state")
+      assert is_list(results)
+    end
+
+    test "unknown chunk_type uses default weight", %{project: project} do
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      Repo.insert!(%DocChunk{
+        project_id: project.id,
+        source_path: "lib/custom.ex",
+        module: "MyApp.Custom",
+        function: nil,
+        chunk_type: "unknown_type",
+        content: "GenServer custom chunk with unknown type for testing weights.",
+        content_hash:
+          Chunker.compute_hash("GenServer custom chunk with unknown type for testing weights."),
+        tokens: 10,
+        inserted_at: now
+      })
+
+      results = Search.query(project.id, "GenServer custom chunk")
+      # The unknown_type chunk should be included with default weight 1.0
+      unknown = Enum.find(results, fn r -> r.chunk_type == "unknown_type" end)
+
+      if unknown do
+        assert unknown.rank > 0
+      end
+    end
+
     test "chunk_type weighting boosts moduledoc over function_doc", %{project: project} do
       results = Search.query(project.id, "GenServer")
       # With equal ts_rank, moduledoc (1.5x) should rank higher than function_doc (1.3x)

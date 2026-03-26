@@ -135,6 +135,32 @@ defmodule Backplane.Jobs.WebhookHandlerTest do
       assert :ok = WebhookHandler.perform(job)
     end
 
+    test "handles push with tag ref (refs/tags/)" do
+      job = %Oban.Job{
+        args: %{
+          "provider" => "github",
+          "event" => "push",
+          "repo_url" => "https://github.com/test/repo.git",
+          "ref" => "refs/tags/v1.0.0"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+
+    test "handles push with no matching projects" do
+      job = %Oban.Job{
+        args: %{
+          "provider" => "github",
+          "event" => "push",
+          "repo_url" => "https://github.com/nonexistent/repo.git",
+          "ref" => "refs/heads/main"
+        }
+      }
+
+      assert :ok = WebhookHandler.perform(job)
+    end
+
     test "handles push with plain branch name (no refs/heads/ prefix)" do
       job = %Oban.Job{
         args: %{
