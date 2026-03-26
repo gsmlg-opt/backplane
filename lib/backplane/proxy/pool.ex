@@ -18,17 +18,15 @@ defmodule Backplane.Proxy.Pool do
 
   @doc "Start a new upstream connection."
   def start_upstream(config) do
-    spec = {Backplane.Proxy.Upstream, config}
+    spec = {Upstream, config}
     DynamicSupervisor.start_child(__MODULE__, spec)
   end
 
   @doc "List status of all upstream connections."
   def list_upstreams do
-    __MODULE__
-    |> DynamicSupervisor.which_children()
-    |> Enum.map(fn {_, pid, _, _} ->
-      if is_pid(pid), do: Upstream.status(pid), else: nil
-    end)
-    |> Enum.reject(&is_nil/1)
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(__MODULE__),
+        is_pid(pid) do
+      Upstream.status(pid)
+    end
   end
 end
