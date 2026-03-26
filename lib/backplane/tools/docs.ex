@@ -63,7 +63,14 @@ defmodule Backplane.Tools.Docs do
 
   def call(%{"_handler" => "resolve_project"} = args) do
     query = args["query"]
-    pattern = "%#{query}%"
+
+    escaped =
+      query
+      |> String.replace("\\", "\\\\")
+      |> String.replace("%", "\\%")
+      |> String.replace("_", "\\_")
+
+    pattern = "%#{escaped}%"
 
     results =
       Project
@@ -104,7 +111,7 @@ defmodule Backplane.Tools.Docs do
         }
       end)
 
-    total_tokens = Enum.sum(Enum.map(formatted, & &1.tokens) |> Enum.map(&(&1 || 0)))
+    total_tokens = Enum.reduce(formatted, 0, fn r, acc -> acc + (r.tokens || 0) end)
 
     {:ok, %{results: formatted, count: length(formatted), total_tokens: total_tokens}}
   end
