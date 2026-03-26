@@ -331,6 +331,48 @@ defmodule Backplane.ConfigTest do
       assert upstream.env == %{}
     end
 
+    test "upstream with timeout and refresh_interval", %{dir: dir} do
+      path = Path.join(dir, "upstream_timeouts.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "custom-timeouts"
+      prefix = "ct"
+      transport = "http"
+      url = "http://localhost:9999/mcp"
+      timeout = 60000
+      refresh_interval = 120000
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.timeout == 60_000
+      assert upstream.refresh_interval == 120_000
+    end
+
+    test "upstream without timeout and refresh_interval defaults to nil", %{dir: dir} do
+      path = Path.join(dir, "upstream_no_timeouts.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "default-timeouts"
+      prefix = "dt"
+      transport = "http"
+      url = "http://localhost:9999/mcp"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.timeout == nil
+      assert upstream.refresh_interval == nil
+    end
+
     test "database section is parsed", %{dir: dir} do
       path = Path.join(dir, "with_db.toml")
 

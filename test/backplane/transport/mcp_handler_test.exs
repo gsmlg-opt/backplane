@@ -744,6 +744,20 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["code"] == -32_602
     end
 
+    test "actually reconfigures Logger level" do
+      original_level = Logger.level()
+
+      try do
+        mcp_request("logging/setLevel", %{"level" => "error"})
+        assert Logger.level() == :error
+
+        mcp_request("logging/setLevel", %{"level" => "debug"})
+        assert Logger.level() == :debug
+      after
+        Logger.configure(level: original_level)
+      end
+    end
+
     test "logging capability advertised in initialize" do
       resp = mcp_request("initialize")
       assert is_map(resp["result"]["capabilities"]["logging"])

@@ -77,7 +77,9 @@ defmodule Backplane.Proxy.Upstream do
       consecutive_ping_failures: 0,
       consecutive_call_failures: 0,
       reconnect_attempts: 0,
-      pending_ping_id: nil
+      pending_ping_id: nil,
+      tool_timeout: config[:timeout] || @default_timeout,
+      refresh_interval: config[:refresh_interval]
     }
 
     {:ok, state, {:continue, :connect}}
@@ -89,7 +91,7 @@ defmodule Backplane.Proxy.Upstream do
       {:ok, state} ->
         case discover_tools(state) do
           {:ok, state} ->
-            schedule_refresh()
+            schedule_refresh(state)
             schedule_health_ping()
             {:noreply, %{state | status: :connected, reconnect_attempts: 0}}
 
@@ -164,11 +166,11 @@ defmodule Backplane.Proxy.Upstream do
   def handle_cast(:refresh, state) do
     case discover_tools(state) do
       {:ok, state} ->
-        schedule_refresh()
+        schedule_refresh(state)
         {:noreply, %{state | reconnect_attempts: 0}}
 
       {:error, _reason, state} ->
-        schedule_refresh()
+        schedule_refresh(state)
         {:noreply, state}
     end
   end
@@ -386,11 +388,12 @@ defmodule Backplane.Proxy.Upstream do
     # Deregister old tools first
     ToolRegistry.deregister_upstream(state.prefix)
     tool_timeouts = state.config[:tool_timeouts] || %{}
+    default_timeout = state.tool_timeout
 
     tools =
       Enum.map(raw_tools, fn raw ->
         tool_name = raw["name"]
-        timeout = Map.get(tool_timeouts, tool_name, @default_timeout)
+        timeout = Map.get(tool_timeouts, tool_name, default_timeout)
 
         %Tool{
           name: tool_name,
@@ -594,7 +597,11 @@ defmodule Backplane.Proxy.Upstream do
     {state.next_id, %{state | next_id: state.next_id + 1}}
   end
 
-  defp schedule_refresh do
+  defp schedule_refresh(%{refresh_interval: interval}) when is_integer(interval) do
+    Process.send_after(self(), :refresh, interval)
+  end
+
+  defp schedule_refresh(_state) do
     Process.send_after(self(), :refresh, @refresh_interval)
   end
 

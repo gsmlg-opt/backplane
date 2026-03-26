@@ -34,12 +34,15 @@ api_url = "https://gitlab.com/api/v4"
 # command = "npx"
 # args = ["-y", "@anthropic/mcp-filesystem"]
 # prefix = "fs"
+# timeout = 30000              # Tool call timeout in ms (default: 30000)
+# refresh_interval = 300000    # Tool discovery refresh in ms (default: 300000)
 
 # [[upstream]]
 # name = "postgres-mcp"
 # transport = "http"
 # url = "http://localhost:4200/mcp"
 # prefix = "pg"
+# timeout = 60000              # Longer timeout for DB queries
 
 # --- Skill Sources ---
 

@@ -122,7 +122,9 @@ defmodule Backplane.Config do
       base = %{
         name: up["name"],
         transport: up["transport"],
-        prefix: up["prefix"]
+        prefix: up["prefix"],
+        timeout: up["timeout"],
+        refresh_interval: up["refresh_interval"]
       }
 
       case up["transport"] do

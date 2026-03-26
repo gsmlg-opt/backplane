@@ -210,6 +210,8 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("logging/setLevel", _id, %{"level" => level})
        when level in ~w(debug info notice warning error critical alert emergency) do
+    Logger.configure(level: String.to_existing_atom(level))
+    Logger.info("MCP client set log level to #{level}")
     {:result, %{}}
   end
 
