@@ -1288,4 +1288,66 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert content["text"] == "plain string result"
     end
   end
+
+  describe "upstream tool dispatch" do
+    defmodule MockUpstream do
+      use GenServer
+
+      def start_link(response), do: GenServer.start_link(__MODULE__, response)
+
+      @impl true
+      def init(response), do: {:ok, response}
+
+      @impl true
+      def handle_call({:tools_call, _name, _args}, _from, response) do
+        {:reply, response, response}
+      end
+    end
+
+    test "forwards tool call to upstream process and returns result" do
+      {:ok, pid} = MockUpstream.start_link({:ok, %{answer: "42"}})
+
+      tool = %Backplane.Registry.Tool{
+        name: "mock-upstream::echo",
+        description: "Mock upstream tool",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        origin: {:upstream, "mock-upstream"},
+        upstream_pid: pid,
+        original_name: "echo",
+        timeout: 5_000
+      }
+
+      :ets.insert(:backplane_tools, {tool.name, tool})
+      on_exit(fn -> :ets.delete(:backplane_tools, tool.name) end)
+
+      resp = mcp_request("tools/call", %{"name" => "mock-upstream::echo", "arguments" => %{}})
+
+      assert resp["result"]
+      content = hd(resp["result"]["content"])
+      assert content["type"] == "text"
+      assert content["text"] =~ "answer"
+    end
+
+    test "returns error when upstream returns {:error, reason}" do
+      {:ok, pid} = MockUpstream.start_link({:error, "upstream failed"})
+
+      tool = %Backplane.Registry.Tool{
+        name: "mock-upstream::fail",
+        description: "Mock failing upstream tool",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        origin: {:upstream, "mock-upstream"},
+        upstream_pid: pid,
+        original_name: "fail",
+        timeout: 5_000
+      }
+
+      :ets.insert(:backplane_tools, {tool.name, tool})
+      on_exit(fn -> :ets.delete(:backplane_tools, tool.name) end)
+
+      resp = mcp_request("tools/call", %{"name" => "mock-upstream::fail", "arguments" => %{}})
+
+      assert resp["result"]["isError"] == true
+      assert hd(resp["result"]["content"])["text"] =~ "upstream failed"
+    end
+  end
 end
