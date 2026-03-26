@@ -3,6 +3,8 @@ defmodule Backplane.Tools.Hub do
   Native MCP tools for hub-level discovery and introspection.
   """
 
+  @behaviour Backplane.Tools.ToolModule
+
   require Logger
 
   alias Backplane.Docs.{DocChunk, Project}

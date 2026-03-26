@@ -4,6 +4,8 @@ defmodule Backplane.Tools.Skill do
   Registers: skill::search, skill::load, skill::list, skill::create, skill::update
   """
 
+  @behaviour Backplane.Tools.ToolModule
+
   alias Backplane.Skills.{Registry, Search}
   alias Backplane.Skills.Sources.Database
 

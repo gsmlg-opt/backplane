@@ -4,6 +4,8 @@ defmodule Backplane.Tools.Docs do
   Registers: docs::resolve-project, docs::query-docs
   """
 
+  @behaviour Backplane.Tools.ToolModule
+
   alias Backplane.Docs.{Project, Search}
   alias Backplane.Repo
 

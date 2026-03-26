@@ -6,6 +6,8 @@ defmodule Backplane.Tools.Git do
              git::search-code
   """
 
+  @behaviour Backplane.Tools.ToolModule
+
   alias Backplane.Git.Resolver
 
   def tools do
