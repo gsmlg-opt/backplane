@@ -10,7 +10,11 @@ defmodule Backplane.Transport.RateLimiterTest do
       :ets.delete_all_objects(@table)
     end
 
-    Application.put_env(:backplane, RateLimiter, max_requests: 3, window_ms: 60_000)
+    Application.put_env(:backplane, RateLimiter,
+      max_requests: 3,
+      window_ms: 60_000,
+      trust_x_forwarded_for: true
+    )
 
     on_exit(fn ->
       Application.delete_env(:backplane, RateLimiter)
@@ -104,6 +108,34 @@ defmodule Backplane.Transport.RateLimiterTest do
 
       # Should be rate-limited based on first IP (198.51.100.1)
       assert RateLimiter.call(conn_fn.(), []).halted
+    end
+
+    test "ignores X-Forwarded-For when trust_x_forwarded_for is false" do
+      Application.put_env(:backplane, RateLimiter,
+        max_requests: 3,
+        window_ms: 60_000,
+        trust_x_forwarded_for: false
+      )
+
+      # These should all use remote_ip (127.0.0.1) regardless of header
+      conn_fn = fn ->
+        build_conn()
+        |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.1")
+      end
+
+      for _ <- 1..3 do
+        refute RateLimiter.call(conn_fn.(), []).halted
+      end
+
+      # 4th request should be blocked based on remote_ip, not the XFF header
+      assert RateLimiter.call(conn_fn.(), []).halted
+
+      # Restore for other tests
+      Application.put_env(:backplane, RateLimiter,
+        max_requests: 3,
+        window_ms: 60_000,
+        trust_x_forwarded_for: true
+      )
     end
 
     test "stale entries don't count toward the limit" do

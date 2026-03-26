@@ -67,8 +67,14 @@ defmodule Backplane.Transport.Idempotency do
     end
   end
 
+  @max_table_size 10_000
+
   defp maybe_sweep(cutoff) do
-    if :rand.uniform(50) == 1, do: do_sweep(cutoff)
+    table_size = :ets.info(@table, :size)
+
+    if :rand.uniform(50) == 1 or table_size > @max_table_size do
+      do_sweep(cutoff)
+    end
   end
 
   defp do_sweep(cutoff) do

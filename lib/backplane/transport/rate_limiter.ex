@@ -11,9 +11,11 @@ defmodule Backplane.Transport.RateLimiter do
 
       config :backplane, Backplane.Transport.RateLimiter,
         max_requests: 100,
-        window_ms: 60_000
+        window_ms: 60_000,
+        trust_x_forwarded_for: false
 
   Defaults: 100 requests per 60 seconds per IP.
+  Set `trust_x_forwarded_for: true` only when behind a trusted reverse proxy.
   """
 
   require Logger
@@ -41,7 +43,9 @@ defmodule Backplane.Transport.RateLimiter do
     cutoff = now - window_ms
 
     # Probabilistic cleanup: ~1% of requests trigger a full sweep
-    if :rand.uniform(100) == 1, do: sweep_stale(cutoff)
+    # Force sweep if table grows beyond 50k entries (defense against IP spoofing)
+    table_size = :ets.info(@table, :size)
+    if :rand.uniform(100) == 1 or table_size > 50_000, do: sweep_stale(cutoff)
 
     # Clean old entries and count current window
     clean_and_count(ip, cutoff, now, max_requests, conn)
@@ -68,12 +72,16 @@ defmodule Backplane.Transport.RateLimiter do
   end
 
   defp client_ip(conn) do
-    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
-      [forwarded | _] ->
-        forwarded |> String.split(",") |> List.first() |> String.trim()
+    if config(:trust_x_forwarded_for, false) do
+      case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
+        [forwarded | _] ->
+          forwarded |> String.split(",") |> List.first() |> String.trim()
 
-      [] ->
-        conn.remote_ip |> :inet.ntoa() |> to_string()
+        [] ->
+          conn.remote_ip |> :inet.ntoa() |> to_string()
+      end
+    else
+      conn.remote_ip |> :inet.ntoa() |> to_string()
     end
   end
 
