@@ -143,9 +143,9 @@ defmodule Backplane.Docs.Parsers.Elixir do
     if typedoc do
       content = "#{type_text}\n\n#{typedoc}"
       chunk = build_chunk(source_path, module_stack, nil, "typespec", content)
-      [chunk | walk_block(rest, source_path, module_stack, doc, spec, nil)]
+      [chunk | walk_block(rest, source_path, module_stack, nil, nil, nil)]
     else
-      walk_block(rest, source_path, module_stack, doc, spec, nil)
+      walk_block(rest, source_path, module_stack, nil, nil, nil)
     end
   end
 

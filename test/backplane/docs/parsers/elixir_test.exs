@@ -533,6 +533,43 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       assert chunk.function == "process/1"
       assert chunk.content =~ "Multi-line function body"
     end
+
+    test "spec does not leak across @type definitions" do
+      code = """
+      defmodule MyApp.SpecLeak do
+        @spec first_func(integer()) :: integer()
+        @doc "First function."
+        def first_func(x), do: x
+
+        @type my_type :: atom()
+
+        @doc "Second function — should NOT have first_func's spec."
+        def second_func(y), do: y
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/spec_leak.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      second = Enum.find(func_chunks, &(&1.function == "second_func/1"))
+      assert second != nil
+      refute second.content =~ "@spec first_func"
+    end
+
+    test "doc does not leak across @type definitions" do
+      code = """
+      defmodule MyApp.DocLeak do
+        @doc "Orphan doc before type."
+        @type my_type :: atom()
+
+        def next_func(x), do: x
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/doc_leak.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      # The orphaned @doc before @type should not attach to next_func
+      assert func_chunks == []
+    end
   end
 
   describe "parse/2 with fixture files" do
