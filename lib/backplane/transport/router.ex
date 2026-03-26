@@ -96,8 +96,9 @@ defmodule Backplane.Transport.Router do
   end
 
   defp validate_webhook(conn, :github) do
-    with secret when not is_nil(secret) <-
-           Application.get_env(:backplane, :github_webhook_secret),
+    secret = find_webhook_secret(conn.body_params, :github)
+
+    with secret when not is_nil(secret) <- secret,
          payload = Jason.encode!(conn.body_params),
          [signature] <- Plug.Conn.get_req_header(conn, "x-hub-signature-256"),
          true <- WebhookHandler.validate_github_signature(payload, signature, secret) do
@@ -109,8 +110,9 @@ defmodule Backplane.Transport.Router do
   end
 
   defp validate_webhook(conn, :gitlab) do
-    with expected when not is_nil(expected) <-
-           Application.get_env(:backplane, :gitlab_webhook_token),
+    secret = find_webhook_secret(conn.body_params, :gitlab)
+
+    with expected when not is_nil(expected) <- secret,
          [token] <- Plug.Conn.get_req_header(conn, "x-gitlab-token"),
          true <- WebhookHandler.validate_gitlab_token(token, expected) do
       :ok
@@ -119,6 +121,33 @@ defmodule Backplane.Transport.Router do
       _ -> {:error, :invalid_signature}
     end
   end
+
+  # Look up the webhook secret for this event's repository.
+  # First checks per-project config, then falls back to the global secret.
+  defp find_webhook_secret(params, provider) do
+    repo_url = extract_repo_url(params, provider)
+    project_secret = repo_url && find_project_secret(repo_url)
+
+    project_secret || global_webhook_secret(provider)
+  end
+
+  defp extract_repo_url(%{"repository" => %{"clone_url" => url}}, :github), do: url
+  defp extract_repo_url(%{"repository" => %{"html_url" => url}}, :github), do: url <> ".git"
+  defp extract_repo_url(%{"project" => %{"git_http_url" => url}}, :gitlab), do: url
+  defp extract_repo_url(_, _), do: nil
+
+  defp find_project_secret(repo_url) do
+    Application.get_env(:backplane, :projects, [])
+    |> Enum.find_value(fn project ->
+      if project.repo == repo_url, do: project[:webhook_secret]
+    end)
+  end
+
+  defp global_webhook_secret(:github),
+    do: Application.get_env(:backplane, :github_webhook_secret)
+
+  defp global_webhook_secret(:gitlab),
+    do: Application.get_env(:backplane, :gitlab_webhook_token)
 
   @doc false
   def call(conn, opts) do

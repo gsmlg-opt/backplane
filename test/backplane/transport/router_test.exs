@@ -135,6 +135,63 @@ defmodule Backplane.Transport.RouterTest do
       assert conn.status == 401
     end
 
+    test "POST /webhook/github uses per-project webhook secret" do
+      secret = "project-specific-secret"
+      repo_url = "https://github.com/org/repo.git"
+
+      Application.put_env(:backplane, :projects, [
+        %{id: "test-proj", repo: repo_url, ref: "main", webhook_secret: secret}
+      ])
+
+      on_exit(fn -> Application.delete_env(:backplane, :projects) end)
+
+      payload =
+        Jason.encode!(%{
+          "ref" => "refs/heads/main",
+          "repository" => %{"clone_url" => repo_url}
+        })
+
+      signature =
+        "sha256=" <>
+          (:crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower))
+
+      conn =
+        conn(:post, "/webhook/github", payload)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 202
+    end
+
+    test "POST /webhook/github rejects when per-project secret doesn't match" do
+      repo_url = "https://github.com/org/repo.git"
+
+      Application.put_env(:backplane, :projects, [
+        %{id: "test-proj", repo: repo_url, ref: "main", webhook_secret: "correct-secret"}
+      ])
+
+      on_exit(fn -> Application.delete_env(:backplane, :projects) end)
+
+      payload =
+        Jason.encode!(%{
+          "ref" => "refs/heads/main",
+          "repository" => %{"clone_url" => repo_url}
+        })
+
+      wrong_sig =
+        "sha256=" <>
+          (:crypto.mac(:hmac, :sha256, "wrong-secret", payload) |> Base.encode16(case: :lower))
+
+      conn =
+        conn(:post, "/webhook/github", payload)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", wrong_sig)
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+    end
+
     test "POST /webhook/gitlab rejects with wrong token when token configured" do
       Application.put_env(:backplane, :gitlab_webhook_token, "correct-token")
       on_exit(fn -> Application.delete_env(:backplane, :gitlab_webhook_token) end)
