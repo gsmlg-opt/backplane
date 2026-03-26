@@ -103,18 +103,29 @@ defmodule Backplane.Registry.ToolRegistry do
     end
   end
 
-  @doc "Search tools by name or description substring."
+  @doc "Search tools by name or description substring. Name matches rank higher."
   @spec search(String.t(), keyword()) :: [Tool.t()]
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     query_down = String.downcase(query)
 
-    for {_key, tool} <- :ets.tab2list(@table),
-        String.contains?(String.downcase(tool.name), query_down) or
-          String.contains?(String.downcase(tool.description), query_down) do
-      tool
-    end
+    @table
+    |> :ets.tab2list()
+    |> Enum.reduce([], fn {_key, tool}, acc ->
+      name_down = String.downcase(tool.name)
+      desc_down = String.downcase(tool.description)
+      name_match = String.contains?(name_down, query_down)
+      desc_match = String.contains?(desc_down, query_down)
+
+      cond do
+        name_match -> [{0, tool} | acc]
+        desc_match -> [{1, tool} | acc]
+        true -> acc
+      end
+    end)
+    |> Enum.sort_by(fn {rank, tool} -> {rank, tool.name} end)
     |> Enum.take(limit)
+    |> Enum.map(fn {_rank, tool} -> tool end)
   end
 
   @doc "Count registered tools."
