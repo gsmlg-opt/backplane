@@ -168,4 +168,34 @@ defmodule Backplane.Skills.LoaderTest do
       assert entry.version == "2"
     end
   end
+
+  describe "parse_skill_file/2" do
+    @tag :tmp_dir
+    test "parses a valid .md file and returns entry with id and source", %{tmp_dir: tmp_dir} do
+      filepath = Path.join(tmp_dir, "my-skill.md")
+      File.write!(filepath, @valid_skill)
+
+      assert [entry] = Loader.parse_skill_file(filepath, "local:test")
+      assert entry.id == "local:test/my-skill"
+      assert entry.source == "local:test"
+      assert entry.name == "elixir-genserver"
+    end
+
+    @tag :tmp_dir
+    test "returns empty list for invalid skill file", %{tmp_dir: tmp_dir} do
+      filepath = Path.join(tmp_dir, "bad.md")
+      File.write!(filepath, "No frontmatter here")
+
+      assert [] = Loader.parse_skill_file(filepath, "local:bad")
+    end
+
+    @tag :tmp_dir
+    test "derives skill name from filename without extension", %{tmp_dir: tmp_dir} do
+      filepath = Path.join(tmp_dir, "cool-skill.md")
+      File.write!(filepath, @minimal_skill)
+
+      assert [entry] = Loader.parse_skill_file(filepath, "git:repo")
+      assert entry.id == "git:repo/cool-skill"
+    end
+  end
 end

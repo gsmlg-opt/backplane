@@ -60,6 +60,10 @@ defmodule Backplane.Jobs.ReindexTest do
 
       project_id = "reindex-ok-#{System.unique_integer([:positive])}"
 
+      # Clean up any stale clone dir from previous test runs
+      clone_dir = Path.join("/tmp/backplane_repos", project_id)
+      File.rm_rf!(clone_dir)
+
       Repo.insert!(%Backplane.Docs.Project{
         id: project_id,
         repo: base_dir,
@@ -70,6 +74,7 @@ defmodule Backplane.Jobs.ReindexTest do
       assert :ok = Reindex.perform(job)
 
       File.rm_rf!(base_dir)
+      File.rm_rf!(clone_dir)
     end
   end
 end
