@@ -48,8 +48,7 @@ defmodule BackplaneTest do
       })
 
       results = Backplane.search_docs("api-test-proj", "test")
-      assert is_list(results)
-      assert length(results) > 0
+      assert [_ | _] = results
     end
   end
 end

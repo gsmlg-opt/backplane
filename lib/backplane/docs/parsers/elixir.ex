@@ -226,45 +226,47 @@ defmodule Backplane.Docs.Parsers.Elixir do
   end
 
   defp match_function(line) do
-    case Regex.run(~r/^(def|defp|defmacro|defmacrop)\s+([\w?!]+)(\(.*?\))?/, line) do
-      [_, _kind, name, args] ->
-        arity = count_args(args)
+    case Regex.run(~r/^(def|defp|defmacro|defmacrop)\s+([\w?!]+)(.*)$/, line) do
+      [_, _kind, name, rest] ->
+        arity = extract_arity(rest)
         "#{name}/#{arity}"
-
-      [_, _kind, name] ->
-        "#{name}/0"
 
       _ ->
         nil
     end
   end
 
-  defp count_args("()"), do: 0
+  defp extract_arity(rest) do
+    trimmed = String.trim(rest)
 
-  defp count_args("(" <> rest) do
-    rest = String.trim_trailing(rest, ")")
-
-    if String.trim(rest) == "" do
-      0
-    else
-      rest
-      |> String.graphemes()
-      |> Enum.reduce({0, 0}, fn
-        "(", {depth, count} -> {depth + 1, count}
-        "[", {depth, count} -> {depth + 1, count}
-        "{", {depth, count} -> {depth + 1, count}
-        ")", {depth, count} -> {max(depth - 1, 0), count}
-        "]", {depth, count} -> {max(depth - 1, 0), count}
-        "}", {depth, count} -> {max(depth - 1, 0), count}
-        ",", {0, count} -> {0, count + 1}
-        _, acc -> acc
-      end)
-      |> elem(1)
-      |> Kernel.+(1)
+    case trimmed do
+      "(" <> _ -> count_args_balanced(trimmed)
+      _ -> 0
     end
   end
 
-  defp count_args(_), do: 0
+  defp count_args_balanced("()"), do: 0
+  defp count_args_balanced("()" <> _), do: 0
+
+  defp count_args_balanced("(" <> rest) do
+    rest
+    |> String.graphemes()
+    |> Enum.reduce_while({0, 0}, fn
+      "(", {depth, count} -> {:cont, {depth + 1, count}}
+      "[", {depth, count} -> {:cont, {depth + 1, count}}
+      "{", {depth, count} -> {:cont, {depth + 1, count}}
+      ")", {0, count} -> {:halt, {0, count}}
+      ")", {depth, count} -> {:cont, {depth - 1, count}}
+      "]", {depth, count} -> {:cont, {max(depth - 1, 0), count}}
+      "}", {depth, count} -> {:cont, {max(depth - 1, 0), count}}
+      ",", {0, count} -> {:cont, {0, count + 1}}
+      _, acc -> {:cont, acc}
+    end)
+    |> elem(1)
+    |> Kernel.+(1)
+  end
+
+  defp count_args_balanced(_), do: 0
 
   defp current_module_name([]), do: nil
   defp current_module_name(stack), do: stack |> Enum.reverse() |> Enum.join(".")

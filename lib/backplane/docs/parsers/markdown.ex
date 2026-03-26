@@ -72,11 +72,9 @@ defmodule Backplane.Docs.Parsers.Markdown do
       current != nil ->
         {sections, %{current | lines: [line | current.lines]}}
 
-      sections == [] ->
-        {sections, %{heading: nil, lines: [line]}}
-
       true ->
-        {sections, current}
+        # Preamble text before first heading — create an untitled section
+        {sections, %{heading: nil, lines: [line]}}
     end
   end
 
