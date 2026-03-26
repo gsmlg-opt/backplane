@@ -21,6 +21,11 @@ defmodule Backplane.Transport.AuthPlugTest do
     :ok
   end
 
+  test "init/1 passes through opts unchanged" do
+    assert Backplane.Transport.AuthPlug.init([]) == []
+    assert Backplane.Transport.AuthPlug.init(foo: :bar) == [foo: :bar]
+  end
+
   describe "no auth configured" do
     test "passes all requests through" do
       conn =

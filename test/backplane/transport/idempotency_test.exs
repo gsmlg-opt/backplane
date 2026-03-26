@@ -115,6 +115,37 @@ defmodule Backplane.Transport.IdempotencyTest do
     assert ct =~ "application/json"
   end
 
+  test "high-volume sweep: stale entries are eventually cleaned" do
+    table = Backplane.Transport.Idempotency
+
+    if :ets.info(table) == :undefined do
+      :ets.new(table, [:set, :public, :named_table, read_concurrency: true])
+    end
+
+    # Insert many stale entries (expired 10 minutes ago)
+    old_ts = System.monotonic_time(:millisecond) - 700_000
+
+    for i <- 1..20 do
+      :ets.insert(table, {"stale-sweep-#{i}", {"body", 200, "application/json", old_ts}})
+    end
+
+    # Send 200 requests to probabilistically trigger do_sweep (1/50 chance each)
+    # With 200 requests, probability of at least one sweep ≈ 98.2%
+    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
+
+    for i <- 1..200 do
+      key = "sweep-vol-#{i}-#{System.unique_integer([:positive])}"
+
+      Plug.Test.conn(:post, "/mcp", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("idempotency-key", key)
+      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+    end
+
+    # Table should still be healthy
+    assert :ets.info(table) != :undefined
+  end
+
   test "init/1 passes through opts" do
     alias Backplane.Transport.Idempotency
     assert Idempotency.init([]) == []

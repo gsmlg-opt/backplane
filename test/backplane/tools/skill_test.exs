@@ -121,6 +121,20 @@ defmodule Backplane.Tools.SkillTest do
     end
   end
 
+  describe "skill::create error" do
+    test "returns error when required name is missing" do
+      {:error, msg} =
+        SkillTool.call(%{
+          "_handler" => "create",
+          "description" => "A skill without a name",
+          "content" => "# No Name"
+        })
+
+      assert msg =~ "Failed to create skill"
+      assert msg =~ "name"
+    end
+  end
+
   describe "skill::search with limit" do
     test "respects limit parameter" do
       {:ok, results} =

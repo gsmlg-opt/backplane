@@ -253,6 +253,49 @@ defmodule Backplane.ConfigTest do
       assert skill.source == "s3"
     end
 
+    test "upstream stdio with env map parses env", %{dir: dir} do
+      path = Path.join(dir, "stdio_env.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "with-env"
+      prefix = "env"
+      transport = "stdio"
+      command = "node"
+      args = ["server.js"]
+
+      [upstream.env]
+      NODE_ENV = "production"
+      DEBUG = "true"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.env == %{"NODE_ENV" => "production", "DEBUG" => "true"}
+    end
+
+    test "upstream stdio with no env defaults to empty map", %{dir: dir} do
+      path = Path.join(dir, "stdio_no_env.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "no-env"
+      prefix = "ne"
+      transport = "stdio"
+      command = "node"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.env == %{}
+    end
+
     test "database section is parsed", %{dir: dir} do
       path = Path.join(dir, "with_db.toml")
 

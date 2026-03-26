@@ -75,5 +75,25 @@ defmodule Backplane.Docs.Parsers.MarkdownTest do
         assert chunk.source_path == "docs/guide.md"
       end)
     end
+
+    test "includes preamble text before first heading" do
+      content = "Some preamble text here.\n\n## First Section\n\nSection body."
+      {:ok, chunks} = Markdown.parse(content, "doc.md")
+      assert length(chunks) == 2
+
+      preamble = Enum.find(chunks, fn c -> c.content =~ "preamble" end)
+      assert preamble != nil
+      assert preamble.chunk_type == "guide"
+    end
+
+    test "skips empty chunks from whitespace-only sections" do
+      content = "## Heading\n\n\n\n## Another\n\nContent here."
+      {:ok, chunks} = Markdown.parse(content, "doc.md")
+
+      # Empty section between headings should be filtered out
+      Enum.each(chunks, fn chunk ->
+        refute chunk.content == ""
+      end)
+    end
   end
 end

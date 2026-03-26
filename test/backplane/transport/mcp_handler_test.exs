@@ -1085,5 +1085,91 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp = raw_mcp_request(%{"jsonrpc" => "1.0", "method" => "ping", "id" => 1})
       assert resp["error"]["code"] == -32_600
     end
+
+    test "returns error for request with no method field at all" do
+      resp = raw_mcp_request(%{"id" => 1, "data" => "something"})
+      assert resp["error"]["code"] == -32_600
+      assert resp["error"]["message"] =~ "Invalid Request"
+    end
+  end
+
+  describe "tools/call input validation" do
+    test "returns error when required argument is missing" do
+      resp = mcp_request("tools/call", %{"name" => "skill::search", "arguments" => %{}})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "Missing required arguments"
+      assert resp["error"]["message"] =~ "query"
+    end
+
+    test "returns error when argument type is wrong" do
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "skill::search",
+          "arguments" => %{"query" => 123}
+        })
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "must be string"
+    end
+  end
+
+  describe "resources/read edge cases" do
+    test "returns error for backplane URI with no chunk_id" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/onlyproject"})
+      assert resp["error"]
+    end
+  end
+
+  describe "prompts with tool arguments" do
+    setup do
+      content = "# Skill with Tools"
+      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+      %Backplane.Skills.Skill{}
+      |> Backplane.Skills.Skill.changeset(%{
+        id: "prompt/with-tools",
+        name: "skill-with-tools",
+        description: "Has required tools",
+        tags: [],
+        content: content,
+        content_hash: hash,
+        source: "db",
+        tools: ["git::repo-tree", "docs::query-docs"],
+        enabled: true
+      })
+      |> Backplane.Repo.insert!()
+
+      Backplane.Skills.Registry.refresh()
+      :ok
+    end
+
+    test "prompts/list includes prompt arguments for skills with tools" do
+      resp = mcp_request("prompts/list")
+      prompts = resp["result"]["prompts"]
+
+      skill_prompt = Enum.find(prompts, fn p -> p["name"] == "skill-with-tools" end)
+      assert skill_prompt != nil
+      assert is_list(skill_prompt["arguments"])
+      assert length(skill_prompt["arguments"]) == 2
+
+      arg_names = Enum.map(skill_prompt["arguments"], & &1["name"])
+      assert "git::repo-tree" in arg_names
+      assert "docs::query-docs" in arg_names
+    end
+  end
+
+  describe "format_result" do
+    test "tools/call returns string result directly" do
+      # Call a tool that returns a plain string result
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "skill::load",
+          "arguments" => %{"skill_id" => "nonexistent"}
+        })
+
+      # Even error results go through format_result — the isError path
+      assert resp["result"]["isError"] == true
+      assert is_binary(hd(resp["result"]["content"])["text"])
+    end
   end
 end

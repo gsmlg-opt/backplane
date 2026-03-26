@@ -97,6 +97,27 @@ defmodule Backplane.Transport.RouterTest do
       assert body["status"] == "accepted"
     end
 
+    test "POST /webhook/github accepts with valid HMAC signature" do
+      secret = "test-webhook-secret"
+      Application.put_env(:backplane, :github_webhook_secret, secret)
+      on_exit(fn -> Application.delete_env(:backplane, :github_webhook_secret) end)
+
+      payload = Jason.encode!(%{"action" => "push", "ref" => "refs/heads/main"})
+
+      signature =
+        "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower))
+
+      conn =
+        Plug.Test.conn(:post, "/webhook/github", payload)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("x-hub-signature-256", signature)
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["status"] == "accepted"
+    end
+
     test "POST /webhook/github rejects with invalid signature when secret configured" do
       Application.put_env(:backplane, :github_webhook_secret, "test-secret")
       on_exit(fn -> Application.delete_env(:backplane, :github_webhook_secret) end)
