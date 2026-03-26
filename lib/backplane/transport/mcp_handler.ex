@@ -247,80 +247,12 @@ defmodule Backplane.Transport.McpHandler do
     json_rpc_error(conn, id, -32_602, "Invalid params: 'params' object is required")
   end
 
-  defp dispatch(conn, "resources/list", id, params) do
-    cursor = if is_map(params), do: params["cursor"]
-    {resources, next_cursor} = list_resources(cursor)
-    result = %{resources: resources}
-    result = if next_cursor, do: Map.put(result, :nextCursor, next_cursor), else: result
-    json_rpc_result(conn, id, result)
-  end
-
-  defp dispatch(conn, "resources/read", id, %{"uri" => uri}) when is_binary(uri) do
-    case read_resource(uri) do
-      {:ok, contents} ->
-        json_rpc_result(conn, id, %{contents: contents})
-
-      {:error, reason} ->
-        json_rpc_error(conn, id, -32_602, "Resource not found: #{reason}")
+  # All remaining methods delegate to compute_result to avoid duplication
+  defp dispatch(conn, method, id, params) do
+    case compute_result(method, id, params) do
+      {:result, result} -> json_rpc_result(conn, id, result)
+      {:error, code, message} -> json_rpc_error(conn, id, code, message)
     end
-  end
-
-  defp dispatch(conn, "resources/read", id, _params) do
-    json_rpc_error(conn, id, -32_602, "Invalid params: 'uri' is required")
-  end
-
-  defp dispatch(conn, "prompts/list", id, _params) do
-    prompts = list_prompts()
-    json_rpc_result(conn, id, %{prompts: prompts})
-  end
-
-  defp dispatch(conn, "prompts/get", id, %{"name" => name}) when is_binary(name) do
-    case get_prompt(name) do
-      {:ok, prompt} ->
-        json_rpc_result(conn, id, prompt)
-
-      {:error, reason} ->
-        json_rpc_error(conn, id, -32_602, "Prompt not found: #{reason}")
-    end
-  end
-
-  defp dispatch(conn, "prompts/get", id, _params) do
-    json_rpc_error(conn, id, -32_602, "Invalid params: 'name' is required")
-  end
-
-  defp dispatch(conn, "completion/complete", id, %{"ref" => ref, "argument" => argument})
-       when is_map(ref) and is_map(argument) do
-    completions = compute_completions(ref, argument)
-
-    json_rpc_result(conn, id, %{
-      completion: %{values: completions, hasMore: false, total: length(completions)}
-    })
-  end
-
-  defp dispatch(conn, "completion/complete", id, _params) do
-    json_rpc_error(conn, id, -32_602, "Invalid params: 'ref' and 'argument' are required")
-  end
-
-  defp dispatch(conn, "logging/setLevel", id, %{"level" => level})
-       when level in ~w(debug info notice warning error critical alert emergency) do
-    json_rpc_result(conn, id, %{})
-  end
-
-  defp dispatch(conn, "logging/setLevel", id, _params) do
-    json_rpc_error(
-      conn,
-      id,
-      -32_602,
-      "Invalid params: 'level' must be one of: debug, info, notice, warning, error, critical, alert, emergency"
-    )
-  end
-
-  defp dispatch(conn, "ping", id, _params) do
-    json_rpc_result(conn, id, %{})
-  end
-
-  defp dispatch(conn, _method, id, _params) do
-    json_rpc_error(conn, id, -32_601, "Method not found")
   end
 
   defp dispatch_notification(conn, "notifications/initialized", _params) do

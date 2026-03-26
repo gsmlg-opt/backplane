@@ -641,6 +641,18 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert is_list(values)
     end
 
+    test "returns all values (up to 20) when prefix is empty" do
+      resp =
+        mcp_request("completion/complete", %{
+          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
+          "argument" => %{"name" => "tool_name", "value" => ""}
+        })
+
+      values = resp["result"]["completion"]["values"]
+      assert [_ | _] = values
+      assert Enum.count(values) <= 20
+    end
+
     test "returns empty for unknown ref type" do
       resp =
         mcp_request("completion/complete", %{
