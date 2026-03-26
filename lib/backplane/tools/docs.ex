@@ -106,7 +106,8 @@ defmodule Backplane.Tools.Docs do
           function: r.function,
           chunk_type: r.chunk_type,
           content: r.content,
-          tokens: r.tokens
+          tokens: r.tokens,
+          score: r.rank
         }
       end)
 

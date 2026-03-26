@@ -4,7 +4,7 @@ defmodule Backplane.Docs.Search do
   """
 
   import Ecto.Query
-  alias Backplane.Docs.DocChunk
+  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Repo
 
   @default_limit 20
@@ -64,7 +64,7 @@ defmodule Backplane.Docs.Search do
   List all projects with their chunk counts.
   """
   def list_projects do
-    from(p in Backplane.Docs.Project,
+    from(p in Project,
       left_join: c in DocChunk,
       on: c.project_id == p.id,
       group_by: p.id,
