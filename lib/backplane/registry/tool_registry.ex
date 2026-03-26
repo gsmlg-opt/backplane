@@ -7,6 +7,8 @@ defmodule Backplane.Registry.ToolRegistry do
 
   use GenServer
 
+  alias Backplane.Registry.Tool
+
   @table :backplane_tools
   @separator "::"
 
@@ -17,17 +19,19 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Register a native tool module."
-  def register_native(%Backplane.Registry.Tool{origin: :native} = tool) do
+  @spec register_native(Tool.t()) :: :ok
+  def register_native(%Tool{origin: :native} = tool) do
     :ets.insert(@table, {tool.name, tool})
     :ok
   end
 
   @doc "Register tools from an upstream MCP server with a namespace prefix."
+  @spec register_upstream(String.t(), pid(), [map()]) :: :ok
   def register_upstream(prefix, upstream_pid, tools) when is_list(tools) do
     Enum.each(tools, fn tool ->
       namespaced = prefix <> @separator <> tool.name
 
-      entry = %Backplane.Registry.Tool{
+      entry = %Tool{
         name: namespaced,
         description: tool.description,
         input_schema: tool.input_schema,
@@ -44,6 +48,7 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Deregister all tools from a given upstream prefix."
+  @spec deregister_upstream(String.t()) :: :ok
   def deregister_upstream(prefix) do
     pattern = prefix <> @separator
 
@@ -57,6 +62,7 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "List all registered tools as MCP tool definitions."
+  @spec list_all() :: [Tool.t()]
   def list_all do
     @table
     |> :ets.tab2list()
@@ -65,6 +71,10 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Resolve a tool name to its handler."
+  @spec resolve(String.t()) ::
+          {:native, module(), atom() | nil}
+          | {:upstream, pid(), String.t(), pos_integer()}
+          | :not_found
   def resolve(name) do
     case :ets.lookup(@table, name) do
       [{^name, %{origin: :native, module: module, handler: handler}}] ->
@@ -79,6 +89,7 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Look up a tool by name, returning the full tool struct or nil."
+  @spec lookup(String.t()) :: Tool.t() | nil
   def lookup(name) do
     case :ets.lookup(@table, name) do
       [{^name, tool}] -> tool
@@ -87,6 +98,7 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Search tools by name or description substring."
+  @spec search(String.t(), keyword()) :: [Tool.t()]
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     query_down = String.downcase(query)
@@ -100,6 +112,7 @@ defmodule Backplane.Registry.ToolRegistry do
   end
 
   @doc "Count registered tools."
+  @spec count() :: non_neg_integer()
   def count do
     :ets.info(@table, :size)
   end
