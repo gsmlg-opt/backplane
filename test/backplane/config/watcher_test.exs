@@ -88,6 +88,72 @@ defmodule Backplane.Config.WatcherTest do
         else: Application.delete_env(:backplane, :git_providers)
     end
 
+    test "applies auth_tokens list from config" do
+      toml_path = Path.join(@test_toml_dir, "tokens.toml")
+
+      File.write!(toml_path, """
+      [backplane]
+      auth_tokens = ["token-a", "token-b"]
+      """)
+
+      old_path = Application.get_env(:backplane, :config_path)
+      old_tokens = Application.get_env(:backplane, :auth_tokens)
+      Application.put_env(:backplane, :config_path, toml_path)
+
+      assert :ok = Watcher.reload()
+      assert Application.get_env(:backplane, :auth_tokens) == ["token-a", "token-b"]
+
+      if old_path,
+        do: Application.put_env(:backplane, :config_path, old_path),
+        else: Application.delete_env(:backplane, :config_path)
+
+      if old_tokens,
+        do: Application.put_env(:backplane, :auth_tokens, old_tokens),
+        else: Application.delete_env(:backplane, :auth_tokens)
+    end
+
+    test "applies projects and skill_sources from config" do
+      toml_path = Path.join(@test_toml_dir, "projects.toml")
+
+      File.write!(toml_path, """
+      [[projects]]
+      id = "reload-test"
+      repo = "github:org/reload-test"
+      ref = "main"
+
+      [[skills]]
+      name = "reload-skills"
+      source = "local"
+      path = "/tmp/skills"
+      """)
+
+      old_path = Application.get_env(:backplane, :config_path)
+      old_projects = Application.get_env(:backplane, :projects)
+      old_skills = Application.get_env(:backplane, :skill_sources)
+      Application.put_env(:backplane, :config_path, toml_path)
+
+      assert :ok = Watcher.reload()
+
+      projects = Application.get_env(:backplane, :projects, [])
+      assert Enum.any?(projects, fn p -> p.id == "reload-test" end)
+
+      skills = Application.get_env(:backplane, :skill_sources, [])
+      assert Enum.any?(skills, fn s -> s.name == "reload-skills" end)
+
+      # Restore
+      if old_path,
+        do: Application.put_env(:backplane, :config_path, old_path),
+        else: Application.delete_env(:backplane, :config_path)
+
+      if old_projects,
+        do: Application.put_env(:backplane, :projects, old_projects),
+        else: Application.delete_env(:backplane, :projects)
+
+      if old_skills,
+        do: Application.put_env(:backplane, :skill_sources, old_skills),
+        else: Application.delete_env(:backplane, :skill_sources)
+    end
+
     test "reconciles upstreams — unchanged config keeps existing connections" do
       children_before = DynamicSupervisor.which_children(Pool)
       Watcher.reload()
