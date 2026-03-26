@@ -8,6 +8,8 @@ defmodule Backplane.Transport.McpHandler do
 
   import Plug.Conn
 
+  require Logger
+
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
@@ -200,7 +202,16 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
 
-  defp dispatch(conn, "initialize", id, _params) do
+  defp dispatch(conn, "initialize", id, params) do
+    client_version = get_in(params || %{}, ["protocolVersion"])
+
+    if client_version && client_version != Backplane.protocol_version() do
+      Logger.warning("Client requested unsupported protocol version",
+        client_version: client_version,
+        server_version: Backplane.protocol_version()
+      )
+    end
+
     session_id = generate_session_id()
 
     conn
