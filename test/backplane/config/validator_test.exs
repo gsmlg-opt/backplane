@@ -180,6 +180,65 @@ defmodule Backplane.Config.ValidatorTest do
     assert log =~ "'prefix' cannot be empty"
   end
 
+  test "validate! warns about invalid upstream timeout" do
+    config = [
+      backplane: %{port: 4100},
+      upstream: [
+        %{
+          name: "bad-timeout",
+          prefix: "bt",
+          transport: "http",
+          url: "http://localhost/mcp",
+          timeout: -1
+        }
+      ],
+      projects: []
+    ]
+
+    log = capture_log(fn -> Validator.validate!(config) end)
+    assert log =~ "'timeout' must be a positive integer"
+  end
+
+  test "validate! warns about non-integer refresh_interval" do
+    config = [
+      backplane: %{port: 4100},
+      upstream: [
+        %{
+          name: "bad-refresh",
+          prefix: "br",
+          transport: "stdio",
+          command: "node",
+          refresh_interval: "5m"
+        }
+      ],
+      projects: []
+    ]
+
+    log = capture_log(fn -> Validator.validate!(config) end)
+    assert log =~ "'refresh_interval' must be a positive integer"
+  end
+
+  test "validate! passes with valid timeout and refresh_interval" do
+    config = [
+      backplane: %{port: 4100},
+      upstream: [
+        %{
+          name: "ok",
+          prefix: "ok",
+          transport: "http",
+          url: "http://localhost/mcp",
+          timeout: 60_000,
+          refresh_interval: 120_000
+        }
+      ],
+      projects: []
+    ]
+
+    log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
+    refute log =~ "timeout"
+    refute log =~ "refresh_interval"
+  end
+
   describe "skill validation" do
     test "validate! passes for valid git skill config" do
       config = [

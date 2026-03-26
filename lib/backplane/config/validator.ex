@@ -37,11 +37,17 @@ defmodule Backplane.Config.Validator do
   end
 
   defp check_upstream_transport(warnings, %{transport: "http"} = upstream) do
-    check_required(warnings, upstream, :url, "upstream #{upstream[:name]} (http)")
+    warnings
+    |> check_required(upstream, :url, "upstream #{upstream[:name]} (http)")
+    |> check_positive_integer(upstream, :timeout, "upstream #{upstream[:name]}")
+    |> check_positive_integer(upstream, :refresh_interval, "upstream #{upstream[:name]}")
   end
 
   defp check_upstream_transport(warnings, %{transport: "stdio"} = upstream) do
-    check_required(warnings, upstream, :command, "upstream #{upstream[:name]} (stdio)")
+    warnings
+    |> check_required(upstream, :command, "upstream #{upstream[:name]} (stdio)")
+    |> check_positive_integer(upstream, :timeout, "upstream #{upstream[:name]}")
+    |> check_positive_integer(upstream, :refresh_interval, "upstream #{upstream[:name]}")
   end
 
   defp check_upstream_transport(warnings, %{transport: transport, name: name})
@@ -99,6 +105,14 @@ defmodule Backplane.Config.Validator do
       nil -> ["#{context}: missing required field '#{key}'" | warnings]
       "" -> ["#{context}: '#{key}' cannot be empty" | warnings]
       _ -> warnings
+    end
+  end
+
+  defp check_positive_integer(warnings, map, key, context) do
+    case Map.get(map, key) do
+      nil -> warnings
+      val when is_integer(val) and val > 0 -> warnings
+      val -> ["#{context}: '#{key}' must be a positive integer, got #{inspect(val)}" | warnings]
     end
   end
 end
