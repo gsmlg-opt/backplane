@@ -179,4 +179,109 @@ defmodule Backplane.Config.ValidatorTest do
 
     assert log =~ "'prefix' cannot be empty"
   end
+
+  describe "skill validation" do
+    test "validate! passes for valid git skill config" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "my-skill", source: "git", repo: "https://github.com/o/r.git"}]
+      ]
+
+      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
+      refute log =~ "skill"
+    end
+
+    test "validate! passes for valid local skill config" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "local-skill", source: "local", path: "/opt/skills"}]
+      ]
+
+      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
+      refute log =~ "skill"
+    end
+
+    test "validate! warns about missing skill name" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{source: "git", repo: "https://github.com/o/r.git"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "missing required field 'name'"
+    end
+
+    test "validate! warns about missing skill source" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "no-source"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "missing required field 'source'"
+    end
+
+    test "validate! warns about missing repo for git skill" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "git-skill", source: "git"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "missing required field 'repo'"
+    end
+
+    test "validate! warns about missing path for local skill" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "local-skill", source: "local"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "missing required field 'path'"
+    end
+
+    test "validate! warns about unknown skill source" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "bad-skill", source: "s3"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "unknown source 's3'"
+    end
+
+    test "validate! does not warn when skills section is absent" do
+      config = [backplane: %{port: 4100}, upstream: [], projects: []]
+
+      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
+      refute log =~ "skill"
+    end
+
+    test "validate! warns about empty skill name" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [],
+        skills: [%{name: "", source: "git", repo: "https://github.com/o/r.git"}]
+      ]
+
+      log = capture_log(fn -> Validator.validate!(config) end)
+      assert log =~ "'name' cannot be empty"
+    end
+  end
 end

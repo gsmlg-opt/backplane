@@ -16,6 +16,7 @@ defmodule Backplane.Config.Validator do
       []
       |> validate_upstreams(config[:upstream] || [])
       |> validate_projects(config[:projects] || [])
+      |> validate_skills(config[:skills] || [])
       |> validate_port(config[:backplane])
 
     for warning <- warnings do
@@ -57,6 +58,30 @@ defmodule Backplane.Config.Validator do
       |> check_required(project, :repo, "project #{project[:id]}")
     end)
   end
+
+  defp validate_skills(warnings, skills) do
+    Enum.reduce(skills, warnings, fn skill, acc ->
+      acc
+      |> check_required(skill, :name, "skill")
+      |> check_required(skill, :source, "skill #{skill[:name]}")
+      |> check_skill_source(skill)
+    end)
+  end
+
+  defp check_skill_source(warnings, %{source: "git"} = skill) do
+    check_required(warnings, skill, :repo, "skill #{skill[:name]} (git)")
+  end
+
+  defp check_skill_source(warnings, %{source: "local"} = skill) do
+    check_required(warnings, skill, :path, "skill #{skill[:name]} (local)")
+  end
+
+  defp check_skill_source(warnings, %{source: source, name: name})
+       when is_binary(source) do
+    ["skill #{name}: unknown source '#{source}' (expected 'git' or 'local')" | warnings]
+  end
+
+  defp check_skill_source(warnings, _skill), do: warnings
 
   defp validate_port(warnings, %{port: port})
        when is_integer(port) and port > 0 and port < 65_536 do
