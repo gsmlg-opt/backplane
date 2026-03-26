@@ -91,6 +91,33 @@ defmodule Backplane.Transport.AuthPlugTest do
       assert conn.status == 401
     end
 
+    test "accepts bearer token with case-insensitive scheme (RFC 6750)" do
+      conn =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "bearer test-secret")
+        |> AuthPlug.call([])
+
+      refute conn.halted
+    end
+
+    test "accepts BEARER token in uppercase" do
+      conn =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "BEARER test-secret")
+        |> AuthPlug.call([])
+
+      refute conn.halted
+    end
+
+    test "trims whitespace from bearer token" do
+      conn =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "Bearer  test-secret ")
+        |> AuthPlug.call([])
+
+      refute conn.halted
+    end
+
     test "always passes /health without auth" do
       conn =
         conn(:get, "/health", "")

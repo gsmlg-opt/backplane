@@ -122,8 +122,15 @@ defmodule Backplane.Skills.Sync do
   def schedule_next(%{"sync_interval" => interval} = args) when is_binary(interval) do
     seconds =
       case Utils.parse_interval(interval) do
-        {:ok, s} -> s
-        :error -> @default_sync_interval
+        {:ok, s} ->
+          s
+
+        :error ->
+          Logger.warning(
+            "Invalid sync_interval '#{interval}' for #{args["name"]}, using default #{@default_sync_interval}s"
+          )
+
+          @default_sync_interval
       end
 
     case args |> new(schedule_in: seconds) |> Oban.insert() do

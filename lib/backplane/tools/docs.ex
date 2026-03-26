@@ -156,7 +156,8 @@ defmodule Backplane.Tools.Docs do
   defp validate_version(project_id, version) do
     case Repo.get(Project, project_id) do
       nil ->
-        :ok
+        {:error,
+         "Project '#{project_id}' not found. Use docs::resolve-project to find available projects."}
 
       project ->
         if project.ref == version do

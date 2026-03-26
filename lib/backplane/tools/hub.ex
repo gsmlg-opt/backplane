@@ -150,18 +150,11 @@ defmodule Backplane.Tools.Hub do
   end
 
   defp get_doc_projects do
-    chunk_counts =
-      DocChunk
-      |> group_by([c], c.project_id)
-      |> select([c], {c.project_id, count(c.id)})
-      |> Repo.all()
-      |> Map.new()
-
     Project
+    |> join(:left, [p], c in DocChunk, on: c.project_id == p.id)
+    |> group_by([p], [p.id, p.last_indexed_at])
+    |> select([p, c], %{id: p.id, chunk_count: count(c.id), last_indexed: p.last_indexed_at})
     |> Repo.all()
-    |> Enum.map(fn p ->
-      %{id: p.id, chunk_count: Map.get(chunk_counts, p.id, 0), last_indexed: p.last_indexed_at}
-    end)
   rescue
     e ->
       Logger.warning("Failed to get doc projects: #{Exception.message(e)}")

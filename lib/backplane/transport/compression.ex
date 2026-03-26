@@ -42,12 +42,16 @@ defmodule Backplane.Transport.Compression do
     body = conn.resp_body
 
     if is_binary(body) and byte_size(body) >= min_size do
-      compressed = :zlib.gzip(body)
+      try do
+        compressed = :zlib.gzip(body)
 
-      conn
-      |> put_resp_header("content-encoding", "gzip")
-      |> put_resp_header("vary", "Accept-Encoding")
-      |> Map.put(:resp_body, compressed)
+        conn
+        |> put_resp_header("content-encoding", "gzip")
+        |> put_resp_header("vary", "Accept-Encoding")
+        |> Map.put(:resp_body, compressed)
+      rescue
+        _e -> conn
+      end
     else
       conn
     end

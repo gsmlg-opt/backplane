@@ -32,16 +32,22 @@ defmodule Backplane.Transport.AuthPlug do
   end
 
   defp verify_token(conn, valid_tokens) do
-    case get_req_header(conn, "authorization") do
-      ["Bearer " <> token] ->
-        if Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
-          conn
-        else
-          reject(conn)
-        end
+    with [header] <- get_req_header(conn, "authorization"),
+         token when is_binary(token) <- extract_bearer_token(header),
+         true <- Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
+      conn
+    else
+      _ -> reject(conn)
+    end
+  end
+
+  defp extract_bearer_token(header) do
+    case String.split(header, " ", parts: 2) do
+      [scheme, token] when byte_size(token) > 0 ->
+        if String.downcase(scheme) == "bearer", do: String.trim(token)
 
       _ ->
-        reject(conn)
+        nil
     end
   end
 

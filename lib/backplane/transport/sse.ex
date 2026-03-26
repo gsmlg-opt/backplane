@@ -52,8 +52,7 @@ defmodule Backplane.Transport.SSE do
       })
 
     chunk_data = "event: message\ndata: #{message}\n\n"
-    {:ok, conn} = chunk(conn, chunk_data)
-    conn
+    safe_chunk(conn, chunk_data)
   end
 
   @doc """
@@ -69,7 +68,13 @@ defmodule Backplane.Transport.SSE do
       })
 
     chunk_data = "event: message\ndata: #{error_message}\n\n"
-    {:ok, conn} = chunk(conn, chunk_data)
-    conn
+    safe_chunk(conn, chunk_data)
+  end
+
+  defp safe_chunk(conn, data) do
+    case chunk(conn, data) do
+      {:ok, conn} -> conn
+      {:error, _reason} -> conn
+    end
   end
 end
