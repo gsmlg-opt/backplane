@@ -35,12 +35,17 @@ defmodule Backplane.Docs.Search do
   def query(_project_id, "", _opts), do: []
   def query(_project_id, nil, _opts), do: []
 
+  # Over-fetch factor: fetch more from DB than requested so that chunk-type
+  # weight reranking can promote chunks that raw ts_rank placed below the limit.
+  @overfetch_factor 3
+
   def query(project_id, search_query, opts) do
     limit = Keyword.get(opts, :limit, @default_limit)
     max_tokens = Keyword.get(opts, :max_tokens, @default_max_tokens)
     chunk_type = Keyword.get(opts, :chunk_type)
 
     tsquery = sanitize_query(search_query)
+    db_limit = limit * @overfetch_factor
 
     base =
       DocChunk
@@ -62,7 +67,7 @@ defmodule Backplane.Docs.Search do
       end
 
     base
-    |> limit(^limit)
+    |> limit(^db_limit)
     |> select([c], %{
       id: c.id,
       source_path: c.source_path,
@@ -75,6 +80,7 @@ defmodule Backplane.Docs.Search do
     })
     |> Repo.all()
     |> apply_chunk_type_weights()
+    |> Enum.take(limit)
     |> apply_token_budget(max_tokens)
   end
 
