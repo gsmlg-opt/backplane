@@ -10,6 +10,7 @@ defmodule Backplane.Skills.Sources.Local do
   defstruct [:name, :path]
 
   @impl true
+  @spec list() :: {:ok, [Backplane.Skills.Source.skill_entry()]} | {:error, term()}
   def list do
     case get_config() do
       nil -> {:ok, []}
@@ -51,6 +52,7 @@ defmodule Backplane.Skills.Sources.Local do
   end
 
   @impl true
+  @spec fetch(String.t()) :: {:ok, Backplane.Skills.Source.skill_entry()} | {:error, term()}
   def fetch(skill_id) do
     case get_config() do
       nil -> {:error, :not_configured}

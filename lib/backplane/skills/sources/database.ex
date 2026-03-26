@@ -10,6 +10,7 @@ defmodule Backplane.Skills.Sources.Database do
   alias Backplane.Skills.Skill
 
   @impl true
+  @spec list() :: {:ok, [Backplane.Skills.Source.skill_entry()]}
   def list do
     skills =
       Skill
@@ -21,6 +22,7 @@ defmodule Backplane.Skills.Sources.Database do
   end
 
   @impl true
+  @spec fetch(String.t()) :: {:ok, Backplane.Skills.Source.skill_entry()} | {:error, :not_found}
   def fetch(skill_id) do
     case Repo.get(Skill, skill_id) do
       nil -> {:error, :not_found}
@@ -29,6 +31,7 @@ defmodule Backplane.Skills.Sources.Database do
   end
 
   @doc "Create a new database-sourced skill."
+  @spec create(map()) :: {:ok, Skill.t()} | {:error, Ecto.Changeset.t()}
   def create(attrs) do
     hash =
       :crypto.hash(:sha256, attrs[:content] || attrs["content"] || "")
@@ -47,6 +50,7 @@ defmodule Backplane.Skills.Sources.Database do
   end
 
   @doc "Update a database-sourced skill. Rejects non-db sources."
+  @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, atom() | Ecto.Changeset.t()}
   def update(skill_id, attrs) do
     case Repo.get(Skill, skill_id) do
       nil ->

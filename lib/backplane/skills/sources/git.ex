@@ -12,6 +12,7 @@ defmodule Backplane.Skills.Sources.Git do
   @clone_base "/tmp/backplane_skills"
 
   @impl true
+  @spec list() :: {:ok, [Backplane.Skills.Source.skill_entry()]} | {:error, term()}
   def list do
     list(%__MODULE__{})
   end
@@ -53,6 +54,7 @@ defmodule Backplane.Skills.Sources.Git do
   end
 
   @impl true
+  @spec fetch(String.t()) :: {:ok, Backplane.Skills.Source.skill_entry()} | {:error, term()}
   def fetch(skill_id) do
     fetch(%__MODULE__{}, skill_id)
   end
