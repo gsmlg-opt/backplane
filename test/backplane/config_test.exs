@@ -127,6 +127,20 @@ defmodule Backplane.ConfigTest do
       assert config[:backplane].auth_token == "test-secret-token"
     end
 
+    @tag :tmp_dir
+    test "reads auth_tokens list from backplane section", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "tokens.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 4100
+      auth_tokens = ["token-a", "token-b"]
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:backplane].auth_tokens == ["token-a", "token-b"]
+    end
+
     test "defaults port to 4100 when omitted" do
       config = Backplane.Config.load!("#{@fixtures_path}/minimal.toml")
       assert config[:backplane].port == 4100

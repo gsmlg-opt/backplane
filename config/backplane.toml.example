@@ -3,6 +3,8 @@ host = "0.0.0.0"
 port = 4100
 # Optional: require bearer token from MCP clients
 # auth_token = "your-backplane-secret"
+# Or use a list for token rotation:
+# auth_tokens = ["current-token", "previous-token"]
 
 [database]
 url = "postgres://localhost/backplane_dev"

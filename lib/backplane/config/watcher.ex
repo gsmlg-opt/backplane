@@ -62,9 +62,13 @@ defmodule Backplane.Config.Watcher do
   end
 
   defp apply_config(config) do
-    # Update auth token from [backplane] section
+    # Update auth token(s) from [backplane] section
     if token = get_in(config, [:backplane, :auth_token]) do
       Application.put_env(:backplane, :auth_token, token)
+    end
+
+    if tokens = get_in(config, [:backplane, :auth_tokens]) do
+      Application.put_env(:backplane, :auth_tokens, tokens)
     end
 
     # Update git providers — merge into the single :git_providers key
