@@ -29,38 +29,37 @@ Backplane is infrastructure, not a feature of any single consumer. Synapsis, Sam
 ### 2.1 High-Level
 
 ```
-MCP Clients                        Backplane                          Backends
-─────────────────────────────────────────────────────────────────────────────
-                              ┌──────────────────┐
- Synapsis ─────┐              │   Plug Router    │
-               │   MCP/HTTP   │   /mcp           │
- Claude Code ──┼─────────────▶│                  │
-               │              │   JSON-RPC       │
- Codex CLI ────┤              │   Dispatcher     │
-               │              ├──────────────────┤
- Cursor ───────┘              │                  │
-                              │  ┌────────────┐  │       ┌──────────────┐
-                              │  │ Hub Meta   │  │       │ (cross-cut   │
-                              │  │ (discovery)│──┼──────▶│  all engines) │
-                              │  └────────────┘  │       └──────────────┘
-                              │                  │
-                              │  ┌────────────┐  │       ┌──────────────┐
-                              │  │ MCP Proxy  │──┼──────▶│ Upstream MCP │
-                              │  └────────────┘  │       │ servers (N)  │
-                              │                  │       └──────────────┘
-                              │  ┌────────────┐  │       ┌──────────────┐
-                              │  │Skills Engine│──┼──────▶│ Git repos /  │
-                              │  └────────────┘  │       │ local dirs   │
-                              │                  │       └──────────────┘
-                              │  ┌────────────┐  │       ┌──────────────┐
-                              │  │ Doc Engine │──┼──────▶│  PostgreSQL   │
-                              │  └────────────┘  │       └──────────────┘
-                              │                  │
-                              │  ┌────────────┐  │       ┌──────────────┐
-                              │  │ Git Proxy  │──┼──────▶│ GitHub API   │
-                              │  └────────────┘  │       │ GitLab API   │
-                              │                  │       └──────────────┘
-                              └──────────────────┘
+                              ┌──────────────────────────────────────┐
+                              │              Backplane                │
+MCP Clients                   │                                      │      Backends
+──────────────                │  ┌─────────────┐  ┌──────────────┐  │  ──────────────
+                              │  │  Plug.Router │  │   Phoenix    │  │
+ Synapsis ─────┐   MCP/HTTP  │  │  /mcp        │  │   LiveView   │  │
+               │─────────────▶│  │  JSON-RPC    │  │   /admin/*   │──┼──▶ Browser
+ Claude Code ──┤              │  │  Dispatcher  │  │              │  │
+               │              │  └──────┬───────┘  └──────┬───────┘  │
+ Codex CLI ────┤              │         │                 │          │
+               │              │         ▼                 ▼          │
+ Cursor ───────┘              │  ┌────────────────────────────────┐  │
+                              │  │        Engine Layer            │  │
+                              │  │                                │  │
+                              │  │  ┌──────────┐ ┌────────────┐  │  │  ┌──────────────┐
+                              │  │  │ MCP Proxy│ │Skills Engine│──┼──┼─▶│ Git repos /  │
+                              │  │  └─────┬────┘ └────────────┘  │  │  │ local dirs   │
+                              │  │        │                      │  │  └──────────────┘
+                              │  │  ┌─────┴────┐ ┌────────────┐  │  │  ┌──────────────┐
+                              │  │  │ Hub Meta │ │ Doc Engine │──┼──┼─▶│  PostgreSQL   │
+                              │  │  └──────────┘ └────────────┘  │  │  └──────────────┘
+                              │  │                               │  │
+                              │  │  ┌──────────┐                 │  │  ┌──────────────┐
+                              │  │  │ Git Proxy│─────────────────┼──┼─▶│ GitHub API   │
+                              │  │  └──────────┘                 │  │  │ GitLab API   │
+                              │  │                               │  │  └──────────────┘
+                              │  └───────────────────────────────┘  │
+                              │              │                      │  ┌──────────────┐
+                              │              └──────────────────────┼─▶│ Upstream MCP │
+                              │                                    │  │ servers (N)  │
+                              └────────────────────────────────────┘  └──────────────┘
 ```
 
 ### 2.2 Internal Modules
@@ -120,6 +119,21 @@ backplane/
 │   │   │   ├── discover.ex         # Cross-engine unified search
 │   │   │   └── inspect.ex          # Tool introspection (schema, origin, health)
 │   │   │
+│   │   ├── web/
+│   │   │   ├── router.ex           # Phoenix Router — /admin/* LiveView, /mcp Plug forward
+│   │   │   ├── endpoint.ex         # Phoenix.Endpoint (Bandit adapter)
+│   │   │   ├── components/
+│   │   │   │   └── layouts.ex      # Root + app layout components (uses PhoenixDuskmoon)
+│   │   │   └── live/
+│   │   │       ├── dashboard_live.ex       # Overview: upstream health, counts, recent activity
+│   │   │       ├── upstreams_live.ex       # Upstream list, health, reconnect, tool browser
+│   │   │       ├── skills_live.ex          # Browse/search/preview skills, create/edit DB skills
+│   │   │       ├── docs_live.ex            # Browse projects, search chunks, trigger reindex
+│   │   │       ├── git_providers_live.ex   # Credential status, rate limits, test connection
+│   │   │       ├── projects_live.ex        # CRUD project configs (repos, parsers, intervals)
+│   │   │       ├── tools_live.ex           # Browse all tools (native + upstream), test calls
+│   │   │       └── logs_live.ex            # Recent tool calls, job history, errors
+│   │   │
 │   │   └── jobs/
 │   │       ├── reindex.ex          # Oban worker: periodic reindex per project
 │   │       └── webhook_handler.ex  # Oban worker: webhook-triggered reindex
@@ -132,11 +146,19 @@ backplane/
 │   └── backplane.toml.example            # Reference config
 │
 ├── priv/
-│   └── repo/migrations/
-│       ├── 001_create_projects.exs
-│       ├── 002_create_doc_chunks.exs
-│       ├── 003_create_reindex_state.exs
-│       └── 004_create_skills.exs
+│   ├── repo/migrations/
+│   │   ├── 001_create_projects.exs
+│   │   ├── 002_create_doc_chunks.exs
+│   │   ├── 003_create_reindex_state.exs
+│   │   └── 004_create_skills.exs
+│   └── static/                     # Compiled Tailwind CSS, Phoenix assets
+│
+├── assets/
+│   ├── css/app.css                 # Tailwind v4 entry: @import "tailwindcss"; @plugin "@duskmoon-dev/core/plugin"
+│   ├── js/app.js                   # Phoenix LiveView JS hooks + DuskMoon elements import
+│   └── package.json                # @duskmoon-dev/* dependencies
+│
+├── bunfig.toml                     # Bun config: optional = true
 │
 ├── test/
 ├── mix.exs
@@ -149,14 +171,17 @@ backplane/
 ```
 Backplane.Application
 ├── Backplane.Repo                        # Ecto
-├── Oban                               # Job processing
+├── Oban                                  # Job processing
 ├── Backplane.Registry.ToolRegistry       # ETS tool registry
 ├── Backplane.Skills.Registry             # ETS skill catalog
 ├── Backplane.Proxy.Pool                  # DynamicSupervisor for upstream MCP connections
 │   ├── Backplane.Proxy.Upstream (server_1)
 │   ├── Backplane.Proxy.Upstream (server_2)
 │   └── ...
-└── Bandit (Backplane.Transport.Router)   # HTTP server
+└── Backplane.Web.Endpoint                # Phoenix Endpoint (Bandit adapter)
+    ├── /mcp    → Backplane.Transport.McpHandler (Plug, no Phoenix overhead)
+    ├── /webhook/* → Backplane.Transport.Router (Plug)
+    └── /admin/* → Backplane.Web.Router (Phoenix LiveView)
 ```
 
 ---
@@ -173,6 +198,9 @@ host = "0.0.0.0"
 port = 4100
 # Optional: require bearer token from MCP clients
 auth_token = "your-backplane-secret"
+# Optional: HTTP basic auth for /admin/* web UI
+admin_username = "admin"
+admin_password = "changeme"
 
 [database]
 url = "postgres://localhost/backplane_dev"
@@ -274,6 +302,8 @@ path = "/home/user/.config/backplane/skills" # local filesystem directory
 | `backplane` | `host` | string | no | Bind address. Default `"0.0.0.0"` |
 | `backplane` | `port` | integer | no | Listen port. Default `4100` |
 | `backplane` | `auth_token` | string | no | Bearer token MCP clients must present. Omit to disable auth |
+| `backplane` | `admin_username` | string | no | HTTP basic auth username for `/admin/*`. Omit to disable admin auth |
+| `backplane` | `admin_password` | string | no | HTTP basic auth password for `/admin/*`. Required if username set |
 | `github.*` | `token` | string | yes | Personal access token or app token |
 | `github.*` | `api_url` | string | no | Default `https://api.github.com` |
 | `gitlab.*` | `token` | string | yes | Personal access token |
@@ -991,21 +1021,244 @@ Health and status overview of the entire hub.
 
 ---
 
-## 11. Webhooks (BP-21)
+## 11. Web UI
 
-### 11.1 GitHub Webhook
+### 11.1 Design Principle
+
+The MCP endpoint (`POST /mcp`) is the primary interface — it stays Plug-level with zero Phoenix overhead on the hot path. The web UI is a management surface for operators, not a client-facing product. Phoenix LiveView is chosen because it gives real-time updates (upstream health changes, reindex progress) for free via PubSub, with no JS framework to maintain.
+
+**Boundary:** MCP transport = Plug. Admin UI = Phoenix LiveView. Both served by the same `Backplane.Web.Endpoint` (Bandit adapter), routed at the path level.
+
+### 11.2 UI Stack
+
+| Layer | Technology | Notes |
+|---|---|---|
+| Components | `phoenix_duskmoon` | Primary LiveView component library. No `core_components.ex`. |
+| CSS | Tailwind CSS v4 + `@duskmoon-dev/core/plugin` | v4 CSS-based config, no `tailwind.config.js` |
+| JS bundler | Bun | Replaces esbuild. `{:bun, "~> 1.4"}` |
+| CSS bundler | Tailwind standalone CLI | `{:tailwind, "~> 0.2"}` |
+| Web components | `@duskmoon-dev/elements`, `@duskmoon-dev/art-elements` | Custom elements for interactive widgets |
+| CSS art | `@duskmoon-dev/css-art` | Decorative utilities |
+
+**Constraints:**
+- Do NOT use DaisyUI or other CSS component libraries
+- Do NOT use `core_components.ex` — use `phoenix_duskmoon` components exclusively
+- Import `PhoenixDuskmoon.Components` in the web module helpers
+- Phoenix JS packages (`phoenix`, `phoenix_html`, `phoenix_live_view`) resolve from `deps/` via `NODE_PATH` — no npm install needed for those
+
+**CSS entry file** (`assets/css/app.css`):
+
+```css
+@import "tailwindcss";
+@plugin "@duskmoon-dev/core/plugin";
+```
+
+**Build config** (`config/config.exs`):
+
+```elixir
+config :bun,
+  version: "1.3.4",
+  backplane: [
+    args: ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
+    cd: Path.expand("../", __DIR__)
+  ]
+
+config :tailwind,
+  version: "4.1.11",
+  backplane: [
+    args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
+    cd: Path.expand("../", __DIR__)
+  ]
+```
+
+**Dev watchers** (`config/dev.exs`):
+
+```elixir
+watchers: [
+  tailwind: {Tailwind, :install_and_run, [:backplane, ~w(--watch)]},
+  bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}
+]
+```
+
+**NODE_PATH**: Set to `deps/` so Bun resolves Phoenix JS packages without npm install:
+
+```bash
+export NODE_PATH="$(pwd)/deps"
+```
+
+**Runtime binary paths** (`config/runtime.exs`) — for devenv environments:
+
+```elixir
+if System.get_env("MIX_BUN_PATH"), do: config(:bun, path: System.get_env("MIX_BUN_PATH"))
+if System.get_env("MIX_TAILWIND_PATH"), do: config(:tailwind, path: System.get_env("MIX_TAILWIND_PATH"))
+```
+
+### 11.3 Routing
+
+```elixir
+defmodule Backplane.Web.Router do
+  use Phoenix.Router
+  import Phoenix.LiveView.Router
+
+  # MCP transport — forwarded to Plug handler, no Phoenix pipeline
+  forward "/mcp", Backplane.Transport.McpPlug
+  forward "/webhook", Backplane.Transport.WebhookPlug
+
+  pipeline :browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {Backplane.Web.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug Backplane.Web.AuthPlug  # optional basic auth for admin
+  end
+
+  scope "/admin", Backplane.Web do
+    pipe_through :browser
+
+    live "/", DashboardLive, :index
+    live "/upstreams", UpstreamsLive, :index
+    live "/skills", SkillsLive, :index
+    live "/skills/new", SkillsLive, :new
+    live "/skills/:id/edit", SkillsLive, :edit
+    live "/docs", DocsLive, :index
+    live "/docs/:project_id", DocsLive, :show
+    live "/git", GitProvidersLive, :index
+    live "/projects", ProjectsLive, :index
+    live "/projects/new", ProjectsLive, :new
+    live "/projects/:id/edit", ProjectsLive, :edit
+    live "/tools", ToolsLive, :index
+    live "/tools/:name", ToolsLive, :show
+    live "/logs", LogsLive, :index
+  end
+
+  # Health check — no auth, no Phoenix pipeline
+  forward "/health", Backplane.Transport.HealthPlug
+end
+```
+
+### 11.4 Pages
+
+#### Dashboard (`/admin`)
+
+The landing page. Answers "is everything working?" at a glance.
+
+| Section | Content | Live updates |
+|---|---|---|
+| Upstream Status | Card per upstream: name, status badge (connected/degraded/disconnected), tool count | PubSub on upstream state change |
+| Engine Summary | Skill count, doc chunk count, indexed project count, total tools | PubSub on sync/reindex complete |
+| Recent Activity | Last 20 events: tool calls, reindex runs, skill syncs, upstream reconnects | PubSub stream |
+| Quick Actions | Buttons: reindex all, sync all skills, reconnect degraded upstreams | Oban job enqueue |
+
+#### Upstreams (`/admin/upstreams`)
+
+| Feature | Description |
+|---|---|
+| List | Table: name, prefix, transport, status badge, tool count, last seen |
+| Expand | Click row → slide-out panel showing all tools registered by this upstream |
+| Actions | Reconnect, disable/enable, view raw capabilities JSON |
+| Live health | Status badge updates in real-time via PubSub |
+
+#### Skills (`/admin/skills`)
+
+| Feature | Description |
+|---|---|
+| Browse | Paginated table: name, source, tags, version, last synced |
+| Search | tsvector-powered search bar with tag filter chips |
+| Preview | Click row → rendered markdown preview of skill content |
+| Create/Edit | Form for DB-sourced skills: name, description, tags, content (markdown editor), enable/disable |
+| Sync | Per-source "Sync Now" button, progress indicator |
+| Source badges | Visual distinction: git (blue), local (green), db (purple) |
+
+#### Docs (`/admin/docs`)
+
+| Feature | Description |
+|---|---|
+| Projects list | Table: project ID, repo, ref, chunk count, last indexed, status |
+| Project detail | Click → browse chunks by file path, module, function |
+| Search | Full-text search across chunks within a project |
+| Reindex | Per-project "Reindex Now" button with progress indicator |
+| Parse preview | Show how a source file was chunked (debug aid) |
+
+#### Git Providers (`/admin/git`)
+
+| Feature | Description |
+|---|---|
+| List | Table: instance name, provider type, API URL, rate limit remaining |
+| Test | "Test Connection" button per provider — verifies token validity |
+| Rate limits | Visual bar showing remaining/total rate limit, resets at time |
+
+#### Projects (`/admin/projects`)
+
+| Feature | Description |
+|---|---|
+| CRUD | Create/edit project config: ID, repo, ref, parsers, reindex interval, webhook secret |
+| Validation | Verify repo exists via git provider before saving |
+| Webhook URL | Show the webhook URL to configure in GitHub/GitLab |
+
+#### Tools (`/admin/tools`)
+
+| Feature | Description |
+|---|---|
+| Browse | Table: name, description, origin (native/upstream prefix), category |
+| Search | Filter by name, prefix, origin type |
+| Detail | Click → full JSON Schema for input_schema, test call form |
+| Test call | Interactive form: fill parameters, call tool, see result (dev/debug aid) |
+
+#### Logs (`/admin/logs`)
+
+| Feature | Description |
+|---|---|
+| Tool calls | Recent calls: tool name, timestamp, duration, success/error, truncated result |
+| Jobs | Oban job history: reindex, skill sync, webhook — status, duration, errors |
+| Errors | Filtered view of failed tool calls and job failures |
+| Live stream | New entries appear in real-time via PubSub |
+
+### 11.5 Admin Authentication (BP-32)
+
+Optional basic auth for the admin UI. When `backplane.admin_username` and `backplane.admin_password` are set in config, the `/admin/*` routes require HTTP basic auth. When omitted, admin is open (for local/VPN deployments).
+
+```toml
+[backplane]
+host = "0.0.0.0"
+port = 4100
+auth_token = "your-backplane-secret"     # MCP client auth
+admin_username = "admin"                  # Web UI auth (optional)
+admin_password = "changeme"              # Web UI auth (optional)
+```
+
+MCP auth (`auth_token`) and admin auth are independent. MCP clients don't use the admin UI. Admin users don't use MCP.
+
+### 11.6 PubSub Topics
+
+LiveView pages subscribe to these topics for real-time updates:
+
+| Topic | Events | Publishers |
+|---|---|---|
+| `upstream:<prefix>` | `:connected`, `:disconnected`, `:degraded`, `:tools_refreshed` | `Proxy.Upstream` |
+| `skills:sync` | `:started`, `:completed`, `:failed` | `Skills.Sync` (Oban worker) |
+| `docs:reindex` | `:started`, `:completed`, `:failed`, `:progress` | `Jobs.Reindex` (Oban worker) |
+| `tools:call` | `:dispatched`, `:completed`, `:failed` | `Transport.McpHandler` |
+| `config:reloaded` | `:reloaded` | `Config.Watcher` |
+
+---
+
+## 12. Webhooks (BP-21)
+
+### 12.1 GitHub Webhook
 
 `POST /webhook/github`
 
 Validates `X-Hub-Signature-256` against a configured secret per project. On `push` events to the tracked `ref`, enqueues an Oban reindex job for the matching project.
 
-### 11.2 GitLab Webhook
+### 12.2 GitLab Webhook
 
 `POST /webhook/gitlab`
 
 Validates `X-Gitlab-Token`. On `push` events to the tracked `ref`, enqueues reindex.
 
-### 11.3 Webhook Config
+### 12.3 Webhook Config
 
 ```toml
 [[projects]]
@@ -1017,37 +1270,78 @@ webhook_secret = "whsec_..."    # GitHub: HMAC secret, GitLab: token
 
 ---
 
-## 12. Dependencies
+## 13. Dependencies
 
 ```elixir
 # mix.exs
 defp deps do
   [
-    {:plug, "~> 1.16"},
+    # Web — Phoenix serves both MCP (Plug routes) and admin UI (LiveView)
+    {:phoenix, "~> 1.8"},
+    {:phoenix_html, "~> 4.2"},
+    {:phoenix_live_view, "~> 1.0"},
+    {:phoenix_live_dashboard, "~> 0.8"},
+    {:phoenix_duskmoon, "~> 5.0"},      # DuskMoon UI component library
     {:bandit, "~> 1.5"},
     {:jason, "~> 1.4"},
+
+    # Assets — Bun bundler + Tailwind v4 standalone CLI
+    {:bun, "~> 1.4", runtime: Mix.env() == :dev},
+    {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
+
+    # HTTP client
     {:req, "~> 0.5"},
+
+    # Database
     {:ecto_sql, "~> 3.12"},
     {:postgrex, "~> 0.19"},
-    {:oban, "~> 2.18"},
-    {:toml, "~> 0.7"},
-    {:file_system, "~> 1.0"},      # local skill source watching
 
-    # Optional
-    {:pgvector, "~> 0.3"},         # semantic search (opt-in)
+    # Job processing
+    {:oban, "~> 2.18"},
+
+    # Config
+    {:toml, "~> 0.7"},
+
+    # File watching (local skill sources)
+    {:file_system, "~> 1.0"},
+
+    # Telemetry
+    {:telemetry, "~> 1.3"},
+    {:telemetry_metrics, "~> 1.0"},
+    {:telemetry_poller, "~> 1.1"},
+
+    # Optional: semantic search
+    {:pgvector, "~> 0.3", optional: true},
 
     # Dev/Test
-    {:credo, "~> 1.7", only: [:dev, :test]},
-    {:dialyxir, "~> 1.4", only: [:dev, :test]},
+    {:phoenix_live_reload, "~> 1.5", only: :dev},
+    {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+    {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+    {:floki, ">= 0.30.0", only: :test},
     {:ex_machina, "~> 2.8", only: :test},
     {:mox, "~> 1.1", only: :test},
   ]
 end
 ```
 
+### 13.1 JS Dependencies (`assets/package.json`)
+
+```json
+{
+  "dependencies": {
+    "@duskmoon-dev/core": "latest",
+    "@duskmoon-dev/css-art": "latest",
+    "@duskmoon-dev/elements": "latest",
+    "@duskmoon-dev/art-elements": "latest"
+  }
+}
+```
+
+Phoenix JS packages (`phoenix`, `phoenix_html`, `phoenix_live_view`) are resolved from `deps/` via `NODE_PATH` — no npm install needed for those.
+
 ---
 
-## 13. Open Questions — Resolved
+## 14. Open Questions — Resolved
 
 ### OQ-1: Should `::` namespace be configurable per-client?
 
@@ -1079,7 +1373,7 @@ Implementation: add `resources/list`, `resources/read`, `prompts/list`, `prompts
 
 ---
 
-## 14. Shared Test Support
+## 15. Shared Test Support
 
 ```elixir
 # test/support/data_case.ex
@@ -1093,6 +1387,14 @@ defmodule Backplane.ConnCase do
   use ExUnit.CaseTemplate
   # Helpers: mcp_request/3 (sends JSON-RPC to /mcp, returns parsed response)
   #          get_request/1 (sends GET, returns parsed response)
+end
+
+# test/support/live_case.ex
+defmodule Backplane.LiveCase do
+  use ExUnit.CaseTemplate
+  # Imports Phoenix.LiveViewTest
+  # Helpers: log_in_admin/1 (sets basic auth session for admin pages)
+  #          visit/2 (mount LiveView, assert connected)
 end
 
 # test/support/fixtures.ex
@@ -1134,7 +1436,7 @@ test/support/fixtures/
 
 ---
 
-## 15. Implementation Phases
+## 16. Implementation Phases
 
 ### Phase 1: Skeleton + MCP Transport
 
@@ -1678,6 +1980,87 @@ test/backplane/transport/structured_logging_test.exs
 │   └── logs request/response as structured JSON
 ```
 
+### Phase 8: Web UI
+
+**Goal:** Admin interface for managing and monitoring Backplane. Dashboard, upstream viewer, skill editor, doc browser, tool inspector, log viewer.
+
+**Modules:** `Web.Endpoint`, `Web.Router`, `Web.Layouts`, `Web.CoreComponents`, `Web.AuthPlug`, `Web.Live.*` (8 LiveView modules)
+
+**Migrations:** None. (Reads existing tables. Optionally `005_create_tool_call_log` for logs persistence.)
+
+**Tests (38 tests):**
+
+```
+test/backplane/web/auth_plug_test.exs
+├── describe "no admin auth configured"
+│   ├── passes all /admin requests through
+│   └── does not prompt for credentials
+├── describe "admin auth configured"
+│   ├── passes request with valid basic auth credentials
+│   ├── returns 401 for missing credentials
+│   ├── returns 401 for wrong password
+│   └── does not affect /mcp or /webhook routes
+
+test/backplane/web/live/dashboard_live_test.exs
+├── describe "mount"
+│   ├── renders upstream status cards
+│   ├── renders engine summary counts (tools, skills, docs)
+│   ├── renders recent activity feed
+│   └── shows quick action buttons
+├── describe "real-time updates"
+│   ├── upstream status card updates on PubSub event
+│   └── activity feed prepends new events on PubSub event
+
+test/backplane/web/live/upstreams_live_test.exs
+├── describe "index"
+│   ├── lists all configured upstreams with status badges
+│   ├── shows tool count per upstream
+│   └── updates status badge on PubSub state change
+├── describe "actions"
+│   ├── reconnect button triggers upstream reconnect
+│   └── expand shows tools registered by upstream
+
+test/backplane/web/live/skills_live_test.exs
+├── describe "index"
+│   ├── lists skills with source badges (git/local/db)
+│   ├── search filters by keyword
+│   ├── tag chips filter by tag
+│   └── click row shows markdown preview
+├── describe "new"
+│   ├── renders create form for DB skill
+│   ├── validates required fields
+│   └── creates skill and redirects to index
+├── describe "edit"
+│   ├── renders edit form with existing content
+│   ├── updates skill on submit
+│   └── rejects edit of git-sourced skill (shows error)
+
+test/backplane/web/live/docs_live_test.exs
+├── describe "index"
+│   ├── lists indexed projects with chunk counts
+│   ├── shows reindex status and last indexed time
+│   └── reindex button enqueues Oban job
+├── describe "show"
+│   ├── lists chunks grouped by source file
+│   ├── search within project returns matching chunks
+│   └── shows chunk content in preview panel
+
+test/backplane/web/live/tools_live_test.exs
+├── describe "index"
+│   ├── lists all tools (native + upstream) with origin badges
+│   ├── search filters by name
+│   └── groups by namespace prefix
+├── describe "show"
+│   ├── renders full input_schema as formatted JSON
+│   └── test call form submits and displays result
+
+test/backplane/web/live/logs_live_test.exs
+├── describe "index"
+│   ├── shows recent tool calls with duration and status
+│   ├── shows Oban job history for reindex and sync
+│   └── new entries appear via PubSub without refresh
+```
+
 ### Test Summary
 
 | Phase | Tests | Cumulative |
@@ -1689,11 +2072,12 @@ test/backplane/transport/structured_logging_test.exs
 | Phase 5: Git Platform Proxy | 47 | 218 |
 | Phase 6: Hub Meta Tools | 19 | 237 |
 | Phase 7: Production Hardening | 12 | 249 |
-| **Total** | **249** | |
+| Phase 8: Web UI | 38 | 287 |
+| **Total** | **287** | |
 
 ---
 
-## 16. Resolved Decisions
+## 17. Resolved Decisions
 
 1. **Standalone project** — not part of Synapsis or Samgita. It's infrastructure, not a feature.
 
@@ -1701,7 +2085,7 @@ test/backplane/transport/structured_logging_test.exs
 
 3. **TOML config over environment variables** — structured config with arrays and tables doesn't fit in env vars. TOML is the convention for MCP config (Claude Code, Codex both use it).
 
-4. **Plug + Bandit, not Phoenix** — no HTML, no sessions, no LiveView. Pure API. Phoenix is unnecessary overhead. Bandit gives HTTP/2 + WebSocket for future SSE needs.
+4. **Phoenix for admin UI, Plug for MCP hot path** — the MCP endpoint (`POST /mcp`) is forwarded to a Plug handler with zero Phoenix overhead. The admin UI (`/admin/*`) uses Phoenix LiveView for real-time dashboards, skill editing, and operational visibility. Same Bandit instance serves both. This avoids the premature "no Phoenix" constraint while keeping the MCP transport lean.
 
 5. **Oban for reindexing and skill sync** — needs: periodic scheduling, uniqueness (don't double-index), persistence across restarts, observability. Oban provides all of these. GenServer + `Process.send_after` does not.
 
@@ -1735,9 +2119,13 @@ test/backplane/transport/structured_logging_test.exs
 
 20. **SIGHUP-based config hot-reload** — (OQ-5) `kill -HUP <pid>` re-reads `backplane.toml`. Git credentials updated in memory. No restart needed. Provider modules read credentials on each request, not at init.
 
+21. **Web UI is Phase 8, not Phase 1** — the admin UI is high-value but not blocking. Phases 1-7 deliver a fully functional headless hub. The UI is operational tooling, not a prerequisite. This means the hub is useful long before the UI is built — agents don't need a dashboard to call tools.
+
+22. **DuskMoon UI, not DaisyUI or core_components** — `phoenix_duskmoon` is the component library. `@duskmoon-dev/core/plugin` is the Tailwind CSS plugin. Bun replaces esbuild. Tailwind v4 (CSS-based config, no `tailwind.config.js`). No `core_components.ex` — all components come from `PhoenixDuskmoon.Components`. This matches the stack used across all gsmlg-opt projects.
+
 ---
 
-## 17. Future Considerations
+## 18. Future Considerations
 
 - **Embedding pipeline**: Optional Oban job that computes embeddings per doc chunk and skill via local model (Ollama) or API. Stored in pgvector column. Enables semantic reranking for both `docs::query-docs` and `skill::search`.
 - **Project auto-discovery**: Scan GitHub org / GitLab group and auto-register all repos matching a pattern.
@@ -1748,6 +2136,5 @@ test/backplane/transport/structured_logging_test.exs
 - **Skill composition**: Skills that reference other skills (`depends_on: [other-skill]`). Loading a skill auto-loads its dependencies. Enables building complex instruction chains from composable pieces.
 - **Skill versioning and rollback**: Maintain version history for DB-sourced skills. Git-sourced skills get this for free via git history. Allow agents to load a specific skill version.
 - **Skill analytics**: Track which skills are loaded most, by which agents, with what outcomes. Feed back into skill curation.
-- **Upstream MCP health dashboard**: Simple web UI (or a separate status page) showing upstream connectivity, tool counts, error rates. Optional — could be a static HTML page served from Plug.
 - **Skill marketplace**: Publish skills to a shared registry that other hub instances can subscribe to. Opt-in, curated, pull-based.
 - **Prompt template engine**: Skills that contain `{{variable}}` placeholders, filled at load time with agent context. Turns skills into parameterized prompt templates.
