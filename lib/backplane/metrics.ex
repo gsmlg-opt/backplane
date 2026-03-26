@@ -44,7 +44,22 @@ defmodule Backplane.Metrics do
           acc
       end)
 
-    Map.put(base, :upstreams, upstream_status())
+    base
+    |> Map.put(:upstreams, upstream_status())
+    |> Map.put(:system, system_info())
+  end
+
+  defp system_info do
+    memory = :erlang.memory()
+
+    %{
+      memory_total_mb: div(memory[:total], 1_048_576),
+      memory_processes_mb: div(memory[:processes], 1_048_576),
+      memory_ets_mb: div(memory[:ets], 1_048_576),
+      process_count: :erlang.system_info(:process_count),
+      schedulers_online: :erlang.system_info(:schedulers_online),
+      uptime_seconds: div(:erlang.statistics(:wall_clock) |> elem(0), 1000)
+    }
   end
 
   defp upstream_status do
