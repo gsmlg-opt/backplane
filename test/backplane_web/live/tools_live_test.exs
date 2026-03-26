@@ -11,7 +11,12 @@ defmodule BackplaneWeb.ToolsLiveTest do
   test "displays registered tools", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/admin/tools")
 
-    # There should be native tools registered
     assert has_element?(view, "h1", "Tools")
+  end
+
+  test "has search functionality", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/admin/tools")
+
+    assert has_element?(view, "input[placeholder='Search tools...']")
   end
 end

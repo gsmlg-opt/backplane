@@ -28,6 +28,7 @@ defmodule Backplane.MixProject do
       # Web — Phoenix serves both MCP (Plug routes) and admin UI (LiveView)
       {:phoenix, "~> 1.8"},
       {:phoenix_html, "~> 4.2"},
+      {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
       {:bandit, "~> 1.5"},
