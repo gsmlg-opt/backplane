@@ -14,6 +14,7 @@ defmodule Backplane.Docs.Indexer do
   Index a set of processed chunks for a project.
   Returns {:ok, stats} with insert/delete/skip counts.
   """
+  @spec index(String.t(), [map()]) :: {:ok, map()}
   def index(project_id, chunks) do
     existing = load_existing_hashes(project_id)
     new_hashes = MapSet.new(chunks, & &1.content_hash)
@@ -46,6 +47,8 @@ defmodule Backplane.Docs.Indexer do
   @doc """
   Update the reindex state for a project.
   """
+  @spec update_reindex_state(String.t(), map()) ::
+          {:ok, ReindexState.t()} | {:error, Ecto.Changeset.t()}
   def update_reindex_state(project_id, attrs) do
     case Repo.get(ReindexState, project_id) do
       nil ->

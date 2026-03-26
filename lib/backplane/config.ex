@@ -22,6 +22,7 @@ defmodule Backplane.Config do
   - `:upstream` — list of upstream MCP server configs
   - `:skills` — list of skill source configs
   """
+  @spec load!(String.t()) :: keyword()
   def load!(path) do
     unless File.exists?(path) do
       raise "Config file not found: #{path}"

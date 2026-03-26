@@ -7,10 +7,12 @@ defmodule Backplane.Utils do
   Conditionally adds a key-value pair to a keyword list.
   Returns the list unchanged if the value is nil.
   """
+  @spec maybe_put(keyword(), atom(), term()) :: keyword()
   def maybe_put(opts, _key, nil), do: opts
   def maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   @doc "Format a tool origin for display."
+  @spec format_origin(:native | {:upstream, String.t()}) :: String.t()
   def format_origin(:native), do: "native"
   def format_origin({:upstream, prefix}), do: "upstream:#{prefix}"
 
@@ -20,6 +22,7 @@ defmodule Backplane.Utils do
   Escapes `%`, `_`, and `\\` so they are treated as literal characters
   rather than pattern wildcards.
   """
+  @spec escape_like(String.t()) :: String.t()
   def escape_like(str) do
     str
     |> String.replace("\\", "\\\\")
