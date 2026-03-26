@@ -224,6 +224,11 @@ defmodule Backplane.Proxy.Upstream do
       exit_status: status
     )
 
+    # Reply to all pending callers so they don't hang until GenServer.call timeout
+    for {_id, from} <- state.pending_requests do
+      GenServer.reply(from, {:error, "upstream process exited (status #{status})"})
+    end
+
     ToolRegistry.deregister_upstream(state.prefix)
     schedule_reconnect(state.reconnect_attempts)
 
@@ -233,12 +238,18 @@ defmodule Backplane.Proxy.Upstream do
        | status: :disconnected,
          port: nil,
          tools: [],
+         pending_requests: %{},
          reconnect_attempts: state.reconnect_attempts + 1
      }}
   end
 
   @impl true
   def terminate(_reason, state) do
+    # Reply to all pending callers so they don't hang
+    for {_id, from} <- state.pending_requests do
+      GenServer.reply(from, {:error, "upstream terminated"})
+    end
+
     ToolRegistry.deregister_upstream(state.prefix)
 
     if state.port do
