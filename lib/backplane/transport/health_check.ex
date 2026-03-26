@@ -26,7 +26,7 @@ defmodule Backplane.Transport.HealthCheck do
           total: SkillsRegistry.count()
         },
         docs: get_docs_summary(),
-        git: %{status: "ok"}
+        git: get_git_summary()
       }
     }
   end
@@ -47,6 +47,19 @@ defmodule Backplane.Transport.HealthCheck do
     e ->
       Logger.warning("Failed to get upstreams: #{Exception.message(e)}")
       []
+  end
+
+  defp get_git_summary do
+    providers = Application.get_env(:backplane, :git_providers, %{})
+
+    provider_count =
+      Enum.sum(for {_type, instances} <- providers, is_list(instances), do: length(instances))
+
+    %{status: "ok", providers: provider_count}
+  rescue
+    e ->
+      Logger.warning("Failed to get git summary: #{Exception.message(e)}")
+      %{status: "unknown", providers: 0}
   end
 
   defp get_docs_summary do
