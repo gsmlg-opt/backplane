@@ -91,11 +91,11 @@ defmodule Backplane.Registry.ToolRegistry do
     limit = Keyword.get(opts, :limit, 50)
     query_down = String.downcase(query)
 
-    list_all()
-    |> Enum.filter(fn tool ->
-      String.contains?(String.downcase(tool.name), query_down) or
-        String.contains?(String.downcase(tool.description), query_down)
-    end)
+    for {_key, tool} <- :ets.tab2list(@table),
+        String.contains?(String.downcase(tool.name), query_down) or
+          String.contains?(String.downcase(tool.description), query_down) do
+      tool
+    end
     |> Enum.take(limit)
   end
 
