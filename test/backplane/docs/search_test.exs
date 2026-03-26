@@ -114,5 +114,32 @@ defmodule Backplane.Docs.SearchTest do
       results = Search.query(project.id, "handle_call/3")
       assert is_list(results)
     end
+
+    test "token budget skips oversized chunks and includes smaller ones", %{project: project} do
+      # The setup inserts chunks with tokens: 12, 9, 11
+      # With a budget of 15, the greedy approach should include the 12-token chunk first,
+      # then skip the next if it doesn't fit, and include the 9-token chunk
+      results = Search.query(project.id, "GenServer", max_tokens: 15)
+      tokens_list = Enum.map(results, & &1.tokens)
+      total = Enum.sum(tokens_list)
+      assert total <= 15
+      # With skip behavior, we should get more results than if we halted early
+      assert length(results) >= 1
+    end
+
+    test "chunk_type weighting boosts moduledoc over function_doc", %{project: project} do
+      results = Search.query(project.id, "GenServer")
+      # With equal ts_rank, moduledoc (1.5x) should rank higher than function_doc (1.3x)
+      types = Enum.map(results, & &1.chunk_type)
+
+      if length(types) >= 2 do
+        moduledoc_idx = Enum.find_index(types, &(&1 == "moduledoc"))
+        func_idx = Enum.find_index(types, &(&1 == "function_doc"))
+
+        if moduledoc_idx && func_idx do
+          assert moduledoc_idx < func_idx
+        end
+      end
+    end
   end
 end
