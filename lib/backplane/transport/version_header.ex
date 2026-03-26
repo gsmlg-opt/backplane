@@ -8,7 +8,6 @@ defmodule Backplane.Transport.VersionHeader do
   @behaviour Plug
 
   @app_version Mix.Project.config()[:version]
-  @mcp_protocol_version "2025-03-26"
 
   @impl true
   def init(opts), do: opts
@@ -17,6 +16,6 @@ defmodule Backplane.Transport.VersionHeader do
   def call(conn, _opts) do
     conn
     |> Plug.Conn.put_resp_header("x-backplane-version", @app_version)
-    |> Plug.Conn.put_resp_header("x-mcp-protocol-version", @mcp_protocol_version)
+    |> Plug.Conn.put_resp_header("x-mcp-protocol-version", Backplane.protocol_version())
   end
 end

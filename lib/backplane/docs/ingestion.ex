@@ -39,13 +39,22 @@ defmodule Backplane.Docs.Ingestion do
            {:ok, chunks} <- process_files(repo_path, project.id) do
         {:ok, stats} = Indexer.index(project.id, chunks)
 
-        # Update project last_indexed_at
-        project
-        |> Project.changeset(%{
-          last_indexed_at: DateTime.utc_now(),
-          index_hash: commit_sha
-        })
-        |> Repo.update()
+        # Update project last_indexed_at (non-fatal if this fails)
+        case project
+             |> Project.changeset(%{
+               last_indexed_at: DateTime.utc_now(),
+               index_hash: commit_sha
+             })
+             |> Repo.update() do
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.warning(
+              "Failed to update project metadata: #{inspect(changeset.errors)}",
+              project_id: project.id
+            )
+        end
 
         Indexer.update_reindex_state(project.id, %{
           status: "completed",

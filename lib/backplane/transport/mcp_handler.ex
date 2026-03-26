@@ -17,9 +17,7 @@ defmodule Backplane.Transport.McpHandler do
 
   import Ecto.Query
 
-  @protocol_version "2025-03-26"
   @server_name "backplane"
-  @server_version "0.1.0"
 
   def handle(conn) do
     case conn.body_params do
@@ -92,8 +90,8 @@ defmodule Backplane.Transport.McpHandler do
   defp compute_result("initialize", _id, _params) do
     {:result,
      %{
-       protocolVersion: @protocol_version,
-       serverInfo: %{name: @server_name, version: @server_version},
+       protocolVersion: Backplane.protocol_version(),
+       serverInfo: %{name: @server_name, version: Backplane.version()},
        capabilities: %{
          tools: %{listChanged: true},
          resources: %{listChanged: false},
@@ -197,10 +195,10 @@ defmodule Backplane.Transport.McpHandler do
     session_id = generate_session_id()
 
     result = %{
-      protocolVersion: @protocol_version,
+      protocolVersion: Backplane.protocol_version(),
       serverInfo: %{
         name: @server_name,
-        version: @server_version
+        version: Backplane.version()
       },
       capabilities: %{
         tools: %{listChanged: true},

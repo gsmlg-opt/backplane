@@ -37,4 +37,7 @@ defmodule Backplane do
 
   @doc "Get the current version."
   def version, do: "0.1.0"
+
+  @doc "MCP protocol version supported by this server."
+  def protocol_version, do: "2025-03-26"
 end

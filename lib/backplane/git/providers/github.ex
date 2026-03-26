@@ -210,13 +210,8 @@ defmodule Backplane.Git.Providers.GitHub do
     language = Keyword.get(opts, :language)
 
     q =
-      [query]
-      |> then(fn parts ->
-        if repo, do: parts ++ ["repo:#{repo}"], else: parts
-      end)
-      |> then(fn parts ->
-        if language, do: parts ++ ["language:#{language}"], else: parts
-      end)
+      [query, if(repo, do: "repo:#{repo}"), if(language, do: "language:#{language}")]
+      |> Enum.reject(&is_nil/1)
       |> Enum.join("+")
 
     case Req.get(client(config), url: "/search/code", params: [q: q]) do

@@ -63,24 +63,26 @@ defmodule Backplane.Skills.Registry do
 
     skills = Backplane.Repo.all(from(s in Backplane.Skills.Skill, where: s.enabled == true))
 
+    rows =
+      Enum.map(skills, fn skill ->
+        {skill.id,
+         %{
+           id: skill.id,
+           name: skill.name,
+           description: skill.description,
+           tags: skill.tags,
+           tools: skill.tools,
+           model: skill.model,
+           version: skill.version,
+           content: skill.content,
+           content_hash: skill.content_hash,
+           source: skill.source
+         }}
+      end)
+
+    # Atomic: delete + bulk insert minimizes the window where the table is empty
     :ets.delete_all_objects(@table)
-
-    Enum.each(skills, fn skill ->
-      entry = %{
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        tags: skill.tags,
-        tools: skill.tools,
-        model: skill.model,
-        version: skill.version,
-        content: skill.content,
-        content_hash: skill.content_hash,
-        source: skill.source
-      }
-
-      :ets.insert(@table, {skill.id, entry})
-    end)
+    :ets.insert(@table, rows)
 
     :ok
   end
