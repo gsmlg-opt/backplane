@@ -68,17 +68,21 @@ defmodule Backplane.Docs.Indexer do
     |> MapSet.new()
   end
 
-  defp delete_chunks(_project_id, hashes) when map_size(hashes) == 0, do: 0
-
   defp delete_chunks(project_id, hashes) do
     hash_list = MapSet.to_list(hashes)
 
-    {count, _} =
-      DocChunk
-      |> where([c], c.project_id == ^project_id and c.content_hash in ^hash_list)
-      |> Repo.delete_all()
+    case hash_list do
+      [] ->
+        0
 
-    count
+      _ ->
+        {count, _} =
+          DocChunk
+          |> where([c], c.project_id == ^project_id and c.content_hash in ^hash_list)
+          |> Repo.delete_all()
+
+        count
+    end
   end
 
   defp insert_chunks(_project_id, []), do: 0

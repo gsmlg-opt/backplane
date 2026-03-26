@@ -430,5 +430,21 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
       assert Enum.any?(func_chunks, fn c -> c.function == "process/3" end)
     end
+
+    test "counts args with nested parentheses inside function args" do
+      # Exercises the "(" and ")" depth tracking branches in count_args_balanced
+      code = ~S'''
+      defmodule MyApp.Nested do
+        @doc "Default arg with nested parens."
+        def transform(opts \\ Keyword.new([])) do
+          opts
+        end
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/nested.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      assert Enum.any?(func_chunks, fn c -> c.function == "transform/1" end)
+    end
   end
 end

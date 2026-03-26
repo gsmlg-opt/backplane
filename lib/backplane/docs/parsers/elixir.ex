@@ -245,7 +245,6 @@ defmodule Backplane.Docs.Parsers.Elixir do
     end
   end
 
-  defp count_args_balanced("()"), do: 0
   defp count_args_balanced("()" <> _), do: 0
 
   defp count_args_balanced("(" <> rest) do
