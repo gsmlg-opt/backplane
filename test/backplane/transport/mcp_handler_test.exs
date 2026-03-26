@@ -594,13 +594,31 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns completions for skill_id argument" do
+      # Insert a skill into the DB so the registry has something to list
+      Repo.insert(
+        %Skill{
+          id: "comp-skill-test",
+          name: "comp-test",
+          description: "test",
+          content: "# test",
+          content_hash: "comphash#{System.unique_integer([:positive])}",
+          source: "db",
+          enabled: true
+        },
+        on_conflict: :nothing
+      )
+
+      Backplane.Skills.Registry.refresh()
+
       resp =
         mcp_request("completion/complete", %{
           "ref" => %{"type" => "ref/tool", "name" => "skill::load"},
-          "argument" => %{"name" => "skill_id", "value" => ""}
+          "argument" => %{"name" => "skill_id", "value" => "comp"}
         })
 
-      assert is_list(resp["result"]["completion"]["values"])
+      values = resp["result"]["completion"]["values"]
+      assert is_list(values)
+      assert Enum.any?(values, &String.contains?(&1, "comp"))
     end
 
     test "returns completions for repo argument" do

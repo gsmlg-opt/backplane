@@ -265,8 +265,6 @@ defmodule Backplane.Docs.Parsers.Elixir do
     |> Kernel.+(1)
   end
 
-  defp count_args_balanced(_), do: 0
-
   defp current_module_name([]), do: nil
   defp current_module_name(stack), do: stack |> Enum.reverse() |> Enum.join(".")
 
