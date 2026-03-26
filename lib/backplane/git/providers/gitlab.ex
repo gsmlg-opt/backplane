@@ -14,6 +14,7 @@ defmodule Backplane.Git.Providers.GitLab do
   @doc """
   Create a new configured Req client for GitLab API calls.
   """
+  @spec client(map()) :: Req.Request.t()
   def client(config) do
     api_url = config[:api_url] || @default_api_url
     token = config[:token]

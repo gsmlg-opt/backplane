@@ -14,6 +14,7 @@ defmodule Backplane.Git.Providers.GitHub do
   @doc """
   Create a new configured Req client for GitHub API calls.
   """
+  @spec client(map()) :: Req.Request.t()
   def client(config) do
     api_url = config[:api_url] || @default_api_url
     token = config[:token]

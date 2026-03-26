@@ -63,6 +63,7 @@ defmodule Backplane.Skills.Sync do
   - Disable removed skills (not present in source)
   - Skip unchanged skills (same content_hash)
   """
+  @spec sync_entries([map()]) :: :ok
   def sync_entries(entries) do
     source = get_source(entries)
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
