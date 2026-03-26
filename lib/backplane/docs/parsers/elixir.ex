@@ -136,8 +136,8 @@ defmodule Backplane.Docs.Parsers.Elixir do
          rest,
          source_path,
          module_stack,
-         doc,
-         spec,
+         _doc,
+         _spec,
          typedoc
        ) do
     if typedoc do

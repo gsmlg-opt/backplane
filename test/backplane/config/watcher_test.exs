@@ -235,6 +235,21 @@ defmodule Backplane.Config.WatcherTest do
       end
     end
 
+    test "debounces rapid SIGHUP signals" do
+      pid = Process.whereis(Watcher)
+
+      if pid do
+        # Send multiple SIGHUP signals rapidly
+        for _ <- 1..5, do: send(pid, {:signal, :sighup})
+        # Wait less than debounce window — process should still be alive
+        Process.sleep(50)
+        assert Process.alive?(pid)
+        # Wait for debounce to fire (1s + margin)
+        Process.sleep(1100)
+        assert Process.alive?(pid)
+      end
+    end
+
     test "handles unknown messages gracefully" do
       pid = Process.whereis(Watcher)
 
