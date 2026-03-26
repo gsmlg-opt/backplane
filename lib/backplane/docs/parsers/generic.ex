@@ -8,6 +8,7 @@ defmodule Backplane.Docs.Parsers.Generic do
   @behaviour Backplane.Docs.Parser
 
   @impl true
+  @spec parse(String.t(), String.t()) :: {:ok, [Backplane.Docs.Parser.chunk_map()]}
   def parse(content, source_path) do
     chunks =
       content

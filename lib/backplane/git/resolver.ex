@@ -23,6 +23,7 @@ defmodule Backplane.Git.Resolver do
       {:ok, {Backplane.Git.Providers.GitHub, %{token: "...", api_url: "..."}, "elixir-lang/elixir"}}
 
   """
+  @spec resolve(String.t()) :: {:ok, {module(), map(), String.t()}} | {:error, atom()}
   def resolve(repo_string) do
     case String.split(repo_string, ":", parts: 2) do
       [provider_part, repo_id] when repo_id != "" ->

@@ -17,6 +17,7 @@ defmodule Backplane.Skills.Search do
     - :source - source type filter (e.g., "git", "local", "db")
     - :limit - max results (default 10)
   """
+  @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
     tools = Keyword.get(opts, :tools, [])

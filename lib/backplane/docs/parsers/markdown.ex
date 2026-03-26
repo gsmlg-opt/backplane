@@ -8,6 +8,7 @@ defmodule Backplane.Docs.Parsers.Markdown do
   @behaviour Backplane.Docs.Parser
 
   @impl true
+  @spec parse(String.t(), String.t()) :: {:ok, [Backplane.Docs.Parser.chunk_map()]}
   def parse(content, source_path) do
     chunks = split_by_headings(content, source_path)
     {:ok, chunks}

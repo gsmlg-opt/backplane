@@ -14,6 +14,7 @@ defmodule Backplane.Docs.Parsers.Elixir do
   require Logger
 
   @impl true
+  @spec parse(String.t(), String.t()) :: {:ok, [Backplane.Docs.Parser.chunk_map()]}
   def parse(content, source_path) when is_binary(content) do
     case Code.string_to_quoted(content,
            columns: true,

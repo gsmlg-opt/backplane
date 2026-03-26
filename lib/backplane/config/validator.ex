@@ -10,6 +10,7 @@ defmodule Backplane.Config.Validator do
   Validates config and returns a list of warnings.
   Raises on fatal errors.
   """
+  @spec validate!(keyword()) :: :ok
   def validate!(config) do
     warnings =
       []

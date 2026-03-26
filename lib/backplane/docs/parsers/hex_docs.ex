@@ -12,6 +12,7 @@ defmodule Backplane.Docs.Parsers.HexDocs do
   require Logger
 
   @impl true
+  @spec parse(String.t(), String.t()) :: {:ok, [Backplane.Docs.Parser.chunk_map()]}
   def parse(content, source_path) do
     chunks = extract_chunks(content, source_path)
     {:ok, chunks}
@@ -140,6 +141,7 @@ defmodule Backplane.Docs.Parsers.HexDocs do
   Split HTML content into sections based on heading tags (h1-h4).
   Returns a list of `{heading_html, body_html}` tuples.
   """
+  @spec split_html_sections(String.t()) :: [{String.t(), String.t()}]
   def split_html_sections(html) do
     # Split on h1-h4 tags
     parts = Regex.split(~r/(<h[1-4][^>]*>.*?<\/h[1-4]>)/s, html, include_captures: true)
@@ -168,6 +170,7 @@ defmodule Backplane.Docs.Parsers.HexDocs do
   @doc """
   Strip HTML tags from a string, leaving only text content.
   """
+  @spec strip_html_tags(String.t()) :: String.t()
   def strip_html_tags(html) do
     html
     |> String.replace(~r/<script[^>]*>.*?<\/script>/s, "")

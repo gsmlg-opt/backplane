@@ -25,6 +25,7 @@ defmodule Backplane.Docs.Parser do
   @doc """
   Select the appropriate parser for a given file path based on extension.
   """
+  @spec parser_for(String.t()) :: module()
   def parser_for(path) do
     case Path.extname(path) do
       ext when ext in [".ex", ".exs"] -> ElixirParser
