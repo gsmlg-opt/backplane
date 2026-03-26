@@ -5,7 +5,16 @@ defmodule BackplaneWeb.ToolsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, current_path: "/admin/tools", loading: true, search: "", selected: nil)}
+    {:ok,
+     assign(socket,
+       current_path: "/admin/tools",
+       loading: true,
+       search: "",
+       selected: nil,
+       test_args: "{}",
+       test_result: nil,
+       test_running: false
+     )}
   end
 
   @impl true
@@ -33,11 +42,46 @@ defmodule BackplaneWeb.ToolsLive do
 
   def handle_event("select", %{"name" => name}, socket) do
     tool = Enum.find(socket.assigns.tools, &(&1.name == name))
-    {:noreply, assign(socket, selected: tool)}
+    {:noreply, assign(socket, selected: tool, test_args: "{}", test_result: nil)}
   end
 
   def handle_event("close_detail", _, socket) do
-    {:noreply, assign(socket, selected: nil)}
+    {:noreply, assign(socket, selected: nil, test_result: nil)}
+  end
+
+  def handle_event("test_call", %{"args" => args_json}, socket) do
+    tool = socket.assigns.selected
+
+    if tool do
+      case Jason.decode(args_json) do
+        {:ok, arguments} ->
+          socket = assign(socket, test_running: true, test_args: args_json)
+
+          result =
+            try do
+              Backplane.Transport.McpHandler.dispatch_tool_call(tool.name, arguments)
+            rescue
+              e -> {:error, Exception.message(e)}
+            end
+
+          formatted =
+            case result do
+              {:ok, data} -> %{status: :ok, data: inspect(data, pretty: true, limit: :infinity)}
+              {:error, msg} -> %{status: :error, data: to_string(msg)}
+            end
+
+          {:noreply, assign(socket, test_result: formatted, test_running: false)}
+
+        {:error, _} ->
+          {:noreply,
+           assign(socket,
+             test_result: %{status: :error, data: "Invalid JSON arguments"},
+             test_args: args_json
+           )}
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   defp safe_call(fun, default) do
@@ -128,6 +172,38 @@ defmodule BackplaneWeb.ToolsLive do
             <dd class="text-xs font-mono text-gray-300 bg-gray-950 rounded p-3 overflow-x-auto">
               <pre>{Jason.encode!(@selected.input_schema || %{}, pretty: true)}</pre>
             </dd>
+          </div>
+
+          <div class="border-t border-gray-800 pt-4">
+            <h3 class="text-sm font-medium text-white mb-2">Test Call</h3>
+            <form phx-submit="test_call">
+              <textarea
+                name="args"
+                rows="4"
+                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-xs font-mono text-white placeholder-gray-500 focus:border-emerald-500"
+                placeholder='{"key": "value"}'
+              >{@test_args}</textarea>
+              <button
+                type="submit"
+                disabled={@test_running}
+                class="mt-2 w-full rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+              >
+                {if @test_running, do: "Running...", else: "Call Tool"}
+              </button>
+            </form>
+
+            <div :if={@test_result} class="mt-3">
+              <div class={[
+                "text-xs px-2 py-1 rounded mb-1 inline-block",
+                if(@test_result.status == :ok,
+                  do: "bg-green-900/50 text-green-300",
+                  else: "bg-red-900/50 text-red-300"
+                )
+              ]}>
+                {if @test_result.status == :ok, do: "Success", else: "Error"}
+              </div>
+              <pre class="text-xs font-mono text-gray-300 bg-gray-950 rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{@test_result.data}</pre>
+            </div>
           </div>
         </div>
       </div>

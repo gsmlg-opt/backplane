@@ -363,7 +363,8 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_tool_call(name, args) do
+  @doc "Execute a tool call by name. Used by admin UI test call form."
+  def dispatch_tool_call(name, args) do
     Telemetry.span_tool_call(name, fn ->
       name |> ToolRegistry.resolve() |> execute_tool(name, args)
     end)
