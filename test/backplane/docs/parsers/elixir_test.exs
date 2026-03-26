@@ -364,5 +364,55 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       assert [chunk] = chunks
       assert chunk.function == "fetch!/1"
     end
+
+    test "rescue returns {:ok, []} for non-binary content" do
+      # Passing nil causes String.split to raise, exercising the rescue branch
+      {:ok, chunks} = ElixirParser.parse(nil, "lib/broken.ex")
+      assert chunks == []
+    end
+
+    test "extracts zero-arity function" do
+      code = ~S'''
+      defmodule MyApp.Config do
+        @doc "Returns configuration."
+        def config() do
+          %{}
+        end
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/config.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      assert Enum.any?(func_chunks, fn c -> c.function == "config/0" end)
+    end
+
+    test "handles function with nested parens/brackets in args" do
+      code = ~S'''
+      defmodule MyApp.Complex do
+        @doc "Complex args."
+        def process(%{key: val}, [head | tail], {a, b}) do
+          :ok
+        end
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/complex.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      assert Enum.any?(func_chunks, fn c -> c.function == "process/3" end)
+    end
+
+    test "handles function with no-paren definition" do
+      code = ~S'''
+      defmodule MyApp.NoParen do
+        @doc "A constant."
+        def value, do: 42
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/no_paren.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      # count_args(_) returns 0 for non-parenthesized defs
+      assert Enum.any?(func_chunks, fn c -> c.function =~ "value" end)
+    end
   end
 end

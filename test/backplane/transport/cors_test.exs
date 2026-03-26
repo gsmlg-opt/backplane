@@ -8,12 +8,18 @@ defmodule Backplane.Transport.CORSTest do
     on_exit(fn -> Application.delete_env(:backplane, CORS) end)
   end
 
+  describe "init/1" do
+    test "passes options through" do
+      assert CORS.init(foo: :bar) == [foo: :bar]
+    end
+  end
+
   describe "OPTIONS preflight" do
     test "returns 204 with CORS headers" do
       conn =
         Plug.Test.conn(:options, "/mcp")
         |> Plug.Conn.put_req_header("origin", "http://localhost:3000")
-        |> CORS.call([])
+        |> CORS.call(CORS.init([]))
 
       assert conn.status == 204
       assert conn.halted

@@ -224,6 +224,21 @@ defmodule Backplane.Skills.Sources.GitTest do
     end
   end
 
+  describe "pull path (existing clone)" do
+    test "list/1 uses pull when clone already exists", %{repo_dir: repo_dir} do
+      name = "test-pull-#{:rand.uniform(100_000)}"
+      config = %Git{name: name, repo: repo_dir, path: "skills", ref: "main"}
+
+      # First call — clones
+      {:ok, skills1} = Git.list(config)
+      assert length(skills1) >= 2
+
+      # Second call — clone dir already exists, so ensure_clone takes the pull path
+      {:ok, skills2} = Git.list(config)
+      assert length(skills2) >= 2
+    end
+  end
+
   describe "zero-arity list/0 and fetch/1 defaults" do
     test "list/0 is exported and delegates to list/1" do
       # list/0 and fetch/1 are @impl callbacks that forward to the struct-arity

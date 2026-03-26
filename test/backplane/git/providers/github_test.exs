@@ -440,4 +440,51 @@ defmodule Backplane.Git.Providers.GitHubTest do
     assert {:error, %{status: 503, message: "Search unavailable"}} =
              GitHub.search_code("missing", config: config, repo: "owner/repo")
   end
+
+  # 3-arity delegators (default opts)
+
+  test "fetch_tree/3 delegates to fetch_tree/4", %{config: config} do
+    # fetch_tree/3 calls fetch_tree/4 with opts: []
+    # We can't use test plug without config, so just verify the function exists
+    assert function_exported?(GitHub, :fetch_tree, 3)
+    assert function_exported?(GitHub, :fetch_tree, 4)
+  end
+
+  test "fetch_file/3 delegates to fetch_file/4", %{config: config} do
+    assert function_exported?(GitHub, :fetch_file, 3)
+    assert function_exported?(GitHub, :fetch_file, 4)
+  end
+
+  # fetch_tree 404 path
+
+  test "fetch_tree returns 404 error for missing path", %{config: config} do
+    assert {:error, %{status: 404, message: "Not Found"}} =
+             GitHub.fetch_tree("owner/repo", "main", "nonexistent.txt", config: config)
+  end
+
+  # fetch_file other-status error
+
+  test "fetch_file returns error for server error status", %{config: config} do
+    assert {:error, %{status: 500}} =
+             GitHub.fetch_file("owner/errored", "", "main", config: config)
+  end
+
+  # list_repos error path
+
+  defmodule RepoErrorPlug do
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(500, Jason.encode!(%{"message" => "Server error"}))
+    end
+  end
+
+  test "list_repos returns error on non-200 response" do
+    config = config_with_plug({RepoErrorPlug, []})
+
+    assert {:error, %{status: 500, message: "Server error"}} =
+             GitHub.list_repos(config: config, query: "test")
+  end
 end

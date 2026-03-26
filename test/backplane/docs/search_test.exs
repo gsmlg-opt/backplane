@@ -55,6 +55,26 @@ defmodule Backplane.Docs.SearchTest do
     {:ok, project: project}
   end
 
+  describe "list_projects/0" do
+    test "returns all projects with chunk counts", %{project: project} do
+      results = Search.list_projects()
+      assert is_list(results)
+      entry = Enum.find(results, fn r -> r.id == project.id end)
+      assert entry != nil
+      assert entry.repo == project.repo
+      assert entry.ref == project.ref
+      assert is_integer(entry.chunk_count)
+      assert entry.chunk_count == 3
+    end
+
+    test "returns empty list when no projects exist" do
+      # Clean up existing project data
+      Repo.delete_all(Backplane.Docs.DocChunk)
+      Repo.delete_all(Backplane.Docs.Project)
+      assert Search.list_projects() == []
+    end
+  end
+
   describe "query/3" do
     test "returns matching results for keyword search", %{project: project} do
       results = Search.query(project.id, "GenServer")

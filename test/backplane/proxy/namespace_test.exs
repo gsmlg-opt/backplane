@@ -36,4 +36,10 @@ defmodule Backplane.Proxy.NamespaceTest do
       assert Namespace.extract_namespace("plain_tool") == :error
     end
   end
+
+  describe "separator/0" do
+    test "returns the namespace separator string" do
+      assert Namespace.separator() == "::"
+    end
+  end
 end

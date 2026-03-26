@@ -11,6 +11,12 @@ defmodule Backplane.Transport.RequestLoggerTest do
     on_exit(fn -> Logger.configure(level: prev_level) end)
   end
 
+  describe "init/1" do
+    test "passes options through" do
+      assert RequestLogger.init(foo: :bar) == [foo: :bar]
+    end
+  end
+
   describe "call/2" do
     test "logs request with method and path" do
       log =
@@ -62,6 +68,18 @@ defmodule Backplane.Transport.RequestLoggerTest do
 
       assert log =~ "GET /broken"
       assert log =~ "500"
+    end
+
+    test "handles non-tuple remote_ip gracefully" do
+      log =
+        capture_log(fn ->
+          conn = Plug.Test.conn(:get, "/test")
+          # Set remote_ip to a non-tuple value to exercise format_ip/1 fallback
+          conn = %{conn | remote_ip: "string_ip"}
+          conn |> RequestLogger.call([]) |> Plug.Conn.send_resp(200, "ok")
+        end)
+
+      assert log =~ "GET /test"
     end
   end
 end

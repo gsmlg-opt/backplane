@@ -35,5 +35,41 @@ defmodule Backplane.Jobs.ReindexTest do
       changeset = Reindex.new(%{"project_id" => "unique-test"})
       assert changeset.changes.args == %{"project_id" => "unique-test"}
     end
+
+    test "returns :ok when ingestion succeeds for a valid local repo" do
+      # Create a temporary git repo with an indexable .md file
+      base_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "backplane_reindex_ok_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(base_dir)
+
+      System.cmd("git", ["init"], cd: base_dir)
+      System.cmd("git", ["checkout", "-b", "main"], cd: base_dir)
+
+      File.write!(Path.join(base_dir, "guide.md"), """
+      # Getting Started
+
+      This is a guide for testing the reindex success path.
+      """)
+
+      System.cmd("git", ["add", "."], cd: base_dir)
+      System.cmd("git", ["commit", "-m", "init"], cd: base_dir)
+
+      project_id = "reindex-ok-#{System.unique_integer([:positive])}"
+
+      Repo.insert!(%Backplane.Docs.Project{
+        id: project_id,
+        repo: base_dir,
+        ref: "main"
+      })
+
+      job = %Oban.Job{args: %{"project_id" => project_id}}
+      assert :ok = Reindex.perform(job)
+
+      File.rm_rf!(base_dir)
+    end
   end
 end

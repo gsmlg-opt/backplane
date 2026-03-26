@@ -111,6 +111,23 @@ defmodule Backplane.Transport.HealthCheckTest do
       assert is_binary(result.engines.git.status)
     end
 
+    test "get_docs_summary rescue returns zero counts on DB error" do
+      # Switch sandbox to manual mode so spawned tasks can't use the connection
+      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :manual)
+
+      task =
+        Task.async(fn ->
+          HealthCheck.check()
+        end)
+
+      result = Task.await(task)
+      assert result.engines.docs.projects == 0
+      assert result.engines.docs.chunks == 0
+
+      # Restore shared mode for remaining tests
+      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, {:shared, self()})
+    end
+
     # Verifies get_docs_summary/0 rescue branch produces valid zero counts:
     # The docs engine always returns integer project and chunk counts.
     # In tests, the DB is available so the normal path runs, but the rescue

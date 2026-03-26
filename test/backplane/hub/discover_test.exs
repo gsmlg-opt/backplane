@@ -205,6 +205,26 @@ defmodule Backplane.Hub.DiscoverTest do
       end
     end
 
+    test "search_docs rescue returns empty list on DB error" do
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+
+      task = Task.async(fn -> Discover.search("anything", scope: ["docs"]) end)
+      {:ok, results} = Task.await(task)
+      assert results.docs == []
+
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+    end
+
+    test "search_repos rescue returns empty list on DB error" do
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+
+      task = Task.async(fn -> Discover.search("anything", scope: ["repos"]) end)
+      {:ok, results} = Task.await(task)
+      assert results.repos == []
+
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+    end
+
     test "search_docs maps fields correctly for matched chunks" do
       Repo.insert!(
         %Backplane.Docs.Project{

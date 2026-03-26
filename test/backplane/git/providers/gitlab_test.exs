@@ -156,6 +156,51 @@ defmodule Backplane.Git.Providers.GitLabTest do
       {500, %{"error" => "database timeout"}}
     end
 
+    # Route for closed issues to exercise normalize_gitlab_issue_state("closed")
+    defp route("GET", "/api/v4/projects/my-group%2Fclosed-project/issues") do
+      {200,
+       [
+         %{
+           "id" => 50,
+           "iid" => 10,
+           "title" => "Closed issue",
+           "state" => "closed",
+           "author" => %{"username" => "eve"},
+           "labels" => [],
+           "created_at" => "2026-01-01T00:00:00Z",
+           "updated_at" => "2026-01-02T00:00:00Z",
+           "web_url" => "https://gitlab.com/my-group/closed-project/-/issues/10"
+         }
+       ]}
+    end
+
+    # Route for MRs with "closed" state to exercise normalize_gitlab_mr_state(other)
+    defp route("GET", "/api/v4/projects/my-group%2Fclosed-project/merge_requests") do
+      {200,
+       [
+         %{
+           "id" => 400,
+           "iid" => 8,
+           "title" => "Closed MR",
+           "state" => "closed",
+           "author" => %{"username" => "frank"},
+           "source_branch" => "old-feature",
+           "target_branch" => "main",
+           "created_at" => "2026-01-01T00:00:00Z",
+           "updated_at" => "2026-01-02T00:00:00Z",
+           "web_url" => "https://gitlab.com/my-group/closed-project/-/merge_requests/8"
+         }
+       ]}
+    end
+
+    defp route("GET", "/api/v4/projects/my-group%2Ferrored/repository/files/bad.txt/raw") do
+      {500, %{"message" => "File server error"}}
+    end
+
+    defp route("GET", "/api/v4/projects/my-group%2Ferrored/search") do
+      {503, %{"message" => "Search unavailable"}}
+    end
+
     defp route(_, _) do
       {404, %{"message" => "Not Found"}}
     end
@@ -376,5 +421,65 @@ defmodule Backplane.Git.Providers.GitLabTest do
   test "search_code without repo returns descriptive error regardless of config" do
     assert {:error, "GitLab code search requires a repo parameter"} =
              GitLab.search_code("anything", config: %{token: nil})
+  end
+
+  # Additional error paths
+
+  test "list_repos returns error on non-200 response" do
+    defmodule RepoErrorPlug do
+      def init(opts), do: opts
+
+      def call(conn, _opts) do
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(500, Jason.encode!(%{"message" => "Server error"}))
+      end
+    end
+
+    config = %{token: "t", api_url: "https://gitlab.com/api/v4", plug: {RepoErrorPlug, []}}
+    assert {:error, %{status: 500, message: "Server error"}} = GitLab.list_repos(config: config)
+  end
+
+  test "fetch_tree returns 404 for nonexistent project", %{config: config} do
+    assert {:error, %{status: 404}} =
+             GitLab.fetch_tree("my-group/nonexistent", "main", "", config: config)
+  end
+
+  test "fetch_file returns error for server error status", %{config: config} do
+    assert {:error, %{status: 500, message: "File server error"}} =
+             GitLab.fetch_file("my-group/errored", "bad.txt", "main", config: config)
+  end
+
+  # Cover normalize_gitlab_issue_state("closed") passthrough (L303)
+  test "fetch_issues passes closed state through unchanged", %{config: config} do
+    assert {:ok, [issue]} =
+             GitLab.fetch_issues("my-group/closed-project", config: config, state: "closed")
+
+    assert issue.state == "closed"
+  end
+
+  # Cover normalize_gitlab_mr_state("closed") passthrough (L308)
+  test "fetch_merge_requests passes closed MR state through unchanged", %{config: config} do
+    assert {:ok, [mr]} =
+             GitLab.fetch_merge_requests("my-group/closed-project",
+               config: config,
+               state: "closed"
+             )
+
+    assert mr.state == "closed"
+  end
+
+  # Cover normalize_issue_state_for_api(other) passthrough (L311)
+  test "fetch_issues with closed state passes through to API", %{config: config} do
+    # "closed" is not "open", so normalize_issue_state_for_api passes it through
+    assert {:ok, [issue]} =
+             GitLab.fetch_issues("my-group/closed-project", config: config, state: "closed")
+
+    assert issue.number == 10
+  end
+
+  test "search_code returns error on non-200 response", %{config: config} do
+    assert {:error, %{status: 503, message: "Search unavailable"}} =
+             GitLab.search_code("query", config: config, repo: "my-group/errored")
   end
 end

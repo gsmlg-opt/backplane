@@ -100,6 +100,23 @@ defmodule Backplane.Skills.SearchTest do
       results = Search.query("zzznonexistent")
       assert results == []
     end
+
+    test "returns all enabled skills when search is nil" do
+      results = Search.query(nil)
+      names = Enum.map(results, & &1.name)
+      # Should return enabled skills ordered by name (no relevance ranking)
+      assert "GenServer Patterns" in names
+      assert "Phoenix LiveView" in names
+      refute "Disabled Skill" in names
+    end
+
+    test "returns all enabled skills when search is empty string" do
+      results = Search.query("")
+      names = Enum.map(results, & &1.name)
+      assert "GenServer Patterns" in names
+      assert "Phoenix LiveView" in names
+      refute "Disabled Skill" in names
+    end
   end
 
   defp insert_skill(id, name, description, tags, source, enabled) do
