@@ -38,6 +38,7 @@ defmodule Backplane.Docs.Ingestion do
     try do
       with {:ok, repo_path} <- ensure_repo(project),
            {:ok, commit_sha} <- get_commit_sha(repo_path),
+           :changed <- check_sha_changed(project, commit_sha),
            {:ok, chunks} <- process_files(repo_path, project.id) do
         {:ok, stats} = Indexer.index(project.id, chunks)
 
@@ -67,6 +68,18 @@ defmodule Backplane.Docs.Ingestion do
 
         {:ok, stats}
       else
+        :unchanged ->
+          Logger.info("Skipping reindex — commit SHA unchanged",
+            project_id: project.id
+          )
+
+          Indexer.update_reindex_state(project.id, %{
+            status: "completed",
+            completed_at: DateTime.utc_now()
+          })
+
+          {:ok, %{skipped: true, reason: :unchanged}}
+
         {:error, reason} = error ->
           Logger.error("Ingestion failed",
             project_id: project.id,
@@ -182,6 +195,14 @@ defmodule Backplane.Docs.Ingestion do
     case System.cmd("git", ["rev-parse", "HEAD"], cd: repo_path, stderr_to_stdout: true) do
       {sha, 0} -> {:ok, String.trim(sha)}
       {output, _} -> {:error, {:sha_failed, output}}
+    end
+  end
+
+  defp check_sha_changed(project, commit_sha) do
+    if project.index_hash == commit_sha do
+      :unchanged
+    else
+      :changed
     end
   end
 

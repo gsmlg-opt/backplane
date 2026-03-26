@@ -263,6 +263,7 @@ defmodule Backplane.Git.Providers.GitHub do
       state: item["state"],
       author: get_in(item, ["user", "login"]),
       labels: Enum.map(item["labels"] || [], & &1["name"]),
+      body_preview: truncate_body(item["body"]),
       created_at: item["created_at"],
       updated_at: item["updated_at"],
       url: item["html_url"]
@@ -339,6 +340,17 @@ defmodule Backplane.Git.Providers.GitHub do
         {:error, reason}
     end
   end
+
+  @body_preview_length 200
+
+  defp truncate_body(nil), do: nil
+  defp truncate_body(""), do: nil
+
+  defp truncate_body(body) when byte_size(body) > @body_preview_length do
+    String.slice(body, 0, @body_preview_length) <> "..."
+  end
+
+  defp truncate_body(body), do: body
 
   defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)
 

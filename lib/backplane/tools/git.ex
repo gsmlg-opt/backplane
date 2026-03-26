@@ -14,6 +14,8 @@ defmodule Backplane.Tools.Git do
   alias Backplane.Git.Resolver
   alias Backplane.Utils
 
+  @max_file_size 100_000
+
   @impl true
   def tools do
     [
@@ -234,7 +236,10 @@ defmodule Backplane.Tools.Git do
     ref = args["ref"] || "main"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      module.fetch_file(repo_id, path, ref, config: config)
+      case module.fetch_file(repo_id, path, ref, config: config) do
+        {:ok, content} -> {:ok, truncate_content(content)}
+        error -> error
+      end
     end)
   end
 
@@ -355,6 +360,13 @@ defmodule Backplane.Tools.Git do
       {:error, reason} -> {:error, "Failed to resolve repo '#{repo}': #{inspect(reason)}"}
     end
   end
+
+  defp truncate_content(content) when byte_size(content) > @max_file_size do
+    truncated = binary_part(content, 0, @max_file_size)
+    truncated <> "\n\n[Truncated at #{@max_file_size} bytes]"
+  end
+
+  defp truncate_content(content), do: content
 
   defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end

@@ -27,6 +27,7 @@ defmodule Backplane.Hub.Discover do
   def search(query, opts \\ []) do
     scopes = Keyword.get(opts, :scope, @all_scopes)
     limit = Keyword.get(opts, :limit, @default_limit)
+    query = sanitize_query(query)
 
     result = %{
       tools: if("tools" in scopes, do: search_tools(query, limit), else: []),
@@ -63,9 +64,9 @@ defmodule Backplane.Hub.Discover do
 
   defp search_docs(query, limit) do
     DocChunk
-    |> where([c], fragment("search_vector @@ plainto_tsquery('english', ?)", ^query))
+    |> where([c], fragment("search_vector @@ websearch_to_tsquery('english', ?)", ^query))
     |> order_by([c],
-      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^query)
+      desc: fragment("ts_rank(search_vector, websearch_to_tsquery('english', ?))", ^query)
     )
     |> limit(^limit)
     |> Repo.all()
@@ -102,6 +103,8 @@ defmodule Backplane.Hub.Discover do
       Logger.warning("Failed to search repos: #{Exception.message(e)}")
       []
   end
+
+  defp sanitize_query(query), do: String.replace(query, <<0>>, "")
 
   defp format_origin(origin), do: Utils.format_origin(origin)
 end

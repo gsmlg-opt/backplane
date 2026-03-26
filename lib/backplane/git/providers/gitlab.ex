@@ -274,6 +274,7 @@ defmodule Backplane.Git.Providers.GitLab do
       state: normalize_gitlab_issue_state(item["state"]),
       author: get_in(item, ["author", "username"]),
       labels: item["labels"] || [],
+      body_preview: truncate_body(item["description"]),
       created_at: item["created_at"],
       updated_at: item["updated_at"],
       url: item["web_url"]
@@ -324,6 +325,17 @@ defmodule Backplane.Git.Providers.GitLab do
 
   defp normalize_mr_state_for_api("open"), do: "opened"
   defp normalize_mr_state_for_api(other), do: other
+
+  @body_preview_length 200
+
+  defp truncate_body(nil), do: nil
+  defp truncate_body(""), do: nil
+
+  defp truncate_body(body) when byte_size(body) > @body_preview_length do
+    String.slice(body, 0, @body_preview_length) <> "..."
+  end
+
+  defp truncate_body(body), do: body
 
   defp error_message(body) when is_map(body),
     do: body["message"] || body["error"] || "Unknown error"
