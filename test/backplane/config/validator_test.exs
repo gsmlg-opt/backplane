@@ -1,11 +1,9 @@
 defmodule Backplane.Config.ValidatorTest do
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog
-
   alias Backplane.Config.Validator
 
-  test "validate! passes for valid config" do
+  test "validate returns no warnings for valid config" do
     config = [
       backplane: %{port: 4100},
       upstream: [
@@ -16,171 +14,123 @@ defmodule Backplane.Config.ValidatorTest do
       ]
     ]
 
-    assert :ok = Validator.validate!(config)
+    assert Validator.validate(config) == []
   end
 
-  test "validate! warns about missing upstream name" do
+  test "validate warns about missing upstream name" do
     config = [
       backplane: %{port: 4100},
       upstream: [%{prefix: "t", transport: "http", url: "http://localhost/mcp"}],
       projects: []
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "missing required field 'name'"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'name'"))
   end
 
-  test "validate! warns about missing url for http upstream" do
+  test "validate warns about missing url for http upstream" do
     config = [
       backplane: %{port: 4100},
       upstream: [%{name: "bad", prefix: "b", transport: "http"}],
       projects: []
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "missing required field 'url'"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'url'"))
   end
 
-  test "validate! warns about missing command for stdio upstream" do
+  test "validate warns about missing command for stdio upstream" do
     config = [
       backplane: %{port: 4100},
       upstream: [%{name: "bad", prefix: "b", transport: "stdio"}],
       projects: []
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "missing required field 'command'"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'command'"))
   end
 
-  test "validate! warns about unknown transport" do
+  test "validate warns about unknown transport" do
     config = [
       backplane: %{port: 4100},
       upstream: [%{name: "bad", prefix: "b", transport: "grpc"}],
       projects: []
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "unknown transport 'grpc'"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "unknown transport 'grpc'"))
   end
 
-  test "validate! warns about missing project fields" do
+  test "validate warns about missing project fields" do
     config = [
       backplane: %{port: 4100},
       upstream: [],
       projects: [%{id: nil, repo: nil}]
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "missing required field 'id'"
-    assert log =~ "missing required field 'repo'"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'id'"))
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'repo'"))
   end
 
-  test "validate! warns about invalid port" do
+  test "validate warns about invalid port" do
     config = [
       backplane: %{port: 99_999},
       upstream: [],
       projects: []
     ]
 
-    log =
-      capture_log(fn ->
-        Validator.validate!(config)
-      end)
-
-    assert log =~ "invalid port"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "invalid port"))
   end
 
-  test "validate! passes with empty config" do
+  test "validate returns no warnings with empty config" do
     config = [backplane: %{port: 4100}, upstream: [], projects: []]
-    assert :ok = Validator.validate!(config)
+    assert Validator.validate(config) == []
   end
 
-  test "validate! passes (no transport warning) for upstream with no transport field" do
-    # L50: check_upstream_transport catch-all clause — upstream has no :transport key at all.
-    # The function simply returns warnings unchanged (no clause matches a missing key).
+  test "validate warns about missing transport and does not warn about unknown transport" do
     config = %{
       backplane: %{port: 4100},
       upstream: [%{name: "no-transport", prefix: "nt"}],
       projects: []
     }
 
-    log =
-      capture_log(fn ->
-        assert :ok = Validator.validate!(config)
-      end)
-
-    # check_required warns about the missing :transport field but the
-    # catch-all check_upstream_transport/2 clause does not add an extra warning
-    assert log =~ "missing required field 'transport'"
-    refute log =~ "unknown transport"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "missing required field 'transport'"))
+    refute Enum.any?(warnings, &(&1 =~ "unknown transport"))
   end
 
-  test "validate! passes when backplane section is absent" do
-    # L69: validate_port catch-all clause — no :backplane key in config at all.
+  test "validate returns no warnings when backplane section is absent" do
     config = %{upstream: [], projects: []}
 
-    log =
-      capture_log(fn ->
-        assert :ok = Validator.validate!(config)
-      end)
-
-    # No port warning should be emitted when the section is entirely absent
-    refute log =~ "invalid port"
+    warnings = Validator.validate(config)
+    refute Enum.any?(warnings, &(&1 =~ "invalid port"))
   end
 
-  test "validate! warns when upstream name is an empty string" do
-    # L74: check_required/4 branch for empty string value.
+  test "validate warns when upstream name is an empty string" do
     config = %{
       backplane: %{port: 4100},
       upstream: [%{name: "", prefix: "t", transport: "http", url: "http://localhost/mcp"}],
       projects: []
     }
 
-    log =
-      capture_log(fn ->
-        assert :ok = Validator.validate!(config)
-      end)
-
-    assert log =~ "'name' cannot be empty"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "'name' cannot be empty"))
   end
 
-  test "validate! warns when upstream prefix is an empty string" do
-    # L74: same empty string branch for a different required field.
+  test "validate warns when upstream prefix is an empty string" do
     config = %{
       backplane: %{port: 4100},
       upstream: [%{name: "myup", prefix: "", transport: "http", url: "http://localhost/mcp"}],
       projects: []
     }
 
-    log =
-      capture_log(fn ->
-        assert :ok = Validator.validate!(config)
-      end)
-
-    assert log =~ "'prefix' cannot be empty"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "'prefix' cannot be empty"))
   end
 
-  test "validate! warns about invalid upstream timeout" do
+  test "validate warns about invalid upstream timeout" do
     config = [
       backplane: %{port: 4100},
       upstream: [
@@ -195,11 +145,11 @@ defmodule Backplane.Config.ValidatorTest do
       projects: []
     ]
 
-    log = capture_log(fn -> Validator.validate!(config) end)
-    assert log =~ "'timeout' must be a positive integer"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "'timeout' must be a positive integer"))
   end
 
-  test "validate! warns about non-integer refresh_interval" do
+  test "validate warns about non-integer refresh_interval" do
     config = [
       backplane: %{port: 4100},
       upstream: [
@@ -214,11 +164,11 @@ defmodule Backplane.Config.ValidatorTest do
       projects: []
     ]
 
-    log = capture_log(fn -> Validator.validate!(config) end)
-    assert log =~ "'refresh_interval' must be a positive integer"
+    warnings = Validator.validate(config)
+    assert Enum.any?(warnings, &(&1 =~ "'refresh_interval' must be a positive integer"))
   end
 
-  test "validate! passes with valid timeout and refresh_interval" do
+  test "validate returns no warnings with valid timeout and refresh_interval" do
     config = [
       backplane: %{port: 4100},
       upstream: [
@@ -234,13 +184,13 @@ defmodule Backplane.Config.ValidatorTest do
       projects: []
     ]
 
-    log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
-    refute log =~ "timeout"
-    refute log =~ "refresh_interval"
+    warnings = Validator.validate(config)
+    refute Enum.any?(warnings, &(&1 =~ "timeout"))
+    refute Enum.any?(warnings, &(&1 =~ "refresh_interval"))
   end
 
   describe "skill validation" do
-    test "validate! passes for valid git skill config" do
+    test "validate returns no warnings for valid git skill config" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -248,11 +198,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "my-skill", source: "git", repo: "https://github.com/o/r.git"}]
       ]
 
-      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
-      refute log =~ "skill"
+      warnings = Validator.validate(config)
+      refute Enum.any?(warnings, &(&1 =~ "skill"))
     end
 
-    test "validate! passes for valid local skill config" do
+    test "validate returns no warnings for valid local skill config" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -260,11 +210,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "local-skill", source: "local", path: "/opt/skills"}]
       ]
 
-      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
-      refute log =~ "skill"
+      warnings = Validator.validate(config)
+      refute Enum.any?(warnings, &(&1 =~ "skill"))
     end
 
-    test "validate! warns about missing skill name" do
+    test "validate warns about missing skill name" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -272,11 +222,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{source: "git", repo: "https://github.com/o/r.git"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "missing required field 'name'"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "missing required field 'name'"))
     end
 
-    test "validate! warns about missing skill source" do
+    test "validate warns about missing skill source" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -284,11 +234,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "no-source"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "missing required field 'source'"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "missing required field 'source'"))
     end
 
-    test "validate! warns about missing repo for git skill" do
+    test "validate warns about missing repo for git skill" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -296,11 +246,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "git-skill", source: "git"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "missing required field 'repo'"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "missing required field 'repo'"))
     end
 
-    test "validate! warns about missing path for local skill" do
+    test "validate warns about missing path for local skill" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -308,11 +258,11 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "local-skill", source: "local"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "missing required field 'path'"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "missing required field 'path'"))
     end
 
-    test "validate! warns about unknown skill source" do
+    test "validate warns about unknown skill source" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -320,18 +270,18 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "bad-skill", source: "s3"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "unknown source 's3'"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "unknown source 's3'"))
     end
 
-    test "validate! does not warn when skills section is absent" do
+    test "validate returns no warnings when skills section is absent" do
       config = [backplane: %{port: 4100}, upstream: [], projects: []]
 
-      log = capture_log(fn -> assert :ok = Validator.validate!(config) end)
-      refute log =~ "skill"
+      warnings = Validator.validate(config)
+      refute Enum.any?(warnings, &(&1 =~ "skill"))
     end
 
-    test "validate! warns about empty skill name" do
+    test "validate warns about empty skill name" do
       config = [
         backplane: %{port: 4100},
         upstream: [],
@@ -339,8 +289,8 @@ defmodule Backplane.Config.ValidatorTest do
         skills: [%{name: "", source: "git", repo: "https://github.com/o/r.git"}]
       ]
 
-      log = capture_log(fn -> Validator.validate!(config) end)
-      assert log =~ "'name' cannot be empty"
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "'name' cannot be empty"))
     end
   end
 end

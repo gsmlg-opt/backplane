@@ -7,19 +7,23 @@ defmodule Backplane.Config.Validator do
   require Logger
 
   @doc """
-  Validates config and returns a list of warnings.
-  Raises on fatal errors.
+  Validates config and returns a list of warning strings.
+  """
+  @spec validate(keyword()) :: [String.t()]
+  def validate(config) do
+    []
+    |> validate_upstreams(config[:upstream] || [])
+    |> validate_projects(config[:projects] || [])
+    |> validate_skills(config[:skills] || [])
+    |> validate_port(config[:backplane])
+  end
+
+  @doc """
+  Validates config, logs warnings, and returns :ok.
   """
   @spec validate!(keyword()) :: :ok
   def validate!(config) do
-    warnings =
-      []
-      |> validate_upstreams(config[:upstream] || [])
-      |> validate_projects(config[:projects] || [])
-      |> validate_skills(config[:skills] || [])
-      |> validate_port(config[:backplane])
-
-    for warning <- warnings do
+    for warning <- validate(config) do
       Logger.warning("Config: #{warning}")
     end
 
