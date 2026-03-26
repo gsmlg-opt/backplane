@@ -16,8 +16,8 @@ defmodule Backplane.Docs.Parser do
           content: String.t()
         }
 
-  alias Backplane.Docs.Parsers.{Generic, HexDocs, Markdown}
   alias Backplane.Docs.Parsers.Elixir, as: ElixirParser
+  alias Backplane.Docs.Parsers.{Generic, HexDocs, Markdown}
 
   @callback parse(content :: String.t(), source_path :: String.t()) ::
               {:ok, [chunk_map()]} | {:error, term()}
