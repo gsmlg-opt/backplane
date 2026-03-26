@@ -17,6 +17,8 @@ defmodule Backplane.Application do
 
   @impl true
   def start(_type, _args) do
+    validate_config_at_boot()
+
     children = [
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
@@ -95,6 +97,19 @@ defmodule Backplane.Application do
           Logger.warning("Failed to enqueue skill sync for #{source.name}: #{inspect(reason)}")
       end
     end
+  end
+
+  defp validate_config_at_boot do
+    config = [
+      backplane: %{
+        port: Application.get_env(:backplane, :port, 4100)
+      },
+      upstream: Application.get_env(:backplane, :upstreams, []),
+      projects: Application.get_env(:backplane, :projects, []),
+      skills: Application.get_env(:backplane, :skill_sources, [])
+    ]
+
+    Backplane.Config.Validator.validate!(config)
   end
 
   defp port do
