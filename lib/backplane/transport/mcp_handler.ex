@@ -206,9 +206,8 @@ defmodule Backplane.Transport.McpHandler do
     client_version = get_in(params || %{}, ["protocolVersion"])
 
     if client_version && client_version != Backplane.protocol_version() do
-      Logger.warning("Client requested unsupported protocol version",
-        client_version: client_version,
-        server_version: Backplane.protocol_version()
+      Logger.warning(
+        "Client requested unsupported protocol version: #{client_version} (server supports #{Backplane.protocol_version()})"
       )
     end
 
