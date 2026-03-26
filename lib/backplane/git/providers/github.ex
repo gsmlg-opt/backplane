@@ -146,22 +146,11 @@ defmodule Backplane.Git.Providers.GitHub do
 
     params =
       [state: state]
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
-    case Req.get(client(config), url: "/repos/#{repo_id}/issues", params: params) do
-      {:ok, %{status: 200, body: body}} ->
-        issues =
-          body
-          |> Enum.reject(fn item -> Map.has_key?(item, "pull_request") end)
-          |> Enum.map(&normalize_issue/1)
-
-        {:ok, issues}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, %{status: status, message: body["message"] || "Unknown error"}}
-
-      {:error, reason} ->
-        {:error, reason}
+    case Keyword.get(opts, :query) do
+      nil -> fetch_issues_list(config, repo_id, params)
+      query -> fetch_issues_search(config, repo_id, query, params)
     end
   end
 
@@ -171,9 +160,9 @@ defmodule Backplane.Git.Providers.GitHub do
 
     params =
       []
-      |> maybe_add_param(:sha, Keyword.get(opts, :sha))
+      |> maybe_add_param(:sha, Keyword.get(opts, :ref))
       |> maybe_add_param(:path, Keyword.get(opts, :path))
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
     case Req.get(client(config), url: "/repos/#{repo_id}/commits", params: params) do
       {:ok, %{status: 200, body: body}} ->
@@ -195,7 +184,7 @@ defmodule Backplane.Git.Providers.GitHub do
 
     params =
       [state: state]
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
     case Req.get(client(config), url: "/repos/#{repo_id}/pulls", params: params) do
       {:ok, %{status: 200, body: body}} ->
@@ -302,6 +291,52 @@ defmodule Backplane.Git.Providers.GitHub do
       updated_at: item["updated_at"],
       url: item["html_url"]
     }
+  end
+
+  defp fetch_issues_list(config, repo_id, params) do
+    case Req.get(client(config), url: "/repos/#{repo_id}/issues", params: params) do
+      {:ok, %{status: 200, body: body}} ->
+        issues =
+          body
+          |> Enum.reject(fn item -> Map.has_key?(item, "pull_request") end)
+          |> Enum.map(&normalize_issue/1)
+
+        {:ok, issues}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, %{status: status, message: body["message"] || "Unknown error"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_issues_search(config, repo_id, query, params) do
+    per_page = Keyword.get(params, :per_page)
+    state = Keyword.get(params, :state, "open")
+
+    q =
+      [query, "repo:#{repo_id}", "is:issue", "state:#{state}"]
+      |> Enum.join(" ")
+
+    search_params =
+      [q: q]
+      |> maybe_add_param(:per_page, per_page)
+
+    case Req.get(client(config), url: "/search/issues", params: search_params) do
+      {:ok, %{status: 200, body: body}} ->
+        issues =
+          (body["items"] || [])
+          |> Enum.map(&normalize_issue/1)
+
+        {:ok, issues}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, %{status: status, message: body["message"] || "Unknown error"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)

@@ -132,7 +132,8 @@ defmodule Backplane.Git.Providers.GitLab do
 
     params =
       [state: normalize_issue_state_for_api(state)]
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:search, Keyword.get(opts, :query))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
     case Req.get(client(config), url: "/projects/#{encoded_id}/issues", params: params) do
       {:ok, %{status: 200, body: body}} ->
@@ -154,9 +155,9 @@ defmodule Backplane.Git.Providers.GitLab do
 
     params =
       []
-      |> maybe_add_param(:ref_name, Keyword.get(opts, :sha))
+      |> maybe_add_param(:ref_name, Keyword.get(opts, :ref))
       |> maybe_add_param(:path, Keyword.get(opts, :path))
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
     case Req.get(client(config),
            url: "/projects/#{encoded_id}/repository/commits",
@@ -182,7 +183,7 @@ defmodule Backplane.Git.Providers.GitLab do
 
     params =
       [state: normalize_mr_state_for_api(state)]
-      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
+      |> maybe_add_param(:per_page, Keyword.get(opts, :limit))
 
     case Req.get(client(config),
            url: "/projects/#{encoded_id}/merge_requests",

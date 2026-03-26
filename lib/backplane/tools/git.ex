@@ -99,9 +99,13 @@ defmodule Backplane.Tools.Git do
               "type" => "string",
               "description" => "Filter by state: open, closed, all (default: open)"
             },
-            "per_page" => %{
+            "query" => %{
+              "type" => "string",
+              "description" => "Search within issues"
+            },
+            "limit" => %{
               "type" => "integer",
-              "description" => "Number of issues to return (default: 20)"
+              "description" => "Max results (default: 20)"
             }
           },
           "required" => ["repo"]
@@ -119,17 +123,17 @@ defmodule Backplane.Tools.Git do
               "type" => "string",
               "description" => "Repository identifier (e.g., 'github:owner/repo')"
             },
-            "sha" => %{
+            "ref" => %{
               "type" => "string",
-              "description" => "Branch name or commit SHA to list from"
+              "description" => "Branch name, tag, or commit SHA to list from"
             },
             "path" => %{
               "type" => "string",
               "description" => "Filter commits affecting this file path"
             },
-            "per_page" => %{
+            "limit" => %{
               "type" => "integer",
-              "description" => "Number of commits to return (default: 30)"
+              "description" => "Max results (default: 20)"
             }
           },
           "required" => ["repo"]
@@ -152,9 +156,9 @@ defmodule Backplane.Tools.Git do
               "type" => "string",
               "description" => "Filter by state: open, closed, merged, all (default: open)"
             },
-            "per_page" => %{
+            "limit" => %{
               "type" => "integer",
-              "description" => "Number of merge requests to return (default: 20)"
+              "description" => "Max results (default: 20)"
             }
           },
           "required" => ["repo"]
@@ -236,7 +240,8 @@ defmodule Backplane.Tools.Git do
     with_resolved_repo(repo, fn module, config, repo_id ->
       opts =
         [config: config, state: state]
-        |> maybe_add(:per_page, args["per_page"])
+        |> maybe_add(:query, args["query"])
+        |> maybe_add(:limit, args["limit"])
 
       module.fetch_issues(repo_id, opts)
     end)
@@ -248,9 +253,9 @@ defmodule Backplane.Tools.Git do
     with_resolved_repo(repo, fn module, config, repo_id ->
       opts =
         [config: config]
-        |> maybe_add(:sha, args["sha"])
+        |> maybe_add(:ref, args["ref"])
         |> maybe_add(:path, args["path"])
-        |> maybe_add(:per_page, args["per_page"])
+        |> maybe_add(:limit, args["limit"])
 
       module.fetch_commits(repo_id, opts)
     end)
@@ -263,7 +268,7 @@ defmodule Backplane.Tools.Git do
     with_resolved_repo(repo, fn module, config, repo_id ->
       opts =
         [config: config, state: state]
-        |> maybe_add(:per_page, args["per_page"])
+        |> maybe_add(:limit, args["limit"])
 
       module.fetch_merge_requests(repo_id, opts)
     end)

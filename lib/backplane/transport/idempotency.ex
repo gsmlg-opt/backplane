@@ -10,6 +10,8 @@ defmodule Backplane.Transport.Idempotency do
   probabilistically (same pattern as RateLimiter).
   """
 
+  require Logger
+
   import Plug.Conn
   @behaviour Plug
 
@@ -83,7 +85,9 @@ defmodule Backplane.Transport.Idempotency do
         try do
           :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
         rescue
-          ArgumentError -> :ok
+          ArgumentError ->
+            Logger.debug("Idempotency ETS table already created by another process")
+            :ok
         end
 
       _ ->

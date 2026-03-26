@@ -5,6 +5,8 @@ defmodule Backplane.Transport.Router do
 
   use Plug.Router
 
+  require Logger
+
   alias Backplane.Jobs.WebhookHandler
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
@@ -121,10 +123,12 @@ defmodule Backplane.Transport.Router do
   def call(conn, opts) do
     super(conn, opts)
   rescue
-    Plug.Parsers.ParseError ->
+    e in Plug.Parsers.ParseError ->
+      Logger.warning("Malformed request body: #{Exception.message(e)}")
       send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
 
-    Plug.Parsers.RequestTooLargeError ->
+    e in Plug.Parsers.RequestTooLargeError ->
+      Logger.warning("Request body too large: #{Exception.message(e)}")
       send_resp(conn, 413, Jason.encode!(%{error: "Request body too large"}))
   end
 end

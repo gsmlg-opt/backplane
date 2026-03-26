@@ -16,6 +16,8 @@ defmodule Backplane.Transport.RateLimiter do
   Defaults: 100 requests per 60 seconds per IP.
   """
 
+  require Logger
+
   import Plug.Conn
   @behaviour Plug
 
@@ -105,7 +107,9 @@ defmodule Backplane.Transport.RateLimiter do
         try do
           :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
         rescue
-          ArgumentError -> :ok
+          ArgumentError ->
+            Logger.debug("RateLimiter ETS table already created by another process")
+            :ok
         end
 
       _ ->
