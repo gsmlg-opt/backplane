@@ -79,12 +79,28 @@ defmodule Backplane.Tools.Docs do
 
     pattern = "%#{escaped}%"
 
+    downcased = String.downcase(query)
+    exact_pattern = downcased
+
     results =
       Project
       |> where(
         [p],
         ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or
           ilike(p.description, ^pattern)
+      )
+      |> order_by(
+        [p],
+        asc:
+          fragment(
+            "CASE WHEN LOWER(?) = ? THEN 0 WHEN LOWER(?) LIKE ? THEN 1 WHEN LOWER(?) LIKE ? THEN 2 ELSE 3 END",
+            p.id,
+            ^exact_pattern,
+            p.id,
+            ^pattern,
+            p.repo,
+            ^pattern
+          )
       )
       |> limit(5)
       |> select([p], %{

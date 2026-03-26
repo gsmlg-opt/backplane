@@ -90,6 +90,26 @@ defmodule Backplane.Tools.DocsTest do
       {:ok, result} = Docs.call(%{"_handler" => "resolve_project", "query" => "xyznonexistent"})
       assert result.count == 0
     end
+
+    test "exact ID match ranks first" do
+      Repo.insert!(%Project{
+        id: "phoenix",
+        repo: "https://github.com/phoenixframework/phoenix.git",
+        ref: "main",
+        description: "Web framework"
+      })
+
+      Repo.insert!(%Project{
+        id: "phoenix-live-view",
+        repo: "https://github.com/phoenixframework/phoenix_live_view.git",
+        ref: "main",
+        description: "Phoenix LiveView"
+      })
+
+      {:ok, result} = Docs.call(%{"_handler" => "resolve_project", "query" => "phoenix"})
+      assert result.count >= 2
+      assert hd(result.projects).id == "phoenix"
+    end
   end
 
   describe "call query_docs" do
