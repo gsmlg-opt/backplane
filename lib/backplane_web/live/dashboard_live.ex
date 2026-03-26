@@ -56,6 +56,25 @@ defmodule BackplaneWeb.DashboardLive do
      |> load_dashboard_data()}
   end
 
+  def handle_event("reconnect_degraded", _, socket) do
+    pids = safe_call(fn -> Pool.list_upstream_pids() end, [])
+
+    count =
+      Enum.count(pids, fn {pid, status} ->
+        if status.status in [:degraded, :disconnected] do
+          Backplane.Proxy.Upstream.refresh(pid)
+          true
+        else
+          false
+        end
+      end)
+
+    {:noreply,
+     socket
+     |> put_flash(:info, "Reconnect triggered for #{count} degraded/disconnected upstreams")
+     |> load_dashboard_data()}
+  end
+
   def handle_event("reindex_all", _, socket) do
     projects = safe_call(fn -> Backplane.Repo.all(Backplane.Docs.Project) end, [])
 
@@ -118,6 +137,12 @@ defmodule BackplaneWeb.DashboardLive do
             class="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
           >
             Sync Skills
+          </button>
+          <button
+            phx-click="reconnect_degraded"
+            class="rounded-md bg-amber-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600"
+          >
+            Reconnect Degraded
           </button>
           <button
             phx-click="reindex_all"
