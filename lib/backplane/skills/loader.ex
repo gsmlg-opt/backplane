@@ -3,6 +3,8 @@ defmodule Backplane.Skills.Loader do
   Parses SKILL.md files — YAML frontmatter + markdown body.
   """
 
+  require Logger
+
   @doc """
   Parse a SKILL.md file's content into a skill entry map.
   Returns {:ok, map} or {:error, reason}.
@@ -73,14 +75,20 @@ defmodule Backplane.Skills.Loader do
   """
   @spec parse_skill_file(String.t(), String.t()) :: [map()]
   def parse_skill_file(filepath, source_label) do
-    content = File.read!(filepath)
-    skill_name = filepath |> Path.basename() |> Path.rootname()
+    case File.read(filepath) do
+      {:ok, content} ->
+        skill_name = filepath |> Path.basename() |> Path.rootname()
 
-    case parse(content) do
-      {:ok, entry} ->
-        [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
+        case parse(content) do
+          {:ok, entry} ->
+            [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
 
-      {:error, _} ->
+          {:error, _} ->
+            []
+        end
+
+      {:error, reason} ->
+        Logger.warning("Failed to read skill file #{filepath}: #{reason}")
         []
     end
   end

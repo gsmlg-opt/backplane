@@ -48,7 +48,7 @@ defmodule Backplane.Transport.Compression do
 
         conn
         |> put_resp_header("content-encoding", "gzip")
-        |> put_resp_header("vary", "Accept-Encoding")
+        |> prepend_vary("Accept-Encoding")
         |> Map.put(:resp_body, compressed)
       rescue
         e ->
@@ -57,6 +57,20 @@ defmodule Backplane.Transport.Compression do
       end
     else
       conn
+    end
+  end
+
+  defp prepend_vary(conn, value) do
+    case get_resp_header(conn, "vary") do
+      [] ->
+        put_resp_header(conn, "vary", value)
+
+      [existing] ->
+        if String.contains?(existing, value) do
+          conn
+        else
+          put_resp_header(conn, "vary", "#{value}, #{existing}")
+        end
     end
   end
 

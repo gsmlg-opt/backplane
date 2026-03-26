@@ -41,12 +41,34 @@ defmodule Backplane.Hub.Discover do
       "repos" => fn -> search_repos(query, limit) end
     }
 
-    results =
+    tasks =
       scopes
       |> Enum.filter(&Map.has_key?(scope_fns, &1))
       |> Enum.map(fn scope -> {scope, Task.async(scope_fns[scope])} end)
-      |> Enum.map(fn {scope, task} -> {scope, Task.await(task, 10_000)} end)
-      |> Map.new()
+
+    task_map = Map.new(tasks, fn {scope, task} -> {task.ref, scope} end)
+
+    results =
+      tasks
+      |> Enum.map(fn {_scope, task} -> task end)
+      |> Task.yield_many(10_000)
+      |> Enum.reduce(%{}, fn {task, result}, acc ->
+        scope = Map.fetch!(task_map, task.ref)
+
+        case result do
+          {:ok, value} ->
+            Map.put(acc, scope, value)
+
+          {:exit, reason} ->
+            Logger.warning("Hub discover scope #{scope} crashed: #{inspect(reason)}")
+            Map.put(acc, scope, [])
+
+          nil ->
+            Task.shutdown(task, :brutal_kill)
+            Logger.warning("Hub discover scope #{scope} timed out")
+            Map.put(acc, scope, [])
+        end
+      end)
 
     {:ok,
      %{

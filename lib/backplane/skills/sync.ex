@@ -88,9 +88,16 @@ defmodule Backplane.Skills.Sync do
   defp upsert_skill(entry, existing, now) do
     case Map.get(existing, entry.id) do
       nil ->
-        %Skill{}
-        |> Skill.changeset(Map.merge(entry, %{inserted_at: now, updated_at: now}))
-        |> Repo.insert!()
+        case %Skill{}
+             |> Skill.changeset(Map.merge(entry, %{inserted_at: now, updated_at: now}))
+             |> Repo.insert() do
+          {:ok, skill} ->
+            skill
+
+          {:error, changeset} ->
+            Logger.warning("Failed to insert skill #{entry.id}: #{inspect(changeset.errors)}")
+            nil
+        end
 
       existing_skill ->
         maybe_update_skill(existing_skill, entry, now)
@@ -99,19 +106,34 @@ defmodule Backplane.Skills.Sync do
 
   defp maybe_update_skill(existing_skill, entry, now) do
     if existing_skill.content_hash != entry.content_hash do
-      existing_skill
-      |> Skill.update_changeset(
-        Map.merge(entry, %{content_hash: entry.content_hash, updated_at: now})
-      )
-      |> Repo.update!()
+      case existing_skill
+           |> Skill.update_changeset(
+             Map.merge(entry, %{content_hash: entry.content_hash, updated_at: now})
+           )
+           |> Repo.update() do
+        {:ok, skill} ->
+          skill
+
+        {:error, changeset} ->
+          Logger.warning("Failed to update skill #{entry.id}: #{inspect(changeset.errors)}")
+
+          nil
+      end
     end
   end
 
   defp maybe_disable_skill({id, skill}, incoming_ids, now) do
     if skill.enabled and not MapSet.member?(incoming_ids, id) do
-      skill
-      |> Skill.update_changeset(%{enabled: false, updated_at: now})
-      |> Repo.update!()
+      case skill
+           |> Skill.update_changeset(%{enabled: false, updated_at: now})
+           |> Repo.update() do
+        {:ok, skill} ->
+          skill
+
+        {:error, changeset} ->
+          Logger.warning("Failed to disable skill #{id}: #{inspect(changeset.errors)}")
+          nil
+      end
     end
   end
 
