@@ -135,6 +135,24 @@ defmodule Backplane.Transport.RouterTest do
       assert conn.status == 401
     end
 
+    test "POST /webhook/github rejects when secret configured but raw_body missing" do
+      Application.put_env(:backplane, :github_webhook_secret, "test-secret")
+      on_exit(fn -> Application.delete_env(:backplane, :github_webhook_secret) end)
+
+      body = Jason.encode!(%{"action" => "push"})
+
+      # Build a conn without going through CacheBodyReader, so raw_body is nil
+      conn =
+        conn(:post, "/webhook/github", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", "sha256=valid-looking-sig")
+        |> Router.call(Router.init([]))
+
+      # Should reject (401) rather than accept — raw_body missing means validation
+      # can't proceed when a secret IS configured
+      assert conn.status == 401
+    end
+
     test "POST /webhook/github uses per-project webhook secret" do
       secret = "project-specific-secret"
       repo_url = "https://github.com/org/repo.git"
