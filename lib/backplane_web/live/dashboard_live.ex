@@ -79,7 +79,7 @@ defmodule BackplaneWeb.DashboardLive do
     projects = safe_call(fn -> Backplane.Repo.all(Backplane.Docs.Project) end, [])
 
     for project <- projects do
-      case Backplane.Jobs.Reindex.build_job(project.id) |> Oban.insert() do
+      case Backplane.Jobs.Reindex.new(%{project_id: project.id}) |> Oban.insert() do
         {:ok, _} -> :ok
         {:error, _} -> :ok
       end
@@ -106,6 +106,12 @@ defmodule BackplaneWeb.DashboardLive do
         []
       )
 
+    chunk_count =
+      safe_call(
+        fn -> Backplane.Repo.aggregate(Backplane.Docs.DocChunk, :count) end,
+        0
+      )
+
     assign(socket,
       loading: false,
       tool_count: length(tools),
@@ -115,6 +121,7 @@ defmodule BackplaneWeb.DashboardLive do
       upstream_count: length(upstreams),
       upstreams: upstreams,
       project_count: length(projects),
+      chunk_count: chunk_count,
       metrics: metrics
     )
   end
@@ -160,9 +167,10 @@ defmodule BackplaneWeb.DashboardLive do
         <.stat_card label="Skills" value={to_string(@skill_count)} />
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3 mb-8">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <.stat_card label="Upstreams" value={to_string(@upstream_count)} />
         <.stat_card label="Doc Projects" value={to_string(@project_count)} />
+        <.stat_card label="Doc Chunks" value={to_string(@chunk_count)} />
         <.stat_card
           label="Total Requests"
           value={to_string(get_in(@metrics, [:requests, :total]) || 0)}

@@ -1,5 +1,5 @@
 defmodule BackplaneWeb.DashboardLiveTest do
-  use Backplane.LiveCase, async: true
+  use Backplane.LiveCase
 
   test "renders dashboard page", %{conn: conn} do
     {:ok, view, html} = live(conn, "/admin")

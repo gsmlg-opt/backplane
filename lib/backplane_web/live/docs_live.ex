@@ -1,7 +1,8 @@
 defmodule BackplaneWeb.DocsLive do
   use BackplaneWeb, :live_view
 
-  alias Backplane.Docs.Project
+  import Ecto.Query
+  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Repo
 
   @impl true
@@ -15,16 +16,32 @@ defmodule BackplaneWeb.DocsLive do
 
   @impl true
   def handle_info({:completed, _payload}, socket) do
-    projects = safe_call(fn -> Repo.all(Project) end, [])
-    {:noreply, assign(socket, projects: projects)}
+    {:noreply, load_docs(socket)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
   def handle_params(_params, _uri, socket) do
+    {:noreply, load_docs(socket)}
+  end
+
+  defp load_docs(socket) do
     projects = safe_call(fn -> Repo.all(Project) end, [])
-    {:noreply, assign(socket, loading: false, projects: projects)}
+
+    chunk_counts =
+      safe_call(
+        fn ->
+          DocChunk
+          |> group_by([c], c.project_id)
+          |> select([c], {c.project_id, count(c.id)})
+          |> Repo.all()
+          |> Map.new()
+        end,
+        %{}
+      )
+
+    assign(socket, loading: false, projects: projects, chunk_counts: chunk_counts)
   end
 
   defp safe_call(fun, default) do
@@ -50,9 +67,14 @@ defmodule BackplaneWeb.DocsLive do
         >
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-medium text-white">{project.id}</h3>
-            <span class="text-xs text-gray-400">
-              {if project.last_indexed_at, do: "Indexed: #{Calendar.strftime(project.last_indexed_at, "%Y-%m-%d %H:%M")}", else: "Not indexed"}
-            </span>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-gray-400">
+                Chunks: {Map.get(@chunk_counts, project.id, 0)}
+              </span>
+              <span class="text-xs text-gray-400">
+                {if project.last_indexed_at, do: "Indexed: #{Calendar.strftime(project.last_indexed_at, "%Y-%m-%d %H:%M")}", else: "Not indexed"}
+              </span>
+            </div>
           </div>
           <p class="text-xs text-gray-400 mt-1">
             {project.repo} @ {project.ref}

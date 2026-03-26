@@ -69,7 +69,7 @@ defmodule BackplaneWeb.ProjectsLive do
   end
 
   def handle_event("reindex", %{"id" => id}, socket) do
-    case Backplane.Jobs.Reindex.build_job(id) |> Oban.insert() do
+    case Backplane.Jobs.Reindex.new(%{project_id: id}) |> Oban.insert() do
       {:ok, _} ->
         {:noreply, put_flash(socket, :info, "Reindex job enqueued for #{id}")}
 
