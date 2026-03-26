@@ -1289,4 +1289,68 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert content_type =~ "text/event-stream"
     end
   end
+
+  describe "format_result fallback" do
+    test "handles non-JSON-serializable tool result gracefully" do
+      alias Backplane.Registry.{Tool, ToolRegistry}
+
+      # Define an inline module that returns a map containing a ref (non-serializable)
+      defmodule TestNonSerializableTool do
+        def call(_args), do: {:ok, %{ref: make_ref()}}
+      end
+
+      tool = %Tool{
+        name: "test::non-serializable",
+        description: "Test tool returning non-serializable data",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        origin: :native,
+        module: TestNonSerializableTool,
+        handler: nil
+      }
+
+      ToolRegistry.register_native(tool)
+
+      on_exit(fn ->
+        :ets.delete(:backplane_tools, "test::non-serializable")
+      end)
+
+      resp = mcp_request("tools/call", %{"name" => "test::non-serializable", "arguments" => %{}})
+
+      # Should succeed (200 response) instead of crashing
+      assert resp["result"]
+      content = hd(resp["result"]["content"])
+      assert content["type"] == "text"
+      # The inspect fallback should produce a readable string with the ref
+      assert content["text"] =~ "ref"
+    end
+
+    test "format_result passes through binary results" do
+      alias Backplane.Registry.{Tool, ToolRegistry}
+
+      defmodule TestStringTool do
+        def call(_args), do: {:ok, "plain string result"}
+      end
+
+      tool = %Tool{
+        name: "test::string-result",
+        description: "Test tool returning a plain string",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        origin: :native,
+        module: TestStringTool,
+        handler: nil
+      }
+
+      ToolRegistry.register_native(tool)
+
+      on_exit(fn ->
+        :ets.delete(:backplane_tools, "test::string-result")
+      end)
+
+      resp = mcp_request("tools/call", %{"name" => "test::string-result", "arguments" => %{}})
+
+      assert resp["result"]
+      content = hd(resp["result"]["content"])
+      assert content["text"] == "plain string result"
+    end
+  end
 end
