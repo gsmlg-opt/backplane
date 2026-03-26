@@ -85,6 +85,17 @@ defmodule Backplane.Tools.HubTest do
       {:error, msg} = Hub.call(%{"_handler" => "inspect", "tool_name" => "nonexistent::tool"})
       assert String.contains?(msg, "Unknown tool")
     end
+
+    test "includes last_called_at field (nil when never called)" do
+      {:ok, result} = Hub.call(%{"_handler" => "inspect", "tool_name" => "skill::search"})
+      assert Map.has_key?(result, :last_called_at)
+    end
+
+    test "last_called_at is populated after tool call" do
+      Backplane.Metrics.record_tool_call("skill::search")
+      {:ok, result} = Hub.call(%{"_handler" => "inspect", "tool_name" => "skill::search"})
+      assert %DateTime{} = result.last_called_at
+    end
   end
 
   describe "hub::status" do

@@ -38,6 +38,10 @@ defmodule Backplane.Metrics do
             total_us: total_us,
             avg_us: avg_us
           })
+
+        {{:last_called, _name}, _timestamp}, acc ->
+          # Per-tool call timestamps are read via last_called_at/1, not included in snapshot
+          acc
       end)
 
     Map.put(base, :upstreams, upstream_status())
@@ -65,6 +69,25 @@ defmodule Backplane.Metrics do
     :ets.update_counter(@table, {:counter, name}, {2, amount}, {{:counter, name}, 0})
   catch
     :error, :badarg -> :ok
+  end
+
+  @doc "Record a per-tool last-called timestamp."
+  @spec record_tool_call(String.t()) :: true | :ok
+  def record_tool_call(tool_name) do
+    :ets.insert(@table, {{:last_called, tool_name}, DateTime.utc_now()})
+  catch
+    :error, :badarg -> :ok
+  end
+
+  @doc "Get the last-called timestamp for a tool, or nil."
+  @spec last_called_at(String.t()) :: DateTime.t() | nil
+  def last_called_at(tool_name) do
+    case :ets.lookup(@table, {:last_called, tool_name}) do
+      [{{:last_called, ^tool_name}, timestamp}] -> timestamp
+      [] -> nil
+    end
+  catch
+    :error, :badarg -> nil
   end
 
   @doc "Record a timing measurement in microseconds."
@@ -113,8 +136,9 @@ defmodule Backplane.Metrics do
     inc("mcp_requests.#{metadata.method}")
   end
 
-  def handle_event([:backplane, :tool_call, :start], _measurements, _metadata, _config) do
+  def handle_event([:backplane, :tool_call, :start], _measurements, metadata, _config) do
     inc("tool_calls_total")
+    if tool = metadata[:tool], do: record_tool_call(tool)
   end
 
   def handle_event([:backplane, :tool_call, :stop], measurements, metadata, _config) do

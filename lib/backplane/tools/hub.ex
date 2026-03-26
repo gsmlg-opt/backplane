@@ -9,6 +9,7 @@ defmodule Backplane.Tools.Hub do
 
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Hub.Discover
+  alias Backplane.Metrics
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -94,7 +95,8 @@ defmodule Backplane.Tools.Hub do
            input_schema: tool.input_schema,
            origin: format_origin(tool.origin),
            upstream_name: if(match?({:upstream, _}, tool.origin), do: elem(tool.origin, 1)),
-           upstream_healthy: if(tool.upstream_pid, do: Process.alive?(tool.upstream_pid))
+           upstream_healthy: if(tool.upstream_pid, do: Process.alive?(tool.upstream_pid)),
+           last_called_at: Metrics.last_called_at(tool.name)
          }}
     end
   end
