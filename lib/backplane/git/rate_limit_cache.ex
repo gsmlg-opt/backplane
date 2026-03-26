@@ -11,7 +11,11 @@ defmodule Backplane.Git.RateLimitCache do
   @doc "Initialize the ETS table. Called from ToolRegistry or Application startup."
   def init do
     if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+      try do
+        :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+      rescue
+        ArgumentError -> :ok
+      end
     end
 
     :ok
@@ -71,7 +75,11 @@ defmodule Backplane.Git.RateLimitCache do
 
   defp init_if_needed do
     if :ets.whereis(@table) == :undefined do
-      init()
+      try do
+        init()
+      rescue
+        ArgumentError -> :ok
+      end
     end
   end
 end
