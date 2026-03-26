@@ -106,13 +106,14 @@ defmodule Backplane.Docs.Search do
 
   defp apply_token_budget(results, max_tokens) do
     {selected, _remaining} =
-      Enum.reduce_while(results, {[], max_tokens}, fn result, {acc, budget} ->
+      Enum.reduce(results, {[], max_tokens}, fn result, {acc, budget} ->
         tokens = result.tokens || 0
 
         if budget - tokens >= 0 do
-          {:cont, {[result | acc], budget - tokens}}
+          {[result | acc], budget - tokens}
         else
-          {:halt, {acc, 0}}
+          # Skip this chunk but continue — a smaller chunk may still fit
+          {acc, budget}
         end
       end)
 
