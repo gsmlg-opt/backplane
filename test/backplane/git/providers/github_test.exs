@@ -209,6 +209,25 @@ defmodule Backplane.Git.Providers.GitHubTest do
        }}
     end
 
+    defp route("GET", "/search/issues", _query) do
+      {200,
+       %{
+         "items" => [
+           %{
+             "id" => 10,
+             "number" => 99,
+             "title" => "Search result issue",
+             "state" => "open",
+             "user" => %{"login" => "carol"},
+             "labels" => [%{"name" => "enhancement"}],
+             "created_at" => "2026-02-01T00:00:00Z",
+             "updated_at" => "2026-02-02T00:00:00Z",
+             "html_url" => "https://github.com/owner/repo/issues/99"
+           }
+         ]
+       }}
+    end
+
     defp route("GET", "/repos/owner/errored/contents/", _query) do
       {500, %{"message" => "Internal Server Error"}}
     end
@@ -405,6 +424,37 @@ defmodule Backplane.Git.Providers.GitHubTest do
     assert {:ok, issues} = GitHub.fetch_issues("owner/repo", config: config)
     assert length(issues) == 1
     refute Enum.any?(issues, fn i -> i.number == 43 end)
+  end
+
+  # fetch_issues with query parameter uses search API
+
+  test "fetch_issues with query uses search endpoint", %{config: config} do
+    assert {:ok, [issue]} = GitHub.fetch_issues("owner/repo", config: config, query: "bug fix")
+    assert issue.number == 99
+    assert issue.title == "Search result issue"
+  end
+
+  # fetch_issues with limit parameter
+
+  test "fetch_issues passes limit to API", %{config: config} do
+    assert {:ok, _issues} = GitHub.fetch_issues("owner/repo", config: config, limit: 10)
+  end
+
+  # fetch_commits with ref and limit parameters
+
+  test "fetch_commits accepts ref parameter", %{config: config} do
+    assert {:ok, [commit]} = GitHub.fetch_commits("owner/repo", config: config, ref: "develop")
+    assert commit.sha == "abc123def"
+  end
+
+  test "fetch_commits accepts limit parameter", %{config: config} do
+    assert {:ok, _commits} = GitHub.fetch_commits("owner/repo", config: config, limit: 5)
+  end
+
+  # fetch_merge_requests with limit parameter
+
+  test "fetch_merge_requests accepts limit parameter", %{config: config} do
+    assert {:ok, _prs} = GitHub.fetch_merge_requests("owner/repo", config: config, limit: 10)
   end
 
   # Error responses for remaining endpoints

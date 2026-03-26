@@ -450,6 +450,29 @@ defmodule Backplane.Tools.GitTest do
       |> send_resp(200, body)
     end
 
+    get "/search/issues" do
+      body =
+        Jason.encode!(%{
+          "items" => [
+            %{
+              "id" => 10,
+              "number" => 99,
+              "title" => "Search result",
+              "state" => "open",
+              "user" => %{"login" => "alice"},
+              "labels" => [],
+              "created_at" => "2026-01-01T00:00:00Z",
+              "updated_at" => "2026-01-01T00:00:00Z",
+              "html_url" => "https://github.com/test/repo/issues/99"
+            }
+          ]
+        })
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, body)
+    end
+
     get "/search/code" do
       body =
         Jason.encode!(%{
@@ -567,6 +590,20 @@ defmodule Backplane.Tools.GitTest do
       end)
     end
 
+    test "repo_issues passes query and limit params" do
+      with_local_github_server(fn ->
+        result =
+          Git.call(%{
+            "_handler" => "repo_issues",
+            "repo" => "github:test/repo",
+            "query" => "bug",
+            "limit" => 10
+          })
+
+        assert {:ok, _issues} = result
+      end)
+    end
+
     test "repo_issues lambda body respects state param" do
       with_local_github_server(fn ->
         result =
@@ -593,15 +630,15 @@ defmodule Backplane.Tools.GitTest do
       end)
     end
 
-    test "repo_commits lambda body passes optional sha, path, per_page" do
+    test "repo_commits passes optional ref, path, limit" do
       with_local_github_server(fn ->
         result =
           Git.call(%{
             "_handler" => "repo_commits",
             "repo" => "github:test/repo",
-            "sha" => "main",
+            "ref" => "main",
             "path" => "lib/",
-            "per_page" => 5
+            "limit" => 5
           })
 
         assert {:ok, _commits} = result

@@ -259,7 +259,25 @@ defmodule Backplane.Git.Providers.GitLabTest do
     assert issue.labels == ["bug", "urgent"]
   end
 
+  test "fetch_issues accepts query and limit parameters", %{config: config} do
+    assert {:ok, _issues} =
+             GitLab.fetch_issues("my-group/my-project",
+               config: config,
+               query: "deployment",
+               limit: 10
+             )
+  end
+
   # fetch_commits
+
+  test "fetch_commits accepts ref and limit parameters", %{config: config} do
+    assert {:ok, _commits} =
+             GitLab.fetch_commits("my-group/my-project",
+               config: config,
+               ref: "develop",
+               limit: 5
+             )
+  end
 
   test "fetch_commits returns normalized commits", %{config: config} do
     assert {:ok, [commit]} = GitLab.fetch_commits("my-group/my-project", config: config)
