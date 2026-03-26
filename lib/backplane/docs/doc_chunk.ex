@@ -26,6 +26,7 @@ defmodule Backplane.Docs.DocChunk do
   @required_fields ~w(project_id source_path chunk_type content content_hash)a
   @optional_fields ~w(module function tokens)a
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(chunk, attrs) do
     chunk
     |> cast(attrs, @required_fields ++ @optional_fields)

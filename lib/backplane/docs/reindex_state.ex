@@ -21,6 +21,7 @@ defmodule Backplane.Docs.ReindexState do
 
   @fields ~w(project_id commit_sha started_at completed_at chunk_count status)a
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(state, attrs) do
     state
     |> cast(attrs, @fields)

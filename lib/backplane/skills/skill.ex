@@ -28,6 +28,7 @@ defmodule Backplane.Skills.Skill do
   @required_fields ~w(id name content content_hash source)a
   @optional_fields ~w(description tags tools model version enabled)a
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(skill, attrs) do
     skill
     |> cast(attrs, @required_fields ++ @optional_fields)

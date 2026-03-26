@@ -26,6 +26,7 @@ defmodule Backplane.Docs.Project do
   @required_fields ~w(id repo)a
   @optional_fields ~w(ref description last_indexed_at index_hash)a
 
+  @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(project, attrs) do
     project
     |> cast(attrs, @required_fields ++ @optional_fields)
