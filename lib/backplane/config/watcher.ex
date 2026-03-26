@@ -6,6 +6,7 @@ defmodule Backplane.Config.Watcher do
   use GenServer
   require Logger
 
+  alias Backplane.Config.Validator
   alias Backplane.Proxy.Pool
 
   def start_link(opts) do
@@ -59,7 +60,7 @@ defmodule Backplane.Config.Watcher do
 
   defp do_reload(path) do
     config = Backplane.Config.load!(path)
-    Backplane.Config.Validator.validate!(config)
+    Validator.validate!(config)
     apply_config(config)
     Logger.info("Configuration reloaded successfully")
     :ok

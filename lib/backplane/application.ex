@@ -4,6 +4,7 @@ defmodule Backplane.Application do
   use Application
   require Logger
 
+  alias Backplane.Config.Validator
   alias Backplane.Config.Watcher
   alias Backplane.Metrics
   alias Backplane.Proxy.Pool
@@ -109,7 +110,7 @@ defmodule Backplane.Application do
       skills: Application.get_env(:backplane, :skill_sources, [])
     ]
 
-    Backplane.Config.Validator.validate!(config)
+    Validator.validate!(config)
   end
 
   defp port do
