@@ -76,17 +76,26 @@ defmodule Backplane.Config.Watcher do
   end
 
   defp apply_config(config) do
-    # Update auth token(s) from [backplane] section
-    if token = get_in(config, [:backplane, :auth_token]) do
-      Application.put_env(:backplane, :auth_token, token)
-    end
+    apply_backplane_settings(config[:backplane] || %{})
+    apply_git_providers(config)
+    maybe_put_env(:projects, config[:projects])
+    maybe_put_env(:skill_sources, config[:skills])
+    reconcile_upstreams(config[:upstream] || [])
+    :ok
+  end
 
-    if tokens = get_in(config, [:backplane, :auth_tokens]) do
-      Application.put_env(:backplane, :auth_tokens, tokens)
+  defp apply_backplane_settings(backplane) do
+    for {config_key, env_key} <- [
+          {:auth_token, :auth_token},
+          {:auth_tokens, :auth_tokens},
+          {:admin_username, :admin_username},
+          {:admin_password, :admin_password}
+        ] do
+      maybe_put_env(env_key, backplane[config_key])
     end
+  end
 
-    # Update git providers — merge into the single :git_providers key
-    # that Tools.Git, Hub, and HealthCheck read from
+  defp apply_git_providers(config) do
     current = Application.get_env(:backplane, :git_providers, %{})
 
     updated =
@@ -97,21 +106,12 @@ defmodule Backplane.Config.Watcher do
     if updated != current do
       Application.put_env(:backplane, :git_providers, updated)
     end
+  end
 
-    # Update project configurations
-    if projects = config[:projects] do
-      Application.put_env(:backplane, :projects, projects)
-    end
+  defp maybe_put_env(_key, nil), do: :ok
 
-    # Update skill source configurations
-    if skills = config[:skills] do
-      Application.put_env(:backplane, :skill_sources, skills)
-    end
-
-    # Reconcile upstream MCP connections (add new, remove stale)
-    reconcile_upstreams(config[:upstream] || [])
-
-    :ok
+  defp maybe_put_env(key, value) do
+    Application.put_env(:backplane, key, value)
   end
 
   defp reconcile_upstreams(desired_upstreams) do
