@@ -7,11 +7,12 @@ defmodule Backplane.Skills.Sync do
 
   import Ecto.Query
   alias Backplane.Repo
-  alias Backplane.Skills.Skill
+  alias Backplane.Skills.{Registry, Skill}
+  alias Backplane.Skills.Sources.{Git, Local}
 
   @allowed_source_modules %{
-    "Elixir.Backplane.Skills.Sources.Local" => Backplane.Skills.Sources.Local,
-    "Elixir.Backplane.Skills.Sources.Git" => Backplane.Skills.Sources.Git
+    "Elixir.Backplane.Skills.Sources.Local" => Local,
+    "Elixir.Backplane.Skills.Sources.Git" => Git
   }
 
   @impl Oban.Worker
@@ -25,7 +26,7 @@ defmodule Backplane.Skills.Sync do
     case module.list(config) do
       {:ok, entries} ->
         sync_entries(entries)
-        Backplane.Skills.Registry.refresh()
+        Registry.refresh()
         :ok
 
       {:error, reason} ->
@@ -96,14 +97,14 @@ defmodule Backplane.Skills.Sync do
 
   defp build_config(module, args) do
     case module do
-      Backplane.Skills.Sources.Local ->
-        %Backplane.Skills.Sources.Local{
+      Local ->
+        %Local{
           name: args["name"],
           path: args["path"]
         }
 
-      Backplane.Skills.Sources.Git ->
-        %Backplane.Skills.Sources.Git{
+      Git ->
+        %Git{
           name: args["name"],
           repo: args["repo"],
           path: args["path"],

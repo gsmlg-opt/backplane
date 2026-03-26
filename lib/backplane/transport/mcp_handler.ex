@@ -8,7 +8,7 @@ defmodule Backplane.Transport.McpHandler do
 
   import Plug.Conn
 
-  alias Backplane.Docs.DocChunk
+  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Repo
@@ -488,7 +488,7 @@ defmodule Backplane.Transport.McpHandler do
         |> filter_by_prefix(prefix)
 
       {_, "repo"} ->
-        Backplane.Docs.Project
+        Project
         |> select([p], p.repo)
         |> limit(100)
         |> Repo.all()

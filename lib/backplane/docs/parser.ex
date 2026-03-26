@@ -16,6 +16,9 @@ defmodule Backplane.Docs.Parser do
           content: String.t()
         }
 
+  alias Backplane.Docs.Parsers.{Generic, HexDocs, Markdown}
+  alias Backplane.Docs.Parsers.Elixir, as: ElixirParser
+
   @callback parse(content :: String.t(), source_path :: String.t()) ::
               {:ok, [chunk_map()]} | {:error, term()}
 
@@ -24,10 +27,10 @@ defmodule Backplane.Docs.Parser do
   """
   def parser_for(path) do
     case Path.extname(path) do
-      ext when ext in [".ex", ".exs"] -> Backplane.Docs.Parsers.Elixir
-      ".md" -> Backplane.Docs.Parsers.Markdown
-      ext when ext in [".html", ".htm"] -> Backplane.Docs.Parsers.HexDocs
-      _ -> Backplane.Docs.Parsers.Generic
+      ext when ext in [".ex", ".exs"] -> ElixirParser
+      ".md" -> Markdown
+      ext when ext in [".html", ".htm"] -> HexDocs
+      _ -> Generic
     end
   end
 end
