@@ -46,13 +46,13 @@ defmodule Backplane.Skills.Search do
 
   defp apply_text_search(query, _), do: query
 
-  defp apply_tag_filter(query, []), do: query
+  defp apply_tag_filter(query, tags) when tags in [nil, []], do: query
 
   defp apply_tag_filter(query, tags) do
     where(query, [s], fragment("tags @> ?::text[]", ^tags))
   end
 
-  defp apply_tools_filter(query, []), do: query
+  defp apply_tools_filter(query, tools) when tools in [nil, []], do: query
 
   defp apply_tools_filter(query, tools) do
     where(query, [s], fragment("tools @> ?::text[]", ^tools))

@@ -14,10 +14,19 @@ defmodule Backplane.Transport.HealthCheck do
   @spec check() :: map()
   def check do
     upstreams = get_upstreams()
-    degraded = Enum.any?(upstreams, fn u -> u.status != :connected end)
+    docs = get_docs_summary()
+    upstream_degraded = Enum.any?(upstreams, fn u -> u.status != :connected end)
+    db_degraded = docs[:status] == "error"
+
+    status =
+      cond do
+        db_degraded -> "degraded"
+        upstream_degraded -> "degraded"
+        true -> "ok"
+      end
 
     %{
-      status: if(degraded, do: "degraded", else: "ok"),
+      status: status,
       engines: %{
         proxy: %{
           upstreams: upstreams,
@@ -26,7 +35,7 @@ defmodule Backplane.Transport.HealthCheck do
         skills: %{
           total: SkillsRegistry.count()
         },
-        docs: get_docs_summary(),
+        docs: docs,
         git: get_git_summary()
       }
     }
@@ -66,10 +75,10 @@ defmodule Backplane.Transport.HealthCheck do
   defp get_docs_summary do
     project_count = Repo.aggregate(Project, :count)
     chunk_count = Repo.aggregate(DocChunk, :count)
-    %{projects: project_count, chunks: chunk_count}
+    %{status: "ok", projects: project_count, chunks: chunk_count}
   rescue
     e ->
       Logger.warning("Failed to get docs summary: #{Exception.message(e)}")
-      %{projects: 0, chunks: 0}
+      %{status: "error", projects: 0, chunks: 0}
   end
 end
