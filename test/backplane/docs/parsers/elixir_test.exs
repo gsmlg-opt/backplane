@@ -446,5 +446,92 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
       assert Enum.any?(func_chunks, fn c -> c.function == "transform/1" end)
     end
+
+    # --- AST-specific tests (capabilities beyond line scanning) ---
+
+    test "handles function with when guard" do
+      code = """
+      defmodule MyApp.Guards do
+        @doc "Only accepts positive integers."
+        def positive(n) when is_integer(n) and n > 0, do: n
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/guards.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "positive/1"
+      assert chunk.content =~ "Only accepts positive integers"
+    end
+
+    test "handles multi-clause function with guard" do
+      code = """
+      defmodule MyApp.TypeCheck do
+        @doc "Converts value to string."
+        def to_s(val) when is_atom(val), do: Atom.to_string(val)
+        def to_s(val) when is_integer(val), do: Integer.to_string(val)
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/type_check.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      assert length(func_chunks) == 1
+      assert hd(func_chunks).function == "to_s/1"
+    end
+
+    test "preserves correct source_path for nested modules" do
+      code = """
+      defmodule MyApp.Parent do
+        @moduledoc "Parent module"
+
+        defmodule Child do
+          @moduledoc "Child module"
+
+          @doc "Child function"
+          def greet(name), do: "Hello"
+        end
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/parent.ex")
+      assert length(chunks) >= 2
+
+      # All chunks should have the correct source_path
+      assert Enum.all?(chunks, fn c -> c.source_path == "lib/my_app/parent.ex" end)
+
+      parent = Enum.find(chunks, &(&1.module == "MyApp.Parent"))
+      assert parent.chunk_type == "moduledoc"
+
+      child = Enum.find(chunks, &(&1.module == "MyApp.Parent.Child"))
+      assert child != nil
+    end
+
+    test "handles default arguments correctly" do
+      code = ~S'''
+      defmodule MyApp.Defaults do
+        @doc "Greets with optional greeting."
+        def greet(name, greeting \\ "Hello"), do: greeting <> name
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/defaults.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "greet/2"
+    end
+
+    test "handles do-end block functions" do
+      code = """
+      defmodule MyApp.Block do
+        @doc "Multi-line function body."
+        def process(data) do
+          data
+        end
+      end
+      """
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/block.ex")
+      assert [chunk] = chunks
+      assert chunk.function == "process/1"
+      assert chunk.content =~ "Multi-line function body"
+    end
   end
 end
