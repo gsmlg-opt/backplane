@@ -102,34 +102,55 @@ defmodule Backplane.Tools.Docs do
   def call(%{"_handler" => "query_docs"} = args) do
     project_id = args["project_id"]
     query = args["query"]
+    version = args["version"]
 
-    opts =
-      []
-      |> maybe_add(:max_tokens, args["max_tokens"])
-      |> maybe_add(:chunk_type, args["chunk_type"])
+    with :ok <- validate_version(project_id, version) do
+      opts =
+        []
+        |> maybe_add(:max_tokens, args["max_tokens"])
+        |> maybe_add(:chunk_type, args["chunk_type"])
 
-    results = Search.query(project_id, query, opts)
+      results = Search.query(project_id, query, opts)
 
-    formatted =
-      Enum.map(results, fn r ->
-        %{
-          source_path: r.source_path,
-          module: r.module,
-          function: r.function,
-          chunk_type: r.chunk_type,
-          content: r.content,
-          tokens: r.tokens,
-          score: r.rank
-        }
-      end)
+      formatted =
+        Enum.map(results, fn r ->
+          %{
+            source_path: r.source_path,
+            module: r.module,
+            function: r.function,
+            chunk_type: r.chunk_type,
+            content: r.content,
+            tokens: r.tokens,
+            score: r.rank
+          }
+        end)
 
-    total_tokens = Enum.reduce(formatted, 0, fn r, acc -> acc + (r.tokens || 0) end)
+      total_tokens = Enum.reduce(formatted, 0, fn r, acc -> acc + (r.tokens || 0) end)
 
-    {:ok, %{results: formatted, count: length(formatted), total_tokens: total_tokens}}
+      {:ok, %{results: formatted, count: length(formatted), total_tokens: total_tokens}}
+    end
   end
 
   def call(args) do
     {:error, "Unknown docs tool handler: #{inspect(args)}"}
+  end
+
+  defp validate_version(_project_id, nil), do: :ok
+
+  defp validate_version(project_id, version) do
+    case Repo.get(Project, project_id) do
+      nil ->
+        :ok
+
+      project ->
+        if project.ref == version do
+          :ok
+        else
+          {:error,
+           "Version '#{version}' not indexed. Project '#{project_id}' is indexed at ref '#{project.ref}'. " <>
+             "Multi-version support is not yet available."}
+        end
+    end
   end
 
   defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)

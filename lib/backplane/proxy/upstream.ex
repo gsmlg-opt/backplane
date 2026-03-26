@@ -73,6 +73,7 @@ defmodule Backplane.Proxy.Upstream do
       last_ping_at: nil,
       last_pong_at: nil,
       consecutive_ping_failures: 0,
+      consecutive_call_failures: 0,
       reconnect_attempts: 0
     }
 
@@ -117,6 +118,7 @@ defmodule Backplane.Proxy.Upstream do
   @impl true
   def handle_call({:tools_call, tool_name, arguments}, _from, %{transport: "http"} = state) do
     result = http_tools_call(state, tool_name, arguments)
+    state = track_call_result(state, result)
     {:reply, result, state}
   end
 
@@ -487,6 +489,21 @@ defmodule Backplane.Proxy.Upstream do
 
   defp parse_jsonrpc_result(%{"result" => result}), do: {:ok, result}
   defp parse_jsonrpc_result(%{"error" => error}), do: {:error, error["message"]}
+
+  # Call failure tracking
+
+  defp track_call_result(state, {:ok, _}) do
+    %{state | consecutive_call_failures: 0, status: :connected}
+  end
+
+  defp track_call_result(state, {:error, _}) do
+    failures = state.consecutive_call_failures + 1
+
+    new_status =
+      if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+
+    %{state | consecutive_call_failures: failures, status: new_status}
+  end
 
   # Helpers
 

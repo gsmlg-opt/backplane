@@ -125,5 +125,42 @@ defmodule Backplane.Tools.DocsTest do
     test "returns error for unknown handler" do
       {:error, _msg} = Docs.call(%{"_handler" => "unknown"})
     end
+
+    test "accepts version matching project ref", %{project: project} do
+      {:ok, result} =
+        Docs.call(%{
+          "_handler" => "query_docs",
+          "project_id" => project.id,
+          "query" => "Example",
+          "version" => "main"
+        })
+
+      assert result.count > 0
+    end
+
+    test "returns error for mismatched version", %{project: project} do
+      {:error, msg} =
+        Docs.call(%{
+          "_handler" => "query_docs",
+          "project_id" => project.id,
+          "query" => "Example",
+          "version" => "v2.0"
+        })
+
+      assert msg =~ "Version 'v2.0' not indexed"
+      assert msg =~ "ref 'main'"
+    end
+
+    test "ignores nil version parameter", %{project: project} do
+      {:ok, result} =
+        Docs.call(%{
+          "_handler" => "query_docs",
+          "project_id" => project.id,
+          "query" => "Example",
+          "version" => nil
+        })
+
+      assert result.count > 0
+    end
   end
 end

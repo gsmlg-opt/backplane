@@ -870,6 +870,58 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "HTTP call failure degradation" do
+    test "consecutive tool call failures transition to degraded" do
+      {:ok, _} = start_mock_http_error_server(4224)
+
+      config = %{
+        name: "test-call-degrade",
+        prefix: "calldegrade",
+        transport: "http",
+        url: "http://127.0.0.1:4224/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      assert Upstream.status(pid).status == :connected
+
+      # Send 3+ failing tool calls (mock returns JSON-RPC error for tools/call)
+      for _ <- 1..4 do
+        Upstream.forward(pid, "failing_tool", %{})
+      end
+
+      Process.sleep(100)
+      status = Upstream.status(pid)
+      assert status.status == :degraded
+      GenServer.stop(pid)
+    end
+
+    test "successful call resets failure counter" do
+      {:ok, _} = start_mock_http_server(4225)
+
+      config = %{
+        name: "test-call-reset",
+        prefix: "callreset",
+        transport: "http",
+        url: "http://127.0.0.1:4225/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # One successful call
+      {:ok, _} = Upstream.forward(pid, "echo", %{"message" => "hello"})
+
+      status = Upstream.status(pid)
+      assert status.status == :connected
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "malformed HTTP response body" do
     test "forward returns error for response without result or error keys" do
       {:ok, _} = start_mock_malformed_server(4223)
