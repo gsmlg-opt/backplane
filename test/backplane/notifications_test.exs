@@ -4,8 +4,20 @@ defmodule Backplane.NotificationsTest do
   alias Backplane.Notifications
 
   setup do
-    # Ensure :pg scope is started (application.ex starts it, but test may need it)
+    # Ensure :pg scope and debounce table are started
+    unless :ets.whereis(:backplane_notification_debounce) != :undefined do
+      :ets.new(:backplane_notification_debounce, [
+        :named_table,
+        :public,
+        :set,
+        write_concurrency: true
+      ])
+    end
+
     start_supervised!({:pg, :backplane_notifications})
+
+    # Clear debounce state between tests
+    :ets.delete_all_objects(:backplane_notification_debounce)
     :ok
   end
 
@@ -58,6 +70,18 @@ defmodule Backplane.NotificationsTest do
 
     Notifications.broadcast(%{jsonrpc: "2.0", method: "test"})
 
+    refute_receive {:mcp_notification, _}, 50
+  end
+
+  test "debounce suppresses rapid duplicate notifications" do
+    Notifications.subscribe()
+
+    # First call should send
+    Notifications.tools_changed()
+    assert_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
+
+    # Rapid second call should be debounced
+    Notifications.tools_changed()
     refute_receive {:mcp_notification, _}, 50
   end
 
