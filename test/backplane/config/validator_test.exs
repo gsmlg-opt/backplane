@@ -189,6 +189,67 @@ defmodule Backplane.Config.ValidatorTest do
     refute Enum.any?(warnings, &(&1 =~ "refresh_interval"))
   end
 
+  describe "duplicate detection" do
+    test "warns about duplicate upstream prefixes" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [
+          %{name: "first", prefix: "dup", transport: "http", url: "http://a/mcp"},
+          %{name: "second", prefix: "dup", transport: "http", url: "http://b/mcp"}
+        ],
+        projects: []
+      ]
+
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "duplicate upstream prefix 'dup'"))
+    end
+
+    test "warns about duplicate upstream names" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [
+          %{name: "same", prefix: "a", transport: "http", url: "http://a/mcp"},
+          %{name: "same", prefix: "b", transport: "http", url: "http://b/mcp"}
+        ],
+        projects: []
+      ]
+
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "duplicate upstream name 'same'"))
+    end
+
+    test "warns about duplicate project ids" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [],
+        projects: [
+          %{id: "proj", repo: "github:a/b"},
+          %{id: "proj", repo: "github:c/d"}
+        ]
+      ]
+
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "duplicate project id 'proj'"))
+    end
+
+    test "no warnings when all upstream prefixes and project ids are unique" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [
+          %{name: "first", prefix: "a", transport: "http", url: "http://a/mcp"},
+          %{name: "second", prefix: "b", transport: "http", url: "http://b/mcp"}
+        ],
+        projects: [
+          %{id: "proj1", repo: "github:a/b"},
+          %{id: "proj2", repo: "github:c/d"}
+        ]
+      ]
+
+      warnings = Validator.validate(config)
+      refute Enum.any?(warnings, &(&1 =~ "duplicate"))
+    end
+  end
+
   describe "skill validation" do
     test "validate returns no warnings for valid git skill config" do
       config = [

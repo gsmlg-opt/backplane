@@ -31,12 +31,17 @@ defmodule Backplane.Config.Validator do
   end
 
   defp validate_upstreams(warnings, upstreams) do
-    Enum.reduce(upstreams, warnings, fn upstream, acc ->
-      acc
-      |> check_required(upstream, :name, "upstream")
-      |> check_required(upstream, :prefix, "upstream #{upstream[:name]}")
-      |> check_required(upstream, :transport, "upstream #{upstream[:name]}")
-      |> check_upstream_transport(upstream)
+    warnings
+    |> check_duplicates(upstreams, :prefix, "upstream prefix")
+    |> check_duplicates(upstreams, :name, "upstream name")
+    |> then(fn w ->
+      Enum.reduce(upstreams, w, fn upstream, acc ->
+        acc
+        |> check_required(upstream, :name, "upstream")
+        |> check_required(upstream, :prefix, "upstream #{upstream[:name]}")
+        |> check_required(upstream, :transport, "upstream #{upstream[:name]}")
+        |> check_upstream_transport(upstream)
+      end)
     end)
   end
 
@@ -62,10 +67,14 @@ defmodule Backplane.Config.Validator do
   defp check_upstream_transport(warnings, _upstream), do: warnings
 
   defp validate_projects(warnings, projects) do
-    Enum.reduce(projects, warnings, fn project, acc ->
-      acc
-      |> check_required(project, :id, "project")
-      |> check_required(project, :repo, "project #{project[:id]}")
+    warnings
+    |> check_duplicates(projects, :id, "project id")
+    |> then(fn w ->
+      Enum.reduce(projects, w, fn project, acc ->
+        acc
+        |> check_required(project, :id, "project")
+        |> check_required(project, :repo, "project #{project[:id]}")
+      end)
     end)
   end
 
@@ -118,5 +127,16 @@ defmodule Backplane.Config.Validator do
       val when is_integer(val) and val > 0 -> warnings
       val -> ["#{context}: '#{key}' must be a positive integer, got #{inspect(val)}" | warnings]
     end
+  end
+
+  defp check_duplicates(warnings, items, key, label) do
+    items
+    |> Enum.map(&Map.get(&1, key))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.frequencies()
+    |> Enum.filter(fn {_val, count} -> count > 1 end)
+    |> Enum.reduce(warnings, fn {val, count}, acc ->
+      ["duplicate #{label} '#{val}' appears #{count} times" | acc]
+    end)
   end
 end
