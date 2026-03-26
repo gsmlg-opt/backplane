@@ -124,7 +124,7 @@ defmodule Backplane.Docs.SearchTest do
       total = Enum.sum(tokens_list)
       assert total <= 15
       # With skip behavior, we should get more results than if we halted early
-      assert length(results) >= 1
+      assert results != []
     end
 
     test "chunk_type weighting boosts moduledoc over function_doc", %{project: project} do

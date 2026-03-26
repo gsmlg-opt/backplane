@@ -370,6 +370,9 @@ defmodule Backplane.Proxy.Upstream do
       {:ok, %{"error" => error}} ->
         {:error, error["message"] || "Unknown upstream error"}
 
+      {:ok, body} ->
+        {:error, "Malformed upstream response: #{inspect(body)}"}
+
       {:error, reason} ->
         {:error, "Upstream request failed: #{inspect(reason)}"}
     end

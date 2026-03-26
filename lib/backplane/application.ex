@@ -99,8 +99,18 @@ defmodule Backplane.Application do
 
   defp port do
     case System.get_env("BACKPLANE_PORT") do
-      nil -> Application.get_env(:backplane, :port, 4100)
-      port -> String.to_integer(port)
+      nil ->
+        Application.get_env(:backplane, :port, 4100)
+
+      port_str ->
+        case Integer.parse(port_str) do
+          {port, ""} when port > 0 and port <= 65_535 ->
+            port
+
+          _ ->
+            Logger.warning("Invalid BACKPLANE_PORT '#{port_str}', using default 4100")
+            4100
+        end
     end
   end
 end
