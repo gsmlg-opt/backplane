@@ -14,34 +14,35 @@ defmodule Backplane.Docs.Indexer do
   Index a set of processed chunks for a project.
   Returns {:ok, stats} with insert/delete/skip counts.
   """
-  @spec index(String.t(), [map()]) :: {:ok, map()}
+  @spec index(String.t(), [map()]) :: {:ok, map()} | {:error, term()}
   def index(project_id, chunks) do
     existing = load_existing_hashes(project_id)
     new_hashes = MapSet.new(chunks, & &1.content_hash)
 
-    # Determine what to insert and what to delete
     to_insert =
       Enum.reject(chunks, fn chunk ->
         MapSet.member?(existing, chunk.content_hash)
       end)
 
     to_delete_hashes = MapSet.difference(existing, new_hashes)
-
-    # Delete removed chunks
-    deleted_count = delete_chunks(project_id, to_delete_hashes)
-
-    # Insert new chunks
-    inserted_count = insert_chunks(project_id, to_insert)
-
     skip_count = length(chunks) - length(to_insert)
 
-    {:ok,
-     %{
-       inserted: inserted_count,
-       deleted: deleted_count,
-       skipped: skip_count,
-       total: length(chunks)
-     }}
+    # Wrap delete + insert in a transaction so a crash between them
+    # doesn't leave the index in an inconsistent state
+    case Repo.transaction(fn ->
+           deleted_count = delete_chunks(project_id, to_delete_hashes)
+           inserted_count = insert_chunks(project_id, to_insert)
+
+           %{
+             inserted: inserted_count,
+             deleted: deleted_count,
+             skipped: skip_count,
+             total: length(chunks)
+           }
+         end) do
+      {:ok, stats} -> {:ok, stats}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """

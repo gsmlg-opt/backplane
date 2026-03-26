@@ -330,6 +330,13 @@ defmodule Backplane.Transport.McpHandler do
   defp execute_tool({:native, module, handler}, args) do
     call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
     module.call(call_args)
+  rescue
+    e ->
+      Logger.error(
+        "Native tool crash in #{inspect(module)}/#{inspect(handler)}: #{Exception.message(e)}"
+      )
+
+      {:error, "Internal error: #{Exception.message(e)}"}
   end
 
   defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, args) do

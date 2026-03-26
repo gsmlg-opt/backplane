@@ -253,26 +253,29 @@ defmodule Backplane.Docs.Ingestion do
   defp walk_files_recursive(dir, acc) do
     case File.ls(dir) do
       {:ok, entries} ->
-        Enum.reduce(entries, acc, fn entry, inner_acc ->
-          full_path = Path.join(dir, entry)
-
-          cond do
-            entry in @skip_dirs ->
-              inner_acc
-
-            File.dir?(full_path) ->
-              walk_files_recursive(full_path, inner_acc)
-
-            File.regular?(full_path) and Path.extname(entry) in @doc_extensions ->
-              [full_path | inner_acc]
-
-            true ->
-              inner_acc
-          end
-        end)
+        Enum.reduce(entries, acc, &classify_entry(dir, &1, &2))
 
       {:error, _} ->
         acc
+    end
+  end
+
+  defp classify_entry(dir, entry, acc) do
+    if MapSet.member?(@skip_dirs, entry) do
+      acc
+    else
+      full_path = Path.join(dir, entry)
+
+      cond do
+        File.dir?(full_path) ->
+          walk_files_recursive(full_path, acc)
+
+        File.regular?(full_path) and Path.extname(entry) in @doc_extensions ->
+          [full_path | acc]
+
+        true ->
+          acc
+      end
     end
   end
 

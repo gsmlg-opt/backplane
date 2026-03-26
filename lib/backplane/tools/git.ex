@@ -362,8 +362,9 @@ defmodule Backplane.Tools.Git do
   end
 
   defp truncate_content(content) when byte_size(content) > @max_file_size do
-    truncated = binary_part(content, 0, @max_file_size)
-    truncated <> "\n\n[Truncated at #{@max_file_size} bytes]"
+    # Use String.slice to avoid splitting multi-byte UTF-8 codepoints
+    truncated = String.slice(content, 0, @max_file_size)
+    truncated <> "\n\n[Truncated at #{@max_file_size} characters]"
   end
 
   defp truncate_content(content), do: content

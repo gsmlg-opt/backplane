@@ -158,10 +158,14 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert msg =~ "got unknown"
     end
 
-    test "nil passes validation for required fields with nil value" do
-      # InputValidator allows nil for any type (line 58) - this is by design
-      # Required field check passes because key exists, type check passes because nil is allowed
+    test "nil value for required field is rejected" do
       args = %{"query" => nil}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "Missing required arguments: query"
+    end
+
+    test "nil value for optional field passes validation" do
+      args = %{"query" => "test", "limit" => nil}
       assert :ok = InputValidator.validate(args, @schema)
     end
   end

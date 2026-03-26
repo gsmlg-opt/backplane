@@ -23,7 +23,11 @@ defmodule Backplane.Registry.InputValidator do
 
   defp validate_required(args, schema) do
     required = Map.get(schema, "required", [])
-    missing = Enum.reject(required, &Map.has_key?(args, &1))
+
+    missing =
+      Enum.reject(required, fn key ->
+        Map.has_key?(args, key) and not is_nil(Map.get(args, key))
+      end)
 
     case missing do
       [] -> :ok
