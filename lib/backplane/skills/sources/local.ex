@@ -30,24 +30,11 @@ defmodule Backplane.Skills.Sources.Local do
         |> Enum.filter(&String.ends_with?(&1, ".md"))
         |> Enum.map(&Path.join(path, &1))
         |> Enum.filter(&File.regular?/1)
-        |> Enum.flat_map(&parse_skill_file(&1, source_label))
+        |> Enum.flat_map(&Loader.parse_skill_file(&1, source_label))
 
       {:ok, entries}
     else
       {:error, :directory_not_found}
-    end
-  end
-
-  defp parse_skill_file(filepath, source_label) do
-    content = File.read!(filepath)
-    skill_name = filepath |> Path.basename() |> Path.rootname()
-
-    case Loader.parse(content) do
-      {:ok, entry} ->
-        [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
-
-      {:error, _} ->
-        []
     end
   end
 

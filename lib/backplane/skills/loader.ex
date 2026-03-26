@@ -67,6 +67,24 @@ defmodule Backplane.Skills.Loader do
     end
   end
 
+  @doc """
+  Parse a skill file from disk, returning a list with one entry or empty on error.
+  Used by file-based sources (Local, Git) to convert .md files into skill entries.
+  """
+  @spec parse_skill_file(String.t(), String.t()) :: [map()]
+  def parse_skill_file(filepath, source_label) do
+    content = File.read!(filepath)
+    skill_name = filepath |> Path.basename() |> Path.rootname()
+
+    case parse(content) do
+      {:ok, entry} ->
+        [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
+
+      {:error, _} ->
+        []
+    end
+  end
+
   defp normalize_list(list) when is_list(list), do: Enum.map(list, &to_string/1)
   defp normalize_list(_), do: []
 end
