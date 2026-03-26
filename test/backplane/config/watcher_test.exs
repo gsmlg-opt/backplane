@@ -95,13 +95,15 @@ defmodule Backplane.Config.WatcherTest do
     end
 
     test "reconciles upstreams — removes upstream not in config" do
-      # Start a test upstream manually
+      # Start a test upstream manually on a random port
       {:ok, bandit} =
         Bandit.start_link(
           plug: Backplane.Test.MockMcpPlug,
-          port: 4215,
+          port: 0,
           ip: {127, 0, 0, 1}
         )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
       on_exit(fn ->
         if Process.alive?(bandit) do
@@ -117,7 +119,7 @@ defmodule Backplane.Config.WatcherTest do
         name: "watcher-reconcile-test",
         prefix: "watcher_test",
         transport: "http",
-        url: "http://127.0.0.1:4215/mcp",
+        url: "http://127.0.0.1:#{port}/mcp",
         headers: %{}
       }
 

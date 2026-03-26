@@ -25,28 +25,14 @@ defmodule Backplane.Proxy.PoolTest do
 
   describe "start_upstream/1" do
     test "dynamically adds new upstream connection" do
-      {:ok, bandit} =
-        Bandit.start_link(
-          plug: Backplane.Test.MockMcpPlug,
-          port: 4210,
-          ip: {127, 0, 0, 1}
-        )
-
-      on_exit(fn ->
-        if Process.alive?(bandit) do
-          try do
-            GenServer.stop(bandit)
-          catch
-            :exit, _ -> :ok
-          end
-        end
-      end)
+      {bandit, port} = start_mock_server()
+      on_exit(fn -> stop_bandit(bandit) end)
 
       config = %{
         name: "pool-test",
         prefix: "pooltest",
         transport: "http",
-        url: "http://127.0.0.1:4210/mcp",
+        url: "http://127.0.0.1:#{port}/mcp",
         headers: %{}
       }
 
@@ -67,28 +53,14 @@ defmodule Backplane.Proxy.PoolTest do
 
   describe "stop_upstream/1" do
     test "terminates an upstream by pid" do
-      {:ok, bandit} =
-        Bandit.start_link(
-          plug: Backplane.Test.MockMcpPlug,
-          port: 4211,
-          ip: {127, 0, 0, 1}
-        )
-
-      on_exit(fn ->
-        if Process.alive?(bandit) do
-          try do
-            GenServer.stop(bandit)
-          catch
-            :exit, _ -> :ok
-          end
-        end
-      end)
+      {bandit, port} = start_mock_server()
+      on_exit(fn -> stop_bandit(bandit) end)
 
       config = %{
         name: "stop-test",
         prefix: "stoptest",
         transport: "http",
-        url: "http://127.0.0.1:4211/mcp",
+        url: "http://127.0.0.1:#{port}/mcp",
         headers: %{}
       }
 
@@ -104,28 +76,14 @@ defmodule Backplane.Proxy.PoolTest do
 
   describe "list_upstream_pids/0" do
     test "returns pid-status tuples for running upstreams" do
-      {:ok, bandit} =
-        Bandit.start_link(
-          plug: Backplane.Test.MockMcpPlug,
-          port: 4212,
-          ip: {127, 0, 0, 1}
-        )
-
-      on_exit(fn ->
-        if Process.alive?(bandit) do
-          try do
-            GenServer.stop(bandit)
-          catch
-            :exit, _ -> :ok
-          end
-        end
-      end)
+      {bandit, port} = start_mock_server()
+      on_exit(fn -> stop_bandit(bandit) end)
 
       config = %{
         name: "pids-test",
         prefix: "pidstest",
         transport: "http",
-        url: "http://127.0.0.1:4212/mcp",
+        url: "http://127.0.0.1:#{port}/mcp",
         headers: %{}
       }
 
@@ -133,8 +91,7 @@ defmodule Backplane.Proxy.PoolTest do
       Process.sleep(300)
 
       pids = Pool.list_upstream_pids()
-      assert length(pids) == 1
-      [{returned_pid, status}] = pids
+      assert [{returned_pid, status}] = pids
       assert returned_pid == pid
       assert status.name == "pids-test"
       assert status.prefix == "pidstest"
@@ -142,6 +99,29 @@ defmodule Backplane.Proxy.PoolTest do
 
     test "returns empty list when no upstreams" do
       assert Pool.list_upstream_pids() == []
+    end
+  end
+
+  # Starts a mock MCP server on a random available port
+  defp start_mock_server do
+    {:ok, bandit} =
+      Bandit.start_link(
+        plug: Backplane.Test.MockMcpPlug,
+        port: 0,
+        ip: {127, 0, 0, 1}
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    {bandit, port}
+  end
+
+  defp stop_bandit(bandit) do
+    if Process.alive?(bandit) do
+      try do
+        GenServer.stop(bandit)
+      catch
+        :exit, _ -> :ok
+      end
     end
   end
 end
