@@ -86,7 +86,7 @@ defmodule Backplane.Config.WatcherTest do
         else: Application.delete_env(:backplane, :github_providers)
     end
 
-    test "does not restart upstream connections" do
+    test "reconciles upstreams — unchanged config keeps existing connections" do
       children_before = DynamicSupervisor.which_children(Backplane.Proxy.Pool)
       Watcher.reload()
       children_after = DynamicSupervisor.which_children(Backplane.Proxy.Pool)

@@ -6,6 +6,8 @@ defmodule Backplane.Config.Watcher do
   use GenServer
   require Logger
 
+  alias Backplane.Proxy.Pool
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -71,8 +73,38 @@ defmodule Backplane.Config.Watcher do
       Application.put_env(:backplane, :gitlab_providers, gitlab)
     end
 
-    # Note: existing upstream connections are NOT restarted.
-    # New upstreams from config would need a separate mechanism.
+    # Reconcile upstream MCP connections (add new, remove stale)
+    reconcile_upstreams(config[:upstream] || [])
+
     :ok
+  end
+
+  defp reconcile_upstreams(desired_upstreams) do
+    running = Pool.list_upstream_pids()
+    running_by_prefix = Map.new(running, fn {pid, status} -> {status.prefix, pid} end)
+    desired_prefixes = MapSet.new(desired_upstreams, & &1.prefix)
+    running_prefixes = MapSet.new(Map.keys(running_by_prefix))
+
+    # Stop upstreams that are no longer in the config
+    removed = MapSet.difference(running_prefixes, desired_prefixes)
+
+    for prefix <- removed do
+      Logger.info("Stopping removed upstream: #{prefix}")
+      Pool.stop_upstream(running_by_prefix[prefix])
+    end
+
+    # Start upstreams that are new in the config
+    added = MapSet.difference(desired_prefixes, running_prefixes)
+
+    for upstream <- desired_upstreams, upstream.prefix in added do
+      Logger.info("Starting new upstream: #{upstream.prefix}")
+      Pool.start_upstream(upstream)
+    end
+
+    if MapSet.size(removed) > 0 or MapSet.size(added) > 0 do
+      Logger.info(
+        "Upstream reconciliation: added=#{MapSet.size(added)} removed=#{MapSet.size(removed)}"
+      )
+    end
   end
 end

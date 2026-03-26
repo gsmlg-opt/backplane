@@ -23,12 +23,27 @@ defmodule Backplane.Proxy.Pool do
     DynamicSupervisor.start_child(__MODULE__, spec)
   end
 
+  @doc "Stop an upstream connection by pid."
+  @spec stop_upstream(pid()) :: :ok | {:error, :not_found}
+  def stop_upstream(pid) when is_pid(pid) do
+    DynamicSupervisor.terminate_child(__MODULE__, pid)
+  end
+
   @doc "List status of all upstream connections."
   @spec list_upstreams() :: [map()]
   def list_upstreams do
     for {_, pid, _, _} <- DynamicSupervisor.which_children(__MODULE__),
         is_pid(pid) do
       Upstream.status(pid)
+    end
+  end
+
+  @doc "List all running upstream pids with their status info."
+  @spec list_upstream_pids() :: [{pid(), map()}]
+  def list_upstream_pids do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(__MODULE__),
+        is_pid(pid) do
+      {pid, Upstream.status(pid)}
     end
   end
 end
