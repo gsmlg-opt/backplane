@@ -21,6 +21,7 @@ defmodule Backplane.Metrics do
   end
 
   @doc "Return all metrics as a map."
+  @spec snapshot() :: map()
   def snapshot do
     base =
       @table
@@ -59,6 +60,7 @@ defmodule Backplane.Metrics do
   end
 
   @doc "Increment a named counter."
+  @spec inc(String.t(), integer()) :: integer() | :ok
   def inc(name, amount \\ 1) do
     :ets.update_counter(@table, {:counter, name}, {2, amount}, {{:counter, name}, 0})
   catch
@@ -66,6 +68,7 @@ defmodule Backplane.Metrics do
   end
 
   @doc "Record a timing measurement in microseconds."
+  @spec record_timing(String.t(), non_neg_integer()) :: [integer()] | :ok
   def record_timing(name, duration_us) do
     :ets.update_counter(
       @table,

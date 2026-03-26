@@ -25,6 +25,7 @@ defmodule Backplane.Skills.Registry do
   end
 
   @doc "List all skills, optionally filtering by source and/or tags."
+  @spec list(keyword()) :: [map()]
   def list(opts \\ []) do
     source_filter = Keyword.get(opts, :source)
     tags_filter = Keyword.get(opts, :tags, [])
@@ -37,6 +38,7 @@ defmodule Backplane.Skills.Registry do
   end
 
   @doc "Search skills by keyword in name and description."
+  @spec search(String.t(), keyword()) :: [map()]
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
     query_down = String.downcase(query)
@@ -50,6 +52,7 @@ defmodule Backplane.Skills.Registry do
   end
 
   @doc "Fetch a single skill by ID."
+  @spec fetch(String.t()) :: {:ok, map()} | {:error, :not_found}
   def fetch(skill_id) do
     case :ets.lookup(@table, skill_id) do
       [{^skill_id, entry}] -> {:ok, entry}
@@ -58,11 +61,13 @@ defmodule Backplane.Skills.Registry do
   end
 
   @doc "Return the total number of skills in the registry."
+  @spec count() :: non_neg_integer()
   def count do
     :ets.info(@table, :size)
   end
 
   @doc "Reload the ETS table from the database."
+  @spec refresh() :: :ok
   def refresh do
     skills = Repo.all(from(s in Skill, where: s.enabled == true))
 

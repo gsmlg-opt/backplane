@@ -34,6 +34,7 @@ defmodule Backplane.Proxy.Upstream do
   The optional `timeout` parameter overrides the default 30s GenServer call
   timeout. This is used by per-tool timeout configuration.
   """
+  @spec forward(pid(), String.t(), map(), pos_integer()) :: {:ok, term()} | {:error, term()}
   def forward(pid, tool_name, arguments, timeout \\ @default_timeout) do
     GenServer.call(pid, {:tools_call, tool_name, arguments}, timeout)
   catch
@@ -42,11 +43,13 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   @doc "Get the status of this upstream connection."
+  @spec status(pid()) :: map()
   def status(pid) do
     GenServer.call(pid, :status)
   end
 
   @doc "Trigger a tool refresh."
+  @spec refresh(pid()) :: :ok
   def refresh(pid) do
     GenServer.cast(pid, :refresh)
   end

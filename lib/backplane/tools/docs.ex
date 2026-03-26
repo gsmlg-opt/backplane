@@ -12,6 +12,7 @@ defmodule Backplane.Tools.Docs do
 
   import Ecto.Query
 
+  @impl true
   def tools do
     [
       %{
@@ -64,6 +65,8 @@ defmodule Backplane.Tools.Docs do
     ]
   end
 
+  @impl true
+  @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "resolve_project"} = args) do
     query = args["query"]
 

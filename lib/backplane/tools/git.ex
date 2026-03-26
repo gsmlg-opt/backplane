@@ -12,6 +12,7 @@ defmodule Backplane.Tools.Git do
   alias Backplane.Git.Resolver
   alias Backplane.Utils
 
+  @impl true
   def tools do
     [
       %{
@@ -194,6 +195,8 @@ defmodule Backplane.Tools.Git do
     ]
   end
 
+  @impl true
+  @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "search_repos"} = args) do
     provider = args["provider"]
     query = args["query"]

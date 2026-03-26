@@ -10,6 +10,7 @@ defmodule Backplane.Tools.Skill do
   alias Backplane.Skills.Sources.Database
   alias Backplane.Utils
 
+  @impl true
   def tools do
     [
       %{
@@ -104,6 +105,8 @@ defmodule Backplane.Tools.Skill do
     ]
   end
 
+  @impl true
+  @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "search"} = args) do
     opts =
       []

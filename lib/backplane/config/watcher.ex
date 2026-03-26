@@ -30,6 +30,7 @@ defmodule Backplane.Config.Watcher do
   def handle_info(_msg, state), do: {:noreply, state}
 
   @doc "Manually trigger config reload."
+  @spec reload() :: :ok | {:error, term()}
   def reload do
     path = config_path()
 

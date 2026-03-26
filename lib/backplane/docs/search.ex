@@ -18,6 +18,7 @@ defmodule Backplane.Docs.Search do
     - :max_tokens — token budget (default 8000)
     - :chunk_type — filter by chunk type
   """
+  @spec query(String.t(), String.t(), keyword()) :: [map()]
   def query(project_id, search_query, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
     max_tokens = Keyword.get(opts, :max_tokens, @default_max_tokens)
@@ -63,6 +64,7 @@ defmodule Backplane.Docs.Search do
   @doc """
   List all projects with their chunk counts.
   """
+  @spec list_projects() :: [map()]
   def list_projects do
     from(p in Project,
       left_join: c in DocChunk,

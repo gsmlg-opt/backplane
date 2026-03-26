@@ -11,6 +11,7 @@ defmodule Backplane.Transport.HealthCheck do
   alias Backplane.Repo
   alias Backplane.Skills.Registry, as: SkillsRegistry
 
+  @spec check() :: map()
   def check do
     upstreams = get_upstreams()
     degraded = Enum.any?(upstreams, fn u -> u.status != :connected end)

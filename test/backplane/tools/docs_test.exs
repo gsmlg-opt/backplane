@@ -68,7 +68,7 @@ defmodule Backplane.Tools.DocsTest do
   end
 
   describe "call query_docs" do
-    test "searches and returns results", %{project: project} do
+    test "searches and returns results with score", %{project: project} do
       {:ok, result} =
         Docs.call(%{
           "_handler" => "query_docs",
@@ -78,6 +78,12 @@ defmodule Backplane.Tools.DocsTest do
 
       assert result.count > 0
       assert is_integer(result.total_tokens)
+
+      [first | _] = result.results
+      assert is_float(first.score)
+      assert first.score > 0
+      assert Map.has_key?(first, :source_path)
+      assert Map.has_key?(first, :content)
     end
 
     test "returns empty for non-matching query", %{project: project} do

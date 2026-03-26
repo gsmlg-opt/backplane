@@ -23,6 +23,7 @@ defmodule Backplane.Hub.Discover do
     - :scope - list of scopes to search (default: all)
     - :limit - max results per scope (default: 5)
   """
+  @spec search(String.t(), keyword()) :: map()
   def search(query, opts \\ []) do
     scopes = Keyword.get(opts, :scope, @all_scopes)
     limit = Keyword.get(opts, :limit, @default_limit)

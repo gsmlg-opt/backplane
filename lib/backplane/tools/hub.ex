@@ -17,6 +17,7 @@ defmodule Backplane.Tools.Hub do
 
   import Ecto.Query
 
+  @impl true
   def tools do
     [
       %{
@@ -67,6 +68,8 @@ defmodule Backplane.Tools.Hub do
     ]
   end
 
+  @impl true
+  @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "discover"} = args) do
     opts =
       []

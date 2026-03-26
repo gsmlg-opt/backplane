@@ -14,6 +14,7 @@ defmodule Backplane.Docs.Ingestion do
   @doc """
   Run the full ingestion pipeline for a project.
   """
+  @spec run(String.t()) :: {:ok, map()} | {:error, term()}
   def run(project_id) do
     case Repo.get(Project, project_id) do
       nil ->
@@ -27,6 +28,7 @@ defmodule Backplane.Docs.Ingestion do
   @doc """
   Run the pipeline for a project struct.
   """
+  @spec run_pipeline(Project.t()) :: {:ok, map()} | {:error, term()}
   def run_pipeline(project) do
     Indexer.update_reindex_state(project.id, %{
       status: "running",
@@ -98,6 +100,7 @@ defmodule Backplane.Docs.Ingestion do
   Process all documentation files in a directory.
   Returns {:ok, processed_chunks}.
   """
+  @spec process_files(String.t(), String.t()) :: {:ok, [map()]}
   def process_files(repo_path, project_id) do
     chunks =
       repo_path
