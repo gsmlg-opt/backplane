@@ -68,26 +68,46 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp handle_batch(conn, requests) do
-    responses =
-      Enum.reduce(requests, [], fn request, acc ->
+    # Partition into requests needing responses vs notifications
+    {to_dispatch, notifications_count} =
+      Enum.reduce(requests, {[], 0}, fn request, {items, notif_count} ->
         case request do
           %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
-            Telemetry.emit_mcp_request(method)
-            result = dispatch_single(method, id, params["params"])
-            [result | acc]
+            {[{:request, method, id, params["params"]} | items], notif_count}
 
           %{"jsonrpc" => "2.0", "method" => _method} ->
-            # Notification in batch — no response
-            acc
+            {items, notif_count + 1}
 
           _ ->
-            [
-              %{jsonrpc: "2.0", id: nil, error: %{code: -32_600, message: "Invalid Request"}}
-              | acc
-            ]
+            invalid = %{
+              jsonrpc: "2.0",
+              id: nil,
+              error: %{code: -32_600, message: "Invalid Request"}
+            }
+
+            {[{:invalid, invalid} | items], notif_count}
         end
       end)
-      |> Enum.reverse()
+
+    to_dispatch = Enum.reverse(to_dispatch)
+    _ = notifications_count
+
+    # Process requests concurrently — each may hit a different upstream
+    responses =
+      to_dispatch
+      |> Task.async_stream(
+        fn
+          {:request, method, id, params} ->
+            Telemetry.emit_mcp_request(method)
+            dispatch_single(method, id, params)
+
+          {:invalid, response} ->
+            response
+        end,
+        ordered: true,
+        max_concurrency: System.schedulers_online()
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
 
     case responses do
       [] ->
