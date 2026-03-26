@@ -63,7 +63,7 @@ defmodule Backplane.Config.WatcherTest do
         else: Application.delete_env(:backplane, :config_path)
     end
 
-    test "applies github providers from config" do
+    test "applies github providers from config into :git_providers" do
       toml_path = Path.join(@test_toml_dir, "github.toml")
 
       File.write!(toml_path, """
@@ -72,19 +72,20 @@ defmodule Backplane.Config.WatcherTest do
       """)
 
       old_path = Application.get_env(:backplane, :config_path)
-      old_github = Application.get_env(:backplane, :github_providers)
+      old_git = Application.get_env(:backplane, :git_providers)
       Application.put_env(:backplane, :config_path, toml_path)
 
       assert :ok = Watcher.reload()
-      assert Application.get_env(:backplane, :github_providers) != nil
+      providers = Application.get_env(:backplane, :git_providers, %{})
+      assert providers[:github] != nil
 
       if old_path,
         do: Application.put_env(:backplane, :config_path, old_path),
         else: Application.delete_env(:backplane, :config_path)
 
-      if old_github,
-        do: Application.put_env(:backplane, :github_providers, old_github),
-        else: Application.delete_env(:backplane, :github_providers)
+      if old_git,
+        do: Application.put_env(:backplane, :git_providers, old_git),
+        else: Application.delete_env(:backplane, :git_providers)
     end
 
     test "reconciles upstreams — unchanged config keeps existing connections" do

@@ -109,6 +109,14 @@ defmodule Backplane.Docs.SearchTest do
       assert results == []
     end
 
+    test "returns empty list for empty query string", %{project: project} do
+      assert Search.query(project.id, "") == []
+    end
+
+    test "returns empty list for nil query", %{project: project} do
+      assert Search.query(project.id, nil) == []
+    end
+
     test "handles special characters in query", %{project: project} do
       # Should not crash
       results = Search.query(project.id, "handle_call/3")

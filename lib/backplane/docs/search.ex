@@ -30,8 +30,12 @@ defmodule Backplane.Docs.Search do
     - :max_tokens — token budget (default 8000)
     - :chunk_type — filter by chunk type
   """
-  @spec query(String.t(), String.t(), keyword()) :: [map()]
-  def query(project_id, search_query, opts \\ []) do
+  @spec query(String.t(), String.t() | nil, keyword()) :: [map()]
+  def query(project_id, search_query, opts \\ [])
+  def query(_project_id, "", _opts), do: []
+  def query(_project_id, nil, _opts), do: []
+
+  def query(project_id, search_query, opts) do
     limit = Keyword.get(opts, :limit, @default_limit)
     max_tokens = Keyword.get(opts, :max_tokens, @default_max_tokens)
     chunk_type = Keyword.get(opts, :chunk_type)

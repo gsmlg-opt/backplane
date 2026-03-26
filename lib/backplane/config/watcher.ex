@@ -64,13 +64,17 @@ defmodule Backplane.Config.Watcher do
       Application.put_env(:backplane, :auth_token, token)
     end
 
-    # Update git providers (separate :github and :gitlab keys)
-    if github = config[:github] do
-      Application.put_env(:backplane, :github_providers, github)
-    end
+    # Update git providers — merge into the single :git_providers key
+    # that Tools.Git, Hub, and HealthCheck read from
+    current = Application.get_env(:backplane, :git_providers, %{})
 
-    if gitlab = config[:gitlab] do
-      Application.put_env(:backplane, :gitlab_providers, gitlab)
+    updated =
+      current
+      |> then(fn m -> if config[:github], do: Map.put(m, :github, config[:github]), else: m end)
+      |> then(fn m -> if config[:gitlab], do: Map.put(m, :gitlab, config[:gitlab]), else: m end)
+
+    if updated != current do
+      Application.put_env(:backplane, :git_providers, updated)
     end
 
     # Reconcile upstream MCP connections (add new, remove stale)
