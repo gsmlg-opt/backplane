@@ -4,6 +4,8 @@ defmodule Backplane.Transport.AuthPlugTest do
   import Plug.Test
   import Plug.Conn
 
+  alias Backplane.Transport.AuthPlug
+
   setup context do
     if context[:auth_token] do
       Application.put_env(:backplane, :auth_token, context[:auth_token])
@@ -22,15 +24,15 @@ defmodule Backplane.Transport.AuthPlugTest do
   end
 
   test "init/1 passes through opts unchanged" do
-    assert Backplane.Transport.AuthPlug.init([]) == []
-    assert Backplane.Transport.AuthPlug.init(foo: :bar) == [foo: :bar]
+    assert AuthPlug.init([]) == []
+    assert AuthPlug.init(foo: :bar) == [foo: :bar]
   end
 
   describe "no auth configured" do
     test "passes all requests through" do
       conn =
         conn(:post, "/mcp", "")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -38,7 +40,7 @@ defmodule Backplane.Transport.AuthPlugTest do
     test "does not check authorization header" do
       conn =
         conn(:post, "/mcp", "")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -55,7 +57,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer test-secret")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -63,7 +65,7 @@ defmodule Backplane.Transport.AuthPlugTest do
     test "rejects request with missing authorization header (401)" do
       conn =
         conn(:post, "/mcp", "")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       assert conn.halted
       assert conn.status == 401
@@ -73,7 +75,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer wrong-token")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       assert conn.halted
       assert conn.status == 401
@@ -83,7 +85,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Basic dGVzdDp0ZXN0")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       assert conn.halted
       assert conn.status == 401
@@ -92,7 +94,7 @@ defmodule Backplane.Transport.AuthPlugTest do
     test "always passes /health without auth" do
       conn =
         conn(:get, "/health", "")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -100,7 +102,7 @@ defmodule Backplane.Transport.AuthPlugTest do
     test "always passes /metrics without auth" do
       conn =
         conn(:get, "/metrics", "")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -117,7 +119,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer new-token")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -126,7 +128,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer old-token")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       refute conn.halted
     end
@@ -135,7 +137,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer invalid-token")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       assert conn.halted
       assert conn.status == 401
@@ -147,7 +149,7 @@ defmodule Backplane.Transport.AuthPlugTest do
       conn =
         conn(:post, "/mcp", "")
         |> put_req_header("authorization", "Bearer single-token")
-        |> Backplane.Transport.AuthPlug.call([])
+        |> AuthPlug.call([])
 
       # single-token is not in auth_tokens list, so should be rejected
       assert conn.halted

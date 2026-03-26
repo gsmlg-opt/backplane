@@ -71,10 +71,12 @@ defmodule Backplane.Application do
   end
 
   defp start_configured_upstreams do
+    alias Backplane.Proxy.Pool
+
     upstreams = Application.get_env(:backplane, :upstreams, [])
 
     for upstream <- upstreams do
-      Backplane.Proxy.Pool.start_upstream(upstream)
+      Pool.start_upstream(upstream)
     end
   end
 

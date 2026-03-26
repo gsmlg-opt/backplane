@@ -1,10 +1,12 @@
 defmodule Backplane.Transport.RouterTest do
   use Backplane.ConnCase, async: false
 
+  alias Backplane.Transport.Router
+
   test "GET /health returns 200 with status" do
     conn =
-      Plug.Test.conn(:get, "/health")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:get, "/health")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 200
     body = Jason.decode!(conn.resp_body)
@@ -13,8 +15,8 @@ defmodule Backplane.Transport.RouterTest do
 
   test "returns 404 for unknown routes" do
     conn =
-      Plug.Test.conn(:get, "/nonexistent")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:get, "/nonexistent")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 404
     body = Jason.decode!(conn.resp_body)
@@ -23,16 +25,16 @@ defmodule Backplane.Transport.RouterTest do
 
   test "DELETE /mcp returns 200 for session termination" do
     conn =
-      Plug.Test.conn(:delete, "/mcp")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:delete, "/mcp")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 200
   end
 
   test "GET /mcp returns 200 with SSE content type" do
     conn =
-      Plug.Test.conn(:get, "/mcp")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:get, "/mcp")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 200
     assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
@@ -40,9 +42,9 @@ defmodule Backplane.Transport.RouterTest do
 
   test "POST /mcp with malformed JSON returns 400" do
     conn =
-      Plug.Test.conn(:post, "/mcp", "not valid json{")
-      |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:post, "/mcp", "not valid json{")
+      |> put_req_header("content-type", "application/json")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 400
   end
@@ -51,9 +53,9 @@ defmodule Backplane.Transport.RouterTest do
     large_body = String.duplicate("x", 2_000_000)
 
     conn =
-      Plug.Test.conn(:post, "/mcp", large_body)
-      |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:post, "/mcp", large_body)
+      |> put_req_header("content-type", "application/json")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 413
     body = Jason.decode!(conn.resp_body)
@@ -62,8 +64,8 @@ defmodule Backplane.Transport.RouterTest do
 
   test "GET /metrics returns 200 with JSON metrics" do
     conn =
-      Plug.Test.conn(:get, "/metrics")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:get, "/metrics")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 200
     body = Jason.decode!(conn.resp_body)
@@ -75,9 +77,9 @@ defmodule Backplane.Transport.RouterTest do
       body = Jason.encode!(%{"action" => "push", "ref" => "refs/heads/main"})
 
       conn =
-        Plug.Test.conn(:post, "/webhook/github", body)
-        |> Plug.Conn.put_req_header("content-type", "application/json")
-        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+        conn(:post, "/webhook/github", body)
+        |> put_req_header("content-type", "application/json")
+        |> Router.call(Router.init([]))
 
       assert conn.status == 202
       body = Jason.decode!(conn.resp_body)
@@ -88,9 +90,9 @@ defmodule Backplane.Transport.RouterTest do
       body = Jason.encode!(%{"event_type" => "push", "ref" => "refs/heads/main"})
 
       conn =
-        Plug.Test.conn(:post, "/webhook/gitlab", body)
-        |> Plug.Conn.put_req_header("content-type", "application/json")
-        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+        conn(:post, "/webhook/gitlab", body)
+        |> put_req_header("content-type", "application/json")
+        |> Router.call(Router.init([]))
 
       assert conn.status == 202
       body = Jason.decode!(conn.resp_body)
@@ -108,10 +110,10 @@ defmodule Backplane.Transport.RouterTest do
         "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower))
 
       conn =
-        Plug.Test.conn(:post, "/webhook/github", payload)
-        |> Plug.Conn.put_req_header("content-type", "application/json")
-        |> Plug.Conn.put_req_header("x-hub-signature-256", signature)
-        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+        conn(:post, "/webhook/github", payload)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> Router.call(Router.init([]))
 
       assert conn.status == 202
       body = Jason.decode!(conn.resp_body)
@@ -125,10 +127,10 @@ defmodule Backplane.Transport.RouterTest do
       body = Jason.encode!(%{"action" => "push"})
 
       conn =
-        Plug.Test.conn(:post, "/webhook/github", body)
-        |> Plug.Conn.put_req_header("content-type", "application/json")
-        |> Plug.Conn.put_req_header("x-hub-signature-256", "sha256=invalid")
-        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+        conn(:post, "/webhook/github", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", "sha256=invalid")
+        |> Router.call(Router.init([]))
 
       assert conn.status == 401
     end
@@ -140,10 +142,10 @@ defmodule Backplane.Transport.RouterTest do
       body = Jason.encode!(%{"event_type" => "push"})
 
       conn =
-        Plug.Test.conn(:post, "/webhook/gitlab", body)
-        |> Plug.Conn.put_req_header("content-type", "application/json")
-        |> Plug.Conn.put_req_header("x-gitlab-token", "wrong-token")
-        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+        conn(:post, "/webhook/gitlab", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-gitlab-token", "wrong-token")
+        |> Router.call(Router.init([]))
 
       assert conn.status == 401
     end
@@ -153,9 +155,9 @@ defmodule Backplane.Transport.RouterTest do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
-      Plug.Test.conn(:post, "/mcp", body)
-      |> Plug.Conn.put_req_header("content-type", "application/json")
-      |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+      conn(:post, "/mcp", body)
+      |> put_req_header("content-type", "application/json")
+      |> Router.call(Router.init([]))
 
     assert conn.status == 200
   end

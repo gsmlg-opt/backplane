@@ -1,6 +1,7 @@
 defmodule Backplane.Hub.DiscoverTest do
   use Backplane.DataCase, async: false
 
+  alias Backplane.Docs.Project
   alias Backplane.Hub.Discover
   alias Backplane.Skills.{Registry, Skill}
 
@@ -113,7 +114,7 @@ defmodule Backplane.Hub.DiscoverTest do
 
     test "search_repos returns matching projects by id" do
       Repo.insert!(
-        %Backplane.Docs.Project{
+        %Project{
           id: "discover-repo-test",
           repo: "https://github.com/test/discover-repo.git",
           ref: "main",
@@ -128,7 +129,7 @@ defmodule Backplane.Hub.DiscoverTest do
 
     test "search_repos returns matching projects by description" do
       Repo.insert!(
-        %Backplane.Docs.Project{
+        %Project{
           id: "desc-search-proj",
           repo: "https://github.com/test/desc.git",
           ref: "main",
@@ -143,7 +144,7 @@ defmodule Backplane.Hub.DiscoverTest do
 
     test "search_repos maps project fields correctly" do
       Repo.insert!(
-        %Backplane.Docs.Project{
+        %Project{
           id: "field-map-proj",
           repo: "https://github.com/test/fields.git",
           ref: "main",
@@ -170,7 +171,7 @@ defmodule Backplane.Hub.DiscoverTest do
     test "search_docs returns matching doc chunks" do
       # Insert a project and doc chunk with searchable content
       Repo.insert!(
-        %Backplane.Docs.Project{
+        %Project{
           id: "discover-docs-proj",
           repo: "https://github.com/test/docs.git",
           ref: "main"
@@ -227,7 +228,7 @@ defmodule Backplane.Hub.DiscoverTest do
 
     test "search_docs maps fields correctly for matched chunks" do
       Repo.insert!(
-        %Backplane.Docs.Project{
+        %Project{
           id: "discover-fields-proj",
           repo: "https://github.com/test/fields.git",
           ref: "main"

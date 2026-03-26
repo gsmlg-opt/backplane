@@ -1,7 +1,7 @@
 defmodule Backplane.Docs.IndexerTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Docs.{DocChunk, Indexer, Project}
+  alias Backplane.Docs.{Chunker, DocChunk, Indexer, Project}
 
   setup do
     project =
@@ -23,7 +23,7 @@ defmodule Backplane.Docs.IndexerTest do
           function: nil,
           chunk_type: "moduledoc",
           content: "Module documentation for Foo.",
-          content_hash: Backplane.Docs.Chunker.compute_hash("Module documentation for Foo."),
+          content_hash: Chunker.compute_hash("Module documentation for Foo."),
           tokens: 7
         }
       ]
@@ -38,7 +38,7 @@ defmodule Backplane.Docs.IndexerTest do
 
     test "skips unchanged chunks", %{project: project} do
       content = "Existing documentation content."
-      hash = Backplane.Docs.Chunker.compute_hash(content)
+      hash = Chunker.compute_hash(content)
 
       Repo.insert!(%DocChunk{
         project_id: project.id,
@@ -72,7 +72,7 @@ defmodule Backplane.Docs.IndexerTest do
         source_path: "lib/old.ex",
         chunk_type: "moduledoc",
         content: "Old content that should be removed.",
-        content_hash: Backplane.Docs.Chunker.compute_hash("Old content that should be removed."),
+        content_hash: Chunker.compute_hash("Old content that should be removed."),
         tokens: 6
       })
 
@@ -83,7 +83,7 @@ defmodule Backplane.Docs.IndexerTest do
 
     test "handles mixed insert/delete/skip", %{project: project} do
       existing_content = "This chunk already exists in the database."
-      existing_hash = Backplane.Docs.Chunker.compute_hash(existing_content)
+      existing_hash = Chunker.compute_hash(existing_content)
 
       Repo.insert!(%DocChunk{
         project_id: project.id,
@@ -99,7 +99,7 @@ defmodule Backplane.Docs.IndexerTest do
         source_path: "lib/remove.ex",
         chunk_type: "moduledoc",
         content: "This will be removed from the index.",
-        content_hash: Backplane.Docs.Chunker.compute_hash("This will be removed from the index."),
+        content_hash: Chunker.compute_hash("This will be removed from the index."),
         tokens: 7
       })
 
@@ -119,8 +119,7 @@ defmodule Backplane.Docs.IndexerTest do
           function: nil,
           chunk_type: "moduledoc",
           content: "Brand new documentation content here.",
-          content_hash:
-            Backplane.Docs.Chunker.compute_hash("Brand new documentation content here."),
+          content_hash: Chunker.compute_hash("Brand new documentation content here."),
           tokens: 6
         }
       ]

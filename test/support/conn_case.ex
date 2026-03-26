@@ -6,6 +6,11 @@ defmodule Backplane.ConnCase do
 
   use ExUnit.CaseTemplate
 
+  import Plug.Conn
+  import Plug.Test
+
+  alias Backplane.Transport.Router
+
   using do
     quote do
       import Plug.Conn
@@ -33,17 +38,17 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      Plug.Test.conn(:post, "/mcp", Jason.encode!(body))
-      |> Plug.Conn.put_req_header("content-type", "application/json")
+      conn(:post, "/mcp", Jason.encode!(body))
+      |> put_req_header("content-type", "application/json")
 
     conn =
       if auth_token do
-        Plug.Conn.put_req_header(conn, "authorization", "Bearer #{auth_token}")
+        put_req_header(conn, "authorization", "Bearer #{auth_token}")
       else
         conn
       end
 
-    conn = Backplane.Transport.Router.call(conn, Backplane.Transport.Router.init([]))
+    conn = Router.call(conn, Router.init([]))
 
     Jason.decode!(conn.resp_body)
   end
@@ -62,17 +67,17 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      Plug.Test.conn(:post, "/mcp", Jason.encode!(body))
-      |> Plug.Conn.put_req_header("content-type", "application/json")
+      conn(:post, "/mcp", Jason.encode!(body))
+      |> put_req_header("content-type", "application/json")
 
     conn =
       if auth_token do
-        Plug.Conn.put_req_header(conn, "authorization", "Bearer #{auth_token}")
+        put_req_header(conn, "authorization", "Bearer #{auth_token}")
       else
         conn
       end
 
-    Backplane.Transport.Router.call(conn, Backplane.Transport.Router.init([]))
+    Router.call(conn, Router.init([]))
   end
 
   @doc "Send a raw POST to /mcp with a custom body."
@@ -80,17 +85,17 @@ defmodule Backplane.ConnCase do
     auth_token = Keyword.get(opts, :auth_token)
 
     conn =
-      Plug.Test.conn(:post, "/mcp", Jason.encode!(body))
-      |> Plug.Conn.put_req_header("content-type", "application/json")
+      conn(:post, "/mcp", Jason.encode!(body))
+      |> put_req_header("content-type", "application/json")
 
     conn =
       if auth_token do
-        Plug.Conn.put_req_header(conn, "authorization", "Bearer #{auth_token}")
+        put_req_header(conn, "authorization", "Bearer #{auth_token}")
       else
         conn
       end
 
-    conn = Backplane.Transport.Router.call(conn, Backplane.Transport.Router.init([]))
+    conn = Router.call(conn, Router.init([]))
 
     Jason.decode!(conn.resp_body)
   end

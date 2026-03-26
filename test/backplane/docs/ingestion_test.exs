@@ -1,7 +1,7 @@
 defmodule Backplane.Docs.IngestionTest do
   use Backplane.DataCase, async: true
 
-  alias Backplane.Docs.{DocChunk, Ingestion, Project}
+  alias Backplane.Docs.{DocChunk, Indexer, Ingestion, Project}
 
   @test_dir "/tmp/backplane_test_repo_#{System.unique_integer([:positive])}"
 
@@ -404,7 +404,7 @@ defmodule Backplane.Docs.IngestionTest do
     test "indexes chunks from local directory structure", %{project: project, test_dir: dir} do
       # We can't do a real git clone in tests, so test process_files + indexer directly
       {:ok, chunks} = Ingestion.process_files(dir, project.id)
-      {:ok, stats} = Backplane.Docs.Indexer.index(project.id, chunks)
+      {:ok, stats} = Indexer.index(project.id, chunks)
 
       assert stats.inserted > 0
       assert stats.total > 0
@@ -415,18 +415,18 @@ defmodule Backplane.Docs.IngestionTest do
 
     test "reindexing is idempotent", %{project: project, test_dir: dir} do
       {:ok, chunks} = Ingestion.process_files(dir, project.id)
-      {:ok, stats1} = Backplane.Docs.Indexer.index(project.id, chunks)
+      {:ok, stats1} = Indexer.index(project.id, chunks)
       assert stats1.inserted > 0
 
       # Second index with same content
-      {:ok, stats2} = Backplane.Docs.Indexer.index(project.id, chunks)
+      {:ok, stats2} = Indexer.index(project.id, chunks)
       assert stats2.inserted == 0
       assert stats2.skipped == stats1.total
     end
 
     test "detects content changes on reindex", %{project: project, test_dir: dir} do
       {:ok, chunks} = Ingestion.process_files(dir, project.id)
-      {:ok, _stats1} = Backplane.Docs.Indexer.index(project.id, chunks)
+      {:ok, _stats1} = Indexer.index(project.id, chunks)
 
       # Modify a file
       File.write!(Path.join(dir, "lib/example.ex"), """
@@ -438,7 +438,7 @@ defmodule Backplane.Docs.IngestionTest do
       """)
 
       {:ok, chunks2} = Ingestion.process_files(dir, project.id)
-      {:ok, stats2} = Backplane.Docs.Indexer.index(project.id, chunks2)
+      {:ok, stats2} = Indexer.index(project.id, chunks2)
 
       # Should have some inserts and deletes due to changed content
       assert stats2.inserted > 0 or stats2.deleted > 0

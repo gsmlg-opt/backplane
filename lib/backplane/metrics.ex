@@ -39,7 +39,9 @@ defmodule Backplane.Metrics do
   end
 
   defp upstream_status do
-    Backplane.Proxy.Pool.list_upstreams()
+    alias Backplane.Proxy.Pool
+
+    Pool.list_upstreams()
     |> Enum.map(fn u ->
       %{
         name: u.name,
