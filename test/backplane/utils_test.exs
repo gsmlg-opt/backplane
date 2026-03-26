@@ -15,6 +15,18 @@ defmodule Backplane.UtilsTest do
     test "overwrites existing key" do
       assert Utils.maybe_put([key: "old"], :key, "new") == [key: "new"]
     end
+
+    test "keeps false values" do
+      assert Utils.maybe_put([], :enabled, false) == [enabled: false]
+    end
+
+    test "keeps empty string values" do
+      assert Utils.maybe_put([], :name, "") == [name: ""]
+    end
+
+    test "keeps empty list values" do
+      assert Utils.maybe_put([], :tags, []) == [tags: []]
+    end
   end
 
   describe "escape_like/1" do
@@ -46,6 +58,14 @@ defmodule Backplane.UtilsTest do
 
     test "formats upstream origin with prefix" do
       assert Utils.format_origin({:upstream, "my-server"}) == "upstream:my-server"
+    end
+
+    test "raises on unknown origin" do
+      assert_raise FunctionClauseError, fn ->
+        # Use binary_to_atom to bypass compile-time type check
+        origin = String.to_atom("unknown")
+        Utils.format_origin(origin)
+      end
     end
   end
 end

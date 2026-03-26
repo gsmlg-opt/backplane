@@ -25,6 +25,11 @@ defmodule BackplaneTest do
       assert Backplane.version() =~ ~r/^\d+\.\d+\.\d+$/
     end
 
+    test "protocol_version returns a date string" do
+      assert is_binary(Backplane.protocol_version())
+      assert Backplane.protocol_version() =~ ~r/^\d{4}-\d{2}-\d{2}$/
+    end
+
     test "discover delegates to Hub.Discover" do
       assert {:ok, results} = Backplane.discover("test")
       assert is_map(results)
