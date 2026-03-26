@@ -446,6 +446,49 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert conn.status == 202
     end
 
+    test "batch tools/call with missing required arg returns validation error" do
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{"name" => "skill::search", "arguments" => %{}}
+        }
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      [resp] = Jason.decode!(conn.resp_body)
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "Invalid params"
+      assert resp["error"]["message"] =~ "Missing required arguments"
+    end
+
+    test "batch tools/call success returns result with content" do
+      batch = [
+        %{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{"name" => "hub::status", "arguments" => %{}}
+        }
+      ]
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", Jason.encode!(batch))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      [resp] = Jason.decode!(conn.resp_body)
+      assert is_list(resp["result"]["content"])
+      text = hd(resp["result"]["content"])["text"]
+      # hub::status returns a map, so format_result JSON-encodes it
+      assert {:ok, _} = Jason.decode(text)
+    end
+
     test "handles invalid entries in batch" do
       batch = [
         %{"jsonrpc" => "2.0", "method" => "ping", "id" => 1},
