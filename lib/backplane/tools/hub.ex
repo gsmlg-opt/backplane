@@ -191,10 +191,18 @@ defmodule Backplane.Tools.Hub do
       name: provider_name,
       type: to_string(type),
       api_url: instance.api_url,
-      status: "ok",
+      status: derive_provider_status(rate_info),
       rate_remaining: if(rate_info, do: rate_info.remaining)
     }
   end
+
+  defp derive_provider_status(nil), do: "unknown"
+
+  defp derive_provider_status(%{remaining: 0, reset: reset}) when is_integer(reset) do
+    if reset > System.system_time(:second), do: "rate_limited", else: "ok"
+  end
+
+  defp derive_provider_status(_), do: "ok"
 
   defp format_origin(origin), do: Utils.format_origin(origin)
 
