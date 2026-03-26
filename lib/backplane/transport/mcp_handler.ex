@@ -2,7 +2,8 @@ defmodule Backplane.Transport.McpHandler do
   @moduledoc """
   JSON-RPC dispatcher for MCP protocol messages.
 
-  Handles: initialize, tools/list, tools/call, ping.
+  Handles: initialize, tools/list, tools/call, resources/list, resources/read,
+  prompts/list, prompts/get, completion/complete, logging/setLevel, ping.
   """
 
   import Plug.Conn

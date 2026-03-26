@@ -242,6 +242,40 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "not found"
     end
+
+    test "returns error for non-numeric chunk ID in URI" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/project/abc"})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "invalid URI"
+    end
+
+    test "returns error for backplane URI with no chunk_id" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/onlyproject"})
+      assert resp["error"]
+    end
+
+    test "returns content for an existing doc chunk" do
+      Repo.insert(
+        %Project{id: "res-read-proj", repo: "test/read", ref: "main"},
+        on_conflict: :nothing
+      )
+
+      {:ok, chunk} =
+        Repo.insert(%DocChunk{
+          project_id: "res-read-proj",
+          source_path: "lib/readable.ex",
+          content: "Readable doc content for testing",
+          chunk_type: "module_doc",
+          content_hash: "resread123"
+        })
+
+      uri = "backplane://docs/res-read-proj/#{chunk.id}"
+      resp = mcp_request("resources/read", %{"uri" => uri})
+      assert is_list(resp["result"]["contents"])
+      [content] = resp["result"]["contents"]
+      assert content["text"] == "Readable doc content for testing"
+      assert content["mimeType"] == "text/plain"
+    end
   end
 
   describe "prompts/list" do
@@ -265,52 +299,6 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "name"
-    end
-  end
-
-  describe "resources/read with valid resource" do
-    test "reads an existing doc chunk resource" do
-      # Insert a test doc chunk
-      # First ensure the project exists
-      Repo.insert(
-        %Project{id: "test-res-project", repo: "test/repo", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      {:ok, chunk} =
-        Repo.insert(%DocChunk{
-          project_id: "test-res-project",
-          source_path: "test.md",
-          content: "Hello from test chunk",
-          chunk_type: "markdown",
-          content_hash: "abc123"
-        })
-
-      uri = "backplane://docs/test-project/#{chunk.id}"
-      resp = mcp_request("resources/read", %{"uri" => uri})
-
-      assert is_list(resp["result"]["contents"])
-      [content] = resp["result"]["contents"]
-      assert content["text"] == "Hello from test chunk"
-      assert content["mimeType"] == "text/plain"
-    end
-  end
-
-  describe "prompts/get with valid prompt" do
-    test "returns prompt messages for existing skill" do
-      # List prompts first to find a valid name
-      list_resp = mcp_request("prompts/list")
-      prompts = list_resp["result"]["prompts"]
-
-      if prompts != [] do
-        name = hd(prompts)["name"]
-        resp = mcp_request("prompts/get", %{"name" => name})
-
-        assert is_list(resp["result"]["messages"])
-        [message] = resp["result"]["messages"]
-        assert message["role"] == "user"
-        assert is_map(message["content"])
-      end
     end
   end
 
@@ -796,34 +784,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
-  describe "resources/read validation" do
-    test "returns error when uri is missing" do
-      resp = mcp_request("resources/read", %{})
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "uri"
-    end
-
-    test "returns error for nonexistent resource" do
-      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/nonexistent/99999"})
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "not found" or resp["error"]["message"] =~ "Resource"
-    end
-  end
-
-  describe "prompts/get validation" do
-    test "returns error when name is missing" do
-      resp = mcp_request("prompts/get", %{})
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "name"
-    end
-
-    test "returns error for nonexistent prompt" do
-      resp = mcp_request("prompts/get", %{"name" => "nonexistent-skill"})
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "not found" or resp["error"]["message"] =~ "Prompt"
-    end
-  end
-
   describe "completion/complete validation" do
     test "returns error when ref is missing" do
       resp = mcp_request("completion/complete", %{})
@@ -835,42 +795,6 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp = mcp_request("completion/complete", %{"ref" => %{"type" => "ref/resource"}})
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "ref"
-    end
-  end
-
-  describe "resources/read with valid chunk" do
-    test "returns content for an existing doc chunk" do
-      Repo.insert(
-        %Project{id: "res-read-proj", repo: "test/read", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      {:ok, chunk} =
-        Repo.insert(%DocChunk{
-          project_id: "res-read-proj",
-          source_path: "lib/readable.ex",
-          content: "Readable doc content for testing",
-          chunk_type: "module_doc",
-          content_hash: "resread123"
-        })
-
-      uri = "backplane://docs/res-read-proj/#{chunk.id}"
-      resp = mcp_request("resources/read", %{"uri" => uri})
-      assert is_list(resp["result"]["contents"])
-      [content] = resp["result"]["contents"]
-      assert content["text"] == "Readable doc content for testing"
-      assert content["mimeType"] == "text/plain"
-    end
-
-    test "returns error for invalid URI format" do
-      resp = mcp_request("resources/read", %{"uri" => "invalid://bad"})
-      assert resp["error"]["code"] == -32_602
-    end
-
-    test "returns error for non-numeric chunk ID in URI" do
-      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/project/abc"})
-      assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "invalid URI"
     end
   end
 
@@ -1194,13 +1118,6 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "must be string"
-    end
-  end
-
-  describe "resources/read edge cases" do
-    test "returns error for backplane URI with no chunk_id" do
-      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/onlyproject"})
-      assert resp["error"]
     end
   end
 
