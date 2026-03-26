@@ -151,6 +151,9 @@ defmodule Backplane.Config.WatcherTest do
       if old_path,
         do: Application.put_env(:backplane, :config_path, old_path),
         else: Application.delete_env(:backplane, :config_path)
+
+      # Watcher.reload() applied auth_token from the TOML — clean it up
+      Application.delete_env(:backplane, :auth_token)
     end
   end
 

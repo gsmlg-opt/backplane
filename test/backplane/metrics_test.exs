@@ -273,18 +273,20 @@ defmodule Backplane.MetricsTest do
   test "upstream_status map body is exercised with a live upstream" do
     # Start a mock MCP server and an Upstream GenServer so Pool.list_upstreams()
     # returns at least one entry, exercising the Enum.map body in upstream_status/0.
-    {:ok, _} =
+    {:ok, bandit} =
       Bandit.start_link(
         plug: Backplane.Test.MockMcpPlug,
-        port: 4250,
+        port: 0,
         ip: {127, 0, 0, 1}
       )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
     config = %{
       name: "metrics-upstream-test",
       prefix: "metup",
       transport: "http",
-      url: "http://127.0.0.1:4250/mcp",
+      url: "http://127.0.0.1:#{port}/mcp",
       headers: %{}
     }
 
@@ -303,6 +305,7 @@ defmodule Backplane.MetricsTest do
     assert is_integer(metup.consecutive_ping_failures)
 
     GenServer.stop(upstream_pid)
+    GenServer.stop(bandit)
   end
 
   # --- Coverage for L59: catch branch in inc/2 ---

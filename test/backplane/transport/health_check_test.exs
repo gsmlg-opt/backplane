@@ -74,18 +74,20 @@ defmodule Backplane.Transport.HealthCheckTest do
 
     test "get_upstreams map body is exercised with a live upstream" do
       # Start a mock MCP server and an Upstream GenServer
-      {:ok, _} =
+      {:ok, bandit} =
         Bandit.start_link(
           plug: Backplane.Test.MockMcpPlug,
-          port: 4260,
+          port: 0,
           ip: {127, 0, 0, 1}
         )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
       config = %{
         name: "health-upstream-test",
         prefix: "hcup",
         transport: "http",
-        url: "http://127.0.0.1:4260/mcp",
+        url: "http://127.0.0.1:#{port}/mcp",
         headers: %{}
       }
 
@@ -107,6 +109,7 @@ defmodule Backplane.Transport.HealthCheckTest do
       assert Map.has_key?(hcup, :last_pong_at)
 
       GenServer.stop(upstream_pid)
+      GenServer.stop(bandit)
     end
 
     # Verifies that get_upstreams/0 rescue branch returns [] on failure:
