@@ -24,19 +24,37 @@ defmodule Backplane.Hub.Discover do
     - :limit - max results per scope (default: 5)
   """
   @spec search(String.t(), keyword()) :: {:ok, map()}
-  def search(query, opts \\ []) do
+  def search(query, opts \\ [])
+  def search("", _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: []}}
+  def search(nil, _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: []}}
+
+  def search(query, opts) do
     scopes = Keyword.get(opts, :scope, @all_scopes)
     limit = Keyword.get(opts, :limit, @default_limit)
     query = sanitize_query(query)
 
-    result = %{
-      tools: if("tools" in scopes, do: search_tools(query, limit), else: []),
-      skills: if("skills" in scopes, do: search_skills(query, limit), else: []),
-      docs: if("docs" in scopes, do: search_docs(query, limit), else: []),
-      repos: if("repos" in scopes, do: search_repos(query, limit), else: [])
+    # Run scope searches concurrently — each hits independent data sources
+    scope_fns = %{
+      "tools" => fn -> search_tools(query, limit) end,
+      "skills" => fn -> search_skills(query, limit) end,
+      "docs" => fn -> search_docs(query, limit) end,
+      "repos" => fn -> search_repos(query, limit) end
     }
 
-    {:ok, result}
+    results =
+      scopes
+      |> Enum.filter(&Map.has_key?(scope_fns, &1))
+      |> Enum.map(fn scope -> {scope, Task.async(scope_fns[scope])} end)
+      |> Enum.map(fn {scope, task} -> {scope, Task.await(task, 10_000)} end)
+      |> Map.new()
+
+    {:ok,
+     %{
+       tools: Map.get(results, "tools", []),
+       skills: Map.get(results, "skills", []),
+       docs: Map.get(results, "docs", []),
+       repos: Map.get(results, "repos", [])
+     }}
   end
 
   defp search_tools(query, limit) do
