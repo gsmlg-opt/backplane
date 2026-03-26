@@ -232,20 +232,6 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  defp handle_ping_failure(state, reason) do
-    failures = state.consecutive_ping_failures + 1
-
-    Logger.warning("Health ping failed",
-      upstream: state.name,
-      reason: inspect(reason),
-      consecutive_failures: failures
-    )
-
-    new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-    schedule_health_ping()
-    {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
-  end
-
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     state = handle_stdio_data(state, data)
     {:noreply, state}
@@ -296,6 +282,20 @@ defmodule Backplane.Proxy.Upstream do
     end
 
     :ok
+  end
+
+  defp handle_ping_failure(state, reason) do
+    failures = state.consecutive_ping_failures + 1
+
+    Logger.warning("Health ping failed",
+      upstream: state.name,
+      reason: inspect(reason),
+      consecutive_failures: failures
+    )
+
+    new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+    schedule_health_ping()
+    {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
   end
 
   # HTTP Transport
