@@ -42,7 +42,8 @@ defmodule Backplane.Docs.Ingestion do
       e ->
         Logger.error("Ingestion crashed",
           project_id: project.id,
-          error: Exception.message(e)
+          error: Exception.message(e),
+          stacktrace: Exception.format_stacktrace(__STACKTRACE__)
         )
 
         mark_failed(project.id)

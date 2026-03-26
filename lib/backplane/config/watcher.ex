@@ -29,7 +29,10 @@ defmodule Backplane.Config.Watcher do
     {:noreply, state}
   end
 
-  def handle_info(_msg, state), do: {:noreply, state}
+  def handle_info(msg, state) do
+    Logger.debug("Config.Watcher received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
 
   @doc "Manually trigger config reload."
   @spec reload() :: :ok | {:error, term()}

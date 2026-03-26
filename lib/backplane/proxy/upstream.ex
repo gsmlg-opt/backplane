@@ -265,6 +265,11 @@ defmodule Backplane.Proxy.Upstream do
      }}
   end
 
+  def handle_info(msg, state) do
+    Logger.debug("Upstream #{state.name} received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @impl true
   def terminate(_reason, state) do
     # Reply to all pending callers so they don't hang
@@ -350,7 +355,9 @@ defmodule Backplane.Proxy.Upstream do
           {:error, reason, state}
       end
     rescue
-      e -> {:error, Exception.message(e), state}
+      e ->
+        Logger.warning("Stdio initialization failed for #{state.name}: #{Exception.message(e)}")
+        {:error, Exception.message(e), state}
     end
   end
 
@@ -472,7 +479,9 @@ defmodule Backplane.Proxy.Upstream do
     Port.command(port, data)
     :ok
   rescue
-    e -> {:error, Exception.message(e)}
+    e ->
+      Logger.debug("Stdio send failed: #{Exception.message(e)}")
+      {:error, Exception.message(e)}
   end
 
   defp send_stdio(nil, _request), do: {:error, :not_connected}

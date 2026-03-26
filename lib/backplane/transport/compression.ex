@@ -15,6 +15,7 @@ defmodule Backplane.Transport.Compression do
   """
 
   import Plug.Conn
+  require Logger
   @behaviour Plug
 
   @default_min_size 1024
@@ -50,7 +51,9 @@ defmodule Backplane.Transport.Compression do
         |> put_resp_header("vary", "Accept-Encoding")
         |> Map.put(:resp_body, compressed)
       rescue
-        _e -> conn
+        e ->
+          Logger.debug("Gzip compression failed: #{Exception.message(e)}")
+          conn
       end
     else
       conn

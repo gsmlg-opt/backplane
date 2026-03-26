@@ -97,29 +97,33 @@ defmodule Backplane.Transport.Router do
   end
 
   defp validate_webhook(conn, :github) do
-    secret = find_webhook_secret(conn.body_params, :github)
+    case find_webhook_secret(conn.body_params, :github) do
+      nil ->
+        {:error, :no_secret}
 
-    with secret when not is_nil(secret) <- secret,
-         raw_body when is_binary(raw_body) <- conn.assigns[:raw_body],
-         [signature] <- Plug.Conn.get_req_header(conn, "x-hub-signature-256"),
-         true <- WebhookHandler.validate_github_signature(raw_body, signature, secret) do
-      :ok
-    else
-      nil -> {:error, :no_secret}
-      _ -> {:error, :invalid_signature}
+      secret ->
+        with raw_body when is_binary(raw_body) <- conn.assigns[:raw_body],
+             [signature] <- Plug.Conn.get_req_header(conn, "x-hub-signature-256"),
+             true <- WebhookHandler.validate_github_signature(raw_body, signature, secret) do
+          :ok
+        else
+          _ -> {:error, :invalid_signature}
+        end
     end
   end
 
   defp validate_webhook(conn, :gitlab) do
-    secret = find_webhook_secret(conn.body_params, :gitlab)
+    case find_webhook_secret(conn.body_params, :gitlab) do
+      nil ->
+        {:error, :no_secret}
 
-    with expected when not is_nil(expected) <- secret,
-         [token] <- Plug.Conn.get_req_header(conn, "x-gitlab-token"),
-         true <- WebhookHandler.validate_gitlab_token(token, expected) do
-      :ok
-    else
-      nil -> {:error, :no_secret}
-      _ -> {:error, :invalid_signature}
+      expected ->
+        with [token] <- Plug.Conn.get_req_header(conn, "x-gitlab-token"),
+             true <- WebhookHandler.validate_gitlab_token(token, expected) do
+          :ok
+        else
+          _ -> {:error, :invalid_signature}
+        end
     end
   end
 
