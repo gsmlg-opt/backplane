@@ -36,11 +36,15 @@ defmodule Backplane.Skills.Search do
     |> Enum.map(&to_result/1)
   end
 
+  @max_query_length 500
+
   defp apply_text_search(query, search) when is_binary(search) and search != "" do
+    sanitized = search |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)
+
     where(
       query,
       [s],
-      fragment("search_vector @@ plainto_tsquery('english', ?)", ^search)
+      fragment("search_vector @@ plainto_tsquery('english', ?)", ^sanitized)
     )
   end
 
@@ -67,10 +71,12 @@ defmodule Backplane.Skills.Search do
   end
 
   defp order_by_relevance(query, search) when is_binary(search) and search != "" do
+    sanitized = search |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)
+
     order_by(
       query,
       [s],
-      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^search)
+      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^sanitized)
     )
   end
 
