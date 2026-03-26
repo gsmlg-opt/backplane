@@ -145,6 +145,10 @@ defmodule Backplane.Metrics do
     duration_us = System.convert_time_unit(measurements.duration, :native, :microsecond)
     record_timing("tool_call_duration", duration_us)
 
+    if tool = metadata[:tool] do
+      record_timing("tool.#{tool}", duration_us)
+    end
+
     case metadata[:result] do
       :error -> inc("tool_calls_errors")
       _ -> inc("tool_calls_success")
