@@ -10,6 +10,18 @@ defmodule Backplane.Docs.Search do
   @default_limit 20
   @default_max_tokens 8000
 
+  # Chunk type weight multipliers for ranking.
+  # moduledoc > function_doc > typespec > guide > code (PRD BP-2)
+  @chunk_type_weights %{
+    "moduledoc" => 1.5,
+    "module_doc" => 1.5,
+    "function_doc" => 1.3,
+    "typespec" => 1.1,
+    "guide" => 1.0,
+    "code" => 0.8
+  }
+  @default_chunk_weight 1.0
+
   @doc """
   Search doc chunks for a project using full-text search.
 
@@ -58,6 +70,7 @@ defmodule Backplane.Docs.Search do
       rank: fragment("ts_rank(search_vector, websearch_to_tsquery('english', ?))", ^tsquery)
     })
     |> Repo.all()
+    |> apply_chunk_type_weights()
     |> apply_token_budget(max_tokens)
   end
 
@@ -80,6 +93,15 @@ defmodule Backplane.Docs.Search do
       }
     )
     |> Repo.all()
+  end
+
+  defp apply_chunk_type_weights(results) do
+    results
+    |> Enum.map(fn result ->
+      weight = Map.get(@chunk_type_weights, result.chunk_type, @default_chunk_weight)
+      %{result | rank: result.rank * weight}
+    end)
+    |> Enum.sort_by(& &1.rank, :desc)
   end
 
   defp apply_token_budget(results, max_tokens) do
