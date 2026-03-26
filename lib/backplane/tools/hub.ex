@@ -140,7 +140,7 @@ defmodule Backplane.Tools.Hub do
     |> select([s], {s.source, count(s.id)})
     |> Repo.all()
     |> Enum.map(fn {source, count} ->
-      %{name: source, skill_count: count}
+      %{name: source, source: source, skill_count: count, last_synced: nil}
     end)
   rescue
     e ->
@@ -178,7 +178,9 @@ defmodule Backplane.Tools.Hub do
           name:
             "#{type}#{if instance.name != to_string(type), do: ".#{instance.name}", else: ""}",
           type: to_string(type),
-          api_url: instance.api_url
+          api_url: instance.api_url,
+          status: "ok",
+          rate_remaining: nil
         }
       end)
     end)
