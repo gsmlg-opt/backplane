@@ -254,7 +254,7 @@ defmodule Backplane.Docs.Ingestion do
     end
   end
 
-  @skip_dirs MapSet.new(~w(.git _build deps node_modules .elixir_ls))
+  @skip_dirs ~w(.git _build deps node_modules .elixir_ls)
 
   defp walk_files(dir) do
     walk_files_recursive(dir, [])
@@ -272,7 +272,7 @@ defmodule Backplane.Docs.Ingestion do
   end
 
   defp classify_entry(dir, entry, acc) do
-    if MapSet.member?(@skip_dirs, entry) do
+    if entry in @skip_dirs do
       acc
     else
       full_path = Path.join(dir, entry)
