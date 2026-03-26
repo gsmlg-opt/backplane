@@ -437,6 +437,10 @@ defmodule Backplane.Transport.McpHandler do
       end
 
     {resources, next_cursor}
+  rescue
+    e ->
+      Logger.warning("Failed to list resources: #{Exception.message(e)}")
+      {[], nil}
   end
 
   defp encode_cursor(id), do: Base.url_encode64(to_string(id), padding: false)
@@ -461,6 +465,10 @@ defmodule Backplane.Transport.McpHandler do
       :error ->
         {:error, "invalid URI format"}
     end
+  rescue
+    e ->
+      Logger.warning("Failed to read resource #{uri}: #{Exception.message(e)}")
+      {:error, "Database unavailable"}
   end
 
   defp resource_uri(project_id, chunk_id) do
@@ -569,6 +577,8 @@ defmodule Backplane.Transport.McpHandler do
       _ ->
         []
     end
+  rescue
+    _ -> []
   end
 
   defp complete_prompt_argument(_prompt_name, _prefix), do: []
