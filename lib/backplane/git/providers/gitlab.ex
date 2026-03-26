@@ -128,7 +128,9 @@ defmodule Backplane.Git.Providers.GitLab do
     encoded_id = encode_project_id(repo_id)
     state = Keyword.get(opts, :state, "opened")
 
-    params = [state: normalize_issue_state_for_api(state)]
+    params =
+      [state: normalize_issue_state_for_api(state)]
+      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
 
     case Req.get(client(config), url: "/projects/#{encoded_id}/issues", params: params) do
       {:ok, %{status: 200, body: body}} ->
@@ -176,7 +178,9 @@ defmodule Backplane.Git.Providers.GitLab do
     encoded_id = encode_project_id(repo_id)
     state = Keyword.get(opts, :state, "opened")
 
-    params = [state: normalize_mr_state_for_api(state)]
+    params =
+      [state: normalize_mr_state_for_api(state)]
+      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
 
     case Req.get(client(config),
            url: "/projects/#{encoded_id}/merge_requests",

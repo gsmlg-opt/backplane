@@ -191,7 +191,9 @@ defmodule Backplane.Git.Providers.GitHub do
     config = Keyword.get(opts, :config, %{})
     state = Keyword.get(opts, :state, "open")
 
-    params = [state: state]
+    params =
+      [state: state]
+      |> maybe_add_param(:per_page, Keyword.get(opts, :per_page))
 
     case Req.get(client(config), url: "/repos/#{repo_id}/pulls", params: params) do
       {:ok, %{status: 200, body: body}} ->

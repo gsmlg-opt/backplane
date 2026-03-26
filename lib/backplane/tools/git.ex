@@ -96,6 +96,10 @@ defmodule Backplane.Tools.Git do
             "state" => %{
               "type" => "string",
               "description" => "Filter by state: open, closed, all (default: open)"
+            },
+            "per_page" => %{
+              "type" => "integer",
+              "description" => "Number of issues to return (default: 20)"
             }
           },
           "required" => ["repo"]
@@ -145,6 +149,10 @@ defmodule Backplane.Tools.Git do
             "state" => %{
               "type" => "string",
               "description" => "Filter by state: open, closed, merged, all (default: open)"
+            },
+            "per_page" => %{
+              "type" => "integer",
+              "description" => "Number of merge requests to return (default: 20)"
             }
           },
           "required" => ["repo"]
@@ -224,7 +232,11 @@ defmodule Backplane.Tools.Git do
     state = args["state"] || "open"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      module.fetch_issues(repo_id, config: config, state: state)
+      opts =
+        [config: config, state: state]
+        |> maybe_add(:per_page, args["per_page"])
+
+      module.fetch_issues(repo_id, opts)
     end)
   end
 
@@ -247,7 +259,11 @@ defmodule Backplane.Tools.Git do
     state = args["state"] || "open"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      module.fetch_merge_requests(repo_id, config: config, state: state)
+      opts =
+        [config: config, state: state]
+        |> maybe_add(:per_page, args["per_page"])
+
+      module.fetch_merge_requests(repo_id, opts)
     end)
   end
 

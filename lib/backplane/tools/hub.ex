@@ -99,12 +99,14 @@ defmodule Backplane.Tools.Hub do
     upstreams = get_upstream_status()
     skill_sources = get_skill_sources()
     doc_projects = get_doc_projects()
+    git_providers = get_git_providers()
 
     {:ok,
      %{
        upstreams: upstreams,
        skill_sources: skill_sources,
        doc_projects: doc_projects,
+       git_providers: git_providers,
        total_tools: ToolRegistry.count(),
        total_skills: Registry.count()
      }}
@@ -156,6 +158,27 @@ defmodule Backplane.Tools.Hub do
   rescue
     e ->
       Logger.warning("Failed to get doc projects: #{Exception.message(e)}")
+      []
+  end
+
+  defp get_git_providers do
+    providers = Application.get_env(:backplane, :git_providers, %{})
+
+    Enum.flat_map([:github, :gitlab], fn type ->
+      instances = Map.get(providers, type, [])
+
+      Enum.map(instances, fn instance ->
+        %{
+          name:
+            "#{type}#{if instance.name != to_string(type), do: ".#{instance.name}", else: ""}",
+          type: to_string(type),
+          api_url: instance.api_url
+        }
+      end)
+    end)
+  rescue
+    e ->
+      Logger.warning("Failed to get git providers: #{Exception.message(e)}")
       []
   end
 
