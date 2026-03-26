@@ -25,7 +25,10 @@ defmodule Backplane.Git.Providers.GitHub do
 
     Req.new(
       base_url: api_url,
-      headers: headers
+      headers: headers,
+      retry: :transient,
+      retry_delay: &retry_delay/1,
+      max_retries: 3
     )
     |> maybe_attach_test_options(config)
   end
@@ -413,5 +416,12 @@ defmodule Backplane.Git.Providers.GitHub do
     else
       "github.#{URI.parse(api_url).host}"
     end
+  end
+
+  # Exponential backoff with jitter: ~1s, ~2s, ~4s
+  defp retry_delay(attempt) do
+    base = Integer.pow(2, attempt) * 1_000
+    jitter = :rand.uniform(500)
+    base + jitter
   end
 end

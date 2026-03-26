@@ -84,6 +84,16 @@ defmodule Backplane.Config.Watcher do
       Application.put_env(:backplane, :git_providers, updated)
     end
 
+    # Update project configurations
+    if projects = config[:projects] do
+      Application.put_env(:backplane, :projects, projects)
+    end
+
+    # Update skill source configurations
+    if skills = config[:skills] do
+      Application.put_env(:backplane, :skill_sources, skills)
+    end
+
     # Reconcile upstream MCP connections (add new, remove stale)
     reconcile_upstreams(config[:upstream] || [])
 
