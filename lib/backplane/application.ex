@@ -46,7 +46,9 @@ defmodule Backplane.Application do
 
     state
   rescue
-    _ -> state
+    e ->
+      Logger.warning("Error during prep_stop: #{Exception.message(e)}")
+      state
   end
 
   defp register_native_tools do

@@ -8,6 +8,8 @@ defmodule Backplane.Metrics do
 
   use GenServer
 
+  require Logger
+
   alias Backplane.Proxy.Pool
 
   @table __MODULE__
@@ -51,7 +53,9 @@ defmodule Backplane.Metrics do
       }
     end)
   rescue
-    _ -> []
+    e ->
+      Logger.warning("Failed to get upstream status: #{Exception.message(e)}")
+      []
   end
 
   @doc "Increment a named counter."
