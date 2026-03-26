@@ -128,7 +128,10 @@ defmodule Backplane.Git.Providers.GitHub do
   end
 
   defp decode_file_content(%{"encoding" => "base64", "content" => content}) do
-    content |> String.replace(~r/\s/, "") |> Base.decode64!()
+    case content |> String.replace(~r/\s/, "") |> Base.decode64() do
+      {:ok, decoded} -> decoded
+      :error -> ""
+    end
   end
 
   defp decode_file_content(%{"content" => content}) when is_binary(content), do: content

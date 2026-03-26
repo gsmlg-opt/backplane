@@ -422,8 +422,10 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp parse_resource_uri("backplane://docs/" <> rest) do
-    case String.split(rest, "/", parts: 2) do
-      [_project_id, chunk_id] -> {:ok, chunk_id}
+    with [_project_id, chunk_id_str] <- String.split(rest, "/", parts: 2),
+         {chunk_id, ""} <- Integer.parse(chunk_id_str) do
+      {:ok, chunk_id}
+    else
       _ -> :error
     end
   end

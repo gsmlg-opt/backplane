@@ -866,6 +866,12 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp = mcp_request("resources/read", %{"uri" => "invalid://bad"})
       assert resp["error"]["code"] == -32_602
     end
+
+    test "returns error for non-numeric chunk ID in URI" do
+      resp = mcp_request("resources/read", %{"uri" => "backplane://docs/project/abc"})
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "invalid URI"
+    end
   end
 
   describe "resources/list pagination with cursor" do
