@@ -126,8 +126,16 @@ defmodule Backplane.Transport.Router do
         end
 
       {:error, :invalid_signature} ->
+        Logger.warning(
+          "Webhook signature validation failed: provider=#{provider} ip=#{format_remote_ip(conn)}"
+        )
+
         send_resp(conn, 401, Jason.encode!(%{error: "Invalid webhook signature"}))
     end
+  end
+
+  defp format_remote_ip(conn) do
+    conn.remote_ip |> :inet.ntoa() |> to_string()
   end
 
   defp validate_webhook(conn, :github) do

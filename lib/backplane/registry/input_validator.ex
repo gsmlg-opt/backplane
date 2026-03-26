@@ -47,15 +47,61 @@ defmodule Backplane.Registry.InputValidator do
     end)
   end
 
-  defp check_type(%{"type" => expected_type}, key, value) do
-    if type_matches?(value, expected_type) do
+  defp check_type(%{"type" => expected_type} = property, key, value) do
+    with true <- type_matches?(value, expected_type),
+         :ok <- check_enum(property, key, value),
+         :ok <- check_constraints(property, key, value) do
       {:cont, :ok}
     else
-      {:halt, {:error, "Argument '#{key}' must be #{expected_type}, got #{inspect_type(value)}"}}
+      false ->
+        {:halt,
+         {:error, "Argument '#{key}' must be #{expected_type}, got #{inspect_type(value)}"}}
+
+      {:error, _} = err ->
+        {:halt, err}
     end
   end
 
   defp check_type(_property, _key, _value), do: {:cont, :ok}
+
+  defp check_enum(%{"enum" => valid_values}, key, value) when is_list(valid_values) do
+    if value in valid_values do
+      :ok
+    else
+      {:error,
+       "Argument '#{key}' must be one of: #{Enum.map_join(valid_values, ", ", &inspect/1)}"}
+    end
+  end
+
+  defp check_enum(_property, _key, _value), do: :ok
+
+  defp check_constraints(property, key, value) when is_number(value) do
+    cond do
+      is_number(property["minimum"]) and value < property["minimum"] ->
+        {:error, "Argument '#{key}' must be >= #{property["minimum"]}"}
+
+      is_number(property["maximum"]) and value > property["maximum"] ->
+        {:error, "Argument '#{key}' must be <= #{property["maximum"]}"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_constraints(property, key, value) when is_binary(value) do
+    cond do
+      is_integer(property["minLength"]) and String.length(value) < property["minLength"] ->
+        {:error, "Argument '#{key}' must have length >= #{property["minLength"]}"}
+
+      is_integer(property["maxLength"]) and String.length(value) > property["maxLength"] ->
+        {:error, "Argument '#{key}' must have length <= #{property["maxLength"]}"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_constraints(_property, _key, _value), do: :ok
 
   defp type_matches?(value, "string") when is_binary(value), do: true
   defp type_matches?(value, "integer") when is_integer(value), do: true
