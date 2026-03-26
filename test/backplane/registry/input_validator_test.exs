@@ -187,4 +187,61 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert :ok = InputValidator.validate(args, @schema)
     end
   end
+
+  describe "enum validation" do
+    @enum_schema %{
+      "type" => "object",
+      "properties" => %{
+        "level" => %{"type" => "string", "enum" => ["debug", "info", "warning", "error"]}
+      },
+      "required" => ["level"]
+    }
+
+    test "accepts value in enum" do
+      assert :ok = InputValidator.validate(%{"level" => "info"}, @enum_schema)
+    end
+
+    test "rejects value not in enum" do
+      assert {:error, msg} = InputValidator.validate(%{"level" => "trace"}, @enum_schema)
+      assert msg =~ "must be one of"
+      assert msg =~ "debug"
+    end
+  end
+
+  describe "constraint validation" do
+    @constraint_schema %{
+      "type" => "object",
+      "properties" => %{
+        "name" => %{"type" => "string", "minLength" => 1, "maxLength" => 50},
+        "count" => %{"type" => "integer", "minimum" => 0, "maximum" => 100}
+      },
+      "required" => []
+    }
+
+    test "accepts values within constraints" do
+      args = %{"name" => "hello", "count" => 50}
+      assert :ok = InputValidator.validate(args, @constraint_schema)
+    end
+
+    test "rejects string shorter than minLength" do
+      assert {:error, msg} = InputValidator.validate(%{"name" => ""}, @constraint_schema)
+      assert msg =~ "length >= 1"
+    end
+
+    test "rejects string longer than maxLength" do
+      long = String.duplicate("a", 51)
+      assert {:error, msg} = InputValidator.validate(%{"name" => long}, @constraint_schema)
+      assert msg =~ "length <= 50"
+    end
+
+    test "rejects number below minimum" do
+      assert {:error, msg} = InputValidator.validate(%{"count" => -1}, @constraint_schema)
+      assert msg =~ ">= 0"
+    end
+
+    test "rejects number above maximum" do
+      assert {:error, msg} = InputValidator.validate(%{"count" => 101}, @constraint_schema)
+      assert msg =~ "<= 100"
+    end
+  end
 end
