@@ -153,20 +153,21 @@ defmodule Backplane.Transport.RouterTest do
       assert conn.status == 401
     end
 
-    test "POST /webhook/github uses per-project webhook secret" do
+    test "POST /webhook/github uses per-project webhook secret with provider:repo format" do
       secret = "project-specific-secret"
-      repo_url = "https://github.com/org/repo.git"
 
+      # Projects use "github:owner/repo" format from backplane.toml
       Application.put_env(:backplane, :projects, [
-        %{id: "test-proj", repo: repo_url, ref: "main", webhook_secret: secret}
+        %{id: "test-proj", repo: "github:org/repo", ref: "main", webhook_secret: secret}
       ])
 
       on_exit(fn -> Application.delete_env(:backplane, :projects) end)
 
+      # Webhook payload uses full clone URL
       payload =
         Jason.encode!(%{
           "ref" => "refs/heads/main",
-          "repository" => %{"clone_url" => repo_url}
+          "repository" => %{"clone_url" => "https://github.com/org/repo.git"}
         })
 
       signature =
@@ -183,10 +184,8 @@ defmodule Backplane.Transport.RouterTest do
     end
 
     test "POST /webhook/github rejects when per-project secret doesn't match" do
-      repo_url = "https://github.com/org/repo.git"
-
       Application.put_env(:backplane, :projects, [
-        %{id: "test-proj", repo: repo_url, ref: "main", webhook_secret: "correct-secret"}
+        %{id: "test-proj", repo: "github:org/repo", ref: "main", webhook_secret: "correct-secret"}
       ])
 
       on_exit(fn -> Application.delete_env(:backplane, :projects) end)
@@ -194,7 +193,7 @@ defmodule Backplane.Transport.RouterTest do
       payload =
         Jason.encode!(%{
           "ref" => "refs/heads/main",
-          "repository" => %{"clone_url" => repo_url}
+          "repository" => %{"clone_url" => "https://github.com/org/repo.git"}
         })
 
       wrong_sig =

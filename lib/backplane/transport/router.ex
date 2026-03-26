@@ -142,10 +142,31 @@ defmodule Backplane.Transport.Router do
   defp extract_repo_url(_, _), do: nil
 
   defp find_project_secret(repo_url) do
+    normalized_url = normalize_repo_url(repo_url)
+
     Application.get_env(:backplane, :projects, [])
     |> Enum.find_value(fn project ->
-      if project.repo == repo_url, do: project[:webhook_secret]
+      if repo_url_matches?(project.repo, normalized_url), do: project[:webhook_secret]
     end)
+  end
+
+  # Project repo is "github:owner/repo" or "gitlab:owner/repo" format.
+  # Webhook repo_url is a full URL like "https://github.com/owner/repo.git".
+  # Compare by extracting owner/repo from both.
+  defp repo_url_matches?(project_repo, normalized_webhook_url) do
+    case String.split(project_repo, ":", parts: 2) do
+      [_provider, repo_id] -> normalize_repo_url(repo_id) == normalized_webhook_url
+      _ -> false
+    end
+  end
+
+  # Extract "owner/repo" from various URL formats, stripping .git suffix
+  defp normalize_repo_url(url) do
+    url
+    |> String.replace(~r{^https?://[^/]+/}, "")
+    |> String.trim_trailing(".git")
+    |> String.trim_trailing("/")
+    |> String.downcase()
   end
 
   defp global_webhook_secret(:github),
