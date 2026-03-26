@@ -21,6 +21,29 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["result"]["capabilities"]["tools"]["listChanged"] == false
     end
 
+    test "logs warning when client sends unsupported protocolVersion" do
+      import ExUnit.CaptureLog
+
+      log =
+        capture_log([level: :warning], fn ->
+          resp = mcp_request("initialize", %{"protocolVersion" => "1999-01-01"})
+          assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+        end)
+
+      assert log =~ "unsupported protocol version"
+    end
+
+    test "does not warn when client sends matching protocolVersion" do
+      import ExUnit.CaptureLog
+
+      log =
+        capture_log(fn ->
+          mcp_request("initialize", %{"protocolVersion" => Backplane.protocol_version()})
+        end)
+
+      refute log =~ "unsupported protocol version"
+    end
+
     test "returns Mcp-Session-Id header" do
       conn = mcp_request_conn("initialize")
 
