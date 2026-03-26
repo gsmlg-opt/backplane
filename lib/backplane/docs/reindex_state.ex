@@ -7,6 +7,8 @@ defmodule Backplane.Docs.ReindexState do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{}
+
   @primary_key {:project_id, :string, autogenerate: false}
 
   schema "reindex_state" do

@@ -370,21 +370,12 @@ defmodule Backplane.Git.Providers.GitLab do
 
   defp cache_rate_limit(_config, _error), do: :ok
 
-  defp get_header(headers, name) when is_list(headers) do
-    case List.keyfind(headers, name, 0) do
-      {_, value} -> value
-      nil -> nil
-    end
-  end
-
   defp get_header(headers, name) when is_map(headers) do
     case Map.get(headers, name) do
       [v | _] -> v
       v -> v
     end
   end
-
-  defp get_header(_, _), do: nil
 
   defp parse_int(nil), do: nil
   defp parse_int(val) when is_integer(val), do: val
