@@ -245,7 +245,8 @@ defmodule Backplane.Proxy.Upstream do
       try do
         Port.close(state.port)
       rescue
-        _ -> :ok
+        e ->
+          Logger.debug("Port.close failed during terminate: #{Exception.message(e)}")
       end
     end
 

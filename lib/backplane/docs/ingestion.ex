@@ -37,63 +37,7 @@ defmodule Backplane.Docs.Ingestion do
     })
 
     try do
-      with {:ok, repo_path} <- ensure_repo(project),
-           {:ok, commit_sha} <- get_commit_sha(repo_path),
-           :changed <- check_sha_changed(project, commit_sha),
-           {:ok, chunks} <- process_files(repo_path, project.id) do
-        {:ok, stats} = Indexer.index(project.id, chunks)
-
-        # Update project last_indexed_at (non-fatal if this fails)
-        case project
-             |> Project.changeset(%{
-               last_indexed_at: DateTime.utc_now(),
-               index_hash: commit_sha
-             })
-             |> Repo.update() do
-          {:ok, _} ->
-            :ok
-
-          {:error, changeset} ->
-            Logger.warning(
-              "Failed to update project metadata: #{inspect(changeset.errors)}",
-              project_id: project.id
-            )
-        end
-
-        Indexer.update_reindex_state(project.id, %{
-          status: "completed",
-          completed_at: DateTime.utc_now(),
-          commit_sha: commit_sha,
-          chunk_count: stats.total
-        })
-
-        {:ok, stats}
-      else
-        :unchanged ->
-          Logger.info("Skipping reindex — commit SHA unchanged",
-            project_id: project.id
-          )
-
-          Indexer.update_reindex_state(project.id, %{
-            status: "completed",
-            completed_at: DateTime.utc_now()
-          })
-
-          {:ok, %{skipped: true, reason: :unchanged}}
-
-        {:error, reason} = error ->
-          Logger.error("Ingestion failed",
-            project_id: project.id,
-            reason: inspect(reason)
-          )
-
-          Indexer.update_reindex_state(project.id, %{
-            status: "failed",
-            completed_at: DateTime.utc_now()
-          })
-
-          error
-      end
+      execute_pipeline(project)
     rescue
       e ->
         Logger.error("Ingestion crashed",
@@ -101,13 +45,77 @@ defmodule Backplane.Docs.Ingestion do
           error: Exception.message(e)
         )
 
-        Indexer.update_reindex_state(project.id, %{
-          status: "failed",
-          completed_at: DateTime.utc_now()
-        })
-
+        mark_failed(project.id)
         {:error, {:crash, Exception.message(e)}}
     end
+  end
+
+  defp execute_pipeline(project) do
+    with {:ok, repo_path} <- ensure_repo(project),
+         {:ok, commit_sha} <- get_commit_sha(repo_path),
+         :changed <- check_sha_changed(project, commit_sha),
+         {:ok, chunks} <- process_files(repo_path, project.id) do
+      {:ok, stats} = Indexer.index(project.id, chunks)
+      update_project_metadata(project, commit_sha)
+
+      Indexer.update_reindex_state(project.id, %{
+        status: "completed",
+        completed_at: DateTime.utc_now(),
+        commit_sha: commit_sha,
+        chunk_count: stats.total
+      })
+
+      {:ok, stats}
+    else
+      :unchanged ->
+        Logger.info("Skipping reindex — commit SHA unchanged",
+          project_id: project.id
+        )
+
+        mark_completed(project.id)
+        {:ok, %{skipped: true, reason: :unchanged}}
+
+      {:error, reason} = error ->
+        Logger.error("Ingestion failed",
+          project_id: project.id,
+          reason: inspect(reason)
+        )
+
+        mark_failed(project.id)
+        error
+    end
+  end
+
+  defp update_project_metadata(project, commit_sha) do
+    case project
+         |> Project.changeset(%{
+           last_indexed_at: DateTime.utc_now(),
+           index_hash: commit_sha
+         })
+         |> Repo.update() do
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.warning(
+          "Failed to update project metadata: #{inspect(changeset.errors)}",
+          project_id: project.id
+        )
+    end
+  end
+
+  defp mark_completed(project_id) do
+    Indexer.update_reindex_state(project_id, %{
+      status: "completed",
+      completed_at: DateTime.utc_now()
+    })
+  end
+
+  defp mark_failed(project_id) do
+    Indexer.update_reindex_state(project_id, %{
+      status: "failed",
+      completed_at: DateTime.utc_now()
+    })
   end
 
   @doc """
