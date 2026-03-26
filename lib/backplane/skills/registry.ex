@@ -19,14 +19,16 @@ defmodule Backplane.Skills.Registry do
     {:ok, %{}}
   end
 
-  @doc "List all skills, optionally filtering by source."
+  @doc "List all skills, optionally filtering by source and/or tags."
   def list(opts \\ []) do
     source_filter = Keyword.get(opts, :source)
+    tags_filter = Keyword.get(opts, :tags, [])
 
     @table
     |> :ets.tab2list()
     |> Enum.map(fn {_id, entry} -> entry end)
     |> maybe_filter_source(source_filter)
+    |> maybe_filter_tags(tags_filter)
   end
 
   @doc "Search skills by keyword in name and description."
@@ -92,6 +94,17 @@ defmodule Backplane.Skills.Registry do
   defp maybe_filter_source(entries, source) do
     Enum.filter(entries, fn entry ->
       entry.source == source || String.starts_with?(entry.source, source <> ":")
+    end)
+  end
+
+  defp maybe_filter_tags(entries, []), do: entries
+
+  defp maybe_filter_tags(entries, tags) do
+    tag_set = MapSet.new(tags)
+
+    Enum.filter(entries, fn entry ->
+      entry_tags = Map.get(entry, :tags, []) |> MapSet.new()
+      MapSet.subset?(tag_set, entry_tags)
     end)
   end
 end

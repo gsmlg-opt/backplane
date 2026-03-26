@@ -11,9 +11,9 @@ defmodule Backplane.Skills.RegistryTest do
     end
 
     # Insert test data into PG
-    insert_skill("reg/s1", "Elixir Patterns", "elixir patterns", "db")
-    insert_skill("reg/s2", "OTP Guide", "otp supervision", "git:myskills")
-    insert_skill("reg/s3", "React Tips", "react frontend", "local:web")
+    insert_skill("reg/s1", "Elixir Patterns", "elixir patterns", ["elixir", "otp"], "db")
+    insert_skill("reg/s2", "OTP Guide", "otp supervision", ["elixir", "otp"], "git:myskills")
+    insert_skill("reg/s3", "React Tips", "react frontend", ["react", "frontend"], "local:web")
 
     # Refresh ETS from PG
     Registry.refresh()
@@ -35,6 +35,21 @@ defmodule Backplane.Skills.RegistryTest do
       ids = Enum.map(skills, & &1.id)
       assert "reg/s2" in ids
       refute "reg/s1" in ids
+    end
+
+    test "filters by tags (AND match)" do
+      skills = Registry.list(tags: ["elixir"])
+      ids = Enum.map(skills, & &1.id)
+      assert "reg/s1" in ids
+      assert "reg/s2" in ids
+      refute "reg/s3" in ids
+    end
+
+    test "filters by tags and source combined" do
+      skills = Registry.list(source: "db", tags: ["elixir"])
+      ids = Enum.map(skills, & &1.id)
+      assert "reg/s1" in ids
+      refute "reg/s2" in ids
     end
   end
 
@@ -71,7 +86,7 @@ defmodule Backplane.Skills.RegistryTest do
   describe "refresh/0" do
     test "reloads ETS from database" do
       # Add a new skill to PG
-      insert_skill("reg/new", "New Skill", "brand new", "db")
+      insert_skill("reg/new", "New Skill", "brand new", [], "db")
 
       # ETS shouldn't have it yet
       assert {:error, :not_found} = Registry.fetch("reg/new")
@@ -85,7 +100,7 @@ defmodule Backplane.Skills.RegistryTest do
     end
   end
 
-  defp insert_skill(id, name, description, source) do
+  defp insert_skill(id, name, description, tags, source) do
     content = "# #{name}"
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
@@ -94,6 +109,7 @@ defmodule Backplane.Skills.RegistryTest do
       id: id,
       name: name,
       description: description,
+      tags: tags,
       content: content,
       content_hash: hash,
       source: source,

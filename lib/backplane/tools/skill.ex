@@ -133,6 +133,7 @@ defmodule Backplane.Tools.Skill do
     opts =
       []
       |> maybe_add(:source, args["source"])
+      |> maybe_add(:tags, args["tags"])
 
     skills =
       Registry.list(opts)
