@@ -483,12 +483,14 @@ defmodule Backplane.Transport.McpHandler do
         DocChunk
         |> select([c], c.project_id)
         |> distinct(true)
+        |> limit(100)
         |> Repo.all()
         |> filter_by_prefix(prefix)
 
       {_, "repo"} ->
         Backplane.Docs.Project
         |> select([p], p.repo)
+        |> limit(100)
         |> Repo.all()
         |> filter_by_prefix(prefix)
 

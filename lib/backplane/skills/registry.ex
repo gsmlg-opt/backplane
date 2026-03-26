@@ -36,13 +36,11 @@ defmodule Backplane.Skills.Registry do
     limit = Keyword.get(opts, :limit, 10)
     query_down = String.downcase(query)
 
-    @table
-    |> :ets.tab2list()
-    |> Enum.map(fn {_id, entry} -> entry end)
-    |> Enum.filter(fn entry ->
-      String.contains?(String.downcase(entry.name), query_down) ||
-        String.contains?(String.downcase(entry.description), query_down)
-    end)
+    for {_id, entry} <- :ets.tab2list(@table),
+        String.contains?(String.downcase(entry.name), query_down) ||
+          String.contains?(String.downcase(entry.description), query_down) do
+      entry
+    end
     |> Enum.take(limit)
   end
 
