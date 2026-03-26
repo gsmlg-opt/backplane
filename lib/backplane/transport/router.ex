@@ -77,17 +77,8 @@ defmodule Backplane.Transport.Router do
 
   defp handle_webhook(conn, provider) do
     case validate_webhook(conn, provider) do
-      :ok ->
-        case WebhookHandler.enqueue(provider, conn.body_params) do
-          {:ok, _} ->
-            send_resp(conn, 202, Jason.encode!(%{status: "accepted"}))
-
-          {:error, reason} ->
-            send_resp(conn, 422, Jason.encode!(%{error: inspect(reason)}))
-        end
-
-      {:error, :no_secret} ->
-        # No webhook secret configured — accept without validation
+      result when result in [:ok, {:error, :no_secret}] ->
+        # :no_secret means no webhook secret configured — accept without validation
         case WebhookHandler.enqueue(provider, conn.body_params) do
           {:ok, _} ->
             send_resp(conn, 202, Jason.encode!(%{status: "accepted"}))
