@@ -104,4 +104,37 @@ defmodule Backplane.Docs.Parsers.MarkdownTest do
       assert length(chunks) == 2
     end
   end
+
+  describe "parse/2 with fixture files" do
+    test "parses guide_with_headings.md fixture" do
+      content = Backplane.Fixtures.read_fixture("markdown", "guide_with_headings.md")
+      {:ok, chunks} = Markdown.parse(content, "docs/guide.md")
+
+      assert length(chunks) >= 4
+      assert Enum.all?(chunks, fn c -> c.chunk_type == "guide" end)
+      assert Enum.all?(chunks, fn c -> c.source_path == "docs/guide.md" end)
+
+      headings = Enum.map(chunks, & &1.content)
+      assert Enum.any?(headings, &(&1 =~ "Installation"))
+      assert Enum.any?(headings, &(&1 =~ "Configuration"))
+      assert Enum.any?(headings, &(&1 =~ "Troubleshooting"))
+    end
+
+    test "parses flat_document.md fixture as single chunk" do
+      content = Backplane.Fixtures.read_fixture("markdown", "flat_document.md")
+      {:ok, chunks} = Markdown.parse(content, "docs/flat.md")
+
+      assert length(chunks) == 1
+      assert hd(chunks).content =~ "flat document with no headings"
+    end
+
+    test "parses guide_with_frontmatter.md fixture" do
+      content = Backplane.Fixtures.read_fixture("markdown", "guide_with_frontmatter.md")
+      {:ok, chunks} = Markdown.parse(content, "docs/deploy.md")
+
+      # Frontmatter is treated as content (markdown parser doesn't strip it)
+      assert chunks != []
+      assert Enum.any?(chunks, fn c -> c.content =~ "Deployment" end)
+    end
+  end
 end

@@ -534,4 +534,56 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       assert chunk.content =~ "Multi-line function body"
     end
   end
+
+  describe "parse/2 with fixture files" do
+    test "parses documented_module.ex fixture" do
+      content = Backplane.Fixtures.read_fixture("elixir_source", "documented_module.ex")
+      {:ok, chunks} = ElixirParser.parse(content, "lib/example/documented.ex")
+
+      moduledoc = Enum.find(chunks, &(&1.chunk_type == "moduledoc"))
+      assert moduledoc != nil
+      assert moduledoc.module == "Example.Documented"
+      assert moduledoc.content =~ "fully documented example module"
+
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      func_names = Enum.map(func_chunks, & &1.function)
+      assert "create/1" in func_names
+      assert "greet/1" in func_names
+      # @doc false should not produce a chunk
+      refute "internal_helper/0" in func_names
+
+      type_chunks = Enum.filter(chunks, &(&1.chunk_type == "typespec"))
+      assert length(type_chunks) == 2
+    end
+
+    test "parses undocumented_module.ex fixture — produces no chunks" do
+      content = Backplane.Fixtures.read_fixture("elixir_source", "undocumented_module.ex")
+      {:ok, chunks} = ElixirParser.parse(content, "lib/example/undocumented.ex")
+
+      # @moduledoc false and no @doc means no chunks
+      assert chunks == []
+    end
+
+    test "parses nested_modules.ex fixture" do
+      content = Backplane.Fixtures.read_fixture("elixir_source", "nested_modules.ex")
+      {:ok, chunks} = ElixirParser.parse(content, "lib/example/nested.ex")
+
+      modules = chunks |> Enum.map(& &1.module) |> Enum.uniq()
+      assert "Example.Outer" in modules
+      assert "Example.Outer.Inner" in modules
+      assert "Example.Outer.Inner.DeepNested" in modules
+      assert "Example.Outer.Sibling" in modules
+
+      # All chunks should have the same source_path
+      assert Enum.all?(chunks, fn c -> c.source_path == "lib/example/nested.ex" end)
+
+      # Verify specific function extractions
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      func_names = Enum.map(func_chunks, & &1.function)
+      assert "outer_func/0" in func_names
+      assert "inner_func/1" in func_names
+      assert "deep_func/0" in func_names
+      assert "sibling_func/0" in func_names
+    end
+  end
 end
