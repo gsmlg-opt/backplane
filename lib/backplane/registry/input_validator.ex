@@ -19,6 +19,10 @@ defmodule Backplane.Registry.InputValidator do
     end
   end
 
+  def validate(args, _schema) when not is_map(args) do
+    {:error, "Arguments must be an object, got #{inspect_type(args)}"}
+  end
+
   def validate(_args, _schema), do: :ok
 
   defp validate_required(args, schema) do

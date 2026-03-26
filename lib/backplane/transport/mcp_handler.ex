@@ -107,7 +107,14 @@ defmodule Backplane.Transport.McpHandler do
         ordered: true,
         max_concurrency: System.schedulers_online()
       )
-      |> Enum.map(fn {:ok, result} -> result end)
+      |> Enum.map(fn
+        {:ok, result} ->
+          result
+
+        {:exit, reason} ->
+          Logger.warning("MCP dispatch task crashed: #{inspect(reason)}")
+          %{jsonrpc: "2.0", id: nil, error: %{code: -32_603, message: "Internal error"}}
+      end)
 
     case responses do
       [] ->

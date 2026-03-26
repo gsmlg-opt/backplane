@@ -81,8 +81,26 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert :ok = InputValidator.validate(%{"anything" => "goes"}, schema)
     end
 
-    test "handles non-map args gracefully" do
-      assert :ok = InputValidator.validate("not a map", @schema)
+    test "rejects non-map args with descriptive error" do
+      assert {:error, msg} = InputValidator.validate("not a map", @schema)
+      assert msg =~ "Arguments must be an object"
+      assert msg =~ "string"
+    end
+
+    test "rejects list args" do
+      assert {:error, msg} = InputValidator.validate([1, 2], @schema)
+      assert msg =~ "Arguments must be an object"
+      assert msg =~ "array"
+    end
+
+    test "rejects nil args" do
+      assert {:error, msg} = InputValidator.validate(nil, @schema)
+      assert msg =~ "Arguments must be an object"
+      assert msg =~ "null"
+    end
+
+    test "accepts map args with non-map schema" do
+      assert :ok = InputValidator.validate(%{"key" => "val"}, nil)
     end
 
     test "validates object type" do
