@@ -15,17 +15,10 @@ defmodule Backplane.Jobs.WebhookHandler do
   import Ecto.Query
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"provider" => "github", "event" => "push"} = args}) do
-    repo_url = args["repo_url"]
-    ref = args["ref"]
-
-    handle_push(repo_url, ref)
-  end
-
-  def perform(%Oban.Job{args: %{"provider" => "gitlab", "event" => "push"} = args}) do
-    repo_url = args["repo_url"]
-    ref = args["ref"]
-
+  def perform(%Oban.Job{
+        args: %{"provider" => provider, "event" => "push", "repo_url" => repo_url, "ref" => ref}
+      })
+      when provider in ["github", "gitlab"] do
     handle_push(repo_url, ref)
   end
 
@@ -37,25 +30,11 @@ defmodule Backplane.Jobs.WebhookHandler do
   @doc """
   Enqueue a webhook event for processing.
   """
-  def enqueue(:github, params) do
-    case extract_github_push(params) do
+  def enqueue(provider, params) when provider in [:github, :gitlab] do
+    case extract_push(provider, params) do
       {:ok, attrs} ->
         attrs
-        |> Map.put("provider", "github")
-        |> Map.put("event", "push")
-        |> __MODULE__.new()
-        |> Oban.insert()
-
-      :ignore ->
-        {:ok, :ignored}
-    end
-  end
-
-  def enqueue(:gitlab, params) do
-    case extract_gitlab_push(params) do
-      {:ok, attrs} ->
-        attrs
-        |> Map.put("provider", "gitlab")
+        |> Map.put("provider", to_string(provider))
         |> Map.put("event", "push")
         |> __MODULE__.new()
         |> Oban.insert()
@@ -107,6 +86,9 @@ defmodule Backplane.Jobs.WebhookHandler do
 
   defp extract_branch("refs/heads/" <> branch), do: branch
   defp extract_branch(ref), do: ref
+
+  defp extract_push(:github, params), do: extract_github_push(params)
+  defp extract_push(:gitlab, params), do: extract_gitlab_push(params)
 
   defp extract_github_push(%{"ref" => ref, "repository" => %{"clone_url" => url}}) do
     {:ok, %{"ref" => ref, "repo_url" => url}}
