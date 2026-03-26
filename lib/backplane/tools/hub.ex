@@ -137,10 +137,10 @@ defmodule Backplane.Tools.Hub do
     Skill
     |> where([s], s.enabled == true)
     |> group_by([s], s.source)
-    |> select([s], {s.source, count(s.id)})
+    |> select([s], {s.source, count(s.id), max(s.updated_at)})
     |> Repo.all()
-    |> Enum.map(fn {source, count} ->
-      %{name: source, source: source, skill_count: count, last_synced: nil}
+    |> Enum.map(fn {source, count, last_synced} ->
+      %{name: source, source: source, skill_count: count, last_synced: last_synced}
     end)
   rescue
     e ->

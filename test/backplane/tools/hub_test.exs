@@ -96,6 +96,27 @@ defmodule Backplane.Tools.HubTest do
       {:ok, result} = Hub.call(%{"_handler" => "inspect", "tool_name" => "skill::search"})
       assert %DateTime{} = result.last_called_at
     end
+
+    test "returns upstream info for upstream tool" do
+      alias Backplane.Registry.ToolRegistry
+
+      upstream_tools = [
+        %{
+          name: "echo",
+          description: "Echo tool from upstream",
+          input_schema: %{"type" => "object", "properties" => %{}},
+          timeout: 30_000
+        }
+      ]
+
+      ToolRegistry.register_upstream("test-up", self(), upstream_tools)
+
+      {:ok, result} = Hub.call(%{"_handler" => "inspect", "tool_name" => "test-up::echo"})
+      assert result.name == "test-up::echo"
+      assert result.origin == "upstream:test-up"
+      assert result.upstream_name == "test-up"
+      assert result.upstream_healthy == true
+    end
   end
 
   describe "hub::status" do
@@ -157,6 +178,14 @@ defmodule Backplane.Tools.HubTest do
     test "skill_sources groups by source" do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
       assert Enum.any?(result.skill_sources, fn s -> s.name == "db" end)
+    end
+
+    test "skill_sources includes last_synced timestamp" do
+      {:ok, result} = Hub.call(%{"_handler" => "status"})
+      db_source = Enum.find(result.skill_sources, fn s -> s.name == "db" end)
+      assert db_source
+      # The skill was inserted in setup, so last_synced should be populated
+      assert db_source.last_synced != nil
     end
   end
 

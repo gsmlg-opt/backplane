@@ -81,8 +81,12 @@ defmodule Backplane.Tools.Docs do
 
     results =
       Project
-      |> where([p], ilike(p.id, ^pattern) or ilike(p.repo, ^pattern))
-      |> limit(10)
+      |> where(
+        [p],
+        ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or
+          ilike(p.description, ^pattern)
+      )
+      |> limit(5)
       |> select([p], %{
         id: p.id,
         repo: p.repo,

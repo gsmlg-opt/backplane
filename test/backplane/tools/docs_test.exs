@@ -61,6 +61,31 @@ defmodule Backplane.Tools.DocsTest do
       assert project.id in ids
     end
 
+    test "finds project by description" do
+      {:ok, result} =
+        Docs.call(%{"_handler" => "resolve_project", "query" => "test project for tools"})
+
+      assert result.count > 0
+      ids = Enum.map(result.projects, & &1.id)
+      assert "tools-test-project" in ids
+    end
+
+    test "returns at most 5 results" do
+      for i <- 1..7 do
+        Repo.insert!(
+          %Project{
+            id: "resolve-limit-#{i}",
+            repo: "https://github.com/test/resolve#{i}.git",
+            ref: "main"
+          },
+          on_conflict: :nothing
+        )
+      end
+
+      {:ok, result} = Docs.call(%{"_handler" => "resolve_project", "query" => "resolve"})
+      assert result.count <= 5
+    end
+
     test "returns empty for non-matching query" do
       {:ok, result} = Docs.call(%{"_handler" => "resolve_project", "query" => "xyznonexistent"})
       assert result.count == 0
