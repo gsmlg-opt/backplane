@@ -168,6 +168,20 @@ defmodule Backplane.Registry.ToolRegistryTest do
     end
   end
 
+  describe "lookup/1" do
+    test "returns tool struct for registered tool" do
+      tool = sample_tool("test::lookup")
+      ToolRegistry.register_native(tool)
+
+      result = ToolRegistry.lookup("test::lookup")
+      assert %Tool{name: "test::lookup"} = result
+    end
+
+    test "returns nil for unregistered tool" do
+      assert ToolRegistry.lookup("nonexistent::tool") == nil
+    end
+  end
+
   describe "search/2" do
     test "finds tools by name substring" do
       ToolRegistry.register_native(sample_tool("git::repo-tree", description: "List files"))

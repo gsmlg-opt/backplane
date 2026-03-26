@@ -60,49 +60,45 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_docs(query, limit) do
-    try do
-      DocChunk
-      |> where([c], fragment("search_vector @@ plainto_tsquery('english', ?)", ^query))
-      |> order_by([c],
-        desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^query)
-      )
-      |> limit(^limit)
-      |> Repo.all()
-      |> Enum.map(fn chunk ->
-        %{
-          project: chunk.project_id,
-          module: chunk.module,
-          function: chunk.function,
-          snippet: String.slice(chunk.content, 0, 200)
-        }
-      end)
-    rescue
-      e ->
-        Logger.warning("Failed to search docs: #{Exception.message(e)}")
-        []
-    end
+    DocChunk
+    |> where([c], fragment("search_vector @@ plainto_tsquery('english', ?)", ^query))
+    |> order_by([c],
+      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^query)
+    )
+    |> limit(^limit)
+    |> Repo.all()
+    |> Enum.map(fn chunk ->
+      %{
+        project: chunk.project_id,
+        module: chunk.module,
+        function: chunk.function,
+        snippet: String.slice(chunk.content, 0, 200)
+      }
+    end)
+  rescue
+    e ->
+      Logger.warning("Failed to search docs: #{Exception.message(e)}")
+      []
   end
 
   defp search_repos(query, limit) do
-    try do
-      downcased = query |> String.downcase() |> Backplane.Utils.escape_like()
-      pattern = "%#{downcased}%"
+    downcased = query |> String.downcase() |> Backplane.Utils.escape_like()
+    pattern = "%#{downcased}%"
 
-      Project
-      |> where(
-        [p],
-        ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or ilike(p.description, ^pattern)
-      )
-      |> limit(^limit)
-      |> Repo.all()
-      |> Enum.map(fn p ->
-        %{id: p.id, repo: p.repo, description: p.description}
-      end)
-    rescue
-      e ->
-        Logger.warning("Failed to search repos: #{Exception.message(e)}")
-        []
-    end
+    Project
+    |> where(
+      [p],
+      ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or ilike(p.description, ^pattern)
+    )
+    |> limit(^limit)
+    |> Repo.all()
+    |> Enum.map(fn p ->
+      %{id: p.id, repo: p.repo, description: p.description}
+    end)
+  rescue
+    e ->
+      Logger.warning("Failed to search repos: #{Exception.message(e)}")
+      []
   end
 
   defp format_origin(origin), do: Backplane.Utils.format_origin(origin)
