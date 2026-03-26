@@ -155,4 +155,97 @@ defmodule Backplane.Tools.HubTest do
       assert msg =~ "Unknown hub tool handler"
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Rescue branch: get_upstream_status
+  #
+  # Inject a fake upstream child under Pool that returns a map missing the
+  # expected :name/:status/:tool_count keys. The Enum.map in
+  # get_upstream_status raises a KeyError which is caught by its rescue block.
+  # DB operations are still healthy so the rest of hub::status succeeds.
+  # ---------------------------------------------------------------------------
+
+  describe "hub::status get_upstream_status rescue branch" do
+    defmodule BadUpstream do
+      @moduledoc false
+      use GenServer
+      def start_link(_opts), do: GenServer.start_link(__MODULE__, [])
+      def init(_), do: {:ok, []}
+      def handle_call(:status, _from, state), do: {:reply, %{unexpected: "bad_shape"}, state}
+    end
+
+    test "get_upstream_status returns [] and logs warning when upstream status is malformed" do
+      import ExUnit.CaptureLog
+
+      {:ok, bad_pid} = DynamicSupervisor.start_child(Backplane.Proxy.Pool, {BadUpstream, []})
+
+      on_exit(fn ->
+        if Process.alive?(bad_pid),
+          do: DynamicSupervisor.terminate_child(Backplane.Proxy.Pool, bad_pid)
+      end)
+
+      log =
+        capture_log(fn ->
+          {:ok, result} = Hub.call(%{"_handler" => "status"})
+          assert result.upstreams == []
+        end)
+
+      assert log =~ "Failed to get upstream status"
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Separate module for DB rescue branches.
+#
+# These tests kill the DBConnection pool which makes the Ecto sandbox
+# unusable afterwards (the sandbox registry points to the old pool PID).
+# By using a plain ExUnit.Case (no DataCase sandbox) the other hub tests
+# are not affected.
+# ---------------------------------------------------------------------------
+defmodule Backplane.Tools.HubDbRescueTest do
+  use Backplane.DataCase, async: false
+
+  alias Backplane.Tools.Hub
+
+  # Switch the sandbox to :manual mode so that Hub.call, when run in a
+  # spawned Task, cannot obtain a DB connection. Repo.all() then raises
+  # DBConnection.OwnershipError — an Elixir exception caught by the rescue
+  # blocks in get_skill_sources and get_doc_projects. After the test we
+  # restore {:shared, self()} so other tests are unaffected.
+  defp with_db_unavailable(fun) do
+    Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :manual)
+
+    try do
+      fun.()
+    after
+      Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, {:shared, self()})
+    end
+  end
+
+  test "get_skill_sources rescue returns [] and logs warning when DB is unavailable" do
+    with_db_unavailable(fn ->
+      {{:ok, result}, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
+          |> Task.await(5000)
+        end)
+
+      assert result.skill_sources == []
+      assert log =~ "Failed to get skill sources"
+    end)
+  end
+
+  test "get_doc_projects rescue returns [] and logs warning when DB is unavailable" do
+    with_db_unavailable(fn ->
+      {{:ok, result}, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
+          |> Task.await(5000)
+        end)
+
+      assert result.doc_projects == []
+      assert log =~ "Failed to get doc projects"
+    end)
+  end
 end

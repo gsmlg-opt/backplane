@@ -106,4 +106,50 @@ defmodule Backplane.Docs.Parsers.HexDocsTest do
       assert sections != []
     end
   end
+
+  describe "parse/2 rescue branch (L19-20)" do
+    test "returns {:ok, []} when content causes an internal exception" do
+      # We cannot easily force extract_chunks to raise via public inputs because
+      # it is well-guarded, but we can verify the rescue contract by passing
+      # content and a path whose combination triggers a code path that could
+      # raise. The rescue clause at L19-20 returns {:ok, []} on any exception.
+      # The safest way to exercise it directly is to note that parse/2 is a
+      # thin wrapper: pass a non-binary (atom) as content, which causes
+      # String.contains? to raise an ArgumentError inside extract_chunks.
+      result = HexDocs.parse(:not_a_binary, "doc/Foo.Bar.html")
+      assert result == {:ok, []}
+    end
+  end
+
+  describe "parse_generic_html / generic path (L36-37, L100, L102)" do
+    # The `true` branch in extract_chunks (L36-37) fires when the source_path
+    # is neither an api-reference path, a module page (.html with uppercase
+    # basename), nor a guide page (.html or .htm extension without module name).
+    # A path with a non-.html extension (e.g., ".xml") passes all three guards
+    # and falls into parse_generic_html, covering L36-37, L100, and L102.
+
+    test "extracts a generic chunk from a non-html-extension path with sufficient content" do
+      content = "<div>This is generic page content with enough text to exceed ten chars.</div>"
+
+      {:ok, chunks} = HexDocs.parse(content, "doc/changelog.xml")
+
+      assert length(chunks) == 1
+      [chunk] = chunks
+      assert chunk.chunk_type == "guide"
+      assert chunk.module == nil
+      assert chunk.function == nil
+      assert chunk.source_path == "doc/changelog.xml"
+      assert String.contains?(chunk.content, "generic page content")
+    end
+
+    test "returns empty list for generic path when stripped text is too short" do
+      # L102: the else branch of `if String.length(text) > 10` — content that
+      # strips down to 10 characters or fewer.
+      content = "<div>Hi</div>"
+
+      {:ok, chunks} = HexDocs.parse(content, "doc/tiny.xml")
+
+      assert chunks == []
+    end
+  end
 end

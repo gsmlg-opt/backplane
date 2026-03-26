@@ -44,7 +44,12 @@ defmodule Backplane.Skills.Sources.GitTest do
     System.cmd("git", ["add", "."], cd: repo_dir)
     System.cmd("git", ["commit", "-m", "init", "--allow-empty"], cd: repo_dir)
 
-    on_exit(fn -> File.rm_rf!(base_dir) end)
+    on_exit(fn ->
+      File.rm_rf!(base_dir)
+      # Clean up any clone dirs created under /tmp/backplane_skills/
+      Path.wildcard("/tmp/backplane_skills/test-*")
+      |> Enum.each(&File.rm_rf!/1)
+    end)
 
     %{repo_dir: repo_dir}
   end

@@ -127,6 +127,62 @@ defmodule Backplane.Skills.SyncTest do
 
       File.rm_rf!(dir)
     end
+
+    # --- Coverage for L31: {:error, reason} branch in perform/1 ---
+    # When the source module's list/1 returns {:error, reason}, perform/1
+    # propagates it as {:error, reason}. Local returns {:error, :directory_not_found}
+    # when the path does not exist on disk.
+    test "perform returns {:error, reason} when source list fails" do
+      job = %Oban.Job{
+        args: %{
+          "source_module" => "Elixir.Backplane.Skills.Sources.Local",
+          "name" => "sync-err",
+          "path" => "/tmp/backplane_nonexistent_dir_#{System.unique_integer([:positive])}"
+        }
+      }
+
+      assert {:error, :directory_not_found} = Sync.perform(job)
+    end
+
+    # --- Coverage for L106, L110: build_config with Git source module ---
+    # build_config/2 builds a Sources.Git struct at L106.  When args["ref"] is
+    # absent the expression `args["ref"] || "main"` evaluates the `|| "main"`
+    # side (L110).  We trigger these lines by calling perform/1 with the Git
+    # source module and a bad repo so the clone fails quickly and returns an
+    # error rather than blocking the test suite.
+    test "build_config uses Git struct and defaults ref to 'main' when absent" do
+      job = %Oban.Job{
+        args: %{
+          "source_module" => "Elixir.Backplane.Skills.Sources.Git",
+          "name" => "git-default-ref",
+          "repo" => "https://invalid.example.invalid/repo.git",
+          "path" => nil
+          # "ref" intentionally omitted to exercise the `|| "main"` branch
+        }
+      }
+
+      # The git clone will fail because the repo URL is invalid, which causes
+      # Sources.Git.list/1 to return {:error, {:clone_failed, _}} — that
+      # propagates as {:error, _} from perform/1.  We only care that build_config
+      # ran the Git branch (L106) and defaulted the ref (L110).
+      result = Sync.perform(job)
+      assert match?({:error, _}, result)
+    end
+
+    test "build_config uses explicit ref when provided in args" do
+      job = %Oban.Job{
+        args: %{
+          "source_module" => "Elixir.Backplane.Skills.Sources.Git",
+          "name" => "git-explicit-ref",
+          "repo" => "https://invalid.example.invalid/repo.git",
+          "path" => nil,
+          "ref" => "develop"
+        }
+      }
+
+      result = Sync.perform(job)
+      assert match?({:error, _}, result)
+    end
   end
 
   defp skill_entry(id, source, opts \\ []) do

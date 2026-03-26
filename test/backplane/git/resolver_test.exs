@@ -61,4 +61,42 @@ defmodule Backplane.Git.ResolverTest do
     assert {:error, :invalid_format} = Resolver.resolve("no-colon-here")
     assert {:error, :invalid_format} = Resolver.resolve("github:")
   end
+
+  test "returns error for github instance not found by name" do
+    # "github.enterprise" looks up the "enterprise" named instance under :github.
+    # Our setup only has "default", so this should return :unknown_provider.
+    assert {:error, :unknown_provider} = Resolver.resolve("github.enterprise:owner/repo")
+  end
+
+  test "returns error for gitlab instance not found by name" do
+    # "gitlab.missing" looks up the "missing" named instance under :gitlab.
+    # Our setup has "default" and "internal" but not "missing".
+    assert {:error, :unknown_provider} = Resolver.resolve("gitlab.missing:group/project")
+  end
+
+  test "returns error for gitlab when no providers configured" do
+    Application.put_env(:backplane, :git_providers, %{})
+
+    assert {:error, :unknown_provider} = Resolver.resolve("gitlab:group/project")
+  end
+
+  test "returns error for github when no providers configured" do
+    Application.put_env(:backplane, :git_providers, %{})
+
+    assert {:error, :unknown_provider} = Resolver.resolve("github:owner/repo")
+  end
+
+  test "propagates gitlab error tuple from find_instance" do
+    # When the instance list for :gitlab is empty, find_instance/2 returns
+    # {:error, :unknown_provider} and resolve_provider/2 propagates it.
+    Application.put_env(:backplane, :git_providers, %{github: [], gitlab: []})
+
+    assert {:error, :unknown_provider} = Resolver.resolve("gitlab:group/repo")
+  end
+
+  test "propagates github error tuple from find_instance" do
+    Application.put_env(:backplane, :git_providers, %{github: [], gitlab: []})
+
+    assert {:error, :unknown_provider} = Resolver.resolve("github:owner/repo")
+  end
 end
