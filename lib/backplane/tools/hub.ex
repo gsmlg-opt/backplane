@@ -9,8 +9,7 @@ defmodule Backplane.Tools.Hub do
 
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Git.RateLimitCache
-  alias Backplane.Hub.Discover
-  alias Backplane.Metrics
+  alias Backplane.Hub.{Discover, Inspect}
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -82,24 +81,7 @@ defmodule Backplane.Tools.Hub do
   end
 
   def call(%{"_handler" => "inspect"} = args) do
-    tool_name = args["tool_name"]
-
-    case find_tool(tool_name) do
-      nil ->
-        {:error, "Unknown tool: #{tool_name}"}
-
-      tool ->
-        {:ok,
-         %{
-           name: tool.name,
-           description: tool.description,
-           input_schema: tool.input_schema,
-           origin: format_origin(tool.origin),
-           upstream_name: if(match?({:upstream, _}, tool.origin), do: elem(tool.origin, 1)),
-           upstream_healthy: if(tool.upstream_pid, do: Process.alive?(tool.upstream_pid)),
-           last_called_at: Metrics.last_called_at(tool.name)
-         }}
-    end
+    Inspect.introspect(args["tool_name"])
   end
 
   def call(%{"_handler" => "status"}) do
@@ -120,8 +102,6 @@ defmodule Backplane.Tools.Hub do
   end
 
   def call(_args), do: {:error, "Unknown hub tool handler"}
-
-  defp find_tool(name), do: ToolRegistry.lookup(name)
 
   defp get_upstream_status do
     Pool.list_upstreams()
@@ -196,8 +176,6 @@ defmodule Backplane.Tools.Hub do
   end
 
   defp derive_provider_status(_), do: "ok"
-
-  defp format_origin(origin), do: Utils.format_origin(origin)
 
   defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end
