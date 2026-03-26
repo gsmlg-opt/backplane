@@ -40,10 +40,11 @@ defmodule Backplane.Docs.Ingestion do
       execute_pipeline(project)
     rescue
       e ->
-        Logger.error("Ingestion crashed",
-          project_id: project.id,
-          error: Exception.message(e),
-          stacktrace: Exception.format_stacktrace(__STACKTRACE__)
+        stacktrace = Exception.format_stacktrace(__STACKTRACE__)
+
+        Logger.error(
+          "Ingestion crashed: #{Exception.message(e)}\n#{stacktrace}",
+          project_id: project.id
         )
 
         mark_failed(project.id)
