@@ -9,6 +9,7 @@ defmodule Backplane.Application do
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
+  alias Backplane.Skills.Sync
   alias Backplane.Tools.{Docs, Git, Hub, Skill}
   alias Backplane.Transport.Router
 
@@ -36,6 +37,9 @@ defmodule Backplane.Application do
 
     # Start configured upstream MCP connections
     start_configured_upstreams()
+
+    # Enqueue initial skill sync jobs for configured sources
+    enqueue_skill_syncs()
 
     result
   end
@@ -76,6 +80,20 @@ defmodule Backplane.Application do
 
     for upstream <- upstreams do
       Pool.start_upstream(upstream)
+    end
+  end
+
+  defp enqueue_skill_syncs do
+    sources = Application.get_env(:backplane, :skill_sources, [])
+
+    for source <- sources do
+      case Sync.build_job(source) |> Oban.insert() do
+        {:ok, _job} ->
+          Logger.info("Enqueued skill sync for source: #{source.name}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to enqueue skill sync for #{source.name}: #{inspect(reason)}")
+      end
     end
   end
 

@@ -1,9 +1,14 @@
 defmodule Backplane.Skills.Sync do
   @moduledoc """
   Oban worker that syncs skills from external sources (git, local) into the database.
+
+  Supports periodic re-sync: when `sync_interval` is present in the job args
+  (e.g. `"1h"`), the worker schedules the next sync after successful completion.
   """
 
-  use Oban.Worker, queue: :sync
+  use Oban.Worker, queue: :sync, unique: [period: 60, fields: [:args, :worker]]
+
+  require Logger
 
   import Ecto.Query
   alias Backplane.Repo
@@ -11,10 +16,25 @@ defmodule Backplane.Skills.Sync do
   alias Backplane.Skills.Sources.{Git, Local}
   alias Backplane.Utils
 
+  @default_sync_interval 3600
+
   @allowed_source_modules %{
     "Elixir.Backplane.Skills.Sources.Local" => Local,
     "Elixir.Backplane.Skills.Sources.Git" => Git
   }
+
+  @doc """
+  Build an Oban job changeset for a skill source config map.
+
+  The config map should have keys: `source`, `name`, and source-specific keys
+  (`path` for local, `repo`/`ref`/`path` for git). Optionally includes
+  `sync_interval` (e.g. `"1h"`) to enable periodic re-sync.
+  """
+  @spec build_job(map(), keyword()) :: Oban.Job.changeset()
+  def build_job(source_config, opts \\ []) do
+    args = build_job_args(source_config)
+    new(args, opts)
+  end
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"source_module" => source_module} = args}) do
@@ -28,6 +48,7 @@ defmodule Backplane.Skills.Sync do
       {:ok, entries} ->
         sync_entries(entries)
         Registry.refresh()
+        schedule_next(args)
         :ok
 
       {:error, reason} ->
@@ -95,6 +116,52 @@ defmodule Backplane.Skills.Sync do
 
   defp get_source([]), do: ""
   defp get_source([first | _]), do: first.source
+
+  @doc false
+  def schedule_next(%{"sync_interval" => interval} = args) when is_binary(interval) do
+    seconds =
+      case Utils.parse_interval(interval) do
+        {:ok, s} -> s
+        :error -> @default_sync_interval
+      end
+
+    case args |> new(schedule_in: seconds) |> Oban.insert() do
+      {:ok, _job} ->
+        Logger.debug("Scheduled next skill sync for #{args["name"]} in #{seconds}s")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to schedule next sync for #{args["name"]}: #{inspect(reason)}")
+
+        :ok
+    end
+  end
+
+  def schedule_next(_args), do: :ok
+
+  defp build_job_args(%{source: "git"} = config) do
+    %{
+      "source_module" => "Elixir.Backplane.Skills.Sources.Git",
+      "name" => config.name,
+      "repo" => config.repo,
+      "path" => config[:path],
+      "ref" => config[:ref] || "main",
+      "sync_interval" => config[:sync_interval]
+    }
+  end
+
+  defp build_job_args(%{source: "local"} = config) do
+    %{
+      "source_module" => "Elixir.Backplane.Skills.Sources.Local",
+      "name" => config.name,
+      "path" => config.path
+    }
+  end
+
+  defp build_job_args(config) do
+    Logger.warning("Unknown skill source type: #{inspect(config[:source])}")
+    %{}
+  end
 
   defp build_config(module, args) do
     case module do

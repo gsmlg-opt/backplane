@@ -51,6 +51,44 @@ defmodule Backplane.UtilsTest do
     end
   end
 
+  describe "parse_interval/1" do
+    test "parses seconds" do
+      assert {:ok, 30} = Utils.parse_interval("30s")
+    end
+
+    test "parses minutes" do
+      assert {:ok, 1800} = Utils.parse_interval("30m")
+    end
+
+    test "parses hours" do
+      assert {:ok, 3600} = Utils.parse_interval("1h")
+    end
+
+    test "parses days" do
+      assert {:ok, 172_800} = Utils.parse_interval("2d")
+    end
+
+    test "returns error for unknown suffix" do
+      assert :error = Utils.parse_interval("10x")
+    end
+
+    test "returns error for zero" do
+      assert :error = Utils.parse_interval("0h")
+    end
+
+    test "returns error for negative" do
+      assert :error = Utils.parse_interval("-1h")
+    end
+
+    test "returns error for non-binary" do
+      assert :error = Utils.parse_interval(42)
+    end
+
+    test "returns error for empty string" do
+      assert :error = Utils.parse_interval("")
+    end
+  end
+
   describe "format_origin/1" do
     test "formats native origin" do
       assert Utils.format_origin(:native) == "native"

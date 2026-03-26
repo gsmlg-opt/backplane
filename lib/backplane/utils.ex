@@ -29,4 +29,34 @@ defmodule Backplane.Utils do
     |> String.replace("%", "\\%")
     |> String.replace("_", "\\_")
   end
+
+  @doc """
+  Parse a human-readable interval string into seconds.
+
+  Supports suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+  Returns `{:ok, seconds}` or `:error`.
+
+  ## Examples
+
+      iex> Backplane.Utils.parse_interval("30m")
+      {:ok, 1800}
+
+      iex> Backplane.Utils.parse_interval("1h")
+      {:ok, 3600}
+
+      iex> Backplane.Utils.parse_interval("2d")
+      {:ok, 172800}
+  """
+  @spec parse_interval(String.t()) :: {:ok, pos_integer()} | :error
+  def parse_interval(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {n, "s"} when n > 0 -> {:ok, n}
+      {n, "m"} when n > 0 -> {:ok, n * 60}
+      {n, "h"} when n > 0 -> {:ok, n * 3600}
+      {n, "d"} when n > 0 -> {:ok, n * 86_400}
+      _ -> :error
+    end
+  end
+
+  def parse_interval(_), do: :error
 end

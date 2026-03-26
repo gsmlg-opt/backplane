@@ -185,6 +185,78 @@ defmodule Backplane.Skills.SyncTest do
     end
   end
 
+  describe "build_job/1" do
+    test "builds an Oban job changeset for a git source" do
+      config = %{
+        source: "git",
+        name: "my-skills",
+        repo: "https://github.com/org/skills.git",
+        path: "/",
+        ref: "main",
+        sync_interval: "1h"
+      }
+
+      changeset = Sync.build_job(config)
+      assert changeset.valid?
+      args = Ecto.Changeset.get_field(changeset, :args)
+      assert args["source_module"] == "Elixir.Backplane.Skills.Sources.Git"
+      assert args["name"] == "my-skills"
+      assert args["repo"] == "https://github.com/org/skills.git"
+      assert args["sync_interval"] == "1h"
+    end
+
+    test "builds an Oban job changeset for a local source" do
+      config = %{source: "local", name: "local-skills", path: "/tmp/skills"}
+
+      changeset = Sync.build_job(config)
+      assert changeset.valid?
+      args = Ecto.Changeset.get_field(changeset, :args)
+      assert args["source_module"] == "Elixir.Backplane.Skills.Sources.Local"
+      assert args["name"] == "local-skills"
+      assert args["path"] == "/tmp/skills"
+    end
+
+    test "accepts schedule_in option" do
+      config = %{source: "local", name: "delayed", path: "/tmp/skills"}
+
+      changeset = Sync.build_job(config, schedule_in: 3600)
+      assert changeset.valid?
+      scheduled_at = Ecto.Changeset.get_field(changeset, :scheduled_at)
+      assert DateTime.diff(scheduled_at, DateTime.utc_now()) > 3500
+    end
+  end
+
+  describe "schedule_next/1" do
+    test "returns :ok and is a no-op when sync_interval is absent" do
+      args = %{"source_module" => "Elixir.Backplane.Skills.Sources.Local", "name" => "test"}
+      assert :ok = Sync.schedule_next(args)
+    end
+
+    test "returns :ok when sync_interval is present" do
+      args = %{
+        "source_module" => "Elixir.Backplane.Skills.Sources.Local",
+        "name" => "test-resched",
+        "path" => "/tmp/nonexistent",
+        "sync_interval" => "30m"
+      }
+
+      # In inline test mode, the re-enqueued job will execute immediately
+      # and may fail (nonexistent path), but schedule_next itself returns :ok
+      assert :ok = Sync.schedule_next(args)
+    end
+
+    test "uses default interval for unparseable sync_interval" do
+      args = %{
+        "source_module" => "Elixir.Backplane.Skills.Sources.Local",
+        "name" => "test-bad-interval",
+        "path" => "/tmp/nonexistent",
+        "sync_interval" => "invalid"
+      }
+
+      assert :ok = Sync.schedule_next(args)
+    end
+  end
+
   defp skill_entry(id, source, opts \\ []) do
     content = Keyword.get(opts, :content, "# Default Content for #{id}")
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
