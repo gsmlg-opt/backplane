@@ -10,6 +10,7 @@ defmodule Backplane.Tools.Hub do
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Git.RateLimitCache
   alias Backplane.Hub.{Discover, Inspect}
+  alias Backplane.Notifications
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -97,7 +98,9 @@ defmodule Backplane.Tools.Hub do
        doc_projects: doc_projects,
        git_providers: git_providers,
        total_tools: ToolRegistry.count(),
-       total_skills: Registry.count()
+       total_skills: Registry.count(),
+       sse_subscribers: Notifications.subscriber_count(),
+       version: Backplane.version()
      }}
   end
 
