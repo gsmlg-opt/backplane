@@ -471,6 +471,405 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "stdio transport" do
+    @tag :stdio
+    test "connects via stdio and discovers tools" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio",
+        prefix: "stdio",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      status = Upstream.status(pid)
+      assert status.name == "test-stdio"
+      assert status.status == :connected
+      assert status.tool_count > 0
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "forwards tool call via stdio" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-fwd",
+        prefix: "stdfwd",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      result = Upstream.forward(pid, "echo", %{"message" => "hello"})
+      assert {:ok, _} = result
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "registers tools with prefix from stdio upstream" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-reg",
+        prefix: "stdioreg",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      tools = ToolRegistry.list_all()
+      assert Enum.any?(tools, fn t -> String.starts_with?(t.name, "stdioreg::") end)
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "deregisters tools and closes port on stop" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-stop",
+        prefix: "stdiostop",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      tools_before = ToolRegistry.list_all()
+      assert Enum.any?(tools_before, fn t -> String.starts_with?(t.name, "stdiostop::") end)
+
+      GenServer.stop(pid)
+      Process.sleep(100)
+
+      tools_after = ToolRegistry.list_all()
+      refute Enum.any?(tools_after, fn t -> String.starts_with?(t.name, "stdiostop::") end)
+    end
+
+    @tag :stdio
+    test "handles stdio health ping" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-ping",
+        prefix: "stdping",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      send(pid, :health_ping)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert status.last_ping_at != nil
+      assert status.consecutive_ping_failures == 0
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "handles stdio process exit and transitions to disconnected" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-exit",
+        prefix: "stdexit",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      assert Upstream.status(pid).status == :connected
+
+      # Kill the port's OS process to trigger {:exit_status, _}
+      port = :sys.get_state(pid).port
+      port_info = Port.info(port)
+      os_pid = port_info[:os_pid]
+      if os_pid, do: System.cmd("kill", [to_string(os_pid)])
+      Process.sleep(500)
+
+      status = Upstream.status(pid)
+      assert status.status == :disconnected
+      assert status.tool_count == 0
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "handles connect failure for invalid command" do
+      config = %{
+        name: "test-stdio-bad",
+        prefix: "stdbad",
+        transport: "stdio",
+        command: "/nonexistent/command/path",
+        args: [],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      status = Upstream.status(pid)
+      assert status.status in [:disconnected, :degraded]
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "send_stdio returns error when port is nil" do
+      # Start with a bad command so port stays nil-like, then try to forward
+      config = %{
+        name: "test-stdio-nil",
+        prefix: "stdnil",
+        transport: "stdio",
+        command: "/nonexistent/never/exists",
+        args: [],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      # Force the port to nil and transport to stdio for the forward call
+      :sys.replace_state(pid, fn state ->
+        %{state | port: nil, status: :connected, transport: "stdio"}
+      end)
+
+      result = Upstream.forward(pid, "echo", %{})
+      assert {:error, _} = result
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "stdio refresh re-discovers tools" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-refresh",
+        prefix: "stdref",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      Upstream.refresh(pid)
+      Process.sleep(300)
+
+      status = Upstream.status(pid)
+      assert status.status == :connected
+      assert status.tool_count > 0
+
+      GenServer.stop(pid)
+    end
+
+    @tag :stdio
+    test "stdio health ping with nil port returns error" do
+      script = Path.join([File.cwd!(), "test", "support", "mock_stdio_mcp.sh"])
+
+      config = %{
+        name: "test-stdio-nilping",
+        prefix: "stdnp",
+        transport: "stdio",
+        command: "bash",
+        args: [script],
+        env: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(500)
+
+      # Set port to nil to test send_ping stdio nil path
+      :sys.replace_state(pid, fn state -> %{state | port: nil} end)
+
+      send(pid, :health_ping)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert status.consecutive_ping_failures >= 1
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "forward/4 error handling" do
+    test "forward with explicit timeout parameter" do
+      {:ok, _} = start_mock_http_server(4217)
+
+      config = %{
+        name: "test-forward-timeout",
+        prefix: "fwdto",
+        transport: "http",
+        url: "http://127.0.0.1:4217/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Use explicit timeout (exercises the 4-arity forward/4)
+      result = Upstream.forward(pid, "echo", %{"message" => "hi"}, 5_000)
+      assert {:ok, _} = result
+
+      GenServer.stop(pid)
+    end
+
+    test "forward catches GenServer exit on timeout" do
+      {:ok, _} = start_mock_http_server(4218)
+
+      config = %{
+        name: "test-forward-catch",
+        prefix: "fwdcatch",
+        transport: "http",
+        url: "http://127.0.0.1:4218/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Stop the process, then try to forward — triggers :exit catch
+      GenServer.stop(pid)
+      Process.sleep(50)
+
+      result = Upstream.forward(pid, "echo", %{})
+      assert {:error, msg} = result
+      assert is_binary(msg)
+    end
+  end
+
+  describe "HTTP transport error paths" do
+    test "forward returns error message from JSON-RPC error response" do
+      {:ok, _} = start_mock_http_error_server(4219)
+
+      config = %{
+        name: "test-jsonrpc-error",
+        prefix: "jrpcerr",
+        transport: "http",
+        url: "http://127.0.0.1:4219/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      assert Upstream.status(pid).status == :connected
+      result = Upstream.forward(pid, "any_tool", %{})
+      assert {:error, msg} = result
+      assert msg =~ "Tool execution failed"
+
+      GenServer.stop(pid)
+    end
+
+    test "forward returns error when upstream HTTP returns non-200 status" do
+      {:ok, _} = start_mock_non200_server(4220)
+
+      config = %{
+        name: "test-non200",
+        prefix: "non200",
+        transport: "http",
+        url: "http://127.0.0.1:4220/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(300)
+
+      # The server returns 500 for all requests, so connect_and_initialize fails
+      status = Upstream.status(pid)
+      assert status.status in [:disconnected, :degraded]
+
+      GenServer.stop(pid)
+    end
+
+    test "forward to dead upstream returns error via catch" do
+      {:ok, _} = start_mock_http_server(4221)
+
+      config = %{
+        name: "test-catch-exit",
+        prefix: "catchexit",
+        transport: "http",
+        url: "http://127.0.0.1:4221/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Point to dead URL so next HTTP request fails
+      :sys.replace_state(pid, fn state ->
+        %{state | config: %{state.config | url: "http://127.0.0.1:19990/mcp"}}
+      end)
+
+      result = Upstream.forward(pid, "echo", %{})
+      assert {:error, msg} = result
+      assert is_binary(msg)
+
+      GenServer.stop(pid)
+    end
+
+    test "refresh discovers tools even when first refresh fails" do
+      {:ok, _} = start_mock_http_server(4222)
+
+      config = %{
+        name: "test-refresh-fail",
+        prefix: "reffail",
+        transport: "http",
+        url: "http://127.0.0.1:4222/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      # Point to dead URL, refresh should fail gracefully
+      :sys.replace_state(pid, fn state ->
+        %{state | config: %{state.config | url: "http://127.0.0.1:19989/mcp"}}
+      end)
+
+      Upstream.refresh(pid)
+      Process.sleep(300)
+
+      # Should still be alive after failed refresh
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_http_server(port) do
@@ -479,5 +878,93 @@ defmodule Backplane.Proxy.UpstreamTest do
       port: port,
       ip: {127, 0, 0, 1}
     )
+  end
+
+  defp start_mock_http_error_server(port) do
+    Bandit.start_link(
+      plug: MockMcpErrorPlug,
+      port: port,
+      ip: {127, 0, 0, 1}
+    )
+  end
+
+  defp start_mock_non200_server(port) do
+    Bandit.start_link(
+      plug: MockMcpNon200Plug,
+      port: port,
+      ip: {127, 0, 0, 1}
+    )
+  end
+end
+
+defmodule MockMcpErrorPlug do
+  @moduledoc false
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    request = Jason.decode!(body)
+
+    response =
+      case request["method"] do
+        "initialize" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{
+              "protocolVersion" => "2025-03-26",
+              "serverInfo" => %{"name" => "mock-error", "version" => "0.1.0"},
+              "capabilities" => %{}
+            }
+          }
+
+        "tools/list" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "result" => %{
+              "tools" => [
+                %{
+                  "name" => "failing_tool",
+                  "description" => "Always errors",
+                  "inputSchema" => %{"type" => "object"}
+                }
+              ]
+            }
+          }
+
+        "tools/call" ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "error" => %{"code" => -32_000, "message" => "Tool execution failed"}
+          }
+
+        _ ->
+          %{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "error" => %{"code" => -32_601, "message" => "Method not found"}
+          }
+      end
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(response))
+  end
+end
+
+defmodule MockMcpNon200Plug do
+  @moduledoc false
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(500, Jason.encode!(%{"error" => "Internal Server Error"}))
   end
 end

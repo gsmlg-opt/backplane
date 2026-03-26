@@ -70,6 +70,43 @@ defmodule Backplane.Transport.HealthCheckTest do
       assert is_list(result.engines.proxy.upstreams)
     end
 
+    test "get_upstreams map body is exercised with a live upstream" do
+      # Start a mock MCP server and an Upstream GenServer
+      {:ok, _} =
+        Bandit.start_link(
+          plug: Backplane.Test.MockMcpPlug,
+          port: 4260,
+          ip: {127, 0, 0, 1}
+        )
+
+      config = %{
+        name: "health-upstream-test",
+        prefix: "hcup",
+        transport: "http",
+        url: "http://127.0.0.1:4260/mcp",
+        headers: %{}
+      }
+
+      {:ok, upstream_pid} = Backplane.Proxy.Pool.start_upstream(config)
+      Process.sleep(300)
+
+      result = HealthCheck.check()
+      assert is_list(result.engines.proxy.upstreams)
+      assert result.engines.proxy.upstreams != []
+
+      hcup =
+        Enum.find(result.engines.proxy.upstreams, fn u -> u.name == "health-upstream-test" end)
+
+      assert hcup != nil
+      assert hcup.status == :connected
+      assert is_integer(hcup.tool_count)
+      assert is_integer(hcup.consecutive_ping_failures)
+      assert Map.has_key?(hcup, :last_ping_at)
+      assert Map.has_key?(hcup, :last_pong_at)
+
+      GenServer.stop(upstream_pid)
+    end
+
     # Verifies that get_upstreams/0 rescue branch returns [] on failure:
     # When no upstreams are configured, Pool.list_upstreams/0 returns [] and
     # the rescue branch is never triggered, but the function still returns a list.
