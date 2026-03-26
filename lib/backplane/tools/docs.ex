@@ -64,11 +64,7 @@ defmodule Backplane.Tools.Docs do
   def call(%{"_handler" => "resolve_project"} = args) do
     query = args["query"]
 
-    escaped =
-      query
-      |> String.replace("\\", "\\\\")
-      |> String.replace("%", "\\%")
-      |> String.replace("_", "\\_")
+    escaped = Backplane.Utils.escape_like(query)
 
     pattern = "%#{escaped}%"
 

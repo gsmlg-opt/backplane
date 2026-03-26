@@ -13,4 +13,17 @@ defmodule Backplane.Utils do
   @doc "Format a tool origin for display."
   def format_origin(:native), do: "native"
   def format_origin({:upstream, prefix}), do: "upstream:#{prefix}"
+
+  @doc """
+  Escape SQL LIKE/ILIKE wildcard characters in user input.
+
+  Escapes `%`, `_`, and `\\` so they are treated as literal characters
+  rather than pattern wildcards.
+  """
+  def escape_like(str) do
+    str
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
 end

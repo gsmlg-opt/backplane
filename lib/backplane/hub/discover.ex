@@ -87,7 +87,7 @@ defmodule Backplane.Hub.Discover do
     import Ecto.Query
 
     try do
-      downcased = String.downcase(query)
+      downcased = query |> String.downcase() |> Backplane.Utils.escape_like()
       pattern = "%#{downcased}%"
 
       Project
