@@ -6,6 +6,8 @@ defmodule Backplane.Git.Providers.GitLab do
 
   @behaviour Backplane.Git.Provider
 
+  alias Backplane.Utils
+
   @default_api_url "https://gitlab.com/api/v4"
 
   @doc """
@@ -324,5 +326,5 @@ defmodule Backplane.Git.Providers.GitLab do
   defp error_message(body) when is_binary(body), do: body
   defp error_message(_), do: "Unknown error"
 
-  defp maybe_add_param(params, key, value), do: Backplane.Utils.maybe_put(params, key, value)
+  defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)
 end

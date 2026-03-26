@@ -6,6 +6,8 @@ defmodule Backplane.Git.Providers.GitHub do
 
   @behaviour Backplane.Git.Provider
 
+  alias Backplane.Utils
+
   @default_api_url "https://api.github.com"
 
   @doc """
@@ -302,5 +304,5 @@ defmodule Backplane.Git.Providers.GitHub do
     }
   end
 
-  defp maybe_add_param(params, key, value), do: Backplane.Utils.maybe_put(params, key, value)
+  defp maybe_add_param(params, key, value), do: Utils.maybe_put(params, key, value)
 end

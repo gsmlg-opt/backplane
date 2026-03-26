@@ -8,6 +8,7 @@ defmodule Backplane.Tools.Docs do
 
   alias Backplane.Docs.{Project, Search}
   alias Backplane.Repo
+  alias Backplane.Utils
 
   import Ecto.Query
 
@@ -66,7 +67,7 @@ defmodule Backplane.Tools.Docs do
   def call(%{"_handler" => "resolve_project"} = args) do
     query = args["query"]
 
-    escaped = Backplane.Utils.escape_like(query)
+    escaped = Utils.escape_like(query)
 
     pattern = "%#{escaped}%"
 
@@ -118,5 +119,5 @@ defmodule Backplane.Tools.Docs do
     {:error, "Unknown docs tool handler: #{inspect(args)}"}
   end
 
-  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end

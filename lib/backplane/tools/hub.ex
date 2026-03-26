@@ -13,6 +13,7 @@ defmodule Backplane.Tools.Hub do
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Skills.{Registry, Skill}
+  alias Backplane.Utils
 
   import Ecto.Query
 
@@ -182,7 +183,7 @@ defmodule Backplane.Tools.Hub do
       []
   end
 
-  defp format_origin(origin), do: Backplane.Utils.format_origin(origin)
+  defp format_origin(origin), do: Utils.format_origin(origin)
 
-  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end

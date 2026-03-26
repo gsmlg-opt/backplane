@@ -6,6 +6,7 @@ defmodule Backplane.Skills.Search do
   import Ecto.Query
   alias Backplane.Repo
   alias Backplane.Skills.Skill
+  alias Backplane.Utils
 
   @doc """
   Search skills by query string with optional filters.
@@ -60,7 +61,7 @@ defmodule Backplane.Skills.Search do
 
   defp apply_source_filter(query, source) do
     # Match exact or prefix (e.g., "git" matches "git:elixir-patterns")
-    escaped = Backplane.Utils.escape_like(source)
+    escaped = Utils.escape_like(source)
     where(query, [s], s.source == ^source or like(s.source, ^"#{escaped}:%"))
   end
 

@@ -9,6 +9,7 @@ defmodule Backplane.Skills.Sync do
   alias Backplane.Repo
   alias Backplane.Skills.{Registry, Skill}
   alias Backplane.Skills.Sources.{Git, Local}
+  alias Backplane.Utils
 
   @allowed_source_modules %{
     "Elixir.Backplane.Skills.Sources.Local" => Local,
@@ -47,7 +48,7 @@ defmodule Backplane.Skills.Sync do
 
     existing =
       Skill
-      |> where([s], like(s.source, ^"#{Backplane.Utils.escape_like(source)}%"))
+      |> where([s], like(s.source, ^"#{Utils.escape_like(source)}%"))
       |> Repo.all()
       |> Map.new(&{&1.id, &1})
 

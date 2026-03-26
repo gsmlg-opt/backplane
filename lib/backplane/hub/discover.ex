@@ -9,6 +9,7 @@ defmodule Backplane.Hub.Discover do
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Skills.Registry, as: SkillsRegistry
+  alias Backplane.Utils
 
   import Ecto.Query
 
@@ -82,7 +83,7 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_repos(query, limit) do
-    downcased = query |> String.downcase() |> Backplane.Utils.escape_like()
+    downcased = query |> String.downcase() |> Utils.escape_like()
     pattern = "%#{downcased}%"
 
     Project
@@ -101,5 +102,5 @@ defmodule Backplane.Hub.Discover do
       []
   end
 
-  defp format_origin(origin), do: Backplane.Utils.format_origin(origin)
+  defp format_origin(origin), do: Utils.format_origin(origin)
 end

@@ -8,6 +8,7 @@ defmodule Backplane.Tools.Skill do
 
   alias Backplane.Skills.{Registry, Search}
   alias Backplane.Skills.Sources.Database
+  alias Backplane.Utils
 
   def tools do
     [
@@ -212,5 +213,5 @@ defmodule Backplane.Tools.Skill do
     {:error, "Unknown skill tool handler: #{inspect(args)}"}
   end
 
-  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end
