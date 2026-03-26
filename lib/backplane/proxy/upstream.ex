@@ -165,7 +165,7 @@ defmodule Backplane.Proxy.Upstream do
     case discover_tools(state) do
       {:ok, state} ->
         schedule_refresh()
-        {:noreply, state}
+        {:noreply, %{state | reconnect_attempts: 0}}
 
       {:error, _reason, state} ->
         schedule_refresh()

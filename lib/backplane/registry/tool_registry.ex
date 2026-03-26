@@ -28,22 +28,25 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Register tools from an upstream MCP server with a namespace prefix."
   @spec register_upstream(String.t(), pid(), [map()]) :: :ok
   def register_upstream(prefix, upstream_pid, tools) when is_list(tools) do
-    Enum.each(tools, fn tool ->
-      namespaced = prefix <> @separator <> tool.name
+    rows =
+      Enum.map(tools, fn tool ->
+        namespaced = prefix <> @separator <> tool.name
 
-      entry = %Tool{
-        name: namespaced,
-        description: tool.description,
-        input_schema: tool.input_schema,
-        origin: {:upstream, prefix},
-        upstream_pid: upstream_pid,
-        original_name: tool.name,
-        timeout: tool.timeout
-      }
+        entry = %Tool{
+          name: namespaced,
+          description: tool.description,
+          input_schema: tool.input_schema,
+          origin: {:upstream, prefix},
+          upstream_pid: upstream_pid,
+          original_name: tool.name,
+          timeout: tool.timeout
+        }
 
-      :ets.insert(@table, {namespaced, entry})
-    end)
+        {namespaced, entry}
+      end)
 
+    # Bulk insert — atomic from readers' perspective
+    :ets.insert(@table, rows)
     :ok
   end
 
