@@ -1239,4 +1239,31 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert is_list(result["resources"])
     end
   end
+
+  describe "SSE streaming" do
+    test "tools/call with Accept: text/event-stream returns chunked SSE response" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "tools/call",
+          "id" => 1,
+          "params" => %{"name" => "hub::status", "arguments" => %{}}
+        })
+
+      conn =
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("accept", "text/event-stream")
+        |> Backplane.Transport.Router.call(Backplane.Transport.Router.init([]))
+
+      assert conn.status == 200
+
+      content_type =
+        conn.resp_headers
+        |> Enum.find(fn {k, _} -> k == "content-type" end)
+        |> elem(1)
+
+      assert content_type =~ "text/event-stream"
+    end
+  end
 end
