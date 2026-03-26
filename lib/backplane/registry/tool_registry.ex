@@ -55,12 +55,12 @@ defmodule Backplane.Registry.ToolRegistry do
   def deregister_upstream(prefix) do
     pattern = prefix <> @separator
 
+    # Atomic select_delete — avoids race with concurrent register_upstream
     match_spec = [
-      {{:"$1", :_}, [{:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}], [:"$1"]}
+      {{:"$1", :_}, [{:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}], [true]}
     ]
 
-    keys = :ets.select(@table, match_spec)
-    Enum.each(keys, &:ets.delete(@table, &1))
+    :ets.select_delete(@table, match_spec)
     :ok
   end
 
