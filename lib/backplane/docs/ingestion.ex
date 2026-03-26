@@ -7,6 +7,7 @@ defmodule Backplane.Docs.Ingestion do
   require Logger
 
   alias Backplane.Docs.{Chunker, Indexer, Parser, Project}
+  alias Backplane.Git.Resolver
   alias Backplane.Repo
 
   @doc_extensions ~w(.ex .exs .md .txt .rst .json .yml .yaml)
@@ -157,8 +158,31 @@ defmodule Backplane.Docs.Ingestion do
     if File.dir?(Path.join(clone_dir, ".git")) do
       pull_repo(clone_dir, project.ref)
     else
-      clone_repo(project.repo, clone_dir, project.ref)
+      case resolve_clone_url(project.repo) do
+        {:ok, url} -> clone_repo(url, clone_dir, project.ref)
+        {:error, reason} -> {:error, {:resolve_failed, reason}}
+      end
     end
+  end
+
+  defp resolve_clone_url(repo_string) do
+    case Resolver.resolve(repo_string) do
+      {:ok, {module, config, repo_id}} ->
+        base_url = module.clone_url(repo_id)
+        {:ok, inject_token(base_url, config[:token])}
+
+      {:error, _} ->
+        # Not a provider-namespaced string — treat as a plain URL
+        {:ok, repo_string}
+    end
+  end
+
+  defp inject_token(url, nil), do: url
+
+  defp inject_token(url, token) do
+    uri = URI.parse(url)
+    # Use x-access-token for GitHub, oauth2 for GitLab — both accept generic userinfo
+    URI.to_string(%{uri | userinfo: "x-access-token:#{token}"})
   end
 
   defp clone_repo(repo_url, dest, ref) do
