@@ -11,7 +11,7 @@ defmodule Backplane.Tools.Hub do
   alias Backplane.Git.RateLimitCache
   alias Backplane.Hub.{Discover, Inspect}
   alias Backplane.Notifications
-  alias Backplane.Proxy.Pool
+  alias Backplane.Proxy.{Pool, Upstream}
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Skills.{Registry, Skill}
@@ -66,6 +66,21 @@ defmodule Backplane.Tools.Hub do
         },
         module: __MODULE__,
         handler: :status
+      },
+      %{
+        name: "hub::refresh",
+        description: "Trigger tool rediscovery on one or all upstream MCP servers",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "upstream" => %{
+              "type" => "string",
+              "description" => "Name of a specific upstream to refresh (omit for all)"
+            }
+          }
+        },
+        module: __MODULE__,
+        handler: :refresh
       }
     ]
   end
@@ -104,7 +119,32 @@ defmodule Backplane.Tools.Hub do
      }}
   end
 
+  def call(%{"_handler" => "refresh"} = args) do
+    refresh_upstreams(args["upstream"])
+  end
+
   def call(_args), do: {:error, "Unknown hub tool handler"}
+
+  defp refresh_upstreams(nil) do
+    upstreams = Pool.list_upstream_pids()
+
+    for {pid, _status} <- upstreams do
+      Upstream.refresh(pid)
+    end
+
+    {:ok, %{refreshed: length(upstreams), message: "Triggered refresh on all upstreams"}}
+  end
+
+  defp refresh_upstreams(name) when is_binary(name) do
+    case Enum.find(Pool.list_upstream_pids(), fn {_pid, s} -> s.name == name end) do
+      {pid, _status} ->
+        Upstream.refresh(pid)
+        {:ok, %{refreshed: 1, message: "Triggered refresh on upstream: #{name}"}}
+
+      nil ->
+        {:error, "Unknown upstream: #{name}"}
+    end
+  end
 
   defp get_upstream_status do
     Pool.list_upstreams()

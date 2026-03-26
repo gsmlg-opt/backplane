@@ -47,25 +47,37 @@ defmodule Backplane.Skills.Loader do
   end
 
   defp build_entry(meta, body) do
-    case meta do
-      %{"name" => name} when is_binary(name) and name != "" ->
-        hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+    with {:ok, name} <- validate_required_string(meta, "name"),
+         {:ok, description} <- validate_optional_string(meta, "description", "") do
+      hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
-        entry = %{
-          name: name,
-          description: Map.get(meta, "description", ""),
-          tags: normalize_list(Map.get(meta, "tags", [])),
-          tools: normalize_list(Map.get(meta, "tools", [])),
-          model: Map.get(meta, "model"),
-          version: to_string(Map.get(meta, "version", "1.0.0")),
-          content: body,
-          content_hash: hash
-        }
+      entry = %{
+        name: name,
+        description: description,
+        tags: normalize_list(Map.get(meta, "tags", [])),
+        tools: normalize_list(Map.get(meta, "tools", [])),
+        model: Map.get(meta, "model"),
+        version: to_string(Map.get(meta, "version", "1.0.0")),
+        content: body,
+        content_hash: hash
+      }
 
-        {:ok, entry}
+      {:ok, entry}
+    end
+  end
 
-      _ ->
-        {:error, :missing_frontmatter}
+  defp validate_required_string(meta, key) do
+    case Map.get(meta, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      nil -> {:error, :missing_frontmatter}
+      _ -> {:error, :missing_frontmatter}
+    end
+  end
+
+  defp validate_optional_string(meta, key, default) do
+    case Map.get(meta, key, default) do
+      value when is_binary(value) -> {:ok, value}
+      _ -> {:ok, default}
     end
   end
 
