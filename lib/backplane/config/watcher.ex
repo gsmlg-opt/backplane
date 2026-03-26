@@ -62,6 +62,7 @@ defmodule Backplane.Config.Watcher do
     config = Backplane.Config.load!(path)
     Validator.validate!(config)
     apply_config(config)
+    Backplane.Notifications.tools_changed()
     Logger.info("Configuration reloaded successfully")
     :ok
   rescue
