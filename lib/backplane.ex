@@ -35,8 +35,10 @@ defmodule Backplane do
   @doc "Count registered skills."
   def skill_count, do: SkillsRegistry.count()
 
-  @doc "Get the current version."
-  def version, do: "0.1.0"
+  @doc "Get the current version from mix.exs."
+  def version do
+    Application.spec(:backplane, :vsn) |> to_string()
+  end
 
   @doc "MCP protocol version supported by this server."
   def protocol_version, do: "2025-03-26"
