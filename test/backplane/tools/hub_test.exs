@@ -286,10 +286,10 @@ end
 # ---------------------------------------------------------------------------
 # Separate module for DB rescue branches.
 #
-# These tests kill the DBConnection pool which makes the Ecto sandbox
-# unusable afterwards (the sandbox registry points to the old pool PID).
-# By using a plain ExUnit.Case (no DataCase sandbox) the other hub tests
-# are not affected.
+# These tests verify the rescue branches in Hub status functions by running
+# Hub.call from a spawned process that has no Ecto Sandbox checkout.
+# We use :manual mode scoped tightly and restore :auto mode (not :shared)
+# to avoid contaminating the sandbox state for other test modules.
 # ---------------------------------------------------------------------------
 defmodule Backplane.Tools.HubDbRescueTest do
   use ExUnit.Case, async: false
@@ -298,41 +298,40 @@ defmodule Backplane.Tools.HubDbRescueTest do
   alias Backplane.Tools.Hub
   alias Ecto.Adapters.SQL.Sandbox
 
-  # These tests switch to :manual mode so spawned Tasks cannot acquire a
-  # DB connection, triggering the rescue branches.
-  defp with_manual_sandbox(fun) do
-    Sandbox.mode(Repo, :manual)
-
-    try do
-      fun.()
-    after
-      Sandbox.mode(Repo, {:shared, self()})
-    end
+  setup do
+    # Ensure we start from a clean :auto state
+    Sandbox.mode(Repo, :auto)
+    :ok
   end
 
   test "get_skill_sources rescue returns [] and logs warning when DB is unavailable" do
-    with_manual_sandbox(fn ->
-      {{:ok, result}, log} =
-        ExUnit.CaptureLog.with_log(fn ->
-          Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
-          |> Task.await(5000)
-        end)
+    # Switch to manual so the spawned task has no checkout
+    Sandbox.mode(Repo, :manual)
 
-      assert result.skill_sources == []
-      assert log =~ "Failed to get skill sources"
-    end)
+    {{:ok, result}, log} =
+      ExUnit.CaptureLog.with_log(fn ->
+        Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
+        |> Task.await(5000)
+      end)
+
+    assert result.skill_sources == []
+    assert log =~ "Failed to get skill sources"
+
+    Sandbox.mode(Repo, :auto)
   end
 
   test "get_doc_projects rescue returns [] and logs warning when DB is unavailable" do
-    with_manual_sandbox(fn ->
-      {{:ok, result}, log} =
-        ExUnit.CaptureLog.with_log(fn ->
-          Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
-          |> Task.await(5000)
-        end)
+    Sandbox.mode(Repo, :manual)
 
-      assert result.doc_projects == []
-      assert log =~ "Failed to get doc projects"
-    end)
+    {{:ok, result}, log} =
+      ExUnit.CaptureLog.with_log(fn ->
+        Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
+        |> Task.await(5000)
+      end)
+
+    assert result.doc_projects == []
+    assert log =~ "Failed to get doc projects"
+
+    Sandbox.mode(Repo, :auto)
   end
 end
