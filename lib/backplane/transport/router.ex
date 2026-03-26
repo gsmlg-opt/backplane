@@ -25,7 +25,8 @@ defmodule Backplane.Transport.Router do
     parsers: [:json],
     pass: ["application/json"],
     json_decoder: Jason,
-    length: 1_000_000
+    length: 1_000_000,
+    body_reader: {Backplane.Transport.CacheBodyReader, :read_body, []}
   )
 
   plug(:dispatch)
@@ -99,9 +100,9 @@ defmodule Backplane.Transport.Router do
     secret = find_webhook_secret(conn.body_params, :github)
 
     with secret when not is_nil(secret) <- secret,
-         payload = Jason.encode!(conn.body_params),
+         raw_body when is_binary(raw_body) <- conn.assigns[:raw_body],
          [signature] <- Plug.Conn.get_req_header(conn, "x-hub-signature-256"),
-         true <- WebhookHandler.validate_github_signature(payload, signature, secret) do
+         true <- WebhookHandler.validate_github_signature(raw_body, signature, secret) do
       :ok
     else
       nil -> {:error, :no_secret}
