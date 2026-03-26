@@ -6,6 +6,7 @@ defmodule Backplane.Transport.HealthCheck do
   require Logger
 
   alias Backplane.Docs.{DocChunk, Project}
+  alias Backplane.Notifications
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -27,6 +28,8 @@ defmodule Backplane.Transport.HealthCheck do
 
     %{
       status: status,
+      version: Backplane.version(),
+      sse_subscribers: Notifications.subscriber_count(),
       engines: %{
         proxy: %{
           upstreams: upstreams,
