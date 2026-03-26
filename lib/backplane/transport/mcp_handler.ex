@@ -38,6 +38,7 @@ defmodule Backplane.Transport.McpHandler do
     }
   end
 
+  @spec handle(Plug.Conn.t()) :: Plug.Conn.t()
   def handle(conn) do
     case conn.body_params do
       %{"_json" => batch} when is_list(batch) ->

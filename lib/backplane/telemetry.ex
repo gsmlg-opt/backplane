@@ -15,6 +15,7 @@ defmodule Backplane.Telemetry do
   require Logger
 
   @doc "Execute a tool call with telemetry instrumentation."
+  @spec span_tool_call(String.t(), (-> term())) :: term()
   def span_tool_call(tool_name, fun) do
     request_id = Logger.metadata()[:request_id]
     metadata = %{tool: tool_name, request_id: request_id}
@@ -77,6 +78,7 @@ defmodule Backplane.Telemetry do
   end
 
   @doc "Emit an MCP request telemetry event."
+  @spec emit_mcp_request(String.t(), map()) :: :ok
   def emit_mcp_request(method, metadata \\ %{}) do
     :telemetry.execute(
       [:backplane, :mcp_request, :start],
@@ -88,6 +90,7 @@ defmodule Backplane.Telemetry do
   end
 
   @doc "Emit an SSE stream start event."
+  @spec emit_sse_start(String.t()) :: :ok
   def emit_sse_start(tool_name) do
     :telemetry.execute(
       [:backplane, :sse_stream, :start],
@@ -97,6 +100,7 @@ defmodule Backplane.Telemetry do
   end
 
   @doc "Emit an SSE stream stop event."
+  @spec emit_sse_stop(String.t(), integer()) :: :ok
   def emit_sse_stop(tool_name, duration) do
     :telemetry.execute(
       [:backplane, :sse_stream, :stop],

@@ -7,6 +7,7 @@ defmodule Backplane.Skills.Loader do
   Parse a SKILL.md file's content into a skill entry map.
   Returns {:ok, map} or {:error, reason}.
   """
+  @spec parse(String.t()) :: {:ok, map()} | {:error, atom()}
   def parse(content) when is_binary(content) do
     case extract_frontmatter(content) do
       {:ok, yaml_str, body} ->

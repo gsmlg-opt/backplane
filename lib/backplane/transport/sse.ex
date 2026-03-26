@@ -15,6 +15,7 @@ defmodule Backplane.Transport.SSE do
   @doc """
   Returns true if the client requested SSE streaming via Accept header.
   """
+  @spec streaming_requested?(Plug.Conn.t()) :: boolean()
   def streaming_requested?(conn) do
     conn
     |> get_req_header("accept")
@@ -27,6 +28,7 @@ defmodule Backplane.Transport.SSE do
   Sets appropriate headers and sends the initial response to begin chunked transfer.
   Returns the updated conn for subsequent `send_event/3` calls.
   """
+  @spec start_stream(Plug.Conn.t()) :: Plug.Conn.t()
   def start_stream(conn) do
     conn
     |> put_resp_content_type("text/event-stream")
@@ -40,6 +42,7 @@ defmodule Backplane.Transport.SSE do
 
   The event type is always "message" per the MCP spec.
   """
+  @spec send_event(Plug.Conn.t(), term(), map()) :: Plug.Conn.t()
   def send_event(conn, id, result) do
     message =
       Jason.encode!(%{
@@ -56,6 +59,7 @@ defmodule Backplane.Transport.SSE do
   @doc """
   Sends a JSON-RPC error as an SSE event.
   """
+  @spec send_error_event(Plug.Conn.t(), term(), integer(), String.t()) :: Plug.Conn.t()
   def send_error_event(conn, id, code, message) do
     error_message =
       Jason.encode!(%{
