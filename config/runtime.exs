@@ -41,4 +41,34 @@ if config_env() == :prod do
     # Skill sources
     config :backplane, skill_sources: backplane_config[:skills] || []
   end
+
+  # Phoenix Endpoint — production configuration
+  secret_key_base =
+    System.get_env("SECRET_KEY_BASE") ||
+      raise """
+      environment variable SECRET_KEY_BASE is missing.
+      You can generate one by calling: mix phx.gen.secret
+      """
+
+  host = System.get_env("PHX_HOST", "localhost")
+
+  port =
+    case System.get_env("BACKPLANE_PORT") || System.get_env("PORT") do
+      nil -> 4100
+      port_str -> String.to_integer(port_str)
+    end
+
+  config :backplane, BackplaneWeb.Endpoint,
+    url: [host: host, port: 443, scheme: "https"],
+    http: [ip: {0, 0, 0, 0}, port: port],
+    secret_key_base: secret_key_base
+
+  # Bun/Tailwind binary paths for devenv environments
+  if bun_path = System.get_env("MIX_BUN_PATH") do
+    config :bun, path: bun_path
+  end
+
+  if tailwind_path = System.get_env("MIX_TAILWIND_PATH") do
+    config :tailwind, path: tailwind_path
+  end
 end
