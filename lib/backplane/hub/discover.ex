@@ -122,7 +122,10 @@ defmodule Backplane.Hub.Discover do
       []
   end
 
-  defp sanitize_query(query), do: String.replace(query, <<0>>, "")
+  @max_query_length 500
+  defp sanitize_query(query) do
+    query |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)
+  end
 
   defp format_origin(origin), do: Utils.format_origin(origin)
 end

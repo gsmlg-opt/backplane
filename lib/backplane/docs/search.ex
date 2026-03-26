@@ -130,9 +130,13 @@ defmodule Backplane.Docs.Search do
     Enum.reverse(selected)
   end
 
+  @max_query_length 500
+
   defp sanitize_query(query) do
     # websearch_to_tsquery handles most sanitization,
-    # but strip null bytes just in case
-    String.replace(query, <<0>>, "")
+    # but strip null bytes and truncate to prevent abuse
+    query
+    |> String.replace(<<0>>, "")
+    |> String.slice(0, @max_query_length)
   end
 end
