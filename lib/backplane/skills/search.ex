@@ -12,11 +12,13 @@ defmodule Backplane.Skills.Search do
 
   Options:
     - :tags - list of tags (AND match)
+    - :tools - list of required tools (AND match)
     - :source - source type filter (e.g., "git", "local", "db")
     - :limit - max results (default 10)
   """
   def query(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
+    tools = Keyword.get(opts, :tools, [])
     source = Keyword.get(opts, :source)
     limit = Keyword.get(opts, :limit, 10)
 
@@ -24,6 +26,7 @@ defmodule Backplane.Skills.Search do
     |> where([s], s.enabled == true)
     |> apply_text_search(search_query)
     |> apply_tag_filter(tags)
+    |> apply_tools_filter(tools)
     |> apply_source_filter(source)
     |> order_by_relevance(search_query)
     |> limit(^limit)
@@ -45,6 +48,12 @@ defmodule Backplane.Skills.Search do
 
   defp apply_tag_filter(query, tags) do
     where(query, [s], fragment("tags @> ?::text[]", ^tags))
+  end
+
+  defp apply_tools_filter(query, []), do: query
+
+  defp apply_tools_filter(query, tools) do
+    where(query, [s], fragment("tools @> ?::text[]", ^tools))
   end
 
   defp apply_source_filter(query, nil), do: query

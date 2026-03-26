@@ -105,6 +105,7 @@ defmodule Backplane.Tools.Skill do
     opts =
       []
       |> maybe_add(:tags, args["tags"])
+      |> maybe_add(:tools, args["tools"])
       |> maybe_add(:limit, args["limit"])
 
     results = Search.query(args["query"], opts)
