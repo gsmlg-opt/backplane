@@ -345,11 +345,11 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch_tool_call(name, args) do
     Telemetry.span_tool_call(name, fn ->
-      name |> ToolRegistry.resolve() |> execute_tool(args)
+      name |> ToolRegistry.resolve() |> execute_tool(name, args)
     end)
   end
 
-  defp execute_tool({:native, module, handler}, args) do
+  defp execute_tool({:native, module, handler}, _name, args) do
     call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
     module.call(call_args)
   rescue
@@ -361,12 +361,12 @@ defmodule Backplane.Transport.McpHandler do
       {:error, "Internal error: #{Exception.message(e)}"}
   end
 
-  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, args) do
+  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, _name, args) do
     Upstream.forward(upstream_pid, original_tool_name, args, timeout)
   end
 
-  defp execute_tool(:not_found, _args) do
-    {:error, "Unknown tool"}
+  defp execute_tool(:not_found, name, _args) do
+    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
   end
 
   # Resources: doc chunks as MCP resources
