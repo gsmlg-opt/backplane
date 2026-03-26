@@ -10,6 +10,8 @@ defmodule Backplane.Hub.Discover do
   alias Backplane.Repo
   alias Backplane.Skills.Registry, as: SkillsRegistry
 
+  import Ecto.Query
+
   @default_limit 5
   @all_scopes ["tools", "skills", "docs", "repos"]
 
@@ -58,8 +60,6 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_docs(query, limit) do
-    import Ecto.Query
-
     try do
       DocChunk
       |> where([c], fragment("search_vector @@ plainto_tsquery('english', ?)", ^query))
@@ -84,8 +84,6 @@ defmodule Backplane.Hub.Discover do
   end
 
   defp search_repos(query, limit) do
-    import Ecto.Query
-
     try do
       downcased = query |> String.downcase() |> Backplane.Utils.escape_like()
       pattern = "%#{downcased}%"

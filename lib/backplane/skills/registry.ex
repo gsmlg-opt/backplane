@@ -6,6 +6,8 @@ defmodule Backplane.Skills.Registry do
 
   use GenServer
 
+  import Ecto.Query
+
   @table :backplane_skills
 
   def start_link(opts) do
@@ -59,8 +61,6 @@ defmodule Backplane.Skills.Registry do
 
   @doc "Reload the ETS table from the database."
   def refresh do
-    import Ecto.Query
-
     skills = Backplane.Repo.all(from(s in Backplane.Skills.Skill, where: s.enabled == true))
 
     rows =
