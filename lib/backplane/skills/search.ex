@@ -51,7 +51,8 @@ defmodule Backplane.Skills.Search do
 
   defp apply_source_filter(query, source) do
     # Match exact or prefix (e.g., "git" matches "git:elixir-patterns")
-    where(query, [s], s.source == ^source or like(s.source, ^"#{source}:%"))
+    escaped = Backplane.Utils.escape_like(source)
+    where(query, [s], s.source == ^source or like(s.source, ^"#{escaped}:%"))
   end
 
   defp order_by_relevance(query, search) when is_binary(search) and search != "" do

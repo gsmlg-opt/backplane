@@ -46,7 +46,7 @@ defmodule Backplane.Skills.Sync do
 
     existing =
       Skill
-      |> where([s], like(s.source, ^"#{source}%"))
+      |> where([s], like(s.source, ^"#{Backplane.Utils.escape_like(source)}%"))
       |> Repo.all()
       |> Map.new(&{&1.id, &1})
 
