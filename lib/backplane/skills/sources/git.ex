@@ -10,6 +10,11 @@ defmodule Backplane.Skills.Sources.Git do
   defstruct [:name, :repo, :path, ref: "main"]
 
   @clone_base "/tmp/backplane_skills"
+  # Environment variables to prevent git hangs
+  @git_env [
+    {"GIT_TERMINAL_PROMPT", "0"},
+    {"GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=30"}
+  ]
 
   @impl true
   @spec list() :: {:ok, [Backplane.Skills.Source.skill_entry()]} | {:error, term()}
@@ -68,7 +73,8 @@ defmodule Backplane.Skills.Sources.Git do
     File.mkdir_p!(Path.dirname(clone_dir))
 
     case System.cmd("git", ["clone", "--depth", "1", "--branch", ref, repo, clone_dir],
-           stderr_to_stdout: true
+           stderr_to_stdout: true,
+           env: @git_env
          ) do
       {_, 0} -> :ok
       {output, _} -> {:error, {:clone_failed, output}}
@@ -76,7 +82,11 @@ defmodule Backplane.Skills.Sources.Git do
   end
 
   defp pull(clone_dir, _ref) do
-    case System.cmd("git", ["pull", "--ff-only"], cd: clone_dir, stderr_to_stdout: true) do
+    case System.cmd("git", ["pull", "--ff-only"],
+           cd: clone_dir,
+           stderr_to_stdout: true,
+           env: @git_env
+         ) do
       {_, 0} -> :ok
       {output, _} -> {:error, {:pull_failed, output}}
     end

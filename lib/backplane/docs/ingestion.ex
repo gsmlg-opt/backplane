@@ -12,6 +12,12 @@ defmodule Backplane.Docs.Ingestion do
 
   @doc_extensions ~w(.ex .exs .md .txt .rst .json .yml .yaml)
 
+  # Environment variables to prevent git hangs on interactive prompts or slow SSH
+  @git_env [
+    {"GIT_TERMINAL_PROMPT", "0"},
+    {"GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=30"}
+  ]
+
   @doc """
   Run the full ingestion pipeline for a project.
   """
@@ -204,7 +210,8 @@ defmodule Backplane.Docs.Ingestion do
     File.mkdir_p!(dest)
 
     case System.cmd("git", ["clone", "--branch", ref, "--depth", "1", repo_url, dest],
-           stderr_to_stdout: true
+           stderr_to_stdout: true,
+           env: @git_env
          ) do
       {_output, 0} -> {:ok, dest}
       {output, _} -> {:error, {:clone_failed, output}}
@@ -214,12 +221,14 @@ defmodule Backplane.Docs.Ingestion do
   defp pull_repo(repo_path, ref) do
     case System.cmd("git", ["fetch", "origin", ref],
            cd: repo_path,
-           stderr_to_stdout: true
+           stderr_to_stdout: true,
+           env: @git_env
          ) do
       {_output, 0} ->
         case System.cmd("git", ["reset", "--hard", "origin/#{ref}"],
                cd: repo_path,
-               stderr_to_stdout: true
+               stderr_to_stdout: true,
+               env: @git_env
              ) do
           {_output, 0} -> {:ok, repo_path}
           {output, _} -> {:error, {:pull_failed, output}}
