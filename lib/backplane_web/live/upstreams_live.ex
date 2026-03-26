@@ -2,12 +2,20 @@ defmodule BackplaneWeb.UpstreamsLive do
   use BackplaneWeb, :live_view
 
   alias Backplane.Proxy.Pool
+  alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
 
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
-      Phoenix.PubSub.subscribe(Backplane.PubSub, "upstream:*")
+      # Subscribe to upstream topics for each known upstream
+      upstreams = safe_call(fn -> Pool.list_upstreams() end, [])
+
+      for upstream <- upstreams do
+        PubSubBroadcaster.subscribe(PubSubBroadcaster.upstream_topic(upstream.prefix))
+      end
+
+      PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
 
     {:ok, assign(socket, current_path: "/admin/upstreams", loading: true)}
@@ -15,6 +23,23 @@ defmodule BackplaneWeb.UpstreamsLive do
 
   @impl true
   def handle_params(_params, _uri, socket) do
+    {:noreply, socket |> assign(selected: nil) |> reload_upstreams()}
+  end
+
+  @impl true
+  def handle_info({event, _payload}, socket)
+      when event in [:connected, :disconnected, :degraded, :tools_refreshed, :reloaded] do
+    {:noreply, reload_upstreams(socket)}
+  end
+
+  def handle_info(_, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select", %{"name" => name}, socket) do
+    {:noreply, assign(socket, selected: name)}
+  end
+
+  defp reload_upstreams(socket) do
     upstreams = safe_call(fn -> Pool.list_upstreams() end, [])
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
 
@@ -26,21 +51,7 @@ defmodule BackplaneWeb.UpstreamsLive do
         end
       end)
 
-    {:noreply,
-     assign(socket,
-       loading: false,
-       upstreams: upstreams,
-       upstream_tools: upstream_tools,
-       selected: nil
-     )}
-  end
-
-  @impl true
-  def handle_info(_, socket), do: {:noreply, socket}
-
-  @impl true
-  def handle_event("select", %{"name" => name}, socket) do
-    {:noreply, assign(socket, selected: name)}
+    assign(socket, loading: false, upstreams: upstreams, upstream_tools: upstream_tools)
   end
 
   defp safe_call(fun, default) do

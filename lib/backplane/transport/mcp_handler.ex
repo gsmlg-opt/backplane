@@ -161,11 +161,19 @@ defmodule Backplane.Transport.McpHandler do
 
     case validate_tool_args(name, arguments) do
       :ok ->
+        Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
+
         case dispatch_tool_call(name, arguments) do
           {:ok, result} ->
+            Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
             {:result, %{content: [%{type: "text", text: format_result(result)}]}}
 
           {:error, message} ->
+            Backplane.PubSubBroadcaster.broadcast_tools_call(:failed, %{
+              tool: name,
+              reason: message
+            })
+
             {:result, %{content: [%{type: "text", text: to_string(message)}], isError: true}}
         end
 

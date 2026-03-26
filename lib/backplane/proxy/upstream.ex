@@ -13,6 +13,7 @@ defmodule Backplane.Proxy.Upstream do
   use GenServer
   require Logger
 
+  alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.{Tool, ToolRegistry}
 
   @default_timeout 30_000
@@ -93,7 +94,9 @@ defmodule Backplane.Proxy.Upstream do
           {:ok, state} ->
             schedule_refresh(state)
             schedule_health_ping()
-            {:noreply, %{state | status: :connected, reconnect_attempts: 0}}
+            new_state = %{state | status: :connected, reconnect_attempts: 0}
+            PubSubBroadcaster.broadcast_upstream(state.prefix, :connected, %{name: state.name})
+            {:noreply, new_state}
 
           {:error, reason, state} ->
             Logger.warning("Failed to discover tools",
@@ -103,8 +106,18 @@ defmodule Backplane.Proxy.Upstream do
 
             schedule_reconnect(state.reconnect_attempts)
 
-            {:noreply,
-             %{state | status: :degraded, reconnect_attempts: state.reconnect_attempts + 1}}
+            new_state = %{
+              state
+              | status: :degraded,
+                reconnect_attempts: state.reconnect_attempts + 1
+            }
+
+            PubSubBroadcaster.broadcast_upstream(state.prefix, :degraded, %{
+              name: state.name,
+              reason: reason
+            })
+
+            {:noreply, new_state}
         end
 
       {:error, reason, state} ->
@@ -115,8 +128,18 @@ defmodule Backplane.Proxy.Upstream do
 
         schedule_reconnect(state.reconnect_attempts)
 
-        {:noreply,
-         %{state | status: :disconnected, reconnect_attempts: state.reconnect_attempts + 1}}
+        new_state = %{
+          state
+          | status: :disconnected,
+            reconnect_attempts: state.reconnect_attempts + 1
+        }
+
+        PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
+          name: state.name,
+          reason: reason
+        })
+
+        {:noreply, new_state}
     end
   end
 
@@ -252,6 +275,11 @@ defmodule Backplane.Proxy.Upstream do
 
     ToolRegistry.deregister_upstream(state.prefix)
     schedule_reconnect(state.reconnect_attempts)
+
+    PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
+      name: state.name,
+      reason: "process exited (status #{status})"
+    })
 
     {:noreply,
      %{
@@ -412,6 +440,11 @@ defmodule Backplane.Proxy.Upstream do
       end)
 
     ToolRegistry.register_upstream(state.prefix, self(), tools)
+
+    PubSubBroadcaster.broadcast_upstream(state.prefix, :tools_refreshed, %{
+      name: state.name,
+      tool_count: length(tools)
+    })
 
     {:ok, %{state | tools: tools}}
   end

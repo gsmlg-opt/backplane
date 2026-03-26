@@ -6,8 +6,20 @@ defmodule BackplaneWeb.DocsLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.docs_reindex_topic())
+    end
+
     {:ok, assign(socket, current_path: "/admin/docs", loading: true)}
   end
+
+  @impl true
+  def handle_info({:completed, _payload}, socket) do
+    projects = safe_call(fn -> Repo.all(Project) end, [])
+    {:noreply, assign(socket, projects: projects)}
+  end
+
+  def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
   def handle_params(_params, _uri, socket) do

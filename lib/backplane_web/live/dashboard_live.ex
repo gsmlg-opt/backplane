@@ -3,6 +3,7 @@ defmodule BackplaneWeb.DashboardLive do
 
   alias Backplane.Metrics
   alias Backplane.Proxy.Pool
+  alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.Registry, as: SkillsRegistry
 
@@ -12,8 +13,9 @@ defmodule BackplaneWeb.DashboardLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Process.send_after(self(), :refresh, @refresh_interval)
-      Phoenix.PubSub.subscribe(Backplane.PubSub, "upstream:*")
-      Phoenix.PubSub.subscribe(Backplane.PubSub, "tools:call")
+      PubSubBroadcaster.subscribe(PubSubBroadcaster.skills_sync_topic())
+      PubSubBroadcaster.subscribe(PubSubBroadcaster.docs_reindex_topic())
+      PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
 
     {:ok, assign(socket, current_path: "/admin", loading: true)}
@@ -30,7 +32,45 @@ defmodule BackplaneWeb.DashboardLive do
     {:noreply, load_dashboard_data(socket)}
   end
 
+  def handle_info({event, _payload}, socket)
+      when event in [:completed, :reloaded] do
+    {:noreply, load_dashboard_data(socket)}
+  end
+
   def handle_info(_, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("sync_skills", _, socket) do
+    sources = Application.get_env(:backplane, :skill_sources, [])
+
+    for source <- sources do
+      case Backplane.Skills.Sync.build_job(source) |> Oban.insert() do
+        {:ok, _} -> :ok
+        {:error, _} -> :ok
+      end
+    end
+
+    {:noreply,
+     socket
+     |> put_flash(:info, "Skill sync jobs enqueued")
+     |> load_dashboard_data()}
+  end
+
+  def handle_event("reindex_all", _, socket) do
+    projects = safe_call(fn -> Backplane.Repo.all(Backplane.Docs.Project) end, [])
+
+    for project <- projects do
+      case Backplane.Jobs.Reindex.build_job(project.id) |> Oban.insert() do
+        {:ok, _} -> :ok
+        {:error, _} -> :ok
+      end
+    end
+
+    {:noreply,
+     socket
+     |> put_flash(:info, "Reindex jobs enqueued for #{length(projects)} projects")
+     |> load_dashboard_data()}
+  end
 
   defp load_dashboard_data(socket) do
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
@@ -70,7 +110,23 @@ defmodule BackplaneWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="text-2xl font-bold text-white mb-6">Dashboard</h1>
+      <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold text-white">Dashboard</h1>
+        <div class="flex gap-2">
+          <button
+            phx-click="sync_skills"
+            class="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
+          >
+            Sync Skills
+          </button>
+          <button
+            phx-click="reindex_all"
+            class="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600"
+          >
+            Reindex All
+          </button>
+        </div>
+      </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <.stat_card label="Total Tools" value={to_string(@tool_count)} />

@@ -5,8 +5,20 @@ defmodule BackplaneWeb.SkillsLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.skills_sync_topic())
+    end
+
     {:ok, assign(socket, current_path: "/admin/skills", loading: true, search: "", selected: nil)}
   end
+
+  @impl true
+  def handle_info({:completed, _payload}, socket) do
+    skills = safe_call(fn -> SkillsRegistry.list() end, [])
+    {:noreply, assign(socket, skills: skills, filtered_skills: skills)}
+  end
+
+  def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
   def handle_params(_params, _uri, socket) do

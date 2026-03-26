@@ -44,14 +44,27 @@ defmodule Backplane.Skills.Sync do
 
     config = build_config(module, args)
 
+    Backplane.PubSubBroadcaster.broadcast_skills_sync(:started, %{name: args["name"]})
+
     case module.list(config) do
       {:ok, entries} ->
         sync_entries(entries)
         Registry.refresh()
         schedule_next(args)
+
+        Backplane.PubSubBroadcaster.broadcast_skills_sync(:completed, %{
+          name: args["name"],
+          count: length(entries)
+        })
+
         :ok
 
       {:error, reason} ->
+        Backplane.PubSubBroadcaster.broadcast_skills_sync(:failed, %{
+          name: args["name"],
+          reason: reason
+        })
+
         {:error, reason}
     end
   end
