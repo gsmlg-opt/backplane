@@ -292,17 +292,15 @@ end
 # are not affected.
 # ---------------------------------------------------------------------------
 defmodule Backplane.Tools.HubDbRescueTest do
-  use Backplane.DataCase, async: false
+  use ExUnit.Case, async: false
 
+  alias Backplane.Repo
   alias Backplane.Tools.Hub
   alias Ecto.Adapters.SQL.Sandbox
 
-  # Switch the sandbox to :manual mode so that Hub.call, when run in a
-  # spawned Task, cannot obtain a DB connection. Repo.all() then raises
-  # DBConnection.OwnershipError — an Elixir exception caught by the rescue
-  # blocks in get_skill_sources and get_doc_projects. After the test we
-  # restore {:shared, self()} so other tests are unaffected.
-  defp with_db_unavailable(fun) do
+  # These tests switch to :manual mode so spawned Tasks cannot acquire a
+  # DB connection, triggering the rescue branches.
+  defp with_manual_sandbox(fun) do
     Sandbox.mode(Repo, :manual)
 
     try do
@@ -313,7 +311,7 @@ defmodule Backplane.Tools.HubDbRescueTest do
   end
 
   test "get_skill_sources rescue returns [] and logs warning when DB is unavailable" do
-    with_db_unavailable(fn ->
+    with_manual_sandbox(fn ->
       {{:ok, result}, log} =
         ExUnit.CaptureLog.with_log(fn ->
           Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
@@ -326,7 +324,7 @@ defmodule Backplane.Tools.HubDbRescueTest do
   end
 
   test "get_doc_projects rescue returns [] and logs warning when DB is unavailable" do
-    with_db_unavailable(fn ->
+    with_manual_sandbox(fn ->
       {{:ok, result}, log} =
         ExUnit.CaptureLog.with_log(fn ->
           Task.async(fn -> Hub.call(%{"_handler" => "status"}) end)
