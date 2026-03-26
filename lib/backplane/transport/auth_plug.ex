@@ -16,7 +16,7 @@ defmodule Backplane.Transport.AuthPlug do
   import Plug.Conn
   @behaviour Plug
 
-  @public_paths ["/health", "/metrics"]
+  @public_paths ["/health", "/metrics", "/webhook/github", "/webhook/gitlab"]
 
   @impl true
   def init(opts), do: opts
