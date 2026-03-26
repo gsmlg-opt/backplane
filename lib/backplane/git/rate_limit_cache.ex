@@ -40,6 +40,14 @@ defmodule Backplane.Git.RateLimitCache do
     end
   end
 
+  @doc "Delete rate limit info for a provider instance."
+  @spec delete(String.t()) :: :ok
+  def delete(provider_key) when is_binary(provider_key) do
+    init_if_needed()
+    :ets.delete(@table, provider_key)
+    :ok
+  end
+
   @doc "Get all stored rate limit info."
   @spec all() :: [{String.t(), map()}]
   def all do

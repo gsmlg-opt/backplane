@@ -37,18 +37,32 @@ defmodule Backplane.Skills.Registry do
     |> maybe_filter_tags(tags_filter)
   end
 
-  @doc "Search skills by keyword in name and description."
+  @doc "Search skills by keyword in name, description, and tags. Results are relevance-sorted."
   @spec search(String.t(), keyword()) :: [map()]
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
-    query_down = String.downcase(query)
+    terms = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
 
-    for {_id, entry} <- :ets.tab2list(@table),
-        String.contains?(String.downcase(entry.name), query_down) ||
-          String.contains?(String.downcase(entry.description), query_down) do
-      entry
-    end
+    @table
+    |> :ets.tab2list()
+    |> Enum.map(fn {_id, entry} -> {entry, score_skill(entry, terms)} end)
+    |> Enum.filter(fn {_entry, score} -> score > 0 end)
+    |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
     |> Enum.take(limit)
+    |> Enum.map(fn {entry, _score} -> entry end)
+  end
+
+  defp score_skill(entry, terms) do
+    name_down = String.downcase(entry.name)
+    desc_down = String.downcase(entry.description || "")
+    tags_down = Enum.map(entry.tags || [], &String.downcase/1)
+
+    Enum.reduce(terms, 0, fn term, acc ->
+      name_score = if String.contains?(name_down, term), do: 3, else: 0
+      tag_score = if Enum.any?(tags_down, &String.contains?(&1, term)), do: 2, else: 0
+      desc_score = if String.contains?(desc_down, term), do: 1, else: 0
+      acc + name_score + tag_score + desc_score
+    end)
   end
 
   @doc "Fetch a single skill by ID."
