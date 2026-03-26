@@ -26,6 +26,17 @@ defmodule BackplaneWeb.DocsLive do
     {:noreply, load_docs(socket)}
   end
 
+  @impl true
+  def handle_event("reindex", %{"id" => id}, socket) do
+    case Backplane.Jobs.Reindex.new(%{project_id: id}) |> Oban.insert() do
+      {:ok, _} ->
+        {:noreply, put_flash(socket, :info, "Reindex job enqueued for #{id}")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to enqueue reindex job")}
+    end
+  end
+
   defp load_docs(socket) do
     projects = safe_call(fn -> Repo.all(Project) end, [])
 
@@ -74,6 +85,13 @@ defmodule BackplaneWeb.DocsLive do
               <span class="text-xs text-gray-400">
                 {if project.last_indexed_at, do: "Indexed: #{Calendar.strftime(project.last_indexed_at, "%Y-%m-%d %H:%M")}", else: "Not indexed"}
               </span>
+              <button
+                phx-click="reindex"
+                phx-value-id={project.id}
+                class="rounded px-2 py-1 text-xs bg-blue-800 text-blue-200 hover:bg-blue-700"
+              >
+                Reindex
+              </button>
             </div>
           </div>
           <p class="text-xs text-gray-400 mt-1">
