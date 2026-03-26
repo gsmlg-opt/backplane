@@ -14,10 +14,17 @@ defmodule Backplane.NotificationsTest do
       ])
     end
 
-    start_supervised!({:pg, :backplane_notifications})
+    # Start :pg scope if not already started (Application may have started it)
+    case :pg.start_link(:backplane_notifications) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
 
     # Clear debounce state between tests
     :ets.delete_all_objects(:backplane_notification_debounce)
+
+    # Unsubscribe current process to clean state
+    :pg.leave(:backplane_notifications, :mcp_subscribers, self())
     :ok
   end
 

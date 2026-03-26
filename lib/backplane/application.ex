@@ -12,7 +12,6 @@ defmodule Backplane.Application do
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Skills.Sync
   alias Backplane.Tools.{Docs, Git, Hub, Skill}
-  alias Backplane.Transport.Router
 
   @drain_timeout 15_000
 
@@ -23,14 +22,14 @@ defmodule Backplane.Application do
     children = [
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
+      {Phoenix.PubSub, name: Backplane.PubSub},
       Backplane.Notifications,
       ToolRegistry,
       SkillsRegistry,
       Pool,
       Metrics,
       Watcher,
-      {Bandit,
-       plug: Router, port: port(), thousand_island_options: [shutdown_timeout: @drain_timeout]}
+      BackplaneWeb.Endpoint
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
@@ -112,22 +111,5 @@ defmodule Backplane.Application do
     ]
 
     Validator.validate!(config)
-  end
-
-  defp port do
-    case System.get_env("BACKPLANE_PORT") do
-      nil ->
-        Application.get_env(:backplane, :port, 4100)
-
-      port_str ->
-        case Integer.parse(port_str) do
-          {port, ""} when port > 0 and port <= 65_535 ->
-            port
-
-          _ ->
-            Logger.warning("Invalid BACKPLANE_PORT '#{port_str}', using default 4100")
-            4100
-        end
-    end
   end
 end

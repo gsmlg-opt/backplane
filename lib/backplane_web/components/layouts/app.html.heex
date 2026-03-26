@@ -1,0 +1,43 @@
+<div class="min-h-full">
+  <nav class="bg-gray-900 border-b border-gray-800">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div class="flex h-16 items-center justify-between">
+        <div class="flex items-center">
+          <div class="shrink-0">
+            <span class="text-xl font-bold text-emerald-400">Backplane</span>
+          </div>
+          <div class="ml-10 flex items-baseline space-x-4">
+            <.nav_link href={~p"/admin"} current={@current_path == "/admin"}>
+              Dashboard
+            </.nav_link>
+            <.nav_link href={~p"/admin/upstreams"} current={String.starts_with?(@current_path, "/admin/upstreams")}>
+              Upstreams
+            </.nav_link>
+            <.nav_link href={~p"/admin/tools"} current={String.starts_with?(@current_path, "/admin/tools")}>
+              Tools
+            </.nav_link>
+            <.nav_link href={~p"/admin/skills"} current={String.starts_with?(@current_path, "/admin/skills")}>
+              Skills
+            </.nav_link>
+            <.nav_link href={~p"/admin/docs"} current={String.starts_with?(@current_path, "/admin/docs")}>
+              Docs
+            </.nav_link>
+            <.nav_link href={~p"/admin/git"} current={String.starts_with?(@current_path, "/admin/git")}>
+              Git
+            </.nav_link>
+          </div>
+        </div>
+        <div class="text-sm text-gray-400">
+          MCP Gateway
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <.flash_group flash={@flash} />
+      {@inner_content}
+    </div>
+  </main>
+</div>

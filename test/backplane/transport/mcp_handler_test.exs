@@ -18,7 +18,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns tools capability with listChanged" do
       resp = mcp_request("initialize")
 
-      assert resp["result"]["capabilities"]["tools"]["listChanged"] == false
+      assert resp["result"]["capabilities"]["tools"]["listChanged"] == true
     end
 
     test "accepts unsupported protocolVersion and returns server version" do
