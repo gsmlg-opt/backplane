@@ -617,7 +617,13 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp format_result(result) when is_binary(result), do: result
-  defp format_result(result), do: Jason.encode!(result)
+
+  defp format_result(result) do
+    case Jason.encode(result) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(result)
+    end
+  end
 
   defp json_rpc_result(conn, id, result) do
     body =
