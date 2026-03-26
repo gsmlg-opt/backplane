@@ -27,6 +27,7 @@ defmodule BackplaneWeb.Router do
     live("/tools", ToolsLive, :index)
     live("/git", GitProvidersLive, :index)
     live("/logs", LogsLive, :index)
+    live("/projects", ProjectsLive, :index)
   end
 
   # Enable LiveDashboard in development
