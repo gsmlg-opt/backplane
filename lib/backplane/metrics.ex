@@ -8,6 +8,8 @@ defmodule Backplane.Metrics do
 
   use GenServer
 
+  alias Backplane.Proxy.Pool
+
   @table __MODULE__
 
   # Client API
@@ -39,8 +41,6 @@ defmodule Backplane.Metrics do
   end
 
   defp upstream_status do
-    alias Backplane.Proxy.Pool
-
     Pool.list_upstreams()
     |> Enum.map(fn u ->
       %{

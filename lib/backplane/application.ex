@@ -4,6 +4,9 @@ defmodule Backplane.Application do
   use Application
   require Logger
 
+  alias Backplane.Proxy.Pool
+  alias Backplane.Registry.{Tool, ToolRegistry}
+
   @drain_timeout 15_000
 
   @impl true
@@ -47,8 +50,6 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    alias Backplane.Registry.{Tool, ToolRegistry}
-
     tool_modules = [
       Backplane.Tools.Skill,
       Backplane.Tools.Docs,
@@ -71,8 +72,6 @@ defmodule Backplane.Application do
   end
 
   defp start_configured_upstreams do
-    alias Backplane.Proxy.Pool
-
     upstreams = Application.get_env(:backplane, :upstreams, [])
 
     for upstream <- upstreams do
