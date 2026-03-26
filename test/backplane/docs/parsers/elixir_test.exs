@@ -414,5 +414,21 @@ defmodule Backplane.Docs.Parsers.ElixirTest do
       # count_args(_) returns 0 for non-parenthesized defs
       assert Enum.any?(func_chunks, fn c -> c.function =~ "value" end)
     end
+
+    test "counts args with nested brackets and parens" do
+      # This exercises the bracket depth tracking: (, [, {, ), ], }
+      code = ~S'''
+      defmodule MyApp.Brackets do
+        @doc "Takes a tuple, list, and map."
+        def process({a, b}, [c | _rest], %{key: val}) do
+          {a, b, c, val}
+        end
+      end
+      '''
+
+      {:ok, chunks} = ElixirParser.parse(code, "lib/my_app/brackets.ex")
+      func_chunks = Enum.filter(chunks, &(&1.chunk_type == "function_doc"))
+      assert Enum.any?(func_chunks, fn c -> c.function == "process/3" end)
+    end
   end
 end

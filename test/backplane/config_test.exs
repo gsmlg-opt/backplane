@@ -296,6 +296,41 @@ defmodule Backplane.ConfigTest do
       assert upstream.env == %{}
     end
 
+    test "config with non-map github section returns empty list", %{dir: dir} do
+      path = Path.join(dir, "bad_github.toml")
+
+      File.write!(path, """
+      github = "not-a-map"
+
+      [backplane]
+      port = 5000
+      """)
+
+      config = Backplane.Config.load!(path)
+      assert config[:github] == []
+    end
+
+    test "upstream stdio with non-map env defaults to empty map", %{dir: dir} do
+      path = Path.join(dir, "stdio_bad_env.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "bad-env"
+      prefix = "be"
+      transport = "stdio"
+      command = "node"
+      args = ["server.js"]
+      env = "not-a-map"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.env == %{}
+    end
+
     test "database section is parsed", %{dir: dir} do
       path = Path.join(dir, "with_db.toml")
 

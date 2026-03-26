@@ -1171,5 +1171,29 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["result"]["isError"] == true
       assert is_binary(hd(resp["result"]["content"])["text"])
     end
+
+    test "tools/call JSON-encodes non-binary result (map)" do
+      # hub::status returns a map, exercising format_result/1 non-binary clause
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "hub::status",
+          "arguments" => %{}
+        })
+
+      text = hd(resp["result"]["content"])["text"]
+      assert is_binary(text)
+      # Should be valid JSON (the map was encoded)
+      assert {:ok, decoded} = Jason.decode(text)
+      assert is_map(decoded)
+      assert Map.has_key?(decoded, "total_tools")
+    end
+  end
+
+  describe "malformed cursor" do
+    test "resources/list with invalid cursor falls back to offset 0" do
+      resp = mcp_request("resources/list", %{"cursor" => "!!!invalid-base64!!!"})
+      result = resp["result"]
+      assert is_list(result["resources"])
+    end
   end
 end

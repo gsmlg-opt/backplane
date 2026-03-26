@@ -152,6 +152,12 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert msg =~ "got array"
     end
 
+    test "rejects tuple when string expected and reports unknown type" do
+      args = %{"query" => {:a, :b}}
+      assert {:error, msg} = InputValidator.validate(args, @schema)
+      assert msg =~ "got unknown"
+    end
+
     test "nil passes validation for required fields with nil value" do
       # InputValidator allows nil for any type (line 58) - this is by design
       # Required field check passes because key exists, type check passes because nil is allowed

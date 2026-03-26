@@ -482,4 +482,8 @@ defmodule Backplane.Git.Providers.GitLabTest do
     assert {:error, %{status: 503, message: "Search unavailable"}} =
              GitLab.search_code("query", config: config, repo: "my-group/errored")
   end
+
+  # The {:error, reason} paths for network failures are unreachable via plug-based
+  # testing since Req runs plugs inline. These defensive paths only fire when the
+  # real HTTP client encounters connection errors (network down, DNS failure, etc.).
 end

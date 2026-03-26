@@ -443,14 +443,14 @@ defmodule Backplane.Git.Providers.GitHubTest do
 
   # 3-arity delegators (default opts)
 
-  test "fetch_tree/3 delegates to fetch_tree/4", %{config: config} do
+  test "fetch_tree/3 delegates to fetch_tree/4", %{config: _config} do
     # fetch_tree/3 calls fetch_tree/4 with opts: []
     # We can't use test plug without config, so just verify the function exists
     assert function_exported?(GitHub, :fetch_tree, 3)
     assert function_exported?(GitHub, :fetch_tree, 4)
   end
 
-  test "fetch_file/3 delegates to fetch_file/4", %{config: config} do
+  test "fetch_file/3 delegates to fetch_file/4", %{config: _config} do
     assert function_exported?(GitHub, :fetch_file, 3)
     assert function_exported?(GitHub, :fetch_file, 4)
   end

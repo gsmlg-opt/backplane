@@ -95,5 +95,13 @@ defmodule Backplane.Docs.Parsers.MarkdownTest do
         refute chunk.content == ""
       end)
     end
+
+    test "drops orphan lines after the last section has been finalized" do
+      # Lines that appear after a section is finalized but before a new heading
+      # and when sections already exist — hits the `true -> {sections, current}` branch
+      content = "## First\n\nContent.\n\n## Second\n\nMore content."
+      {:ok, chunks} = Markdown.parse(content, "doc.md")
+      assert length(chunks) == 2
+    end
   end
 end
