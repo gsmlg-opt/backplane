@@ -158,22 +158,21 @@ defmodule Backplane.Docs.Ingestion do
     if File.dir?(Path.join(clone_dir, ".git")) do
       pull_repo(clone_dir, project.ref)
     else
-      case resolve_clone_url(project.repo) do
-        {:ok, url} -> clone_repo(url, clone_dir, project.ref)
-        {:error, reason} -> {:error, {:resolve_failed, reason}}
-      end
+      url = resolve_clone_url(project.repo)
+      clone_repo(url, clone_dir, project.ref)
     end
   end
 
+  @spec resolve_clone_url(String.t()) :: String.t()
   defp resolve_clone_url(repo_string) do
     case Resolver.resolve(repo_string) do
       {:ok, {module, config, repo_id}} ->
         base_url = module.clone_url(repo_id)
-        {:ok, inject_token(base_url, config[:token])}
+        inject_token(base_url, config[:token])
 
       {:error, _} ->
         # Not a provider-namespaced string — treat as a plain URL
-        {:ok, repo_string}
+        repo_string
     end
   end
 

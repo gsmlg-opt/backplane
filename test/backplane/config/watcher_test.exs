@@ -2,6 +2,7 @@ defmodule Backplane.Config.WatcherTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Config.Watcher
+  alias Backplane.Proxy.Pool
 
   @test_toml_dir "/tmp/backplane_watcher_test_#{System.unique_integer([:positive])}"
 
@@ -87,10 +88,67 @@ defmodule Backplane.Config.WatcherTest do
     end
 
     test "reconciles upstreams — unchanged config keeps existing connections" do
-      children_before = DynamicSupervisor.which_children(Backplane.Proxy.Pool)
+      children_before = DynamicSupervisor.which_children(Pool)
       Watcher.reload()
-      children_after = DynamicSupervisor.which_children(Backplane.Proxy.Pool)
+      children_after = DynamicSupervisor.which_children(Pool)
       assert length(children_before) == length(children_after)
+    end
+
+    test "reconciles upstreams — removes upstream not in config" do
+      # Start a test upstream manually
+      {:ok, bandit} =
+        Bandit.start_link(
+          plug: Backplane.Test.MockMcpPlug,
+          port: 4215,
+          ip: {127, 0, 0, 1}
+        )
+
+      on_exit(fn ->
+        if Process.alive?(bandit) do
+          try do
+            GenServer.stop(bandit)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end)
+
+      config = %{
+        name: "watcher-reconcile-test",
+        prefix: "watcher_test",
+        transport: "http",
+        url: "http://127.0.0.1:4215/mcp",
+        headers: %{}
+      }
+
+      {:ok, _pid} = Pool.start_upstream(config)
+      Process.sleep(300)
+
+      # Verify it's running
+      upstreams_before = Pool.list_upstreams()
+      assert Enum.any?(upstreams_before, fn u -> u.prefix == "watcher_test" end)
+
+      # Reload with a config that has no upstreams — should remove the one we added
+      toml_path = Path.join(@test_toml_dir, "no_upstreams.toml")
+
+      File.write!(toml_path, """
+      [backplane]
+      auth_token = "test-token"
+      """)
+
+      old_path = Application.get_env(:backplane, :config_path)
+      Application.put_env(:backplane, :config_path, toml_path)
+
+      Watcher.reload()
+      Process.sleep(200)
+
+      # The watcher_test prefix upstream should be gone
+      upstreams_after = Pool.list_upstreams()
+      refute Enum.any?(upstreams_after, fn u -> u.prefix == "watcher_test" end)
+
+      if old_path,
+        do: Application.put_env(:backplane, :config_path, old_path),
+        else: Application.delete_env(:backplane, :config_path)
     end
   end
 
