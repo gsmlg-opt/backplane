@@ -474,9 +474,11 @@ defmodule Backplane.Transport.McpHandler do
   defp encode_cursor(id), do: Base.url_encode64(to_string(id), padding: false)
 
   defp decode_cursor(cursor) do
-    case Base.url_decode64(cursor, padding: false) do
-      {:ok, id_str} -> String.to_integer(id_str)
-      :error -> 0
+    with {:ok, id_str} <- Base.url_decode64(cursor, padding: false),
+         {id, ""} <- Integer.parse(id_str) do
+      id
+    else
+      _ -> 0
     end
   end
 
