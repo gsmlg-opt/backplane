@@ -21,20 +21,24 @@ defmodule Backplane.Skills.Sources.Local do
   def list(%__MODULE__{path: nil}), do: {:ok, []}
 
   def list(%__MODULE__{name: name, path: path}) do
-    if File.dir?(path) do
-      source_label = if name, do: "local:#{name}", else: "local"
+    source_label = if name, do: "local:#{name}", else: "local"
 
-      entries =
-        path
-        |> File.ls!()
-        |> Enum.filter(&String.ends_with?(&1, ".md"))
-        |> Enum.map(&Path.join(path, &1))
-        |> Enum.filter(&File.regular?/1)
-        |> Enum.flat_map(&Loader.parse_skill_file(&1, source_label))
+    case File.ls(path) do
+      {:ok, files} ->
+        entries =
+          files
+          |> Enum.filter(&String.ends_with?(&1, ".md"))
+          |> Enum.map(&Path.join(path, &1))
+          |> Enum.filter(&File.regular?/1)
+          |> Enum.flat_map(&Loader.parse_skill_file(&1, source_label))
 
-      {:ok, entries}
-    else
-      {:error, :directory_not_found}
+        {:ok, entries}
+
+      {:error, :enoent} ->
+        {:error, :directory_not_found}
+
+      {:error, reason} ->
+        {:error, {:scan_failed, reason}}
     end
   end
 

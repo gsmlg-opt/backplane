@@ -29,18 +29,22 @@ defmodule Backplane.Skills.Sources.Git do
       scan_dir = if subdir, do: Path.join(clone_dir, subdir), else: clone_dir
       source_label = "git:#{name}"
 
-      if File.dir?(scan_dir) do
-        entries =
-          scan_dir
-          |> File.ls!()
-          |> Enum.filter(&String.ends_with?(&1, ".md"))
-          |> Enum.map(&Path.join(scan_dir, &1))
-          |> Enum.filter(&File.regular?/1)
-          |> Enum.flat_map(&Loader.parse_skill_file(&1, source_label))
+      case File.ls(scan_dir) do
+        {:ok, files} ->
+          entries =
+            files
+            |> Enum.filter(&String.ends_with?(&1, ".md"))
+            |> Enum.map(&Path.join(scan_dir, &1))
+            |> Enum.filter(&File.regular?/1)
+            |> Enum.flat_map(&Loader.parse_skill_file(&1, source_label))
 
-        {:ok, entries}
-      else
-        {:ok, []}
+          {:ok, entries}
+
+        {:error, :enoent} ->
+          {:ok, []}
+
+        {:error, reason} ->
+          {:error, {:scan_failed, reason}}
       end
     end
   end
