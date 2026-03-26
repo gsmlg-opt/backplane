@@ -8,7 +8,9 @@ defmodule Backplane.Tools.Git do
 
   @behaviour Backplane.Tools.ToolModule
 
+  alias Backplane.Git.Providers.{GitHub, GitLab}
   alias Backplane.Git.Resolver
+  alias Backplane.Utils
 
   def tools do
     [
@@ -286,8 +288,8 @@ defmodule Backplane.Tools.Git do
   end
 
   @provider_modules %{
-    github: Backplane.Git.Providers.GitHub,
-    gitlab: Backplane.Git.Providers.GitLab
+    github: GitHub,
+    gitlab: GitLab
   }
 
   # Search repos across all configured providers
@@ -336,5 +338,5 @@ defmodule Backplane.Tools.Git do
     end
   end
 
-  defp maybe_add(opts, key, value), do: Backplane.Utils.maybe_put(opts, key, value)
+  defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end
