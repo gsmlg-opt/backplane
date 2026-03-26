@@ -65,10 +65,17 @@ defmodule Backplane.Skills.SearchTest do
       assert "Ecto Queries" in names
     end
 
-    test "finds skills by tag match" do
+    test "finds skills by tag match via search_vector" do
       results = Search.query("otp")
       names = Enum.map(results, & &1.name)
       assert "GenServer Patterns" in names
+    end
+
+    test "tags in search_vector have higher weight than content" do
+      # "frontend" only appears as a tag on s5, not in name/description
+      results = Search.query("frontend")
+      names = Enum.map(results, & &1.name)
+      assert "React Components" in names
     end
 
     test "filters by tags (AND match)" do
