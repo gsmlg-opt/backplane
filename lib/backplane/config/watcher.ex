@@ -12,6 +12,9 @@ defmodule Backplane.Config.Watcher do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  # Debounce interval: coalesce rapid SIGHUP signals into a single reload
+  @debounce_ms 1_000
+
   @impl true
   def init(_opts) do
     # Register for SIGHUP on supported systems
@@ -19,14 +22,22 @@ defmodule Backplane.Config.Watcher do
       :os.set_signal(:sighup, :handle)
     end
 
-    {:ok, %{}}
+    {:ok, %{reload_timer: nil}}
   end
 
   @impl true
   def handle_info({:signal, :sighup}, state) do
-    Logger.info("Received SIGHUP, reloading configuration")
+    Logger.info("Received SIGHUP, scheduling config reload")
+
+    # Cancel pending reload timer if one exists (debounce)
+    if state.reload_timer, do: Process.cancel_timer(state.reload_timer)
+    timer = Process.send_after(self(), :do_reload, @debounce_ms)
+    {:noreply, %{state | reload_timer: timer}}
+  end
+
+  def handle_info(:do_reload, state) do
     reload()
-    {:noreply, state}
+    {:noreply, %{state | reload_timer: nil}}
   end
 
   def handle_info(msg, state) do
@@ -48,6 +59,7 @@ defmodule Backplane.Config.Watcher do
 
   defp do_reload(path) do
     config = Backplane.Config.load!(path)
+    Backplane.Config.Validator.validate!(config)
     apply_config(config)
     Logger.info("Configuration reloaded successfully")
     :ok
