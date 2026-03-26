@@ -25,8 +25,8 @@ defmodule Backplane.Hub.Discover do
   """
   @spec search(String.t(), keyword()) :: {:ok, map()}
   def search(query, opts \\ [])
-  def search("", _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: []}}
-  def search(nil, _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: []}}
+  def search("", _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: [], total: 0}}
+  def search(nil, _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: [], total: 0}}
 
   def search(query, opts) do
     scopes = Keyword.get(opts, :scope, @all_scopes)
@@ -70,12 +70,18 @@ defmodule Backplane.Hub.Discover do
         end
       end)
 
+    tools = Map.get(results, "tools", [])
+    skills = Map.get(results, "skills", [])
+    docs = Map.get(results, "docs", [])
+    repos = Map.get(results, "repos", [])
+
     {:ok,
      %{
-       tools: Map.get(results, "tools", []),
-       skills: Map.get(results, "skills", []),
-       docs: Map.get(results, "docs", []),
-       repos: Map.get(results, "repos", [])
+       tools: tools,
+       skills: skills,
+       docs: docs,
+       repos: repos,
+       total: length(tools) + length(skills) + length(docs) + length(repos)
      }}
   end
 
