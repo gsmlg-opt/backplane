@@ -110,12 +110,7 @@ defmodule Backplane.Tools.Hub do
 
   def call(_args), do: {:error, "Unknown hub tool handler"}
 
-  defp find_tool(name) do
-    case :ets.lookup(:backplane_tools, name) do
-      [{^name, tool}] -> tool
-      [] -> nil
-    end
-  end
+  defp find_tool(name), do: ToolRegistry.lookup(name)
 
   defp get_upstream_status do
     Pool.list_upstreams()

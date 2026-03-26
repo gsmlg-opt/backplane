@@ -17,6 +17,28 @@ defmodule Backplane.UtilsTest do
     end
   end
 
+  describe "escape_like/1" do
+    test "escapes percent wildcard" do
+      assert Utils.escape_like("100%") == "100\\%"
+    end
+
+    test "escapes underscore wildcard" do
+      assert Utils.escape_like("my_project") == "my\\_project"
+    end
+
+    test "escapes backslash" do
+      assert Utils.escape_like("path\\to") == "path\\\\to"
+    end
+
+    test "escapes all wildcards in mixed input" do
+      assert Utils.escape_like("a%b_c\\d") == "a\\%b\\_c\\\\d"
+    end
+
+    test "returns plain strings unchanged" do
+      assert Utils.escape_like("hello world") == "hello world"
+    end
+  end
+
   describe "format_origin/1" do
     test "formats native origin" do
       assert Utils.format_origin(:native) == "native"
