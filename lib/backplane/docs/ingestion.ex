@@ -54,8 +54,8 @@ defmodule Backplane.Docs.Ingestion do
     with {:ok, repo_path} <- ensure_repo(project),
          {:ok, commit_sha} <- get_commit_sha(repo_path),
          :changed <- check_sha_changed(project, commit_sha),
-         {:ok, chunks} <- process_files(repo_path, project.id) do
-      {:ok, stats} = Indexer.index(project.id, chunks)
+         {:ok, chunks} <- process_files(repo_path, project.id),
+         {:ok, stats} <- Indexer.index(project.id, chunks) do
       update_project_metadata(project, commit_sha)
 
       Indexer.update_reindex_state(project.id, %{
@@ -176,7 +176,7 @@ defmodule Backplane.Docs.Ingestion do
     case Resolver.resolve(repo_string) do
       {:ok, {module, config, repo_id}} ->
         base_url = module.clone_url(repo_id)
-        inject_token(base_url, config[:token])
+        inject_token(base_url, config[:token], module)
 
       {:error, _} ->
         # Not a provider-namespaced string — treat as a plain URL
@@ -184,12 +184,18 @@ defmodule Backplane.Docs.Ingestion do
     end
   end
 
-  defp inject_token(url, nil), do: url
+  defp inject_token(url, nil, _provider), do: url
 
-  defp inject_token(url, token) do
+  defp inject_token(url, token, provider) do
     uri = URI.parse(url)
-    # Use x-access-token for GitHub, oauth2 for GitLab — both accept generic userinfo
-    URI.to_string(%{uri | userinfo: "x-access-token:#{token}"})
+    # GitHub uses x-access-token, GitLab uses oauth2 for token-based clone auth
+    userinfo =
+      case provider do
+        Backplane.Git.Providers.GitLab -> "oauth2:#{token}"
+        _ -> "x-access-token:#{token}"
+      end
+
+    URI.to_string(%{uri | userinfo: userinfo})
   end
 
   defp clone_repo(repo_url, dest, ref) do
