@@ -1,0 +1,19 @@
+<div class="min-h-full">
+  <.dm_appbar title="Backplane" title_to={~p"/admin"}>
+    <:menu to={~p"/admin"} active={@current_path == "/admin"}>Dashboard</:menu>
+    <:menu to={~p"/admin/upstreams"} active={String.starts_with?(@current_path, "/admin/upstreams")}>Upstreams</:menu>
+    <:menu to={~p"/admin/tools"} active={String.starts_with?(@current_path, "/admin/tools")}>Tools</:menu>
+    <:menu to={~p"/admin/skills"} active={String.starts_with?(@current_path, "/admin/skills")}>Skills</:menu>
+    <:menu to={~p"/admin/docs"} active={String.starts_with?(@current_path, "/admin/docs")}>Docs</:menu>
+    <:menu to={~p"/admin/projects"} active={String.starts_with?(@current_path, "/admin/projects")}>Projects</:menu>
+    <:menu to={~p"/admin/git"} active={String.starts_with?(@current_path, "/admin/git")}>Git</:menu>
+    <:menu to={~p"/admin/logs"} active={String.starts_with?(@current_path, "/admin/logs")}>Logs</:menu>
+  </.dm_appbar>
+
+  <main>
+    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <.dm_flash_group flash={@flash} />
+      {@inner_content}
+    </div>
+  </main>
+</div>

@@ -1,0 +1,10 @@
+{
+  "name": "backplane_web",
+  "private": true,
+  "dependencies": {
+    "@duskmoon-dev/core": "latest",
+    "@duskmoon-dev/css-art": "latest",
+    "@duskmoon-dev/elements": "latest",
+    "@duskmoon-dev/art-elements": "latest"
+  }
+}
