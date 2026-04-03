@@ -58,7 +58,7 @@ if config_env() == :prod do
       port_str -> String.to_integer(port_str)
     end
 
-  config :backplane, BackplaneWeb.Endpoint,
+  config :backplane_web, BackplaneWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [ip: {0, 0, 0, 0}, port: port],
     secret_key_base: secret_key_base

@@ -12,7 +12,7 @@ config :backplane, Oban,
   queues: [default: 10, indexing: 5, sync: 3]
 
 # Phoenix Endpoint
-config :backplane, BackplaneWeb.Endpoint,
+config :backplane_web, BackplaneWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
@@ -28,7 +28,7 @@ config :bun,
   backplane: [
     args:
       ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
-    cd: Path.expand("../", __DIR__),
+    cd: Path.expand("../apps/backplane_web", __DIR__),
     env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
   ]
 
@@ -37,7 +37,7 @@ config :tailwind,
   version: "4.1.11",
   backplane: [
     args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
-    cd: Path.expand("../", __DIR__)
+    cd: Path.expand("../apps/backplane_web", __DIR__)
   ]
 
 config :logger, :console,

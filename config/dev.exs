@@ -8,9 +8,9 @@ config :backplane, Backplane.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
-config :backplane, dev_routes: true
+config :backplane_web, dev_routes: true
 
-config :backplane, BackplaneWeb.Endpoint,
+config :backplane_web, BackplaneWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4100],
   check_origin: false,
   code_reloader: true,
@@ -22,11 +22,11 @@ config :backplane, BackplaneWeb.Endpoint,
     bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}
   ]
 
-config :backplane, BackplaneWeb.Endpoint,
+config :backplane_web, BackplaneWeb.Endpoint,
   live_reload: [
     patterns: [
       ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
-      ~r"lib/backplane_web/(controllers|live|components)/.*(ex|heex)$"
+      ~r"apps/backplane_web/lib/backplane_web/(controllers|live|components)/.*(ex|heex)$"
     ]
   ]
 

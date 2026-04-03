@@ -14,6 +14,15 @@ Backplane is a self-hosted MCP (Model Context Protocol) gateway written in Elixi
 
 Module namespace: `Backplane`. Target: Elixir >= 1.18 / OTP 28+.
 
+## Umbrella Structure
+
+This is an umbrella project with two apps:
+
+- **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, proxy, docs, skills, git, hub, jobs, config, DB (Ecto/Oban)
+- **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets. Depends on `:backplane`.
+
+Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses `config :backplane_web, ...`.
+
 ## Development Environment
 
 Uses [devenv](https://devenv.sh/) with Nix for reproducible setup. Enter the dev shell via `direnv allow` or `devenv shell`.
@@ -56,13 +65,19 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `d
 ### Supervision Tree
 
 ```
-Backplane.Application
+Backplane.Application (apps/backplane)
 ├── Backplane.Repo (Ecto/PostgreSQL)
 ├── Oban (background jobs: reindex, skill sync, webhooks)
+├── Phoenix.PubSub
+├── Backplane.Notifications
 ├── Backplane.Registry.ToolRegistry (ETS)
 ├── Backplane.Skills.Registry (ETS)
 ├── Backplane.Proxy.Pool (DynamicSupervisor for upstream MCP connections)
-└── Bandit (HTTP server)
+├── Backplane.Metrics
+└── Backplane.Config.Watcher
+
+BackplaneWeb.Application (apps/backplane_web)
+└── BackplaneWeb.Endpoint (Bandit HTTP server)
 ```
 
 ### Data Storage
@@ -76,6 +91,29 @@ Single TOML file (`backplane.toml`) loaded at boot. Sections: `[backplane]` (hos
 ### Key Dependencies
 
 Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Oban (jobs), toml (config), file_system (filesystem watching). Mox for test mocking.
+
+## UI Library
+
+This project uses the DuskMoon UI system:
+
+- **`phoenix_duskmoon`** — Phoenix LiveView UI component library (primary web UI)
+- **`@duskmoon-dev/core`** — Core Tailwind CSS plugin and utilities
+- **`@duskmoon-dev/css-art`** — CSS art utilities
+- **`@duskmoon-dev/elements`** — Base web components
+- **`@duskmoon-dev/art-elements`** — Art/decorative web components
+
+Do NOT use DaisyUI or other CSS component libraries. Do NOT use `core_components.ex` — use `phoenix_duskmoon` components instead.
+Use `@duskmoon-dev/core/plugin` as the Tailwind CSS plugin.
+
+### Reporting issues or feature requests
+
+If you encounter missing features, bugs, or need functionality not yet available in any DuskMoon package, open a GitHub issue in the appropriate repository with the label `internal request`:
+
+- **`phoenix_duskmoon`** — https://github.com/gsmlg-dev/phoenix_duskmoon/issues
+- **`@duskmoon-dev/core`** — https://github.com/gsmlg-dev/duskmoon-dev/issues
+- **`@duskmoon-dev/css-art`** — https://github.com/gsmlg-dev/duskmoon-dev/issues
+- **`@duskmoon-dev/elements`** — https://github.com/gsmlg-dev/duskmoon-dev/issues
+- **`@duskmoon-dev/art-elements`** — https://github.com/gsmlg-dev/duskmoon-dev/issues
 
 ## Testing Conventions
 
