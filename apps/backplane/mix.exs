@@ -29,6 +29,8 @@ defmodule Backplane.MixProject do
 
   defp deps do
     [
+      {:relayixir, in_umbrella: true},
+
       # Web — Phoenix core (for PubSub, JSON, Plug)
       {:phoenix, "~> 1.8"},
       {:phoenix_ecto, "~> 4.6"},

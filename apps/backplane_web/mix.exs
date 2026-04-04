@@ -30,6 +30,7 @@ defmodule BackplaneWeb.MixProject do
   defp deps do
     [
       {:backplane, in_umbrella: true},
+      {:relayixir, in_umbrella: true},
 
       # Web
       {:phoenix, "~> 1.8"},

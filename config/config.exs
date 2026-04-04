@@ -66,4 +66,7 @@ config :logger, :console,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Relayixir — used as a library, BackplaneWeb handles HTTP serving
+config :relayixir, start_server: false
+
 import_config "#{config_env()}.exs"
