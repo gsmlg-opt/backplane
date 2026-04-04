@@ -33,6 +33,41 @@ defmodule Relayixir do
   alias Relayixir.Config.{RouteConfig, UpstreamConfig, HookConfig}
 
   @doc """
+  Returns a child spec that starts all Relayixir processes under a supervisor.
+
+  Add `Relayixir` (or `{Relayixir, opts}`) to your application's supervision tree.
+  After start, routes and upstreams are automatically loaded from application config.
+  """
+  def child_spec(opts \\ []) do
+    %{
+      id: __MODULE__,
+      type: :supervisor,
+      start: {__MODULE__, :start_link, [opts]}
+    }
+  end
+
+  @doc false
+  def start_link(_opts \\ []) do
+    children = [
+      RouteConfig,
+      UpstreamConfig,
+      HookConfig,
+      Relayixir.Telemetry.Events,
+      {DynamicSupervisor,
+       name: Relayixir.Proxy.WebSocket.BridgeSupervisor, strategy: :one_for_one},
+      {Registry, keys: :unique, name: Relayixir.Proxy.WebSocket.BridgeRegistry},
+      {DynamicSupervisor, name: Relayixir.Proxy.ConnPool.Supervisor, strategy: :one_for_one},
+      {Registry, keys: :unique, name: Relayixir.Proxy.ConnPool.Registry}
+    ]
+
+    with {:ok, sup} <-
+           Supervisor.start_link(children, strategy: :one_for_one, name: Relayixir.Supervisor) do
+      reload()
+      {:ok, sup}
+    end
+  end
+
+  @doc """
   Atomically loads routes and upstreams from a keyword list.
 
   Accepts `:routes` (list of route maps) and/or `:upstreams` (map of name → config).

@@ -8,6 +8,10 @@ defmodule Relayixir.MixProject do
     [
       app: :relayixir,
       version: @version,
+      build_path: "../../_build",
+      config_path: "../../config/config.exs",
+      deps_path: "../../deps",
+      lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -20,8 +24,7 @@ defmodule Relayixir.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
-      mod: {Relayixir.Application, []}
+      extra_applications: [:logger]
     ]
   end
 
@@ -47,7 +50,6 @@ defmodule Relayixir.MixProject do
       {:mint, "~> 1.6"},
       {:mint_web_socket, "~> 1.0"},
       {:telemetry, "~> 1.2"},
-      {:plug_cowboy, "~> 2.7", only: :test},
       {:websock_adapter, "~> 0.5"}
     ]
   end
