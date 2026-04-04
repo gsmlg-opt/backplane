@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Relayixir is an Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + Mint + Mint.WebSocket. Application-layer proxy focused on correctness, streaming safety, and protocol-aware behavior.
 
+Upstream source: [gsmlg-dev/relayixir](https://github.com/gsmlg-dev/relayixir)
+
+### Role in Backplane
+
+Relayixir is an umbrella app within the Backplane project. Bandit standalone server is disabled (`config :relayixir, start_server: false`). Backplane uses Relayixir as a library — calling `Relayixir.Router` as a Plug, using its proxy modules directly, and configuring routes at runtime via `Relayixir.load/1`.
+
 ## Project Status
 
 Phase 1 (HTTP MVP) and Phase 2 (WebSocket) are complete. Next up:
@@ -54,7 +60,7 @@ Relayixir.Application (one_for_one)
 ├── Registry (BridgeRegistry) — bridge process discovery
 ├── DynamicSupervisor (ConnPool.Supervisor) — per-upstream connection pools
 ├── Registry (ConnPool.Registry) — pool process discovery
-└── Bandit (port 4000, plug: Router)
+└── Bandit (port 4000, plug: Router) — only when start_server: true
 ```
 
 ### Configuration System
