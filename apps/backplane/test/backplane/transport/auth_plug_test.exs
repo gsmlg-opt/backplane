@@ -1,8 +1,9 @@
 defmodule Backplane.Transport.AuthPlugTest do
-  use ExUnit.Case, async: false
+  use Backplane.DataCase, async: false
 
   import Plug.Test
   import Plug.Conn
+  import Backplane.Fixtures
 
   alias Backplane.Transport.AuthPlug
 
@@ -197,6 +198,60 @@ defmodule Backplane.Transport.AuthPlugTest do
       # single-token is not in auth_tokens list, so should be rejected
       assert conn.halted
       assert conn.status == 401
+    end
+  end
+
+  describe "client mode" do
+    test "resolves bearer token to client and sets assigns" do
+      {_client, token} = insert_client(name: "test-client", scopes: ["docs::*", "git::*"])
+
+      result =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> AuthPlug.call([])
+
+      refute result.halted
+      assert result.assigns[:client].name == "test-client"
+      assert result.assigns[:tool_scopes] == ["docs::*", "git::*"]
+    end
+
+    test "falls through to legacy token on client miss" do
+      # Insert a client so client mode is active
+      insert_client(name: "existing-client")
+      Application.put_env(:backplane, :auth_token, "legacy-secret")
+
+      result =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "Bearer legacy-secret")
+        |> AuthPlug.call([])
+
+      refute result.halted
+      assert result.assigns[:tool_scopes] == ["*"]
+      refute Map.has_key?(result.assigns, :client)
+    end
+
+    test "returns 401 when both client and legacy fail" do
+      insert_client(name: "existing-client")
+
+      result =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "Bearer wrong-token")
+        |> AuthPlug.call([])
+
+      assert result.halted
+      assert result.status == 401
+    end
+
+    test "sets tool_scopes from client record" do
+      {_client, token} = insert_client(name: "scoped-client", scopes: ["skill::*"])
+
+      result =
+        conn(:post, "/mcp", "")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> AuthPlug.call([])
+
+      refute result.halted
+      assert result.assigns[:tool_scopes] == ["skill::*"]
     end
   end
 end

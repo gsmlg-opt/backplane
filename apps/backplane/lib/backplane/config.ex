@@ -45,7 +45,11 @@ defmodule Backplane.Config do
       gitlab: parse_git_providers(raw, "gitlab", @default_gitlab_api_url),
       projects: parse_projects(raw["projects"] || []),
       upstream: parse_upstreams(raw["upstream"] || []),
-      skills: parse_skills(raw["skills"] || [])
+      skills: parse_skills(raw["skills"] || []),
+      clients: parse_clients(raw["clients"] || []),
+      cache: parse_cache(raw["cache"] || %{}),
+      embeddings: parse_embeddings(raw["embeddings"]),
+      audit: parse_audit(raw["audit"] || %{})
     ]
   end
 
@@ -127,7 +131,9 @@ defmodule Backplane.Config do
         transport: up["transport"],
         prefix: up["prefix"],
         timeout: up["timeout"],
-        refresh_interval: up["refresh_interval"]
+        refresh_interval: up["refresh_interval"],
+        cache_ttl: up["cache_ttl"],
+        cache_tools: up["cache_tools"]
       }
 
       case up["transport"] do
@@ -178,6 +184,46 @@ defmodule Backplane.Config do
   end
 
   defp parse_skills(_), do: []
+
+  defp parse_audit(section) do
+    %{
+      enabled: section["enabled"] != false,
+      retention_days: section["retention_days"] || 30
+    }
+  end
+
+  defp parse_embeddings(nil), do: nil
+
+  defp parse_embeddings(section) do
+    %{
+      provider: section["provider"],
+      model: section["model"],
+      api_url: section["api_url"],
+      api_key: section["api_key"],
+      dimensions: section["dimensions"],
+      batch_size: section["batch_size"] || 32
+    }
+  end
+
+  defp parse_cache(section) do
+    %{
+      enabled: section["enabled"] != false,
+      max_entries: section["max_entries"] || 10_000,
+      default_ttl: section["default_ttl"] || "5m"
+    }
+  end
+
+  defp parse_clients(clients) when is_list(clients) do
+    Enum.map(clients, fn client ->
+      %{
+        name: client["name"],
+        token: client["token"],
+        scopes: client["scopes"] || []
+      }
+    end)
+  end
+
+  defp parse_clients(_), do: []
 
   defp parse_env(nil), do: %{}
   defp parse_env(env) when is_map(env), do: env

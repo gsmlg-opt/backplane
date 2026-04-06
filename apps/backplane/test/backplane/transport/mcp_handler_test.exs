@@ -1374,4 +1374,95 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert hd(resp["result"]["content"])["text"] =~ "upstream failed"
     end
   end
+
+  describe "scoped tools/list" do
+    test "returns all tools for scope [\"*\"]" do
+      {_client, token} = Backplane.Fixtures.insert_client(name: "all-access", scopes: ["*"])
+      resp = mcp_request("tools/list", nil, auth_token: token)
+
+      tools = resp["result"]["tools"]
+      assert is_list(tools)
+      assert length(tools) > 0
+    end
+
+    test "returns only docs:: tools for scope [\"docs::*\"]" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "docs-only", scopes: ["docs::*"])
+
+      resp = mcp_request("tools/list", nil, auth_token: token)
+
+      tools = resp["result"]["tools"]
+      assert is_list(tools)
+
+      Enum.each(tools, fn tool ->
+        assert String.starts_with?(tool["name"], "docs::")
+      end)
+    end
+
+    test "returns single tool for exact scope" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "single-tool", scopes: ["skill::search"])
+
+      resp = mcp_request("tools/list", nil, auth_token: token)
+
+      tools = resp["result"]["tools"]
+      assert length(tools) == 1
+      assert hd(tools)["name"] == "skill::search"
+    end
+
+    test "returns empty list for scope with no matches" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "no-match", scopes: ["nonexistent::*"])
+
+      resp = mcp_request("tools/list", nil, auth_token: token)
+
+      assert resp["result"]["tools"] == []
+    end
+  end
+
+  describe "scoped tools/call" do
+    test "allows call for in-scope tool" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "skill-access", scopes: ["skill::*"])
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "skill::list", "arguments" => %{}},
+          auth_token: token
+        )
+
+      # Should succeed (not an access denied error)
+      refute resp["error"]
+    end
+
+    test "returns -32001 error for out-of-scope tool" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "docs-restricted", scopes: ["docs::*"])
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "skill::search", "arguments" => %{"query" => "test"}},
+          auth_token: token
+        )
+
+      assert resp["error"]["code"] == -32_001
+      assert resp["error"]["message"] =~ "not in scope"
+    end
+
+    test "error message includes tool name" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "limited-client", scopes: ["docs::*"])
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "git::repo-tree", "arguments" => %{}},
+          auth_token: token
+        )
+
+      assert resp["error"]["message"] =~ "git::repo-tree"
+    end
+  end
 end

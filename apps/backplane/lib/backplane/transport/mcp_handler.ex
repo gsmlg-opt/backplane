@@ -10,6 +10,7 @@ defmodule Backplane.Transport.McpHandler do
 
   require Logger
 
+  alias Backplane.Clients
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
@@ -68,6 +69,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp handle_batch(conn, requests) do
+    scopes = conn.assigns[:tool_scopes] || ["*"]
+
     # Partition into requests needing responses vs notifications
     {to_dispatch, notifications_count} =
       Enum.reduce(requests, {[], 0}, fn request, {items, notif_count} ->
@@ -99,7 +102,7 @@ defmodule Backplane.Transport.McpHandler do
         fn
           {:request, method, id, params} ->
             Telemetry.emit_mcp_request(method)
-            dispatch_single(method, id, params)
+            dispatch_single(method, id, params, scopes)
 
           {:invalid, response} ->
             response
@@ -134,7 +137,34 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   # Batch dispatch: returns a JSON-RPC response map (no conn)
-  defp dispatch_single(method, id, params) do
+  defp dispatch_single("tools/list", id, params, scopes) do
+    case compute_result("tools/list", id, params) do
+      {:result, %{tools: tools} = result} ->
+        filtered = Clients.filter_tools(tools, scopes)
+        %{jsonrpc: "2.0", id: id, result: %{result | tools: filtered}}
+    end
+  end
+
+  defp dispatch_single("tools/call", id, %{"name" => name} = params, scopes)
+       when is_binary(name) and name != "" do
+    if Clients.scope_matches?(scopes, name) do
+      case compute_result("tools/call", id, params) do
+        {:result, result} ->
+          %{jsonrpc: "2.0", id: id, result: result}
+
+        {:error, code, message} ->
+          %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
+      end
+    else
+      %{
+        jsonrpc: "2.0",
+        id: id,
+        error: %{code: -32_001, message: "Tool '#{name}' is not in scope for this client"}
+      }
+    end
+  end
+
+  defp dispatch_single(method, id, params, _scopes) do
     case compute_result(method, id, params) do
       {:result, result} -> %{jsonrpc: "2.0", id: id, result: result}
       {:error, code, message} -> %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
@@ -261,8 +291,11 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch(conn, "tools/list", id, params) do
-    {:result, %{tools: tools} = result} = compute_result("tools/list", id, params)
-    etag = tools_etag(tools)
+    {:result, %{tools: tools}} = compute_result("tools/list", id, params)
+    scopes = conn.assigns[:tool_scopes] || ["*"]
+    filtered = Clients.filter_tools(tools, scopes)
+    result = %{tools: filtered}
+    etag = tools_etag(filtered)
     client_etag = get_req_header(conn, "if-none-match")
 
     if client_etag == [etag] do
@@ -276,11 +309,17 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "tools/call", id, %{"name" => name} = params)
        when is_binary(name) and name != "" do
-    arguments = params["arguments"] || %{}
+    scopes = conn.assigns[:tool_scopes] || ["*"]
 
-    case validate_tool_args(name, arguments) do
-      :ok -> dispatch_validated_tool_call(conn, id, name, arguments)
-      {:error, reason} -> json_rpc_error(conn, id, -32_602, "Invalid params: #{reason}")
+    if Clients.scope_matches?(scopes, name) do
+      arguments = params["arguments"] || %{}
+
+      case validate_tool_args(name, arguments) do
+        :ok -> dispatch_validated_tool_call(conn, id, name, arguments)
+        {:error, reason} -> json_rpc_error(conn, id, -32_602, "Invalid params: #{reason}")
+      end
+    else
+      json_rpc_error(conn, id, -32_001, "Tool '#{name}' is not in scope for this client")
     end
   end
 
@@ -383,6 +422,36 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args) do
+    # Check if upstream tool caching is configured
+    case upstream_cache_ttl(name) do
+      nil ->
+        forward_upstream(upstream_pid, original_tool_name, name, args, timeout)
+
+      ttl_ms ->
+        key = Backplane.Cache.KeyBuilder.upstream(upstream_prefix(name), name, args)
+
+        case Backplane.Cache.get(key) do
+          {:ok, cached} ->
+            cached
+
+          :miss ->
+            result = forward_upstream(upstream_pid, original_tool_name, name, args, timeout)
+
+            case result do
+              {:ok, _} -> Backplane.Cache.put(key, result, ttl_ms)
+              _ -> :ok
+            end
+
+            result
+        end
+    end
+  end
+
+  defp execute_tool(:not_found, name, _args) do
+    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
+  end
+
+  defp forward_upstream(upstream_pid, original_tool_name, name, args, timeout) do
     case Upstream.forward(upstream_pid, original_tool_name, args, timeout) do
       {:ok, result} ->
         {:ok, result}
@@ -396,9 +465,44 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp execute_tool(:not_found, name, _args) do
-    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
+  defp upstream_prefix(namespaced_name) do
+    case String.split(namespaced_name, "::", parts: 2) do
+      [prefix, _] -> prefix
+      _ -> namespaced_name
+    end
   end
+
+  defp upstream_cache_ttl(tool_name) do
+    prefix = upstream_prefix(tool_name)
+    upstreams = Application.get_env(:backplane, :upstreams, [])
+
+    case Enum.find(upstreams, fn u -> u[:prefix] == prefix || u["prefix"] == prefix end) do
+      nil ->
+        nil
+
+      upstream ->
+        cache_ttl = upstream[:cache_ttl] || upstream["cache_ttl"]
+        cache_tools = upstream[:cache_tools] || upstream["cache_tools"]
+
+        cond do
+          is_nil(cache_ttl) -> nil
+          is_nil(cache_tools) -> parse_ttl(cache_ttl)
+          tool_name in cache_tools -> parse_ttl(cache_ttl)
+          true -> nil
+        end
+    end
+  end
+
+  defp parse_ttl(ttl) when is_integer(ttl), do: ttl
+
+  defp parse_ttl(ttl) when is_binary(ttl) do
+    case Backplane.Utils.parse_interval(ttl) do
+      {:ok, seconds} -> seconds * 1000
+      :error -> nil
+    end
+  end
+
+  defp parse_ttl(_), do: nil
 
   # Resources: doc chunks as MCP resources
 

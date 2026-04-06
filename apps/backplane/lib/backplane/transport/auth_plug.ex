@@ -1,20 +1,22 @@
 defmodule Backplane.Transport.AuthPlug do
   @moduledoc """
-  Optional bearer token authentication plug.
+  Bearer token authentication plug with two modes:
 
-  When `backplane.auth_token` is configured, requests must include
-  `Authorization: Bearer <token>`. When not configured, all requests pass through.
+  **Legacy mode** (backward-compatible): When `backplane.auth_token` is set and
+  no `clients` table rows exist, behaves as a single shared token — all tools visible.
 
-  Supports token rotation by accepting a list of valid tokens:
+  **Client mode**: When at least one row exists in `clients`, resolves the bearer
+  token against `clients.token_hash`. On match, stores the client record in
+  `conn.assigns[:client]` and scopes in `conn.assigns[:tool_scopes]`. On miss,
+  falls through to legacy token check. If both fail, 401.
 
-      config :backplane, auth_token: "single-token"
-      config :backplane, auth_tokens: ["current-token", "previous-token"]
-
-  The /health and /metrics endpoints always pass without auth.
+  The /health, /metrics, and webhook endpoints always pass without auth.
   """
 
   import Plug.Conn
   @behaviour Plug
+
+  alias Backplane.Clients
 
   @public_paths ["/health", "/metrics", "/webhook/github", "/webhook/gitlab"]
 
@@ -22,22 +24,62 @@ defmodule Backplane.Transport.AuthPlug do
   def init(opts), do: opts
 
   @impl true
-  def call(%{request_path: path} = conn, _opts) when path in @public_paths, do: conn
+  def call(%{request_path: path} = conn, _opts) when path in @public_paths do
+    assign(conn, :tool_scopes, ["*"])
+  end
 
   def call(conn, _opts) do
-    case get_valid_tokens() do
-      [] -> conn
-      valid_tokens -> verify_token(conn, valid_tokens)
+    token = extract_bearer(conn)
+
+    cond do
+      # Client mode: try DB-backed clients first
+      clients_exist?() ->
+        case token && Clients.verify_token(token) do
+          {:ok, client} ->
+            conn
+            |> assign(:client, client)
+            |> assign(:tool_scopes, client.scopes)
+
+          _ ->
+            # Fall through to legacy token
+            verify_legacy(conn, token)
+        end
+
+      # Legacy mode: no clients in DB
+      true ->
+        case get_valid_tokens() do
+          [] ->
+            # No auth configured at all
+            assign(conn, :tool_scopes, ["*"])
+
+          valid_tokens ->
+            if token && Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
+              assign(conn, :tool_scopes, ["*"])
+            else
+              reject(conn)
+            end
+        end
     end
   end
 
-  defp verify_token(conn, valid_tokens) do
-    with [header] <- get_req_header(conn, "authorization"),
-         token when is_binary(token) <- extract_bearer_token(header),
-         true <- Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
-      conn
-    else
-      _ -> reject(conn)
+  defp verify_legacy(conn, token) do
+    case get_valid_tokens() do
+      [] ->
+        reject(conn)
+
+      valid_tokens ->
+        if token && Enum.any?(valid_tokens, &Plug.Crypto.secure_compare(token, &1)) do
+          assign(conn, :tool_scopes, ["*"])
+        else
+          reject(conn)
+        end
+    end
+  end
+
+  defp extract_bearer(conn) do
+    case get_req_header(conn, "authorization") do
+      [header] -> extract_bearer_token(header)
+      _ -> nil
     end
   end
 
@@ -67,5 +109,12 @@ defmodule Backplane.Transport.AuthPlug do
       {_, token} when is_binary(token) -> [token]
       _ -> []
     end
+  end
+
+  defp clients_exist? do
+    Clients.any_clients?()
+  rescue
+    # DB may not be available (e.g., during migrations)
+    _ -> false
   end
 end

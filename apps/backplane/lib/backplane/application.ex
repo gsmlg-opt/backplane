@@ -11,13 +11,17 @@ defmodule Backplane.Application do
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Skills.Sync
-  alias Backplane.Tools.{Docs, Git, Hub, Skill}
+  alias Backplane.Tools.{Admin, Docs, Git, Hub, Skill}
 
   @drain_timeout 15_000
 
   @impl true
   def start(_type, _args) do
     validate_config_at_boot()
+
+    cache_opts = [
+      max_entries: Application.get_env(:backplane, :cache_max_entries, 10_000)
+    ]
 
     children = [
       Backplane.Repo,
@@ -27,6 +31,7 @@ defmodule Backplane.Application do
       ToolRegistry,
       SkillsRegistry,
       Pool,
+      {Backplane.Cache, cache_opts},
       Metrics,
       Watcher
     ]
@@ -42,6 +47,9 @@ defmodule Backplane.Application do
 
     # Enqueue initial skill sync jobs for configured sources
     enqueue_skill_syncs()
+
+    # Upsert pre-seeded clients from config
+    upsert_config_clients()
 
     result
   end
@@ -61,7 +69,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [Skill, Docs, Git, Hub]
+    tool_modules = [Skill, Docs, Git, Hub, Admin]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
@@ -95,6 +103,20 @@ defmodule Backplane.Application do
 
         {:error, reason} ->
           Logger.warning("Failed to enqueue skill sync for #{source.name}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp upsert_config_clients do
+    seeds = Application.get_env(:backplane, :client_seeds, [])
+
+    for %{name: name} = seed when is_binary(name) <- seeds do
+      case Backplane.Clients.upsert_from_config(seed) do
+        {:ok, _client} ->
+          Logger.info("Upserted client from config: #{name}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to upsert client #{name}: #{inspect(reason)}")
       end
     end
   end

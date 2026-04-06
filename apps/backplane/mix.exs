@@ -43,9 +43,13 @@ defmodule Backplane.MixProject do
       # Database
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
+      {:pgvector, "~> 0.3"},
 
       # Job processing
       {:oban, "~> 2.18"},
+
+      # Auth
+      {:bcrypt_elixir, "~> 3.0"},
 
       # Config
       {:toml, "~> 0.7"},

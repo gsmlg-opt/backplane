@@ -40,6 +40,28 @@ if config_env() == :prod do
 
     # Skill sources
     config :backplane, skill_sources: backplane_config[:skills] || []
+
+    # Pre-seeded clients (upserted on boot)
+    config :backplane, client_seeds: backplane_config[:clients] || []
+
+    # Embeddings configuration (optional — entire pipeline inert when absent)
+    if embeddings = backplane_config[:embeddings] do
+      config :backplane, embeddings: embeddings
+    end
+
+    # Audit settings
+    if audit = backplane_config[:audit] do
+      config :backplane,
+        audit_enabled: audit.enabled,
+        audit_retention_days: audit.retention_days
+    end
+
+    # Cache settings
+    if cache = backplane_config[:cache] do
+      config :backplane,
+        cache_enabled: cache.enabled,
+        cache_max_entries: cache.max_entries
+    end
   end
 
   # Phoenix Endpoint — production configuration
