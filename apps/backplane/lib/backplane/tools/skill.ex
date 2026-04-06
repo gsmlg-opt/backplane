@@ -6,7 +6,7 @@ defmodule Backplane.Tools.Skill do
 
   @behaviour Backplane.Tools.ToolModule
 
-  alias Backplane.Skills.{Registry, Search}
+  alias Backplane.Skills.{Deps, Registry, Search, Versions}
   alias Backplane.Skills.Sources.Database
   alias Backplane.Utils
 
@@ -39,11 +39,20 @@ defmodule Backplane.Tools.Skill do
       },
       %{
         name: "skill::load",
-        description: "Load a skill's full content for injection into agent context",
+        description:
+          "Load a skill's full content for injection into agent context. With resolve_deps (default true), also loads transitive dependencies in topological order.",
         input_schema: %{
           "type" => "object",
           "properties" => %{
-            "skill_id" => %{"type" => "string", "description" => "Skill ID from skill::search"}
+            "skill_id" => %{"type" => "string", "description" => "Skill ID from skill::search"},
+            "resolve_deps" => %{
+              "type" => "boolean",
+              "description" => "Resolve and load dependency chain (default true)"
+            },
+            "version" => %{
+              "type" => "integer",
+              "description" => "Load a specific version (DB skills only)"
+            }
           },
           "required" => ["skill_id"]
         },
@@ -86,6 +95,23 @@ defmodule Backplane.Tools.Skill do
         handler: :create
       },
       %{
+        name: "skill::versions",
+        description: "List version history for a DB-sourced skill",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "skill_id" => %{"type" => "string", "description" => "Skill ID"},
+            "limit" => %{
+              "type" => "integer",
+              "description" => "Max versions to return (default 10)"
+            }
+          },
+          "required" => ["skill_id"]
+        },
+        module: __MODULE__,
+        handler: :versions
+      },
+      %{
         name: "skill::update",
         description: "Update a database-sourced skill",
         input_schema: %{
@@ -119,19 +145,22 @@ defmodule Backplane.Tools.Skill do
   end
 
   def call(%{"_handler" => "load"} = args) do
-    case Registry.fetch(args["skill_id"]) do
-      {:ok, entry} ->
-        {:ok,
-         %{
-           id: entry.id,
-           name: entry.name,
-           content: entry.content,
-           tools: entry.tools,
-           model: entry.model
-         }}
+    skill_id = args["skill_id"]
+    version = args["version"]
+    resolve_deps? = Map.get(args, "resolve_deps", true)
 
-      {:error, :not_found} ->
-        {:error, "Skill not found: #{args["skill_id"]}"}
+    cond do
+      # Load specific version (DB skills only)
+      version ->
+        load_version(skill_id, version)
+
+      # Load with dependency resolution
+      resolve_deps? ->
+        load_with_deps(skill_id)
+
+      # Load single skill
+      true ->
+        load_single(skill_id)
     end
   end
 
@@ -195,6 +224,17 @@ defmodule Backplane.Tools.Skill do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
+    # Snapshot current version before update
+    case Backplane.Repo.get(Backplane.Skills.Skill, skill_id) do
+      nil ->
+        :skip
+
+      skill ->
+        if skill.source == "db" do
+          Versions.snapshot(skill, author: args["_client_name"] || "system")
+        end
+    end
+
     case Database.update(skill_id, attrs) do
       {:ok, skill} ->
         Registry.refresh()
@@ -211,9 +251,105 @@ defmodule Backplane.Tools.Skill do
     end
   end
 
+  def call(%{"_handler" => "versions"} = args) do
+    skill_id = args["skill_id"]
+    limit = args["limit"] || 10
+
+    # Check if skill is DB-sourced
+    case Registry.fetch(skill_id) do
+      {:ok, %{source: source}} when source != "db" ->
+        {:ok,
+         %{
+           versions: [],
+           message: "Version history not available for #{source}-sourced skills. Use git log."
+         }}
+
+      {:ok, _} ->
+        versions =
+          Versions.list(skill_id, limit: limit)
+          |> Enum.map(fn v ->
+            %{
+              version: v.version,
+              content_hash: v.content_hash,
+              author: v.author,
+              change_summary: v.change_summary,
+              inserted_at: v.inserted_at && DateTime.to_iso8601(v.inserted_at)
+            }
+          end)
+
+        {:ok, %{versions: versions}}
+
+      {:error, :not_found} ->
+        {:error, "Skill not found: #{skill_id}"}
+    end
+  end
+
   # Default handler — route based on tool name
   def call(args) do
     {:error, "Unknown skill tool handler: #{inspect(args)}"}
+  end
+
+  defp load_single(skill_id) do
+    case Registry.fetch(skill_id) do
+      {:ok, entry} ->
+        {:ok, format_skill_for_load(entry)}
+
+      {:error, :not_found} ->
+        {:error, "Skill not found: #{skill_id}"}
+    end
+  end
+
+  defp load_with_deps(skill_id) do
+    case Deps.resolve(skill_id) do
+      {:ok, skills} ->
+        loaded = Enum.map(skills, &format_skill_for_load/1)
+        {:ok, loaded}
+
+      {:ok, skills, warnings} ->
+        loaded = Enum.map(skills, &format_skill_for_load/1)
+        {:ok, %{skills: loaded, warnings: warnings}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp load_version(skill_id, version) do
+    # Check if skill is DB-sourced
+    case Registry.fetch(skill_id) do
+      {:ok, %{source: source}} when source != "db" ->
+        {:error, "Version history not available for #{source}-sourced skills. Use git log."}
+
+      {:ok, entry} ->
+        case Versions.get(skill_id, version) do
+          {:ok, sv} ->
+            {:ok,
+             %{
+               id: entry.id,
+               name: entry.name,
+               content: sv.content,
+               version: sv.version,
+               tools: entry.tools,
+               model: entry.model
+             }}
+
+          {:error, :not_found} ->
+            {:error, "Version #{version} not found for skill #{skill_id}"}
+        end
+
+      {:error, :not_found} ->
+        {:error, "Skill not found: #{skill_id}"}
+    end
+  end
+
+  defp format_skill_for_load(entry) do
+    %{
+      id: entry.id,
+      name: entry.name,
+      content: entry.content,
+      tools: entry[:tools],
+      model: entry[:model]
+    }
   end
 
   defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
