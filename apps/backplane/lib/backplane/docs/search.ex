@@ -29,6 +29,7 @@ defmodule Backplane.Docs.Search do
     - :limit — max results (default 20)
     - :max_tokens — token budget (default 8000)
     - :chunk_type — filter by chunk type
+    - :rerank — enable semantic reranking via embeddings (default: true when configured)
   """
   @spec query(String.t(), String.t() | nil, keyword()) :: [map()]
   def query(project_id, search_query, opts \\ [])
@@ -66,22 +67,42 @@ defmodule Backplane.Docs.Search do
         base
       end
 
-    base
-    |> limit(^db_limit)
-    |> select([c], %{
-      id: c.id,
-      source_path: c.source_path,
-      module: c.module,
-      function: c.function,
-      chunk_type: c.chunk_type,
-      content: c.content,
-      tokens: c.tokens,
-      rank: fragment("ts_rank(search_vector, websearch_to_tsquery('english', ?))", ^tsquery)
-    })
-    |> Repo.all()
-    |> apply_chunk_type_weights()
+    rerank? = Keyword.get(opts, :rerank, Backplane.Embeddings.configured?())
+
+    results =
+      base
+      |> limit(^db_limit)
+      |> select([c], %{
+        id: c.id,
+        source_path: c.source_path,
+        module: c.module,
+        function: c.function,
+        chunk_type: c.chunk_type,
+        content: c.content,
+        tokens: c.tokens,
+        rank: fragment("ts_rank(search_vector, websearch_to_tsquery('english', ?))", ^tsquery)
+      })
+      |> maybe_select_embedding(rerank?)
+      |> Repo.all()
+      |> apply_chunk_type_weights()
+
+    results =
+      if rerank? do
+        apply_semantic_reranking(results, search_query)
+      else
+        results
+      end
+
+    results
+    |> Enum.map(&Map.delete(&1, :embedding))
     |> Enum.take(limit)
     |> apply_token_budget(max_tokens)
+  end
+
+  defp maybe_select_embedding(query, false), do: query
+
+  defp maybe_select_embedding(query, true) do
+    select_merge(query, [c], %{embedding: fragment("embedding")})
   end
 
   @doc """
@@ -129,6 +150,52 @@ defmodule Backplane.Docs.Search do
 
     Enum.reverse(selected)
   end
+
+  @tsvector_weight 0.7
+  @cosine_weight 0.3
+
+  defp apply_semantic_reranking(results, query_text) do
+    # Only rerank if results have embeddings
+    has_embeddings? = Enum.any?(results, fn r -> r.embedding != nil end)
+
+    if has_embeddings? do
+      case Backplane.Embeddings.embed(query_text) do
+        {:ok, query_vec} ->
+          results
+          |> Enum.map(fn result ->
+            cosine_sim =
+              if result.embedding do
+                cosine_similarity(query_vec, embedding_to_list(result.embedding))
+              else
+                0.0
+              end
+
+            blended = @tsvector_weight * result.rank + @cosine_weight * cosine_sim
+            %{result | rank: blended}
+          end)
+          |> Enum.sort_by(& &1.rank, :desc)
+
+        {:error, _} ->
+          results
+      end
+    else
+      results
+    end
+  end
+
+  defp cosine_similarity(a, b) when length(a) == length(b) do
+    dot = Enum.zip(a, b) |> Enum.reduce(0.0, fn {x, y}, acc -> acc + x * y end)
+    mag_a = :math.sqrt(Enum.reduce(a, 0.0, fn x, acc -> acc + x * x end))
+    mag_b = :math.sqrt(Enum.reduce(b, 0.0, fn x, acc -> acc + x * x end))
+
+    if mag_a == 0.0 or mag_b == 0.0, do: 0.0, else: dot / (mag_a * mag_b)
+  end
+
+  defp cosine_similarity(_, _), do: 0.0
+
+  defp embedding_to_list(%Pgvector{} = v), do: Pgvector.to_list(v)
+  defp embedding_to_list(v) when is_list(v), do: v
+  defp embedding_to_list(_), do: []
 
   @max_query_length 500
 

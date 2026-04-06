@@ -2,6 +2,10 @@ defmodule Backplane.Docs.DocChunk do
   @moduledoc """
   Ecto schema for the doc_chunks table.
   Stores parsed documentation chunks with full-text search support.
+
+  The `embedding` column (pgvector) is NOT included in this schema to avoid
+  errors when pgvector is not installed. Embedding reads/writes are done via
+  explicit fragments in the embedding jobs and search modules.
   """
 
   use Ecto.Schema
@@ -11,14 +15,14 @@ defmodule Backplane.Docs.DocChunk do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "doc_chunks" do
-    belongs_to :project, Backplane.Docs.Project, type: :string
-    field :source_path, :string
-    field :module, :string
-    field :function, :string
-    field :chunk_type, :string
-    field :content, :string
-    field :content_hash, :string
-    field :tokens, :integer
+    belongs_to(:project, Backplane.Docs.Project, type: :string)
+    field(:source_path, :string)
+    field(:module, :string)
+    field(:function, :string)
+    field(:chunk_type, :string)
+    field(:content, :string)
+    field(:content_hash, :string)
+    field(:tokens, :integer)
 
     timestamps(updated_at: false)
   end

@@ -1,6 +1,7 @@
 defmodule Backplane.Skills.Search do
   @moduledoc """
   Full-text search for skills using PostgreSQL tsvector.
+  Optionally reranks results using embedding similarity when configured.
   """
 
   import Ecto.Query
@@ -16,6 +17,7 @@ defmodule Backplane.Skills.Search do
     - :tools - list of required tools (AND match)
     - :source - source type filter (e.g., "git", "local", "db")
     - :limit - max results (default 10)
+    - :rerank - enable semantic reranking via embeddings (default: true when configured)
   """
   @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
@@ -23,16 +25,31 @@ defmodule Backplane.Skills.Search do
     tools = Keyword.get(opts, :tools, [])
     source = Keyword.get(opts, :source)
     limit = Keyword.get(opts, :limit, 10)
+    rerank? = Keyword.get(opts, :rerank, Backplane.Embeddings.configured?())
 
-    Skill
-    |> where([s], s.enabled == true)
-    |> apply_text_search(search_query)
-    |> apply_tag_filter(tags)
-    |> apply_tools_filter(tools)
-    |> apply_source_filter(source)
-    |> order_by_relevance(search_query)
-    |> limit(^limit)
-    |> Repo.all()
+    # Over-fetch when reranking to give semantic similarity more candidates
+    db_limit = if rerank?, do: limit * 3, else: limit
+
+    results =
+      Skill
+      |> where([s], s.enabled == true)
+      |> apply_text_search(search_query)
+      |> apply_tag_filter(tags)
+      |> apply_tools_filter(tools)
+      |> apply_source_filter(source)
+      |> order_by_relevance(search_query)
+      |> limit(^db_limit)
+      |> Repo.all()
+
+    results =
+      if rerank? and is_binary(search_query) and search_query != "" do
+        apply_semantic_reranking(results, search_query)
+      else
+        results
+      end
+
+    results
+    |> Enum.take(limit)
     |> Enum.map(&to_result/1)
   end
 
@@ -81,6 +98,59 @@ defmodule Backplane.Skills.Search do
   end
 
   defp order_by_relevance(query, _), do: order_by(query, [s], asc: s.name)
+
+  @tsvector_weight 0.7
+  @cosine_weight 0.3
+
+  defp apply_semantic_reranking(results, query_text) do
+    has_embeddings? = Enum.any?(results, fn s -> s.embedding != nil end)
+
+    if has_embeddings? do
+      case Backplane.Embeddings.embed(query_text) do
+        {:ok, query_vec} ->
+          # Compute ts_rank-equivalent score for blending (use position as proxy)
+          total = length(results)
+
+          results
+          |> Enum.with_index()
+          |> Enum.map(fn {skill, idx} ->
+            # Normalize tsvector rank to 0..1 based on position
+            ts_score = (total - idx) / total
+
+            cosine_sim =
+              if skill.embedding do
+                cosine_similarity(query_vec, embedding_to_list(skill.embedding))
+              else
+                0.0
+              end
+
+            blended = @tsvector_weight * ts_score + @cosine_weight * cosine_sim
+            {skill, blended}
+          end)
+          |> Enum.sort_by(fn {_, score} -> score end, :desc)
+          |> Enum.map(fn {skill, _} -> skill end)
+
+        {:error, _} ->
+          results
+      end
+    else
+      results
+    end
+  end
+
+  defp cosine_similarity(a, b) when length(a) == length(b) do
+    dot = Enum.zip(a, b) |> Enum.reduce(0.0, fn {x, y}, acc -> acc + x * y end)
+    mag_a = :math.sqrt(Enum.reduce(a, 0.0, fn x, acc -> acc + x * x end))
+    mag_b = :math.sqrt(Enum.reduce(b, 0.0, fn x, acc -> acc + x * x end))
+
+    if mag_a == 0.0 or mag_b == 0.0, do: 0.0, else: dot / (mag_a * mag_b)
+  end
+
+  defp cosine_similarity(_, _), do: 0.0
+
+  defp embedding_to_list(%Pgvector{} = v), do: Pgvector.to_list(v)
+  defp embedding_to_list(v) when is_list(v), do: v
+  defp embedding_to_list(_), do: []
 
   defp to_result(%Skill{} = s) do
     %{

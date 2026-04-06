@@ -1,6 +1,10 @@
 defmodule Backplane.Skills.Skill do
   @moduledoc """
   Ecto schema for the skills table.
+
+  The `embedding` column (pgvector) is NOT included in this schema to avoid
+  errors when pgvector is not installed. Embedding reads/writes are done via
+  explicit fragments in the embedding jobs and search modules.
   """
 
   use Ecto.Schema
@@ -11,16 +15,16 @@ defmodule Backplane.Skills.Skill do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "skills" do
-    field :name, :string
-    field :description, :string, default: ""
-    field :tags, {:array, :string}, default: []
-    field :tools, {:array, :string}, default: []
-    field :model, :string
-    field :version, :string, default: "1.0.0"
-    field :content, :string
-    field :content_hash, :string
-    field :source, :string
-    field :enabled, :boolean, default: true
+    field(:name, :string)
+    field(:description, :string, default: "")
+    field(:tags, {:array, :string}, default: [])
+    field(:tools, {:array, :string}, default: [])
+    field(:model, :string)
+    field(:version, :string, default: "1.0.0")
+    field(:content, :string)
+    field(:content_hash, :string)
+    field(:source, :string)
+    field(:enabled, :boolean, default: true)
 
     timestamps()
   end
