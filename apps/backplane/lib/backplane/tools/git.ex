@@ -10,6 +10,7 @@ defmodule Backplane.Tools.Git do
 
   require Logger
 
+  alias Backplane.Git.CachedProvider
   alias Backplane.Git.Providers.{GitHub, GitLab}
   alias Backplane.Git.Resolver
   alias Backplane.Utils
@@ -226,7 +227,9 @@ defmodule Backplane.Tools.Git do
     ref = args["ref"] || "main"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      module.fetch_tree(repo_id, ref, path, config: config)
+      CachedProvider.cached(module, "fetch_tree", repo_id, %{ref: ref, path: path}, fn ->
+        module.fetch_tree(repo_id, ref, path, config: config)
+      end)
     end)
   end
 
@@ -236,10 +239,12 @@ defmodule Backplane.Tools.Git do
     ref = args["ref"] || "main"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      case module.fetch_file(repo_id, path, ref, config: config) do
-        {:ok, content} -> {:ok, truncate_content(content)}
-        error -> error
-      end
+      CachedProvider.cached(module, "fetch_file", repo_id, %{path: path, ref: ref}, fn ->
+        case module.fetch_file(repo_id, path, ref, config: config) do
+          {:ok, content} -> {:ok, truncate_content(content)}
+          error -> error
+        end
+      end)
     end)
   end
 
@@ -248,12 +253,16 @@ defmodule Backplane.Tools.Git do
     state = args["state"] || "open"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      opts =
-        [config: config, state: state]
-        |> maybe_add(:query, args["query"])
-        |> maybe_add(:limit, args["limit"])
+      params = %{state: state, query: args["query"], limit: args["limit"]}
 
-      module.fetch_issues(repo_id, opts)
+      CachedProvider.cached(module, "fetch_issues", repo_id, params, fn ->
+        opts =
+          [config: config, state: state]
+          |> maybe_add(:query, args["query"])
+          |> maybe_add(:limit, args["limit"])
+
+        module.fetch_issues(repo_id, opts)
+      end)
     end)
   end
 
@@ -261,13 +270,17 @@ defmodule Backplane.Tools.Git do
     repo = args["repo"]
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      opts =
-        [config: config]
-        |> maybe_add(:ref, args["ref"])
-        |> maybe_add(:path, args["path"])
-        |> maybe_add(:limit, args["limit"])
+      params = %{ref: args["ref"], path: args["path"], limit: args["limit"]}
 
-      module.fetch_commits(repo_id, opts)
+      CachedProvider.cached(module, "fetch_commits", repo_id, params, fn ->
+        opts =
+          [config: config]
+          |> maybe_add(:ref, args["ref"])
+          |> maybe_add(:path, args["path"])
+          |> maybe_add(:limit, args["limit"])
+
+        module.fetch_commits(repo_id, opts)
+      end)
     end)
   end
 
@@ -276,11 +289,15 @@ defmodule Backplane.Tools.Git do
     state = args["state"] || "open"
 
     with_resolved_repo(repo, fn module, config, repo_id ->
-      opts =
-        [config: config, state: state]
-        |> maybe_add(:limit, args["limit"])
+      params = %{state: state, limit: args["limit"]}
 
-      module.fetch_merge_requests(repo_id, opts)
+      CachedProvider.cached(module, "fetch_merge_requests", repo_id, params, fn ->
+        opts =
+          [config: config, state: state]
+          |> maybe_add(:limit, args["limit"])
+
+        module.fetch_merge_requests(repo_id, opts)
+      end)
     end)
   end
 
@@ -291,7 +308,11 @@ defmodule Backplane.Tools.Git do
 
     if repo_string do
       with_resolved_repo(repo_string, fn module, config, repo_id ->
-        module.search_code(query, config: config, repo: repo_id, language: language)
+        params = %{query: query, language: language}
+
+        CachedProvider.cached(module, "search_code", repo_id, params, fn ->
+          module.search_code(query, config: config, repo: repo_id, language: language)
+        end)
       end)
     else
       search_code_all_providers(query, language)

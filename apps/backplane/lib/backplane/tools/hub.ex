@@ -81,6 +81,32 @@ defmodule Backplane.Tools.Hub do
         },
         module: __MODULE__,
         handler: :refresh
+      },
+      %{
+        name: "hub::cache-status",
+        description: "Get response cache statistics (hit rate, size, evictions)",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{}
+        },
+        module: __MODULE__,
+        handler: :cache_status
+      },
+      %{
+        name: "hub::cache-flush",
+        description: "Flush the response cache. Optionally flush only a specific prefix.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "prefix" => %{
+              "type" => "string",
+              "description" =>
+                "Flush only entries matching this upstream prefix or provider name. Omit to flush all."
+            }
+          }
+        },
+        module: __MODULE__,
+        handler: :cache_flush
       }
     ]
   end
@@ -121,6 +147,34 @@ defmodule Backplane.Tools.Hub do
 
   def call(%{"_handler" => "refresh"} = args) do
     refresh_upstreams(args["upstream"])
+  end
+
+  def call(%{"_handler" => "cache_status"}) do
+    stats = Backplane.Cache.stats()
+
+    {:ok,
+     %{
+       hits: stats.hits,
+       misses: stats.misses,
+       hit_rate: stats.hit_rate,
+       entry_count: stats.size,
+       max_entries: Application.get_env(:backplane, :cache_max_entries, 10_000),
+       evictions: stats.evictions
+     }}
+  end
+
+  def call(%{"_handler" => "cache_flush"} = args) do
+    case args["prefix"] do
+      nil ->
+        count = Backplane.Cache.flush()
+        {:ok, %{flushed_count: count}}
+
+      prefix ->
+        # Build a prefix tuple for invalidation
+        count = Backplane.Cache.invalidate_prefix({:upstream, prefix})
+        git_count = Backplane.Cache.invalidate_prefix({:git, prefix})
+        {:ok, %{flushed_count: count + git_count}}
+    end
   end
 
   def call(_args), do: {:error, "Unknown hub tool handler"}

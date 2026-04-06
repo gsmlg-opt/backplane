@@ -253,6 +253,52 @@ defmodule Backplane.Tools.HubTest do
   # DB operations are still healthy so the rest of hub::status succeeds.
   # ---------------------------------------------------------------------------
 
+  describe "hub::cache-status" do
+    test "returns cache statistics" do
+      # Flush first to get clean state
+      Backplane.Cache.flush()
+      # Put a value so size > 0
+      Backplane.Cache.put(:test_status_key, "value", 60_000)
+      Process.sleep(10)
+      # Get to increment hits
+      Backplane.Cache.get(:test_status_key)
+
+      result = Hub.call(%{"_handler" => "cache_status"})
+      assert {:ok, stats} = result
+      assert is_integer(stats.hits)
+      assert is_integer(stats.misses)
+      assert is_float(stats.hit_rate)
+      assert is_integer(stats.entry_count)
+      assert is_integer(stats.max_entries)
+      assert is_integer(stats.evictions)
+    end
+  end
+
+  describe "hub::cache-flush" do
+    test "flushes all entries when no prefix" do
+      Backplane.Cache.put(:flush_key1, "v1", 60_000)
+      Backplane.Cache.put(:flush_key2, "v2", 60_000)
+      Process.sleep(10)
+
+      {:ok, result} = Hub.call(%{"_handler" => "cache_flush"})
+      assert result.flushed_count >= 2
+
+      assert :miss = Backplane.Cache.get(:flush_key1)
+    end
+
+    test "flushes only matching prefix" do
+      Backplane.Cache.put({:upstream, "test", "tool1", "hash1"}, "v1", 60_000)
+      Backplane.Cache.put({:upstream, "other", "tool2", "hash2"}, "v2", 60_000)
+      Process.sleep(10)
+
+      {:ok, result} = Hub.call(%{"_handler" => "cache_flush", "prefix" => "test"})
+      assert result.flushed_count >= 1
+
+      # "other" prefix should still exist
+      assert {:ok, "v2"} = Backplane.Cache.get({:upstream, "other", "tool2", "hash2"})
+    end
+  end
+
   describe "hub::status get_upstream_status rescue branch" do
     defmodule BadUpstream do
       @moduledoc false
