@@ -1,21 +1,28 @@
 defmodule Backplane.Transport.MetricsPlug do
   @moduledoc """
-  Metrics endpoint returning JSON snapshot.
+  Metrics endpoints:
+  - GET /metrics — JSON snapshot
+  - GET /metrics/prometheus — Prometheus text exposition format
   """
 
-  @behaviour Plug
+  use Plug.Router
 
-  alias Backplane.Metrics
+  plug(:match)
+  plug(:dispatch)
 
-  @impl true
-  def init(opts), do: opts
-
-  @impl true
-  def call(conn, _opts) do
-    metrics = Metrics.snapshot()
+  get "/prometheus" do
+    body = Backplane.Metrics.Prometheus.render()
 
     conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(metrics))
+    |> put_resp_content_type("text/plain")
+    |> send_resp(200, body)
+  end
+
+  match _ do
+    metrics = Backplane.Metrics.snapshot()
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(metrics))
   end
 end
