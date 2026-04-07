@@ -51,4 +51,10 @@ defmodule Backplane.PubSubBroadcaster do
   def broadcast_config_reloaded(payload \\ %{}) do
     Phoenix.PubSub.broadcast(@pubsub, config_reloaded_topic(), {:reloaded, payload})
   end
+
+  def llm_providers_topic, do: "llm:providers"
+
+  def broadcast_llm_providers(event, payload \\ %{}) do
+    Phoenix.PubSub.broadcast(@pubsub, llm_providers_topic(), {event, payload})
+  end
 end
