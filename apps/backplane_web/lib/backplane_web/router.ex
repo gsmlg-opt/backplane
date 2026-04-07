@@ -6,6 +6,8 @@ defmodule BackplaneWeb.Router do
   forward("/webhook", Backplane.Transport.WebhookPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
+  forward("/api/llm", Backplane.LLM.ApiRouter)
+  # forward("/llm", Backplane.LLM.Router)
 
   pipeline :browser do
     plug(:accepts, ["html"])
