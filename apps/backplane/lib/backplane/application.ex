@@ -33,7 +33,10 @@ defmodule Backplane.Application do
       Pool,
       {Backplane.Cache, cache_opts},
       Metrics,
-      Watcher
+      Watcher,
+      Relayixir,
+      Backplane.LLM.ModelResolver,
+      Backplane.LLM.RouteLoader
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]

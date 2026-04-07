@@ -22,7 +22,9 @@ defmodule Backplane.LLM.ModelResolverTest do
   }
 
   setup do
-    start_supervised!(ModelResolver)
+    # ModelResolver is started by the application supervision tree.
+    # Clear the cache before each test to ensure isolation.
+    ModelResolver.clear_cache()
     :ok
   end
 

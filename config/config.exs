@@ -9,7 +9,7 @@ config :backplane, Backplane.Repo,
 
 config :backplane, Oban,
   repo: Backplane.Repo,
-  queues: [default: 10, indexing: 5, sync: 3, embeddings: 2]
+  queues: [default: 10, indexing: 5, sync: 3, embeddings: 2, llm: 5]
 
 # Phoenix Endpoint
 config :backplane_web, BackplaneWeb.Endpoint,
