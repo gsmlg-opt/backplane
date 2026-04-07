@@ -37,7 +37,8 @@ defmodule Backplane.Application do
       Relayixir,
       Backplane.LLM.ModelResolver,
       Backplane.LLM.RouteLoader,
-      Backplane.LLM.RateLimiter
+      Backplane.LLM.RateLimiter,
+      {Backplane.LLM.HealthChecker, []}
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]

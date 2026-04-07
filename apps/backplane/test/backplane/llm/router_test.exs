@@ -4,7 +4,7 @@ defmodule Backplane.LLM.RouterTest do
   import Plug.Test
   import Plug.Conn
 
-  alias Backplane.LLM.{ModelAlias, ModelResolver, Provider, Router}
+  alias Backplane.LLM.{ModelAlias, ModelResolver, Provider, RateLimiter, Router}
 
   @anthropic_attrs %{
     name: "anthropic-prod",
@@ -26,6 +26,7 @@ defmodule Backplane.LLM.RouterTest do
     # ModelResolver is started by the application supervision tree.
     # Clear the cache before each test to ensure isolation.
     ModelResolver.clear_cache()
+    RateLimiter.reset()
     :ok
   end
 
@@ -116,6 +117,66 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       assert is_map(body["error"])
       assert body["error"]["type"] == "invalid_request_error"
+    end
+  end
+
+  # ── Rate limiting ─────────────────────────────────────────────────────────────
+
+  describe "rate limiting" do
+    test "returns 429 with anthropic error shape when rate limited" do
+      {:ok, provider} =
+        Provider.create(%{
+          name: "anthropic-rl",
+          api_type: :anthropic,
+          api_url: "https://api.anthropic.com",
+          api_key: "sk-ant-test-rl-abcd",
+          models: ["claude-sonnet-4-20250514"],
+          rpm_limit: 1
+        })
+
+      # Exhaust rate limit
+      RateLimiter.check(provider.id, 1)
+
+      conn =
+        llm_request(:post, "/v1/messages", %{
+          "model" => "anthropic-rl/claude-sonnet-4-20250514",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "max_tokens" => 10
+        })
+
+      assert conn.status == 429
+      body = json_body(conn)
+      assert body["type"] == "error"
+      assert body["error"]["type"] == "rate_limit_error"
+      assert Plug.Conn.get_resp_header(conn, "retry-after") != []
+    end
+
+    test "returns 429 with openai error shape when rate limited" do
+      {:ok, provider} =
+        Provider.create(%{
+          name: "openai-rl",
+          api_type: :openai,
+          api_url: "https://api.openai.com",
+          api_key: "sk-openai-test-rl-abcd",
+          models: ["gpt-4o"],
+          rpm_limit: 1
+        })
+
+      # Exhaust rate limit
+      RateLimiter.check(provider.id, 1)
+
+      conn =
+        llm_request(:post, "/v1/chat/completions", %{
+          "model" => "openai-rl/gpt-4o",
+          "messages" => [%{"role" => "user", "content" => "hi"}]
+        })
+
+      assert conn.status == 429
+      body = json_body(conn)
+      assert is_map(body["error"])
+      assert body["error"]["type"] == "rate_limit_error"
+      assert body["error"]["code"] == "rate_limit_exceeded"
+      assert Plug.Conn.get_resp_header(conn, "retry-after") != []
     end
   end
 

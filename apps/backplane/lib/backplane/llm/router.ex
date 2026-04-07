@@ -16,7 +16,7 @@ defmodule Backplane.LLM.Router do
 
   import Plug.Conn
 
-  alias Backplane.LLM.{CredentialPlug, ModelAlias, ModelExtractor, ModelResolver, Provider}
+  alias Backplane.LLM.{CredentialPlug, ModelAlias, ModelExtractor, ModelResolver, Provider, RateLimiter}
   alias Backplane.LLM.RouteLoader
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Config.UpstreamConfig
@@ -81,23 +81,30 @@ defmodule Backplane.LLM.Router do
             send_api_type_mismatch(conn, api_type, model_string, provider)
 
           {:ok, provider, raw_model} ->
-            case ModelExtractor.replace_model(raw_body, raw_model) do
-              {:error, :invalid_json} ->
-                send_model_error(conn, api_type, :invalid_json)
+            case RateLimiter.check(provider.id, provider.rpm_limit) do
+              {:error, retry_after} ->
+                send_rate_limit_error(conn, api_type, retry_after)
 
-              {:ok, rewritten_body} ->
-                do_proxy(conn, provider, rewritten_body, api_type)
+              :ok ->
+                case ModelExtractor.replace_model(raw_body, raw_model) do
+                  {:error, :invalid_json} ->
+                    send_model_error(conn, api_type, :invalid_json)
+
+                  {:ok, rewritten_body} ->
+                    do_proxy(conn, provider, rewritten_body, raw_model, api_type)
+                end
             end
         end
     end
   end
 
-  defp do_proxy(conn, provider, rewritten_body, api_type) do
+  defp do_proxy(conn, provider, rewritten_body, raw_model, api_type) do
     upstream_name = RouteLoader.upstream_name(provider.id)
 
     case UpstreamConfig.get_upstream(upstream_name) do
       nil ->
         Logger.warning("RouteLoader: no upstream config for #{upstream_name}")
+        emit_telemetry(provider, raw_model, 502, false, nil, nil, conn, "upstream_not_configured", 0)
         send_error(conn, api_type, 502, "Provider upstream not configured")
 
       upstream_config ->
@@ -107,7 +114,7 @@ defmodule Backplane.LLM.Router do
 
         headers = build_proxy_headers(injected_conn)
 
-        proxy_with_req(conn, url, headers, rewritten_body, upstream_config)
+        proxy_with_req(conn, url, headers, rewritten_body, upstream_config, provider, raw_model, api_type)
     end
   end
 
@@ -137,8 +144,9 @@ defmodule Backplane.LLM.Router do
     |> Enum.map(fn {k, v} -> {k, v} end)
   end
 
-  defp proxy_with_req(conn, url, headers, body, upstream_config) do
+  defp proxy_with_req(conn, url, headers, body, upstream_config, provider, raw_model, api_type) do
     timeout = Map.get(upstream_config, :request_timeout, 300_000)
+    start_ms = System.monotonic_time(:millisecond)
 
     req_opts = [
       method: String.downcase(conn.method) |> String.to_existing_atom(),
@@ -151,13 +159,20 @@ defmodule Backplane.LLM.Router do
       decode_body: false
     ]
 
+    stream? = is_stream_request?(body)
+
     case Req.request(req_opts) do
       {:ok, response} ->
+        latency_ms = System.monotonic_time(:millisecond) - start_ms
+        {input_tokens, output_tokens} = extract_tokens(response, provider.api_type)
+        emit_telemetry(provider, raw_model, response.status, stream?, input_tokens, output_tokens, conn, nil, latency_ms)
         forward_response(conn, response)
 
       {:error, %{reason: reason}} ->
+        latency_ms = System.monotonic_time(:millisecond) - start_ms
         Logger.warning("LLM proxy request failed: #{inspect(reason)}")
-        send_error(conn, :openai, 502, "Upstream request failed: #{inspect(reason)}")
+        emit_telemetry(provider, raw_model, 502, stream?, nil, nil, conn, inspect(reason), latency_ms)
+        send_error(conn, api_type, 502, "Upstream request failed: #{inspect(reason)}")
     end
   end
 
@@ -181,6 +196,61 @@ defmodule Backplane.LLM.Router do
       end
 
     send_resp(conn, response.status, body)
+  end
+
+  # ── Telemetry helpers ─────────────────────────────────────────────────────────
+
+  defp emit_telemetry(provider, raw_model, status, stream?, input_tokens, output_tokens, conn, error_reason, latency_ms) do
+    :telemetry.execute(
+      [:backplane, :llm, :request],
+      %{latency_ms: latency_ms, system_time: System.system_time()},
+      %{
+        provider_id: provider.id,
+        model: raw_model,
+        status: status,
+        stream: stream?,
+        input_tokens: input_tokens,
+        output_tokens: output_tokens,
+        client_ip: client_ip(conn),
+        error_reason: error_reason
+      }
+    )
+  end
+
+  defp client_ip(conn) do
+    case get_req_header(conn, "x-forwarded-for") do
+      [ip | _] -> ip
+      [] -> conn.remote_ip |> :inet.ntoa() |> to_string()
+    end
+  end
+
+  defp is_stream_request?(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{"stream" => true}} -> true
+      _ -> false
+    end
+  end
+
+  defp extract_tokens(response, :anthropic) do
+    with true <- is_binary(response.body),
+         {:ok, %{"usage" => usage}} <- Jason.decode(response.body),
+         input when is_integer(input) <- Map.get(usage, "input_tokens"),
+         output when is_integer(output) <- Map.get(usage, "output_tokens") do
+      {input, output}
+    else
+      _ -> {nil, nil}
+    end
+  end
+
+  defp extract_tokens(response, :openai) do
+    with true <- is_binary(response.body),
+         {:ok, %{"usage" => usage}} <- Jason.decode(response.body),
+         input when is_integer(input) <- Map.get(usage, "prompt_tokens"),
+         output when is_integer(output) <- Map.get(usage, "completion_tokens") do
+      {input, output}
+    else
+      _ -> {nil, nil}
+    end
   end
 
   # ── Model listing ─────────────────────────────────────────────────────────────
@@ -220,6 +290,30 @@ defmodule Backplane.LLM.Router do
   end
 
   # ── Error helpers ─────────────────────────────────────────────────────────────
+
+  defp send_rate_limit_error(conn, :anthropic, retry_after) do
+    conn
+    |> put_resp_header("retry-after", to_string(retry_after))
+    |> send_json(429, %{
+      "type" => "error",
+      "error" => %{
+        "type" => "rate_limit_error",
+        "message" => "Provider rate limit exceeded. Retry after #{retry_after} seconds."
+      }
+    })
+  end
+
+  defp send_rate_limit_error(conn, _api_type, retry_after) do
+    conn
+    |> put_resp_header("retry-after", to_string(retry_after))
+    |> send_json(429, %{
+      "error" => %{
+        "message" => "Provider rate limit exceeded. Retry after #{retry_after} seconds.",
+        "type" => "rate_limit_error",
+        "code" => "rate_limit_exceeded"
+      }
+    })
+  end
 
   defp send_json(conn, status, body) do
     conn
