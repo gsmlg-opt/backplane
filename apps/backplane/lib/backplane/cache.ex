@@ -11,6 +11,7 @@ defmodule Backplane.Cache do
   require Logger
 
   @table :backplane_response_cache
+  @expiry_table :backplane_cache_expiry
   @stats_table :backplane_cache_stats
   @default_sweep_interval 60_000
   @default_max_entries 10_000
@@ -99,6 +100,8 @@ defmodule Backplane.Cache do
       write_concurrency: true
     ])
 
+    ensure_table(@expiry_table, [:named_table, :ordered_set, :public, write_concurrency: true])
+
     ensure_table(@stats_table, [
       :named_table,
       :set,
@@ -124,6 +127,12 @@ defmodule Backplane.Cache do
     now = System.monotonic_time(:millisecond)
     expires_at = now + ttl_ms
 
+    # Remove old expiry entry if key already exists
+    case :ets.lookup(@table, key) do
+      [{^key, _old_val, old_expires}] -> :ets.delete(@expiry_table, {old_expires, key})
+      [] -> :ok
+    end
+
     # Enforce max_entries — evict oldest if at capacity
     current_size = :ets.info(@table, :size)
 
@@ -132,10 +141,16 @@ defmodule Backplane.Cache do
     end
 
     :ets.insert(@table, {key, value, expires_at})
+    :ets.insert(@expiry_table, {{expires_at, key}})
     {:noreply, state}
   end
 
   def handle_cast({:invalidate, key}, state) do
+    case :ets.lookup(@table, key) do
+      [{^key, _val, expires_at}] -> :ets.delete(@expiry_table, {expires_at, key})
+      [] -> :ok
+    end
+
     :ets.delete(@table, key)
     {:noreply, state}
   end
@@ -149,6 +164,7 @@ defmodule Backplane.Cache do
   def handle_call(:flush, _from, state) do
     count = :ets.info(@table, :size)
     :ets.delete_all_objects(@table)
+    :ets.delete_all_objects(@expiry_table)
     bump_stat(:evictions, count)
     {:reply, count, state}
   end
@@ -173,58 +189,54 @@ defmodule Backplane.Cache do
 
   defp sweep_expired do
     now = System.monotonic_time(:millisecond)
-    # Scan ETS for expired entries
-    expired =
-      :ets.foldl(
-        fn {key, _value, expires_at}, acc ->
-          if now >= expires_at, do: [key | acc], else: acc
-        end,
-        [],
-        @table
-      )
-
-    for key <- expired, do: :ets.delete(@table, key)
-    count = length(expired)
+    count = sweep_expiry_index(now, 0)
     if count > 0, do: bump_stat(:evictions, count)
     count
   end
 
-  defp evict_oldest do
-    # Find the entry with the earliest expiration
-    case :ets.foldl(
-           fn
-             {key, _value, expires_at}, nil ->
-               {key, expires_at}
+  defp sweep_expiry_index(now, count) do
+    case :ets.first(@expiry_table) do
+      :"$end_of_table" ->
+        count
 
-             {key, _value, expires_at}, {_ok, oe} = old ->
-               if expires_at < oe, do: {key, expires_at}, else: old
-           end,
-           nil,
-           @table
-         ) do
-      {key, _} ->
+      {expires_at, key} = entry when expires_at <= now ->
         :ets.delete(@table, key)
-        bump_stat(:evictions)
+        :ets.delete(@expiry_table, entry)
+        sweep_expiry_index(now, count + 1)
 
-      nil ->
+      _ ->
+        count
+    end
+  end
+
+  defp evict_oldest do
+    case :ets.first(@expiry_table) do
+      :"$end_of_table" ->
         :ok
+
+      {_expires_at, key} = entry ->
+        :ets.delete(@table, key)
+        :ets.delete(@expiry_table, entry)
+        bump_stat(:evictions)
     end
   end
 
   defp invalidate_matching(prefix) do
-    # Prefix is typically a tuple like {provider, owner, repo}
-    # Match entries whose key starts with the prefix tuple elements
-    keys_to_delete =
+    entries_to_delete =
       :ets.foldl(
-        fn {key, _value, _expires_at}, acc ->
-          if key_matches_prefix?(key, prefix), do: [key | acc], else: acc
+        fn {key, _value, expires_at}, acc ->
+          if key_matches_prefix?(key, prefix), do: [{key, expires_at} | acc], else: acc
         end,
         [],
         @table
       )
 
-    for key <- keys_to_delete, do: :ets.delete(@table, key)
-    count = length(keys_to_delete)
+    for {key, expires_at} <- entries_to_delete do
+      :ets.delete(@table, key)
+      :ets.delete(@expiry_table, {expires_at, key})
+    end
+
+    count = length(entries_to_delete)
     if count > 0, do: bump_stat(:evictions, count)
     count
   end

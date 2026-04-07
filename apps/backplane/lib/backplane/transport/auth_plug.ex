@@ -113,8 +113,5 @@ defmodule Backplane.Transport.AuthPlug do
 
   defp clients_exist? do
     Clients.any_clients?()
-  rescue
-    # DB may not be available (e.g., during migrations)
-    _ -> false
   end
 end

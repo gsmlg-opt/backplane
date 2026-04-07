@@ -1,16 +1,22 @@
 defmodule Backplane.Repo.Migrations.AddEmbeddings do
   use Ecto.Migration
 
+  # Read dimensions from embeddings config, default to 1536 (OpenAI compatible).
+  # Ollama models with smaller dimensions (e.g. 768) fit within 1536.
+  @default_dimensions 1536
+
   def up do
     if pgvector_available?() do
+      dims = embedding_dimensions()
+
       execute("CREATE EXTENSION IF NOT EXISTS vector")
 
       alter table(:doc_chunks) do
-        add(:embedding, :vector, size: 768)
+        add(:embedding, :vector, size: dims)
       end
 
       alter table(:skills) do
-        add(:embedding, :vector, size: 768)
+        add(:embedding, :vector, size: dims)
       end
 
       execute("""
@@ -43,6 +49,13 @@ defmodule Backplane.Repo.Migrations.AddEmbeddings do
       alter table(:doc_chunks) do
         remove(:embedding)
       end
+    end
+  end
+
+  defp embedding_dimensions do
+    case Application.get_env(:backplane, :embeddings) do
+      %{dimensions: dims} when is_integer(dims) and dims > 0 -> dims
+      _ -> @default_dimensions
     end
   end
 

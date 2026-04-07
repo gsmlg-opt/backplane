@@ -48,7 +48,8 @@ defmodule Backplane.Application do
     # Enqueue initial skill sync jobs for configured sources
     enqueue_skill_syncs()
 
-    # Upsert pre-seeded clients from config
+    # Initialize clients ETS cache and upsert pre-seeded clients
+    Backplane.Clients.init_cache()
     upsert_config_clients()
 
     result

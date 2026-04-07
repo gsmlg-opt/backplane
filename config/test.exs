@@ -8,6 +8,7 @@ config :backplane, Backplane.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
+config :backplane, env: :test
 config :backplane, Oban, testing: :inline
 
 # We don't run a server during test

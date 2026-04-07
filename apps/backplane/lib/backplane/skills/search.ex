@@ -99,32 +99,35 @@ defmodule Backplane.Skills.Search do
 
   defp order_by_relevance(query, _), do: order_by(query, [s], asc: s.name)
 
-  @tsvector_weight 0.7
-  @cosine_weight 0.3
+  alias Backplane.Embeddings.Similarity
 
   defp apply_semantic_reranking(results, query_text) do
-    has_embeddings? = Enum.any?(results, fn s -> s.embedding != nil end)
+    has_embeddings? = Enum.any?(results, fn s -> Map.get(s, :embedding) != nil end)
 
     if has_embeddings? do
       case Backplane.Embeddings.embed(query_text) do
         {:ok, query_vec} ->
-          # Compute ts_rank-equivalent score for blending (use position as proxy)
           total = length(results)
 
           results
           |> Enum.with_index()
           |> Enum.map(fn {skill, idx} ->
-            # Normalize tsvector rank to 0..1 based on position
             ts_score = (total - idx) / total
 
             cosine_sim =
-              if skill.embedding do
-                cosine_similarity(query_vec, embedding_to_list(skill.embedding))
+              if Map.get(skill, :embedding) do
+                Similarity.cosine_similarity(
+                  query_vec,
+                  Similarity.embedding_to_list(skill.embedding)
+                )
               else
                 0.0
               end
 
-            blended = @tsvector_weight * ts_score + @cosine_weight * cosine_sim
+            blended =
+              Similarity.tsvector_weight() * ts_score +
+                Similarity.cosine_weight() * cosine_sim
+
             {skill, blended}
           end)
           |> Enum.sort_by(fn {_, score} -> score end, :desc)
@@ -137,20 +140,6 @@ defmodule Backplane.Skills.Search do
       results
     end
   end
-
-  defp cosine_similarity(a, b) when length(a) == length(b) do
-    dot = Enum.zip(a, b) |> Enum.reduce(0.0, fn {x, y}, acc -> acc + x * y end)
-    mag_a = :math.sqrt(Enum.reduce(a, 0.0, fn x, acc -> acc + x * x end))
-    mag_b = :math.sqrt(Enum.reduce(b, 0.0, fn x, acc -> acc + x * x end))
-
-    if mag_a == 0.0 or mag_b == 0.0, do: 0.0, else: dot / (mag_a * mag_b)
-  end
-
-  defp cosine_similarity(_, _), do: 0.0
-
-  defp embedding_to_list(%Pgvector{} = v), do: Pgvector.to_list(v)
-  defp embedding_to_list(v) when is_list(v), do: v
-  defp embedding_to_list(_), do: []
 
   defp to_result(%Skill{} = s) do
     %{

@@ -6,7 +6,7 @@ defmodule Backplane.AuditTest do
 
   describe "log_tool_call/1" do
     test "inserts tool call log with metadata" do
-      Audit.log_tool_call(%{
+      Audit.log_tool_call_sync(%{
         tool_name: "docs::query-docs",
         status: "ok",
         duration_us: 5000,
@@ -22,7 +22,7 @@ defmodule Backplane.AuditTest do
     end
 
     test "records duration from attrs" do
-      Audit.log_tool_call(%{
+      Audit.log_tool_call_sync(%{
         tool_name: "git::repo-tree",
         status: "ok",
         duration_us: 12345
@@ -33,7 +33,7 @@ defmodule Backplane.AuditTest do
     end
 
     test "records error status and message on failure" do
-      Audit.log_tool_call(%{
+      Audit.log_tool_call_sync(%{
         tool_name: "git::repo-tree",
         status: "error",
         error_message: "upstream timeout",
@@ -46,7 +46,7 @@ defmodule Backplane.AuditTest do
     end
 
     test "records client_name when present" do
-      Audit.log_tool_call(%{
+      Audit.log_tool_call_sync(%{
         tool_name: "docs::query-docs",
         status: "ok",
         client_name: "my-agent"
@@ -59,7 +59,7 @@ defmodule Backplane.AuditTest do
 
   describe "log_skill_load/1" do
     test "inserts skill load log with metadata" do
-      Audit.log_skill_load(%{
+      Audit.log_skill_load_sync(%{
         skill_name: "elixir-review",
         client_name: "test-client",
         loaded_deps: ["base-lib", "formatter"]
