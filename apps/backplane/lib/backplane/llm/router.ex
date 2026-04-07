@@ -66,35 +66,38 @@ defmodule Backplane.LLM.Router do
     raw_body = conn.assigns[:raw_body] || ""
 
     case ModelExtractor.extract(raw_body) do
-      {:error, :no_model} ->
-        send_model_error(conn, api_type, :no_model)
+      {:error, reason} -> send_model_error(conn, api_type, reason)
+      {:ok, model_string} -> resolve_and_proxy(conn, api_type, raw_body, model_string)
+    end
+  end
 
-      {:error, :invalid_json} ->
-        send_model_error(conn, api_type, :invalid_json)
+  defp resolve_and_proxy(conn, api_type, raw_body, model_string) do
+    case ModelResolver.resolve(api_type, model_string) do
+      {:error, :no_provider} ->
+        send_not_found(conn, api_type, model_string)
 
-      {:ok, model_string} ->
-        case ModelResolver.resolve(api_type, model_string) do
-          {:error, :no_provider} ->
-            send_not_found(conn, api_type, model_string)
+      {:error, :api_type_mismatch, provider} ->
+        send_api_type_mismatch(conn, api_type, model_string, provider)
 
-          {:error, :api_type_mismatch, provider} ->
-            send_api_type_mismatch(conn, api_type, model_string, provider)
+      {:ok, provider, raw_model} ->
+        check_rate_and_proxy(conn, api_type, raw_body, provider, raw_model)
+    end
+  end
 
-          {:ok, provider, raw_model} ->
-            case RateLimiter.check(provider.id, provider.rpm_limit) do
-              {:error, retry_after} ->
-                send_rate_limit_error(conn, api_type, retry_after)
+  defp check_rate_and_proxy(conn, api_type, raw_body, provider, raw_model) do
+    case RateLimiter.check(provider.id, provider.rpm_limit) do
+      {:error, retry_after} ->
+        send_rate_limit_error(conn, api_type, retry_after)
 
-              :ok ->
-                case ModelExtractor.replace_model(raw_body, raw_model) do
-                  {:error, :invalid_json} ->
-                    send_model_error(conn, api_type, :invalid_json)
+      :ok ->
+        rewrite_and_proxy(conn, api_type, raw_body, provider, raw_model)
+    end
+  end
 
-                  {:ok, rewritten_body} ->
-                    do_proxy(conn, provider, rewritten_body, raw_model, api_type)
-                end
-            end
-        end
+  defp rewrite_and_proxy(conn, api_type, raw_body, provider, raw_model) do
+    case ModelExtractor.replace_model(raw_body, raw_model) do
+      {:error, :invalid_json} -> send_model_error(conn, api_type, :invalid_json)
+      {:ok, rewritten_body} -> do_proxy(conn, provider, rewritten_body, raw_model, api_type)
     end
   end
 
@@ -104,7 +107,7 @@ defmodule Backplane.LLM.Router do
     case UpstreamConfig.get_upstream(upstream_name) do
       nil ->
         Logger.warning("RouteLoader: no upstream config for #{upstream_name}")
-        emit_telemetry(provider, raw_model, 502, false, nil, nil, conn, "upstream_not_configured", 0)
+        emit_telemetry(provider, raw_model, conn, %{status: 502, stream?: false, input_tokens: nil, output_tokens: nil, error_reason: "upstream_not_configured", latency_ms: 0})
         send_error(conn, api_type, 502, "Provider upstream not configured")
 
       upstream_config ->
@@ -165,13 +168,13 @@ defmodule Backplane.LLM.Router do
       {:ok, response} ->
         latency_ms = System.monotonic_time(:millisecond) - start_ms
         {input_tokens, output_tokens} = extract_tokens(response, provider.api_type)
-        emit_telemetry(provider, raw_model, response.status, stream?, input_tokens, output_tokens, conn, nil, latency_ms)
+        emit_telemetry(provider, raw_model, conn, %{status: response.status, stream?: stream?, input_tokens: input_tokens, output_tokens: output_tokens, error_reason: nil, latency_ms: latency_ms})
         forward_response(conn, response)
 
       {:error, %{reason: reason}} ->
         latency_ms = System.monotonic_time(:millisecond) - start_ms
         Logger.warning("LLM proxy request failed: #{inspect(reason)}")
-        emit_telemetry(provider, raw_model, 502, stream?, nil, nil, conn, inspect(reason), latency_ms)
+        emit_telemetry(provider, raw_model, conn, %{status: 502, stream?: stream?, input_tokens: nil, output_tokens: nil, error_reason: inspect(reason), latency_ms: latency_ms})
         send_error(conn, api_type, 502, "Upstream request failed: #{inspect(reason)}")
     end
   end
@@ -200,7 +203,7 @@ defmodule Backplane.LLM.Router do
 
   # ── Telemetry helpers ─────────────────────────────────────────────────────────
 
-  defp emit_telemetry(provider, raw_model, status, stream?, input_tokens, output_tokens, conn, error_reason, latency_ms) do
+  defp emit_telemetry(provider, raw_model, conn, %{status: status, stream?: stream?, input_tokens: input_tokens, output_tokens: output_tokens, error_reason: error_reason, latency_ms: latency_ms}) do
     :telemetry.execute(
       [:backplane, :llm, :request],
       %{latency_ms: latency_ms, system_time: System.system_time()},

@@ -49,19 +49,22 @@ defmodule Backplane.LLM.ModelAlias do
     model = get_field(changeset, :model)
 
     if provider_id && model do
-      case Repo.get(Provider, provider_id) do
-        nil ->
-          add_error(changeset, :provider_id, "does not exist")
-
-        provider ->
-          if model in (provider.models || []) do
-            changeset
-          else
-            add_error(changeset, :model, "must be one of the provider's models")
-          end
-      end
+      changeset
+      |> check_model_in_provider(Repo.get(Provider, provider_id), model)
     else
       changeset
+    end
+  end
+
+  defp check_model_in_provider(changeset, nil, _model) do
+    add_error(changeset, :provider_id, "does not exist")
+  end
+
+  defp check_model_in_provider(changeset, provider, model) do
+    if model in (provider.models || []) do
+      changeset
+    else
+      add_error(changeset, :model, "must be one of the provider's models")
     end
   end
 

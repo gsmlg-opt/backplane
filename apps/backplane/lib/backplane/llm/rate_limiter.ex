@@ -37,23 +37,7 @@ defmodule Backplane.LLM.RateLimiter do
 
       [{^provider_id, ref, window_start}] ->
         elapsed_ms = now_ms - window_start
-
-        if elapsed_ms > @window_ms do
-          # Window expired — reset
-          :counters.put(ref, 1, 1)
-          :ets.insert(@table, {provider_id, ref, now_ms})
-          :ok
-        else
-          current = :counters.get(ref, 1)
-
-          if current < rpm_limit do
-            :counters.add(ref, 1, 1)
-            :ok
-          else
-            retry_after = ceil((@window_ms - elapsed_ms) / 1_000)
-            {:error, max(retry_after, 1)}
-          end
-        end
+        check_window(provider_id, ref, now_ms, elapsed_ms, rpm_limit)
     end
   end
 
@@ -89,6 +73,24 @@ defmodule Backplane.LLM.RateLimiter do
   end
 
   # ── Private ───────────────────────────────────────────────────────────────────
+
+  defp check_window(provider_id, ref, now_ms, elapsed_ms, _rpm_limit) when elapsed_ms > @window_ms do
+    :counters.put(ref, 1, 1)
+    :ets.insert(@table, {provider_id, ref, now_ms})
+    :ok
+  end
+
+  defp check_window(_provider_id, ref, _now_ms, elapsed_ms, rpm_limit) do
+    current = :counters.get(ref, 1)
+
+    if current < rpm_limit do
+      :counters.add(ref, 1, 1)
+      :ok
+    else
+      retry_after = ceil((@window_ms - elapsed_ms) / 1_000)
+      {:error, max(retry_after, 1)}
+    end
+  end
 
   defp ensure_table do
     if :ets.whereis(@table) == :undefined do

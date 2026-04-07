@@ -241,55 +241,49 @@ defmodule BackplaneWeb.ProvidersLive do
   end
 
   defp prepare_provider_params(params) do
-    models =
-      (params["models"] || "")
-      |> String.split(",", trim: true)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-
-    rpm_limit =
-      case params["rpm_limit"] do
-        nil -> nil
-        "" -> nil
-        val ->
-          case Integer.parse(val) do
-            {n, _} -> n
-            :error -> nil
-          end
-      end
-
-    default_headers =
-      case params["default_headers"] do
-        nil -> %{}
-        "" -> %{}
-        val ->
-          case Jason.decode(val) do
-            {:ok, map} when is_map(map) -> map
-            _ -> %{}
-          end
-      end
-
-    api_type =
-      case params["api_type"] do
-        "anthropic" -> :anthropic
-        "openai" -> :openai
-        other -> other
-      end
-
     result =
       params
-      |> Map.put("models", models)
-      |> Map.put("rpm_limit", rpm_limit)
-      |> Map.put("default_headers", default_headers)
-      |> Map.put("api_type", api_type)
+      |> Map.put("models", parse_models(params["models"]))
+      |> Map.put("rpm_limit", parse_rpm_limit(params["rpm_limit"]))
+      |> Map.put("default_headers", parse_default_headers(params["default_headers"]))
+      |> Map.put("api_type", parse_api_type(params["api_type"]))
 
-    # Drop blank api_key on edit so existing key is preserved
     if params["api_key"] == "" do
       Map.delete(result, "api_key")
     else
       result
     end
   end
+
+  defp parse_models(nil), do: []
+  defp parse_models(val) do
+    val
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp parse_rpm_limit(nil), do: nil
+  defp parse_rpm_limit(""), do: nil
+  defp parse_rpm_limit(val) do
+    case Integer.parse(val) do
+      {n, _} -> n
+      :error -> nil
+    end
+  end
+
+  defp parse_default_headers(nil), do: %{}
+  defp parse_default_headers(""), do: %{}
+  defp parse_default_headers(val) do
+    case Jason.decode(val) do
+      {:ok, map} when is_map(map) -> map
+      _ -> %{}
+    end
+  end
+
+  defp parse_api_type("anthropic"), do: :anthropic
+  defp parse_api_type("openai"), do: :openai
+  defp parse_api_type(other), do: other
 
   defp load_providers(socket) do
     providers =
