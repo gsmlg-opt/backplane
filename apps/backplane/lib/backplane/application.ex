@@ -36,7 +36,8 @@ defmodule Backplane.Application do
       Watcher,
       Relayixir,
       Backplane.LLM.ModelResolver,
-      Backplane.LLM.RouteLoader
+      Backplane.LLM.RouteLoader,
+      Backplane.LLM.RateLimiter
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
@@ -50,6 +51,9 @@ defmodule Backplane.Application do
 
     # Enqueue initial skill sync jobs for configured sources
     enqueue_skill_syncs()
+
+    # Attach telemetry handlers for usage collection
+    Backplane.LLM.UsageCollector.attach()
 
     # Initialize clients ETS cache and upsert pre-seeded clients
     Backplane.Clients.init_cache()
