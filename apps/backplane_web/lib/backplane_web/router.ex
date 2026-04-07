@@ -31,6 +31,7 @@ defmodule BackplaneWeb.Router do
     live("/logs", LogsLive, :index)
     live("/projects", ProjectsLive, :index)
     live("/clients", ClientsLive, :index)
+    live("/providers", ProvidersLive, :index)
   end
 
   # Enable LiveDashboard in development
