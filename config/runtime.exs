@@ -1,5 +1,14 @@
 import Config
 
+# Bun/Tailwind binary paths for devenv environments (all envs)
+if bun_path = System.get_env("MIX_BUN_PATH") do
+  config :bun, path: bun_path
+end
+
+if tailwind_path = System.get_env("MIX_TAILWIND_PATH") do
+  config :tailwind, path: tailwind_path
+end
+
 if config_env() == :prod do
   config_path = System.get_env("BACKPLANE_CONFIG", "backplane.toml")
 
@@ -85,12 +94,4 @@ if config_env() == :prod do
     http: [ip: {0, 0, 0, 0}, port: port],
     secret_key_base: secret_key_base
 
-  # Bun/Tailwind binary paths for devenv environments
-  if bun_path = System.get_env("MIX_BUN_PATH") do
-    config :bun, path: bun_path
-  end
-
-  if tailwind_path = System.get_env("MIX_TAILWIND_PATH") do
-    config :tailwind, path: tailwind_path
-  end
 end

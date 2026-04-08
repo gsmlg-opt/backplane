@@ -11,7 +11,7 @@ config :backplane, Backplane.Repo,
 config :backplane_web, dev_routes: true
 
 config :backplane_web, BackplaneWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4100],
+  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

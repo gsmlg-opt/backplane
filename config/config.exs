@@ -24,7 +24,7 @@ config :backplane_web, BackplaneWeb.Endpoint,
 
 # Bun bundler
 config :bun,
-  version: "1.2.0",
+  version: "1.3.4",
   backplane: [
     args:
       ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
