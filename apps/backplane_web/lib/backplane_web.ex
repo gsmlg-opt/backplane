@@ -70,6 +70,7 @@ defmodule BackplaneWeb do
       import Phoenix.HTML
 
       use PhoenixDuskmoon.Component
+      use PhoenixDuskmoon.CssArt
 
       alias Phoenix.LiveView.JS
 

@@ -5,9 +5,9 @@ import * as DuskmoonHooks from "phoenix_duskmoon/hooks"
 
 // Register DuskMoon custom elements
 import {registerAll} from "@duskmoon-dev/elements"
-import {registerAll as registerAllArt} from "@duskmoon-dev/art-elements"
+import {registerAllArts} from "@duskmoon-dev/art-elements"
 registerAll()
-registerAllArt()
+registerAllArts()
 
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
