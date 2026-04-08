@@ -24,7 +24,7 @@ config :backplane_web, BackplaneWeb.Endpoint,
 
 # Bun bundler
 config :bun,
-  version: "1.3.4",
+  version: "1.3.3",
   backplane: [
     args:
       ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
@@ -34,7 +34,7 @@ config :bun,
 
 # Tailwind v4
 config :tailwind,
-  version: "4.1.11",
+  version: "4.1.18",
   backplane: [
     args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
     cd: Path.expand("../apps/backplane_web", __DIR__)

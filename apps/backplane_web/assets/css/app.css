@@ -3,3 +3,9 @@
 @import "@duskmoon-dev/core/themes/sunshine";
 @import "@duskmoon-dev/core/themes/moonlight";
 @import "@duskmoon-dev/core/components";
+
+.appbar-actions .appbar-action {
+  width: auto;
+  height: auto;
+  padding: 0.375rem 0.75rem;
+}
