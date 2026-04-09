@@ -62,6 +62,14 @@ defmodule DayEx do
 
   def parse(_), do: {:error, "unsupported input type"}
 
+  def parse(input, format) when is_binary(input) and is_binary(format) do
+    DayEx.Parse.parse(input, format)
+  end
+
+  def parse(input, format, locale) when is_binary(input) and is_binary(format) and is_atom(locale) do
+    DayEx.Parse.parse(input, format, locale)
+  end
+
   defp parse_iso8601_datetime(str) do
     case DateTime.from_iso8601(str) do
       {:ok, dt, _offset} ->
@@ -77,6 +85,13 @@ defmodule DayEx do
 
   def parse!(input) do
     case parse(input) do
+      {:ok, d} -> d
+      {:error, reason} -> raise ArgumentError, "failed to parse: #{reason}"
+    end
+  end
+
+  def parse!(input, format) when is_binary(input) and is_binary(format) do
+    case parse(input, format) do
       {:ok, d} -> d
       {:error, reason} -> raise ArgumentError, "failed to parse: #{reason}"
     end
