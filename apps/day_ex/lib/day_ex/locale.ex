@@ -14,7 +14,12 @@ defmodule DayEx.Locale do
 
   @doc "Get locale module for a given locale atom."
   def get(locale) do
-    module = Module.concat(__MODULE__, locale |> Atom.to_string() |> String.capitalize() |> String.to_atom())
+    module =
+      Module.concat(
+        __MODULE__,
+        locale |> Atom.to_string() |> String.capitalize() |> String.to_atom()
+      )
+
     if Code.ensure_loaded?(module), do: module, else: DayEx.Locale.En
   end
 end

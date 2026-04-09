@@ -21,7 +21,8 @@ defmodule DayEx.Parse do
 
   Returns `{:ok, %DayEx{}}` on success, `{:error, reason}` on failure.
   """
-  def parse(input, format, locale) when is_binary(input) and is_binary(format) and is_atom(locale) do
+  def parse(input, format, locale)
+      when is_binary(input) and is_binary(format) and is_atom(locale) do
     tokens = DayEx.Format.tokenize(format)
     locale_mod = DayEx.Locale.get(locale)
 
@@ -78,6 +79,7 @@ defmodule DayEx.Parse do
   # MMMM — full month name
   defp consume_token(input, "MMMM", locale) do
     months = locale.months_full()
+
     case match_name_list(input, months) do
       {:ok, index, rest} -> {:ok, :month, index + 1, rest}
       :error -> {:error, "expected full month name, got: #{inspect(String.slice(input, 0, 10))}"}
@@ -87,6 +89,7 @@ defmodule DayEx.Parse do
   # MMM — short month name
   defp consume_token(input, "MMM", locale) do
     months = locale.months_short()
+
     case match_name_list(input, months) do
       {:ok, index, rest} -> {:ok, :month, index + 1, rest}
       :error -> {:error, "expected short month name, got: #{inspect(String.slice(input, 0, 5))}"}
@@ -200,11 +203,14 @@ defmodule DayEx.Parse do
   # A — uppercase AM/PM
   defp consume_token(input, "A", locale) do
     {am, pm} = locale.meridiem_upper()
+
     cond do
       String.starts_with?(input, pm) ->
         {:ok, :meridiem, :pm, String.slice(input, String.length(pm)..-1//1)}
+
       String.starts_with?(input, am) ->
         {:ok, :meridiem, :am, String.slice(input, String.length(am)..-1//1)}
+
       true ->
         {:error, "expected AM or PM, got: #{inspect(String.slice(input, 0, 2))}"}
     end
@@ -213,11 +219,14 @@ defmodule DayEx.Parse do
   # a — lowercase am/pm
   defp consume_token(input, "a", locale) do
     {am, pm} = locale.meridiem_lower()
+
     cond do
       String.starts_with?(input, pm) ->
         {:ok, :meridiem, :pm, String.slice(input, String.length(pm)..-1//1)}
+
       String.starts_with?(input, am) ->
         {:ok, :meridiem, :am, String.slice(input, String.length(am)..-1//1)}
+
       true ->
         {:error, "expected am or pm, got: #{inspect(String.slice(input, 0, 2))}"}
     end
@@ -270,6 +279,7 @@ defmodule DayEx.Parse do
   # Returns `{:ok, digits_string, rest}` or `:error`.
   defp take_digits(str, min_digits, max_digits) do
     {digits, rest} = take_while_digit(str, max_digits, "")
+
     if String.length(digits) >= min_digits do
       {:ok, digits, rest}
     else
@@ -282,6 +292,7 @@ defmodule DayEx.Parse do
 
   defp take_while_digit(str, n, acc) do
     {char, rest} = String.split_at(str, 1)
+
     if char >= "0" and char <= "9" do
       take_while_digit(rest, n - 1, acc <> char)
     else

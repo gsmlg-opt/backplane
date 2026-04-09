@@ -3,7 +3,8 @@ defmodule DayEx.Locale.En do
   @behaviour DayEx.Locale
 
   @impl true
-  def months_full, do: ~w(January February March April May June July August September October November December)
+  def months_full,
+    do: ~w(January February March April May June July August September October November December)
 
   @impl true
   def months_short, do: ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
@@ -44,6 +45,7 @@ defmodule DayEx.Locale.En do
         rem(n, 10) == 3 -> "rd"
         true -> "th"
       end
+
     "#{n}#{suffix}"
   end
 

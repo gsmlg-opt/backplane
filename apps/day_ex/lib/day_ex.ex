@@ -66,7 +66,8 @@ defmodule DayEx do
     DayEx.Parse.parse(input, format)
   end
 
-  def parse(input, format, locale) when is_binary(input) and is_binary(format) and is_atom(locale) do
+  def parse(input, format, locale)
+      when is_binary(input) and is_binary(format) and is_atom(locale) do
     DayEx.Parse.parse(input, format, locale)
   end
 
@@ -139,12 +140,21 @@ defmodule DayEx do
   end
 
   def year(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, year: value)}
-  def month(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, month: value)}
+
+  def month(%DayEx{datetime: dt} = d, value),
+    do: %{d | datetime: update_datetime(dt, month: value)}
+
   def date(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, day: value)}
   def hour(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, hour: value)}
-  def minute(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, minute: value)}
-  def second(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, second: value)}
-  def millisecond(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, microsecond: {value * 1000, 3})}
+
+  def minute(%DayEx{datetime: dt} = d, value),
+    do: %{d | datetime: update_datetime(dt, minute: value)}
+
+  def second(%DayEx{datetime: dt} = d, value),
+    do: %{d | datetime: update_datetime(dt, second: value)}
+
+  def millisecond(%DayEx{datetime: dt} = d, value),
+    do: %{d | datetime: update_datetime(dt, microsecond: {value * 1000, 3})}
 
   def set(d, :year, value), do: year(d, value)
   def set(d, :month, value), do: month(d, value)
@@ -167,7 +177,11 @@ defmodule DayEx do
     new_month = rem(total_months, 12) + 1
     max_day = Calendar.ISO.days_in_month(new_year, new_month)
     clamped_day = min(date(d), max_day)
-    %{d | datetime: update_datetime(d.datetime, year: new_year, month: new_month, day: clamped_day)}
+
+    %{
+      d
+      | datetime: update_datetime(d.datetime, year: new_year, month: new_month, day: clamped_day)
+    }
   end
 
   def add(%DayEx{} = d, n, :week), do: add(d, n * 7, :day)
@@ -203,10 +217,25 @@ defmodule DayEx do
   def subtract(%DayEx{} = d, n, unit), do: add(d, -n, unit)
 
   def start_of(%DayEx{} = d, :year),
-    do: %{d | datetime: update_datetime(d.datetime, month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+    do: %{
+      d
+      | datetime:
+          update_datetime(d.datetime,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: {0, 0}
+          )
+    }
 
   def start_of(%DayEx{} = d, :month),
-    do: %{d | datetime: update_datetime(d.datetime, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+    do: %{
+      d
+      | datetime:
+          update_datetime(d.datetime, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})
+    }
 
   def start_of(%DayEx{} = d, :week) do
     days_since_sunday = day(d)
@@ -214,7 +243,10 @@ defmodule DayEx do
   end
 
   def start_of(%DayEx{} = d, :day),
-    do: %{d | datetime: update_datetime(d.datetime, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+    do: %{
+      d
+      | datetime: update_datetime(d.datetime, hour: 0, minute: 0, second: 0, microsecond: {0, 0})
+    }
 
   def start_of(%DayEx{} = d, :hour),
     do: %{d | datetime: update_datetime(d.datetime, minute: 0, second: 0, microsecond: {0, 0})}
@@ -226,11 +258,33 @@ defmodule DayEx do
     do: %{d | datetime: update_datetime(d.datetime, microsecond: {0, 0})}
 
   def end_of(%DayEx{} = d, :year),
-    do: %{d | datetime: update_datetime(d.datetime, month: 12, day: 31, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+    do: %{
+      d
+      | datetime:
+          update_datetime(d.datetime,
+            month: 12,
+            day: 31,
+            hour: 23,
+            minute: 59,
+            second: 59,
+            microsecond: {999_000, 3}
+          )
+    }
 
   def end_of(%DayEx{} = d, :month) do
     max_day = Calendar.ISO.days_in_month(year(d), month(d))
-    %{d | datetime: update_datetime(d.datetime, day: max_day, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+
+    %{
+      d
+      | datetime:
+          update_datetime(d.datetime,
+            day: max_day,
+            hour: 23,
+            minute: 59,
+            second: 59,
+            microsecond: {999_000, 3}
+          )
+    }
   end
 
   def end_of(%DayEx{} = d, :week) do
@@ -239,10 +293,17 @@ defmodule DayEx do
   end
 
   def end_of(%DayEx{} = d, :day),
-    do: %{d | datetime: update_datetime(d.datetime, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+    do: %{
+      d
+      | datetime:
+          update_datetime(d.datetime, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})
+    }
 
   def end_of(%DayEx{} = d, :hour),
-    do: %{d | datetime: update_datetime(d.datetime, minute: 59, second: 59, microsecond: {999_000, 3})}
+    do: %{
+      d
+      | datetime: update_datetime(d.datetime, minute: 59, second: 59, microsecond: {999_000, 3})
+    }
 
   def end_of(%DayEx{} = d, :minute),
     do: %{d | datetime: update_datetime(d.datetime, second: 59, microsecond: {999_000, 3})}
@@ -262,17 +323,30 @@ defmodule DayEx do
     {:ok, utc} = DateTime.shift_zone(dt, "Etc/UTC")
     DateTime.to_iso8601(utc)
   end
-  def to_iso_string(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: NaiveDateTime.to_iso8601(ndt) <> "Z"
+
+  def to_iso_string(%DayEx{datetime: %NaiveDateTime{} = ndt}),
+    do: NaiveDateTime.to_iso8601(ndt) <> "Z"
 
   def to_json(%DayEx{} = d), do: to_iso_string(d)
 
   def to_unix(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt)
-  def to_unix(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
 
-  def to_list(%DayEx{} = d), do: [year(d), month(d), date(d), hour(d), minute(d), second(d), millisecond(d)]
+  def to_unix(%DayEx{datetime: %NaiveDateTime{} = ndt}),
+    do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
+
+  def to_list(%DayEx{} = d),
+    do: [year(d), month(d), date(d), hour(d), minute(d), second(d), millisecond(d)]
 
   def to_map(%DayEx{} = d) do
-    %{year: year(d), month: month(d), date: date(d), hour: hour(d), minute: minute(d), second: second(d), millisecond: millisecond(d)}
+    %{
+      year: year(d),
+      month: month(d),
+      date: date(d),
+      hour: hour(d),
+      minute: minute(d),
+      second: second(d),
+      millisecond: millisecond(d)
+    }
   end
 
   def to_date(%DayEx{datetime: dt}), do: dt
@@ -280,38 +354,64 @@ defmodule DayEx do
   # --- Comparison & Query ---
 
   def before?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :lt
-  def before?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :lt
+
+  def before?(%DayEx{} = a, %DayEx{} = b, unit),
+    do: compare(start_of(a, unit), start_of(b, unit)) == :lt
 
   def after?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :gt
-  def after?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :gt
+
+  def after?(%DayEx{} = a, %DayEx{} = b, unit),
+    do: compare(start_of(a, unit), start_of(b, unit)) == :gt
 
   def same?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :eq
-  def same?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :eq
+
+  def same?(%DayEx{} = a, %DayEx{} = b, unit),
+    do: compare(start_of(a, unit), start_of(b, unit)) == :eq
 
   def same_or_before?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) in [:lt, :eq]
-  def same_or_before?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) in [:lt, :eq]
+
+  def same_or_before?(%DayEx{} = a, %DayEx{} = b, unit),
+    do: compare(start_of(a, unit), start_of(b, unit)) in [:lt, :eq]
 
   def same_or_after?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) in [:gt, :eq]
-  def same_or_after?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) in [:gt, :eq]
+
+  def same_or_after?(%DayEx{} = a, %DayEx{} = b, unit),
+    do: compare(start_of(a, unit), start_of(b, unit)) in [:gt, :eq]
 
   def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b), do: between?(d, a, b, nil, "()")
   def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b, unit), do: between?(d, a, b, unit, "()")
+
   def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b, unit, inclusivity) do
-    {left_inc, right_inc} = case inclusivity do
-      "()" -> {false, false}; "[]" -> {true, true}; "[)" -> {true, false}; "(]" -> {false, true}
-    end
-    left_ok = if unit, do: (if left_inc, do: same_or_after?(d, a, unit), else: after?(d, a, unit)),
-                       else: (if left_inc, do: same_or_after?(d, a), else: after?(d, a))
-    right_ok = if unit, do: (if right_inc, do: same_or_before?(d, b, unit), else: before?(d, b, unit)),
-                        else: (if right_inc, do: same_or_before?(d, b), else: before?(d, b))
+    {left_inc, right_inc} =
+      case inclusivity do
+        "()" -> {false, false}
+        "[]" -> {true, true}
+        "[)" -> {true, false}
+        "(]" -> {false, true}
+      end
+
+    left_ok =
+      if unit,
+        do: if(left_inc, do: same_or_after?(d, a, unit), else: after?(d, a, unit)),
+        else: if(left_inc, do: same_or_after?(d, a), else: after?(d, a))
+
+    right_ok =
+      if unit,
+        do: if(right_inc, do: same_or_before?(d, b, unit), else: before?(d, b, unit)),
+        else: if(right_inc, do: same_or_before?(d, b), else: before?(d, b))
+
     left_ok and right_ok
   end
 
   def diff(%DayEx{} = a, %DayEx{} = b), do: to_unix_ms(a) - to_unix_ms(b)
   def diff(%DayEx{} = a, %DayEx{} = b, unit), do: trunc(diff(a, b) / unit_to_ms(unit))
+
   def diff(%DayEx{} = a, %DayEx{} = b, unit, opts) do
     ms = diff(a, b)
-    if Keyword.get(opts, :float, false), do: ms / unit_to_ms(unit), else: trunc(ms / unit_to_ms(unit))
+
+    if Keyword.get(opts, :float, false),
+      do: ms / unit_to_ms(unit),
+      else: trunc(ms / unit_to_ms(unit))
   end
 
   def leap_year?(%DayEx{} = d), do: Calendar.ISO.leap_year?(year(d))
@@ -322,6 +422,7 @@ defmodule DayEx do
 
   def tz(input, timezone) when is_binary(input) and is_binary(timezone) do
     {:ok, d} = parse(input)
+
     case d.datetime do
       %NaiveDateTime{} = ndt ->
         case DateTime.from_naive(ndt, timezone) do
@@ -329,6 +430,7 @@ defmodule DayEx do
           {:ambiguous, first, _} -> %{d | datetime: first}
           {:gap, _, just_after} -> %{d | datetime: just_after}
         end
+
       %DateTime{} = dt ->
         {:ok, shifted} = DateTime.shift_zone(dt, timezone)
         %{d | datetime: shifted}
@@ -352,19 +454,29 @@ defmodule DayEx do
   def local(%DayEx{datetime: %DateTime{} = dt} = d), do: %{d | datetime: DateTime.to_naive(dt)}
   def local(%DayEx{datetime: %NaiveDateTime{}} = d), do: d
 
-  def utc_offset(%DayEx{datetime: %DateTime{utc_offset: offset, std_offset: std}}), do: div(offset + std, 60)
+  def utc_offset(%DayEx{datetime: %DateTime{utc_offset: offset, std_offset: std}}),
+    do: div(offset + std, 60)
+
   def utc_offset(%DayEx{datetime: %NaiveDateTime{}}), do: nil
 
   # --- Relative Time entry points ---
 
   def from_now(%DayEx{} = d), do: DayEx.RelativeTime.from(d, now())
-  def from_now(%DayEx{} = d, without_suffix), do: DayEx.RelativeTime.from(d, now(), without_suffix)
+
+  def from_now(%DayEx{} = d, without_suffix),
+    do: DayEx.RelativeTime.from(d, now(), without_suffix)
+
   def from(%DayEx{} = d, %DayEx{} = ref), do: DayEx.RelativeTime.from(d, ref)
-  def from(%DayEx{} = d, %DayEx{} = ref, without_suffix), do: DayEx.RelativeTime.from(d, ref, without_suffix)
+
+  def from(%DayEx{} = d, %DayEx{} = ref, without_suffix),
+    do: DayEx.RelativeTime.from(d, ref, without_suffix)
+
   def to_now(%DayEx{} = d), do: DayEx.RelativeTime.to(d, now())
   def to_now(%DayEx{} = d, without_suffix), do: DayEx.RelativeTime.to(d, now(), without_suffix)
   def to(%DayEx{} = d, %DayEx{} = target), do: DayEx.RelativeTime.to(d, target)
-  def to(%DayEx{} = d, %DayEx{} = target, without_suffix), do: DayEx.RelativeTime.to(d, target, without_suffix)
+
+  def to(%DayEx{} = d, %DayEx{} = target, without_suffix),
+    do: DayEx.RelativeTime.to(d, target, without_suffix)
 
   # --- Week / Quarter / Calendar ---
 
@@ -372,6 +484,7 @@ defmodule DayEx do
     doy = day_of_year(d)
     div(doy - 1, 7) + 1
   end
+
   def week(%DayEx{} = d, n) do
     current = week(d)
     add(d, (n - current) * 7, :day)
@@ -382,6 +495,7 @@ defmodule DayEx do
     {_year, week} = :calendar.iso_week_number({date.year, date.month, date.day})
     week
   end
+
   def iso_week(%DayEx{} = d, n) do
     current = iso_week(d)
     add(d, (n - current) * 7, :day)
@@ -396,12 +510,14 @@ defmodule DayEx do
   end
 
   def day_of_year(%DayEx{datetime: dt}), do: Date.day_of_year(to_elixir_date(dt))
+
   def day_of_year(%DayEx{} = d, n) do
     current = day_of_year(d)
     add(d, n - current, :day)
   end
 
   def quarter(%DayEx{} = d), do: div(month(d) - 1, 3) + 1
+
   def quarter(%DayEx{} = d, q) do
     current_q = quarter(d)
     month_offset = (q - current_q) * 3
@@ -413,6 +529,7 @@ defmodule DayEx do
     ws = locale_mod.week_start()
     rem(day(d) - ws + 7, 7)
   end
+
   def weekday(%DayEx{} = d, n) do
     current = weekday(d)
     add(d, n - current, :day)
@@ -438,7 +555,9 @@ defmodule DayEx do
 
   # Private helpers
   defp to_unix_ms(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt, :millisecond)
-  defp to_unix_ms(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
+
+  defp to_unix_ms(%DayEx{datetime: %NaiveDateTime{} = ndt}),
+    do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
 
   defp unit_to_ms(:millisecond), do: 1
   defp unit_to_ms(:second), do: 1_000
@@ -462,6 +581,7 @@ defmodule DayEx do
     {date_fields, time_fields} = split_date_time_fields(updates)
     date = update_date(dt, date_fields)
     time = update_time(dt, time_fields)
+
     case DateTime.new(date, time, dt.time_zone) do
       {:ok, new_dt} -> new_dt
       {:ambiguous, first, _second} -> first
@@ -484,6 +604,7 @@ defmodule DayEx do
   end
 
   defp update_date(dt, []), do: Date.new!(dt.year, dt.month, dt.day)
+
   defp update_date(dt, fields) do
     year = Keyword.get(fields, :year, dt.year)
     month = Keyword.get(fields, :month, dt.month)
@@ -493,6 +614,7 @@ defmodule DayEx do
   end
 
   defp update_time(dt, []), do: Time.new!(dt.hour, dt.minute, dt.second, dt.microsecond)
+
   defp update_time(dt, fields) do
     hour = Keyword.get(fields, :hour, dt.hour)
     minute = Keyword.get(fields, :minute, dt.minute)

@@ -4,8 +4,7 @@ defmodule DayEx.Locale.De do
 
   @impl true
   def months_full,
-    do:
-      ~w(Januar Februar März April Mai Juni Juli August September Oktober November Dezember)
+    do: ~w(Januar Februar März April Mai Juni Juli August September Oktober November Dezember)
 
   @impl true
   def months_short, do: ~w(Jan. Feb. März Apr. Mai Juni Juli Aug. Sep. Okt. Nov. Dez.)

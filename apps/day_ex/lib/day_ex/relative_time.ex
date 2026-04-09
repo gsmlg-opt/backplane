@@ -8,7 +8,7 @@ defmodule DayEx.RelativeTime do
     locale_mod = DayEx.Locale.get(d.locale)
     rt = locale_mod.relative_time()
     raw = relative_string(abs_ms, rt)
-    if without_suffix, do: raw, else: (if future?, do: "in #{raw}", else: "#{raw} ago")
+    if without_suffix, do: raw, else: if(future?, do: "in #{raw}", else: "#{raw} ago")
   end
 
   def to(%DayEx{} = d, %DayEx{} = reference, without_suffix \\ false) do
@@ -21,6 +21,7 @@ defmodule DayEx.RelativeTime do
     hours = div(abs_ms, 3_600_000)
     days = div(abs_ms, 86_400_000)
     months = div(abs_ms, 2_629_746_000)
+
     cond do
       seconds < 45 -> rt.s
       seconds < 90 -> rt.m

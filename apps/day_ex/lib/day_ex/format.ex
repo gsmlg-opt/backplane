@@ -84,6 +84,7 @@ defmodule DayEx.Format do
   end
 
   defp render_token(d, "YYYY", _locale), do: String.pad_leading(to_string(DayEx.year(d)), 4, "0")
+
   defp render_token(d, "YY", _locale) do
     year = DayEx.year(d)
     two = rem(year, 100)
@@ -276,6 +277,7 @@ defmodule DayEx.Format do
     abs_seconds = abs(seconds)
     hours = div(abs_seconds, 3600)
     minutes = div(rem(abs_seconds, 3600), 60)
+
     "#{sign}#{String.pad_leading(to_string(hours), 2, "0")}:#{String.pad_leading(to_string(minutes), 2, "0")}"
   end
 
@@ -284,6 +286,7 @@ defmodule DayEx.Format do
     abs_seconds = abs(seconds)
     hours = div(abs_seconds, 3600)
     minutes = div(rem(abs_seconds, 3600), 60)
+
     "#{sign}#{String.pad_leading(to_string(hours), 2, "0")}#{String.pad_leading(to_string(minutes), 2, "0")}"
   end
 end

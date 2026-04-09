@@ -3,11 +3,21 @@ defmodule DayEx.FormatTest do
 
   describe "tokenize/1" do
     test "basic tokens" do
-      assert DayEx.Format.tokenize("YYYY-MM-DD") == [{:token, "YYYY"}, {:literal, "-"}, {:token, "MM"}, {:literal, "-"}, {:token, "DD"}]
+      assert DayEx.Format.tokenize("YYYY-MM-DD") == [
+               {:token, "YYYY"},
+               {:literal, "-"},
+               {:token, "MM"},
+               {:literal, "-"},
+               {:token, "DD"}
+             ]
     end
 
     test "escaped text" do
-      assert DayEx.Format.tokenize("[Year:] YYYY") == [{:literal, "Year:"}, {:literal, " "}, {:token, "YYYY"}]
+      assert DayEx.Format.tokenize("[Year:] YYYY") == [
+               {:literal, "Year:"},
+               {:literal, " "},
+               {:token, "YYYY"}
+             ]
     end
 
     test "greedy matching — MMMM before MMM" do
@@ -16,7 +26,15 @@ defmodule DayEx.FormatTest do
 
     test "adjacent tokens" do
       tokens = DayEx.Format.tokenize("YYYYMMDDHHmmss")
-      assert tokens == [{:token, "YYYY"}, {:token, "MM"}, {:token, "DD"}, {:token, "HH"}, {:token, "mm"}, {:token, "ss"}]
+
+      assert tokens == [
+               {:token, "YYYY"},
+               {:token, "MM"},
+               {:token, "DD"},
+               {:token, "HH"},
+               {:token, "mm"},
+               {:token, "ss"}
+             ]
     end
   end
 
