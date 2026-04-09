@@ -157,4 +157,45 @@ defmodule DayExTest do
       assert dt.time_zone == "Etc/UTC"
     end
   end
+
+  describe "getters" do
+    setup do
+      {:ok, dt, _} = DateTime.from_iso8601("2024-03-15T14:30:45.123Z")
+      d = %DayEx{datetime: dt}
+      %{d: d}
+    end
+
+    test "year/1", %{d: d} do
+      assert DayEx.year(d) == 2024
+    end
+
+    test "month/1 (1-indexed)", %{d: d} do
+      assert DayEx.month(d) == 3
+    end
+
+    test "date/1 (day of month)", %{d: d} do
+      assert DayEx.date(d) == 15
+    end
+
+    test "day/1 (day of week, 0=Sunday)", %{d: d} do
+      # 2024-03-15 is a Friday = 5
+      assert DayEx.day(d) == 5
+    end
+
+    test "hour/1", %{d: d} do
+      assert DayEx.hour(d) == 14
+    end
+
+    test "minute/1", %{d: d} do
+      assert DayEx.minute(d) == 30
+    end
+
+    test "second/1", %{d: d} do
+      assert DayEx.second(d) == 45
+    end
+
+    test "millisecond/1", %{d: d} do
+      assert DayEx.millisecond(d) == 123
+    end
+  end
 end

@@ -103,6 +103,26 @@ defmodule DayEx do
     end
   end
 
+  def year(%DayEx{datetime: dt}), do: dt.year
+  def month(%DayEx{datetime: dt}), do: dt.month
+  def date(%DayEx{datetime: dt}), do: dt.day
+
+  def day(%DayEx{datetime: dt}) do
+    case Date.day_of_week(dt) do
+      7 -> 0
+      n -> n
+    end
+  end
+
+  def hour(%DayEx{datetime: dt}), do: dt.hour
+  def minute(%DayEx{datetime: dt}), do: dt.minute
+  def second(%DayEx{datetime: dt}), do: dt.second
+
+  def millisecond(%DayEx{datetime: dt}) do
+    {us, _precision} = dt.microsecond
+    div(us, 1000)
+  end
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)
