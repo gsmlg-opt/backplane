@@ -15,6 +15,94 @@ defmodule DayEx do
 
   defstruct [:datetime, locale: :en]
 
+  def now, do: %DayEx{datetime: DateTime.utc_now()}
+  def now(locale) when is_atom(locale), do: %DayEx{datetime: DateTime.utc_now(), locale: locale}
+
+  def parse(%DayEx{} = d), do: {:ok, %DayEx{datetime: d.datetime, locale: d.locale}}
+  def parse(%DateTime{} = dt), do: {:ok, %DayEx{datetime: dt}}
+  def parse(%NaiveDateTime{} = ndt), do: {:ok, %DayEx{datetime: ndt}}
+  def parse(%Date{} = date), do: {:ok, %DayEx{datetime: NaiveDateTime.new!(date, ~T[00:00:00])}}
+
+  def parse(ts) when is_integer(ts) do
+    case DateTime.from_unix(ts) do
+      {:ok, dt} -> {:ok, %DayEx{datetime: dt}}
+      {:error, reason} -> {:error, "invalid unix timestamp: #{inspect(reason)}"}
+    end
+  end
+
+  def parse(ts) when is_float(ts) do
+    seconds = trunc(ts)
+    microseconds = round((ts - seconds) * 1_000_000)
+
+    case DateTime.from_unix(seconds) do
+      {:ok, dt} ->
+        dt = %{dt | microsecond: {microseconds, 6}}
+        {:ok, %DayEx{datetime: dt}}
+
+      {:error, reason} ->
+        {:error, "invalid unix timestamp: #{inspect(reason)}"}
+    end
+  end
+
+  def parse(str) when is_binary(str) do
+    cond do
+      String.contains?(str, "T") or String.contains?(str, "t") ->
+        parse_iso8601_datetime(str)
+
+      Regex.match?(~r/^\d{4}-\d{2}-\d{2}$/, str) ->
+        case Date.from_iso8601(str) do
+          {:ok, date} -> {:ok, %DayEx{datetime: NaiveDateTime.new!(date, ~T[00:00:00])}}
+          {:error, reason} -> {:error, "invalid date: #{inspect(reason)}"}
+        end
+
+      true ->
+        {:error, "unrecognized format: #{str}"}
+    end
+  end
+
+  def parse(_), do: {:error, "unsupported input type"}
+
+  defp parse_iso8601_datetime(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _offset} ->
+        {:ok, %DayEx{datetime: dt}}
+
+      {:error, _} ->
+        case NaiveDateTime.from_iso8601(str) do
+          {:ok, ndt} -> {:ok, %DayEx{datetime: ndt}}
+          {:error, reason} -> {:error, "invalid datetime: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  def parse!(input) do
+    case parse(input) do
+      {:ok, d} -> d
+      {:error, reason} -> raise ArgumentError, "failed to parse: #{reason}"
+    end
+  end
+
+  def unix(ts) when is_integer(ts) do
+    {:ok, dt} = DateTime.from_unix(ts)
+    %DayEx{datetime: dt}
+  end
+
+  def utc, do: %DayEx{datetime: DateTime.utc_now()}
+
+  def utc(input) do
+    {:ok, d} = parse(input)
+
+    case d.datetime do
+      %DateTime{} = dt ->
+        {:ok, utc_dt} = DateTime.shift_zone(dt, "Etc/UTC")
+        %DayEx{datetime: utc_dt}
+
+      %NaiveDateTime{} = ndt ->
+        dt = DateTime.from_naive!(ndt, "Etc/UTC")
+        %DayEx{datetime: dt}
+    end
+  end
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)

@@ -1,5 +1,7 @@
 import Config
 
+config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
+
 config :backplane, ecto_repos: [Backplane.Repo]
 
 config :backplane, Backplane.Repo,
