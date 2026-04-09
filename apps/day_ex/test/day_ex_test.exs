@@ -198,4 +198,71 @@ defmodule DayExTest do
       assert DayEx.millisecond(d) == 123
     end
   end
+
+  describe "setters" do
+    setup do
+      d = DayEx.parse!("2024-03-15T14:30:45Z")
+      %{d: d}
+    end
+
+    test "year/2", %{d: d} do
+      result = DayEx.year(d, 2025)
+      assert DayEx.year(result) == 2025
+      assert DayEx.month(result) == 3
+    end
+
+    test "month/2", %{d: d} do
+      result = DayEx.month(d, 6)
+      assert DayEx.month(result) == 6
+      assert DayEx.year(result) == 2024
+    end
+
+    test "date/2", %{d: d} do
+      result = DayEx.date(d, 20)
+      assert DayEx.date(result) == 20
+    end
+
+    test "hour/2", %{d: d} do
+      result = DayEx.hour(d, 8)
+      assert DayEx.hour(result) == 8
+    end
+
+    test "minute/2", %{d: d} do
+      result = DayEx.minute(d, 15)
+      assert DayEx.minute(result) == 15
+    end
+
+    test "second/2", %{d: d} do
+      result = DayEx.second(d, 30)
+      assert DayEx.second(result) == 30
+    end
+
+    test "millisecond/2", %{d: d} do
+      result = DayEx.millisecond(d, 500)
+      assert DayEx.millisecond(result) == 500
+    end
+
+    test "set/3 with :year", %{d: d} do
+      result = DayEx.set(d, :year, 2025)
+      assert DayEx.year(result) == 2025
+    end
+
+    test "set/3 with :month", %{d: d} do
+      result = DayEx.set(d, :month, 12)
+      assert DayEx.month(result) == 12
+    end
+
+    test "immutability — original unchanged", %{d: d} do
+      _result = DayEx.year(d, 2025)
+      assert DayEx.year(d) == 2024
+    end
+
+    test "month overflow — clamps day" do
+      # Set month to Feb on a date with day=31
+      d = DayEx.parse!("2024-01-31T00:00:00Z")
+      result = DayEx.month(d, 2)
+      # 2024 is leap year so Feb has 29 days
+      assert DayEx.date(result) == 29
+    end
+  end
 end

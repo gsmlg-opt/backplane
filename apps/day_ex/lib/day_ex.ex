@@ -123,6 +123,22 @@ defmodule DayEx do
     div(us, 1000)
   end
 
+  def year(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, year: value)}
+  def month(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, month: value)}
+  def date(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, day: value)}
+  def hour(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, hour: value)}
+  def minute(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, minute: value)}
+  def second(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, second: value)}
+  def millisecond(%DayEx{datetime: dt} = d, value), do: %{d | datetime: update_datetime(dt, microsecond: {value * 1000, 3})}
+
+  def set(d, :year, value), do: year(d, value)
+  def set(d, :month, value), do: month(d, value)
+  def set(d, :date, value), do: date(d, value)
+  def set(d, :hour, value), do: hour(d, value)
+  def set(d, :minute, value), do: minute(d, value)
+  def set(d, :second, value), do: second(d, value)
+  def set(d, :millisecond, value), do: millisecond(d, value)
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)
@@ -130,6 +146,49 @@ defmodule DayEx do
       {%DateTime{} = a, %NaiveDateTime{} = b} -> NaiveDateTime.compare(DateTime.to_naive(a), b)
       {%NaiveDateTime{} = a, %DateTime{} = b} -> NaiveDateTime.compare(a, DateTime.to_naive(b))
     end
+  end
+
+  defp update_datetime(%DateTime{} = dt, updates) do
+    {date_fields, time_fields} = split_date_time_fields(updates)
+    date = update_date(dt, date_fields)
+    time = update_time(dt, time_fields)
+    case DateTime.new(date, time, dt.time_zone) do
+      {:ok, new_dt} -> new_dt
+      {:ambiguous, first, _second} -> first
+      {:gap, _just_before, just_after} -> just_after
+    end
+  end
+
+  defp update_datetime(%NaiveDateTime{} = ndt, updates) do
+    {date_fields, time_fields} = split_date_time_fields(updates)
+    date = update_date(ndt, date_fields)
+    time = update_time(ndt, time_fields)
+    NaiveDateTime.new!(date, time)
+  end
+
+  defp split_date_time_fields(updates) do
+    date_keys = [:year, :month, :day]
+    date_fields = Keyword.take(updates, date_keys)
+    time_fields = Keyword.drop(updates, date_keys)
+    {date_fields, time_fields}
+  end
+
+  defp update_date(dt, []), do: Date.new!(dt.year, dt.month, dt.day)
+  defp update_date(dt, fields) do
+    year = Keyword.get(fields, :year, dt.year)
+    month = Keyword.get(fields, :month, dt.month)
+    day = Keyword.get(fields, :day, dt.day)
+    max_day = Calendar.ISO.days_in_month(year, month)
+    Date.new!(year, month, min(day, max_day))
+  end
+
+  defp update_time(dt, []), do: Time.new!(dt.hour, dt.minute, dt.second, dt.microsecond)
+  defp update_time(dt, fields) do
+    hour = Keyword.get(fields, :hour, dt.hour)
+    minute = Keyword.get(fields, :minute, dt.minute)
+    second = Keyword.get(fields, :second, dt.second)
+    microsecond = Keyword.get(fields, :microsecond, dt.microsecond)
+    Time.new!(hour, minute, second, microsecond)
   end
 
   defimpl String.Chars do
