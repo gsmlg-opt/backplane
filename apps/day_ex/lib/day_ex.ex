@@ -240,6 +240,28 @@ defmodule DayEx do
   def valid?(%DayEx{datetime: %NaiveDateTime{}}), do: true
   def valid?(_), do: false
 
+  def format(%DayEx{} = d), do: to_string(d)
+  def format(%DayEx{} = d, template), do: DayEx.Format.format(d, template)
+
+  def to_iso_string(%DayEx{datetime: %DateTime{} = dt}) do
+    {:ok, utc} = DateTime.shift_zone(dt, "Etc/UTC")
+    DateTime.to_iso8601(utc)
+  end
+  def to_iso_string(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: NaiveDateTime.to_iso8601(ndt) <> "Z"
+
+  def to_json(%DayEx{} = d), do: to_iso_string(d)
+
+  def to_unix(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt)
+  def to_unix(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
+
+  def to_list(%DayEx{} = d), do: [year(d), month(d), date(d), hour(d), minute(d), second(d), millisecond(d)]
+
+  def to_map(%DayEx{} = d) do
+    %{year: year(d), month: month(d), date: date(d), hour: hour(d), minute: minute(d), second: second(d), millisecond: millisecond(d)}
+  end
+
+  def to_date(%DayEx{datetime: dt}), do: dt
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)
