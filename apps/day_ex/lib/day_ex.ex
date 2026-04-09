@@ -277,6 +277,71 @@ defmodule DayEx do
 
   def to_date(%DayEx{datetime: dt}), do: dt
 
+  # --- Comparison & Query ---
+
+  def before?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :lt
+  def before?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :lt
+
+  def after?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :gt
+  def after?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :gt
+
+  def same?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) == :eq
+  def same?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) == :eq
+
+  def same_or_before?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) in [:lt, :eq]
+  def same_or_before?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) in [:lt, :eq]
+
+  def same_or_after?(%DayEx{} = a, %DayEx{} = b), do: compare(a, b) in [:gt, :eq]
+  def same_or_after?(%DayEx{} = a, %DayEx{} = b, unit), do: compare(start_of(a, unit), start_of(b, unit)) in [:gt, :eq]
+
+  def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b), do: between?(d, a, b, nil, "()")
+  def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b, unit), do: between?(d, a, b, unit, "()")
+  def between?(%DayEx{} = d, %DayEx{} = a, %DayEx{} = b, unit, inclusivity) do
+    {left_inc, right_inc} = case inclusivity do
+      "()" -> {false, false}; "[]" -> {true, true}; "[)" -> {true, false}; "(]" -> {false, true}
+    end
+    left_ok = if unit, do: (if left_inc, do: same_or_after?(d, a, unit), else: after?(d, a, unit)),
+                       else: (if left_inc, do: same_or_after?(d, a), else: after?(d, a))
+    right_ok = if unit, do: (if right_inc, do: same_or_before?(d, b, unit), else: before?(d, b, unit)),
+                        else: (if right_inc, do: same_or_before?(d, b), else: before?(d, b))
+    left_ok and right_ok
+  end
+
+  def diff(%DayEx{} = a, %DayEx{} = b), do: to_unix_ms(a) - to_unix_ms(b)
+  def diff(%DayEx{} = a, %DayEx{} = b, unit), do: trunc(diff(a, b) / unit_to_ms(unit))
+  def diff(%DayEx{} = a, %DayEx{} = b, unit, opts) do
+    ms = diff(a, b)
+    if Keyword.get(opts, :float, false), do: ms / unit_to_ms(unit), else: trunc(ms / unit_to_ms(unit))
+  end
+
+  def leap_year?(%DayEx{} = d), do: Calendar.ISO.leap_year?(year(d))
+  def utc?(%DayEx{datetime: %DateTime{time_zone: "Etc/UTC"}}), do: true
+  def utc?(%DayEx{}), do: false
+
+  # --- Relative Time entry points ---
+
+  def from_now(%DayEx{} = d), do: DayEx.RelativeTime.from(d, now())
+  def from_now(%DayEx{} = d, without_suffix), do: DayEx.RelativeTime.from(d, now(), without_suffix)
+  def from(%DayEx{} = d, %DayEx{} = ref), do: DayEx.RelativeTime.from(d, ref)
+  def from(%DayEx{} = d, %DayEx{} = ref, without_suffix), do: DayEx.RelativeTime.from(d, ref, without_suffix)
+  def to_now(%DayEx{} = d), do: DayEx.RelativeTime.to(d, now())
+  def to_now(%DayEx{} = d, without_suffix), do: DayEx.RelativeTime.to(d, now(), without_suffix)
+  def to(%DayEx{} = d, %DayEx{} = target), do: DayEx.RelativeTime.to(d, target)
+  def to(%DayEx{} = d, %DayEx{} = target, without_suffix), do: DayEx.RelativeTime.to(d, target, without_suffix)
+
+  # Private helpers
+  defp to_unix_ms(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt, :millisecond)
+  defp to_unix_ms(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
+
+  defp unit_to_ms(:millisecond), do: 1
+  defp unit_to_ms(:second), do: 1_000
+  defp unit_to_ms(:minute), do: 60_000
+  defp unit_to_ms(:hour), do: 3_600_000
+  defp unit_to_ms(:day), do: 86_400_000
+  defp unit_to_ms(:week), do: 604_800_000
+  defp unit_to_ms(:month), do: 2_629_746_000
+  defp unit_to_ms(:year), do: 31_556_952_000
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)

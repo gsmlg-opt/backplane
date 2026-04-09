@@ -422,4 +422,132 @@ defmodule DayExTest do
       assert DayEx.valid?(%DayEx{datetime: nil}) == false
     end
   end
+
+  describe "before?/2,3" do
+    test "before? without unit" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T12:00:00Z")
+      assert DayEx.before?(a, b)
+      refute DayEx.before?(b, a)
+    end
+
+    test "before? with unit" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T12:00:00Z")
+      refute DayEx.before?(a, b, :day)
+      assert DayEx.before?(a, b, :hour)
+    end
+  end
+
+  describe "after?/2,3" do
+    test "after? without unit" do
+      a = DayEx.parse!("2024-01-15T12:00:00Z")
+      b = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.after?(a, b)
+    end
+  end
+
+  describe "same?/2,3" do
+    test "same? without unit" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.same?(a, b)
+    end
+
+    test "same? with :day unit" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T22:00:00Z")
+      assert DayEx.same?(a, b, :day)
+      refute DayEx.same?(a, b, :hour)
+    end
+  end
+
+  describe "same_or_before?/2" do
+    test "same or before" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.same_or_before?(a, a)
+    end
+  end
+
+  describe "same_or_after?/2" do
+    test "same or after" do
+      a = DayEx.parse!("2024-01-15T12:00:00Z")
+      b = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.same_or_after?(a, b)
+    end
+  end
+
+  describe "between?/3,4,5" do
+    test "between two dates (exclusive)" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-20T00:00:00Z")
+      d = DayEx.parse!("2024-01-15T00:00:00Z")
+      assert DayEx.between?(d, a, b)
+    end
+
+    test "not between when equal to boundary (exclusive)" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-20T00:00:00Z")
+      refute DayEx.between?(a, a, b)
+    end
+
+    test "between with inclusive '[]'" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-20T00:00:00Z")
+      assert DayEx.between?(a, a, b, nil, "[]")
+    end
+
+    test "between with '[)'" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-20T00:00:00Z")
+      assert DayEx.between?(a, a, b, nil, "[)")
+      refute DayEx.between?(b, a, b, nil, "[)")
+    end
+  end
+
+  describe "diff/2,3,4" do
+    test "diff in milliseconds" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T12:00:00Z")
+      assert DayEx.diff(a, b) == -7_200_000
+    end
+
+    test "diff in hours" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T12:30:00Z")
+      assert DayEx.diff(a, b, :hour) == -2
+    end
+
+    test "diff as float" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T12:30:00Z")
+      assert DayEx.diff(a, b, :hour, float: true) == -2.5
+    end
+
+    test "diff in days" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-15T00:00:00Z")
+      assert DayEx.diff(a, b, :day) == -5
+    end
+  end
+
+  describe "leap_year?/1" do
+    test "2024 is a leap year" do
+      assert DayEx.leap_year?(DayEx.parse!("2024-06-15T00:00:00Z"))
+    end
+
+    test "2023 is not a leap year" do
+      refute DayEx.leap_year?(DayEx.parse!("2023-06-15T00:00:00Z"))
+    end
+  end
+
+  describe "utc?/1" do
+    test "UTC DateTime is utc" do
+      assert DayEx.utc?(DayEx.parse!("2024-01-15T10:00:00Z"))
+    end
+
+    test "NaiveDateTime is not utc" do
+      refute DayEx.utc?(%DayEx{datetime: ~N[2024-01-15 10:00:00]})
+    end
+  end
 end
