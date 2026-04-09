@@ -265,4 +265,161 @@ defmodule DayExTest do
       assert DayEx.date(result) == 29
     end
   end
+
+  describe "add/3" do
+    test "adds days" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.add(d, 5, :day)
+      assert DayEx.date(result) == 20
+    end
+
+    test "adds months" do
+      d = DayEx.parse!("2024-01-31T10:00:00Z")
+      result = DayEx.add(d, 1, :month)
+      assert DayEx.month(result) == 2
+      assert DayEx.date(result) == 29
+    end
+
+    test "adds years" do
+      d = DayEx.parse!("2024-02-29T10:00:00Z")
+      result = DayEx.add(d, 1, :year)
+      assert DayEx.year(result) == 2025
+      assert DayEx.month(result) == 2
+      assert DayEx.date(result) == 28
+    end
+
+    test "adds hours" do
+      d = DayEx.parse!("2024-01-15T22:00:00Z")
+      result = DayEx.add(d, 5, :hour)
+      assert DayEx.date(result) == 16
+      assert DayEx.hour(result) == 3
+    end
+
+    test "adds weeks" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.add(d, 2, :week)
+      assert DayEx.date(result) == 29
+    end
+
+    test "adds minutes" do
+      d = DayEx.parse!("2024-01-15T10:50:00Z")
+      result = DayEx.add(d, 20, :minute)
+      assert DayEx.hour(result) == 11
+      assert DayEx.minute(result) == 10
+    end
+
+    test "adds seconds" do
+      d = DayEx.parse!("2024-01-15T10:00:50Z")
+      result = DayEx.add(d, 20, :second)
+      assert DayEx.minute(result) == 1
+      assert DayEx.second(result) == 10
+    end
+
+    test "adds milliseconds" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.add(d, 1500, :millisecond)
+      assert DayEx.second(result) == 1
+      assert DayEx.millisecond(result) == 500
+    end
+  end
+
+  describe "subtract/3" do
+    test "subtracts days" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.subtract(d, 5, :day)
+      assert DayEx.date(result) == 10
+    end
+
+    test "subtracts months across year boundary" do
+      d = DayEx.parse!("2024-02-15T10:00:00Z")
+      result = DayEx.subtract(d, 3, :month)
+      assert DayEx.year(result) == 2023
+      assert DayEx.month(result) == 11
+    end
+  end
+
+  describe "start_of/2" do
+    test "start of year" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :year)
+      assert to_string(result) == "2024-01-01T00:00:00Z"
+    end
+
+    test "start of month" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :month)
+      assert to_string(result) == "2024-06-01T00:00:00Z"
+    end
+
+    test "start of day" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :day)
+      assert to_string(result) == "2024-06-15T00:00:00Z"
+    end
+
+    test "start of hour" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :hour)
+      assert to_string(result) == "2024-06-15T14:00:00Z"
+    end
+
+    test "start of minute" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :minute)
+      assert to_string(result) == "2024-06-15T14:30:00Z"
+    end
+
+    test "start of second" do
+      d = DayEx.parse!("2024-06-15T14:30:45.123Z")
+      result = DayEx.start_of(d, :second)
+      assert DayEx.millisecond(result) == 0
+    end
+
+    test "start of week (Sunday)" do
+      # 2024-06-15 is Saturday
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.start_of(d, :week)
+      assert DayEx.date(result) == 9
+      assert DayEx.hour(result) == 0
+    end
+  end
+
+  describe "end_of/2" do
+    test "end of year" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.end_of(d, :year)
+      assert DayEx.month(result) == 12
+      assert DayEx.date(result) == 31
+      assert DayEx.hour(result) == 23
+      assert DayEx.minute(result) == 59
+      assert DayEx.second(result) == 59
+      assert DayEx.millisecond(result) == 999
+    end
+
+    test "end of month" do
+      d = DayEx.parse!("2024-02-15T14:30:45Z")
+      result = DayEx.end_of(d, :month)
+      assert DayEx.date(result) == 29
+      assert DayEx.hour(result) == 23
+    end
+
+    test "end of day" do
+      d = DayEx.parse!("2024-06-15T14:30:45Z")
+      result = DayEx.end_of(d, :day)
+      assert DayEx.hour(result) == 23
+      assert DayEx.minute(result) == 59
+      assert DayEx.second(result) == 59
+      assert DayEx.millisecond(result) == 999
+    end
+  end
+
+  describe "valid?/1" do
+    test "valid DayEx" do
+      assert DayEx.valid?(DayEx.now())
+    end
+
+    test "nil datetime is invalid" do
+      assert DayEx.valid?(%DayEx{datetime: nil}) == false
+    end
+  end
 end

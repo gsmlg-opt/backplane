@@ -139,6 +139,107 @@ defmodule DayEx do
   def set(d, :second, value), do: second(d, value)
   def set(d, :millisecond, value), do: millisecond(d, value)
 
+  def add(%DayEx{} = d, n, :year) do
+    new_year = year(d) + n
+    max_day = Calendar.ISO.days_in_month(new_year, month(d))
+    clamped_day = min(date(d), max_day)
+    %{d | datetime: update_datetime(d.datetime, year: new_year, day: clamped_day)}
+  end
+
+  def add(%DayEx{} = d, n, :month) do
+    total_months = (year(d) - 1) * 12 + (month(d) - 1) + n
+    new_year = div(total_months, 12) + 1
+    new_month = rem(total_months, 12) + 1
+    max_day = Calendar.ISO.days_in_month(new_year, new_month)
+    clamped_day = min(date(d), max_day)
+    %{d | datetime: update_datetime(d.datetime, year: new_year, month: new_month, day: clamped_day)}
+  end
+
+  def add(%DayEx{} = d, n, :week), do: add(d, n * 7, :day)
+
+  def add(%DayEx{datetime: %DateTime{} = dt} = d, n, unit)
+      when unit in [:day, :hour, :minute, :second, :millisecond] do
+    new_dt =
+      case unit do
+        :millisecond -> DateTime.add(dt, n, :millisecond)
+        :second -> DateTime.add(dt, n, :second)
+        :minute -> DateTime.add(dt, n * 60, :second)
+        :hour -> DateTime.add(dt, n * 3_600, :second)
+        :day -> DateTime.add(dt, n * 86_400, :second)
+      end
+
+    %{d | datetime: new_dt}
+  end
+
+  def add(%DayEx{datetime: %NaiveDateTime{} = ndt} = d, n, unit)
+      when unit in [:day, :hour, :minute, :second, :millisecond] do
+    new_ndt =
+      case unit do
+        :millisecond -> NaiveDateTime.add(ndt, n, :millisecond)
+        :second -> NaiveDateTime.add(ndt, n, :second)
+        :minute -> NaiveDateTime.add(ndt, n * 60, :second)
+        :hour -> NaiveDateTime.add(ndt, n * 3_600, :second)
+        :day -> NaiveDateTime.add(ndt, n * 86_400, :second)
+      end
+
+    %{d | datetime: new_ndt}
+  end
+
+  def subtract(%DayEx{} = d, n, unit), do: add(d, -n, unit)
+
+  def start_of(%DayEx{} = d, :year),
+    do: %{d | datetime: update_datetime(d.datetime, month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+
+  def start_of(%DayEx{} = d, :month),
+    do: %{d | datetime: update_datetime(d.datetime, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+
+  def start_of(%DayEx{} = d, :week) do
+    days_since_sunday = day(d)
+    d |> subtract(days_since_sunday, :day) |> start_of(:day)
+  end
+
+  def start_of(%DayEx{} = d, :day),
+    do: %{d | datetime: update_datetime(d.datetime, hour: 0, minute: 0, second: 0, microsecond: {0, 0})}
+
+  def start_of(%DayEx{} = d, :hour),
+    do: %{d | datetime: update_datetime(d.datetime, minute: 0, second: 0, microsecond: {0, 0})}
+
+  def start_of(%DayEx{} = d, :minute),
+    do: %{d | datetime: update_datetime(d.datetime, second: 0, microsecond: {0, 0})}
+
+  def start_of(%DayEx{} = d, :second),
+    do: %{d | datetime: update_datetime(d.datetime, microsecond: {0, 0})}
+
+  def end_of(%DayEx{} = d, :year),
+    do: %{d | datetime: update_datetime(d.datetime, month: 12, day: 31, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+
+  def end_of(%DayEx{} = d, :month) do
+    max_day = Calendar.ISO.days_in_month(year(d), month(d))
+    %{d | datetime: update_datetime(d.datetime, day: max_day, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+  end
+
+  def end_of(%DayEx{} = d, :week) do
+    days_until_saturday = 6 - day(d)
+    d |> add(days_until_saturday, :day) |> end_of(:day)
+  end
+
+  def end_of(%DayEx{} = d, :day),
+    do: %{d | datetime: update_datetime(d.datetime, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})}
+
+  def end_of(%DayEx{} = d, :hour),
+    do: %{d | datetime: update_datetime(d.datetime, minute: 59, second: 59, microsecond: {999_000, 3})}
+
+  def end_of(%DayEx{} = d, :minute),
+    do: %{d | datetime: update_datetime(d.datetime, second: 59, microsecond: {999_000, 3})}
+
+  def end_of(%DayEx{} = d, :second),
+    do: %{d | datetime: update_datetime(d.datetime, microsecond: {999_000, 3})}
+
+  def valid?(%DayEx{datetime: nil}), do: false
+  def valid?(%DayEx{datetime: %DateTime{}}), do: true
+  def valid?(%DayEx{datetime: %NaiveDateTime{}}), do: true
+  def valid?(_), do: false
+
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
       {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)
