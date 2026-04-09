@@ -599,4 +599,89 @@ defmodule DayExTest do
     end
   end
 
+  describe "week/1,2" do
+    test "week of year" do
+      d = DayEx.parse!("2024-01-15T00:00:00Z")
+      assert is_integer(DayEx.week(d))
+    end
+
+    test "set week" do
+      d = DayEx.parse!("2024-01-15T00:00:00Z")
+      result = DayEx.week(d, 10)
+      assert DayEx.week(result) == 10
+    end
+  end
+
+  describe "iso_week/1" do
+    test "ISO week number" do
+      d = DayEx.parse!("2024-01-01T00:00:00Z")
+      assert DayEx.iso_week(d) == 1
+    end
+  end
+
+  describe "day_of_year/1,2" do
+    test "day of year" do
+      d = DayEx.parse!("2024-02-01T00:00:00Z")
+      assert DayEx.day_of_year(d) == 32
+    end
+
+    test "set day of year" do
+      d = DayEx.parse!("2024-01-01T00:00:00Z")
+      result = DayEx.day_of_year(d, 60)
+      assert DayEx.month(result) == 2
+      assert DayEx.date(result) == 29
+    end
+  end
+
+  describe "quarter/1,2" do
+    test "quarter" do
+      d = DayEx.parse!("2024-05-15T00:00:00Z")
+      assert DayEx.quarter(d) == 2
+    end
+
+    test "set quarter" do
+      d = DayEx.parse!("2024-05-15T00:00:00Z")
+      result = DayEx.quarter(d, 4)
+      assert DayEx.month(result) == 11
+    end
+  end
+
+  describe "weekday/1" do
+    test "locale-aware day of week" do
+      d = DayEx.parse!("2024-03-15T00:00:00Z")
+      assert DayEx.weekday(d) == 5
+    end
+  end
+
+  describe "weeks_in_year/1" do
+    test "weeks in year" do
+      d = DayEx.parse!("2024-01-01T00:00:00Z")
+      weeks = DayEx.weeks_in_year(d)
+      assert weeks in [52, 53]
+    end
+  end
+
+  describe "min/1 and max/1" do
+    test "min returns earliest" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-15T00:00:00Z")
+      c = DayEx.parse!("2024-01-05T00:00:00Z")
+      assert DayEx.date(DayEx.min([a, b, c])) == 5
+    end
+
+    test "max returns latest" do
+      a = DayEx.parse!("2024-01-10T00:00:00Z")
+      b = DayEx.parse!("2024-01-15T00:00:00Z")
+      c = DayEx.parse!("2024-01-05T00:00:00Z")
+      assert DayEx.date(DayEx.max([a, b, c])) == 15
+    end
+  end
+
+  describe "locale/2" do
+    test "set locale" do
+      d = DayEx.parse!("2024-01-15T00:00:00Z")
+      result = DayEx.locale(d, :fr)
+      assert result.locale == :fr
+    end
+  end
 end

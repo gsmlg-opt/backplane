@@ -366,6 +366,76 @@ defmodule DayEx do
   def to(%DayEx{} = d, %DayEx{} = target), do: DayEx.RelativeTime.to(d, target)
   def to(%DayEx{} = d, %DayEx{} = target, without_suffix), do: DayEx.RelativeTime.to(d, target, without_suffix)
 
+  # --- Week / Quarter / Calendar ---
+
+  def week(%DayEx{} = d) do
+    doy = day_of_year(d)
+    div(doy - 1, 7) + 1
+  end
+  def week(%DayEx{} = d, n) do
+    current = week(d)
+    add(d, (n - current) * 7, :day)
+  end
+
+  def iso_week(%DayEx{datetime: dt}) do
+    date = to_elixir_date(dt)
+    {_year, week} = :calendar.iso_week_number({date.year, date.month, date.day})
+    week
+  end
+  def iso_week(%DayEx{} = d, n) do
+    current = iso_week(d)
+    add(d, (n - current) * 7, :day)
+  end
+
+  def week_year(%DayEx{} = d), do: year(d)
+
+  def iso_week_year(%DayEx{datetime: dt}) do
+    date = to_elixir_date(dt)
+    {year, _week} = :calendar.iso_week_number({date.year, date.month, date.day})
+    year
+  end
+
+  def day_of_year(%DayEx{datetime: dt}), do: Date.day_of_year(to_elixir_date(dt))
+  def day_of_year(%DayEx{} = d, n) do
+    current = day_of_year(d)
+    add(d, n - current, :day)
+  end
+
+  def quarter(%DayEx{} = d), do: div(month(d) - 1, 3) + 1
+  def quarter(%DayEx{} = d, q) do
+    current_q = quarter(d)
+    month_offset = (q - current_q) * 3
+    add(d, month_offset, :month)
+  end
+
+  def weekday(%DayEx{} = d) do
+    locale_mod = DayEx.Locale.get(d.locale)
+    ws = locale_mod.week_start()
+    rem(day(d) - ws + 7, 7)
+  end
+  def weekday(%DayEx{} = d, n) do
+    current = weekday(d)
+    add(d, n - current, :day)
+  end
+
+  def weeks_in_year(%DayEx{} = d) do
+    dec28 = Date.new!(year(d), 12, 28)
+    {_year, week} = :calendar.iso_week_number({dec28.year, dec28.month, dec28.day})
+    week
+  end
+
+  # --- Min / Max ---
+
+  def min(list) when is_list(list), do: Enum.min_by(list, &to_unix_ms/1)
+  def max(list) when is_list(list), do: Enum.max_by(list, &to_unix_ms/1)
+
+  # --- Locale ---
+
+  def locale(%DayEx{} = d, loc) when is_atom(loc), do: %{d | locale: loc}
+
+  defp to_elixir_date(%DateTime{} = dt), do: DateTime.to_date(dt)
+  defp to_elixir_date(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_date(ndt)
+
   # Private helpers
   defp to_unix_ms(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt, :millisecond)
   defp to_unix_ms(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:millisecond)
