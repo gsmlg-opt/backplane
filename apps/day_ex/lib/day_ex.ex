@@ -318,6 +318,43 @@ defmodule DayEx do
   def utc?(%DayEx{datetime: %DateTime{time_zone: "Etc/UTC"}}), do: true
   def utc?(%DayEx{}), do: false
 
+  # --- Timezone ---
+
+  def tz(input, timezone) when is_binary(input) and is_binary(timezone) do
+    {:ok, d} = parse(input)
+    case d.datetime do
+      %NaiveDateTime{} = ndt ->
+        case DateTime.from_naive(ndt, timezone) do
+          {:ok, dt} -> %{d | datetime: dt}
+          {:ambiguous, first, _} -> %{d | datetime: first}
+          {:gap, _, just_after} -> %{d | datetime: just_after}
+        end
+      %DateTime{} = dt ->
+        {:ok, shifted} = DateTime.shift_zone(dt, timezone)
+        %{d | datetime: shifted}
+    end
+  end
+
+  def tz(%DayEx{datetime: %DateTime{} = dt} = d, timezone) when is_binary(timezone) do
+    {:ok, shifted} = DateTime.shift_zone(dt, timezone)
+    %{d | datetime: shifted}
+  end
+
+  def tz(%DayEx{datetime: %NaiveDateTime{} = ndt} = d, timezone) when is_binary(timezone) do
+    dt = DateTime.from_naive!(ndt, "Etc/UTC")
+    {:ok, shifted} = DateTime.shift_zone(dt, timezone)
+    %{d | datetime: shifted}
+  end
+
+  def tz_name(%DayEx{datetime: %DateTime{time_zone: tz}}), do: tz
+  def tz_name(%DayEx{datetime: %NaiveDateTime{}}), do: nil
+
+  def local(%DayEx{datetime: %DateTime{} = dt} = d), do: %{d | datetime: DateTime.to_naive(dt)}
+  def local(%DayEx{datetime: %NaiveDateTime{}} = d), do: d
+
+  def utc_offset(%DayEx{datetime: %DateTime{utc_offset: offset, std_offset: std}}), do: div(offset + std, 60)
+  def utc_offset(%DayEx{datetime: %NaiveDateTime{}}), do: nil
+
   # --- Relative Time entry points ---
 
   def from_now(%DayEx{} = d), do: DayEx.RelativeTime.from(d, now())

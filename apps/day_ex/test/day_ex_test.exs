@@ -550,4 +550,53 @@ defmodule DayExTest do
       refute DayEx.utc?(%DayEx{datetime: ~N[2024-01-15 10:00:00]})
     end
   end
+
+  describe "tz/2 — parse in timezone" do
+    test "parse string in timezone" do
+      d = DayEx.tz("2024-01-15T10:00:00", "America/New_York")
+      assert d.datetime.time_zone == "America/New_York"
+    end
+  end
+
+  describe "tz/1 — convert to timezone" do
+    test "convert UTC to timezone" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.tz(d, "America/New_York")
+      assert result.datetime.time_zone == "America/New_York"
+      assert DayEx.hour(result) == 5
+    end
+  end
+
+  describe "tz_name/1" do
+    test "returns timezone name" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.tz_name(d) == "Etc/UTC"
+    end
+
+    test "returns nil for NaiveDateTime" do
+      d = %DayEx{datetime: ~N[2024-01-15 10:00:00]}
+      assert DayEx.tz_name(d) == nil
+    end
+  end
+
+  describe "local/1" do
+    test "converts to NaiveDateTime" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      result = DayEx.local(d)
+      assert %NaiveDateTime{} = result.datetime
+    end
+  end
+
+  describe "utc_offset/1" do
+    test "UTC offset is 0" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+      assert DayEx.utc_offset(d) == 0
+    end
+
+    test "NaiveDateTime offset is nil" do
+      d = %DayEx{datetime: ~N[2024-01-15 10:00:00]}
+      assert DayEx.utc_offset(d) == nil
+    end
+  end
+
 end
