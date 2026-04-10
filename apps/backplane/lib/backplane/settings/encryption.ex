@@ -30,7 +30,7 @@ defmodule Backplane.Settings.Encryption do
 
   defp derive_key do
     secret_key_base = fetch_secret_key_base()
-    :crypto.hash(:sha256, secret_key_base)
+    :crypto.mac(:hmac, :sha256, "backplane-credentials-v1", secret_key_base)
   end
 
   defp fetch_secret_key_base do

@@ -18,14 +18,11 @@ defmodule BackplaneWeb.DashboardLiveTest do
     assert has_element?(view, "dt", "Native Tools")
     assert has_element?(view, "dt", "Upstream Tools")
     assert has_element?(view, "dt", "Skills")
-    assert has_element?(view, "dt", "Doc Chunks")
   end
 
   test "shows quick action buttons", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/admin")
 
-    assert html =~ "Sync Skills"
-    assert html =~ "Reindex All"
     assert html =~ "Reconnect Degraded"
   end
 end

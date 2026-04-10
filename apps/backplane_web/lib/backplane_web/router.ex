@@ -5,7 +5,6 @@ defmodule BackplaneWeb.Router do
   forward("/mcp", Backplane.Transport.McpPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
-  forward("/api/llm", Backplane.LLM.ApiRouter)
   # forward("/llm", Backplane.LLM.Router)
 
   pipeline :browser do
@@ -16,6 +15,11 @@ defmodule BackplaneWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
     plug(Backplane.Web.AdminAuthPlug)
+  end
+
+  scope "/api" do
+    pipe_through(:browser)
+    forward("/llm", Backplane.LLM.ApiRouter)
   end
 
   scope "/admin", BackplaneWeb do

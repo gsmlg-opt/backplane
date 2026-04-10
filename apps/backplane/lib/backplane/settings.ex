@@ -77,10 +77,14 @@ defmodule Backplane.Settings do
     |> Map.new()
   end
 
+  @sensitive_keys ~w(admin.password_hash)
+
   @doc "List all setting definitions with metadata."
   @spec list_definitions() :: [map()]
   def list_definitions do
-    Enum.map(@defaults, fn {key, meta} ->
+    @defaults
+    |> Enum.reject(fn {key, _} -> key in @sensitive_keys end)
+    |> Enum.map(fn {key, meta} ->
       %{
         key: key,
         value: get(key),

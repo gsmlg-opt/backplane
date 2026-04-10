@@ -12,20 +12,17 @@ defmodule Backplane.Skills.Search do
 
   Options:
     - :tags - list of tags (AND match)
-    - :tools - list of required tools (AND match)
     - :limit - max results (default 10)
   """
   @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
-    tools = Keyword.get(opts, :tools, [])
     limit = Keyword.get(opts, :limit, 10)
 
     Skill
     |> where([s], s.enabled == true)
     |> apply_text_search(search_query)
     |> apply_tag_filter(tags)
-    |> apply_tools_filter(tools)
     |> order_by_relevance(search_query)
     |> limit(^limit)
     |> Repo.all()
@@ -50,12 +47,6 @@ defmodule Backplane.Skills.Search do
 
   defp apply_tag_filter(query, tags) do
     where(query, [s], fragment("tags @> ?::text[]", ^tags))
-  end
-
-  defp apply_tools_filter(query, tools) when tools in [nil, []], do: query
-
-  defp apply_tools_filter(query, tools) do
-    where(query, [s], fragment("tools @> ?::text[]", ^tools))
   end
 
   defp order_by_relevance(query, search) when is_binary(search) and search != "" do

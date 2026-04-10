@@ -117,6 +117,4 @@ defmodule Backplane.Fixtures do
   defp unique, do: System.unique_integer([:positive])
 
   defp hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-
-  defp estimate_tokens(content), do: max(div(byte_size(content), 4), 1)
 end

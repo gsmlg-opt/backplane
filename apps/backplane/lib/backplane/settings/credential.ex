@@ -7,6 +7,7 @@ defmodule Backplane.Settings.Credential do
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts [type: :utc_datetime_usec]
 
+  @derive {Inspect, except: [:encrypted_value]}
   schema "credentials" do
     field :name, :string
     field :kind, :string

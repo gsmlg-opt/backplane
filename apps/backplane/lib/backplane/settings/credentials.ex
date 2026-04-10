@@ -53,13 +53,17 @@ defmodule Backplane.Settings.Credentials do
   end
 
   @doc "Delete a credential by name."
-  @spec delete(String.t()) :: :ok | {:error, :not_found}
+  @spec delete(String.t()) :: :ok | {:error, :not_found | :delete_failed}
   def delete(name) do
     case Repo.get_by(Credential, name: name) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       credential ->
-        Repo.delete(credential)
-        :ok
+        case Repo.delete(credential) do
+          {:ok, _} -> :ok
+          {:error, _} -> {:error, :delete_failed}
+        end
     end
   end
 

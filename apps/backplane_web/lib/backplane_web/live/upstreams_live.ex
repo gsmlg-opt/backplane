@@ -88,7 +88,7 @@ defmodule BackplaneWeb.UpstreamsLive do
       <h1 class="text-2xl font-bold text-white mb-6">Upstream MCP Servers</h1>
 
       <div :if={@upstreams == []} class="text-gray-400">
-        No upstream MCP servers configured. Add [[upstream]] sections to your backplane.toml.
+        No upstream MCP servers configured. Use the admin UI or API to add upstream servers.
       </div>
 
       <div class="space-y-4">

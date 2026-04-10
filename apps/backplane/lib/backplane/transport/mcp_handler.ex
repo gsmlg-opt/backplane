@@ -440,6 +440,15 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
+  defp execute_tool({:managed, handler}, name, args) when is_function(handler, 1) do
+    case handler.(args) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, "Managed tool #{name} failed: #{reason}"}
+    end
+  rescue
+    e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
+  end
+
   defp execute_tool(:not_found, name, _args) do
     {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
   end

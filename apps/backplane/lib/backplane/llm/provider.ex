@@ -19,6 +19,7 @@ defmodule Backplane.LLM.Provider do
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts [type: :utc_datetime_usec]
 
+  @derive {Inspect, except: [:api_key_encrypted, :api_key]}
   @name_pattern ~r/^[a-z0-9][a-z0-9-]*$/
   @localhost_pattern ~r/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/
 

@@ -38,10 +38,10 @@ defmodule Backplane.LLM.CredentialPlug do
         |> maybe_inject_anthropic_version()
         |> merge_default_headers(provider.default_headers)
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(503, Jason.encode!(%{error: "credential unavailable", detail: inspect(reason)}))
+        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
         |> halt()
     end
   end
@@ -54,10 +54,10 @@ defmodule Backplane.LLM.CredentialPlug do
         |> put_req_header("authorization", "Bearer #{api_key}")
         |> merge_default_headers(provider.default_headers)
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(503, Jason.encode!(%{error: "credential unavailable", detail: inspect(reason)}))
+        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
         |> halt()
     end
   end

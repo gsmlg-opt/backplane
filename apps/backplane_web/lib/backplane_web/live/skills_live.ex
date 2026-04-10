@@ -111,12 +111,6 @@ defmodule BackplaneWeb.SkillsLive do
         >
           <div class="flex items-center justify-between">
             <span class="text-sm font-medium text-white">{skill.name}</span>
-            <span class={[
-              "text-xs px-2 py-0.5 rounded",
-              source_color(skill.source)
-            ]}>
-              {skill.source}
-            </span>
           </div>
           <p class="text-xs text-gray-400 mt-1 line-clamp-1">{skill.description}</p>
           <div :if={skill.tags != []} class="mt-2 flex flex-wrap gap-1">
@@ -147,14 +141,4 @@ defmodule BackplaneWeb.SkillsLive do
     """
   end
 
-  defp source_color(source) when is_binary(source) do
-    cond do
-      String.starts_with?(source, "git") -> "bg-blue-900/50 text-blue-300"
-      String.starts_with?(source, "local") -> "bg-green-900/50 text-green-300"
-      source == "db" -> "bg-purple-900/50 text-purple-300"
-      true -> "bg-gray-800 text-gray-300"
-    end
-  end
-
-  defp source_color(_), do: "bg-gray-800 text-gray-300"
 end
