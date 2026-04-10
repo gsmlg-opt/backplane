@@ -52,6 +52,33 @@ defmodule Backplane.Registry.ToolRegistry do
     :ok
   end
 
+  @doc "Register tools from a managed service with a namespace prefix."
+  @spec register_managed(String.t(), [map()]) :: :ok
+  def register_managed(prefix, tools) when is_list(tools) do
+    rows =
+      Enum.map(tools, fn tool ->
+        entry = %Tool{
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.input_schema,
+          origin: {:managed, prefix},
+          handler: tool.handler
+        }
+
+        {tool.name, entry}
+      end)
+
+    :ets.insert(@table, rows)
+    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
+    :ok
+  end
+
+  @doc "Deregister all tools from a given managed service prefix."
+  @spec deregister_managed(String.t()) :: :ok
+  def deregister_managed(prefix) do
+    deregister_upstream(prefix)
+  end
+
   @doc "Deregister all tools from a given upstream prefix."
   @spec deregister_upstream(String.t()) :: :ok
   def deregister_upstream(prefix) do
@@ -80,6 +107,7 @@ defmodule Backplane.Registry.ToolRegistry do
   @spec resolve(String.t()) ::
           {:native, module(), atom() | nil}
           | {:upstream, pid(), String.t(), pos_integer()}
+          | {:managed, (map() -> {:ok, term()} | {:error, term()})}
           | :not_found
   def resolve(name) do
     case :ets.lookup(@table, name) do
@@ -88,6 +116,9 @@ defmodule Backplane.Registry.ToolRegistry do
 
       [{^name, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original} = tool}] ->
         {:upstream, pid, original, tool.timeout}
+
+      [{^name, %{origin: {:managed, _}, handler: handler}}] ->
+        {:managed, handler}
 
       [] ->
         :not_found

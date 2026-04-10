@@ -20,9 +20,9 @@ defmodule Backplane.Registry.Tool do
           name: String.t(),
           description: String.t(),
           input_schema: map(),
-          origin: :native | {:upstream, String.t()},
+          origin: :native | {:upstream, String.t()} | {:managed, String.t()},
           module: module() | nil,
-          handler: atom() | nil,
+          handler: atom() | (map() -> {:ok, term()} | {:error, term()}) | nil,
           upstream_pid: pid() | nil,
           original_name: String.t() | nil,
           timeout: pos_integer()

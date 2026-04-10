@@ -127,6 +127,7 @@ defmodule Backplane.LLM.ApiRouter do
       api_type: to_string(p.api_type),
       api_url: p.api_url,
       api_key_hint: Provider.api_key_hint(p),
+      credential: p.credential,
       models: p.models,
       rpm_limit: p.rpm_limit,
       default_headers: p.default_headers,

@@ -28,6 +28,7 @@ defmodule Backplane.LLM.Provider do
     field(:api_url, :string)
     field(:api_key_encrypted, :binary)
     field(:api_key, :string, virtual: true)
+    field(:credential, :string)
     field(:models, {:array, :string})
     field(:default_headers, :map, default: %{})
     field(:rpm_limit, :integer)
@@ -40,7 +41,7 @@ defmodule Backplane.LLM.Provider do
   end
 
   @required_fields ~w(name api_type api_url models)a
-  @optional_fields ~w(default_headers rpm_limit enabled)a
+  @optional_fields ~w(default_headers rpm_limit enabled credential)a
   @update_extra_fields ~w(api_key)a
 
   # ── Changesets ───────────────────────────────────────────────────────────────
@@ -109,10 +110,24 @@ defmodule Backplane.LLM.Provider do
   end
 
   defp validate_api_key_on_insert(%Ecto.Changeset{data: %{api_key_encrypted: nil}} = changeset) do
-    case get_field(changeset, :api_key) do
-      nil -> add_error(changeset, :api_key, "is required when creating a new provider")
-      "" -> add_error(changeset, :api_key, "is required when creating a new provider")
-      _ -> changeset
+    has_api_key =
+      case get_field(changeset, :api_key) do
+        nil -> false
+        "" -> false
+        _ -> true
+      end
+
+    has_credential =
+      case get_field(changeset, :credential) do
+        nil -> false
+        "" -> false
+        _ -> true
+      end
+
+    if has_api_key or has_credential do
+      changeset
+    else
+      add_error(changeset, :api_key, "is required when creating a new provider (or set credential)")
     end
   end
 

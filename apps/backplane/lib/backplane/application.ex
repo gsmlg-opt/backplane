@@ -44,8 +44,14 @@ defmodule Backplane.Application do
       # Register native tools after supervisor starts
       register_native_tools()
 
+      # Register managed service tools
+      register_managed_services()
+
       # Start configured upstream MCP connections
       start_configured_upstreams()
+
+      # Start DB-backed upstream MCP connections
+      start_db_upstreams()
 
       # Attach telemetry handlers for usage collection
       Backplane.LLM.UsageCollector.attach()
@@ -109,6 +115,34 @@ defmodule Backplane.Application do
           Logger.warning("Failed to upsert client #{name}: #{inspect(reason)}")
       end
     end
+  end
+
+  defp register_managed_services do
+    services = [Backplane.Services.Day]
+
+    for service <- services, service.enabled?() do
+      ToolRegistry.register_managed(service.prefix(), service.tools())
+    end
+  end
+
+  defp start_db_upstreams do
+    for upstream <- Backplane.Proxy.Upstreams.list_enabled() do
+      config = %{
+        name: upstream.name,
+        prefix: upstream.prefix,
+        transport: upstream.transport,
+        url: upstream.url,
+        command: upstream.command,
+        args: upstream.args || [],
+        timeout: upstream.timeout_ms,
+        refresh_interval: upstream.refresh_interval_ms
+      }
+
+      Pool.start_upstream(config)
+    end
+  rescue
+    e ->
+      Logger.warning("Failed to load DB upstreams: #{Exception.message(e)}")
   end
 
   defp validate_config_at_boot do
