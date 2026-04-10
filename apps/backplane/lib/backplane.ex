@@ -2,25 +2,16 @@ defmodule Backplane do
   @moduledoc """
   Backplane - A self-hosted MCP gateway.
 
-  Presents a single MCP Streamable HTTP endpoint that aggregates:
-  - MCP Proxy (upstream MCP servers)
-  - Skills Hub (curated instruction packages)
-  - Doc Server (documentation search)
-  - Git Platform Proxy (GitHub + GitLab)
-  - Hub Meta (cross-cutting discovery)
-
-  This module provides the public API for programmatic access.
+  Two features:
+  - MCP Hub (upstream MCP servers + managed services)
+  - LLM Proxy (credential-injecting reverse proxy)
   """
 
-  alias Backplane.Docs.Search
   alias Backplane.Hub.Discover
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.Registry, as: SkillsRegistry
 
-  @doc "Search documentation for a project."
-  defdelegate search_docs(project_id, query, opts \\ []), to: Search, as: :query
-
-  @doc "Unified discovery across tools, skills, docs, and repos."
+  @doc "Unified discovery across tools and skills."
   defdelegate discover(query, opts \\ []), to: Discover, as: :search
 
   @doc "List all registered tools."

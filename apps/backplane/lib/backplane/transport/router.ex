@@ -7,9 +7,7 @@ defmodule Backplane.Transport.Router do
 
   require Logger
 
-  alias Backplane.Jobs.WebhookHandler
   alias Backplane.Metrics
-  alias Backplane.Notifications
   alias Backplane.Transport.{HealthCheck, McpHandler}
 
   plug(Plug.RequestId)
@@ -54,14 +52,6 @@ defmodule Backplane.Transport.Router do
     |> sse_notification_loop()
   end
 
-  post "/webhook/github" do
-    handle_webhook(conn, :github)
-  end
-
-  post "/webhook/gitlab" do
-    handle_webhook(conn, :gitlab)
-  end
-
   get "/health" do
     health = HealthCheck.check()
 
@@ -87,10 +77,10 @@ defmodule Backplane.Transport.Router do
   @sse_keepalive_ms 30_000
 
   defp sse_notification_loop(conn) do
-    Notifications.subscribe()
+    Phoenix.PubSub.subscribe(Backplane.PubSub, "mcp:notifications")
     sse_loop(conn)
   after
-    Notifications.unsubscribe()
+    Phoenix.PubSub.unsubscribe(Backplane.PubSub, "mcp:notifications")
   end
 
   defp sse_loop(conn) do
@@ -112,110 +102,6 @@ defmodule Backplane.Transport.Router do
         end
     end
   end
-
-  defp handle_webhook(conn, provider) do
-    case validate_webhook(conn, provider) do
-      result when result in [:ok, {:error, :no_secret}] ->
-        # :no_secret means no webhook secret configured — accept without validation
-        case WebhookHandler.enqueue(provider, conn.body_params) do
-          {:ok, _} ->
-            send_resp(conn, 202, Jason.encode!(%{status: "accepted"}))
-
-          {:error, reason} ->
-            send_resp(conn, 422, Jason.encode!(%{error: inspect(reason)}))
-        end
-
-      {:error, :invalid_signature} ->
-        Logger.warning(
-          "Webhook signature validation failed: provider=#{provider} ip=#{format_remote_ip(conn)}"
-        )
-
-        send_resp(conn, 401, Jason.encode!(%{error: "Invalid webhook signature"}))
-    end
-  end
-
-  defp format_remote_ip(conn) do
-    conn.remote_ip |> :inet.ntoa() |> to_string()
-  end
-
-  defp validate_webhook(conn, :github) do
-    case find_webhook_secret(conn.body_params, :github) do
-      nil ->
-        {:error, :no_secret}
-
-      secret ->
-        with raw_body when is_binary(raw_body) <- conn.assigns[:raw_body],
-             [signature] <- Plug.Conn.get_req_header(conn, "x-hub-signature-256"),
-             true <- WebhookHandler.validate_github_signature(raw_body, signature, secret) do
-          :ok
-        else
-          _ -> {:error, :invalid_signature}
-        end
-    end
-  end
-
-  defp validate_webhook(conn, :gitlab) do
-    case find_webhook_secret(conn.body_params, :gitlab) do
-      nil ->
-        {:error, :no_secret}
-
-      expected ->
-        with [token] <- Plug.Conn.get_req_header(conn, "x-gitlab-token"),
-             true <- WebhookHandler.validate_gitlab_token(token, expected) do
-          :ok
-        else
-          _ -> {:error, :invalid_signature}
-        end
-    end
-  end
-
-  # Look up the webhook secret for this event's repository.
-  # First checks per-project config, then falls back to the global secret.
-  defp find_webhook_secret(params, provider) do
-    repo_url = extract_repo_url(params, provider)
-    project_secret = repo_url && find_project_secret(repo_url)
-
-    project_secret || global_webhook_secret(provider)
-  end
-
-  defp extract_repo_url(%{"repository" => %{"clone_url" => url}}, :github), do: url
-  defp extract_repo_url(%{"repository" => %{"html_url" => url}}, :github), do: url <> ".git"
-  defp extract_repo_url(%{"project" => %{"git_http_url" => url}}, :gitlab), do: url
-  defp extract_repo_url(_, _), do: nil
-
-  defp find_project_secret(repo_url) do
-    normalized_url = normalize_repo_url(repo_url)
-
-    Application.get_env(:backplane, :projects, [])
-    |> Enum.find_value(fn project ->
-      if repo_url_matches?(project.repo, normalized_url), do: project[:webhook_secret]
-    end)
-  end
-
-  # Project repo is "github:owner/repo" or "gitlab:owner/repo" format.
-  # Webhook repo_url is a full URL like "https://github.com/owner/repo.git".
-  # Compare by extracting owner/repo from both.
-  defp repo_url_matches?(project_repo, normalized_webhook_url) do
-    case String.split(project_repo, ":", parts: 2) do
-      [_provider, repo_id] -> normalize_repo_url(repo_id) == normalized_webhook_url
-      _ -> false
-    end
-  end
-
-  # Extract "owner/repo" from various URL formats, stripping .git suffix
-  defp normalize_repo_url(url) do
-    url
-    |> String.replace(~r{^https?://[^/]+/}, "")
-    |> String.trim_trailing(".git")
-    |> String.trim_trailing("/")
-    |> String.downcase()
-  end
-
-  defp global_webhook_secret(:github),
-    do: Application.get_env(:backplane, :github_webhook_secret)
-
-  defp global_webhook_secret(:gitlab),
-    do: Application.get_env(:backplane, :gitlab_webhook_token)
 
   @doc false
   def call(conn, opts) do

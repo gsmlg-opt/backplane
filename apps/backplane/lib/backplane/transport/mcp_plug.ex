@@ -8,7 +8,6 @@ defmodule Backplane.Transport.McpPlug do
 
   require Logger
 
-  alias Backplane.Notifications
   alias Backplane.Transport.{McpHandler, CacheBodyReader}
 
   plug Backplane.Transport.VersionHeader
@@ -53,10 +52,10 @@ defmodule Backplane.Transport.McpPlug do
   @sse_keepalive_ms 30_000
 
   defp sse_notification_loop(conn) do
-    Notifications.subscribe()
+    Phoenix.PubSub.subscribe(Backplane.PubSub, "mcp:notifications")
     sse_loop(conn)
   after
-    Notifications.unsubscribe()
+    Phoenix.PubSub.unsubscribe(Backplane.PubSub, "mcp:notifications")
   end
 
   defp sse_loop(conn) do

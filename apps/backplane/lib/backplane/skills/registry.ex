@@ -148,7 +148,7 @@ defmodule Backplane.Skills.Registry do
     end)
 
     # Notify connected MCP clients that prompts (skills) have changed
-    Backplane.Notifications.prompts_changed()
+    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/prompts/list_changed")
 
     :ok
   end

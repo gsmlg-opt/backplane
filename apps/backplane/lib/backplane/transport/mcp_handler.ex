@@ -11,15 +11,11 @@ defmodule Backplane.Transport.McpHandler do
   require Logger
 
   alias Backplane.Clients
-  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
-  alias Backplane.Repo
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Telemetry
   alias Backplane.Transport.SSE
-
-  import Ecto.Query
 
   @server_name "backplane"
 
@@ -225,10 +221,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp compute_result("resources/read", _id, %{"uri" => uri}) when is_binary(uri) do
-    case read_resource(uri) do
-      {:ok, contents} -> {:result, %{contents: contents}}
-      {:error, reason} -> {:error, -32_602, "Resource not found: #{reason}"}
-    end
+    {:error, -32_602, "Resource not found: #{uri}"}
   end
 
   defp compute_result("resources/read", _id, _params) do
@@ -504,100 +497,10 @@ defmodule Backplane.Transport.McpHandler do
 
   defp parse_ttl(_), do: nil
 
-  # Resources: doc chunks as MCP resources
+  # Resources: no longer backed by doc chunks — return empty
 
-  @page_size 100
+  defp list_resources(_cursor), do: {[], nil}
 
-  defp list_resources(cursor) do
-    query =
-      DocChunk
-      |> select([c], %{
-        project_id: c.project_id,
-        source_path: c.source_path,
-        chunk_type: c.chunk_type,
-        id: c.id
-      })
-      |> order_by([c], asc: c.id)
-
-    query = if cursor, do: where(query, [c], c.id > ^decode_cursor(cursor)), else: query
-
-    chunks =
-      query
-      |> limit(^(@page_size + 1))
-      |> Repo.all()
-
-    {page, has_more} =
-      if length(chunks) > @page_size do
-        {Enum.take(chunks, @page_size), true}
-      else
-        {chunks, false}
-      end
-
-    resources =
-      Enum.map(page, fn chunk ->
-        %{
-          uri: resource_uri(chunk.project_id, chunk.id),
-          name: "#{chunk.project_id}/#{chunk.source_path}",
-          description: "#{chunk.chunk_type} from #{chunk.source_path}",
-          mimeType: "text/plain"
-        }
-      end)
-
-    next_cursor =
-      if has_more do
-        last = List.last(page)
-        encode_cursor(last.id)
-      end
-
-    {resources, next_cursor}
-  rescue
-    e ->
-      Logger.warning("Failed to list resources: #{Exception.message(e)}")
-      {[], nil}
-  end
-
-  defp encode_cursor(id), do: Base.url_encode64(to_string(id), padding: false)
-
-  defp decode_cursor(cursor) do
-    with {:ok, id_str} <- Base.url_decode64(cursor, padding: false),
-         {id, ""} <- Integer.parse(id_str) do
-      id
-    else
-      _ -> 0
-    end
-  end
-
-  defp read_resource(uri) do
-    case parse_resource_uri(uri) do
-      {:ok, chunk_id} ->
-        case Repo.get(DocChunk, chunk_id) do
-          nil -> {:error, "not found"}
-          chunk -> {:ok, [%{uri: uri, mimeType: "text/plain", text: chunk.content}]}
-        end
-
-      :error ->
-        {:error, "invalid URI format"}
-    end
-  rescue
-    e ->
-      Logger.warning("Failed to read resource #{uri}: #{Exception.message(e)}")
-      {:error, "Database unavailable"}
-  end
-
-  defp resource_uri(project_id, chunk_id) do
-    "backplane://docs/#{project_id}/#{chunk_id}"
-  end
-
-  defp parse_resource_uri("backplane://docs/" <> rest) do
-    with [_project_id, chunk_id_str] <- String.split(rest, "/", parts: 2),
-         {chunk_id, ""} <- Integer.parse(chunk_id_str) do
-      {:ok, chunk_id}
-    else
-      _ -> :error
-    end
-  end
-
-  defp parse_resource_uri(_), do: :error
 
   # Prompts: skills as MCP prompts
 
@@ -662,21 +565,6 @@ defmodule Backplane.Transport.McpHandler do
 
   defp complete_tool_argument(tool_name, arg_name, prefix) do
     case {tool_name, arg_name} do
-      {_, "project_id"} ->
-        DocChunk
-        |> select([c], c.project_id)
-        |> distinct(true)
-        |> limit(100)
-        |> Repo.all()
-        |> filter_by_prefix(prefix)
-
-      {_, "repo"} ->
-        Project
-        |> select([p], p.repo)
-        |> limit(100)
-        |> Repo.all()
-        |> filter_by_prefix(prefix)
-
       {_, "skill_id"} ->
         SkillsRegistry.list()
         |> Enum.map(& &1.id)

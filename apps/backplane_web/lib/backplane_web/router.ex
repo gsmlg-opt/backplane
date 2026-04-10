@@ -3,7 +3,6 @@ defmodule BackplaneWeb.Router do
 
   # MCP transport — forwarded to Plug handler, no Phoenix pipeline
   forward("/mcp", Backplane.Transport.McpPlug)
-  forward("/webhook", Backplane.Transport.WebhookPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
   forward("/api/llm", Backplane.LLM.ApiRouter)
@@ -25,11 +24,8 @@ defmodule BackplaneWeb.Router do
     live("/", DashboardLive, :index)
     live("/upstreams", UpstreamsLive, :index)
     live("/skills", SkillsLive, :index)
-    live("/docs", DocsLive, :index)
     live("/tools", ToolsLive, :index)
-    live("/git", GitProvidersLive, :index)
     live("/logs", LogsLive, :index)
-    live("/projects", ProjectsLive, :index)
     live("/clients", ClientsLive, :index)
     live("/providers", ProvidersLive, :index)
   end

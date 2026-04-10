@@ -13,7 +13,6 @@ defmodule BackplaneWeb.LogsLive do
     if connected?(socket) do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.tools_call_topic())
       PubSubBroadcaster.subscribe(PubSubBroadcaster.skills_sync_topic())
-      PubSubBroadcaster.subscribe(PubSubBroadcaster.docs_reindex_topic())
     end
 
     {:ok,

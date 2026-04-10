@@ -5,13 +5,11 @@ defmodule Backplane.Application do
   require Logger
 
   alias Backplane.Config.Validator
-  alias Backplane.Config.Watcher
   alias Backplane.Metrics
   alias Backplane.Proxy.Pool
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
-  alias Backplane.Skills.Sync
-  alias Backplane.Tools.{Admin, Docs, Git, Hub, Skill}
+  alias Backplane.Tools.{Admin, Hub, Skill}
 
   @drain_timeout 15_000
 
@@ -27,13 +25,11 @@ defmodule Backplane.Application do
       Backplane.Repo,
       {Oban, Application.fetch_env!(:backplane, Oban)},
       {Phoenix.PubSub, name: Backplane.PubSub},
-      Backplane.Notifications,
       ToolRegistry,
       SkillsRegistry,
       Pool,
       {Backplane.Cache, cache_opts},
       Metrics,
-      Watcher,
       Relayixir,
       Backplane.LLM.ModelResolver,
       Backplane.LLM.RouteLoader,
@@ -49,9 +45,6 @@ defmodule Backplane.Application do
 
       # Start configured upstream MCP connections
       start_configured_upstreams()
-
-      # Enqueue initial skill sync jobs for configured sources
-      enqueue_skill_syncs()
 
       # Attach telemetry handlers for usage collection
       Backplane.LLM.UsageCollector.attach()
@@ -79,7 +72,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [Skill, Docs, Git, Hub, Admin]
+    tool_modules = [Skill, Hub, Admin]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
@@ -103,20 +96,6 @@ defmodule Backplane.Application do
     end
   end
 
-  defp enqueue_skill_syncs do
-    sources = Application.get_env(:backplane, :skill_sources, [])
-
-    for source <- sources do
-      case Sync.build_job(source) |> Oban.insert() do
-        {:ok, _job} ->
-          Logger.info("Enqueued skill sync for source: #{source.name}")
-
-        {:error, reason} ->
-          Logger.warning("Failed to enqueue skill sync for #{source.name}: #{inspect(reason)}")
-      end
-    end
-  end
-
   defp upsert_config_clients do
     seeds = Application.get_env(:backplane, :client_seeds, [])
 
@@ -136,9 +115,7 @@ defmodule Backplane.Application do
       backplane: %{
         port: Application.get_env(:backplane, :port, 4100)
       },
-      upstream: Application.get_env(:backplane, :upstreams, []),
-      projects: Application.get_env(:backplane, :projects, []),
-      skills: Application.get_env(:backplane, :skill_sources, [])
+      upstream: Application.get_env(:backplane, :upstreams, [])
     ]
 
     Validator.validate!(config)

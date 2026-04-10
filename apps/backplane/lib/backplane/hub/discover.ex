@@ -1,20 +1,16 @@
 defmodule Backplane.Hub.Discover do
   @moduledoc """
-  Cross-cutting discovery across tools, skills, docs, and repos.
+  Cross-cutting discovery across tools and skills.
   """
 
   require Logger
 
-  alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Registry.ToolRegistry
-  alias Backplane.Repo
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Utils
 
-  import Ecto.Query
-
   @default_limit 5
-  @all_scopes ["tools", "skills", "docs", "repos"]
+  @all_scopes ["tools", "skills"]
 
   @doc """
   Search across all hub engines.
@@ -25,8 +21,8 @@ defmodule Backplane.Hub.Discover do
   """
   @spec search(String.t(), keyword()) :: {:ok, map()}
   def search(query, opts \\ [])
-  def search("", _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: [], total: 0}}
-  def search(nil, _opts), do: {:ok, %{tools: [], skills: [], docs: [], repos: [], total: 0}}
+  def search("", _opts), do: {:ok, %{tools: [], skills: [], total: 0}}
+  def search(nil, _opts), do: {:ok, %{tools: [], skills: [], total: 0}}
 
   def search(query, opts) do
     scopes = Keyword.get(opts, :scope, @all_scopes)
@@ -36,9 +32,7 @@ defmodule Backplane.Hub.Discover do
     # Run scope searches concurrently — each hits independent data sources
     scope_fns = %{
       "tools" => fn -> search_tools(query, limit) end,
-      "skills" => fn -> search_skills(query, limit) end,
-      "docs" => fn -> search_docs(query, limit) end,
-      "repos" => fn -> search_repos(query, limit) end
+      "skills" => fn -> search_skills(query, limit) end
     }
 
     tasks =
@@ -72,16 +66,12 @@ defmodule Backplane.Hub.Discover do
 
     tools = Map.get(results, "tools", [])
     skills = Map.get(results, "skills", [])
-    docs = Map.get(results, "docs", [])
-    repos = Map.get(results, "repos", [])
 
     {:ok,
      %{
        tools: tools,
        skills: skills,
-       docs: docs,
-       repos: repos,
-       total: length(tools) + length(skills) + length(docs) + length(repos)
+       total: length(tools) + length(skills)
      }}
   end
 
@@ -106,48 +96,6 @@ defmodule Backplane.Hub.Discover do
         tags: skill.tags
       }
     end)
-  end
-
-  defp search_docs(query, limit) do
-    DocChunk
-    |> where([c], fragment("search_vector @@ websearch_to_tsquery('english', ?)", ^query))
-    |> order_by([c],
-      desc: fragment("ts_rank(search_vector, websearch_to_tsquery('english', ?))", ^query)
-    )
-    |> limit(^limit)
-    |> Repo.all()
-    |> Enum.map(fn chunk ->
-      %{
-        project: chunk.project_id,
-        module: chunk.module,
-        function: chunk.function,
-        snippet: String.slice(chunk.content, 0, 200)
-      }
-    end)
-  rescue
-    e ->
-      Logger.warning("Failed to search docs: #{Exception.message(e)}")
-      []
-  end
-
-  defp search_repos(query, limit) do
-    downcased = query |> String.downcase() |> Utils.escape_like()
-    pattern = "%#{downcased}%"
-
-    Project
-    |> where(
-      [p],
-      ilike(p.id, ^pattern) or ilike(p.repo, ^pattern) or ilike(p.description, ^pattern)
-    )
-    |> limit(^limit)
-    |> Repo.all()
-    |> Enum.map(fn p ->
-      %{id: p.id, repo: p.repo, description: p.description}
-    end)
-  rescue
-    e ->
-      Logger.warning("Failed to search repos: #{Exception.message(e)}")
-      []
   end
 
   @max_query_length 500

@@ -16,7 +16,7 @@ defmodule Backplane.PubSubBroadcaster do
 
   def upstream_topic(prefix), do: "upstream:#{prefix}"
   def skills_sync_topic, do: "skills:sync"
-  def docs_reindex_topic, do: "docs:reindex"
+  def mcp_notifications_topic, do: "mcp:notifications"
   def tools_call_topic, do: "tools:call"
   def config_reloaded_topic, do: "config:reloaded"
 
@@ -40,8 +40,12 @@ defmodule Backplane.PubSubBroadcaster do
     Phoenix.PubSub.broadcast(@pubsub, skills_sync_topic(), {event, payload})
   end
 
-  def broadcast_docs_reindex(event, payload \\ %{}) do
-    Phoenix.PubSub.broadcast(@pubsub, docs_reindex_topic(), {event, payload})
+  def broadcast_mcp_notification(method) do
+    Phoenix.PubSub.broadcast(
+      @pubsub,
+      mcp_notifications_topic(),
+      {:mcp_notification, %{jsonrpc: "2.0", method: method}}
+    )
   end
 
   def broadcast_tools_call(event, payload \\ %{}) do

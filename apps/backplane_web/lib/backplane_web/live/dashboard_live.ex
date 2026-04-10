@@ -14,7 +14,6 @@ defmodule BackplaneWeb.DashboardLive do
     if connected?(socket) do
       Process.send_after(self(), :refresh, @refresh_interval)
       PubSubBroadcaster.subscribe(PubSubBroadcaster.skills_sync_topic())
-      PubSubBroadcaster.subscribe(PubSubBroadcaster.docs_reindex_topic())
       PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
 
@@ -40,22 +39,6 @@ defmodule BackplaneWeb.DashboardLive do
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("sync_skills", _, socket) do
-    sources = Application.get_env(:backplane, :skill_sources, [])
-
-    for source <- sources do
-      case Backplane.Skills.Sync.build_job(source) |> Oban.insert() do
-        {:ok, _} -> :ok
-        {:error, _} -> :ok
-      end
-    end
-
-    {:noreply,
-     socket
-     |> put_flash(:info, "Skill sync jobs enqueued")
-     |> load_dashboard_data()}
-  end
-
   def handle_event("reconnect_degraded", _, socket) do
     pids = safe_call(fn -> Pool.list_upstream_pids() end, [])
 
@@ -75,22 +58,6 @@ defmodule BackplaneWeb.DashboardLive do
      |> load_dashboard_data()}
   end
 
-  def handle_event("reindex_all", _, socket) do
-    projects = safe_call(fn -> Backplane.Repo.all(Backplane.Docs.Project) end, [])
-
-    for project <- projects do
-      case Backplane.Jobs.Reindex.new(%{project_id: project.id}) |> Oban.insert() do
-        {:ok, _} -> :ok
-        {:error, _} -> :ok
-      end
-    end
-
-    {:noreply,
-     socket
-     |> put_flash(:info, "Reindex jobs enqueued for #{length(projects)} projects")
-     |> load_dashboard_data()}
-  end
-
   defp load_dashboard_data(socket) do
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
     skills = safe_call(fn -> SkillsRegistry.list() end, [])
@@ -100,18 +67,6 @@ defmodule BackplaneWeb.DashboardLive do
     native_tools = Enum.filter(tools, &(&1.origin == :native))
     upstream_tools = Enum.reject(tools, &(&1.origin == :native))
 
-    projects =
-      safe_call(
-        fn -> Backplane.Repo.all(Backplane.Docs.Project) end,
-        []
-      )
-
-    chunk_count =
-      safe_call(
-        fn -> Backplane.Repo.aggregate(Backplane.Docs.DocChunk, :count) end,
-        0
-      )
-
     assign(socket,
       loading: false,
       tool_count: length(tools),
@@ -120,8 +75,6 @@ defmodule BackplaneWeb.DashboardLive do
       skill_count: length(skills),
       upstream_count: length(upstreams),
       upstreams: upstreams,
-      project_count: length(projects),
-      chunk_count: chunk_count,
       metrics: metrics
     )
   end
@@ -139,14 +92,8 @@ defmodule BackplaneWeb.DashboardLive do
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">Dashboard</h1>
         <div class="flex gap-2">
-          <.dm_btn variant="primary" size="sm" phx-click="sync_skills">
-            Sync Skills
-          </.dm_btn>
           <.dm_btn variant="warning" size="sm" phx-click="reconnect_degraded">
             Reconnect Degraded
-          </.dm_btn>
-          <.dm_btn variant="info" size="sm" phx-click="reindex_all">
-            Reindex All
           </.dm_btn>
         </div>
       </div>
@@ -160,8 +107,6 @@ defmodule BackplaneWeb.DashboardLive do
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
         <.dm_stat title="Upstreams" value={to_string(@upstream_count)} />
-        <.dm_stat title="Doc Projects" value={to_string(@project_count)} />
-        <.dm_stat title="Doc Chunks" value={to_string(@chunk_count)} />
         <.dm_stat
           title="Total Requests"
           value={to_string(get_in(@metrics, [:requests, :total]) || 0)}

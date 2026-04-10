@@ -7,10 +7,7 @@ defmodule Backplane.Tools.Hub do
 
   require Logger
 
-  alias Backplane.Docs.{DocChunk, Project}
-  alias Backplane.Git.RateLimitCache
   alias Backplane.Hub.{Discover, Inspect}
-  alias Backplane.Notifications
   alias Backplane.Proxy.{Pool, Upstream}
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
@@ -24,7 +21,7 @@ defmodule Backplane.Tools.Hub do
     [
       %{
         name: "hub::discover",
-        description: "Unified search across tools, skills, docs, and repos",
+        description: "Unified search across tools and skills",
         input_schema: %{
           "type" => "object",
           "properties" => %{
@@ -32,7 +29,7 @@ defmodule Backplane.Tools.Hub do
             "scope" => %{
               "type" => "array",
               "items" => %{"type" => "string"},
-              "description" => "Filter to specific scopes: tools, skills, docs, repos"
+              "description" => "Filter to specific scopes: tools, skills"
             },
             "limit" => %{
               "type" => "integer",
@@ -129,18 +126,13 @@ defmodule Backplane.Tools.Hub do
   def call(%{"_handler" => "status"}) do
     upstreams = get_upstream_status()
     skill_sources = get_skill_sources()
-    doc_projects = get_doc_projects()
-    git_providers = get_git_providers()
 
     {:ok,
      %{
        upstreams: upstreams,
        skill_sources: skill_sources,
-       doc_projects: doc_projects,
-       git_providers: git_providers,
        total_tools: ToolRegistry.count(),
        total_skills: Registry.count(),
-       sse_subscribers: Notifications.subscriber_count(),
        version: Backplane.version()
      }}
   end
@@ -172,8 +164,7 @@ defmodule Backplane.Tools.Hub do
       prefix ->
         # Build a prefix tuple for invalidation
         count = Backplane.Cache.invalidate_prefix({:upstream, prefix})
-        git_count = Backplane.Cache.invalidate_prefix({:git, prefix})
-        {:ok, %{flushed_count: count + git_count}}
+        {:ok, %{flushed_count: count}}
     end
   end
 
@@ -225,54 +216,6 @@ defmodule Backplane.Tools.Hub do
       Logger.warning("Failed to get skill sources: #{Exception.message(e)}")
       []
   end
-
-  defp get_doc_projects do
-    Project
-    |> join(:left, [p], c in DocChunk, on: c.project_id == p.id)
-    |> group_by([p], [p.id, p.last_indexed_at])
-    |> select([p, c], %{id: p.id, chunk_count: count(c.id), last_indexed: p.last_indexed_at})
-    |> Repo.all()
-  rescue
-    e ->
-      Logger.warning("Failed to get doc projects: #{Exception.message(e)}")
-      []
-  end
-
-  defp get_git_providers do
-    providers = Application.get_env(:backplane, :git_providers, %{})
-
-    Enum.flat_map([:github, :gitlab], fn type ->
-      instances = Map.get(providers, type, [])
-      Enum.map(instances, &format_provider_instance(type, &1))
-    end)
-  rescue
-    e ->
-      Logger.warning("Failed to get git providers: #{Exception.message(e)}")
-      []
-  end
-
-  defp format_provider_instance(type, instance) do
-    provider_name =
-      "#{type}#{if instance.name != to_string(type), do: ".#{instance.name}", else: ""}"
-
-    rate_info = RateLimitCache.get(provider_name)
-
-    %{
-      name: provider_name,
-      type: to_string(type),
-      api_url: instance.api_url,
-      status: derive_provider_status(rate_info),
-      rate_remaining: if(rate_info, do: rate_info.remaining)
-    }
-  end
-
-  defp derive_provider_status(nil), do: "unknown"
-
-  defp derive_provider_status(%{remaining: 0, reset: reset}) when is_integer(reset) do
-    if reset > System.system_time(:second), do: "rate_limited", else: "ok"
-  end
-
-  defp derive_provider_status(_), do: "ok"
 
   defp maybe_add(opts, key, value), do: Utils.maybe_put(opts, key, value)
 end

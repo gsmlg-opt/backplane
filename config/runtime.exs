@@ -31,32 +31,11 @@ if config_env() == :prod do
         config_path: config_path
     end
 
-    # Git providers
-    github_providers = backplane_config[:github] || []
-    gitlab_providers = backplane_config[:gitlab] || []
-
-    config :backplane,
-      git_providers: %{
-        github: github_providers,
-        gitlab: gitlab_providers
-      }
-
-    # Projects to index
-    config :backplane, projects: backplane_config[:projects] || []
-
     # Upstream MCP servers to proxy
     config :backplane, upstreams: backplane_config[:upstream] || []
 
-    # Skill sources
-    config :backplane, skill_sources: backplane_config[:skills] || []
-
     # Pre-seeded clients (upserted on boot)
     config :backplane, client_seeds: backplane_config[:clients] || []
-
-    # Embeddings configuration (optional — entire pipeline inert when absent)
-    if embeddings = backplane_config[:embeddings] do
-      config :backplane, embeddings: embeddings
-    end
 
     # Audit settings
     if audit = backplane_config[:audit] do
