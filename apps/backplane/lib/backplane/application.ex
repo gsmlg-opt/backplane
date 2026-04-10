@@ -42,25 +42,26 @@ defmodule Backplane.Application do
     ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
-    result = Supervisor.start_link(children, opts)
 
-    # Register native tools after supervisor starts
-    register_native_tools()
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      # Register native tools after supervisor starts
+      register_native_tools()
 
-    # Start configured upstream MCP connections
-    start_configured_upstreams()
+      # Start configured upstream MCP connections
+      start_configured_upstreams()
 
-    # Enqueue initial skill sync jobs for configured sources
-    enqueue_skill_syncs()
+      # Enqueue initial skill sync jobs for configured sources
+      enqueue_skill_syncs()
 
-    # Attach telemetry handlers for usage collection
-    Backplane.LLM.UsageCollector.attach()
+      # Attach telemetry handlers for usage collection
+      Backplane.LLM.UsageCollector.attach()
 
-    # Initialize clients ETS cache and upsert pre-seeded clients
-    Backplane.Clients.init_cache()
-    upsert_config_clients()
+      # Initialize clients ETS cache and upsert pre-seeded clients
+      Backplane.Clients.init_cache()
+      upsert_config_clients()
 
-    result
+      {:ok, pid}
+    end
   end
 
   @impl true

@@ -58,6 +58,9 @@ defmodule Backplane.MixProject do
       # File watching (local skill sources)
       {:file_system, "~> 1.0"},
 
+      # Timezone data (must start before Oban to avoid DateTime.add failures)
+      {:tzdata, "~> 1.1"},
+
       # Telemetry
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},

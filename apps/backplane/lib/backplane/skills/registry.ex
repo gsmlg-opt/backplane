@@ -6,6 +6,7 @@ defmodule Backplane.Skills.Registry do
 
   use GenServer
 
+  require Logger
   import Ecto.Query
 
   alias Backplane.Repo
@@ -20,8 +21,41 @@ defmodule Backplane.Skills.Registry do
   @impl true
   def init(_opts) do
     :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+    {:ok, %{}, {:continue, :refresh}}
+  end
+
+  @impl true
+  def handle_continue(:refresh, state) do
+    case safe_refresh() do
+      :ok ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.warning("Skills registry initial refresh failed: #{inspect(reason)}, retrying in 5s")
+        Process.send_after(self(), :retry_refresh, 5_000)
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(:retry_refresh, state) do
+    case safe_refresh() do
+      :ok ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.warning("Skills registry refresh retry failed: #{inspect(reason)}, retrying in 5s")
+        Process.send_after(self(), :retry_refresh, 5_000)
+        {:noreply, state}
+    end
+  end
+
+  defp safe_refresh do
     refresh()
-    {:ok, %{}}
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc "List all skills, optionally filtering by source and/or tags."

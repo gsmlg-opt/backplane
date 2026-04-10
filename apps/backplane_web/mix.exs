@@ -38,13 +38,13 @@ defmodule BackplaneWeb.MixProject do
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
-      {:phoenix_duskmoon, "~> 9.0"},
+      {:phoenix_duskmoon, "~> 9.1"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
 
       # Assets
-      {:bun, "~> 1.4", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
+      {:bun, "~> 1.6", runtime: Mix.env() == :dev},
+      {:tailwind, "~> 0.4", runtime: Mix.env() == :dev},
 
       # Dev
       {:phoenix_live_reload, "~> 1.5", only: :dev},

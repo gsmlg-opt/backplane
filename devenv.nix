@@ -33,12 +33,25 @@ in {
   languages.javascript.bun.enable = true;
   languages.javascript.bun.package = pkgs-stable.bun;
 
-  services.postgres.enable = true;
-  services.postgres.package = pkgs-stable.postgresql_17;
-  services.postgres.initialDatabases = [
-    { name = "backplane_dev"; }
-    { name = "backplane_test"; }
-  ];
+  processes.backplane = {
+    exec = ''
+      echo "Waiting for PostgreSQL..."
+      while ! pg_isready -h "$PGHOST" -d backplane_dev -q 2>/dev/null; do
+        sleep 0.5
+      done
+      echo "PostgreSQL is ready, starting backplane..."
+      exec mix phx.server
+    '';
+  };
+
+  services.postgres = {
+    enable = true;
+    package = pkgs-stable.postgresql_17;
+    initialDatabases = [
+      {name = "backplane_dev";}
+      {name = "backplane_test";}
+    ];
+  };
 
   scripts.hello.exec = ''
     figlet -w 120 $GREET | lolcat
@@ -48,4 +61,3 @@ in {
     hello
   '';
 }
-
