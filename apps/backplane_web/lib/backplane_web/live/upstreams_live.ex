@@ -18,7 +18,7 @@ defmodule BackplaneWeb.UpstreamsLive do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
 
-    {:ok, assign(socket, current_path: "/admin/upstreams", loading: true)}
+    {:ok, assign(socket, current_path: "/admin/hub/upstreams", loading: true)}
   end
 
   @impl true
@@ -64,6 +64,27 @@ defmodule BackplaneWeb.UpstreamsLive do
   def render(assigns) do
     ~H"""
     <div>
+      <div class="flex gap-2 mb-6">
+        <.dm_btn
+          variant={if @current_path in ["/admin/hub", "/admin/hub/upstreams"], do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/upstreams")}
+        >
+          Upstreams
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/skills", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/skills")}
+        >
+          Skills
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/tools", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/tools")}
+        >
+          Tools
+        </.dm_btn>
+      </div>
+
       <h1 class="text-2xl font-bold text-white mb-6">Upstream MCP Servers</h1>
 
       <div :if={@upstreams == []} class="text-gray-400">

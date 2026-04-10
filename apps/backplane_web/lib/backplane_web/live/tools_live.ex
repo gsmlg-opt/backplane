@@ -7,7 +7,7 @@ defmodule BackplaneWeb.ToolsLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/tools",
+       current_path: "/admin/hub/tools",
        loading: true,
        search: "",
        selected: nil,
@@ -94,6 +94,27 @@ defmodule BackplaneWeb.ToolsLive do
   def render(assigns) do
     ~H"""
     <div>
+      <div class="flex gap-2 mb-6">
+        <.dm_btn
+          variant={if @current_path in ["/admin/hub", "/admin/hub/upstreams"], do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/upstreams")}
+        >
+          Upstreams
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/skills", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/skills")}
+        >
+          Skills
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/tools", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/tools")}
+        >
+          Tools
+        </.dm_btn>
+      </div>
+
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold text-white">Tools</h1>
         <span class="text-sm text-gray-400">{length(@filtered_tools)} tools</span>

@@ -9,7 +9,7 @@ defmodule BackplaneWeb.SkillsLive do
       Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.skills_sync_topic())
     end
 
-    {:ok, assign(socket, current_path: "/admin/skills", loading: true, search: "", selected: nil)}
+    {:ok, assign(socket, current_path: "/admin/hub/skills", loading: true, search: "", selected: nil)}
   end
 
   @impl true
@@ -63,6 +63,27 @@ defmodule BackplaneWeb.SkillsLive do
   def render(assigns) do
     ~H"""
     <div>
+      <div class="flex gap-2 mb-6">
+        <.dm_btn
+          variant={if @current_path in ["/admin/hub", "/admin/hub/upstreams"], do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/upstreams")}
+        >
+          Upstreams
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/skills", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/skills")}
+        >
+          Skills
+        </.dm_btn>
+        <.dm_btn
+          variant={if @current_path == "/admin/hub/tools", do: "primary", else: nil}
+          phx-click={JS.navigate(~p"/admin/hub/tools")}
+        >
+          Tools
+        </.dm_btn>
+      </div>
+
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold text-white">Skills</h1>
         <span class="text-sm text-gray-400">{length(@filtered_skills)} skills</span>

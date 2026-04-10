@@ -21,13 +21,26 @@ defmodule BackplaneWeb.Router do
   scope "/admin", BackplaneWeb do
     pipe_through(:browser)
 
+    # Dashboard
     live("/", DashboardLive, :index)
-    live("/upstreams", UpstreamsLive, :index)
-    live("/skills", SkillsLive, :index)
-    live("/tools", ToolsLive, :index)
-    live("/logs", LogsLive, :index)
-    live("/clients", ClientsLive, :index)
+
+    # MCP Hub
+    live("/hub", UpstreamsLive, :index)
+    live("/hub/upstreams", UpstreamsLive, :index)
+    live("/hub/skills", SkillsLive, :index)
+    live("/hub/tools", ToolsLive, :index)
+
+    # LLM Providers
     live("/providers", ProvidersLive, :index)
+
+    # Clients
+    live("/clients", ClientsLive, :index)
+
+    # Logs
+    live("/logs", LogsLive, :index)
+
+    # Settings
+    live("/settings", SettingsLive, :index)
   end
 
   # Enable LiveDashboard in development
