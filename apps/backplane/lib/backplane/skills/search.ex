@@ -6,7 +6,6 @@ defmodule Backplane.Skills.Search do
   import Ecto.Query
   alias Backplane.Repo
   alias Backplane.Skills.Skill
-  alias Backplane.Utils
 
   @doc """
   Search skills by query string with optional filters.
@@ -14,14 +13,12 @@ defmodule Backplane.Skills.Search do
   Options:
     - :tags - list of tags (AND match)
     - :tools - list of required tools (AND match)
-    - :source - source type filter (e.g., "git", "local", "db")
     - :limit - max results (default 10)
   """
   @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
     tools = Keyword.get(opts, :tools, [])
-    source = Keyword.get(opts, :source)
     limit = Keyword.get(opts, :limit, 10)
 
     Skill
@@ -29,7 +26,6 @@ defmodule Backplane.Skills.Search do
     |> apply_text_search(search_query)
     |> apply_tag_filter(tags)
     |> apply_tools_filter(tools)
-    |> apply_source_filter(source)
     |> order_by_relevance(search_query)
     |> limit(^limit)
     |> Repo.all()
@@ -62,14 +58,6 @@ defmodule Backplane.Skills.Search do
     where(query, [s], fragment("tools @> ?::text[]", ^tools))
   end
 
-  defp apply_source_filter(query, nil), do: query
-
-  defp apply_source_filter(query, source) do
-    # Match exact or prefix (e.g., "git" matches "git:elixir-patterns")
-    escaped = Utils.escape_like(source)
-    where(query, [s], s.source == ^source or like(s.source, ^"#{escaped}:%"))
-  end
-
   defp order_by_relevance(query, search) when is_binary(search) and search != "" do
     sanitized = search |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)
 
@@ -87,9 +75,7 @@ defmodule Backplane.Skills.Search do
       id: s.id,
       name: s.name,
       description: s.description,
-      tags: s.tags,
-      version: s.version,
-      source: s.source
+      tags: s.tags
     }
   end
 end

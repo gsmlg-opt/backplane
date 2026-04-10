@@ -61,7 +61,6 @@ defmodule Backplane.Tools.Skill do
         input_schema: %{
           "type" => "object",
           "properties" => %{
-            "source" => %{"type" => "string", "description" => "Filter by source: git, local, db"},
             "tags" => %{
               "type" => "array",
               "items" => %{"type" => "string"},
@@ -81,9 +80,7 @@ defmodule Backplane.Tools.Skill do
             "name" => %{"type" => "string"},
             "description" => %{"type" => "string"},
             "content" => %{"type" => "string"},
-            "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
-            "tools" => %{"type" => "array", "items" => %{"type" => "string"}},
-            "model" => %{"type" => "string"}
+            "tags" => %{"type" => "array", "items" => %{"type" => "string"}}
           },
           "required" => ["name", "description", "content"]
         },
@@ -137,7 +134,6 @@ defmodule Backplane.Tools.Skill do
   def call(%{"_handler" => "list"} = args) do
     opts =
       []
-      |> maybe_add(:source, args["source"])
       |> maybe_add(:tags, args["tags"])
 
     skills =
@@ -148,8 +144,6 @@ defmodule Backplane.Tools.Skill do
           name: s.name,
           description: s.description,
           tags: s.tags,
-          version: s.version,
-          source: s.source,
           enabled: Map.get(s, :enabled, true)
         }
       end)
@@ -162,15 +156,13 @@ defmodule Backplane.Tools.Skill do
       name: args["name"],
       description: args["description"],
       content: args["content"],
-      tags: args["tags"] || [],
-      tools: args["tools"] || [],
-      model: args["model"]
+      tags: args["tags"] || []
     }
 
     case Database.create(attrs) do
       {:ok, skill} ->
         Registry.refresh()
-        {:ok, %{id: skill.id, name: skill.name, source: skill.source}}
+        {:ok, %{id: skill.id, name: skill.name}}
 
       {:error, changeset} ->
         {:error, "Failed to create skill: #{inspect(changeset.errors)}"}
@@ -233,9 +225,7 @@ defmodule Backplane.Tools.Skill do
     %{
       id: entry.id,
       name: entry.name,
-      content: entry.content,
-      tools: entry[:tools],
-      model: entry[:model]
+      content: entry.content
     }
   end
 

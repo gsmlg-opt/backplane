@@ -1,4 +1,3 @@
-# Script for populating the database.
+# Script for populating the database. You can run it as:
 #
-# You can run it with:
 #     mix run priv/repo/seeds.exs

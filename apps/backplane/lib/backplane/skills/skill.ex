@@ -1,10 +1,6 @@
 defmodule Backplane.Skills.Skill do
   @moduledoc """
   Ecto schema for the skills table.
-
-  The `embedding` column (pgvector) is NOT included in this schema to avoid
-  errors when pgvector is not installed. Embedding reads/writes are done via
-  explicit fragments in the embedding jobs and search modules.
   """
 
   use Ecto.Schema
@@ -18,19 +14,15 @@ defmodule Backplane.Skills.Skill do
     field(:name, :string)
     field(:description, :string, default: "")
     field(:tags, {:array, :string}, default: [])
-    field(:tools, {:array, :string}, default: [])
-    field(:model, :string)
-    field(:version, :string, default: "1.0.0")
     field(:content, :string)
     field(:content_hash, :string)
-    field(:source, :string)
     field(:enabled, :boolean, default: true)
 
     timestamps()
   end
 
-  @required_fields ~w(id name content content_hash source)a
-  @optional_fields ~w(description tags tools model version enabled)a
+  @required_fields ~w(id name content)a
+  @optional_fields ~w(description tags content_hash enabled)a
 
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(skill, attrs) do
@@ -42,6 +34,6 @@ defmodule Backplane.Skills.Skill do
   @spec update_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def update_changeset(skill, attrs) do
     skill
-    |> cast(attrs, ~w(content content_hash description tags tools model version enabled)a)
+    |> cast(attrs, ~w(content content_hash description tags enabled)a)
   end
 end

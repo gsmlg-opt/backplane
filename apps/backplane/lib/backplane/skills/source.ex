@@ -8,12 +8,8 @@ defmodule Backplane.Skills.Source do
           name: String.t(),
           description: String.t(),
           tags: [String.t()],
-          tools: [String.t()],
-          model: String.t() | nil,
-          version: String.t(),
           content: String.t(),
-          content_hash: String.t(),
-          source: String.t()
+          content_hash: String.t()
         }
 
   @callback list() :: {:ok, [skill_entry]} | {:error, term()}

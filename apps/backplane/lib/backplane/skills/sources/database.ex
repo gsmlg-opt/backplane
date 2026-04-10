@@ -14,7 +14,7 @@ defmodule Backplane.Skills.Sources.Database do
   def list do
     skills =
       Skill
-      |> where([s], s.source == "db" and s.enabled == true)
+      |> where([s], s.enabled == true)
       |> Repo.all()
       |> Enum.map(&to_entry/1)
 
@@ -42,22 +42,19 @@ defmodule Backplane.Skills.Sources.Database do
     params =
       attrs
       |> Map.new(fn {k, v} -> {to_string(k), v} end)
-      |> Map.merge(%{"id" => id, "source" => "db", "content_hash" => hash})
+      |> Map.merge(%{"id" => id, "content_hash" => hash})
 
     %Skill{}
     |> Skill.changeset(params)
     |> Repo.insert()
   end
 
-  @doc "Update a database-sourced skill. Rejects non-db sources."
+  @doc "Update a skill by ID."
   @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, atom() | Ecto.Changeset.t()}
   def update(skill_id, attrs) do
     case Repo.get(Skill, skill_id) do
       nil ->
         {:error, :not_found}
-
-      %Skill{source: source} when source != "db" ->
-        {:error, :readonly_source}
 
       skill ->
         attrs = maybe_recompute_hash(attrs)
@@ -89,12 +86,8 @@ defmodule Backplane.Skills.Sources.Database do
       name: s.name,
       description: s.description,
       tags: s.tags,
-      tools: s.tools,
-      model: s.model,
-      version: s.version,
       content: s.content,
-      content_hash: s.content_hash,
-      source: s.source
+      content_hash: s.content_hash
     }
   end
 end

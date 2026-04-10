@@ -58,16 +58,14 @@ defmodule Backplane.Skills.Registry do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  @doc "List all skills, optionally filtering by source and/or tags."
+  @doc "List all skills, optionally filtering by tags."
   @spec list(keyword()) :: [map()]
   def list(opts \\ []) do
-    source_filter = Keyword.get(opts, :source)
     tags_filter = Keyword.get(opts, :tags, [])
 
     @table
     |> :ets.tab2list()
     |> Enum.map(fn {_id, entry} -> entry end)
-    |> maybe_filter_source(source_filter)
     |> maybe_filter_tags(tags_filter)
   end
 
@@ -127,12 +125,8 @@ defmodule Backplane.Skills.Registry do
            name: skill.name,
            description: skill.description,
            tags: skill.tags,
-           tools: skill.tools,
-           model: skill.model,
-           version: skill.version,
            content: skill.content,
-           content_hash: skill.content_hash,
-           source: skill.source
+           content_hash: skill.content_hash
          }}
       end)
 
@@ -151,14 +145,6 @@ defmodule Backplane.Skills.Registry do
     Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/prompts/list_changed")
 
     :ok
-  end
-
-  defp maybe_filter_source(entries, nil), do: entries
-
-  defp maybe_filter_source(entries, source) do
-    Enum.filter(entries, fn entry ->
-      entry.source == source || String.starts_with?(entry.source, source <> ":")
-    end)
   end
 
   defp maybe_filter_tags(entries, []), do: entries

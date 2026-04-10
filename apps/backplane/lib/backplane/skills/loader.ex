@@ -55,9 +55,6 @@ defmodule Backplane.Skills.Loader do
         name: name,
         description: description,
         tags: normalize_list(Map.get(meta, "tags", [])),
-        tools: normalize_list(Map.get(meta, "tools", [])),
-        model: Map.get(meta, "model"),
-        version: to_string(Map.get(meta, "version", "1.0.0")),
         content: body,
         content_hash: hash
       }
@@ -93,7 +90,7 @@ defmodule Backplane.Skills.Loader do
 
         case parse(content) do
           {:ok, entry} ->
-            [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
+            [Map.merge(entry, %{id: "#{source_label}/#{skill_name}"})]
 
           {:error, _} ->
             []
