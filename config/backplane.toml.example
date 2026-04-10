@@ -11,12 +11,3 @@ port = 4100
 [database]
 url = "postgres://localhost/backplane_dev"
 
-# --- Upstream MCP Servers (temporary — will move to DB in SP-3) ---
-# [[upstream]]
-# name = "filesystem"
-# transport = "stdio"
-# command = "npx"
-# args = ["-y", "@anthropic/mcp-filesystem"]
-# prefix = "fs"
-# timeout = 30000
-# refresh_interval = 300000
