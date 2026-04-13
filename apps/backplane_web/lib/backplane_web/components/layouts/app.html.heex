@@ -1,5 +1,5 @@
 <div class="min-h-full">
-  <.dm_appbar title="Backplane" title_to={~p"/admin"}>
+  <.dm_appbar title="Backplane" title_to={~p"/admin"} class="appbar-primary">
     <:menu to={~p"/admin"} active={@current_path == "/admin"}>Dashboard</:menu>
     <:menu to={~p"/admin/hub"} active={String.starts_with?(@current_path, "/admin/hub")}>MCP Hub</:menu>
     <:menu to={~p"/admin/providers"} active={String.starts_with?(@current_path, "/admin/providers")}>LLM Providers</:menu>

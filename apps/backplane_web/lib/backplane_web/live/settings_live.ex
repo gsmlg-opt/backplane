@@ -1,4 +1,6 @@
 defmodule BackplaneWeb.SettingsLive do
+  @moduledoc "Settings page with system settings editor and credentials management."
+
   use BackplaneWeb, :live_view
 
   alias Backplane.Settings
@@ -183,13 +185,11 @@ defmodule BackplaneWeb.SettingsLive do
     kind = params["kind"] || "llm"
     secret = params["secret"] || ""
 
-    # Update kind
     case Credentials.update(name, %{kind: kind}) do
       {:ok, _} -> :ok
       {:error, _} -> :ok
     end
 
-    # Rotate secret if provided
     if secret != "" do
       case Credentials.rotate(name, secret) do
         {:ok, _} ->
@@ -247,6 +247,14 @@ defmodule BackplaneWeb.SettingsLive do
     _ -> value
   end
 
+  @kind_options [
+    {"LLM Provider", "llm"},
+    {"Upstream MCP", "upstream"},
+    {"Service", "service"},
+    {"Admin", "admin"},
+    {"Custom", "custom"}
+  ]
+
   # --- Render ---
 
   @impl true
@@ -255,73 +263,72 @@ defmodule BackplaneWeb.SettingsLive do
     <div>
       <h1 class="text-2xl font-bold mb-6">Settings</h1>
 
-      <div class="flex gap-2 mb-6">
-        <.dm_btn
-          variant={if @active_tab == "settings", do: "primary", else: nil}
-          phx-click="switch_tab"
-          phx-value-tab="settings"
-        >
-          Settings
-        </.dm_btn>
-        <.dm_btn
-          variant={if @active_tab == "credentials", do: "primary", else: nil}
-          phx-click="switch_tab"
-          phx-value-tab="credentials"
-        >
-          Credentials
-        </.dm_btn>
-      </div>
-
-      <%= if @active_tab == "settings" do %>
-        <.render_settings_tab {assigns} />
-      <% else %>
-        <.render_credentials_tab {assigns} />
-      <% end %>
+      <.dm_tab id="settings-tabs" active_tab_index={if @active_tab == "credentials", do: 1, else: 0}>
+        <:tab name="settings">
+          <.link patch={~p"/admin/settings?tab=settings"}>Settings</.link>
+        </:tab>
+        <:tab name="credentials">
+          <.link patch={~p"/admin/settings?tab=credentials"}>Credentials</.link>
+        </:tab>
+        <:tab_content name="settings">
+          <.render_settings_tab {assigns} />
+        </:tab_content>
+        <:tab_content name="credentials">
+          <.render_credentials_tab {assigns} />
+        </:tab_content>
+      </.dm_tab>
     </div>
     """
   end
 
   defp render_settings_tab(assigns) do
     ~H"""
-    <div :for={{group, settings} <- @settings_groups} class="mb-8">
-      <h2 class="text-lg font-semibold mb-3 capitalize">{group}</h2>
-      <.dm_card variant="bordered">
-        <div class="divide-y divide-outline-variant">
-          <div :for={setting <- settings} class="py-3 px-4 flex items-center justify-between">
-            <div class="flex-1">
-              <div class="font-mono text-sm">{setting.key}</div>
-              <div class="text-xs text-on-surface-variant">{setting.description}</div>
+    <div class="space-y-6 mt-4">
+      <div :for={{group, settings} <- @settings_groups}>
+        <.dm_collapse id={"settings-group-#{group}"} open variant="bordered">
+          <:trigger>
+            <span class="capitalize text-lg font-semibold">{group}</span>
+          </:trigger>
+          <:content>
+            <div class="divide-y divide-outline-variant">
+              <div :for={setting <- settings} class="py-3 flex items-center justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                  <div class="font-mono text-sm text-on-surface">{setting.key}</div>
+                  <div class="text-xs text-on-surface-variant">{setting.description}</div>
+                </div>
+                <div :if={@editing_key == setting.key}>
+                  <form phx-submit="save_setting" class="flex items-center gap-2">
+                    <input type="hidden" name="key" value={setting.key} />
+                    <.dm_input
+                      id={"edit-#{setting.key}"}
+                      name="value"
+                      value={@edit_value}
+                      size="sm"
+                    />
+                    <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
+                    <.dm_btn variant="error" size="sm" phx-click="cancel_edit">Cancel</.dm_btn>
+                  </form>
+                </div>
+                <div :if={@editing_key != setting.key} class="flex items-center gap-2 shrink-0">
+                  <code class="text-sm">{inspect(setting.value)}</code>
+                  <.dm_btn size="sm" phx-click="edit_setting" phx-value-key={setting.key}>
+                    Edit
+                  </.dm_btn>
+                </div>
+              </div>
             </div>
-            <div :if={@editing_key == setting.key} class="flex items-center gap-2">
-              <form phx-submit="save_setting" class="flex items-center gap-2">
-                <input type="hidden" name="key" value={setting.key} />
-                <input
-                  type="text"
-                  name="value"
-                  value={@edit_value}
-                  class="px-2 py-1 text-sm border rounded bg-surface-container text-on-surface"
-                  autofocus
-                />
-                <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
-                <.dm_btn type="button" size="sm" phx-click="cancel_edit">Cancel</.dm_btn>
-              </form>
-            </div>
-            <div :if={@editing_key != setting.key} class="flex items-center gap-2">
-              <span class="text-sm font-mono">{inspect(setting.value)}</span>
-              <.dm_btn size="sm" phx-click="edit_setting" phx-value-key={setting.key}>
-                Edit
-              </.dm_btn>
-            </div>
-          </div>
-        </div>
-      </.dm_card>
+          </:content>
+        </.dm_collapse>
+      </div>
     </div>
     """
   end
 
   defp render_credentials_tab(assigns) do
+    assigns = assign(assigns, :kind_options, @kind_options)
+
     ~H"""
-    <div>
+    <div class="mt-4">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">Credential Store</h2>
         <.dm_btn
@@ -333,54 +340,46 @@ defmodule BackplaneWeb.SettingsLive do
         </.dm_btn>
       </div>
 
-      <.render_cred_form :if={@cred_form_mode != nil} {assigns} />
+      <.render_cred_form :if={@cred_form_mode != nil} kind_options={@kind_options} {assigns} />
 
       <.dm_card variant="bordered">
         <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
           No credentials stored yet. Click "Add Credential" to create one.
         </div>
-        <div :if={@credentials != []} class="divide-y divide-outline-variant">
-          <div :for={cred <- @credentials} class="py-3 px-4">
-            <div class="flex items-center justify-between">
-              <div class="flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="font-mono text-sm font-medium">{cred.name}</span>
-                  <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
-                </div>
-                <div class="text-xs text-on-surface-variant mt-1">
-                  <span class="font-mono">{cred.hint}</span>
-                  <span class="mx-2">&middot;</span>
-                  <span>Updated {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}</span>
-                </div>
-              </div>
-              <div class="flex items-center gap-2">
-                <.dm_btn
-                  size="sm"
-                  phx-click="show_edit_form"
-                  phx-value-name={cred.name}
-                >
+        <div :if={@credentials != []}>
+          <.dm_table id="credentials-table" data={@credentials} hover zebra>
+            <:col :let={cred} label="Name">
+              <code>{cred.name}</code>
+            </:col>
+            <:col :let={cred} label="Kind">
+              <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
+            </:col>
+            <:col :let={cred} label="Hint">
+              <code class="text-on-surface-variant">{cred.hint}</code>
+            </:col>
+            <:col :let={cred} label="Updated">
+              {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
+            </:col>
+            <:col :let={cred} label="Actions">
+              <div class="flex items-center gap-1">
+                <.dm_btn size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
                   Edit
                 </.dm_btn>
-                <.dm_btn
-                  size="sm"
-                  variant="warning"
-                  phx-click="show_rotate_form"
-                  phx-value-name={cred.name}
-                >
+                <.dm_btn size="sm" variant="warning" phx-click="show_rotate_form" phx-value-name={cred.name}>
                   Rotate
                 </.dm_btn>
                 <.dm_btn
                   size="sm"
                   variant="error"
+                  confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
                   phx-click="delete_credential"
                   phx-value-name={cred.name}
-                  data-confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
                 >
                   Delete
                 </.dm_btn>
               </div>
-            </div>
-          </div>
+            </:col>
+          </.dm_table>
         </div>
       </.dm_card>
     </div>
@@ -389,75 +388,60 @@ defmodule BackplaneWeb.SettingsLive do
 
   defp render_cred_form(assigns) do
     ~H"""
-    <div class="mb-6">
-      <.dm_card variant="bordered">
-        <:title>
-          <%= case @cred_form_mode do %>
-            <% :add -> %>New Credential
-            <% :edit -> %>Edit Credential: {@cred_editing_name}
-            <% :rotate -> %>Rotate Secret: {@cred_editing_name}
-          <% end %>
-        </:title>
-        <form phx-submit="save_credential" class="space-y-4 p-4">
-          <%= if @cred_form_mode == :add do %>
-            <div>
-              <label class="block text-sm font-medium mb-1">Name</label>
-              <input
-                type="text"
-                name="name"
-                value={@cred_name}
-                placeholder="e.g. anthropic-prod-key"
-                class="w-full px-3 py-2 border rounded bg-surface-container text-on-surface"
-                required
-              />
-            </div>
-          <% end %>
+    <.dm_card variant="bordered" class="mb-6">
+      <:title>
+        <%= case @cred_form_mode do %>
+          <% :add -> %>New Credential
+          <% :edit -> %>Edit Credential: {@cred_editing_name}
+          <% :rotate -> %>Rotate Secret: {@cred_editing_name}
+        <% end %>
+      </:title>
+      <form phx-submit="save_credential" class="space-y-4">
+        <%= if @cred_form_mode == :add do %>
+          <.dm_input
+            id="cred-name"
+            name="name"
+            label="Name"
+            value={@cred_name}
+            placeholder="e.g. anthropic-prod-key"
+            required
+          />
+        <% end %>
 
-          <%= if @cred_form_mode in [:add, :edit] do %>
-            <div>
-              <label class="block text-sm font-medium mb-1">Kind</label>
-              <select
-                name="kind"
-                class="w-full px-3 py-2 border rounded bg-surface-container text-on-surface"
-              >
-                <option value="llm" selected={@cred_kind == "llm"}>LLM Provider</option>
-                <option value="upstream" selected={@cred_kind == "upstream"}>Upstream MCP</option>
-                <option value="service" selected={@cred_kind == "service"}>Service</option>
-                <option value="admin" selected={@cred_kind == "admin"}>Admin</option>
-                <option value="custom" selected={@cred_kind == "custom"}>Custom</option>
-              </select>
-            </div>
-          <% end %>
+        <%= if @cred_form_mode in [:add, :edit] do %>
+          <.dm_select
+            id="cred-kind"
+            name="kind"
+            label="Kind"
+            options={@kind_options}
+            value={@cred_kind}
+          />
+        <% end %>
 
-          <div>
-            <label class="block text-sm font-medium mb-1">
-              <%= if @cred_form_mode == :rotate, do: "New Secret", else: "Secret" %>
-            </label>
-            <input
-              type="password"
-              name="secret"
-              placeholder={if @cred_form_mode == :edit, do: "Leave empty to keep current secret", else: "API key or token"}
-              class="w-full px-3 py-2 border rounded bg-surface-container text-on-surface"
-              {if @cred_form_mode in [:add, :rotate], do: [required: true], else: []}
-            />
-            <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant mt-1">
-              Leave empty to keep the current secret. Enter a new value to rotate it.
-            </p>
-          </div>
+        <.dm_input
+          id="cred-secret"
+          name="secret"
+          type="password"
+          label={if @cred_form_mode == :rotate, do: "New Secret", else: "Secret"}
+          placeholder={if @cred_form_mode == :edit, do: "Leave empty to keep current", else: "API key or token"}
+          {if @cred_form_mode in [:add, :rotate], do: [required: true], else: []}
+        />
+        <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant -mt-2">
+          Leave empty to keep the current secret. Enter a new value to rotate it.
+        </p>
 
-          <div class="flex gap-2">
-            <.dm_btn type="submit" variant="primary">
-              <%= case @cred_form_mode do %>
-                <% :add -> %>Store Credential
-                <% :edit -> %>Save Changes
-                <% :rotate -> %>Rotate Secret
-              <% end %>
-            </.dm_btn>
-            <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
-          </div>
-        </form>
-      </.dm_card>
-    </div>
+        <div class="flex gap-2 pt-2">
+          <.dm_btn type="submit" variant="primary">
+            <%= case @cred_form_mode do %>
+              <% :add -> %>Store Credential
+              <% :edit -> %>Save Changes
+              <% :rotate -> %>Rotate Secret
+            <% end %>
+          </.dm_btn>
+          <.dm_btn phx-click="cancel_cred_form">Cancel</.dm_btn>
+        </div>
+      </form>
+    </.dm_card>
     """
   end
 end
