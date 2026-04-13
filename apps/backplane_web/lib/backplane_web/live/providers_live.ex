@@ -296,16 +296,16 @@ defmodule BackplaneWeb.ProvidersLive do
     assign(socket, loading: false, providers: providers)
   end
 
-  defp api_type_badge(:anthropic), do: {"bg-purple-900 text-purple-300", "Anthropic"}
-  defp api_type_badge(:openai), do: {"bg-blue-900 text-blue-300", "OpenAI"}
-  defp api_type_badge(_), do: {"bg-gray-700 text-gray-300", "Unknown"}
+  defp api_type_badge_variant(:anthropic), do: "tertiary"
+  defp api_type_badge_variant(:openai), do: "info"
+  defp api_type_badge_variant(_), do: "neutral"
+
+  defp api_type_label(:anthropic), do: "Anthropic"
+  defp api_type_label(:openai), do: "OpenAI"
+  defp api_type_label(_), do: "Unknown"
 
   defp health_dot(provider_id) do
-    if HealthChecker.healthy?(provider_id) do
-      "bg-emerald-500"
-    else
-      "bg-red-500"
-    end
+    if HealthChecker.healthy?(provider_id), do: "bg-success", else: "bg-error"
   end
 
   defp models_display(models) when is_list(models), do: Enum.join(models, ", ")
@@ -324,7 +324,7 @@ defmodule BackplaneWeb.ProvidersLive do
     ~H"""
     <div
       :for={msg <- Enum.map(@field.errors, &translate_error/1)}
-      class="text-xs text-red-400 mt-1"
+      class="text-xs text-error mt-1"
     >
       {msg}
     </div>
@@ -344,346 +344,264 @@ defmodule BackplaneWeb.ProvidersLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-white">LLM Providers</h1>
-        <button
-          phx-click="new"
-          class="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
-        >
-          Add Provider
-        </button>
+        <h1 class="text-2xl font-bold">LLM Providers</h1>
+        <.dm_btn variant="primary" size="sm" phx-click="new">Add Provider</.dm_btn>
       </div>
 
       <%!-- Provider Form (create/edit) --%>
-      <div :if={@editing} class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-semibold text-white mb-4">
+      <.dm_card :if={@editing} variant="bordered" class="mb-6">
+        <:title>
           {if @editing == :new, do: "New Provider", else: "Edit Provider"}
-        </h2>
+        </:title>
         <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label class="block text-sm font-medium text-gray-300 mb-1">Name</label>
-              <input
-                type="text"
+              <.dm_input
+                id="provider-name"
                 name="provider[name]"
+                label="Name"
                 value={@form[:name].value}
                 placeholder="anthropic-prod"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
               />
               <.form_error field={@form[:name]} />
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-300 mb-1">API Type</label>
-              <select
+              <.dm_select
+                id="provider-api-type"
                 name="provider[api_type]"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
-              >
-                <option value="anthropic" selected={to_string(@form[:api_type].value) == "anthropic"}>
-                  Anthropic
-                </option>
-                <option value="openai" selected={to_string(@form[:api_type].value) == "openai"}>
-                  OpenAI
-                </option>
-              </select>
+                label="API Type"
+                options={[{"Anthropic", "anthropic"}, {"OpenAI", "openai"}]}
+                value={to_string(@form[:api_type].value)}
+              />
               <.form_error field={@form[:api_type]} />
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-300 mb-1">API URL</label>
-              <input
-                type="text"
+              <.dm_input
+                id="provider-api-url"
                 name="provider[api_url]"
+                label="API URL"
                 value={@form[:api_url].value}
                 placeholder="https://api.anthropic.com"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
               />
               <.form_error field={@form[:api_url]} />
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-300 mb-1">
-                API Key
-                <span :if={@editing != :new} class="text-gray-500">(leave blank to keep existing)</span>
-              </label>
-              <input
+              <.dm_input
+                id="provider-api-key"
                 type="password"
                 name="provider[api_key]"
+                label={if @editing != :new, do: "API Key (leave blank to keep existing)", else: "API Key"}
                 value=""
                 placeholder={if @editing != :new, do: "••••••••", else: "sk-ant-..."}
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
               />
               <.form_error field={@form[:api_key]} />
             </div>
 
             <div class="sm:col-span-2">
-              <label class="block text-sm font-medium text-gray-300 mb-1">
-                Models
-                <span class="text-gray-500">(comma-separated)</span>
-              </label>
-              <input
-                type="text"
+              <.dm_input
+                id="provider-models"
                 name="provider[models]"
+                label="Models (comma-separated)"
                 value={models_display(@form[:models].value)}
                 placeholder="claude-sonnet-4-20250514, claude-haiku-3-20240307"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
               />
               <.form_error field={@form[:models]} />
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-300 mb-1">
-                RPM Limit
-                <span class="text-gray-500">(optional)</span>
-              </label>
-              <input
-                type="text"
+              <.dm_input
+                id="provider-rpm-limit"
                 name="provider[rpm_limit]"
+                label="RPM Limit (optional)"
                 value={@form[:rpm_limit].value}
                 placeholder="60"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
               />
               <.form_error field={@form[:rpm_limit]} />
             </div>
 
             <div class="sm:col-span-2">
-              <label class="block text-sm font-medium text-gray-300 mb-1">
-                Default Headers
-                <span class="text-gray-500">(JSON object, optional)</span>
-              </label>
-              <textarea
+              <.dm_textarea
+                id="provider-default-headers"
                 name="provider[default_headers]"
-                rows="3"
-                placeholder='{"anthropic-version": "2023-06-01"}'
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white font-mono"
-              >{headers_display(@form[:default_headers].value)}</textarea>
+                label="Default Headers (JSON object, optional)"
+                rows={3}
+                value={headers_display(@form[:default_headers].value)}
+                placeholder={~s({"anthropic-version": "2023-06-01"})}
+                class="font-mono"
+              />
               <.form_error field={@form[:default_headers]} />
             </div>
           </div>
 
           <div class="flex gap-2">
-            <button
-              type="submit"
-              class="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              phx-click="cancel"
-              class="rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600"
-            >
-              Cancel
-            </button>
+            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel">Cancel</.dm_btn>
           </div>
         </.form>
-      </div>
+      </.dm_card>
 
       <%!-- Alias Form --%>
-      <div :if={@alias_form} class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-semibold text-white mb-4">Add Model Alias</h2>
+      <.dm_card :if={@alias_form} variant="bordered" class="mb-6">
+        <:title>Add Model Alias</:title>
         <.form for={@alias_form} phx-submit="save_alias" class="flex items-end gap-4">
           <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Alias Name</label>
-            <input
-              type="text"
+            <.dm_input
+              id="alias-name"
               name="model_alias[alias]"
+              label="Alias Name"
               value={@alias_form[:alias].value}
               placeholder="fast"
-              class="rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
             />
             <.form_error field={@alias_form[:alias]} />
           </div>
           <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Model</label>
-            <select
+            <.dm_select
+              id="alias-model"
               name="model_alias[model]"
-              class="rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
-            >
-              <option
-                :for={model <- alias_provider_models(@providers, @alias_provider_id)}
-                value={model}
-                selected={to_string(@alias_form[:model].value) == model}
-              >
-                {model}
-              </option>
-            </select>
+              label="Model"
+              options={Enum.map(alias_provider_models(@providers, @alias_provider_id), &{&1, &1})}
+              value={to_string(@alias_form[:model].value)}
+            />
             <.form_error field={@alias_form[:model]} />
           </div>
           <div class="flex gap-2">
-            <button
-              type="submit"
-              class="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              phx-click="cancel"
-              class="rounded-md bg-gray-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-600"
-            >
-              Cancel
-            </button>
+            <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
+            <.dm_btn type="button" size="sm" phx-click="cancel">Cancel</.dm_btn>
           </div>
         </.form>
-      </div>
+      </.dm_card>
 
       <%!-- Usage Panel --%>
-      <div :if={@selected_provider && @usage} class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-6">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold text-white">
-            Usage: {@selected_provider.name}
-          </h2>
-          <button
-            phx-click="select"
-            phx-value-id={@selected_provider.id}
-            class="text-xs text-gray-400 hover:text-gray-200"
-          >
-            Refresh
-          </button>
-        </div>
+      <.dm_card :if={@selected_provider && @usage} variant="bordered" class="mb-6">
+        <:title>
+          <div class="flex items-center justify-between">
+            <span>Usage: {@selected_provider.name}</span>
+            <.dm_btn
+              variant="ghost"
+              size="xs"
+              phx-click="select"
+              phx-value-id={@selected_provider.id}
+            >
+              Refresh
+            </.dm_btn>
+          </div>
+        </:title>
         <div class="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-4">
-          <div class="bg-gray-950 rounded-lg p-3">
-            <p class="text-xs text-gray-400">Total Requests</p>
-            <p class="text-lg font-bold text-white">{@usage.total_requests}</p>
-          </div>
-          <div class="bg-gray-950 rounded-lg p-3">
-            <p class="text-xs text-gray-400">Input Tokens</p>
-            <p class="text-lg font-bold text-white">{@usage.total_input_tokens}</p>
-          </div>
-          <div class="bg-gray-950 rounded-lg p-3">
-            <p class="text-xs text-gray-400">Output Tokens</p>
-            <p class="text-lg font-bold text-white">{@usage.total_output_tokens}</p>
-          </div>
-          <div class="bg-gray-950 rounded-lg p-3">
-            <p class="text-xs text-gray-400">Avg Latency</p>
-            <p class="text-lg font-bold text-white">{@usage.avg_latency_ms}ms</p>
-          </div>
+          <.dm_stat title="Total Requests" value={to_string(@usage.total_requests)} />
+          <.dm_stat title="Input Tokens" value={to_string(@usage.total_input_tokens)} />
+          <.dm_stat title="Output Tokens" value={to_string(@usage.total_output_tokens)} />
+          <.dm_stat title="Avg Latency" value={"#{@usage.avg_latency_ms}ms"} />
         </div>
 
         <div :if={@usage.by_model != []} class="mb-4">
-          <h3 class="text-sm font-medium text-gray-300 mb-2">By Model</h3>
+          <h3 class="text-sm font-medium text-on-surface mb-2">By Model</h3>
           <div class="space-y-1">
             <div
               :for={row <- @usage.by_model}
-              class="flex items-center justify-between text-sm px-3 py-1.5 bg-gray-950 rounded"
+              class="flex items-center justify-between text-sm px-3 py-1.5 bg-surface-container-high rounded"
             >
-              <span class="text-gray-200 font-mono">{row.model}</span>
-              <span class="text-gray-400">{row.requests} reqs</span>
+              <span class="text-on-surface font-mono">{row.model}</span>
+              <span class="text-on-surface-variant">{row.requests} reqs</span>
             </div>
           </div>
         </div>
 
         <div :if={map_size(@usage.by_status) > 0}>
-          <h3 class="text-sm font-medium text-gray-300 mb-2">By Status</h3>
+          <h3 class="text-sm font-medium text-on-surface mb-2">By Status</h3>
           <div class="flex flex-wrap gap-2">
-            <span
+            <.dm_badge
               :for={{status, count} <- @usage.by_status}
-              class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-gray-700 text-gray-300"
+              variant="neutral"
+              size="sm"
             >
               {status}: {count}
-            </span>
+            </.dm_badge>
           </div>
         </div>
-      </div>
+      </.dm_card>
 
       <%!-- Provider List --%>
-      <div :if={@providers == []} class="text-gray-400">
+      <div :if={@providers == []} class="text-on-surface-variant">
         No LLM providers configured.
       </div>
 
       <div class="space-y-4">
-        <div
-          :for={provider <- @providers}
-          class="bg-gray-900 border border-gray-800 rounded-lg p-4"
-        >
+        <.dm_card :for={provider <- @providers} variant="bordered">
           <div class="flex items-start justify-between">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
-                <button
+                <.dm_btn
+                  variant="link"
+                  size="sm"
                   phx-click="select"
                   phx-value-id={provider.id}
-                  class="text-sm font-medium text-white hover:text-emerald-300"
                 >
                   {provider.name}
-                </button>
-                <span class={[
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                  elem(api_type_badge(provider.api_type), 0)
-                ]}>
-                  {elem(api_type_badge(provider.api_type), 1)}
-                </span>
+                </.dm_btn>
+                <.dm_badge variant={api_type_badge_variant(provider.api_type)} size="sm">
+                  {api_type_label(provider.api_type)}
+                </.dm_badge>
                 <span
-                  class={[
-                    "inline-block w-2 h-2 rounded-full",
-                    health_dot(provider.id)
-                  ]}
+                  class={["inline-block w-2 h-2 rounded-full", health_dot(provider.id)]}
                   title={if HealthChecker.healthy?(provider.id), do: "Healthy", else: "Unhealthy"}
                 >
                 </span>
               </div>
-              <p class="text-xs text-gray-400 mt-1 truncate">{provider.api_url}</p>
-              <p class="text-xs text-gray-500 mt-0.5">
+              <p class="text-xs text-on-surface-variant mt-1 truncate">{provider.api_url}</p>
+              <p class="text-xs text-on-surface-variant mt-0.5">
                 {length(provider.models || [])} model(s)
               </p>
 
               <%!-- Aliases --%>
               <div :if={provider.aliases != []} class="flex flex-wrap gap-1 mt-2">
-                <span
+                <.dm_badge
                   :for={a <- provider.aliases}
-                  class="inline-flex items-center gap-1 rounded-md bg-gray-800 px-2 py-0.5 text-xs text-gray-300"
+                  variant="neutral"
+                  size="sm"
                 >
                   {a.alias} → {a.model}
-                  <button
+                  <.dm_btn
+                    variant="error"
+                    size="xs"
+                    confirm={"Delete alias #{a.alias}?"}
                     phx-click="delete_alias"
                     phx-value-id={a.id}
-                    data-confirm={"Delete alias #{a.alias}?"}
-                    class="text-red-400 hover:text-red-300 ml-1"
+                    class="ml-1"
                   >
                     ×
-                  </button>
-                </span>
+                  </.dm_btn>
+                </.dm_badge>
               </div>
             </div>
 
             <div class="flex items-center gap-2 ml-4 flex-shrink-0">
-              <button
+              <.dm_btn
+                variant={if provider.enabled, do: "warning", else: "success"}
+                size="xs"
                 phx-click="toggle_enabled"
                 phx-value-id={provider.id}
-                class={[
-                  "rounded px-2 py-1 text-xs",
-                  if(provider.enabled,
-                    do: "bg-amber-900 text-amber-200 hover:bg-amber-800",
-                    else: "bg-emerald-900 text-emerald-200 hover:bg-emerald-800"
-                  )
-                ]}
               >
                 {if provider.enabled, do: "Disable", else: "Enable"}
-              </button>
-              <button
-                phx-click="new_alias"
-                phx-value-provider-id={provider.id}
-                class="rounded px-2 py-1 text-xs bg-gray-700 text-gray-200 hover:bg-gray-600"
-              >
+              </.dm_btn>
+              <.dm_btn size="xs" phx-click="new_alias" phx-value-provider-id={provider.id}>
                 + Alias
-              </button>
-              <button
-                phx-click="edit"
-                phx-value-id={provider.id}
-                class="rounded px-2 py-1 text-xs bg-gray-700 text-gray-200 hover:bg-gray-600"
-              >
-                Edit
-              </button>
-              <button
+              </.dm_btn>
+              <.dm_btn size="xs" phx-click="edit" phx-value-id={provider.id}>Edit</.dm_btn>
+              <.dm_btn
+                variant="error"
+                size="xs"
+                confirm={"Delete provider #{provider.name}? This cannot be undone."}
                 phx-click="delete"
                 phx-value-id={provider.id}
-                data-confirm={"Delete provider #{provider.name}? This cannot be undone."}
-                class="rounded px-2 py-1 text-xs bg-red-900 text-red-200 hover:bg-red-800"
               >
                 Delete
-              </button>
+              </.dm_btn>
             </div>
           </div>
-        </div>
+        </.dm_card>
       </div>
     </div>
     """

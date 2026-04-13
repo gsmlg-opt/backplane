@@ -85,55 +85,55 @@ defmodule BackplaneWeb.UpstreamsLive do
         </.dm_btn>
       </div>
 
-      <h1 class="text-2xl font-bold text-white mb-6">Upstream MCP Servers</h1>
+      <h1 class="text-2xl font-bold mb-6">Upstream MCP Servers</h1>
 
-      <div :if={@upstreams == []} class="text-gray-400">
+      <div :if={@upstreams == []} class="text-on-surface-variant">
         No upstream MCP servers configured. Use the admin UI or API to add upstream servers.
       </div>
 
       <div class="space-y-4">
-        <div
+        <.dm_card
           :for={upstream <- @upstreams}
+          variant="bordered"
           class={[
-            "bg-gray-900 border rounded-lg p-4 cursor-pointer transition-colors",
-            if(@selected == upstream.name,
-              do: "border-emerald-600",
-              else: "border-gray-800 hover:border-gray-700"
-            )
+            "cursor-pointer transition-colors",
+            @selected == upstream.name && "ring-2 ring-primary"
           ]}
           phx-click="select"
           phx-value-name={upstream.name}
         >
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="text-sm font-medium text-white">{upstream.name}</h3>
-              <p class="text-xs text-gray-400 mt-1">
-                {upstream.prefix}:: | {upstream.transport}
-              </p>
+          <:title>
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="text-sm font-medium">{upstream.name}</span>
+                <p class="text-xs text-on-surface-variant mt-1">
+                  {upstream.prefix}:: | {upstream.transport}
+                </p>
+              </div>
+              <.dm_badge variant={upstream_badge_color(upstream)}>
+                {upstream_status(upstream) |> to_string() |> String.capitalize()}
+              </.dm_badge>
             </div>
-            <.dm_badge variant={upstream_badge_color(upstream)}>
-              {upstream_status(upstream) |> to_string() |> String.capitalize()}
-            </.dm_badge>
-          </div>
+          </:title>
 
-          <div :if={@selected == upstream.name} class="mt-4 border-t border-gray-800 pt-4">
-            <h4 class="text-xs font-medium text-gray-400 mb-2">Registered Tools</h4>
+          <div :if={@selected == upstream.name} class="mt-2 border-t border-outline-variant pt-4">
+            <h4 class="text-xs font-medium text-on-surface-variant mb-2">Registered Tools</h4>
             <div class="space-y-1">
               <div
                 :for={tool <- Map.get(@upstream_tools, upstream.name, [])}
-                class="text-xs text-gray-300 font-mono"
+                class="text-xs text-on-surface font-mono"
               >
                 {tool.name}
               </div>
               <div
                 :if={Map.get(@upstream_tools, upstream.name, []) == []}
-                class="text-xs text-gray-500"
+                class="text-xs text-on-surface-variant"
               >
                 No tools registered
               </div>
             </div>
           </div>
-        </div>
+        </.dm_card>
       </div>
     </div>
     """

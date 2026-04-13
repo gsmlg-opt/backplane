@@ -207,170 +207,118 @@ defmodule BackplaneWeb.ClientsLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-white">Clients</h1>
-        <button
-          phx-click="new"
-          class="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
-        >
-          New Client
-        </button>
+        <h1 class="text-2xl font-bold">Clients</h1>
+        <.dm_btn variant="primary" size="sm" phx-click="new">New Client</.dm_btn>
       </div>
 
-      <div :if={@editing} class="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-6">
-        <h2 class="text-lg font-semibold text-white mb-4">
+      <.dm_card :if={@editing} variant="bordered" class="mb-6">
+        <:title>
           {if @editing == :new, do: "New Client", else: "Edit Client"}
-        </h2>
+        </:title>
         <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Name</label>
-            <input
-              type="text"
-              name="client[name]"
-              value={@form[:name].value}
-              disabled={@editing != :new}
-              placeholder="synapsis-prod"
-              class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white disabled:opacity-50"
-            />
-            <.form_error field={@form[:name]} />
-          </div>
+          <.dm_input
+            id="client-name"
+            name="client[name]"
+            label="Name"
+            value={@form[:name].value}
+            disabled={@editing != :new}
+            placeholder="synapsis-prod"
+          />
+          <.form_error field={@form[:name]} />
 
-          <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">
-              Scopes
-              <span class="text-gray-500">(comma-separated)</span>
-            </label>
-            <input
-              type="text"
-              name="client[scopes]"
-              value={
-                case @form[:scopes].value do
-                  list when is_list(list) -> Enum.join(list, ", ")
-                  other -> other || "*"
-                end
-              }
-              placeholder="*, docs::*, git::repo-tree"
-              class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white"
-            />
-            <p class="text-xs text-gray-500 mt-1">
-              Examples: * (all), docs::* (all docs tools), git::repo-tree (single tool)
-            </p>
-            <.form_error field={@form[:scopes]} />
-          </div>
+          <.dm_input
+            id="client-scopes"
+            name="client[scopes]"
+            label="Scopes (comma-separated)"
+            value={
+              case @form[:scopes].value do
+                list when is_list(list) -> Enum.join(list, ", ")
+                other -> other || "*"
+              end
+            }
+            placeholder="*, docs::*, git::repo-tree"
+          />
+          <p class="text-xs text-on-surface-variant -mt-2">
+            Examples: * (all), docs::* (all docs tools), git::repo-tree (single tool)
+          </p>
+          <.form_error field={@form[:scopes]} />
 
-          <div :if={@generated_token} class="bg-gray-950 border border-amber-800 rounded-lg p-4">
-            <label class="block text-sm font-medium text-amber-400 mb-2">
+          <div :if={@generated_token} class="bg-surface-container border border-warning rounded-lg p-4">
+            <label class="block text-sm font-medium text-warning mb-2">
               Bearer Token
-              <span class="text-amber-600">(copy now — shown only once)</span>
+              <span class="text-on-surface-variant">(copy now — shown only once)</span>
             </label>
             <div class="flex items-center gap-2">
-              <code class="flex-1 text-sm text-amber-300 bg-gray-900 px-3 py-2 rounded font-mono break-all">
+              <code class="flex-1 text-sm text-warning bg-surface-container-high px-3 py-2 rounded font-mono break-all">
                 {@generated_token}
               </code>
-              <button
-                type="button"
-                phx-click="regenerate_token"
-                class="rounded px-2 py-1 text-xs bg-gray-700 text-gray-200 hover:bg-gray-600"
-              >
-                Regenerate
-              </button>
+              <.dm_btn variant="ghost" size="xs" phx-click="regenerate_token">Regenerate</.dm_btn>
             </div>
           </div>
 
           <div :if={@editing != :new && !@generated_token}>
-            <button
-              type="button"
-              phx-click="regenerate_token"
-              class="rounded px-3 py-1.5 text-xs bg-amber-900 text-amber-200 hover:bg-amber-800"
-            >
-              Rotate Token
-            </button>
+            <.dm_btn variant="warning" size="xs" phx-click="regenerate_token">Rotate Token</.dm_btn>
           </div>
 
           <div class="flex gap-2">
-            <button
-              type="submit"
-              class="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              phx-click="cancel"
-              class="rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600"
-            >
-              Cancel
-            </button>
+            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel">Cancel</.dm_btn>
           </div>
         </.form>
-      </div>
+      </.dm_card>
 
-      <div :if={@clients == []} class="text-gray-400">
+      <div :if={@clients == []} class="text-on-surface-variant">
         No clients configured. All MCP requests use legacy token authentication.
       </div>
 
       <div class="space-y-4">
-        <div
-          :for={client <- @clients}
-          class="bg-gray-900 border border-gray-800 rounded-lg p-4"
-        >
+        <.dm_card :for={client <- @clients} variant="bordered">
           <div class="flex items-center justify-between">
             <div>
               <div class="flex items-center gap-2">
-                <h3 class="text-sm font-medium text-white">{client.name}</h3>
-                <span class={[
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                  if(client.active,
-                    do: "bg-emerald-900 text-emerald-300",
-                    else: "bg-red-900 text-red-300"
-                  )
-                ]}>
+                <h3 class="text-sm font-medium">{client.name}</h3>
+                <.dm_badge
+                  variant={if client.active, do: "success", else: "error"}
+                  size="sm"
+                >
                   {if client.active, do: "Active", else: "Inactive"}
-                </span>
+                </.dm_badge>
               </div>
               <div class="flex flex-wrap gap-1 mt-2">
-                <span
+                <.dm_badge
                   :for={scope <- client.scopes}
-                  class="inline-flex items-center rounded-md bg-blue-900 px-2 py-0.5 text-xs font-medium text-blue-300"
+                  variant="info"
+                  size="sm"
                 >
                   {scope}
-                </span>
+                </.dm_badge>
               </div>
-              <p class="text-xs text-gray-500 mt-1">
+              <p class="text-xs text-on-surface-variant mt-1">
                 Last seen: {relative_time(client.last_seen_at)}
               </p>
             </div>
             <div class="flex items-center gap-2">
-              <button
+              <.dm_btn
+                variant={if client.active, do: "warning", else: "success"}
+                size="xs"
                 phx-click="toggle_active"
                 phx-value-id={client.id}
-                class={[
-                  "rounded px-2 py-1 text-xs",
-                  if(client.active,
-                    do: "bg-amber-900 text-amber-200 hover:bg-amber-800",
-                    else: "bg-emerald-900 text-emerald-200 hover:bg-emerald-800"
-                  )
-                ]}
               >
                 {if client.active, do: "Deactivate", else: "Activate"}
-              </button>
-              <button
-                phx-click="edit"
-                phx-value-id={client.id}
-                class="rounded px-2 py-1 text-xs bg-gray-700 text-gray-200 hover:bg-gray-600"
-              >
-                Edit
-              </button>
-              <button
+              </.dm_btn>
+              <.dm_btn size="xs" phx-click="edit" phx-value-id={client.id}>Edit</.dm_btn>
+              <.dm_btn
+                variant="error"
+                size="xs"
+                confirm={"Delete client #{client.name}? This cannot be undone."}
                 phx-click="delete"
                 phx-value-id={client.id}
-                data-confirm={"Delete client #{client.name}? This cannot be undone."}
-                class="rounded px-2 py-1 text-xs bg-red-900 text-red-200 hover:bg-red-800"
               >
                 Delete
-              </button>
+              </.dm_btn>
             </div>
           </div>
-        </div>
+        </.dm_card>
       </div>
     </div>
     """
@@ -380,7 +328,7 @@ defmodule BackplaneWeb.ClientsLive do
     ~H"""
     <div
       :for={msg <- Enum.map(@field.errors, &translate_error/1)}
-      class="text-xs text-red-400 mt-1"
+      class="text-xs text-error mt-1"
     >
       {msg}
     </div>

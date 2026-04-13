@@ -116,114 +116,106 @@ defmodule BackplaneWeb.ToolsLive do
       </div>
 
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-white">Tools</h1>
-        <span class="text-sm text-gray-400">{length(@filtered_tools)} tools</span>
+        <h1 class="text-2xl font-bold">Tools</h1>
+        <span class="text-sm text-on-surface-variant">{length(@filtered_tools)} tools</span>
       </div>
 
       <div class="mb-4">
-        <input
-          type="text"
-          placeholder="Search tools..."
-          value={@search}
-          phx-keyup="search"
-          phx-value-query=""
-          class="w-full rounded-lg bg-gray-900 border border-gray-700 px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+        <.dm_input
+          id="tools-search"
+          type="search"
           name="query"
+          value={@search}
+          placeholder="Search tools..."
+          phx-keyup="search"
           phx-debounce="200"
         />
       </div>
 
       <div class="space-y-2">
-        <div
+        <.dm_card
           :for={tool <- @filtered_tools}
+          variant="bordered"
           class={[
-            "bg-gray-900 border rounded-lg p-3 cursor-pointer transition-colors",
-            if(@selected && @selected.name == tool.name,
-              do: "border-emerald-600",
-              else: "border-gray-800 hover:border-gray-700"
-            )
+            "cursor-pointer transition-colors",
+            @selected && @selected.name == tool.name && "ring-2 ring-primary"
           ]}
           phx-click="select"
           phx-value-name={tool.name}
         >
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-mono text-emerald-400">{tool.name}</span>
-            <span class={[
-              "text-xs px-2 py-0.5 rounded",
-              if(tool.origin == :native,
-                do: "bg-blue-900/50 text-blue-300",
-                else: "bg-purple-900/50 text-purple-300"
-              )
-            ]}>
-              {origin_label(tool.origin)}
-            </span>
-          </div>
-          <p class="text-xs text-gray-400 mt-1 line-clamp-1">{tool.description}</p>
-        </div>
+          <:title>
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-mono text-primary">{tool.name}</span>
+              <.dm_badge
+                variant={if tool.origin == :native, do: "info", else: "tertiary"}
+                size="sm"
+              >
+                {origin_label(tool.origin)}
+              </.dm_badge>
+            </div>
+          </:title>
+          <p class="text-xs text-on-surface-variant mt-1 line-clamp-1">{tool.description}</p>
+        </.dm_card>
       </div>
 
       <div
         :if={@selected}
-        class="fixed inset-y-0 right-0 w-96 bg-gray-900 border-l border-gray-800 p-6 overflow-y-auto z-50"
+        class="fixed inset-y-0 right-0 w-96 bg-surface-container border-l border-outline-variant p-6 overflow-y-auto z-50"
       >
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold text-white">Tool Detail</h2>
-          <button
-            phx-click="close_detail"
-            class="text-gray-400 hover:text-white"
-          >
-            X
-          </button>
+          <h2 class="text-lg font-bold">Tool Detail</h2>
+          <.dm_btn variant="ghost" size="xs" phx-click="close_detail">X</.dm_btn>
         </div>
         <div class="space-y-4">
           <div>
-            <dt class="text-xs text-gray-400">Name</dt>
-            <dd class="text-sm font-mono text-emerald-400">{@selected.name}</dd>
+            <dt class="text-xs text-on-surface-variant">Name</dt>
+            <dd class="text-sm font-mono text-primary">{@selected.name}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">Description</dt>
-            <dd class="text-sm text-gray-300">{@selected.description}</dd>
+            <dt class="text-xs text-on-surface-variant">Description</dt>
+            <dd class="text-sm text-on-surface">{@selected.description}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">Origin</dt>
-            <dd class="text-sm text-gray-300">{origin_label(@selected.origin)}</dd>
+            <dt class="text-xs text-on-surface-variant">Origin</dt>
+            <dd class="text-sm text-on-surface">{origin_label(@selected.origin)}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">Input Schema</dt>
-            <dd class="text-xs font-mono text-gray-300 bg-gray-950 rounded p-3 overflow-x-auto">
+            <dt class="text-xs text-on-surface-variant">Input Schema</dt>
+            <dd class="text-xs font-mono text-on-surface bg-surface-container-high rounded p-3 overflow-x-auto">
               <pre>{Jason.encode!(@selected.input_schema || %{}, pretty: true)}</pre>
             </dd>
           </div>
 
-          <div class="border-t border-gray-800 pt-4">
-            <h3 class="text-sm font-medium text-white mb-2">Test Call</h3>
+          <div class="border-t border-outline-variant pt-4">
+            <h3 class="text-sm font-medium mb-2">Test Call</h3>
             <form phx-submit="test_call">
-              <textarea
+              <.dm_textarea
+                id="test-call-args"
                 name="args"
-                rows="4"
-                class="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-xs font-mono text-white placeholder-gray-500 focus:border-emerald-500"
-                placeholder='{"key": "value"}'
-              >{@test_args}</textarea>
-              <button
+                rows={4}
+                value={@test_args}
+                placeholder={~s({"key": "value"})}
+                class="font-mono text-xs"
+              />
+              <.dm_btn
                 type="submit"
+                variant="primary"
                 disabled={@test_running}
-                class="mt-2 w-full rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+                class="mt-2 w-full"
               >
                 {if @test_running, do: "Running...", else: "Call Tool"}
-              </button>
+              </.dm_btn>
             </form>
 
             <div :if={@test_result} class="mt-3">
-              <div class={[
-                "text-xs px-2 py-1 rounded mb-1 inline-block",
-                if(@test_result.status == :ok,
-                  do: "bg-green-900/50 text-green-300",
-                  else: "bg-red-900/50 text-red-300"
-                )
-              ]}>
+              <.dm_badge
+                variant={if @test_result.status == :ok, do: "success", else: "error"}
+                size="sm"
+                class="mb-1"
+              >
                 {if @test_result.status == :ok, do: "Success", else: "Error"}
-              </div>
-              <pre class="text-xs font-mono text-gray-300 bg-gray-950 rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{@test_result.data}</pre>
+              </.dm_badge>
+              <pre class="text-xs font-mono text-on-surface bg-surface-container-high rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">{@test_result.data}</pre>
             </div>
           </div>
         </div>

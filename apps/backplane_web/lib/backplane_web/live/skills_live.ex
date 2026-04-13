@@ -85,56 +85,57 @@ defmodule BackplaneWeb.SkillsLive do
       </div>
 
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-white">Skills</h1>
-        <span class="text-sm text-gray-400">{length(@filtered_skills)} skills</span>
+        <h1 class="text-2xl font-bold">Skills</h1>
+        <span class="text-sm text-on-surface-variant">{length(@filtered_skills)} skills</span>
       </div>
 
       <div class="mb-4">
-        <input
-          type="text"
-          placeholder="Search skills..."
-          value={@search}
-          phx-keyup="search"
-          phx-value-query=""
-          class="w-full rounded-lg bg-gray-900 border border-gray-700 px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+        <.dm_input
+          id="skills-search"
+          type="search"
           name="query"
+          value={@search}
+          placeholder="Search skills..."
+          phx-keyup="search"
           phx-debounce="200"
         />
       </div>
 
       <div class="space-y-2">
-        <div
+        <.dm_card
           :for={skill <- @filtered_skills}
-          class="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-lg p-3 cursor-pointer"
+          variant="bordered"
+          class="cursor-pointer"
           phx-click="select"
           phx-value-id={skill.id}
         >
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium text-white">{skill.name}</span>
-          </div>
-          <p class="text-xs text-gray-400 mt-1 line-clamp-1">{skill.description}</p>
+          <:title>
+            <span class="text-sm font-medium">{skill.name}</span>
+          </:title>
+          <p class="text-xs text-on-surface-variant mt-1 line-clamp-1">{skill.description}</p>
           <div :if={skill.tags != []} class="mt-2 flex flex-wrap gap-1">
-            <span
+            <.dm_badge
               :for={tag <- skill.tags || []}
-              class="text-xs bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded"
+              variant="neutral"
+              size="sm"
             >
               {tag}
-            </span>
+            </.dm_badge>
           </div>
-        </div>
+        </.dm_card>
       </div>
 
       <div
         :if={@selected}
-        class="fixed inset-y-0 right-0 w-[480px] bg-gray-900 border-l border-gray-800 p-6 overflow-y-auto z-50"
+        class="fixed inset-y-0 right-0 w-[480px] bg-surface-container border-l border-outline-variant p-6 overflow-y-auto z-50"
       >
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold text-white">{@selected.name}</h2>
-          <button phx-click="close_detail" class="text-gray-400 hover:text-white">X</button>
+          <h2 class="text-lg font-bold">{@selected.name}</h2>
+          <.dm_btn variant="ghost" size="xs" phx-click="close_detail">X</.dm_btn>
         </div>
-        <p class="text-sm text-gray-400 mb-4">{@selected.description}</p>
+        <p class="text-sm text-on-surface-variant mb-4">{@selected.description}</p>
         <div class="prose prose-invert prose-sm max-w-none">
-          <pre class="text-xs bg-gray-950 rounded p-4 overflow-x-auto whitespace-pre-wrap">{@selected.content}</pre>
+          <pre class="text-xs bg-surface-container-high rounded p-4 overflow-x-auto whitespace-pre-wrap">{@selected.content}</pre>
         </div>
       </div>
     </div>

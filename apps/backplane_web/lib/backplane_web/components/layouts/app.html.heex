@@ -8,7 +8,7 @@
     <:menu to={~p"/admin/settings"} active={String.starts_with?(@current_path, "/admin/settings")}>Settings</:menu>
   </.dm_appbar>
 
-  <main>
+  <main class="bg-surface-container-low">
     <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <.dm_flash_group flash={@flash} />
       {@inner_content}

@@ -263,25 +263,30 @@ defmodule BackplaneWeb.SettingsLive do
     <div>
       <h1 class="text-2xl font-bold mb-6">Settings</h1>
 
-      <.dm_tab
-        id="settings-tabs"
-        active_tab_name={@active_tab}
-        variant="lifted"
-        size="lg"
-      >
-        <:tab name="settings" phx_click={JS.patch(~p"/admin/settings?tab=settings")}>
+      <div class="tabs tabs-lifted" role="tablist">
+        <.link
+          patch={~p"/admin/settings?tab=settings"}
+          class={["tab tab-lg", @active_tab == "settings" && "tab-active"]}
+          role="tab"
+          aria-selected={@active_tab == "settings"}
+        >
           Settings
-        </:tab>
-        <:tab name="credentials" phx_click={JS.patch(~p"/admin/settings?tab=credentials")}>
+        </.link>
+        <.link
+          patch={~p"/admin/settings?tab=credentials"}
+          class={["tab tab-lg", @active_tab == "credentials" && "tab-active"]}
+          role="tab"
+          aria-selected={@active_tab == "credentials"}
+        >
           Credentials
-        </:tab>
-        <:tab_content name="settings">
-          <.render_settings_tab {assigns} />
-        </:tab_content>
-        <:tab_content name="credentials">
-          <.render_credentials_tab {assigns} />
-        </:tab_content>
-      </.dm_tab>
+        </.link>
+      </div>
+
+      <%= if @active_tab == "settings" do %>
+        <.render_settings_tab {assigns} />
+      <% else %>
+        <.render_credentials_tab {assigns} />
+      <% end %>
     </div>
     """
   end
@@ -311,12 +316,12 @@ defmodule BackplaneWeb.SettingsLive do
                       size="sm"
                     />
                     <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
-                    <.dm_btn variant="error" size="sm" phx-click="cancel_edit">Cancel</.dm_btn>
+                    <.dm_btn type="button" variant="error" size="sm" phx-click="cancel_edit">Cancel</.dm_btn>
                   </form>
                 </div>
                 <div :if={@editing_key != setting.key} class="flex items-center gap-2 shrink-0">
                   <code class="text-sm">{inspect(setting.value)}</code>
-                  <.dm_btn size="sm" phx-click="edit_setting" phx-value-key={setting.key}>
+                  <.dm_btn type="button" size="sm" phx-click="edit_setting" phx-value-key={setting.key}>
                     Edit
                   </.dm_btn>
                 </div>
@@ -336,11 +341,7 @@ defmodule BackplaneWeb.SettingsLive do
     <div class="mt-4">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">Credential Store</h2>
-        <.dm_btn
-          :if={@cred_form_mode == nil}
-          variant="primary"
-          phx-click="show_add_form"
-        >
+        <.dm_btn :if={@cred_form_mode == nil} variant="primary" phx-click="show_add_form">
           Add Credential
         </.dm_btn>
       </div>
@@ -370,12 +371,12 @@ defmodule BackplaneWeb.SettingsLive do
                 <.dm_btn size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
                   Edit
                 </.dm_btn>
-                <.dm_btn size="sm" variant="warning" phx-click="show_rotate_form" phx-value-name={cred.name}>
+                <.dm_btn variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
                   Rotate
                 </.dm_btn>
                 <.dm_btn
-                  size="sm"
                   variant="error"
+                  size="sm"
                   confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
                   phx-click="delete_credential"
                   phx-value-name={cred.name}
@@ -443,7 +444,7 @@ defmodule BackplaneWeb.SettingsLive do
               <% :rotate -> %>Rotate Secret
             <% end %>
           </.dm_btn>
-          <.dm_btn phx-click="cancel_cred_form">Cancel</.dm_btn>
+          <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
         </div>
       </form>
     </.dm_card>
