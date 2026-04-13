@@ -263,12 +263,17 @@ defmodule BackplaneWeb.SettingsLive do
     <div>
       <h1 class="text-2xl font-bold mb-6">Settings</h1>
 
-      <.dm_tab id="settings-tabs" active_tab_index={if @active_tab == "credentials", do: 1, else: 0}>
-        <:tab name="settings">
-          <.link patch={~p"/admin/settings?tab=settings"}>Settings</.link>
+      <.dm_tab
+        id="settings-tabs"
+        active_tab_name={@active_tab}
+        variant="lifted"
+        size="lg"
+      >
+        <:tab name="settings" phx_click={JS.patch(~p"/admin/settings?tab=settings")}>
+          Settings
         </:tab>
-        <:tab name="credentials">
-          <.link patch={~p"/admin/settings?tab=credentials"}>Credentials</.link>
+        <:tab name="credentials" phx_click={JS.patch(~p"/admin/settings?tab=credentials")}>
+          Credentials
         </:tab>
         <:tab_content name="settings">
           <.render_settings_tab {assigns} />
