@@ -5,8 +5,6 @@ defmodule BackplaneWeb.Router do
   forward("/mcp", Backplane.Transport.McpPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
-  # forward("/llm", Backplane.LLM.Router)
-
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
