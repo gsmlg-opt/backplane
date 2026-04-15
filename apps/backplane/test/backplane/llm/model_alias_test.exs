@@ -3,12 +3,13 @@ defmodule Backplane.LLM.ModelAliasTest do
 
   alias Backplane.LLM.ModelAlias
   alias Backplane.LLM.Provider
+  alias Backplane.Settings.Credentials
 
   @provider_attrs %{
     name: "alias-test-provider",
     api_type: :openai,
     api_url: "https://api.openai.com",
-    api_key: "sk-test-key",
+    credential: "alias-test-cred",
     models: ["gpt-4o", "gpt-4o-mini"]
   }
 
@@ -21,6 +22,8 @@ defmodule Backplane.LLM.ModelAliasTest do
   end
 
   setup do
+    Credentials.store("alias-test-cred", "sk-test-key", "llm")
+    Credentials.store("alias-ant-cred", "sk-ant-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
     {:ok, provider: provider}
   end
@@ -78,7 +81,7 @@ defmodule Backplane.LLM.ModelAliasTest do
           name: "to-be-deleted",
           api_type: :anthropic,
           api_url: "https://api.anthropic.com",
-          api_key: "sk-ant-key",
+          credential: "alias-ant-cred",
           models: ["claude-3-5-sonnet-20241022"]
         })
 

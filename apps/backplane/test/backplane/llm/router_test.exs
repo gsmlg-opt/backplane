@@ -5,12 +5,13 @@ defmodule Backplane.LLM.RouterTest do
   import Plug.Conn
 
   alias Backplane.LLM.{ModelAlias, ModelResolver, Provider, RateLimiter, Router}
+  alias Backplane.Settings.Credentials
 
   @anthropic_attrs %{
     name: "anthropic-prod",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key-abcd",
+    credential: "router-anthropic-cred",
     models: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
   }
 
@@ -18,11 +19,15 @@ defmodule Backplane.LLM.RouterTest do
     name: "openai-prod",
     api_type: :openai,
     api_url: "https://api.openai.com",
-    api_key: "sk-openai-test-key",
+    credential: "router-openai-cred",
     models: ["gpt-4o", "gpt-4o-mini"]
   }
 
   setup do
+    Credentials.store("router-anthropic-cred", "sk-ant-test-key-abcd", "llm")
+    Credentials.store("router-openai-cred", "sk-openai-test-key", "llm")
+    Credentials.store("router-anthropic-rl-cred", "sk-ant-test-rl-abcd", "llm")
+    Credentials.store("router-openai-rl-cred", "sk-openai-test-rl-abcd", "llm")
     # ModelResolver is started by the application supervision tree.
     # Clear the cache before each test to ensure isolation.
     ModelResolver.clear_cache()
@@ -129,7 +134,7 @@ defmodule Backplane.LLM.RouterTest do
           name: "anthropic-rl",
           api_type: :anthropic,
           api_url: "https://api.anthropic.com",
-          api_key: "sk-ant-test-rl-abcd",
+          credential: "router-anthropic-rl-cred",
           models: ["claude-sonnet-4-20250514"],
           rpm_limit: 1
         })
@@ -157,7 +162,7 @@ defmodule Backplane.LLM.RouterTest do
           name: "openai-rl",
           api_type: :openai,
           api_url: "https://api.openai.com",
-          api_key: "sk-openai-test-rl-abcd",
+          credential: "router-openai-rl-cred",
           models: ["gpt-4o"],
           rpm_limit: 1
         })

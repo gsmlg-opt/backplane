@@ -23,10 +23,9 @@ defmodule Backplane.LLM.CredentialPlug do
   - Sets `authorization` to `Bearer <resolved_key>`
   - Merges `provider.default_headers`
 
-  API key resolution order:
-  1. `provider.credential` — name referencing the centralized credentials store
-  2. `provider.api_key_encrypted` — legacy direct-encrypted API key
-  3. Returns 503 if neither is set
+  API key resolution:
+  - `provider.credential` — name referencing the centralized credentials store
+  - Returns 503 if credential is not set or not found
   """
   @spec inject(Plug.Conn.t(), Provider.t()) :: Plug.Conn.t()
   def inject(%Plug.Conn{} = conn, %Provider{api_type: :anthropic} = provider) do
@@ -62,20 +61,55 @@ defmodule Backplane.LLM.CredentialPlug do
     end
   end
 
+  # ── Public helpers ────────────────────────────────────────────────────────────
+
+  @doc """
+  Build authentication headers for a provider without a conn.
+
+  Returns `{:ok, headers}` where headers is a list of `{key, value}` tuples,
+  or `{:error, reason}`.
+  """
+  @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def build_auth_headers(%Provider{api_type: :anthropic} = provider) do
+    case resolve_api_key(provider) do
+      {:ok, api_key} ->
+        headers =
+          [{"x-api-key", api_key}, {"anthropic-version", @default_anthropic_version}]
+          ++ default_header_pairs(provider.default_headers)
+
+        {:ok, headers}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def build_auth_headers(%Provider{api_type: :openai} = provider) do
+    case resolve_api_key(provider) do
+      {:ok, api_key} ->
+        headers =
+          [{"authorization", "Bearer #{api_key}"}]
+          ++ default_header_pairs(provider.default_headers)
+
+        {:ok, headers}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp default_header_pairs(nil), do: []
+
+  defp default_header_pairs(headers) when is_map(headers) do
+    Enum.map(headers, fn {k, v} -> {String.downcase(k), v} end)
+  end
+
   # ── Private helpers ───────────────────────────────────────────────────────────
 
-  # Resolve the plaintext API key for a provider.
-  # 1. If `credential` is set, look it up in the centralized credentials store.
-  # 2. Fall back to `api_key_encrypted` (legacy direct-encryption path).
-  # 3. Return {:error, :no_credential} if neither is set.
+  # Resolve the plaintext API key for a provider via the centralized credential store.
   defp resolve_api_key(%Provider{credential: credential})
        when is_binary(credential) and credential != "" do
     Credentials.fetch(credential)
-  end
-
-  defp resolve_api_key(%Provider{api_key_encrypted: encrypted})
-       when is_binary(encrypted) do
-    Provider.decrypt_api_key(%Provider{api_key_encrypted: encrypted})
   end
 
   defp resolve_api_key(_provider), do: {:error, :no_credential}

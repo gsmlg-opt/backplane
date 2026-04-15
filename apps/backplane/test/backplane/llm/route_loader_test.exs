@@ -2,17 +2,19 @@ defmodule Backplane.LLM.RouteLoaderTest do
   use Backplane.DataCase, async: false
 
   alias Backplane.LLM.{Provider, RouteLoader}
+  alias Backplane.Settings.Credentials
   alias Relayixir.Config.UpstreamConfig
 
   @provider_attrs %{
     name: "anthropic-prod",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "route-loader-cred",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
   setup do
+    Credentials.store("route-loader-cred", "sk-ant-test-key", "llm")
     # UpstreamConfig and RouteLoader are started by the application supervision tree.
     # Clear upstream config and resolver cache for test isolation.
     UpstreamConfig.put_upstreams(%{})

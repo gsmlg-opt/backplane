@@ -4,12 +4,13 @@ defmodule Backplane.LLM.ModelResolverTest do
   alias Backplane.LLM.ModelAlias
   alias Backplane.LLM.ModelResolver
   alias Backplane.LLM.Provider
+  alias Backplane.Settings.Credentials
 
   @anthropic_attrs %{
     name: "anthropic-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "resolver-anthropic-cred",
     models: ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"]
   }
 
@@ -17,11 +18,13 @@ defmodule Backplane.LLM.ModelResolverTest do
     name: "openai-provider",
     api_type: :openai,
     api_url: "https://api.openai.com",
-    api_key: "sk-openai-test-key",
+    credential: "resolver-openai-cred",
     models: ["gpt-4o", "gpt-4o-mini"]
   }
 
   setup do
+    Credentials.store("resolver-anthropic-cred", "sk-ant-test-key", "llm")
+    Credentials.store("resolver-openai-cred", "sk-openai-test-key", "llm")
     # ModelResolver is started by the application supervision tree.
     # Clear the cache before each test to ensure isolation.
     ModelResolver.clear_cache()

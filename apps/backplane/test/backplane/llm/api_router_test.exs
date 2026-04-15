@@ -5,12 +5,18 @@ defmodule Backplane.LLM.ApiRouterTest do
   import Plug.Test
 
   alias Backplane.LLM.{ApiRouter, ModelAlias, Provider}
+  alias Backplane.Settings.Credentials
+
+  setup do
+    Credentials.store("anthropic-api-key", "sk-ant-test-key-abcd", "llm")
+    :ok
+  end
 
   @provider_attrs %{
     name: "anthropic-prod",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key-abcd",
+    credential: "anthropic-api-key",
     models: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
   }
 
@@ -25,13 +31,13 @@ defmodule Backplane.LLM.ApiRouterTest do
   # ── POST /providers ──────────────────────────────────────────────────────────
 
   describe "POST /providers" do
-    test "creates a provider and returns 201 with masked key" do
+    test "creates a provider and returns 201 with credential_hint" do
       conn =
         api_request(:post, "/providers", %{
           name: "anthropic-prod",
           api_type: "anthropic",
           api_url: "https://api.anthropic.com",
-          api_key: "sk-ant-test-key-abcd",
+          credential: "anthropic-api-key",
           models: ["claude-sonnet-4-20250514"]
         })
 
@@ -39,8 +45,10 @@ defmodule Backplane.LLM.ApiRouterTest do
       body = json_body(conn)
       assert body["name"] == "anthropic-prod"
       assert body["api_type"] == "anthropic"
-      assert body["api_key_hint"] =~ ~r/^\.\.\./
+      assert body["credential"] == "anthropic-api-key"
+      assert body["credential_hint"] =~ ~r/^\.\.\./
       refute Map.has_key?(body, "api_key")
+      refute Map.has_key?(body, "api_key_hint")
     end
 
     test "returns 422 with errors for invalid provider" do
@@ -49,7 +57,7 @@ defmodule Backplane.LLM.ApiRouterTest do
           name: "anthropic-prod",
           api_type: "anthropic",
           api_url: "https://api.anthropic.com"
-          # missing api_key and models
+          # missing credential and models
         })
 
       assert conn.status == 422
@@ -79,6 +87,7 @@ defmodule Backplane.LLM.ApiRouterTest do
       assert length(body) == 1
       [p] = body
       assert p["name"] == "anthropic-prod"
+      assert p["credential_hint"] =~ ~r/^\.\.\./
       assert is_list(p["aliases"])
       assert length(p["aliases"]) == 1
     end

@@ -11,9 +11,19 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   @doc """
   Proxies the HTTP request to the resolved upstream.
+
+  ## Options
+
+    * `:body` (`binary() | nil`) — when present, sends this body directly to upstream
+      instead of streaming from `Plug.Conn.read_body/1`.
+
+    * `:on_response_chunk` (`(binary() -> :ok) | nil`) — when present, called for each
+      response chunk in the streaming path (no content-length), before `Plug.Conn.chunk/2`
+      forwards it to the client. Does not affect non-streaming (content-length) responses.
+
   """
-  @spec call(Plug.Conn.t(), Upstream.t()) :: Plug.Conn.t()
-  def call(%Plug.Conn{} = conn, %Upstream{} = upstream) do
+  @spec call(Plug.Conn.t(), Upstream.t(), keyword()) :: Plug.Conn.t()
+  def call(%Plug.Conn{} = conn, %Upstream{} = upstream, opts \\ []) do
     start_time = System.monotonic_time()
 
     metadata = %{
@@ -28,7 +38,7 @@ defmodule Relayixir.Proxy.HttpPlug do
       metadata
     )
 
-    case do_proxy(conn, upstream) do
+    case do_proxy(conn, upstream, opts) do
       {:ok, conn, request} ->
         duration_ms =
           System.convert_time_unit(System.monotonic_time() - start_time, :native, :millisecond)
@@ -61,7 +71,7 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp do_proxy(conn, upstream) do
+  defp do_proxy(conn, upstream, opts) do
     # Strip content-length so Mint uses chunked transfer encoding for streaming.
     # Then append any route-level injected headers (overriding earlier values if same name).
     request_headers =
@@ -75,11 +85,9 @@ defmodule Relayixir.Proxy.HttpPlug do
     method = String.upcase(conn.method)
 
     with {:ok, mint_conn} <- connect_upstream(upstream),
-         {:ok, mint_conn, request_ref} <-
-           HttpClient.send_request(mint_conn, method, path, request_headers, :stream),
          {:ok, mint_conn} <-
-           stream_request_body(conn, mint_conn, request_ref, upstream.max_request_body_size) do
-      case stream_response(conn, mint_conn, upstream) do
+           send_request_with_body(conn, mint_conn, method, path, request_headers, upstream, opts) do
+      case stream_response(conn, mint_conn, upstream, opts) do
         {:ok, conn} -> {:ok, conn, request}
         {:error, reason, conn} -> {:error, reason, conn}
       end
@@ -89,6 +97,26 @@ defmodule Relayixir.Proxy.HttpPlug do
 
       {:error, _mint_conn, reason} ->
         {:error, map_error(reason), conn}
+    end
+  end
+
+  defp send_request_with_body(conn, mint_conn, method, path, headers, upstream, opts) do
+    case Keyword.get(opts, :body) do
+      body when is_binary(body) ->
+        # body: opt provided — send it directly (non-streaming).
+        case HttpClient.send_request(mint_conn, method, path, headers, body) do
+          {:ok, mint_conn, _ref} -> {:ok, mint_conn}
+          {:error, mint_conn, reason} -> {:error, mint_conn, reason}
+        end
+
+      _ ->
+        # Default: stream request body from Plug.Conn (original behavior).
+        with {:ok, mint_conn, request_ref} <-
+               HttpClient.send_request(mint_conn, method, path, headers, :stream),
+             {:ok, mint_conn} <-
+               stream_request_body(conn, mint_conn, request_ref, upstream.max_request_body_size) do
+          {:ok, mint_conn}
+        end
     end
   end
 
@@ -208,7 +236,7 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp stream_response(conn, mint_conn, upstream) do
+  defp stream_response(conn, mint_conn, upstream, opts) do
     timeout = upstream.request_timeout
     fbt = upstream.first_byte_timeout
 
@@ -223,7 +251,8 @@ defmodule Relayixir.Proxy.HttpPlug do
           status,
           response_headers,
           chunks,
-          completeness
+          completeness,
+          opts
         )
 
       {:error, reason} ->
@@ -231,7 +260,16 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp forward_response(conn, mint_conn, upstream, status, response_headers, _chunks, _complete)
+  defp forward_response(
+         conn,
+         mint_conn,
+         upstream,
+         status,
+         response_headers,
+         _chunks,
+         _complete,
+         _opts
+       )
        when status in [204, 304] do
     release_conn(upstream, mint_conn)
 
@@ -250,7 +288,8 @@ defmodule Relayixir.Proxy.HttpPlug do
          status,
          response_headers,
          chunks,
-         completeness
+         completeness,
+         opts
        ) do
     if has_content_length?(response_headers) do
       # Collect body — bounded by the declared content-length.
@@ -284,10 +323,10 @@ defmodule Relayixir.Proxy.HttpPlug do
 
       case completeness do
         :done ->
-          send_pending_chunks(conn, mint_conn, upstream, chunks)
+          send_pending_chunks(conn, mint_conn, upstream, chunks, opts)
 
         :more ->
-          stream_chunks_from_mint(conn, mint_conn, upstream, chunks)
+          stream_chunks_from_mint(conn, mint_conn, upstream, chunks, opts)
       end
     end
   end
@@ -311,15 +350,18 @@ defmodule Relayixir.Proxy.HttpPlug do
     HttpClient.recv_body(mint_conn, timeout, chunks, max_size)
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, []) do
+  defp send_pending_chunks(conn, mint_conn, upstream, [], _opts) do
     release_conn(upstream, mint_conn)
     {:ok, conn}
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest]) do
+  defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest], opts) do
+    response_callback = opts[:on_response_chunk]
+    if response_callback, do: response_callback.(chunk)
+
     case Plug.Conn.chunk(conn, chunk) do
       {:ok, conn} ->
-        send_pending_chunks(conn, mint_conn, upstream, rest)
+        send_pending_chunks(conn, mint_conn, upstream, rest, opts)
 
       {:error, :closed} ->
         HttpClient.close(mint_conn)
@@ -333,8 +375,12 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   # Streams chunks from Mint to the downstream client immediately as they arrive.
   # pending_chunks holds any data already received during the headers phase.
-  defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks) do
+  defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks, opts) do
+    response_callback = opts[:on_response_chunk]
+
     on_chunk = fn chunk ->
+      if response_callback, do: response_callback.(chunk)
+
       case Plug.Conn.chunk(conn, chunk) do
         {:ok, _conn} ->
           :ok

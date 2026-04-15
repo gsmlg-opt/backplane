@@ -2,16 +2,18 @@ defmodule Backplane.LLM.UsageCollectorTest do
   use Backplane.DataCase, async: false
 
   alias Backplane.LLM.{Provider, UsageCollector, UsageLog}
+  alias Backplane.Settings.Credentials
 
   @provider_attrs %{
     name: "collector-test-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "collector-test-cred",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
   setup do
+    Credentials.store("collector-test-cred", "sk-ant-test-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
 
     # Attach the handler and detach on exit

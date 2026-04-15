@@ -16,10 +16,9 @@ defmodule Backplane.LLM.Router do
 
   import Plug.Conn
 
-  alias Backplane.LLM.{CredentialPlug, ModelAlias, ModelExtractor, ModelResolver, Provider, RateLimiter}
-  alias Backplane.LLM.RouteLoader
+  alias Backplane.LLM.{CredentialPlug, ModelAlias, ModelExtractor, ModelResolver, Provider, RateLimiter, UsageAccumulator}
   alias Backplane.Transport.CacheBodyReader
-  alias Relayixir.Config.UpstreamConfig
+  alias Relayixir.Proxy.{HttpPlug, Upstream}
 
   plug Backplane.Transport.CORS
   plug :match
@@ -66,139 +65,114 @@ defmodule Backplane.LLM.Router do
     raw_body = conn.assigns[:raw_body] || ""
 
     case ModelExtractor.extract(raw_body) do
-      {:error, reason} -> send_model_error(conn, api_type, reason)
-      {:ok, model_string} -> resolve_and_proxy(conn, api_type, raw_body, model_string)
+      {:error, reason} ->
+        send_model_error(conn, api_type, reason)
+
+      {:ok, model_string} ->
+        with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
+             :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
+             {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
+             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider) do
+          upstream = build_upstream(provider, auth_headers)
+          do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type)
+        else
+          {:error, :no_provider} ->
+            send_not_found(conn, api_type, model_string)
+
+          {:error, :api_type_mismatch, provider} ->
+            send_api_type_mismatch(conn, api_type, model_string, provider)
+
+          {:error, retry_after} when is_integer(retry_after) ->
+            send_rate_limit_error(conn, api_type, retry_after)
+
+          {:error, :invalid_json} ->
+            send_model_error(conn, api_type, :invalid_json)
+
+          {:error, _} ->
+            send_error(conn, api_type, 503, "Provider credential not configured")
+        end
     end
   end
 
-  defp resolve_and_proxy(conn, api_type, raw_body, model_string) do
-    case ModelResolver.resolve(api_type, model_string) do
-      {:error, :no_provider} ->
-        send_not_found(conn, api_type, model_string)
+  defp build_upstream(%Provider{} = provider, auth_headers) do
+    uri = URI.parse(provider.api_url)
 
-      {:error, :api_type_mismatch, provider} ->
-        send_api_type_mismatch(conn, api_type, model_string, provider)
-
-      {:ok, provider, raw_model} ->
-        check_rate_and_proxy(conn, api_type, raw_body, provider, raw_model)
-    end
+    %Upstream{
+      scheme: String.to_existing_atom(uri.scheme || "https"),
+      host: uri.host,
+      port: uri.port || (if uri.scheme == "https", do: 443, else: 80),
+      request_timeout: 300_000,
+      first_byte_timeout: 120_000,
+      connect_timeout: 10_000,
+      max_request_body_size: 50_000_000,
+      max_response_body_size: 50_000_000,
+      inject_request_headers: auth_headers,
+      host_forward_mode: :rewrite_to_upstream,
+      metadata: %{provider_id: provider.id, api_type: provider.api_type}
+    }
   end
 
-  defp check_rate_and_proxy(conn, api_type, raw_body, provider, raw_model) do
-    case RateLimiter.check(provider.id, provider.rpm_limit) do
-      {:error, retry_after} ->
-        send_rate_limit_error(conn, api_type, retry_after)
-
-      :ok ->
-        rewrite_and_proxy(conn, api_type, raw_body, provider, raw_model)
-    end
-  end
-
-  defp rewrite_and_proxy(conn, api_type, raw_body, provider, raw_model) do
-    case ModelExtractor.replace_model(raw_body, raw_model) do
-      {:error, :invalid_json} -> send_model_error(conn, api_type, :invalid_json)
-      {:ok, rewritten_body} -> do_proxy(conn, provider, rewritten_body, raw_model, api_type)
-    end
-  end
-
-  defp do_proxy(conn, provider, rewritten_body, raw_model, api_type) do
-    upstream_name = RouteLoader.upstream_name(provider.id)
-
-    case UpstreamConfig.get_upstream(upstream_name) do
-      nil ->
-        Logger.warning("RouteLoader: no upstream config for #{upstream_name}")
-        emit_telemetry(provider, raw_model, conn, %{status: 502, stream?: false, input_tokens: nil, output_tokens: nil, error_reason: "upstream_not_configured", latency_ms: 0})
-        send_error(conn, api_type, 502, "Provider upstream not configured")
-
-      upstream_config ->
-        injected_conn = CredentialPlug.inject(conn, provider)
-
-        url = build_upstream_url(provider.api_url, conn.request_path, conn.query_string)
-
-        headers = build_proxy_headers(injected_conn)
-
-        proxy_with_req(conn, url, headers, rewritten_body, upstream_config, provider, raw_model, api_type)
-    end
-  end
-
-  defp build_upstream_url(api_url, request_path, query_string) do
-    uri = URI.parse(api_url)
-    base = "#{uri.scheme}://#{uri.host}:#{effective_port(uri)}#{request_path}"
-
-    if query_string && query_string != "" do
-      "#{base}?#{query_string}"
-    else
-      base
-    end
-  end
-
-  defp effective_port(%URI{scheme: "https", port: nil}), do: 443
-  defp effective_port(%URI{scheme: "http", port: nil}), do: 80
-  defp effective_port(%URI{port: port}), do: port
-
-  defp build_proxy_headers(conn) do
-    hop_by_hop = ~w(
-      connection keep-alive transfer-encoding upgrade proxy-authorization
-      proxy-authenticate te trailer host content-length
-    )
-
-    conn.req_headers
-    |> Enum.reject(fn {name, _} -> String.downcase(name) in hop_by_hop end)
-    |> Enum.map(fn {k, v} -> {k, v} end)
-  end
-
-  defp proxy_with_req(conn, url, headers, body, upstream_config, provider, raw_model, api_type) do
-    timeout = Map.get(upstream_config, :request_timeout, 300_000)
+  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, _api_type) do
+    stream? = is_stream_request?(rewritten_body)
+    usage_acc = if stream?, do: UsageAccumulator.new(), else: nil
     start_ms = System.monotonic_time(:millisecond)
 
-    req_opts = [
-      method: String.downcase(conn.method) |> String.to_existing_atom(),
-      url: url,
-      headers: headers,
-      body: body,
-      receive_timeout: timeout,
-      redirect: false,
-      retry: :never,
-      decode_body: false
-    ]
+    on_chunk =
+      if stream? do
+        fn chunk -> UsageAccumulator.scan_chunk(usage_acc, chunk) end
+      end
 
-    stream? = is_stream_request?(body)
+    opts =
+      [body: rewritten_body]
+      |> then(fn o -> if on_chunk, do: Keyword.put(o, :on_response_chunk, on_chunk), else: o end)
 
-    case Req.request(req_opts) do
-      {:ok, response} ->
-        latency_ms = System.monotonic_time(:millisecond) - start_ms
-        {input_tokens, output_tokens} = extract_tokens(response, provider.api_type)
-        emit_telemetry(provider, raw_model, conn, %{status: response.status, stream?: stream?, input_tokens: input_tokens, output_tokens: output_tokens, error_reason: nil, latency_ms: latency_ms})
-        forward_response(conn, response)
+    result_conn = HttpPlug.call(conn, upstream, opts)
 
-      {:error, %{reason: reason}} ->
-        latency_ms = System.monotonic_time(:millisecond) - start_ms
-        Logger.warning("LLM proxy request failed: #{inspect(reason)}")
-        emit_telemetry(provider, raw_model, conn, %{status: 502, stream?: stream?, input_tokens: nil, output_tokens: nil, error_reason: inspect(reason), latency_ms: latency_ms})
-        send_error(conn, api_type, 502, "Upstream request failed: #{inspect(reason)}")
+    latency_ms = System.monotonic_time(:millisecond) - start_ms
+
+    {input_tokens, output_tokens} =
+      if stream? do
+        UsageAccumulator.get_tokens(usage_acc)
+      else
+        extract_tokens_from_resp(result_conn, provider.api_type)
+      end
+
+    emit_telemetry(provider, raw_model, result_conn, %{
+      status: result_conn.status,
+      stream?: stream?,
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      error_reason: nil,
+      latency_ms: latency_ms
+    })
+
+    result_conn
+  end
+
+  defp extract_tokens_from_resp(conn, :anthropic) do
+    body = conn.resp_body
+
+    with true <- is_binary(body),
+         {:ok, %{"usage" => usage}} <- Jason.decode(body),
+         input when is_integer(input) <- Map.get(usage, "input_tokens"),
+         output when is_integer(output) <- Map.get(usage, "output_tokens") do
+      {input, output}
+    else
+      _ -> {nil, nil}
     end
   end
 
-  defp forward_response(conn, response) do
-    resp_headers =
-      response.headers
-      |> Enum.reject(fn {name, _} ->
-        String.downcase(name) in ~w(connection keep-alive transfer-encoding)
-      end)
+  defp extract_tokens_from_resp(conn, :openai) do
+    body = conn.resp_body
 
-    conn =
-      Enum.reduce(resp_headers, conn, fn {name, value}, acc ->
-        put_resp_header(acc, String.downcase(name), value)
-      end)
-
-    body =
-      cond do
-        is_binary(response.body) -> response.body
-        is_list(response.body) -> IO.iodata_to_binary(response.body)
-        true -> ""
-      end
-
-    send_resp(conn, response.status, body)
+    with true <- is_binary(body),
+         {:ok, %{"usage" => usage}} <- Jason.decode(body),
+         input when is_integer(input) <- Map.get(usage, "prompt_tokens"),
+         output when is_integer(output) <- Map.get(usage, "completion_tokens") do
+      {input, output}
+    else
+      _ -> {nil, nil}
+    end
   end
 
   # ── Telemetry helpers ─────────────────────────────────────────────────────────
@@ -231,28 +205,6 @@ defmodule Backplane.LLM.Router do
     case Jason.decode(body) do
       {:ok, %{"stream" => true}} -> true
       _ -> false
-    end
-  end
-
-  defp extract_tokens(response, :anthropic) do
-    with true <- is_binary(response.body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(response.body),
-         input when is_integer(input) <- Map.get(usage, "input_tokens"),
-         output when is_integer(output) <- Map.get(usage, "output_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  defp extract_tokens(response, :openai) do
-    with true <- is_binary(response.body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(response.body),
-         input when is_integer(input) <- Map.get(usage, "prompt_tokens"),
-         output when is_integer(output) <- Map.get(usage, "completion_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
     end
   end
 
