@@ -2,16 +2,19 @@ defmodule Backplane.LLM.UsageQueryTest do
   use Backplane.DataCase, async: true
 
   alias Backplane.LLM.{Provider, UsageLog, UsageQuery}
+  alias Backplane.Settings.Credentials
 
   @provider_attrs %{
     name: "query-test-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "query-test-cred",
     models: ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"]
   }
 
   setup do
+    Credentials.store("query-test-cred", "sk-ant-test-key", "llm")
+    Credentials.store("query-other-cred", "sk-other-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
     {:ok, provider: provider}
   end
@@ -36,7 +39,7 @@ defmodule Backplane.LLM.UsageQueryTest do
           name: "other-provider",
           api_type: :openai,
           api_url: "https://api.openai.com",
-          api_key: "sk-other-key",
+          credential: "query-other-cred",
           models: ["gpt-4o"]
         })
 

@@ -3,16 +3,18 @@ defmodule Backplane.Jobs.UsageRetentionTest do
 
   alias Backplane.Jobs.UsageRetention
   alias Backplane.LLM.{Provider, UsageLog}
+  alias Backplane.Settings.Credentials
 
   @provider_attrs %{
     name: "retention-test-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "retention-test-cred",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
   setup do
+    Credentials.store("retention-test-cred", "sk-ant-test-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
     {:ok, provider: provider}
   end

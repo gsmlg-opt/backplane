@@ -4,6 +4,12 @@ defmodule BackplaneWeb.ProvidersLiveTest do
   import Phoenix.LiveViewTest
 
   alias Backplane.LLM.Provider
+  alias Backplane.Settings.Credentials
+
+  setup do
+    Credentials.store("test-cred", "sk-test", "llm")
+    :ok
+  end
 
   describe "index" do
     test "renders provider list page", %{conn: conn} do
@@ -18,7 +24,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
           name: "anthropic-prod",
           api_type: :anthropic,
           api_url: "https://api.anthropic.com",
-          api_key: "sk-test",
+          credential: "test-cred",
           models: ["claude-sonnet-4-20250514"]
         })
 
@@ -34,7 +40,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
           name: "anthropic-prod",
           api_type: :anthropic,
           api_url: "https://api.anthropic.com",
-          api_key: "sk-test",
+          credential: "test-cred",
           models: ["claude-sonnet-4-20250514"]
         })
 

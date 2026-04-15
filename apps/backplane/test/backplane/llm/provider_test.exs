@@ -2,12 +2,13 @@ defmodule Backplane.LLM.ProviderTest do
   use Backplane.DataCase, async: true
 
   alias Backplane.LLM.Provider
+  alias Backplane.Settings.Credentials
 
   @valid_attrs %{
     name: "test-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "test-key",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
@@ -19,6 +20,11 @@ defmodule Backplane.LLM.ProviderTest do
     end)
   end
 
+  setup do
+    Credentials.store("test-key", "sk-ant-test-value", "llm")
+    :ok
+  end
+
   # ── create/1 ──────────────────────────────────────────────────────────────────
 
   describe "create/1" do
@@ -26,12 +32,7 @@ defmodule Backplane.LLM.ProviderTest do
       assert {:ok, provider} = Provider.create(@valid_attrs)
       assert provider.name == "test-provider"
       assert provider.api_type == :anthropic
-    end
-
-    test "encrypts api_key into api_key_encrypted" do
-      assert {:ok, provider} = Provider.create(@valid_attrs)
-      assert is_binary(provider.api_key_encrypted)
-      assert {:ok, "sk-ant-test-key"} = Provider.decrypt_api_key(provider)
+      assert provider.credential == "test-key"
     end
 
     test "rejects missing name" do
@@ -88,10 +89,24 @@ defmodule Backplane.LLM.ProviderTest do
       assert provider.api_url == "http://127.0.0.1:11434"
     end
 
-    test "rejects missing api_key on insert" do
-      attrs = Map.delete(@valid_attrs, :api_key)
+    test "rejects missing credential" do
+      attrs = Map.delete(@valid_attrs, :credential)
       assert {:error, changeset} = Provider.create(attrs)
-      assert %{api_key: [_ | _]} = errors_on(changeset)
+      assert %{credential: [_ | _]} = errors_on(changeset)
+    end
+
+    test "rejects credential that does not exist in store" do
+      attrs = %{@valid_attrs | name: "bad-cred", credential: "nonexistent-cred"}
+      assert {:error, changeset} = Provider.create(attrs)
+      assert %{credential: [msg]} = errors_on(changeset)
+      assert msg =~ "not found"
+    end
+
+    test "does not accept api_key parameter" do
+      attrs = Map.put(@valid_attrs, :api_key, "sk-ant-should-not-work")
+      # api_key is not a field, so it's silently ignored; the provider still creates fine
+      assert {:ok, provider} = Provider.create(attrs)
+      refute Map.has_key?(Map.from_struct(provider), :api_key)
     end
 
     test "rejects empty models list" do
@@ -104,7 +119,7 @@ defmodule Backplane.LLM.ProviderTest do
       assert {:ok, _} = Provider.create(@valid_attrs)
 
       assert {:error, changeset} =
-               Provider.create(%{@valid_attrs | api_key: "sk-ant-other-key"})
+               Provider.create(%{@valid_attrs | name: "test-provider"})
 
       assert %{name: [_ | _]} = errors_on(changeset)
     end
@@ -126,21 +141,16 @@ defmodule Backplane.LLM.ProviderTest do
       assert updated.rpm_limit == 100
     end
 
-    test "re-encrypts on key change", %{provider: provider} do
-      old_encrypted = provider.api_key_encrypted
+    test "updates credential reference", %{provider: provider} do
+      Credentials.store("other-key", "sk-other-value", "llm")
 
-      assert {:ok, updated} = Provider.update(provider, %{api_key: "sk-ant-new-key"})
-
-      assert updated.api_key_encrypted != old_encrypted
-      assert {:ok, "sk-ant-new-key"} = Provider.decrypt_api_key(updated)
+      assert {:ok, updated} = Provider.update(provider, %{credential: "other-key"})
+      assert updated.credential == "other-key"
     end
 
-    test "preserves existing key when api_key not provided", %{provider: provider} do
-      old_encrypted = provider.api_key_encrypted
-
-      assert {:ok, updated} = Provider.update(provider, %{rpm_limit: 60})
-
-      assert updated.api_key_encrypted == old_encrypted
+    test "rejects update to nonexistent credential", %{provider: provider} do
+      assert {:error, changeset} = Provider.update(provider, %{credential: "does-not-exist"})
+      assert %{credential: [_ | _]} = errors_on(changeset)
     end
   end
 
@@ -176,9 +186,7 @@ defmodule Backplane.LLM.ProviderTest do
     test "releases name for reuse after soft-delete", %{provider: provider} do
       assert {:ok, _} = Provider.soft_delete(provider)
 
-      assert {:ok, new_provider} =
-               Provider.create(%{@valid_attrs | api_key: "sk-ant-new-key"})
-
+      assert {:ok, new_provider} = Provider.create(@valid_attrs)
       assert new_provider.name == "test-provider"
     end
 
@@ -202,15 +210,6 @@ defmodule Backplane.LLM.ProviderTest do
       {:ok, provider} = Provider.create(@valid_attrs)
       {:ok, _} = Provider.soft_delete(provider)
       assert Provider.list() == []
-    end
-
-    test "does not expose raw encrypted key in list" do
-      {:ok, _} = Provider.create(@valid_attrs)
-      [provider] = Provider.list()
-      # api_key (virtual) should be nil; api_key_encrypted is binary, not plain text
-      assert is_nil(provider.api_key)
-      assert is_binary(provider.api_key_encrypted)
-      refute provider.api_key_encrypted == "sk-ant-test-key"
     end
   end
 end

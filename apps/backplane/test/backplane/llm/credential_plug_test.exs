@@ -3,15 +3,22 @@ defmodule Backplane.LLM.CredentialPlugTest do
 
   alias Backplane.LLM.CredentialPlug
   alias Backplane.LLM.Provider
+  alias Backplane.Settings.Credentials
 
   import Plug.Test
   import Plug.Conn
+
+  setup do
+    Credentials.store("anthropic-cred", "sk-ant-test-key-1234", "llm")
+    Credentials.store("openai-cred", "sk-openai-test-key-5678", "llm")
+    :ok
+  end
 
   @anthropic_attrs %{
     name: "cred-plug-anthropic",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key-1234",
+    credential: "anthropic-cred",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
@@ -19,7 +26,7 @@ defmodule Backplane.LLM.CredentialPlugTest do
     name: "cred-plug-openai",
     api_type: :openai,
     api_url: "https://api.openai.com",
-    api_key: "sk-openai-test-key-5678",
+    credential: "openai-cred",
     models: ["gpt-4o"]
   }
 
@@ -33,8 +40,7 @@ defmodule Backplane.LLM.CredentialPlugTest do
 
     test "injects x-api-key header", %{provider: provider} do
       conn = conn(:post, "/") |> CredentialPlug.inject(provider)
-      {:ok, expected_key} = Provider.decrypt_api_key(provider)
-      assert get_req_header(conn, "x-api-key") == [expected_key]
+      assert get_req_header(conn, "x-api-key") == ["sk-ant-test-key-1234"]
     end
 
     test "strips authorization header", %{provider: provider} do
@@ -79,8 +85,7 @@ defmodule Backplane.LLM.CredentialPlugTest do
 
     test "injects Authorization Bearer header", %{provider: provider} do
       conn = conn(:post, "/") |> CredentialPlug.inject(provider)
-      {:ok, expected_key} = Provider.decrypt_api_key(provider)
-      assert get_req_header(conn, "authorization") == ["Bearer #{expected_key}"]
+      assert get_req_header(conn, "authorization") == ["Bearer sk-openai-test-key-5678"]
     end
 
     test "strips x-api-key header", %{provider: provider} do
@@ -98,6 +103,61 @@ defmodule Backplane.LLM.CredentialPlugTest do
 
       conn = conn(:post, "/") |> CredentialPlug.inject(provider_with_headers)
       assert get_req_header(conn, "x-org-id") == ["org-123"]
+    end
+  end
+
+  # ── No credential ────────────────────────────────────────────────────────────
+
+  describe "inject/2 with missing credential" do
+    test "returns 503 when provider has no credential" do
+      # Build a provider struct directly (bypass changeset validation)
+      provider = %Provider{
+        api_type: :anthropic,
+        credential: nil
+      }
+
+      conn = conn(:post, "/") |> CredentialPlug.inject(provider)
+      assert conn.status == 503
+      assert conn.halted
+    end
+  end
+
+  # ── build_auth_headers/1 ──────────────────────────────────────────────────────
+
+  describe "build_auth_headers/1" do
+    test "returns anthropic headers" do
+      {:ok, provider} = Provider.create(@anthropic_attrs)
+
+      assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+      assert {"x-api-key", "sk-ant-test-key-1234"} in headers
+      assert {"anthropic-version", "2023-06-01"} in headers
+    end
+
+    test "returns openai headers" do
+      {:ok, provider} = Provider.create(@openai_attrs)
+
+      assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+      assert {"authorization", "Bearer sk-openai-test-key-5678"} in headers
+    end
+
+    test "includes default_headers" do
+      {:ok, provider} = Provider.create(@anthropic_attrs)
+
+      {:ok, provider} =
+        Provider.update(provider, %{default_headers: %{"X-Custom" => "val"}})
+
+      assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+      assert {"x-custom", "val"} in headers
+    end
+
+    test "returns error when credential is missing" do
+      provider = %Provider{api_type: :anthropic, credential: nil}
+      assert {:error, :no_credential} = CredentialPlug.build_auth_headers(provider)
+    end
+
+    test "returns error when credential not found in store" do
+      provider = %Provider{api_type: :openai, credential: "nonexistent"}
+      assert {:error, :not_found} = CredentialPlug.build_auth_headers(provider)
     end
   end
 end

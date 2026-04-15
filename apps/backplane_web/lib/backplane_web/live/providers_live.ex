@@ -247,7 +247,6 @@ defmodule BackplaneWeb.ProvidersLive do
     |> Map.put("rpm_limit", parse_rpm_limit(params["rpm_limit"]))
     |> Map.put("default_headers", parse_default_headers(params["default_headers"]))
     |> Map.put("api_type", parse_api_type(params["api_type"]))
-    |> Map.delete("api_key")
     |> then(fn result ->
       case result["credential"] do
         "" -> Map.put(result, "credential", nil)

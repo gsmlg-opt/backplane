@@ -139,29 +139,17 @@ defmodule Backplane.LLM.HealthChecker do
     end
   end
 
-  defp probe_params(%{api_type: :anthropic, api_url: api_url} = provider) do
+  defp probe_params(%{api_url: api_url} = provider) do
+    alias Backplane.LLM.CredentialPlug
+
     url = "#{api_url}/v1/models"
 
-    api_key =
-      case Provider.decrypt_api_key(provider) do
-        {:ok, key} -> key
-        :error -> ""
+    headers =
+      case CredentialPlug.build_auth_headers(provider) do
+        {:ok, hdrs} -> hdrs
+        {:error, _} -> []
       end
 
-    headers = [{"x-api-key", api_key}]
-    {url, headers}
-  end
-
-  defp probe_params(%{api_type: :openai, api_url: api_url} = provider) do
-    url = "#{api_url}/v1/models"
-
-    api_key =
-      case Provider.decrypt_api_key(provider) do
-        {:ok, key} -> key
-        :error -> ""
-      end
-
-    headers = [{"authorization", "Bearer #{api_key}"}]
     {url, headers}
   end
 end

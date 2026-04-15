@@ -3,16 +3,18 @@ defmodule Backplane.Jobs.UsageWriterTest do
 
   alias Backplane.Jobs.UsageWriter
   alias Backplane.LLM.{Provider, UsageLog}
+  alias Backplane.Settings.Credentials
 
   @provider_attrs %{
     name: "writer-test-provider",
     api_type: :anthropic,
     api_url: "https://api.anthropic.com",
-    api_key: "sk-ant-test-key",
+    credential: "writer-test-cred",
     models: ["claude-3-5-sonnet-20241022"]
   }
 
   setup do
+    Credentials.store("writer-test-cred", "sk-ant-test-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
     {:ok, provider: provider}
   end
