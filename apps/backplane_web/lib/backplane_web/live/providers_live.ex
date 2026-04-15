@@ -6,6 +6,7 @@ defmodule BackplaneWeb.ProvidersLive do
   alias Backplane.LLM.Provider
   alias Backplane.LLM.UsageQuery
   alias Backplane.PubSubBroadcaster
+  alias Backplane.Settings.Credentials
 
   @impl true
   def mount(_params, _session, socket) do
@@ -241,18 +242,18 @@ defmodule BackplaneWeb.ProvidersLive do
   end
 
   defp prepare_provider_params(params) do
-    result =
-      params
-      |> Map.put("models", parse_models(params["models"]))
-      |> Map.put("rpm_limit", parse_rpm_limit(params["rpm_limit"]))
-      |> Map.put("default_headers", parse_default_headers(params["default_headers"]))
-      |> Map.put("api_type", parse_api_type(params["api_type"]))
-
-    if params["api_key"] == "" do
-      Map.delete(result, "api_key")
-    else
-      result
-    end
+    params
+    |> Map.put("models", parse_models(params["models"]))
+    |> Map.put("rpm_limit", parse_rpm_limit(params["rpm_limit"]))
+    |> Map.put("default_headers", parse_default_headers(params["default_headers"]))
+    |> Map.put("api_type", parse_api_type(params["api_type"]))
+    |> Map.delete("api_key")
+    |> then(fn result ->
+      case result["credential"] do
+        "" -> Map.put(result, "credential", nil)
+        _ -> result
+      end
+    end)
   end
 
   defp parse_models(nil), do: []
@@ -293,7 +294,15 @@ defmodule BackplaneWeb.ProvidersLive do
         _ -> []
       end
 
-    assign(socket, loading: false, providers: providers)
+    credential_options =
+      try do
+        creds = Credentials.list()
+        [{"", "Select a credential..."} | Enum.map(creds, fn c -> {c.name, c.name} end)]
+      rescue
+        _ -> [{"", "Select a credential..."}]
+      end
+
+    assign(socket, loading: false, providers: providers, credential_options: credential_options)
   end
 
   defp api_type_badge_variant(:anthropic), do: "tertiary"
@@ -371,7 +380,7 @@ defmodule BackplaneWeb.ProvidersLive do
                 id="provider-api-type"
                 name="provider[api_type]"
                 label="API Type"
-                options={[{"Anthropic", "anthropic"}, {"OpenAI", "openai"}]}
+                options={[{"anthropic", "Anthropic"}, {"openai", "OpenAI"}]}
                 value={to_string(@form[:api_type].value)}
               />
               <.form_error field={@form[:api_type]} />
@@ -389,15 +398,17 @@ defmodule BackplaneWeb.ProvidersLive do
             </div>
 
             <div>
-              <.dm_input
-                id="provider-api-key"
-                type="password"
-                name="provider[api_key]"
-                label={if @editing != :new, do: "API Key (leave blank to keep existing)", else: "API Key"}
-                value=""
-                placeholder={if @editing != :new, do: "••••••••", else: "sk-ant-..."}
+              <.dm_select
+                id="provider-credential"
+                name="provider[credential]"
+                label="Credential"
+                options={@credential_options}
+                value={@form[:credential].value || ""}
               />
-              <.form_error field={@form[:api_key]} />
+              <p class="text-xs text-on-surface-variant mt-1">
+                Select a credential from the <.link navigate={~p"/admin/settings?tab=credentials"} class="text-primary underline">credential store</.link>.
+              </p>
+              <.form_error field={@form[:credential]} />
             </div>
 
             <div class="sm:col-span-2">
@@ -553,6 +564,9 @@ defmodule BackplaneWeb.ProvidersLive do
               <p class="text-xs text-on-surface-variant mt-1 truncate">{provider.api_url}</p>
               <p class="text-xs text-on-surface-variant mt-0.5">
                 {length(provider.models || [])} model(s)
+                <%= if provider.credential do %>
+                  · credential: <code>{provider.credential}</code>
+                <% end %>
               </p>
 
               <%!-- Aliases --%>

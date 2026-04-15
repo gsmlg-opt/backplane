@@ -248,11 +248,11 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   @kind_options [
-    {"LLM Provider", "llm"},
-    {"Upstream MCP", "upstream"},
-    {"Service", "service"},
-    {"Admin", "admin"},
-    {"Custom", "custom"}
+    {"llm", "LLM Provider"},
+    {"upstream", "Upstream MCP"},
+    {"service", "Service"},
+    {"admin", "Admin"},
+    {"custom", "Custom"}
   ]
 
   # --- Render ---
@@ -377,7 +377,7 @@ defmodule BackplaneWeb.SettingsLive do
                 <.dm_btn
                   variant="error"
                   size="sm"
-                  confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
+                  data-confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
                   phx-click="delete_credential"
                   phx-value-name={cred.name}
                 >
@@ -428,6 +428,7 @@ defmodule BackplaneWeb.SettingsLive do
           id="cred-secret"
           name="secret"
           type="password"
+          value={@cred_secret}
           label={if @cred_form_mode == :rotate, do: "New Secret", else: "Secret"}
           placeholder={if @cred_form_mode == :edit, do: "Leave empty to keep current", else: "API key or token"}
           {if @cred_form_mode in [:add, :rotate], do: [required: true], else: []}
