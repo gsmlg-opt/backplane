@@ -55,7 +55,11 @@ defmodule BackplaneWeb.SettingsLive do
       cred_editing_name: nil,
       cred_name: "",
       cred_kind: "llm",
-      cred_secret: ""
+      cred_secret: "",
+      cred_auth_type: "api_key",
+      cred_client_id: "",
+      cred_token_url: "",
+      cred_scope: ""
     )
   end
 
@@ -102,12 +106,17 @@ defmodule BackplaneWeb.SettingsLive do
        cred_editing_name: nil,
        cred_name: "",
        cred_kind: "llm",
-       cred_secret: ""
+       cred_secret: "",
+       cred_auth_type: "api_key",
+       cred_client_id: "",
+       cred_token_url: "",
+       cred_scope: ""
      )}
   end
 
   def handle_event("show_edit_form", %{"name" => name}, socket) do
     cred = Enum.find(socket.assigns.credentials, &(&1.name == name))
+    metadata = (cred && cred.metadata) || %{}
 
     {:noreply,
      assign(socket,
@@ -115,7 +124,11 @@ defmodule BackplaneWeb.SettingsLive do
        cred_editing_name: name,
        cred_name: name,
        cred_kind: (cred && cred.kind) || "llm",
-       cred_secret: ""
+       cred_secret: "",
+       cred_auth_type: metadata["auth_type"] || "api_key",
+       cred_client_id: metadata["client_id"] || "",
+       cred_token_url: metadata["token_url"] || "",
+       cred_scope: metadata["scope"] || ""
      )}
   end
 
@@ -132,6 +145,10 @@ defmodule BackplaneWeb.SettingsLive do
 
   def handle_event("cancel_cred_form", _, socket) do
     {:noreply, assign(socket, cred_form_mode: nil, cred_editing_name: nil)}
+  end
+
+  def handle_event("change_auth_type", %{"auth_type" => auth_type}, socket) do
+    {:noreply, assign(socket, cred_auth_type: auth_type)}
   end
 
   def handle_event("save_credential", params, socket) do
@@ -162,11 +179,12 @@ defmodule BackplaneWeb.SettingsLive do
     name = params["name"] || ""
     kind = params["kind"] || "llm"
     secret = params["secret"] || ""
+    metadata = build_metadata(params)
 
     if name == "" or secret == "" do
       {:noreply, put_flash(socket, :error, "Name and secret are required")}
     else
-      case Credentials.store(name, secret, kind) do
+      case Credentials.store(name, secret, kind, metadata) do
         {:ok, _} ->
           {:noreply,
            socket
@@ -184,8 +202,9 @@ defmodule BackplaneWeb.SettingsLive do
     name = socket.assigns.cred_editing_name
     kind = params["kind"] || "llm"
     secret = params["secret"] || ""
+    metadata = build_metadata(params)
 
-    case Credentials.update(name, %{kind: kind}) do
+    case Credentials.update(name, %{kind: kind, metadata: metadata}) do
       {:ok, _} -> :ok
       {:error, _} -> :ok
     end
@@ -233,6 +252,32 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   # --- Helpers ---
+
+  defp cred_secret_label(:rotate, _auth_type), do: "New Secret"
+  defp cred_secret_label(_mode, "oauth2_client_credentials"), do: "Client Secret"
+  defp cred_secret_label(_mode, _auth_type), do: "Secret"
+
+  defp cred_secret_placeholder(:edit, "oauth2_client_credentials"),
+    do: "Leave empty to keep current client secret"
+
+  defp cred_secret_placeholder(:edit, _auth_type), do: "Leave empty to keep current"
+  defp cred_secret_placeholder(_mode, "oauth2_client_credentials"), do: "OAuth2 client secret"
+  defp cred_secret_placeholder(_mode, _auth_type), do: "API key or token"
+
+  defp build_metadata(params) do
+    auth_type = params["auth_type"] || "api_key"
+
+    if auth_type == "oauth2_client_credentials" do
+      %{
+        "auth_type" => "oauth2_client_credentials",
+        "client_id" => params["client_id"] || "",
+        "token_url" => params["token_url"] || "",
+        "scope" => params["scope"] || ""
+      }
+    else
+      %{"auth_type" => "api_key"}
+    end
+  end
 
   defp parse_setting_value(key, value) do
     definitions = Settings.list_definitions()
@@ -422,6 +467,41 @@ defmodule BackplaneWeb.SettingsLive do
             options={@kind_options}
             value={@cred_kind}
           />
+
+          <.dm_select
+            id="cred-auth-type"
+            name="auth_type"
+            label="Auth Type"
+            options={[{"api_key", "API Key"}, {"oauth2_client_credentials", "OAuth2 Client Credentials"}]}
+            value={@cred_auth_type}
+            phx-change="change_auth_type"
+          />
+
+          <%= if @cred_auth_type == "oauth2_client_credentials" do %>
+            <.dm_input
+              id="cred-client-id"
+              name="client_id"
+              label="Client ID"
+              value={@cred_client_id}
+              placeholder="OAuth2 client identifier"
+              required
+            />
+            <.dm_input
+              id="cred-token-url"
+              name="token_url"
+              label="Token URL"
+              value={@cred_token_url}
+              placeholder="https://auth.example.com/oauth/token"
+              required
+            />
+            <.dm_input
+              id="cred-scope"
+              name="scope"
+              label="Scope (optional)"
+              value={@cred_scope}
+              placeholder="e.g. read write"
+            />
+          <% end %>
         <% end %>
 
         <.dm_input
@@ -429,8 +509,8 @@ defmodule BackplaneWeb.SettingsLive do
           name="secret"
           type="password"
           value={@cred_secret}
-          label={if @cred_form_mode == :rotate, do: "New Secret", else: "Secret"}
-          placeholder={if @cred_form_mode == :edit, do: "Leave empty to keep current", else: "API key or token"}
+          label={cred_secret_label(@cred_form_mode, @cred_auth_type)}
+          placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type)}
           {if @cred_form_mode in [:add, :rotate], do: [required: true], else: []}
         />
         <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant -mt-2">
