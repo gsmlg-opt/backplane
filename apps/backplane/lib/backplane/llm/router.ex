@@ -97,10 +97,19 @@ defmodule Backplane.LLM.Router do
   defp build_upstream(%Provider{} = provider, auth_headers) do
     uri = URI.parse(provider.api_url)
 
+    path_prefix =
+      case uri.path do
+        nil -> nil
+        "/" -> nil
+        "" -> nil
+        path -> String.trim_trailing(path, "/")
+      end
+
     %Upstream{
       scheme: String.to_existing_atom(uri.scheme || "https"),
       host: uri.host,
       port: uri.port || (if uri.scheme == "https", do: 443, else: 80),
+      path_prefix_rewrite: path_prefix,
       request_timeout: 300_000,
       first_byte_timeout: 120_000,
       connect_timeout: 10_000,

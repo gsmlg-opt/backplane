@@ -23,6 +23,7 @@ defmodule BackplaneWeb.ProvidersLive do
        form: nil,
        alias_form: nil,
        alias_provider_id: nil,
+       editing_alias: nil,
        selected_provider: nil,
        usage: nil
      )}
@@ -74,7 +75,7 @@ defmodule BackplaneWeb.ProvidersLive do
   end
 
   def handle_event("cancel", _, socket) do
-    {:noreply, assign(socket, editing: nil, form: nil, alias_form: nil, alias_provider_id: nil)}
+    {:noreply, assign(socket, editing: nil, form: nil, alias_form: nil, alias_provider_id: nil, editing_alias: nil)}
   end
 
   def handle_event("validate", %{"provider" => params}, socket) do
@@ -153,25 +154,68 @@ defmodule BackplaneWeb.ProvidersLive do
     end
   end
 
+  def handle_event("edit_alias", %{"id" => id}, socket) do
+    case ModelAlias.get(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Alias not found")}
+
+      model_alias ->
+        changeset = ModelAlias.changeset(model_alias, %{})
+
+        {:noreply,
+         assign(socket,
+           alias_form: to_form(changeset, as: :model_alias),
+           alias_provider_id: model_alias.provider_id,
+           editing_alias: model_alias,
+           editing: nil,
+           form: nil
+         )}
+    end
+  end
+
   def handle_event("save_alias", %{"model_alias" => params}, socket) do
     provider_id = socket.assigns.alias_provider_id
 
-    attrs = %{
-      "alias" => params["alias"],
-      "model" => params["model"],
-      "provider_id" => provider_id
-    }
+    case socket.assigns.editing_alias do
+      nil ->
+        # Creating new alias
+        attrs = %{
+          "alias" => params["alias"],
+          "model" => params["model"],
+          "provider_id" => provider_id
+        }
 
-    case ModelAlias.create(attrs) do
-      {:ok, _alias} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Alias created")
-         |> assign(alias_form: nil, alias_provider_id: nil)
-         |> load_providers()}
+        case ModelAlias.create(attrs) do
+          {:ok, _alias} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Alias created")
+             |> assign(alias_form: nil, alias_provider_id: nil, editing_alias: nil)
+             |> load_providers()}
 
-      {:error, changeset} ->
-        {:noreply, assign(socket, alias_form: to_form(changeset, as: :model_alias))}
+          {:error, changeset} ->
+            {:noreply, assign(socket, alias_form: to_form(changeset, as: :model_alias))}
+        end
+
+      %ModelAlias{} = existing ->
+        # Updating existing alias
+        attrs = %{
+          "alias" => params["alias"],
+          "model" => params["model"],
+          "provider_id" => provider_id
+        }
+
+        case ModelAlias.update(existing, attrs) do
+          {:ok, _alias} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Alias updated")
+             |> assign(alias_form: nil, alias_provider_id: nil, editing_alias: nil)
+             |> load_providers()}
+
+          {:error, changeset} ->
+            {:noreply, assign(socket, alias_form: to_form(changeset, as: :model_alias))}
+        end
     end
   end
 
@@ -455,7 +499,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
       <%!-- Alias Form --%>
       <.dm_card :if={@alias_form} variant="bordered" class="mb-6">
-        <:title>Add Model Alias</:title>
+        <:title>{if @editing_alias, do: "Edit Model Alias", else: "Add Model Alias"}</:title>
         <.form for={@alias_form} phx-submit="save_alias" class="flex items-end gap-4">
           <div>
             <.dm_input
@@ -570,23 +614,30 @@ defmodule BackplaneWeb.ProvidersLive do
 
               <%!-- Aliases --%>
               <div :if={provider.aliases != []} class="flex flex-wrap gap-1 mt-2">
-                <.dm_badge
-                  :for={a <- provider.aliases}
-                  variant="neutral"
-                  size="sm"
-                >
-                  {a.alias} → {a.model}
+                <span :for={a <- provider.aliases} class="inline-flex items-center gap-1">
+                  <.dm_badge variant="neutral" size="sm">
+                    {a.alias} → {a.model}
+                  </.dm_badge>
+                  <.dm_btn
+                    variant="ghost"
+                    size="xs"
+                    phx-click="edit_alias"
+                    phx-value-id={a.id}
+                    title="Edit alias"
+                  >
+                    ✎
+                  </.dm_btn>
                   <.dm_btn
                     variant="error"
                     size="xs"
-                    confirm={"Delete alias #{a.alias}?"}
+                    data-confirm={"Delete alias #{a.alias}?"}
                     phx-click="delete_alias"
                     phx-value-id={a.id}
-                    class="ml-1"
+                    title="Delete alias"
                   >
                     ×
                   </.dm_btn>
-                </.dm_badge>
+                </span>
               </div>
             </div>
 
@@ -606,7 +657,7 @@ defmodule BackplaneWeb.ProvidersLive do
               <.dm_btn
                 variant="error"
                 size="xs"
-                confirm={"Delete provider #{provider.name}? This cannot be undone."}
+                data-confirm={"Delete provider #{provider.name}? This cannot be undone."}
                 phx-click="delete"
                 phx-value-id={provider.id}
               >

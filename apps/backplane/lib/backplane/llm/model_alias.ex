@@ -101,6 +101,21 @@ defmodule Backplane.LLM.ModelAlias do
     result
   end
 
+  @doc "Update a model alias and broadcast the change."
+  @spec update(t(), map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
+  def update(%__MODULE__{} = model_alias, attrs) do
+    result =
+      model_alias
+      |> changeset(attrs)
+      |> Repo.update()
+
+    if match?({:ok, _}, result) do
+      Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
+    end
+
+    result
+  end
+
   @doc "Delete a model alias and broadcast the change."
   @spec delete(t()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
   def delete(%__MODULE__{} = model_alias) do
