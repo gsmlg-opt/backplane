@@ -35,6 +35,7 @@ defmodule Backplane.Proxy.McpUpstream do
     |> cast(attrs, @required ++ @optional)
     |> validate_required(@required)
     |> validate_inclusion(:transport, ~w(http stdio sse))
+    |> validate_inclusion(:auth_scheme, ~w(none bearer x_api_key custom_header))
     |> validate_transport_fields()
     |> validate_headers_deny_list()
     |> validate_no_url_userinfo()

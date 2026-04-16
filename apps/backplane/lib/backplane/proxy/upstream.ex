@@ -84,6 +84,7 @@ defmodule Backplane.Proxy.Upstream do
       refresh_interval: config[:refresh_interval],
       # SSE transport fields
       sse_ref: nil,
+      sse_pid: nil,
       sse_endpoint: nil,
       sse_retry_ms: nil
     }
@@ -356,6 +357,7 @@ defmodule Backplane.Proxy.Upstream do
        state
        | status: :disconnected,
          sse_ref: nil,
+         sse_pid: nil,
          sse_endpoint: nil,
          tools: [],
          pending_requests: %{},
@@ -415,8 +417,8 @@ defmodule Backplane.Proxy.Upstream do
     ToolRegistry.deregister_upstream(state.prefix)
 
     # Close SSE connection
-    if state.sse_ref do
-      Backplane.Proxy.SSEClient.close(state.sse_ref)
+    if state.sse_pid do
+      Backplane.Proxy.SSEClient.close(state.sse_ref, state.sse_pid)
     end
 
     if state.port do
@@ -515,44 +517,57 @@ defmodule Backplane.Proxy.Upstream do
              config[:auth_header_name],
              config[:credential]
            ) do
-        {:ok, h} -> h
-        # Connect anyway, auth failure will surface on POST
-        {:error, _reason} -> base_headers
+        {:ok, h} ->
+          h
+
+        {:error, reason} ->
+          Logger.warning("Auth injection failed for SSE connect",
+            upstream: state.name,
+            reason: inspect(reason)
+          )
+
+          base_headers
       end
 
     # Open SSE connection
-    {:ok, ref} = Backplane.Proxy.SSEClient.connect(config.url, headers, self())
-    state = %{state | sse_ref: ref}
+    case Backplane.Proxy.SSEClient.connect(config.url, headers, self()) do
+      {:ok, ref, pid} ->
+        state = %{state | sse_ref: ref, sse_pid: pid}
 
-    # Wait for the endpoint event
-    receive do
-      {:sse_event, ^ref, %{event: "endpoint", data: endpoint_url}} ->
-        # Resolve endpoint URL (may be relative)
-        post_url = resolve_endpoint_url(config.url, endpoint_url)
-        state = %{state | sse_endpoint: post_url}
+        # Wait for the endpoint event
+        receive do
+          {:sse_event, ^ref, %{event: "endpoint", data: endpoint_url}} ->
+            # Resolve endpoint URL (may be relative)
+            post_url = resolve_endpoint_url(config.url, endpoint_url)
+            state = %{state | sse_endpoint: post_url}
 
-        # Now send initialize via POST to the discovered endpoint
-        request =
-          jsonrpc_request("initialize", %{
-            "protocolVersion" => Backplane.protocol_version(),
-            "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
-            "capabilities" => %{}
-          })
+            # Now send initialize via POST to the discovered endpoint
+            request =
+              jsonrpc_request("initialize", %{
+                "protocolVersion" => Backplane.protocol_version(),
+                "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
+                "capabilities" => %{}
+              })
 
-        case sse_post_and_wait(state, request) do
-          {:ok, _result, state} ->
-            {:ok, %{state | initialized: true}}
+            case sse_post_and_wait(state, request) do
+              {:ok, _result, state} ->
+                {:ok, %{state | initialized: true}}
 
-          {:error, reason, state} ->
-            {:error, reason, state}
+              {:error, reason, state} ->
+                {:error, reason, state}
+            end
+
+          {:sse_closed, ^ref, reason} ->
+            {:error, "SSE connection closed: #{inspect(reason)}",
+             %{state | sse_ref: nil, sse_pid: nil}}
+        after
+          @default_timeout ->
+            Backplane.Proxy.SSEClient.close(ref, pid)
+            {:error, :timeout, %{state | sse_ref: nil, sse_pid: nil}}
         end
 
-      {:sse_closed, ^ref, reason} ->
-        {:error, "SSE connection closed: #{inspect(reason)}", %{state | sse_ref: nil}}
-    after
-      @default_timeout ->
-        Backplane.Proxy.SSEClient.close(ref)
-        {:error, :timeout, %{state | sse_ref: nil}}
+      {:error, reason} ->
+        {:error, reason, state}
     end
   end
 
@@ -1122,7 +1137,7 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   defp resolve_endpoint_url(sse_url, endpoint_url) do
-    if String.starts_with?(endpoint_url, "http") do
+    if String.starts_with?(endpoint_url, ["http://", "https://"]) do
       endpoint_url
     else
       base = URI.parse(sse_url)
