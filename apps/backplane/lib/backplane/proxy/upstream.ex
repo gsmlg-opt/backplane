@@ -473,26 +473,53 @@ defmodule Backplane.Proxy.Upstream do
 
   defp http_request(state, body) do
     config = state.config
-    headers = Map.to_list(config[:headers] || %{})
+    base_headers = Map.to_list(config[:headers] || %{})
+
+    # Inject auth credentials
+    base_headers =
+      case Backplane.Proxy.AuthInjector.inject(
+             base_headers,
+             config[:auth_scheme],
+             config[:auth_header_name],
+             config[:credential]
+           ) do
+        {:ok, h} -> h
+        {:error, reason} -> throw({:auth_error, reason})
+      end
 
     # Propagate request ID from Logger metadata for distributed tracing
     headers =
       case Logger.metadata()[:request_id] do
-        nil -> headers
-        req_id -> [{"x-request-id", req_id} | headers]
+        nil -> base_headers
+        req_id -> [{"x-request-id", req_id} | base_headers]
       end
 
     opts = [
       url: config.url,
       method: :post,
       json: body,
-      headers: [{"content-type", "application/json"} | headers],
-      receive_timeout: @default_timeout
+      headers: [
+        {"content-type", "application/json"},
+        {"accept", "application/json, text/event-stream"}
+        | headers
+      ],
+      receive_timeout: config[:timeout] || @default_timeout,
+      decode_body: false
     ]
 
     case Req.request(opts) do
-      {:ok, %{status: 200, body: body}} when is_map(body) ->
-        {:ok, body}
+      {:ok, %{status: 200, headers: resp_headers, body: resp_body}} ->
+        content_type = get_content_type(resp_headers)
+
+        if String.contains?(content_type, "text/event-stream") do
+          parse_sse_response(resp_body)
+        else
+          case Jason.decode(resp_body) do
+            {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+            {:ok, _} -> {:error, "Unexpected non-object JSON response"}
+            {:error, _} -> {:error, "Invalid JSON response"}
+          end
+        end
 
       {:ok, %{status: status}} ->
         {:error, "HTTP #{status}"}
@@ -503,6 +530,38 @@ defmodule Backplane.Proxy.Upstream do
       {:error, reason} ->
         {:error, reason}
     end
+  catch
+    {:auth_error, reason} -> {:error, reason}
+  end
+
+  defp parse_sse_response(body) when is_binary(body) do
+    {events, _rest} = Backplane.Proxy.SSEParser.parse(body, "")
+
+    case Enum.find(events, &(&1.event == "message")) do
+      %{data: data} ->
+        case Jason.decode(data) do
+          {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+          {:ok, _} -> {:error, "Unexpected non-object in SSE data"}
+          {:error, _} -> {:error, "Invalid JSON in SSE data"}
+        end
+
+      nil ->
+        {:error, "No message event in SSE response"}
+    end
+  end
+
+  defp get_content_type(headers) when is_map(headers) do
+    case headers["content-type"] do
+      [ct | _] -> ct
+      _ -> ""
+    end
+  end
+
+  defp get_content_type(headers) when is_list(headers) do
+    Enum.find_value(headers, "", fn
+      {k, v} when is_binary(k) -> if String.downcase(k) == "content-type", do: v
+      _ -> nil
+    end)
   end
 
   # Stdio Transport helpers

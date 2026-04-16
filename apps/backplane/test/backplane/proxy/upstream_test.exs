@@ -946,7 +946,60 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "http transport with SSE response (Streamable HTTP)" do
+    test "connects and discovers tools via SSE response" do
+      port = 4260
+      {:ok, _} = start_mock_sse_http_server(port)
+
+      config = %{
+        name: "stream-http",
+        prefix: "shttp",
+        transport: "http",
+        url: "http://127.0.0.1:#{port}/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert status.status == :connected
+      assert status.tool_count == 1
+
+      GenServer.stop(pid)
+    end
+
+    test "forwards tool call and parses SSE response" do
+      port = 4261
+      {:ok, _} = start_mock_sse_http_server(port)
+
+      config = %{
+        name: "stream-http-fwd",
+        prefix: "shttpfwd",
+        transport: "http",
+        url: "http://127.0.0.1:#{port}/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      assert {:ok, result} = Upstream.forward(pid, "echo", %{"message" => "hi"})
+      assert [%{"text" => "sse mock result"}] = result["content"]
+
+      GenServer.stop(pid)
+    end
+  end
+
   # Mock HTTP MCP Server
+
+  defp start_mock_sse_http_server(port) do
+    Bandit.start_link(
+      plug: Backplane.Test.MockSseHttpPlug,
+      port: port,
+      ip: {127, 0, 0, 1}
+    )
+  end
 
   defp start_mock_http_server(port) do
     Bandit.start_link(

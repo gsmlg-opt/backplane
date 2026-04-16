@@ -136,7 +136,11 @@ defmodule Backplane.Application do
         command: upstream.command,
         args: upstream.args || [],
         timeout: upstream.timeout_ms,
-        refresh_interval: upstream.refresh_interval_ms
+        refresh_interval: upstream.refresh_interval_ms,
+        headers: upstream.headers || %{},
+        credential: upstream.credential,
+        auth_scheme: upstream.auth_scheme || "none",
+        auth_header_name: upstream.auth_header_name
       }
 
       Pool.start_upstream(config)
