@@ -25,8 +25,7 @@ defmodule Backplane.Test.MockSseMcpServer do
     end
 
     post "/message" do
-      {:ok, body, conn} = read_body(conn)
-      request = Jason.decode!(body)
+      request = conn.body_params
 
       session_id =
         conn.query_params["sessionId"]

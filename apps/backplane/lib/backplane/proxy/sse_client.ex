@@ -47,7 +47,8 @@ defmodule Backplane.Proxy.SSEClient do
            headers: all_headers,
            into: :self,
            receive_timeout: :infinity,
-           decode_body: false
+           decode_body: false,
+           retry: false
          ) do
       {:ok, resp} ->
         stream_loop(resp.body, ref, parent, "")
