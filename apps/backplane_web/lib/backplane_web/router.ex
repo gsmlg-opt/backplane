@@ -27,10 +27,9 @@ defmodule BackplaneWeb.Router do
     live("/", DashboardLive, :index)
 
     # MCP Hub
-    live("/hub", UpstreamsLive, :index)
+    live("/hub", HubLive, :index)
     live("/hub/upstreams", UpstreamsLive, :index)
-    live("/hub/skills", SkillsLive, :index)
-    live("/hub/tools", ToolsLive, :index)
+    live("/hub/managed", ManagedLive, :index)
 
     # LLM Providers
     live("/providers", ProvidersLive, :index)
