@@ -655,26 +655,7 @@ defmodule Backplane.Proxy.Upstream do
 
   defp http_request(state, body) do
     config = state.config
-    base_headers = Map.to_list(config[:headers] || %{})
-
-    # Inject auth credentials
-    base_headers =
-      case Backplane.Proxy.AuthInjector.inject(
-             base_headers,
-             config[:auth_scheme],
-             config[:auth_header_name],
-             config[:credential]
-           ) do
-        {:ok, h} -> h
-        {:error, reason} -> throw({:auth_error, reason})
-      end
-
-    # Propagate request ID from Logger metadata for distributed tracing
-    headers =
-      case Logger.metadata()[:request_id] do
-        nil -> base_headers
-        req_id -> [{"x-request-id", req_id} | base_headers]
-      end
+    headers = build_request_headers(config)
 
     opts = [
       url: config.url,
@@ -691,17 +672,7 @@ defmodule Backplane.Proxy.Upstream do
 
     case Req.request(opts) do
       {:ok, %{status: 200, headers: resp_headers, body: resp_body}} ->
-        content_type = get_content_type(resp_headers)
-
-        if String.contains?(content_type, "text/event-stream") do
-          parse_sse_response(resp_body)
-        else
-          case Jason.decode(resp_body) do
-            {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-            {:ok, _} -> {:error, "Unexpected non-object JSON response"}
-            {:error, _} -> {:error, "Invalid JSON response"}
-          end
-        end
+        decode_http_response(resp_headers, resp_body)
 
       {:ok, %{status: status}} ->
         {:error, "HTTP #{status}"}
@@ -714,6 +685,40 @@ defmodule Backplane.Proxy.Upstream do
     end
   catch
     {:auth_error, reason} -> {:error, reason}
+  end
+
+  defp build_request_headers(config) do
+    base_headers = Map.to_list(config[:headers] || %{})
+
+    base_headers =
+      case Backplane.Proxy.AuthInjector.inject(
+             base_headers,
+             config[:auth_scheme],
+             config[:auth_header_name],
+             config[:credential]
+           ) do
+        {:ok, h} -> h
+        {:error, reason} -> throw({:auth_error, reason})
+      end
+
+    case Logger.metadata()[:request_id] do
+      nil -> base_headers
+      req_id -> [{"x-request-id", req_id} | base_headers]
+    end
+  end
+
+  defp decode_http_response(resp_headers, resp_body) do
+    content_type = get_content_type(resp_headers)
+
+    if String.contains?(content_type, "text/event-stream") do
+      parse_sse_response(resp_body)
+    else
+      case Jason.decode(resp_body) do
+        {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+        {:ok, _} -> {:error, "Unexpected non-object JSON response"}
+        {:error, _} -> {:error, "Invalid JSON response"}
+      end
+    end
   end
 
   defp parse_sse_response(body) when is_binary(body) do
@@ -1010,52 +1015,53 @@ defmodule Backplane.Proxy.Upstream do
     {:auth_error, reason} -> {:error, reason, state}
   end
 
-  defp sse_wait_for_response(state, id, depth \\ 0) do
-    if depth > 20 do
-      {:error, "Too many non-matching SSE events", state}
-    else
-      ref = state.sse_ref
+  defp sse_wait_for_response(state, id, depth \\ 0)
 
-      receive do
-        {:sse_event, ^ref, %{event: "message", data: data} = event} ->
-          # Check for retry field on the event
-          state =
-            if is_integer(event.retry) and event.retry > 0,
-              do: %{state | sse_retry_ms: event.retry},
-              else: state
+  defp sse_wait_for_response(state, _id, depth) when depth > 20 do
+    {:error, "Too many non-matching SSE events", state}
+  end
 
-          case Jason.decode(data) do
-            {:ok, %{"id" => ^id, "result" => result}} ->
-              {:ok, result, state}
+  defp sse_wait_for_response(state, id, depth) do
+    ref = state.sse_ref
 
-            {:ok, %{"id" => ^id, "error" => error}} ->
-              {:error, error["message"] || "Unknown error", state}
+    receive do
+      {:sse_event, ^ref, %{event: "message", data: data} = event} ->
+        state = maybe_update_retry(state, event)
+        dispatch_sse_wait_result(state, id, data, depth)
 
-            {:ok, _other} ->
-              # Notification or non-matching id, try again
-              sse_wait_for_response(state, id, depth + 1)
+      {:sse_event, ^ref, event} ->
+        state = maybe_update_retry(state, event)
+        sse_wait_for_response(state, id, depth + 1)
 
-            {:error, _} ->
-              {:error, "Invalid JSON in SSE data", state}
-          end
-
-        {:sse_event, ^ref, event} ->
-          # Handle retry on non-message events
-          state =
-            if is_integer(event.retry) and event.retry > 0,
-              do: %{state | sse_retry_ms: event.retry},
-              else: state
-
-          sse_wait_for_response(state, id, depth + 1)
-
-        {:sse_closed, ^ref, reason} ->
-          {:error, "SSE closed: #{inspect(reason)}", state}
-      after
-        @default_timeout ->
-          {:error, :timeout, state}
-      end
+      {:sse_closed, ^ref, reason} ->
+        {:error, "SSE closed: #{inspect(reason)}", state}
+    after
+      @default_timeout ->
+        {:error, :timeout, state}
     end
   end
+
+  defp dispatch_sse_wait_result(state, id, data, depth) do
+    case Jason.decode(data) do
+      {:ok, %{"id" => ^id, "result" => result}} ->
+        {:ok, result, state}
+
+      {:ok, %{"id" => ^id, "error" => error}} ->
+        {:error, error["message"] || "Unknown error", state}
+
+      {:ok, _other} ->
+        sse_wait_for_response(state, id, depth + 1)
+
+      {:error, _} ->
+        {:error, "Invalid JSON in SSE data", state}
+    end
+  end
+
+  defp maybe_update_retry(state, %{retry: retry}) when is_integer(retry) and retry > 0 do
+    %{state | sse_retry_ms: retry}
+  end
+
+  defp maybe_update_retry(state, _event), do: state
 
   defp handle_sse_event(state, %{event: "message", data: data} = event) do
     # Check for retry field

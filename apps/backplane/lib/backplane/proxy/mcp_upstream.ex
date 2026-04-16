@@ -17,8 +17,8 @@ defmodule Backplane.Proxy.McpUpstream do
     field :command, :string
     field :args, {:array, :string}, default: []
     field :credential, :string
-    field :timeout_ms, :integer, default: 30000
-    field :refresh_interval_ms, :integer, default: 300000
+    field :timeout_ms, :integer, default: 30_000
+    field :refresh_interval_ms, :integer, default: 300_000
     field :enabled, :boolean, default: true
     field :headers, :map, default: %{}
     field :auth_scheme, :string, default: "none"
