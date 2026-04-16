@@ -530,44 +530,39 @@ defmodule Backplane.Proxy.Upstream do
       end
 
     # Open SSE connection
-    case Backplane.Proxy.SSEClient.connect(config.url, headers, self()) do
-      {:ok, ref, pid} ->
-        state = %{state | sse_ref: ref, sse_pid: pid}
+    {:ok, ref, pid} = Backplane.Proxy.SSEClient.connect(config.url, headers, self())
+    state = %{state | sse_ref: ref, sse_pid: pid}
 
-        # Wait for the endpoint event
-        receive do
-          {:sse_event, ^ref, %{event: "endpoint", data: endpoint_url}} ->
-            # Resolve endpoint URL (may be relative)
-            post_url = resolve_endpoint_url(config.url, endpoint_url)
-            state = %{state | sse_endpoint: post_url}
+    # Wait for the endpoint event
+    receive do
+      {:sse_event, ^ref, %{event: "endpoint", data: endpoint_url}} ->
+        # Resolve endpoint URL (may be relative)
+        post_url = resolve_endpoint_url(config.url, endpoint_url)
+        state = %{state | sse_endpoint: post_url}
 
-            # Now send initialize via POST to the discovered endpoint
-            request =
-              jsonrpc_request("initialize", %{
-                "protocolVersion" => Backplane.protocol_version(),
-                "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
-                "capabilities" => %{}
-              })
+        # Now send initialize via POST to the discovered endpoint
+        request =
+          jsonrpc_request("initialize", %{
+            "protocolVersion" => Backplane.protocol_version(),
+            "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
+            "capabilities" => %{}
+          })
 
-            case sse_post_and_wait(state, request) do
-              {:ok, _result, state} ->
-                {:ok, %{state | initialized: true}}
+        case sse_post_and_wait(state, request) do
+          {:ok, _result, state} ->
+            {:ok, %{state | initialized: true}}
 
-              {:error, reason, state} ->
-                {:error, reason, state}
-            end
-
-          {:sse_closed, ^ref, reason} ->
-            {:error, "SSE connection closed: #{inspect(reason)}",
-             %{state | sse_ref: nil, sse_pid: nil}}
-        after
-          @default_timeout ->
-            Backplane.Proxy.SSEClient.close(ref, pid)
-            {:error, :timeout, %{state | sse_ref: nil, sse_pid: nil}}
+          {:error, reason, state} ->
+            {:error, reason, state}
         end
 
-      {:error, reason} ->
-        {:error, reason, state}
+      {:sse_closed, ^ref, reason} ->
+        {:error, "SSE connection closed: #{inspect(reason)}",
+         %{state | sse_ref: nil, sse_pid: nil}}
+    after
+      @default_timeout ->
+        Backplane.Proxy.SSEClient.close(ref, pid)
+        {:error, :timeout, %{state | sse_ref: nil, sse_pid: nil}}
     end
   end
 
