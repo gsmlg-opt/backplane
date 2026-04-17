@@ -3,6 +3,7 @@ defmodule BackplaneWeb.UpstreamsLive do
 
   alias Backplane.Proxy.{McpUpstream, Pool, Upstreams}
   alias Backplane.PubSubBroadcaster
+  alias Backplane.Settings.Credentials
 
   @impl true
   def mount(_params, _session, socket) do
@@ -17,14 +18,47 @@ defmodule BackplaneWeb.UpstreamsLive do
        loading: true,
        upstreams: [],
        runtime_status: %{},
+       credential_options: [],
        editing: nil,
        form: nil
      )}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, load_upstreams(socket)}
+  def handle_params(params, _uri, socket) do
+    {:noreply, apply_action(socket, socket.assigns.live_action, params)}
+  end
+
+  defp apply_action(socket, :index, _params) do
+    socket
+    |> assign(editing: nil, form: nil)
+    |> load_upstreams()
+  end
+
+  defp apply_action(socket, :new, _params) do
+    changeset = Upstreams.change(%McpUpstream{}, %{transport: "http", auth_scheme: "none"})
+
+    socket
+    |> assign(editing: :new, form: to_form(changeset))
+    |> load_credentials()
+    |> load_upstreams()
+  end
+
+  defp apply_action(socket, :edit, %{"id" => id}) do
+    case safe_call(fn -> Upstreams.get!(id) end, nil) do
+      nil ->
+        socket
+        |> put_flash(:error, "Upstream not found")
+        |> push_patch(to: ~p"/admin/hub/upstreams")
+
+      upstream ->
+        changeset = Upstreams.change(upstream, %{})
+
+        socket
+        |> assign(editing: upstream, form: to_form(changeset))
+        |> load_credentials()
+        |> load_upstreams()
+    end
   end
 
   @impl true
@@ -42,21 +76,6 @@ defmodule BackplaneWeb.UpstreamsLive do
   # ── Events ──────────────────────────────────────────────────────────────────
 
   @impl true
-  def handle_event("new", _, socket) do
-    changeset = Upstreams.change(%McpUpstream{}, %{transport: "http", auth_scheme: "none"})
-    {:noreply, assign(socket, editing: :new, form: to_form(changeset))}
-  end
-
-  def handle_event("edit", %{"id" => id}, socket) do
-    upstream = Upstreams.get!(id)
-    changeset = Upstreams.change(upstream, %{})
-    {:noreply, assign(socket, editing: upstream, form: to_form(changeset))}
-  end
-
-  def handle_event("cancel", _, socket) do
-    {:noreply, assign(socket, editing: nil, form: nil)}
-  end
-
   def handle_event("validate", %{"mcp_upstream" => params}, socket) do
     params = prepare_params(params)
 
@@ -79,8 +98,7 @@ defmodule BackplaneWeb.UpstreamsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Upstream created")
-             |> assign(editing: nil, form: nil)
-             |> load_upstreams()}
+             |> push_patch(to: ~p"/admin/hub/upstreams")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: to_form(changeset))}
@@ -92,8 +110,7 @@ defmodule BackplaneWeb.UpstreamsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Upstream updated")
-             |> assign(editing: nil, form: nil)
-             |> load_upstreams()}
+             |> push_patch(to: ~p"/admin/hub/upstreams")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: to_form(changeset))}
@@ -125,6 +142,30 @@ defmodule BackplaneWeb.UpstreamsLive do
       upstreams: upstreams,
       runtime_status: runtime_map
     )
+  end
+
+  defp load_credentials(socket) do
+    creds = safe_call(fn -> Credentials.list() end, [])
+    known_names = MapSet.new(creds, & &1.name)
+
+    base_options =
+      [{"", "Select a credential..."} | Enum.map(creds, fn c -> {c.name, "#{c.name} (#{c.kind})"} end)]
+
+    # Preserve current selection if it references a credential that no longer exists in the store
+    options =
+      case socket.assigns[:editing] do
+        %McpUpstream{credential: current} when is_binary(current) and current != "" ->
+          if MapSet.member?(known_names, current) do
+            base_options
+          else
+            base_options ++ [{current, "#{current} (missing)"}]
+          end
+
+        _ ->
+          base_options
+      end
+
+    assign(socket, credential_options: options)
   end
 
   defp safe_call(fun, default) do
@@ -234,172 +275,32 @@ defmodule BackplaneWeb.UpstreamsLive do
   def render(assigns) do
     ~H"""
     <div>
+      <%= case @live_action do %>
+        <% :index -> %>
+          {list_view(assigns)}
+        <% action when action in [:new, :edit] -> %>
+          {form_view(assigns)}
+      <% end %>
+    </div>
+    """
+  end
+
+  defp list_view(assigns) do
+    ~H"""
+    <div>
       <div class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-3">
-          <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/admin/hub")}>
+          <.link navigate={~p"/admin/hub"} class="text-sm text-primary hover:underline">
             &larr; Hub
-          </.dm_btn>
+          </.link>
           <h1 class="text-2xl font-bold">Upstream MCP Servers</h1>
         </div>
-        <.dm_btn :if={@editing == nil} variant="primary" size="sm" phx-click="new">
-          New Upstream
-        </.dm_btn>
+        <.link patch={~p"/admin/hub/upstreams/new"}>
+          <.dm_btn variant="primary" size="sm">New Upstream</.dm_btn>
+        </.link>
       </div>
 
-      <%!-- Upstream Form (create/edit) --%>
-      <%= if @editing != nil do %>
-        <.dm_card variant="bordered" class="mb-6">
-          <:title>
-            {if @editing == :new, do: "New Upstream", else: "Edit #{@editing.name}"}
-          </:title>
-          <.form for={@form} phx-change="validate" phx-submit="save" class="space-y-4">
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <.dm_input
-                  id="upstream-name"
-                  name="mcp_upstream[name]"
-                  label="Name"
-                  value={@form[:name].value}
-                  placeholder="my-upstream"
-                />
-                <.form_error field={@form[:name]} />
-              </div>
-              <div>
-                <.dm_input
-                  id="upstream-prefix"
-                  name="mcp_upstream[prefix]"
-                  label="Prefix"
-                  value={@form[:prefix].value}
-                  placeholder="myup"
-                />
-                <.form_error field={@form[:prefix]} />
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div>
-                <.dm_select
-                  id="upstream-transport"
-                  name="mcp_upstream[transport]"
-                  label="Transport"
-                  options={[{"http", "HTTP"}, {"sse", "SSE (Legacy)"}, {"stdio", "Stdio"}]}
-                  value={transport_value(@form)}
-                />
-                <.form_error field={@form[:transport]} />
-              </div>
-              <div>
-                <.dm_select
-                  id="upstream-auth-scheme"
-                  name="mcp_upstream[auth_scheme]"
-                  label="Auth Scheme"
-                  options={[{"none", "None"}, {"bearer", "Bearer Token"}, {"x_api_key", "X-API-Key"}, {"custom_header", "Custom Header"}]}
-                  value={auth_scheme_value(@form)}
-                />
-                <.form_error field={@form[:auth_scheme]} />
-              </div>
-              <div>
-                <.dm_input
-                  id="upstream-credential"
-                  name="mcp_upstream[credential]"
-                  label="Credential Name"
-                  value={@form[:credential].value || ""}
-                  placeholder="credential-name"
-                />
-                <.form_error field={@form[:credential]} />
-              </div>
-            </div>
-
-            <div :if={transport_value(@form) in ["http", "sse"]}>
-              <.dm_input
-                id="upstream-url"
-                name="mcp_upstream[url]"
-                label="URL"
-                value={@form[:url].value || ""}
-                placeholder="https://example.com/mcp"
-              />
-              <.form_error field={@form[:url]} />
-            </div>
-
-            <div :if={transport_value(@form) == "stdio"} class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <.dm_input
-                  id="upstream-command"
-                  name="mcp_upstream[command]"
-                  label="Command"
-                  value={@form[:command].value || ""}
-                  placeholder="/usr/bin/node"
-                />
-                <.form_error field={@form[:command]} />
-              </div>
-              <div>
-                <.dm_input
-                  id="upstream-args"
-                  name="mcp_upstream[args]"
-                  label="Args (comma-separated)"
-                  value={args_display(@form[:args].value)}
-                  placeholder="server.js,--port,3000"
-                />
-                <.form_error field={@form[:args]} />
-              </div>
-            </div>
-
-            <div :if={auth_scheme_value(@form) == "custom_header"}>
-              <.dm_input
-                id="upstream-auth-header-name"
-                name="mcp_upstream[auth_header_name]"
-                label="Auth Header Name"
-                value={@form[:auth_header_name].value || ""}
-                placeholder="X-Custom-Key"
-              />
-              <.form_error field={@form[:auth_header_name]} />
-            </div>
-
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <.dm_input
-                  id="upstream-timeout-ms"
-                  name="mcp_upstream[timeout_ms]"
-                  label="Timeout (ms)"
-                  type="number"
-                  value={@form[:timeout_ms].value}
-                />
-                <.form_error field={@form[:timeout_ms]} />
-              </div>
-              <div>
-                <.dm_input
-                  id="upstream-refresh-interval-ms"
-                  name="mcp_upstream[refresh_interval_ms]"
-                  label="Refresh Interval (ms)"
-                  type="number"
-                  value={@form[:refresh_interval_ms].value}
-                />
-                <.form_error field={@form[:refresh_interval_ms]} />
-              </div>
-            </div>
-
-            <div class="sm:col-span-2">
-              <.dm_textarea
-                id="upstream-headers"
-                name="mcp_upstream[headers]"
-                label="Headers (JSON object, optional)"
-                rows={3}
-                value={headers_display(@form[:headers].value)}
-                placeholder={~s({"X-Custom": "value"})}
-                class="font-mono"
-              />
-              <.form_error field={@form[:headers]} />
-            </div>
-
-            <div class="flex gap-2 pt-2">
-              <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-              <.dm_btn type="button" phx-click="cancel">Cancel</.dm_btn>
-            </div>
-          </.form>
-        </.dm_card>
-      <% end %>
-
-      <%!-- Upstream List --%>
-      <div :if={@upstreams == [] and @editing == nil} class="text-on-surface-variant">
+      <div :if={@upstreams == []} class="text-on-surface-variant">
         No upstream MCP servers configured. Click "New Upstream" to add one.
       </div>
 
@@ -423,7 +324,9 @@ defmodule BackplaneWeb.UpstreamsLive do
                 <.dm_badge :if={rs = @runtime_status[upstream.name]} variant="ghost">
                   {rs.tool_count || 0} tools
                 </.dm_badge>
-                <.dm_btn size="xs" phx-click="edit" phx-value-id={upstream.id}>Edit</.dm_btn>
+                <.link patch={~p"/admin/hub/upstreams/#{upstream.id}/edit"}>
+                  <.dm_btn size="xs">Edit</.dm_btn>
+                </.link>
                 <.dm_btn
                   size="xs"
                   variant="error"
@@ -450,6 +353,180 @@ defmodule BackplaneWeb.UpstreamsLive do
           </div>
         </.dm_card>
       </div>
+    </div>
+    """
+  end
+
+  defp form_view(assigns) do
+    ~H"""
+    <div>
+      <div class="flex items-center gap-3 mb-6">
+        <.link patch={~p"/admin/hub/upstreams"} class="text-sm text-primary hover:underline">
+          &larr; Upstreams
+        </.link>
+        <h1 class="text-2xl font-bold">
+          {if @editing == :new, do: "New Upstream", else: "Edit #{@editing.name}"}
+        </h1>
+      </div>
+
+      <.dm_card variant="bordered">
+        <.form for={@form} phx-change="validate" phx-submit="save" class="space-y-4">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <.dm_input
+                id="upstream-name"
+                name="mcp_upstream[name]"
+                label="Name"
+                value={@form[:name].value}
+                placeholder="my-upstream"
+              />
+              <.form_error field={@form[:name]} />
+            </div>
+            <div>
+              <.dm_input
+                id="upstream-prefix"
+                name="mcp_upstream[prefix]"
+                label="Prefix"
+                value={@form[:prefix].value}
+                placeholder="myup"
+              />
+              <.form_error field={@form[:prefix]} />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <.dm_select
+                id="upstream-transport"
+                name="mcp_upstream[transport]"
+                label="Transport"
+                options={[{"http", "HTTP"}, {"sse", "SSE (Legacy)"}, {"stdio", "Stdio"}]}
+                value={transport_value(@form)}
+              />
+              <.form_error field={@form[:transport]} />
+            </div>
+            <div>
+              <.dm_select
+                id="upstream-auth-scheme"
+                name="mcp_upstream[auth_scheme]"
+                label="Auth Scheme"
+                options={[
+                  {"none", "None"},
+                  {"bearer", "Bearer Token"},
+                  {"x_api_key", "X-API-Key"},
+                  {"custom_header", "Custom Header"}
+                ]}
+                value={auth_scheme_value(@form)}
+              />
+              <.form_error field={@form[:auth_scheme]} />
+            </div>
+            <div>
+              <.dm_select
+                id="upstream-credential"
+                name="mcp_upstream[credential]"
+                label="Credential"
+                options={@credential_options}
+                value={@form[:credential].value || ""}
+              />
+              <p class="text-xs text-on-surface-variant mt-1">
+                Select from the <.link
+                  navigate={~p"/admin/settings?tab=credentials"}
+                  class="text-primary underline"
+                >credential store</.link>.
+              </p>
+              <.form_error field={@form[:credential]} />
+            </div>
+          </div>
+
+          <div :if={transport_value(@form) in ["http", "sse"]}>
+            <.dm_input
+              id="upstream-url"
+              name="mcp_upstream[url]"
+              label="URL"
+              value={@form[:url].value || ""}
+              placeholder="https://example.com/mcp"
+            />
+            <.form_error field={@form[:url]} />
+          </div>
+
+          <div :if={transport_value(@form) == "stdio"} class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <.dm_input
+                id="upstream-command"
+                name="mcp_upstream[command]"
+                label="Command"
+                value={@form[:command].value || ""}
+                placeholder="/usr/bin/node"
+              />
+              <.form_error field={@form[:command]} />
+            </div>
+            <div>
+              <.dm_input
+                id="upstream-args"
+                name="mcp_upstream[args]"
+                label="Args (comma-separated)"
+                value={args_display(@form[:args].value)}
+                placeholder="server.js,--port,3000"
+              />
+              <.form_error field={@form[:args]} />
+            </div>
+          </div>
+
+          <div :if={auth_scheme_value(@form) == "custom_header"}>
+            <.dm_input
+              id="upstream-auth-header-name"
+              name="mcp_upstream[auth_header_name]"
+              label="Auth Header Name"
+              value={@form[:auth_header_name].value || ""}
+              placeholder="X-Custom-Key"
+            />
+            <.form_error field={@form[:auth_header_name]} />
+          </div>
+
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <.dm_input
+                id="upstream-timeout-ms"
+                name="mcp_upstream[timeout_ms]"
+                label="Timeout (ms)"
+                type="number"
+                value={@form[:timeout_ms].value}
+              />
+              <.form_error field={@form[:timeout_ms]} />
+            </div>
+            <div>
+              <.dm_input
+                id="upstream-refresh-interval-ms"
+                name="mcp_upstream[refresh_interval_ms]"
+                label="Refresh Interval (ms)"
+                type="number"
+                value={@form[:refresh_interval_ms].value}
+              />
+              <.form_error field={@form[:refresh_interval_ms]} />
+            </div>
+          </div>
+
+          <div>
+            <.dm_textarea
+              id="upstream-headers"
+              name="mcp_upstream[headers]"
+              label="Headers (JSON object, optional)"
+              rows={3}
+              value={headers_display(@form[:headers].value)}
+              placeholder={~s({"X-Custom": "value"})}
+              class="font-mono"
+            />
+            <.form_error field={@form[:headers]} />
+          </div>
+
+          <div class="flex gap-2 pt-2">
+            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.link patch={~p"/admin/hub/upstreams"}>
+              <.dm_btn type="button">Cancel</.dm_btn>
+            </.link>
+          </div>
+        </.form>
+      </.dm_card>
     </div>
     """
   end
