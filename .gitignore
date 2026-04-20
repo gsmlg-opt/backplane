@@ -71,3 +71,6 @@ Mnesia.nonode@nohost/
 # Mix install cache
 /.mix/
 .loki/
+
+# Git worktrees
+/.trees/
