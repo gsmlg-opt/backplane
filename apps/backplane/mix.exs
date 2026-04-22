@@ -66,13 +66,20 @@ defmodule Backplane.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
 
+      # Math
+      {:decimal, "~> 2.1"},
+      {:complex, "~> 0.5"},
+      {:nx, "~> 0.7"},
+      {:nimble_parsec, "~> 1.4"},
+
       # Dev/Test
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:floki, ">= 0.30.0", only: :test},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_machina, "~> 2.8", only: :test},
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+      {:stream_data, "~> 1.1", only: [:dev, :test]}
     ]
   end
 

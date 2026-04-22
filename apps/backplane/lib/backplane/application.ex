@@ -28,6 +28,7 @@ defmodule Backplane.Application do
       Backplane.Settings.TokenCache,
       Backplane.Settings,
       ToolRegistry,
+      Backplane.Math.Supervisor,
       SkillsRegistry,
       Pool,
       {Backplane.Cache, cache_opts},
@@ -80,7 +81,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [Skill, Hub, Admin]
+    tool_modules = [Skill, Hub, Admin, Backplane.Math.Tools]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
