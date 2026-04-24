@@ -103,6 +103,11 @@ defmodule Backplane.Math.Config do
   defp cache(record), do: :ets.insert(@table, {:config, record})
 
   defp broadcast(record) do
+    Backplane.PubSubBroadcaster.broadcast_config_reloaded(%{
+      source: :math,
+      enabled: record.enabled
+    })
+
     Phoenix.PubSub.broadcast(Backplane.PubSub, @topic, {:math_config_changed, record})
   end
 
