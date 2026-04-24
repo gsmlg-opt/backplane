@@ -19,6 +19,7 @@ defmodule Backplane.Math.Expression.ParserJson do
   defp to_ast(map) when is_map(map) do
     cond do
       Map.has_key?(map, "num") -> wrap_num(map["num"])
+      Map.has_key?(map, "complex") -> wrap_complex(map["complex"])
       Map.has_key?(map, "var") -> wrap_var(map["var"])
       Map.has_key?(map, "sym") -> wrap_sym(map["sym"])
       Map.has_key?(map, "op") -> wrap_children(:op, map["op"], map["args"])
@@ -42,15 +43,27 @@ defmodule Backplane.Math.Expression.ParserJson do
 
   defp wrap_num(other), do: {:error, {:parse, :bad_num, other}}
 
-  defp wrap_var(name) when is_binary(name), do: {:ok, {:var, String.to_atom(name)}}
+  defp wrap_complex(%{"re" => re, "im" => im}) when is_number(re) and is_number(im),
+    do: {:ok, {:num, Complex.new(re, im)}}
+
+  defp wrap_complex(other), do: {:error, {:parse, :bad_complex, other}}
+
+  defp wrap_var(name) when is_binary(name) and name != "", do: {:ok, {:var, name}}
   defp wrap_var(other), do: {:error, {:parse, :bad_var, other}}
 
-  defp wrap_sym(name) when is_binary(name), do: {:ok, {:sym, String.to_atom(name)}}
+  defp wrap_sym(name) when is_binary(name) do
+    case Ast.known_symbol(name) do
+      {:ok, symbol} -> {:ok, {:sym, symbol}}
+      :error -> {:error, {:parse, :bad_sym, name}}
+    end
+  end
+
   defp wrap_sym(other), do: {:error, {:parse, :bad_sym, other}}
 
   defp wrap_children(tag, name, args) when is_binary(name) and is_list(args) do
-    with {:ok, parsed} <- parse_list(args) do
-      {:ok, {tag, op_atom(name), parsed}}
+    with {:ok, parsed} <- parse_list(args),
+         {:ok, op_name} <- resolve_name(tag, name) do
+      {:ok, {tag, op_name, parsed}}
     end
   end
 
@@ -98,13 +111,17 @@ defmodule Backplane.Math.Expression.ParserJson do
     end
   end
 
-  defp op_atom("+"), do: :+
-  defp op_atom("-"), do: :-
-  defp op_atom("*"), do: :*
-  defp op_atom("/"), do: :/
-  defp op_atom("^"), do: :^
-  defp op_atom("!"), do: :!
-  defp op_atom("neg"), do: :neg
-  defp op_atom("mod"), do: :mod
-  defp op_atom(name), do: String.to_atom(name)
+  defp resolve_name(:op, name) do
+    case Ast.known_op(name) do
+      {:ok, op} -> {:ok, op}
+      :error -> {:error, {:parse, :bad_op, name}}
+    end
+  end
+
+  defp resolve_name(:app, name) do
+    case Ast.known_app(name) do
+      {:ok, app} -> {:ok, app}
+      :error -> {:error, {:parse, :bad_app, name}}
+    end
+  end
 end

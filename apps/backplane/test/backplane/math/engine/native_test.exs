@@ -22,11 +22,17 @@ defmodule Backplane.Math.Engine.NativeTest do
     assert {:ok, val} = Native.run(:evaluate, %{ast: {:app, :sin, [{:num, 0}]}})
     assert_in_delta val, 0.0, 1.0e-12
 
-    assert {:ok, 3} = Native.run(:evaluate, %{ast: {:op, :+, [{:var, :x}, {:num, 1}]}, vars: %{x: 2}})
-    assert {:error, {:unbound_var, :y}} = Native.run(:evaluate, %{ast: {:var, :y}})
+    assert {:ok, 3} = Native.run(:evaluate, %{ast: {:op, :+, [{:var, "x"}, {:num, 1}]}, vars: %{"x" => 2}})
+    assert {:error, {:unbound_var, "y"}} = Native.run(:evaluate, %{ast: {:var, "y"}})
 
     assert {:ok, val_pi} = Native.run(:evaluate, %{ast: {:sym, :pi}})
     assert_in_delta val_pi, :math.pi(), 1.0e-12
+  end
+
+  test "preserves Decimal arithmetic for exact decimal inputs" do
+    ast = {:op, :+, [{:num, Decimal.new("0.1")}, {:num, Decimal.new("0.2")}]}
+    assert {:ok, %Decimal{} = value} = Native.run(:evaluate, %{ast: ast})
+    assert Decimal.equal?(value, Decimal.new("0.3"))
   end
 
   test "returns unsupported op errors" do

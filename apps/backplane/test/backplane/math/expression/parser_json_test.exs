@@ -6,7 +6,7 @@ defmodule Backplane.Math.Expression.ParserJsonTest do
   test "parses literals, variables, and symbols" do
     assert {:ok, {:num, 3}} = ParserJson.parse(%{"num" => 3})
     assert {:ok, {:num, 3.14}} = ParserJson.parse(%{"num" => 3.14})
-    assert {:ok, {:var, :x}} = ParserJson.parse(%{"var" => "x"})
+    assert {:ok, {:var, "x"}} = ParserJson.parse(%{"var" => "x"})
     assert {:ok, {:sym, :pi}} = ParserJson.parse(%{"sym" => "pi"})
   end
 
@@ -14,8 +14,15 @@ defmodule Backplane.Math.Expression.ParserJsonTest do
     assert {:ok, {:op, :+, [{:num, 1}, {:num, 2}]}} =
              ParserJson.parse(%{"op" => "+", "args" => [%{"num" => 1}, %{"num" => 2}]})
 
-    assert {:ok, {:app, :sin, [{:var, :x}]}} =
+    assert {:ok, {:app, :sin, [{:var, "x"}]}} =
              ParserJson.parse(%{"app" => "sin", "args" => [%{"var" => "x"}]})
+  end
+
+  test "parses complex literals" do
+    assert {:ok, {:num, %Complex{} = complex}} =
+             ParserJson.parse(%{"complex" => %{"re" => 0, "im" => 1}})
+
+    assert complex == Complex.new(0, 1)
   end
 
   test "parses matrix literals" do

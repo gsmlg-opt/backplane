@@ -5,51 +5,37 @@ defmodule Backplane.Math.Expression.Ast do
 
   @type expr ::
           {:num, number() | Decimal.t() | Complex.t()}
-          | {:var, atom()}
+          | {:var, String.t()}
           | {:sym, atom()}
           | {:app, atom(), [expr()]}
           | {:op, atom(), [expr()]}
           | {:mat, [[expr()]]}
           | {:set, [expr()]}
 
-  @known_syms ~w(pi e inf nan i)a
+  @known_syms ~w(pi e i)a
 
   @known_apps %{
     sin: 1,
     cos: 1,
     tan: 1,
-    asin: 1,
-    acos: 1,
-    atan: 1,
-    atan2: 2,
-    sinh: 1,
-    cosh: 1,
-    tanh: 1,
     exp: 1,
     log: 1,
     log10: 1,
     log2: 1,
-    logb: 2,
     sqrt: 1,
-    cbrt: 1,
     abs: 1,
-    sign: 1,
     floor: 1,
     ceil: 1,
-    round: 2,
-    factorial: 1,
-    gamma: 1,
     min: :any,
     max: :any
   }
 
   @known_ops %{
     :+ => :any,
-    :- => :any,
+    :- => [1, 2],
     :* => :any,
     :/ => 2,
     :^ => 2,
-    :! => 1,
     :neg => 1,
     :mod => 2
   }
@@ -59,7 +45,7 @@ defmodule Backplane.Math.Expression.Ast do
   def well_formed?({:num, %Decimal{}}), do: true
   def well_formed?({:num, %Complex{}}), do: true
   def well_formed?({:num, _}), do: false
-  def well_formed?({:var, a}) when is_atom(a), do: true
+  def well_formed?({:var, a}) when is_binary(a) and a != "", do: true
   def well_formed?({:var, _}), do: false
   def well_formed?({:sym, s}) when is_atom(s), do: s in @known_syms
   def well_formed?({:sym, _}), do: false
@@ -94,7 +80,36 @@ defmodule Backplane.Math.Expression.Ast do
 
   defp valid_arity?({:ok, :any}, args), do: args != []
   defp valid_arity?({:ok, arity}, args) when is_integer(arity), do: length(args) == arity
+  defp valid_arity?({:ok, arities}, args) when is_list(arities), do: length(args) in arities
   defp valid_arity?(:error, _args), do: false
+
+  @spec known_symbol(String.t()) :: {:ok, atom()} | :error
+  def known_symbol(name) when is_binary(name) do
+    atom = String.to_existing_atom(name)
+
+    if atom in @known_syms, do: {:ok, atom}, else: :error
+  rescue
+    ArgumentError -> :error
+  end
+
+  @spec known_app(String.t()) :: {:ok, atom()} | :error
+  def known_app(name) when is_binary(name) do
+    atom = String.to_existing_atom(name)
+
+    if Map.has_key?(@known_apps, atom), do: {:ok, atom}, else: :error
+  rescue
+    ArgumentError -> :error
+  end
+
+  @spec known_op(String.t()) :: {:ok, atom()} | :error
+  def known_op("+"), do: {:ok, :+}
+  def known_op("-"), do: {:ok, :-}
+  def known_op("*"), do: {:ok, :*}
+  def known_op("/"), do: {:ok, :/}
+  def known_op("^"), do: {:ok, :^}
+  def known_op("neg"), do: {:ok, :neg}
+  def known_op("mod"), do: {:ok, :mod}
+  def known_op(_), do: :error
 
   @spec size(expr()) :: non_neg_integer()
   def size({:num, _}), do: 1

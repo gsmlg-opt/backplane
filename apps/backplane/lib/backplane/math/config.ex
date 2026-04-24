@@ -9,7 +9,9 @@ defmodule Backplane.Math.Config do
   use GenServer
 
   alias Backplane.Math.Config.Record
+  alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Repo
+  require Logger
 
   @table :backplane_math_config
   @topic "math:config"
@@ -74,6 +76,7 @@ defmodule Backplane.Math.Config do
     case Repo.insert_or_update(changeset) do
       {:ok, updated} ->
         cache(updated)
+        sync_registry(updated)
         broadcast(updated)
         {:reply, {:ok, updated}, state}
 
@@ -83,8 +86,17 @@ defmodule Backplane.Math.Config do
   end
 
   defp do_reload do
-    record = Repo.get(Record, 1) || Record.defaults()
+    record =
+      try do
+        Repo.get(Record, 1) || Record.defaults()
+      rescue
+        Postgrex.Error ->
+          Logger.warning("Math config table unavailable; using defaults until migrations run")
+          Record.defaults()
+      end
+
     cache(record)
+    sync_registry(record)
     broadcast(record)
   end
 
@@ -92,5 +104,24 @@ defmodule Backplane.Math.Config do
 
   defp broadcast(record) do
     Phoenix.PubSub.broadcast(Backplane.PubSub, @topic, {:math_config_changed, record})
+  end
+
+  defp sync_registry(%Record{enabled: true}) do
+    for tool_def <- Backplane.Math.Tools.tools() do
+      tool = %Tool{
+        name: tool_def.name,
+        description: tool_def.description,
+        input_schema: tool_def.input_schema,
+        origin: :native,
+        module: tool_def.module,
+        handler: tool_def.handler
+      }
+
+      ToolRegistry.register_native(tool)
+    end
+  end
+
+  defp sync_registry(%Record{enabled: false}) do
+    ToolRegistry.deregister_native("math::evaluate")
   end
 end

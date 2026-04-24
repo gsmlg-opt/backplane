@@ -8,42 +8,47 @@ defmodule Backplane.Math.Tools do
 
   @impl true
   def tools do
-    [
-      %{
-        name: "math::evaluate",
-        description:
-          "Numerically evaluate a math expression from an infix string or canonical JSON AST.",
-        input_schema: %{
-          "type" => "object",
-          "oneOf" => [
-            %{"required" => ["expr"]},
-            %{"required" => ["ast"]}
-          ],
-          "properties" => %{
-            "expr" => %{
-              "type" => "string",
-              "description" => "Infix expression, for example \"2 * (3 + 4)\"."
-            },
-            "ast" => %{
-              "type" => "object",
-              "description" => "Canonical JSON AST."
-            },
-            "vars" => %{
-              "type" => "object",
-              "description" => "Variable bindings.",
-              "additionalProperties" => %{"type" => "number"}
+    if enabled?() do
+      [
+        %{
+          name: "math::evaluate",
+          description:
+            "Numerically evaluate a math expression from an infix string or canonical JSON AST.",
+          input_schema: %{
+            "type" => "object",
+            "oneOf" => [
+              %{"required" => ["expr"]},
+              %{"required" => ["ast"]}
+            ],
+            "properties" => %{
+              "expr" => %{
+                "type" => "string",
+                "description" => "Infix expression, for example \"2 * (3 + 4)\"."
+              },
+              "ast" => %{
+                "type" => "object",
+                "description" => "Canonical JSON AST."
+              },
+              "vars" => %{
+                "type" => "object",
+                "description" => "Variable bindings.",
+                "additionalProperties" => %{"type" => "number"}
+              }
             }
-          }
-        },
-        module: __MODULE__,
-        handler: :evaluate
-      }
-    ]
+          },
+          module: __MODULE__,
+          handler: :evaluate
+        }
+      ]
+    else
+      []
+    end
   end
 
   @impl true
   def call(%{"_handler" => "evaluate"} = args) do
-    with {:ok, ast} <- parse_expression(args),
+    with :ok <- ensure_enabled(),
+         {:ok, ast} <- parse_expression(args),
          {:ok, vars} <- parse_vars(args),
          {:ok, value} <- Router.call("math::evaluate", :evaluate, %{ast: ast, vars: vars}) do
       value_ast = value_to_ast(value)
@@ -76,12 +81,18 @@ defmodule Backplane.Math.Tools do
           {:halt, {:error, {:bad_request, {:var_value, key, value}}}}
 
         true ->
-          {:cont, {:ok, Map.put(acc, String.to_atom(key), value)}}
+          {:cont, {:ok, Map.put(acc, key, value)}}
       end
     end)
   end
 
   defp parse_vars(_args), do: {:ok, %{}}
+
+  def enabled?, do: Backplane.Math.Config.get(:enabled)
+
+  defp ensure_enabled do
+    if enabled?(), do: :ok, else: {:error, {:disabled, "math::evaluate"}}
+  end
 
   defp value_to_ast(value) when is_integer(value) or is_float(value), do: {:num, value}
   defp value_to_ast(%Decimal{} = value), do: {:num, value}

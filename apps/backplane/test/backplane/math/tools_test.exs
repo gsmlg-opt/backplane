@@ -44,4 +44,11 @@ defmodule Backplane.Math.ToolsTest do
 
     assert {:error, {:complexity_limit, :max_expr_nodes, _, 2}} = Tools.call(args)
   end
+
+  test "call/1 respects the enabled flag" do
+    {:ok, _} = Backplane.Math.Config.save(%{enabled: false})
+    assert Tools.tools() == []
+    assert {:error, {:disabled, "math::evaluate"}} = Tools.call(%{"_handler" => "evaluate", "expr" => "1 + 2"})
+    {:ok, _} = Backplane.Math.Config.save(%{enabled: true})
+  end
 end

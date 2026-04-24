@@ -12,8 +12,8 @@ defmodule Backplane.Math.Expression.AstTest do
   end
 
   test "well_formed?/1 validates variables and symbols" do
-    assert Ast.well_formed?({:var, :x})
-    refute Ast.well_formed?({:var, "x"})
+    assert Ast.well_formed?({:var, "x"})
+    refute Ast.well_formed?({:var, :x})
     assert Ast.well_formed?({:sym, :pi})
     refute Ast.well_formed?({:sym, :tau})
   end
@@ -21,8 +21,8 @@ defmodule Backplane.Math.Expression.AstTest do
   test "well_formed?/1 validates op and app children" do
     assert Ast.well_formed?({:op, :+, [{:num, 1}, {:num, 2}]})
     refute Ast.well_formed?({:op, :+, [{:num, 1}, "two"]})
-    assert Ast.well_formed?({:app, :sin, [{:var, :x}]})
-    refute Ast.well_formed?({:app, :sin, [{:var, :x}, {:var, :y}]})
+    assert Ast.well_formed?({:app, :sin, [{:var, "x"}]})
+    refute Ast.well_formed?({:app, :sin, [{:var, "x"}, {:var, "y"}]})
   end
 
   test "well_formed?/1 validates matrix rectangularity" do

@@ -375,7 +375,7 @@ defmodule Backplane.Transport.McpHandler do
 
         {:error, message} ->
           SSE.send_event(conn, id, %{
-            content: [%{type: "text", text: to_string(message)}],
+            content: [%{type: "text", text: format_error(message)}],
             isError: true
           })
       end

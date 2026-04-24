@@ -32,16 +32,24 @@ defmodule Backplane.Math.Expression.ParserInfix do
   end
 
   defp parse_mul(tokens) do
-    with {:ok, left, rest} <- parse_pow(tokens) do
-      parse_left_assoc(left, rest, ["*", "/"], &parse_pow/1)
+    with {:ok, left, rest} <- parse_unary(tokens) do
+      parse_left_assoc(left, rest, ["*", "/"], &parse_unary/1)
     end
   end
 
+  defp parse_unary(["-" | rest]) do
+    with {:ok, inner, after_inner} <- parse_pow(rest) do
+      {:ok, {:op, :neg, [inner]}, after_inner}
+    end
+  end
+
+  defp parse_unary(tokens), do: parse_pow(tokens)
+
   defp parse_pow(tokens) do
-    with {:ok, base, rest} <- parse_unary(tokens) do
+    with {:ok, base, rest} <- parse_call(tokens) do
       case rest do
         ["^" | after_op] ->
-          with {:ok, exp, after_exp} <- parse_pow(after_op) do
+          with {:ok, exp, after_exp} <- parse_unary(after_op) do
             {:ok, {:op, :^, [base, exp]}, after_exp}
           end
 
@@ -51,20 +59,13 @@ defmodule Backplane.Math.Expression.ParserInfix do
     end
   end
 
-  defp parse_unary(["-" | rest]) do
-    with {:ok, inner, after_inner} <- parse_unary(rest) do
-      {:ok, {:op, :neg, [inner]}, after_inner}
-    end
-  end
-
-  defp parse_unary(tokens), do: parse_call(tokens)
-
   defp parse_call(tokens) do
     with {:ok, atom, rest} <- parse_atom(tokens) do
       case {atom, rest} do
         {{:ident, name}, ["(" | after_lparen]} ->
-          with {:ok, args, after_args} <- parse_arglist(after_lparen) do
-            {:ok, {:app, String.to_atom(name), args}, after_args}
+          with {:ok, app_name} <- known_app(name),
+               {:ok, args, after_args} <- parse_arglist(after_lparen) do
+            {:ok, {:app, app_name, args}, after_args}
           end
 
         {{:ident, name}, _} ->
@@ -123,17 +124,22 @@ defmodule Backplane.Math.Expression.ParserInfix do
   defp parse_argtail(acc, [")" | rest]), do: {:ok, Enum.reverse(acc), rest}
   defp parse_argtail(_acc, rest), do: {:error, :unterminated_call, rest}
 
+  defp ident_to_ast("i"), do: {:sym, :i}
   defp ident_to_ast("pi"), do: {:sym, :pi}
   defp ident_to_ast("e"), do: {:sym, :e}
-  defp ident_to_ast("inf"), do: {:sym, :inf}
-  defp ident_to_ast("nan"), do: {:sym, :nan}
-  defp ident_to_ast("i"), do: {:sym, :i}
-  defp ident_to_ast(name), do: {:var, String.to_atom(name)}
+  defp ident_to_ast(name), do: {:var, name}
 
   defp op_atom("+"), do: :+
   defp op_atom("-"), do: :-
   defp op_atom("*"), do: :*
   defp op_atom("/"), do: :/
+
+  defp known_app(name) do
+    case Ast.known_app(name) do
+      {:ok, app} -> {:ok, app}
+      :error -> {:error, :unknown_function, name}
+    end
+  end
 
   defp tokenize(input), do: input |> String.to_charlist() |> do_tokenize([])
 
