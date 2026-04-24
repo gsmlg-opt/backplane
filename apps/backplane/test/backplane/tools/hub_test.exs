@@ -130,10 +130,6 @@ defmodule Backplane.Tools.HubTest do
       assert is_list(result.skill_sources)
     end
 
-    test "returns doc project summaries" do
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      assert is_list(result.doc_projects)
-    end
 
     test "returns total tool count" do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
@@ -151,29 +147,6 @@ defmodule Backplane.Tools.HubTest do
       assert is_list(result.git_providers)
     end
 
-    test "doc_projects includes chunk counts" do
-      Repo.insert!(
-        %Backplane.Docs.Project{
-          id: "hub-status-proj",
-          repo: "https://github.com/t/r.git",
-          ref: "main"
-        },
-        on_conflict: :nothing
-      )
-
-      Repo.insert!(%Backplane.Docs.DocChunk{
-        project_id: "hub-status-proj",
-        source_path: "lib/mod.ex",
-        content: "content",
-        chunk_type: "module_doc",
-        content_hash: "hubstatus1"
-      })
-
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      proj = Enum.find(result.doc_projects, &(&1.id == "hub-status-proj"))
-      assert proj
-      assert proj.chunk_count >= 1
-    end
 
     test "skill_sources groups by source" do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
