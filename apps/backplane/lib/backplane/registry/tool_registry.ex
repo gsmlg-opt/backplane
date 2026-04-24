@@ -26,6 +26,14 @@ defmodule Backplane.Registry.ToolRegistry do
     :ok
   end
 
+  @doc "Deregister a native tool by name."
+  @spec deregister_native(String.t()) :: :ok
+  def deregister_native(name) when is_binary(name) do
+    :ets.delete(@table, name)
+    Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
+    :ok
+  end
+
   @doc "Register tools from an upstream MCP server with a namespace prefix."
   @spec register_upstream(String.t(), pid(), [map()]) :: :ok
   def register_upstream(prefix, upstream_pid, tools) when is_list(tools) do

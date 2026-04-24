@@ -200,7 +200,7 @@ defmodule Backplane.Transport.McpHandler do
               reason: message
             })
 
-            {:result, %{content: [%{type: "text", text: to_string(message)}], isError: true}}
+            {:result, %{content: [%{type: "text", text: format_error(message)}], isError: true}}
         end
 
       {:error, reason} ->
@@ -355,7 +355,7 @@ defmodule Backplane.Transport.McpHandler do
 
       {:error, message} ->
         json_rpc_result(conn, id, %{
-          content: [%{type: "text", text: to_string(message)}],
+          content: [%{type: "text", text: format_error(message)}],
           isError: true
         })
     end
@@ -375,7 +375,7 @@ defmodule Backplane.Transport.McpHandler do
 
         {:error, message} ->
           SSE.send_event(conn, id, %{
-            content: [%{type: "text", text: to_string(message)}],
+            content: [%{type: "text", text: format_error(message)}],
             isError: true
           })
       end
@@ -510,7 +510,6 @@ defmodule Backplane.Transport.McpHandler do
 
   defp list_resources(_cursor), do: {[], nil}
 
-
   # Prompts: skills as MCP prompts
 
   defp list_prompts do
@@ -618,6 +617,9 @@ defmodule Backplane.Transport.McpHandler do
       {:error, _} -> inspect(result)
     end
   end
+
+  defp format_error(message) when is_binary(message), do: message
+  defp format_error(message), do: inspect(message)
 
   defp json_rpc_result(conn, id, result) do
     body =

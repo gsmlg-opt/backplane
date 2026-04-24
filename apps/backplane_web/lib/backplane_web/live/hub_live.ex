@@ -6,6 +6,13 @@ defmodule BackplaneWeb.HubLive do
   alias Backplane.Registry.ToolRegistry
 
   @managed_services [Backplane.Services.Day]
+  @native_services [
+    %{
+      module: Backplane.Math.Tools,
+      name: "Math",
+      prefix: "math"
+    }
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -52,6 +59,23 @@ defmodule BackplaneWeb.HubLive do
         }
       end)
 
+    native =
+      Enum.map(@native_services, fn service ->
+        tool_count =
+          Enum.count(tools, fn t -> String.starts_with?(t.name, service.prefix <> "::") end)
+
+        enabled = service.module.enabled?()
+
+        %{
+          name: service.name,
+          prefix: service.prefix,
+          type: :native,
+          enabled: enabled,
+          status: if(enabled, do: :connected, else: :disabled),
+          tool_count: tool_count
+        }
+      end)
+
     upstream_entries =
       Enum.map(upstreams, fn u ->
         %{
@@ -67,8 +91,9 @@ defmodule BackplaneWeb.HubLive do
 
     assign(socket,
       loading: false,
-      services: managed ++ upstream_entries,
+      services: managed ++ native ++ upstream_entries,
       managed_count: length(managed),
+      native_count: length(native),
       upstream_count: length(upstream_entries)
     )
   end
@@ -97,7 +122,11 @@ defmodule BackplaneWeb.HubLive do
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         <.dm_stat title="Managed Services" value={to_string(@managed_count)} />
+        <.dm_stat title="Native Services" value={to_string(@native_count)} />
         <.dm_stat title="Upstream Servers" value={to_string(@upstream_count)} />
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-1 mb-8">
         <.dm_stat title="Total Services" value={to_string(length(@services))} />
       </div>
 
@@ -114,7 +143,7 @@ defmodule BackplaneWeb.HubLive do
               <div class="flex items-center gap-3">
                 <span class="font-medium">{service.name}</span>
                 <span class="text-xs text-on-surface-variant font-mono">{service.prefix}::</span>
-                <.dm_badge variant={if service.type == :managed, do: "info", else: "primary"}>
+                <.dm_badge variant={service_type_color(service.type)}>
                   {to_string(service.type)}
                 </.dm_badge>
                 <span :if={service[:transport]} class="text-xs text-on-surface-variant">
@@ -139,4 +168,8 @@ defmodule BackplaneWeb.HubLive do
   defp status_color(:disabled), do: "ghost"
   defp status_color(:degraded), do: "warning"
   defp status_color(_), do: "error"
+
+  defp service_type_color(:managed), do: "info"
+  defp service_type_color(:native), do: "warning"
+  defp service_type_color(_), do: "primary"
 end
