@@ -3,14 +3,14 @@ defmodule BackplaneWeb.HubLiveTest do
 
   alias Backplane.Math.Config
 
-  test "renders hub page with native math service", %{conn: conn} do
+  test "renders hub page with managed math service", %{conn: conn} do
     {:ok, _record} = Config.save(%{enabled: true})
 
     {:ok, _view, html} = live(conn, "/admin/hub")
 
     assert html =~ "MCP Hub"
-    assert html =~ "Math"
+    assert html =~ "math"
     assert html =~ "math::"
-    assert html =~ "native"
+    assert html =~ "managed"
   end
 end

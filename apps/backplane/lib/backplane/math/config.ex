@@ -9,7 +9,7 @@ defmodule Backplane.Math.Config do
   use GenServer
 
   alias Backplane.Math.Config.Record
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   require Logger
 
@@ -112,21 +112,13 @@ defmodule Backplane.Math.Config do
   end
 
   defp sync_registry(%Record{enabled: true}) do
-    for tool_def <- Backplane.Math.Tools.tools() do
-      tool = %Tool{
-        name: tool_def.name,
-        description: tool_def.description,
-        input_schema: tool_def.input_schema,
-        origin: :native,
-        module: tool_def.module,
-        handler: tool_def.handler
-      }
-
-      ToolRegistry.register_native(tool)
-    end
+    ToolRegistry.register_managed(
+      Backplane.Services.Math.prefix(),
+      Backplane.Services.Math.tools()
+    )
   end
 
   defp sync_registry(%Record{enabled: false}) do
-    ToolRegistry.deregister_native("math::evaluate")
+    ToolRegistry.deregister_managed(Backplane.Services.Math.prefix())
   end
 end

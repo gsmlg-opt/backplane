@@ -5,14 +5,7 @@ defmodule BackplaneWeb.HubLive do
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
 
-  @managed_services [Backplane.Services.Day]
-  @native_services [
-    %{
-      module: Backplane.Math.Tools,
-      name: "Math",
-      prefix: "math"
-    }
-  ]
+  @managed_services [Backplane.Services.Day, Backplane.Services.Math]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -59,23 +52,6 @@ defmodule BackplaneWeb.HubLive do
         }
       end)
 
-    native =
-      Enum.map(@native_services, fn service ->
-        tool_count =
-          Enum.count(tools, fn t -> String.starts_with?(t.name, service.prefix <> "::") end)
-
-        enabled = service.module.enabled?()
-
-        %{
-          name: service.name,
-          prefix: service.prefix,
-          type: :native,
-          enabled: enabled,
-          status: if(enabled, do: :connected, else: :disabled),
-          tool_count: tool_count
-        }
-      end)
-
     upstream_entries =
       Enum.map(upstreams, fn u ->
         %{
@@ -91,9 +67,8 @@ defmodule BackplaneWeb.HubLive do
 
     assign(socket,
       loading: false,
-      services: managed ++ native ++ upstream_entries,
+      services: managed ++ upstream_entries,
       managed_count: length(managed),
-      native_count: length(native),
       upstream_count: length(upstream_entries)
     )
   end
@@ -122,7 +97,6 @@ defmodule BackplaneWeb.HubLive do
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         <.dm_stat title="Managed Services" value={to_string(@managed_count)} />
-        <.dm_stat title="Native Services" value={to_string(@native_count)} />
         <.dm_stat title="Upstream Servers" value={to_string(@upstream_count)} />
       </div>
 
@@ -170,6 +144,5 @@ defmodule BackplaneWeb.HubLive do
   defp status_color(_), do: "error"
 
   defp service_type_color(:managed), do: "info"
-  defp service_type_color(:native), do: "warning"
   defp service_type_color(_), do: "primary"
 end

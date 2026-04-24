@@ -8,14 +8,15 @@ defmodule Backplane.Math.RegistrationTest do
     assert "math::evaluate" in names
   end
 
-  test "math::evaluate resolves to Backplane.Math.Tools" do
-    assert {:native, Backplane.Math.Tools, :evaluate} = ToolRegistry.resolve("math::evaluate")
+  test "math::evaluate resolves to managed handler" do
+    assert {:managed, handler} = ToolRegistry.resolve("math::evaluate")
+    assert is_function(handler, 1)
   end
 
   test "math::evaluate deregisters when disabled" do
     {:ok, _} = Backplane.Math.Config.save(%{enabled: false})
     assert :not_found = ToolRegistry.resolve("math::evaluate")
     {:ok, _} = Backplane.Math.Config.save(%{enabled: true})
-    assert {:native, Backplane.Math.Tools, :evaluate} = ToolRegistry.resolve("math::evaluate")
+    assert {:managed, _handler} = ToolRegistry.resolve("math::evaluate")
   end
 end

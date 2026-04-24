@@ -81,8 +81,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    math_modules = if Backplane.Math.Tools.enabled?(), do: [Backplane.Math.Tools], else: []
-    tool_modules = [Skill, Hub, Admin] ++ math_modules
+    tool_modules = [Skill, Hub, Admin]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
@@ -121,7 +120,7 @@ defmodule Backplane.Application do
   end
 
   defp register_managed_services do
-    services = [Backplane.Services.Day]
+    services = [Backplane.Services.Day, Backplane.Services.Math]
 
     for service <- services, service.enabled?() do
       ToolRegistry.register_managed(service.prefix(), service.tools())
