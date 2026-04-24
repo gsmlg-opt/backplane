@@ -15,6 +15,7 @@ defmodule DayEx.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      aliases: aliases(),
       deps: deps(),
       description: description(),
       package: package(),
@@ -47,6 +48,12 @@ defmodule DayEx.MixProject do
     [
       {:tzdata, "~> 1.1", override: true},
       {:stream_data, "~> 1.0", only: [:test, :dev], runtime: false}
+    ]
+  end
+
+  defp aliases do
+    [
+      setup: ["deps.get"]
     ]
   end
 end

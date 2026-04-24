@@ -18,9 +18,9 @@ defmodule Backplane.Umbrella.MixProject do
   defp aliases do
     [
       setup: ["cmd mix setup"],
-      "ecto.setup": ["do --app backplane ecto.setup"],
-      "ecto.reset": ["do --app backplane ecto.reset"],
-      "ecto.migrate": ["do --app backplane ecto.migrate"],
+      "ecto.setup": ["do --app backplane cmd mix ecto.setup"],
+      "ecto.reset": ["do --app backplane cmd mix ecto.reset"],
+      "ecto.migrate": ["do --app backplane cmd mix ecto.migrate"],
       "assets.deploy": ["do --app backplane_web assets.deploy"],
       test: ["test"]
     ]

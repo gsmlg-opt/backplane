@@ -15,6 +15,7 @@ defmodule Relayixir.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      aliases: aliases(),
       deps: deps(),
       description: description(),
       package: package(),
@@ -51,6 +52,12 @@ defmodule Relayixir.MixProject do
       {:mint_web_socket, "~> 1.0"},
       {:telemetry, "~> 1.2"},
       {:websock_adapter, "~> 0.5"}
+    ]
+  end
+
+  defp aliases do
+    [
+      setup: ["deps.get"]
     ]
   end
 end
