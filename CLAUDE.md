@@ -13,11 +13,31 @@ Everything else — git access, documentation search, skill libraries — is del
 
 Module namespace: `Backplane`. Target: Elixir >= 1.18 / OTP 28+.
 
+Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
+
+### Key Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/mcp` | MCP SSE notification stream |
+| `DELETE` | `/mcp` | MCP session cleanup |
+| `GET` | `/health` | Health check JSON |
+| `GET` | `/metrics` | Runtime metrics |
+| `*` | `/api/llm/*` | LLM proxy API routes |
+| `*` | `/admin` | Admin UI (LiveView) |
+
+### MCP Auth Modes
+
+- **Client mode** (active when `clients` table has rows): bearer tokens verified against DB, scoped to allowed tools.
+- **Legacy mode** (no clients exist): falls back to TOML-configured bearer token for all-tool access.
+- **Open mode** (no clients, no legacy token): MCP access is unrestricted. Local dev only.
+
 ## Umbrella Structure
 
 This is an umbrella project with four apps:
 
-- **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
+- **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
 - **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets. Depends on `:backplane`.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM APIs.
 - **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
@@ -52,16 +72,19 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 
 ### Key Internal Modules
 
+- `Backplane.Transport.Router` — Plug router dispatching `POST /mcp`, `GET /mcp` (SSE), `DELETE /mcp`, health, and metrics
 - `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Transport.AuthPlug` — Client bearer token validation with scope filtering
-- `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub)
+- `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub + native)
 - `Backplane.Proxy.Pool` — DynamicSupervisor managing upstream MCP connections
 - `Backplane.Proxy.Upstream` — GenServer per upstream (stdio Port or HTTP; lifecycle, reconnect, tool discovery)
 - `Backplane.Proxy.Upstreams` — Ecto context for `mcp_upstreams` table (DB-managed upstream definitions)
 - `Backplane.Services.Day` — Managed service wrapping `day_ex` datetime tools (`day::*`)
+- `Backplane.Services.WebFetch` — Managed service for web fetching (`webfetch::*`)
+- `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
 - `Backplane.Services.Skills.*` — Managed service for skill upload, browse, serve (`skills::*`)
-- `Backplane.Hub.*` — Cross-service meta tools (`hub::discover`, `hub::inspect`)
+- `Backplane.Tools.*` — Native tool modules (Hub, Skill, Admin) registered at boot
 - `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, HealthChecker, UsageLog, UsageCollector
 - `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
 - `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
@@ -75,8 +98,10 @@ Backplane.Application (apps/backplane)
 ├── Backplane.Repo (Ecto/PostgreSQL)
 ├── Oban (background jobs: UsageWriter, UsageRetention)
 ├── Phoenix.PubSub
+├── Backplane.Settings.TokenCache (ETS)
 ├── Backplane.Settings (ETS-cached system settings)
 ├── Backplane.Registry.ToolRegistry (ETS)
+├── Backplane.Math.Supervisor (native math engine)
 ├── Backplane.Skills.Registry (ETS)
 ├── Backplane.Proxy.Pool (DynamicSupervisor for upstream MCP connections)
 ├── Backplane.Cache (ETS response cache)
@@ -90,6 +115,8 @@ Backplane.Application (apps/backplane)
 BackplaneWeb.Application (apps/backplane_web)
 └── BackplaneWeb.Endpoint (Bandit HTTP server)
 ```
+
+After supervisor start, the application initializes: native tool registration (skills, hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry, and client cache seeding.
 
 ### Data Storage
 
@@ -112,6 +139,15 @@ TOML (`backplane.toml`) is boot-only. It covers: server bind address/port, datab
 
 All operational configuration — upstream MCP servers, LLM providers, credentials, managed service toggles, client tokens — is stored in PostgreSQL and managed through the admin UI at `/admin`. No TOML entries are needed for operational concerns.
 
+### Production Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `BACKPLANE_CONFIG` | Path to TOML config file (default: `backplane.toml`) |
+| `SECRET_KEY_BASE` | Phoenix secret for cookies/sessions |
+| `PHX_HOST` | Public hostname for the server |
+| `BACKPLANE_PORT` | HTTP listen port (falls back to `PORT`, then 4100) |
+
 ### Admin UI Navigation
 
 ```
@@ -128,7 +164,7 @@ Six top-level modules:
 
 ### Key Dependencies
 
-Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Oban (jobs), toml (config), file_system (filesystem watching). Mox for test mocking.
+Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Oban (jobs), toml (config), file_system (filesystem watching).
 
 ## UI Library
 
@@ -155,6 +191,12 @@ If you encounter missing features, bugs, or need functionality not yet available
 
 ## Testing Conventions
 
-- `Backplane.DataCase` — base case template for DB-backed tests (Ecto sandbox)
-- `Backplane.ConnCase` — base case template for HTTP tests, provides `mcp_request/3` helper
-- Upstream MCP connections use Mox-based behaviours for test isolation
+- `Backplane.DataCase` — base case template for DB-backed tests (Ecto sandbox). `setup_sandbox/1` uses `shared: not tags[:async]`, so async tests get isolated sandboxes.
+- `Backplane.ConnCase` — base case template for HTTP/MCP transport tests. Provides `mcp_request/3`, `mcp_request_conn/3`, and `raw_mcp_request/2` helpers for JSON-RPC testing.
+- `BackplaneWeb.LiveCase` — base case template for LiveView tests (in `apps/backplane_web`).
+- Upstream MCP connections use custom mock modules (`MockMcpPlug`, `MockSSEMcpServer`, `MockSSEHttpPlug`) for test isolation.
+- Only mark tests `async: true` when they avoid shared state, processes, ports, and database sandbox behavior.
+
+## Commit Conventions
+
+Use Conventional Commits with a scope prefix: `feat(mcp):`, `fix(hub):`, `test(day_ex):`, `docs:`, `ci:`. Pull requests should describe behavior changes, list validation commands, and include screenshots for admin UI changes.
