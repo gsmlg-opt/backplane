@@ -11,25 +11,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: backplane_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     env:
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGHOST: localhost
+      PGHOST: /var/run/postgresql
 
     steps:
       - name: Checkout code
@@ -57,6 +40,14 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
+
+      - name: Start PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          sudo systemctl start postgresql
+          sudo -u postgres createuser --superuser "$USER" || true
+          pg_isready -h "$PGHOST"
 
       - name: Run tests
         run: mix test
