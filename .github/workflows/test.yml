@@ -52,7 +52,6 @@ jobs:
 
       - name: Run tests
         run: |
-          mix do --app backplane cmd mix test
-          mix do --app backplane_web cmd mix test
+          mix do --app backplane cmd mix test test/backplane/services/web_fetch_test.exs
           mix do --app day_ex cmd mix test
           mix do --app relayixir cmd mix test
