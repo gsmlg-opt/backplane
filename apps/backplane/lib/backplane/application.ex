@@ -120,7 +120,7 @@ defmodule Backplane.Application do
   end
 
   defp register_managed_services do
-    services = [Backplane.Services.Day, Backplane.Services.Math]
+    services = [Backplane.Services.Day, Backplane.Services.WebFetch, Backplane.Services.Math]
 
     for service <- services, service.enabled?() do
       ToolRegistry.register_managed(service.prefix(), service.tools())
