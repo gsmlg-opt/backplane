@@ -18,8 +18,18 @@ config :backplane_web, BackplaneWeb.Endpoint,
   secret_key_base:
     "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only_do_not_use",
   watchers: [
-    tailwind: {Tailwind, :install_and_run, [:backplane, ~w(--watch)]},
-    bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}
+    {"/bin/sh",
+     [
+       "-c",
+       "bun x --bun @tailwindcss/cli@4.1.18 --input=assets/css/app.css --output=priv/static/assets/app.css --watch",
+       cd: Path.expand("../apps/backplane_web", __DIR__)
+     ]},
+    {"/bin/sh",
+     [
+       "-c",
+       "NODE_PATH=../../deps bun build assets/js/app.js --outdir=priv/static/assets --external '/fonts/*' --external '/images/*' --sourcemap=inline --watch",
+       cd: Path.expand("../apps/backplane_web", __DIR__)
+     ]}
   ]
 
 config :backplane_web, BackplaneWeb.Endpoint,

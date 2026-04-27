@@ -58,12 +58,17 @@ defmodule BackplaneWeb.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": ["tailwind.install --if-missing", "bun.install --if-missing"],
-      "assets.build": ["tailwind backplane", "bun backplane"],
+      "assets.setup": ["cmd bun install"],
+      "assets.build": [
+        "cmd mkdir -p priv/static/assets",
+        "cmd env NODE_PATH=../../deps bun build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*",
+        "cmd bunx --bun @tailwindcss/cli@4.1.18 --input=assets/css/app.css --output=priv/static/assets/app.css"
+      ],
       "assets.deploy": [
         "phx.digest.clean",
-        "tailwind backplane --minify",
-        "bun backplane --minify",
+        "cmd mkdir -p priv/static/assets",
+        "cmd env NODE_PATH=../../deps bun build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/* --minify",
+        "cmd bunx --bun @tailwindcss/cli@4.1.18 --input=assets/css/app.css --output=priv/static/assets/app.css --minify",
         "phx.digest"
       ],
       test: ["test"]
