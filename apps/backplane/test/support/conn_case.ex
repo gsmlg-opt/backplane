@@ -9,7 +9,7 @@ defmodule Backplane.ConnCase do
   import Plug.Conn
   import Plug.Test
 
-  alias Backplane.Transport.Router
+  alias Backplane.Transport.McpPlug
 
   using do
     quote do
@@ -38,7 +38,7 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      conn(:post, "/mcp", Jason.encode!(body))
+      conn(:post, "/", Jason.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -48,7 +48,7 @@ defmodule Backplane.ConnCase do
         conn
       end
 
-    conn = Router.call(conn, Router.init([]))
+    conn = McpPlug.call(conn, McpPlug.init([]))
 
     Jason.decode!(conn.resp_body)
   end
@@ -67,7 +67,7 @@ defmodule Backplane.ConnCase do
     body = if params, do: Map.put(body, "params", params), else: body
 
     conn =
-      conn(:post, "/mcp", Jason.encode!(body))
+      conn(:post, "/", Jason.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -77,15 +77,15 @@ defmodule Backplane.ConnCase do
         conn
       end
 
-    Router.call(conn, Router.init([]))
+    McpPlug.call(conn, McpPlug.init([]))
   end
 
-  @doc "Send a raw POST to /mcp with a custom body."
+  @doc "Send a raw POST to the mounted MCP plug with a custom body."
   def raw_mcp_request(body, opts \\ []) do
     auth_token = Keyword.get(opts, :auth_token)
 
     conn =
-      conn(:post, "/mcp", Jason.encode!(body))
+      conn(:post, "/", Jason.encode!(body))
       |> put_req_header("content-type", "application/json")
 
     conn =
@@ -95,7 +95,7 @@ defmodule Backplane.ConnCase do
         conn
       end
 
-    conn = Router.call(conn, Router.init([]))
+    conn = McpPlug.call(conn, McpPlug.init([]))
 
     Jason.decode!(conn.resp_body)
   end

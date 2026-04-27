@@ -134,22 +134,6 @@ defmodule Backplane.Transport.AuthPlugTest do
 
       refute conn.halted
     end
-
-    test "always passes /webhook/github without auth" do
-      conn =
-        conn(:post, "/webhook/github", "")
-        |> AuthPlug.call([])
-
-      refute conn.halted
-    end
-
-    test "always passes /webhook/gitlab without auth" do
-      conn =
-        conn(:post, "/webhook/gitlab", "")
-        |> AuthPlug.call([])
-
-      refute conn.halted
-    end
   end
 
   describe "token rotation (auth_tokens list)" do

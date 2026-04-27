@@ -42,7 +42,7 @@ defmodule Backplane.Tools.Admin do
               "type" => "array",
               "items" => %{"type" => "string"},
               "description" =>
-                "Tool scope allowlist. Examples: [\"*\"], [\"docs::*\", \"git::*\"], [\"docs::query-docs\"]"
+                "Tool scope allowlist. Examples: [\"*\"], [\"skill::*\"], [\"math::evaluate\"], [\"admin::*\"]"
             },
             "active" => %{
               "type" => "boolean",

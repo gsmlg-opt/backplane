@@ -7,6 +7,7 @@ defmodule Backplane.Transport.MetricsPlug do
 
   use Plug.Router
 
+  plug(Backplane.Transport.VersionHeader)
   plug(:match)
   plug(:dispatch)
 

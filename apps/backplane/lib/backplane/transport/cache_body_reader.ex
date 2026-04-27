@@ -2,9 +2,8 @@ defmodule Backplane.Transport.CacheBodyReader do
   @moduledoc """
   Custom body reader that caches the raw request body in `conn.assigns[:raw_body]`.
 
-  This is needed for webhook signature verification, where the HMAC must be
-  computed over the exact bytes sent by the client — not a re-serialized version
-  of the parsed JSON (which may differ in key ordering or whitespace).
+  This is used by proxy routes that need the exact request bytes after parsing,
+  for example when extracting and rewriting LLM model names.
 
   Used as the `:body_reader` option for `Plug.Parsers`.
   """

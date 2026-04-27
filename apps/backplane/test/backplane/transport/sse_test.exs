@@ -1,12 +1,12 @@
 defmodule Backplane.Transport.SSETest do
   use Backplane.ConnCase
 
-  alias Backplane.Transport.{Router, SSE}
+  alias Backplane.Transport.{McpPlug, SSE}
 
   describe "streaming_requested?/1" do
     test "returns true when Accept header contains text/event-stream" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> put_req_header("accept", "text/event-stream")
 
       assert SSE.streaming_requested?(conn)
@@ -14,7 +14,7 @@ defmodule Backplane.Transport.SSETest do
 
     test "returns true when Accept header contains mixed types with text/event-stream" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> put_req_header("accept", "application/json, text/event-stream")
 
       assert SSE.streaming_requested?(conn)
@@ -22,14 +22,14 @@ defmodule Backplane.Transport.SSETest do
 
     test "returns false when Accept header is application/json" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> put_req_header("accept", "application/json")
 
       refute SSE.streaming_requested?(conn)
     end
 
     test "returns false when no Accept header is set" do
-      conn = conn(:post, "/mcp")
+      conn = conn(:post, "/")
 
       refute SSE.streaming_requested?(conn)
     end
@@ -38,7 +38,7 @@ defmodule Backplane.Transport.SSETest do
   describe "start_stream/1" do
     test "sets SSE headers and returns chunked conn" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> SSE.start_stream()
 
       assert conn.status == 200
@@ -52,7 +52,7 @@ defmodule Backplane.Transport.SSETest do
   describe "send_event/3" do
     test "sends SSE event with JSON-RPC result" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> SSE.start_stream()
         |> SSE.send_event(42, %{tools: []})
 
@@ -74,7 +74,7 @@ defmodule Backplane.Transport.SSETest do
   describe "send_error_event/4" do
     test "sends SSE event with JSON-RPC error" do
       conn =
-        conn(:post, "/mcp")
+        conn(:post, "/")
         |> SSE.start_stream()
         |> SSE.send_error_event(7, -32_601, "Method not found")
 
@@ -105,10 +105,10 @@ defmodule Backplane.Transport.SSETest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> put_req_header("accept", "text/event-stream")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
       assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
@@ -143,10 +143,10 @@ defmodule Backplane.Transport.SSETest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> put_req_header("accept", "text/event-stream")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
       assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
@@ -176,9 +176,9 @@ defmodule Backplane.Transport.SSETest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
       assert {"content-type", "application/json; charset=utf-8"} in conn.resp_headers

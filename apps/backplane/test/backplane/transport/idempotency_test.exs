@@ -1,7 +1,7 @@
 defmodule Backplane.Transport.IdempotencyTest do
   use Backplane.ConnCase, async: false
 
-  alias Backplane.Transport.{Idempotency, Router}
+  alias Backplane.Transport.{Idempotency, McpPlug}
 
   test "request without idempotency key processes normally" do
     resp = mcp_request("ping")
@@ -12,10 +12,10 @@ defmodule Backplane.Transport.IdempotencyTest do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", "test-key-1")
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 200
     resp = Jason.decode!(conn.resp_body)
@@ -28,20 +28,20 @@ defmodule Backplane.Transport.IdempotencyTest do
 
     # First request
     conn1 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     assert conn1.status == 200
     first_body = conn1.resp_body
 
     # Second request with same key — should return cached
     conn2 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     assert conn2.status == 200
     assert conn2.resp_body == first_body
@@ -52,22 +52,22 @@ defmodule Backplane.Transport.IdempotencyTest do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn1 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header(
         "idempotency-key",
         "key-a-#{System.unique_integer([:positive])}"
       )
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     conn2 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header(
         "idempotency-key",
         "key-b-#{System.unique_integer([:positive])}"
       )
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     # Both should process independently (not cached)
     assert conn1.status == 200
@@ -80,10 +80,10 @@ defmodule Backplane.Transport.IdempotencyTest do
     body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
     conn =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", "")
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 200
     refute conn.halted
@@ -95,17 +95,17 @@ defmodule Backplane.Transport.IdempotencyTest do
 
     # First request
     conn1 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     # Second request with same key
     conn2 =
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
 
     assert conn2.status == conn1.status
 
@@ -138,10 +138,10 @@ defmodule Backplane.Transport.IdempotencyTest do
     for i <- 1..200 do
       key = "sweep-vol-#{i}-#{System.unique_integer([:positive])}"
 
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
     end
 
     # Table should still be healthy
@@ -170,10 +170,10 @@ defmodule Backplane.Transport.IdempotencyTest do
       key = "sweep-trigger-#{i}-#{System.unique_integer([:positive])}"
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
 
-      conn(:post, "/mcp", body)
+      conn(:post, "/", body)
       |> put_req_header("content-type", "application/json")
       |> put_req_header("idempotency-key", key)
-      |> Router.call(Router.init([]))
+      |> McpPlug.call(McpPlug.init([]))
     end
 
     assert :ets.info(table) != :undefined

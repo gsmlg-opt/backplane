@@ -236,10 +236,10 @@ defmodule BackplaneWeb.ClientsLive do
                 other -> other || "*"
               end
             }
-            placeholder="*, docs::*, git::repo-tree"
+            placeholder="*, skill::*, math::evaluate"
           />
           <p class="text-xs text-on-surface-variant -mt-2">
-            Examples: * (all), docs::* (all docs tools), git::repo-tree (single tool)
+            Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)
           </p>
           <.form_error field={@form[:scopes]} />
 

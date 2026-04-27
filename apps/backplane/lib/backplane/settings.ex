@@ -24,29 +24,72 @@ defmodule Backplane.Settings do
 
   @defaults %{
     # General
-    "instance.name" => %{value: "Backplane", type: "string", desc: "Display name in UI and MCP server info"},
+    "instance.name" => %{
+      value: "Backplane",
+      type: "string",
+      desc: "Display name in UI and MCP server info"
+    },
     "admin.auth_enabled" => %{value: false, type: "boolean", desc: "Require auth for admin UI"},
     "admin.username" => %{value: "admin", type: "string", desc: "Admin UI username"},
     "admin.password_hash" => %{value: nil, type: "string", desc: "Bcrypt hash of admin password"},
     # MCP Hub
-    "mcp.auth_required" => %{value: false, type: "boolean", desc: "Require bearer token for MCP endpoint"},
-    "mcp.default_timeout_ms" => %{value: 30_000, type: "integer", desc: "Default upstream tool call timeout"},
-    "mcp.tool_discovery_interval_ms" => %{value: 300_000, type: "integer", desc: "Tool discovery refresh interval"},
+    "mcp.auth_required" => %{
+      value: false,
+      type: "boolean",
+      desc: "Require bearer token for MCP endpoint"
+    },
+    "mcp.default_timeout_ms" => %{
+      value: 30_000,
+      type: "integer",
+      desc: "Default upstream tool call timeout"
+    },
+    "mcp.tool_discovery_interval_ms" => %{
+      value: 300_000,
+      type: "integer",
+      desc: "Tool discovery refresh interval"
+    },
     # LLM Proxy
-    "llm.default_rpm_limit" => %{value: nil, type: "integer", desc: "Fallback RPM limit when provider has none"},
-    "llm.usage_retention_days" => %{value: 90, type: "integer", desc: "How long to keep usage logs"},
-    "llm.health_check_interval_s" => %{value: 60, type: "integer", desc: "Seconds between health probes"},
+    "llm.default_rpm_limit" => %{
+      value: nil,
+      type: "integer",
+      desc: "Fallback RPM limit when provider has none"
+    },
+    "llm.usage_retention_days" => %{
+      value: 90,
+      type: "integer",
+      desc: "How long to keep usage logs"
+    },
+    "llm.health_check_interval_s" => %{
+      value: 60,
+      type: "integer",
+      desc: "Seconds between health probes"
+    },
     "llm.streaming_enabled" => %{value: true, type: "boolean", desc: "Allow streaming responses"},
     # Managed Services
-    "services.skills.enabled" => %{value: true, type: "boolean", desc: "Enable skills managed service"},
-    "services.skills.max_upload_bytes" => %{value: 1_048_576, type: "integer", desc: "Max skill upload size (1MB)"},
-    "services.day.enabled" => %{value: true, type: "boolean", desc: "Enable day_ex datetime service"},
+    "services.skills.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable skills managed service"
+    },
+    "services.skills.max_upload_bytes" => %{
+      value: 1_048_576,
+      type: "integer",
+      desc: "Max skill upload size (1MB)"
+    },
+    "services.day.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable day_ex datetime service"
+    },
     "services.web.enabled" => %{value: true, type: "boolean", desc: "Enable web fetch service"},
-    "services.docs.enabled" => %{value: false, type: "boolean", desc: "Enable docs service (planned)"},
     # Observability
     "audit.enabled" => %{value: true, type: "boolean", desc: "Enable tool call audit logging"},
     "audit.retention_days" => %{value: 30, type: "integer", desc: "Audit log retention"},
-    "metrics.enabled" => %{value: true, type: "boolean", desc: "Enable Prometheus metrics endpoint"}
+    "metrics.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable Prometheus metrics endpoint"
+    }
   }
 
   # --- Client API ---

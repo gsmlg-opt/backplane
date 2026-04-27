@@ -5,7 +5,6 @@ defmodule Backplane.PubSubBroadcaster do
   Topics (per PRD Section 11.6):
   - `upstream:<prefix>` — upstream state changes
   - `skills:sync` — skill sync lifecycle
-  - `docs:reindex` — documentation reindex lifecycle
   - `tools:call` — tool call events
   - `config:reloaded` — configuration reload events
   """

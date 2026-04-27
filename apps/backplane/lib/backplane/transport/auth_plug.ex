@@ -10,7 +10,7 @@ defmodule Backplane.Transport.AuthPlug do
   `conn.assigns[:client]` and scopes in `conn.assigns[:tool_scopes]`. On miss,
   falls through to legacy token check. If both fail, 401.
 
-  The /health, /metrics, and webhook endpoints always pass without auth.
+  The /health and /metrics endpoints always pass without auth.
   """
 
   import Plug.Conn
@@ -18,7 +18,7 @@ defmodule Backplane.Transport.AuthPlug do
 
   alias Backplane.Clients
 
-  @public_paths ["/health", "/metrics", "/webhook/github", "/webhook/gitlab"]
+  @public_paths ["/health", "/metrics"]
 
   @impl true
   def init(opts), do: opts

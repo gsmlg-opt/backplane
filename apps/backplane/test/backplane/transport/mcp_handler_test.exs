@@ -4,7 +4,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   alias Backplane.Docs.{DocChunk, Project}
   alias Backplane.Repo
   alias Backplane.Skills.Skill
-  alias Backplane.Transport.Router
+  alias Backplane.Transport.McpPlug
 
   describe "initialize" do
     test "returns protocolVersion and serverInfo" do
@@ -80,10 +80,10 @@ defmodule Backplane.Transport.McpHandlerTest do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
       conn2 =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> put_req_header("if-none-match", etag)
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn2.status == 304
     end
@@ -92,10 +92,10 @@ defmodule Backplane.Transport.McpHandlerTest do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/list", "id" => 1})
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> put_req_header("if-none-match", "\"stale-etag\"")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
       resp = Jason.decode!(conn.resp_body)
@@ -158,9 +158,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "notifications/initialized"})
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -174,9 +174,9 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -185,9 +185,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "custom/notification"})
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -317,9 +317,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 1})
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       resp = Jason.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
@@ -360,9 +360,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert is_list(responses)
@@ -373,9 +373,9 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns error for empty batch" do
       conn =
-        conn(:post, "/mcp", Jason.encode!([]))
+        conn(:post, "/", Jason.encode!([]))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       resp = Jason.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_600
@@ -388,9 +388,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       # Only the request with id gets a response, notification is silent
@@ -405,9 +405,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 2
@@ -426,9 +426,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert [resp] = responses
@@ -442,9 +442,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -460,9 +460,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       [resp] = Jason.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
@@ -481,9 +481,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       [resp] = Jason.decode!(conn.resp_body)
       assert is_list(resp["result"]["content"])
@@ -499,9 +499,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 2
@@ -759,9 +759,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 2
@@ -880,9 +880,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 2
@@ -900,9 +900,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       [resp] = Jason.decode!(conn.resp_body)
       assert resp["error"]["code"] == -32_602
@@ -942,9 +942,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 3
@@ -995,9 +995,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 3
@@ -1039,9 +1039,9 @@ defmodule Backplane.Transport.McpHandlerTest do
       ]
 
       conn =
-        conn(:post, "/mcp", Jason.encode!(batch))
+        conn(:post, "/", Jason.encode!(batch))
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 4
@@ -1069,9 +1069,9 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -1084,9 +1084,9 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -1099,9 +1099,9 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 202
     end
@@ -1233,10 +1233,10 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       conn =
-        conn(:post, "/mcp", body)
+        conn(:post, "/", body)
         |> put_req_header("content-type", "application/json")
         |> put_req_header("accept", "text/event-stream")
-        |> Router.call(Router.init([]))
+        |> McpPlug.call(McpPlug.init([]))
 
       assert conn.status == 200
 
