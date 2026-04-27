@@ -10,6 +10,12 @@ defmodule BackplaneWeb.ManagedLive do
       name: "Day",
       description: "Date/time utilities",
       setting_key: "services.day.enabled"
+    },
+    %{
+      module: Backplane.Services.WebFetch,
+      name: "Web Fetch",
+      description: "Fetch HTTP(S) pages and convert them to Markdown",
+      setting_key: "services.web.enabled"
     }
   ]
 

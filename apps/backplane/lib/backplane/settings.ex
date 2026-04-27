@@ -41,6 +41,7 @@ defmodule Backplane.Settings do
     "services.skills.enabled" => %{value: true, type: "boolean", desc: "Enable skills managed service"},
     "services.skills.max_upload_bytes" => %{value: 1_048_576, type: "integer", desc: "Max skill upload size (1MB)"},
     "services.day.enabled" => %{value: true, type: "boolean", desc: "Enable day_ex datetime service"},
+    "services.web.enabled" => %{value: true, type: "boolean", desc: "Enable web fetch service"},
     "services.docs.enabled" => %{value: false, type: "boolean", desc: "Enable docs service (planned)"},
     # Observability
     "audit.enabled" => %{value: true, type: "boolean", desc: "Enable tool call audit logging"},

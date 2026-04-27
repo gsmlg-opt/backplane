@@ -39,7 +39,8 @@ defmodule Backplane.MixProject do
       {:jason, "~> 1.4"},
 
       # HTTP client
-      {:req, "~> 0.5"},
+      {:req, "~> 0.5", override: true},
+      {:lazy_html, ">= 0.1.0"},
 
       # Database
       {:ecto_sql, "~> 3.12"},
@@ -75,8 +76,6 @@ defmodule Backplane.MixProject do
       # Dev/Test
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:floki, ">= 0.30.0", only: :test},
-      {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_machina, "~> 2.8", only: :test},
       {:mox, "~> 1.1", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]}
