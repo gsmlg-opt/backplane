@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      MIX_ENV: test
       PGHOST: /var/run/postgresql
 
     steps:
@@ -50,4 +51,8 @@ jobs:
           pg_isready -h "$PGHOST"
 
       - name: Run tests
-        run: mix test
+        run: |
+          mix do --app backplane cmd mix test
+          mix do --app backplane_web cmd mix test
+          mix do --app day_ex cmd mix test
+          mix do --app relayixir cmd mix test
