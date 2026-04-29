@@ -13,7 +13,10 @@ defmodule Relayixir.Proxy.HttpClient do
     scheme = upstream.scheme || :http
     transport_opts = [timeout: upstream.connect_timeout]
 
-    Mint.HTTP.connect(scheme, upstream.host, upstream.port, transport_opts: transport_opts)
+    Mint.HTTP.connect(scheme, upstream.host, upstream.port,
+      protocols: [:http1],
+      transport_opts: transport_opts
+    )
   end
 
   @doc """

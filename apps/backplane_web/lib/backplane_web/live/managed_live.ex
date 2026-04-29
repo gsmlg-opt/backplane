@@ -103,8 +103,8 @@ defmodule BackplaneWeb.ManagedLive do
       <div class="space-y-4">
         <.dm_card :for={service <- @services} variant="bordered">
           <:title>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
+            <div class="flex w-full items-center justify-between gap-4">
+              <div class="flex items-center gap-4">
                 <span class="font-medium">{service.name}</span>
                 <span class="text-xs text-on-surface-variant font-mono">{service.prefix}::</span>
                 <.dm_badge variant={if service.enabled, do: "success", else: "ghost"}>

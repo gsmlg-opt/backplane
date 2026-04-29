@@ -18,6 +18,15 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert html =~ "LLM Providers"
     end
 
+    test "opens new provider form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/providers")
+
+      html = render_click(element(view, ~s(el-dm-button[phx-click="new"]), "Add Provider"))
+
+      assert html =~ "New Provider"
+      assert html =~ "provider-name"
+    end
+
     test "shows a created provider", %{conn: conn} do
       {:ok, _} =
         Provider.create(%{

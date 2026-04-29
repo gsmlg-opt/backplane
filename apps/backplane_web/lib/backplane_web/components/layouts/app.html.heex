@@ -7,7 +7,7 @@
     <:menu to={~p"/admin/logs"} active={String.starts_with?(@current_path, "/admin/logs")}>Logs</:menu>
     <:menu to={~p"/admin/settings"} active={String.starts_with?(@current_path, "/admin/settings")}>Settings</:menu>
     <:user_profile>
-      <.dm_theme_switcher id="admin-theme-switcher" button_text="Theme" />
+      <.dm_theme_switcher id="admin-theme-switcher" button_text="Theme" theme="moonlight" />
     </:user_profile>
   </.dm_appbar>
 

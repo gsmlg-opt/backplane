@@ -21,24 +21,26 @@ defmodule Backplane.Application do
       max_entries: Application.get_env(:backplane, :cache_max_entries, 10_000)
     ]
 
-    children = [
-      Backplane.Repo,
-      {Oban, Application.fetch_env!(:backplane, Oban)},
-      {Phoenix.PubSub, name: Backplane.PubSub},
-      Backplane.Settings.TokenCache,
-      Backplane.Settings,
-      ToolRegistry,
-      Backplane.Math.Supervisor,
-      SkillsRegistry,
-      Pool,
-      {Backplane.Cache, cache_opts},
-      Metrics,
-      Relayixir,
-      Backplane.LLM.ModelResolver,
-      Backplane.LLM.RouteLoader,
-      Backplane.LLM.RateLimiter,
-      {Backplane.LLM.HealthChecker, []}
-    ]
+    children =
+      [
+        Backplane.Repo,
+        {Oban, Application.fetch_env!(:backplane, Oban)},
+        {Phoenix.PubSub, name: Backplane.PubSub},
+        Backplane.Settings.TokenCache,
+        Backplane.Settings,
+        ToolRegistry,
+        Backplane.Math.Supervisor,
+        SkillsRegistry,
+        Pool,
+        {Backplane.Cache, cache_opts},
+        Metrics,
+        Relayixir,
+        Backplane.LLM.ModelResolver,
+        route_loader_child(),
+        Backplane.LLM.RateLimiter,
+        {Backplane.LLM.HealthChecker, []}
+      ]
+      |> Enum.reject(&is_nil/1)
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
@@ -94,6 +96,12 @@ defmodule Backplane.Application do
       }
 
       ToolRegistry.register_native(tool)
+    end
+  end
+
+  defp route_loader_child do
+    if Application.get_env(:backplane, :llm_route_loader_enabled, true) do
+      Backplane.LLM.RouteLoader
     end
   end
 

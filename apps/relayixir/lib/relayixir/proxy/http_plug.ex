@@ -28,7 +28,8 @@ defmodule Relayixir.Proxy.HttpPlug do
 
     metadata = %{
       method: conn.method,
-      path: conn.request_path,
+      path: build_upstream_path(conn, upstream),
+      incoming_path: conn.request_path,
       upstream: "#{upstream.host}:#{upstream.port}"
     }
 
@@ -93,10 +94,10 @@ defmodule Relayixir.Proxy.HttpPlug do
       end
     else
       {:error, reason} ->
-        {:error, map_error(reason), conn}
+        {:error, map_error(reason, "connect_or_send", upstream, path), conn}
 
       {:error, _mint_conn, reason} ->
-        {:error, map_error(reason), conn}
+        {:error, map_error(reason, "send", upstream, path), conn}
     end
   end
 
@@ -256,7 +257,9 @@ defmodule Relayixir.Proxy.HttpPlug do
         )
 
       {:error, reason} ->
-        {:error, map_error(reason), conn}
+        {:error,
+         map_error(reason, "receive_headers", upstream, build_upstream_path(conn, upstream)),
+         conn}
     end
   end
 
@@ -312,7 +315,7 @@ defmodule Relayixir.Proxy.HttpPlug do
           {:ok, conn}
 
         {:error, reason} ->
-          {:error, map_error(reason), conn}
+          {:error, map_error(reason, "collect_body", upstream, conn.request_path), conn}
       end
     else
       # Stream each chunk to downstream immediately — no buffering.
@@ -413,7 +416,7 @@ defmodule Relayixir.Proxy.HttpPlug do
         {:ok, conn}
 
       {:error, reason} ->
-        {:error, map_error(reason), conn}
+        {:error, map_error(reason, "stream_body", upstream, conn.request_path), conn}
     end
   end
 
@@ -434,13 +437,33 @@ defmodule Relayixir.Proxy.HttpPlug do
       :ok
   end
 
-  defp map_error(:upstream_timeout), do: :upstream_timeout
-  defp map_error(:upstream_connect_failed), do: :upstream_connect_failed
-  defp map_error(:upstream_invalid_response), do: :upstream_invalid_response
-  defp map_error(:response_too_large), do: :response_too_large
-  defp map_error(:request_too_large), do: :request_too_large
-  defp map_error(:nxdomain), do: :upstream_connect_failed
-  defp map_error(:econnrefused), do: :upstream_connect_failed
-  defp map_error(%Mint.TransportError{}), do: :upstream_connect_failed
-  defp map_error(_), do: :internal_error
+  defp map_error(:upstream_timeout, _stage, _upstream, _path), do: :upstream_timeout
+  defp map_error(:upstream_connect_failed, _stage, _upstream, _path), do: :upstream_connect_failed
+
+  defp map_error(:upstream_invalid_response, _stage, _upstream, _path),
+    do: :upstream_invalid_response
+
+  defp map_error(:response_too_large, _stage, _upstream, _path), do: :response_too_large
+  defp map_error(:request_too_large, _stage, _upstream, _path), do: :request_too_large
+  defp map_error(:nxdomain, _stage, _upstream, _path), do: :upstream_connect_failed
+  defp map_error(:econnrefused, _stage, _upstream, _path), do: :upstream_connect_failed
+  defp map_error(%Mint.TransportError{}, _stage, _upstream, _path), do: :upstream_connect_failed
+
+  defp map_error(reason, stage, upstream, path) do
+    raw_reason = inspect(reason)
+    upstream = upstream_label(upstream)
+
+    Logger.warning(
+      "Relayixir mapped unexpected HTTP proxy error to internal_error stage=#{stage} upstream=#{upstream} path=#{path} raw_reason=#{raw_reason}",
+      stage: stage,
+      upstream: upstream,
+      path: path,
+      raw_reason: raw_reason
+    )
+
+    :internal_error
+  end
+
+  defp upstream_label(%Upstream{} = upstream), do: "#{upstream.host}:#{upstream.port}"
+  defp upstream_label(_), do: nil
 end

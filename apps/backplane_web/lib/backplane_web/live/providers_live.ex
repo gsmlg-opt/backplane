@@ -50,7 +50,7 @@ defmodule BackplaneWeb.ProvidersLive do
     {:noreply,
      assign(socket,
        editing: :new,
-       form: to_form(changeset),
+       form: provider_form(changeset),
        alias_form: nil,
        alias_provider_id: nil
      )}
@@ -67,7 +67,7 @@ defmodule BackplaneWeb.ProvidersLive do
         {:noreply,
          assign(socket,
            editing: provider,
-           form: to_form(changeset),
+           form: provider_form(changeset),
            alias_form: nil,
            alias_provider_id: nil
          )}
@@ -75,7 +75,14 @@ defmodule BackplaneWeb.ProvidersLive do
   end
 
   def handle_event("cancel", _, socket) do
-    {:noreply, assign(socket, editing: nil, form: nil, alias_form: nil, alias_provider_id: nil, editing_alias: nil)}
+    {:noreply,
+     assign(socket,
+       editing: nil,
+       form: nil,
+       alias_form: nil,
+       alias_provider_id: nil,
+       editing_alias: nil
+     )}
   end
 
   def handle_event("validate", %{"provider" => params}, socket) do
@@ -88,7 +95,7 @@ defmodule BackplaneWeb.ProvidersLive do
           Provider.update_changeset(provider, prepare_provider_params(params))
       end
 
-    {:noreply, assign(socket, form: to_form(Map.put(changeset, :action, :validate)))}
+    {:noreply, assign(socket, form: provider_form(Map.put(changeset, :action, :validate)))}
   end
 
   def handle_event("save", %{"provider" => params}, socket) do
@@ -146,7 +153,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
         {:noreply,
          assign(socket,
-           alias_form: to_form(alias_changeset, as: :model_alias),
+           alias_form: model_alias_form(alias_changeset),
            alias_provider_id: provider.id,
            editing: nil,
            form: nil
@@ -164,7 +171,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
         {:noreply,
          assign(socket,
-           alias_form: to_form(changeset, as: :model_alias),
+           alias_form: model_alias_form(changeset),
            alias_provider_id: model_alias.provider_id,
            editing_alias: model_alias,
            editing: nil,
@@ -194,7 +201,7 @@ defmodule BackplaneWeb.ProvidersLive do
              |> load_providers()}
 
           {:error, changeset} ->
-            {:noreply, assign(socket, alias_form: to_form(changeset, as: :model_alias))}
+            {:noreply, assign(socket, alias_form: model_alias_form(changeset))}
         end
 
       %ModelAlias{} = existing ->
@@ -214,7 +221,7 @@ defmodule BackplaneWeb.ProvidersLive do
              |> load_providers()}
 
           {:error, changeset} ->
-            {:noreply, assign(socket, alias_form: to_form(changeset, as: :model_alias))}
+            {:noreply, assign(socket, alias_form: model_alias_form(changeset))}
         end
     end
   end
@@ -267,7 +274,7 @@ defmodule BackplaneWeb.ProvidersLive do
          |> load_providers()}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: provider_form(changeset))}
     end
   end
 
@@ -281,7 +288,7 @@ defmodule BackplaneWeb.ProvidersLive do
          |> load_providers()}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: provider_form(changeset))}
     end
   end
 
@@ -300,6 +307,7 @@ defmodule BackplaneWeb.ProvidersLive do
   end
 
   defp parse_models(nil), do: []
+
   defp parse_models(val) do
     val
     |> String.split(",", trim: true)
@@ -309,6 +317,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
   defp parse_rpm_limit(nil), do: nil
   defp parse_rpm_limit(""), do: nil
+
   defp parse_rpm_limit(val) do
     case Integer.parse(val) do
       {n, _} -> n
@@ -318,6 +327,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
   defp parse_default_headers(nil), do: %{}
   defp parse_default_headers(""), do: %{}
+
   defp parse_default_headers(val) do
     case Jason.decode(val) do
       {:ok, map} when is_map(map) -> map
@@ -328,6 +338,35 @@ defmodule BackplaneWeb.ProvidersLive do
   defp parse_api_type("anthropic"), do: :anthropic
   defp parse_api_type("openai"), do: :openai
   defp parse_api_type(other), do: other
+
+  defp provider_form(changeset) do
+    changeset
+    |> changeset_params([
+      :name,
+      :api_type,
+      :api_url,
+      :credential,
+      :models,
+      :rpm_limit,
+      :default_headers
+    ])
+    |> to_form(as: :provider, errors: visible_errors(changeset))
+  end
+
+  defp model_alias_form(changeset) do
+    changeset
+    |> changeset_params([:alias, :model, :provider_id])
+    |> to_form(as: :model_alias, errors: visible_errors(changeset))
+  end
+
+  defp changeset_params(changeset, fields) do
+    Map.new(fields, fn field ->
+      {Atom.to_string(field), Ecto.Changeset.get_field(changeset, field)}
+    end)
+  end
+
+  defp visible_errors(%Ecto.Changeset{action: nil}), do: []
+  defp visible_errors(%Ecto.Changeset{errors: errors}), do: errors
 
   defp load_providers(socket) do
     providers =

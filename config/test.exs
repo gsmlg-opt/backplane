@@ -9,6 +9,7 @@ config :backplane, Backplane.Repo,
   pool_size: System.schedulers_online() * 2
 
 config :backplane, env: :test
+config :backplane, llm_route_loader_enabled: false
 config :backplane, Oban, testing: :inline
 
 # We don't run a server during test

@@ -14,8 +14,9 @@ defmodule Backplane.LLM.RouteLoaderTest do
   }
 
   setup do
+    start_supervised!(RouteLoader)
     Credentials.store("route-loader-cred", "sk-ant-test-key", "llm")
-    # UpstreamConfig and RouteLoader are started by the application supervision tree.
+    # UpstreamConfig is started by the application supervision tree.
     # Clear upstream config and resolver cache for test isolation.
     UpstreamConfig.put_upstreams(%{})
     Backplane.LLM.ModelResolver.clear_cache()

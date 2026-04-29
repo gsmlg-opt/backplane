@@ -115,8 +115,8 @@ defmodule BackplaneWeb.HubLive do
       <div class="space-y-3">
         <.dm_card :for={service <- @services} variant="bordered">
           <:title>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
+            <div class="flex w-full items-center justify-between gap-4">
+              <div class="flex items-center gap-4">
                 <span class="font-medium">{service.name}</span>
                 <span class="text-xs text-on-surface-variant font-mono">{service.prefix}::</span>
                 <.dm_badge variant={service_type_color(service.type)}>
@@ -126,7 +126,7 @@ defmodule BackplaneWeb.HubLive do
                   {service.transport}
                 </span>
               </div>
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-4">
                 <span class="text-sm text-on-surface-variant">{service.tool_count} tools</span>
                 <.dm_badge variant={status_color(service.status)}>
                   {service.status |> to_string() |> String.capitalize()}
