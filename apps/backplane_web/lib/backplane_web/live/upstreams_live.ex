@@ -130,6 +130,48 @@ defmodule BackplaneWeb.UpstreamsLive do
     end
   end
 
+  def handle_event("toggle", %{"id" => id}, socket) do
+    upstream = Upstreams.get!(id)
+    enabled = !upstream.enabled
+
+    case Upstreams.update(upstream, %{enabled: enabled}) do
+      {:ok, updated} ->
+        if enabled do
+          stop_runtime(updated)
+          start_runtime(updated)
+        else
+          stop_runtime(updated)
+        end
+
+        message = if enabled, do: "Upstream enabled", else: "Upstream disabled"
+        {:noreply, socket |> put_flash(:info, message) |> load_upstreams()}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update upstream")}
+    end
+  end
+
+  def handle_event("connect", %{"id" => id}, socket) do
+    upstream = Upstreams.get!(id)
+
+    if upstream.enabled do
+      stop_runtime(upstream)
+
+      case start_runtime(upstream) do
+        {:ok, _pid} ->
+          {:noreply, socket |> put_flash(:info, "Connection attempt started") |> load_upstreams()}
+
+        {:error, reason} ->
+          {:noreply,
+           socket
+           |> put_flash(:error, "Failed to start connection: #{inspect(reason)}")
+           |> load_upstreams()}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Enable upstream before connecting")}
+    end
+  end
+
   # ── Private helpers ─────────────────────────────────────────────────────────
 
   defp load_upstreams(socket) do
@@ -149,7 +191,10 @@ defmodule BackplaneWeb.UpstreamsLive do
     known_names = MapSet.new(creds, & &1.name)
 
     base_options =
-      [{"", "Select a credential..."} | Enum.map(creds, fn c -> {c.name, "#{c.name} (#{c.kind})"} end)]
+      [
+        {"", "Select a credential..."}
+        | Enum.map(creds, fn c -> {c.name, "#{c.name} (#{c.kind})"} end)
+      ]
 
     # Preserve current selection if it references a credential that no longer exists in the store
     options =
@@ -172,6 +217,43 @@ defmodule BackplaneWeb.UpstreamsLive do
     fun.()
   rescue
     _ -> default
+  end
+
+  defp start_runtime(upstream) do
+    upstream
+    |> runtime_config()
+    |> Pool.start_upstream()
+  end
+
+  defp stop_runtime(upstream) do
+    upstream.name
+    |> runtime_pids_for_name()
+    |> Enum.each(&Pool.stop_upstream/1)
+
+    :ok
+  end
+
+  defp runtime_pids_for_name(name) do
+    Pool.list_upstream_pids()
+    |> Enum.filter(fn {_pid, status} -> status.name == name end)
+    |> Enum.map(fn {pid, _status} -> pid end)
+  end
+
+  defp runtime_config(upstream) do
+    %{
+      name: upstream.name,
+      prefix: upstream.prefix,
+      transport: upstream.transport,
+      url: upstream.url,
+      command: upstream.command,
+      args: upstream.args || [],
+      timeout: upstream.timeout_ms,
+      refresh_interval: upstream.refresh_interval_ms,
+      headers: upstream.headers || %{},
+      credential: upstream.credential,
+      auth_scheme: upstream.auth_scheme || "none",
+      auth_header_name: upstream.auth_header_name
+    }
   end
 
   defp prepare_params(params) do
@@ -324,6 +406,22 @@ defmodule BackplaneWeb.UpstreamsLive do
                 <.dm_badge :if={rs = @runtime_status[upstream.name]} variant="ghost">
                   {rs.tool_count || 0} tools
                 </.dm_badge>
+                <.dm_btn
+                  size="xs"
+                  variant={if upstream.enabled, do: "warning", else: "primary"}
+                  phx-click="toggle"
+                  phx-value-id={upstream.id}
+                >
+                  {if upstream.enabled, do: "Disable", else: "Enable"}
+                </.dm_btn>
+                <.dm_btn
+                  size="xs"
+                  variant="primary"
+                  phx-click="connect"
+                  phx-value-id={upstream.id}
+                >
+                  Connect
+                </.dm_btn>
                 <.link patch={~p"/admin/hub/upstreams/#{upstream.id}/edit"}>
                   <.dm_btn size="xs">Edit</.dm_btn>
                 </.link>

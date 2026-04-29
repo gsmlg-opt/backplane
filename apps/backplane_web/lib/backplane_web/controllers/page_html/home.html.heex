@@ -1,0 +1,285 @@
+<div class="min-h-full bg-surface text-on-surface">
+  <.dm_appbar
+    title="Backplane"
+    title_to={~p"/"}
+    class="appbar-primary appbar-elevated border-b border-outline-variant"
+    nav_label="Backplane documentation"
+  >
+    <:menu to="/#overview">Overview</:menu>
+    <:menu to="/#setup">Setup</:menu>
+    <:menu to="/#agents">Agent setup</:menu>
+    <:menu to={~p"/admin"}>Admin</:menu>
+    <:user_profile>
+      <div class="hidden items-center gap-2 sm:flex">
+        <.dm_badge variant="info" size="sm" soft>Documentation</.dm_badge>
+        <.dm_badge variant="success" size="sm" soft>Public</.dm_badge>
+        <.dm_theme_switcher id="home-theme-switcher" button_text="Theme" />
+      </div>
+    </:user_profile>
+  </.dm_appbar>
+
+  <div id="home-body" class="mx-auto max-w-7xl">
+    <header class="border-b border-outline-variant bg-surface-container-low">
+      <div class="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-8 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="max-w-3xl">
+            <div class="flex flex-wrap gap-2">
+              <.dm_badge variant="primary" soft>Backplane</.dm_badge>
+              <.dm_badge variant="info" soft>Public docs</.dm_badge>
+            </div>
+            <h1 class="mt-2 text-3xl font-bold tracking-normal sm:text-4xl">
+              Private gateway for MCP tools and LLM APIs
+            </h1>
+          </div>
+          <a href={~p"/admin"} class="no-underline">
+            <.dm_btn variant="primary" size="sm">Open admin</.dm_btn>
+          </a>
+        </div>
+        <p class="max-w-3xl text-base leading-7 text-on-surface-variant">
+          Backplane gives agents one MCP endpoint and one LLM API proxy. It aggregates upstream MCP
+          servers, exposes managed tools, injects provider credentials, routes model aliases, and records
+          operational usage in PostgreSQL.
+        </p>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+    <section id="overview" class="scroll-mt-24 grid gap-4 md:grid-cols-3">
+      <.dm_card variant="bordered" padding="lg">
+        <:title>
+          <div class="flex items-center justify-between gap-3">
+            <span>MCP Hub</span>
+            <.dm_badge variant="success" size="sm">/mcp</.dm_badge>
+          </div>
+        </:title>
+        <p class="mt-2 text-sm leading-6 text-on-surface-variant">
+          Connect clients to <code class="text-on-surface">/mcp</code> and access upstream and managed
+          tools through namespaced tool names like <code class="text-on-surface">day::now</code>.
+        </p>
+      </.dm_card>
+      <.dm_card variant="bordered" padding="lg">
+        <:title>
+          <div class="flex items-center justify-between gap-3">
+            <span>LLM Proxy</span>
+            <.dm_badge variant="secondary" size="sm">/llm</.dm_badge>
+          </div>
+        </:title>
+        <p class="mt-2 text-sm leading-6 text-on-surface-variant">
+          Send LLM traffic through <code class="text-on-surface">/llm/*</code>. Backplane resolves
+          model aliases, injects credentials, and tracks provider usage.
+        </p>
+      </.dm_card>
+      <.dm_card variant="bordered" padding="lg">
+        <:title>
+          <div class="flex items-center justify-between gap-3">
+            <span>Admin UI</span>
+            <.dm_badge variant="tertiary" size="sm">/admin</.dm_badge>
+          </div>
+        </:title>
+        <p class="mt-2 text-sm leading-6 text-on-surface-variant">
+          Operational settings live in PostgreSQL and are managed from <a
+            href={~p"/admin"}
+            class="font-medium text-primary"
+          >/admin</a>.
+        </p>
+      </.dm_card>
+    </section>
+
+    <section id="setup" class="mt-10 scroll-mt-24 grid gap-8 lg:grid-cols-2">
+      <.dm_card variant="bordered" padding="lg">
+        <:title>
+          <div class="flex flex-wrap items-center gap-3">
+            <span>LLM API setup</span>
+            <.dm_badge variant="info" size="sm" soft>Provider routing</.dm_badge>
+          </div>
+        </:title>
+        <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
+          <li>
+            <span class="font-semibold text-on-surface">1. Store the API key.</span>
+            Open <a href={~p"/admin/settings"} class="font-medium text-primary">/admin/settings</a>
+            and add the provider secret in the credentials vault.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">2. Create a provider.</span>
+            Open <a href={~p"/admin/providers"} class="font-medium text-primary">/admin/providers</a>,
+            choose the upstream API format, base URL, and credential name.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">3. Add model aliases.</span>
+            Map local model names to provider model IDs so clients can use stable names while providers
+            change behind the proxy.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">4. Point clients at the proxy.</span>
+            Use this server as the API base URL and send requests under
+            <code class="text-on-surface">/llm/*</code>.
+          </li>
+        </ol>
+        <:action>
+          <a href={~p"/admin/providers"} class="no-underline">
+            <.dm_btn variant="outline" size="sm">Configure providers</.dm_btn>
+          </a>
+        </:action>
+      </.dm_card>
+
+      <.dm_card variant="bordered" padding="lg">
+        <:title>
+          <div class="flex flex-wrap items-center gap-3">
+            <span>MCP server setup</span>
+            <.dm_badge variant="success" size="sm" soft>Tool namespaces</.dm_badge>
+          </div>
+        </:title>
+        <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
+          <li>
+            <span class="font-semibold text-on-surface">1. Add an upstream.</span>
+            Open <a href={~p"/admin/hub/upstreams"} class="font-medium text-primary">
+              /admin/hub/upstreams
+            </a>
+            and create a stdio, HTTP, or SSE MCP server entry.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">2. Choose a prefix.</span>
+            Each upstream receives a namespace prefix. Tools appear as
+            <code class="text-on-surface">prefix::tool_name</code>.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">3. Configure client access.</span>
+            Open <a href={~p"/admin/clients"} class="font-medium text-primary">/admin/clients</a>
+            to create bearer tokens and restrict which tool prefixes each client can call.
+          </li>
+          <li>
+            <span class="font-semibold text-on-surface">4. Connect MCP clients.</span>
+            Use <code class="text-on-surface">POST /mcp</code> for JSON-RPC,
+            <code class="text-on-surface">GET /mcp</code> for SSE notifications, and
+            <code class="text-on-surface">DELETE /mcp</code> for session cleanup.
+          </li>
+        </ol>
+        <:action>
+          <a href={~p"/admin/hub/upstreams"} class="no-underline">
+            <.dm_btn variant="outline" size="sm">Configure upstreams</.dm_btn>
+          </a>
+        </:action>
+      </.dm_card>
+    </section>
+
+    <section id="agents" class="mt-10 scroll-mt-24">
+      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 class="text-2xl font-semibold">Agent client setup</h2>
+          <p class="mt-2 max-w-3xl text-sm leading-6 text-on-surface-variant">
+            Use Backplane as the model gateway and the MCP hub for local coding agents. These examples
+            assume this node is reachable at <code class="text-on-surface">10.100.10.17:4220</code>.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <.dm_badge variant="secondary" soft>LLM base URL</.dm_badge>
+          <.dm_badge variant="success" soft>MCP settings</.dm_badge>
+        </div>
+      </div>
+
+      <div class="grid gap-6 lg:grid-cols-2">
+        <.dm_card variant="bordered" padding="lg">
+          <:title>
+            <div class="flex flex-wrap items-center gap-3">
+              <span>Claude Code setup</span>
+              <.dm_badge variant="tertiary" size="sm">Anthropic wire API</.dm_badge>
+            </div>
+          </:title>
+
+          <div class="space-y-4 text-sm leading-6 text-on-surface-variant">
+            <p>
+              Set the model gateway without <code class="text-on-surface">/v1</code>. Claude Code appends
+              <code class="text-on-surface">/v1/messages</code> when it calls the Anthropic Messages API.
+            </p>
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export ANTHROPIC_BASE_URL="http://10.100.10.17:4220/llm"
+export ANTHROPIC_API_KEY="bk-client-or-placeholder-token"
+claude</code></pre>
+            <p>
+              Add Backplane as the project or user MCP server. If Backplane clients are enabled, include
+              the bearer token your admin created.
+            </p>
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>claude mcp add --transport http backplane http://10.100.10.17:4220/mcp
+
+claude mcp add-json backplane \
+'&#123;"type":"http","url":"http://10.100.10.17:4220/mcp","headers":&#123;"Authorization":"Bearer YOUR_MCP_TOKEN"&#125;&#125;'</code></pre>
+          </div>
+
+          <:action>
+            <a href="https://code.claude.com/docs/en/env-vars" class="no-underline">
+              <.dm_btn variant="outline" size="sm">Claude env docs</.dm_btn>
+            </a>
+          </:action>
+        </.dm_card>
+
+        <.dm_card variant="bordered" padding="lg">
+          <:title>
+            <div class="flex flex-wrap items-center gap-3">
+              <span>Codex setup</span>
+              <.dm_badge variant="info" size="sm">OpenAI-compatible config</.dm_badge>
+            </div>
+          </:title>
+
+          <div class="space-y-4 text-sm leading-6 text-on-surface-variant">
+            <p>
+              Configure Codex in <code class="text-on-surface">~/.codex/config.toml</code>. Use
+              <code class="text-on-surface">openai_base_url</code> for the built-in OpenAI provider and
+              add Backplane under <code class="text-on-surface">mcp_servers</code>.
+            </p>
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>openai_base_url = "http://10.100.10.17:4220/llm/v1"
+
+[mcp_servers.backplane]
+url = "http://10.100.10.17:4220/mcp"
+
+# If Backplane clients are enabled:
+bearer_token_env_var = "BACKPLANE_MCP_TOKEN"</code></pre>
+            <p>
+              Then export the tokens before launching Codex. Backplane injects upstream provider secrets,
+              so this client token can be scoped to the proxy or MCP client you created in
+              <a href={~p"/admin/clients"} class="font-medium text-primary">/admin/clients</a>.
+            </p>
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export OPENAI_API_KEY="bk-client-or-placeholder-token"
+export BACKPLANE_MCP_TOKEN="YOUR_MCP_TOKEN"
+codex</code></pre>
+          </div>
+
+          <:action>
+            <a href="https://developers.openai.com/codex/config-reference" class="no-underline">
+              <.dm_btn variant="outline" size="sm">Codex config docs</.dm_btn>
+            </a>
+          </:action>
+        </.dm_card>
+      </div>
+    </section>
+    </main>
+  </div>
+
+  <.dm_page_footer
+    label="Backplane footer"
+    class="border-t border-outline-variant bg-secondary text-secondary-content py-8"
+  >
+    <:section class="md:col-span-2" body_class="gap-3" title="Operations first, public by default">
+      <div class="flex flex-wrap gap-2">
+        <.dm_badge variant="primary" soft>Self-hosted gateway</.dm_badge>
+        <.dm_badge variant="tertiary" soft>Scoped client tokens</.dm_badge>
+      </div>
+      <p class="max-w-2xl text-sm leading-6 text-secondary-content">
+        Keep secrets in Backplane, point agents at one model gateway, and expose tools through one
+        MCP endpoint. Use scoped client tokens before exposing this host outside trusted networks.
+      </p>
+    </:section>
+    <:section title="Configure" body_class="gap-2 text-sm">
+      <a href={~p"/admin/settings"} class="font-medium text-secondary-content underline">
+        Credentials vault
+      </a>
+      <a href={~p"/admin/providers"} class="font-medium text-secondary-content underline">
+        LLM providers
+      </a>
+      <a href={~p"/admin/hub/upstreams"} class="font-medium text-secondary-content underline">
+        MCP upstreams
+      </a>
+      <a href={~p"/admin/clients"} class="font-medium text-secondary-content underline">
+        Client tokens
+      </a>
+    </:section>
+  </.dm_page_footer>
+</div>

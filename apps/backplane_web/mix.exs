@@ -56,19 +56,22 @@ defmodule BackplaneWeb.MixProject do
   end
 
   defp aliases do
+    bun_path = System.get_env("MIX_BUN_PATH", "bun")
+    tailwind_path = System.get_env("MIX_TAILWIND_PATH", "bunx --bun @tailwindcss/cli@4.1.18")
+
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": ["cmd bun install"],
+      "assets.setup": ["cmd #{bun_path} install"],
       "assets.build": [
         "cmd mkdir -p priv/static/assets",
-        "cmd env NODE_PATH=../../deps bun build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*",
-        "cmd bunx --bun @tailwindcss/cli@4.1.18 --input=assets/css/app.css --output=priv/static/assets/app.css"
+        "cmd env NODE_PATH=../../deps #{bun_path} build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*",
+        "cmd #{tailwind_path} --input=assets/css/app.css --output=priv/static/assets/app.css"
       ],
       "assets.deploy": [
         "phx.digest.clean",
         "cmd mkdir -p priv/static/assets",
-        "cmd env NODE_PATH=../../deps bun build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/* --minify",
-        "cmd bunx --bun @tailwindcss/cli@4.1.18 --input=assets/css/app.css --output=priv/static/assets/app.css --minify",
+        "cmd env NODE_PATH=../../deps #{bun_path} build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/* --minify",
+        "cmd #{tailwind_path} --input=assets/css/app.css --output=priv/static/assets/app.css --minify",
         "phx.digest"
       ],
       test: ["test"]

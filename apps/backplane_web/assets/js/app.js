@@ -18,6 +18,44 @@ registerBadge()
 registerDialog()
 registerAlert()
 
+function applyTheme(theme) {
+  if (theme && theme !== "default") {
+    document.documentElement.setAttribute("data-theme", theme)
+  } else {
+    document.documentElement.removeAttribute("data-theme")
+  }
+}
+
+function initThemeSwitchers(root = document) {
+  root.querySelectorAll(".theme-controller-dropdown").forEach((switcher) => {
+    if (switcher.dataset.themeSwitcherBound === "true") return
+
+    switcher.dataset.themeSwitcherBound = "true"
+
+    let theme = switcher.dataset.theme || localStorage.getItem("theme") || "default"
+    applyTheme(theme)
+
+    switcher.querySelectorAll(".theme-controller-item").forEach((input) => {
+      input.checked = theme === input.value
+
+      input.addEventListener("change", (event) => {
+        theme = event.target.value
+        applyTheme(theme)
+        localStorage.setItem("theme", theme)
+        switcher.removeAttribute("open")
+      })
+    })
+  })
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => initThemeSwitchers())
+} else {
+  initThemeSwitchers()
+}
+
+window.addEventListener("phx:page-loading-stop", () => initThemeSwitchers())
+
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,

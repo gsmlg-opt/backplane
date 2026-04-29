@@ -1,6 +1,7 @@
 defmodule BackplaneWeb.ManagedLive do
   use BackplaneWeb, :live_view
 
+  alias Backplane.Math.Config, as: MathConfig
   alias Backplane.Settings
   alias Backplane.Registry.ToolRegistry
 
@@ -14,8 +15,12 @@ defmodule BackplaneWeb.ManagedLive do
     %{
       module: Backplane.Services.WebFetch,
       name: "Web Fetch",
-      description: "Fetch HTTP(S) pages and convert them to Markdown",
-      setting_key: "services.web.enabled"
+      description: "Fetch HTTP(S) pages and convert them to Markdown"
+    },
+    %{
+      module: Backplane.Services.Math,
+      name: "Math",
+      description: "Evaluate math expressions with the native math engine"
     }
   ]
 
@@ -30,22 +35,13 @@ defmodule BackplaneWeb.ManagedLive do
   end
 
   @impl true
-  def handle_event("toggle", %{"key" => key}, socket) do
-    current = Settings.get(key) == true
-    Settings.set(key, !current)
-
-    service = Enum.find(@managed_services, &(&1.setting_key == key))
+  def handle_event("toggle", %{"prefix" => prefix}, socket) do
+    service = Enum.find(@managed_services, &(&1.module.prefix() == prefix))
 
     if service do
       mod = service.module
-
-      if !current do
-        # Was false, now true -- register
-        ToolRegistry.register_managed(mod.prefix(), mod.tools())
-      else
-        # Was true, now false -- deregister
-        ToolRegistry.deregister_managed(mod.prefix())
-      end
+      current = mod.enabled?()
+      set_enabled(mod, !current)
     end
 
     {:noreply, socket |> put_flash(:info, "Service updated") |> load_services()}
@@ -58,7 +54,7 @@ defmodule BackplaneWeb.ManagedLive do
       Enum.map(@managed_services, fn svc ->
         mod = svc.module
         prefix = mod.prefix()
-        enabled = Settings.get(svc.setting_key) == true
+        enabled = mod.enabled?()
         tool_count = Enum.count(tools, fn t -> t.origin == {:managed, prefix} end)
 
         Map.merge(svc, %{
@@ -77,6 +73,21 @@ defmodule BackplaneWeb.ManagedLive do
   rescue
     _ -> default
   end
+
+  defp set_enabled(Backplane.Services.Day = mod, enabled) do
+    Settings.set("services.day.enabled", enabled)
+    sync_registry(mod, enabled)
+  end
+
+  defp set_enabled(Backplane.Services.WebFetch = mod, enabled) do
+    Settings.set("services.web.enabled", enabled)
+    sync_registry(mod, enabled)
+  end
+
+  defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
+
+  defp sync_registry(mod, true), do: ToolRegistry.register_managed(mod.prefix(), mod.tools())
+  defp sync_registry(mod, false), do: ToolRegistry.deregister_managed(mod.prefix())
 
   @impl true
   def render(assigns) do
@@ -105,7 +116,7 @@ defmodule BackplaneWeb.ManagedLive do
                 size="sm"
                 variant={if service.enabled, do: "warning", else: "primary"}
                 phx-click="toggle"
-                phx-value-key={service.setting_key}
+                phx-value-prefix={service.prefix}
               >
                 {if service.enabled, do: "Disable", else: "Enable"}
               </.dm_btn>

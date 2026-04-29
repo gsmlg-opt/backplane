@@ -5,6 +5,7 @@ defmodule BackplaneWeb.Router do
   forward("/mcp", Backplane.Transport.McpPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -13,6 +14,21 @@ defmodule BackplaneWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
     plug(Backplane.Web.AdminAuthPlug)
+  end
+
+  pipeline :public_browser do
+    plug(:accepts, ["html"])
+    plug(:fetch_session)
+    plug(:fetch_live_flash)
+    plug(:put_root_layout, html: {BackplaneWeb.Layouts, :root})
+    plug(:protect_from_forgery)
+    plug(:put_secure_browser_headers)
+  end
+
+  scope "/", BackplaneWeb do
+    pipe_through(:public_browser)
+
+    get("/", PageController, :home)
   end
 
   scope "/api" do

@@ -8,6 +8,8 @@ defmodule BackplaneWeb.DashboardLiveTest do
     assert html =~ "Total Tools"
     assert html =~ "Skills"
     assert html =~ "Upstreams"
+    assert html =~ "theme-controller-dropdown"
+    assert html =~ ~s(phx-hook="ThemeSwitcher")
     assert has_element?(view, "h1", "Dashboard")
   end
 

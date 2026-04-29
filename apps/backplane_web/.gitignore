@@ -24,6 +24,7 @@ backplane_web-*.tar
 
 # Generated static assets (built by bun/tailwind)
 /priv/static/assets/
+cache_manifest.json
 
 # npm packages
 node_modules/

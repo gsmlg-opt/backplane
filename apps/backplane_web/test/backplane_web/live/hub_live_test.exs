@@ -13,4 +13,13 @@ defmodule BackplaneWeb.HubLiveTest do
     assert html =~ "math::"
     assert html =~ "managed"
   end
+
+  test "does not list disabled managed services", %{conn: conn} do
+    {:ok, _record} = Config.save(%{enabled: false})
+
+    {:ok, _view, html} = live(conn, "/admin/hub")
+
+    assert html =~ "MCP Hub"
+    refute html =~ "math::"
+  end
 end

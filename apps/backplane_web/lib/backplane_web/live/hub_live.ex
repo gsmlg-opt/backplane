@@ -38,7 +38,9 @@ defmodule BackplaneWeb.HubLive do
     upstreams = safe_call(fn -> Pool.list_upstreams() end, [])
 
     managed =
-      Enum.map(@managed_services, fn mod ->
+      @managed_services
+      |> Enum.filter(& &1.enabled?())
+      |> Enum.map(fn mod ->
         prefix = mod.prefix()
         tool_count = Enum.count(tools, fn t -> t.origin == {:managed, prefix} end)
 
@@ -46,8 +48,8 @@ defmodule BackplaneWeb.HubLive do
           name: prefix,
           prefix: prefix,
           type: :managed,
-          enabled: mod.enabled?(),
-          status: if(mod.enabled?(), do: :connected, else: :disabled),
+          enabled: true,
+          status: :connected,
           tool_count: tool_count
         }
       end)

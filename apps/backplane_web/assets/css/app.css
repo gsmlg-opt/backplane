@@ -4,6 +4,16 @@
 @import "@duskmoon-dev/core/themes/moonlight";
 @import "@duskmoon-dev/core/components";
 
+@layer utilities {
+  .bg-secondary {
+    background-color: var(--color-secondary);
+  }
+
+  .text-secondary-content {
+    color: var(--color-secondary-content);
+  }
+}
+
 .appbar-actions .appbar-action {
   width: auto;
   height: auto;
