@@ -10,9 +10,6 @@ config :backplane, Backplane.Repo,
 
 config :backplane_web, dev_routes: true
 
-tailwind_path = System.get_env("MIX_TAILWIND_PATH", "tailwindcss")
-bun_path = System.get_env("MIX_BUN_PATH", "bun")
-
 config :backplane_web, BackplaneWeb.Endpoint,
   http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
   check_origin: false,
@@ -21,18 +18,8 @@ config :backplane_web, BackplaneWeb.Endpoint,
   secret_key_base:
     "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only_do_not_use",
   watchers: [
-    {"/bin/sh",
-     [
-       "-c",
-       "#{tailwind_path} --input=assets/css/app.css --output=priv/static/assets/app.css --watch",
-       cd: Path.expand("../apps/backplane_web", __DIR__)
-     ]},
-    {"/bin/sh",
-     [
-       "-c",
-       "NODE_PATH=../../deps #{bun_path} build assets/js/app.js --outdir=priv/static/assets --external '/fonts/*' --external '/images/*' --sourcemap=inline --watch",
-       cd: Path.expand("../apps/backplane_web", __DIR__)
-     ]}
+    tailwind: {Tailwind, :install_and_run, [:backplane, ~w(--watch)]},
+    bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}
   ]
 
 config :backplane_web, BackplaneWeb.Endpoint,

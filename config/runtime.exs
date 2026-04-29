@@ -1,11 +1,13 @@
 import Config
 
-# Bun/Tailwind binary paths for devenv environments (all envs)
-if bun_path = System.get_env("MIX_BUN_PATH") do
+# Bun/Tailwind binary paths for devenv environments (all envs).
+# Keep this in runtime config so local installations can be detected at boot
+# without baking machine-specific paths into compile-time config.
+if bun_path = System.get_env("MIX_BUN_PATH") || System.find_executable("bun") do
   config :bun, path: bun_path
 end
 
-if tailwind_path = System.get_env("MIX_TAILWIND_PATH") do
+if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable("tailwindcss") do
   config :tailwind, path: tailwind_path
 end
 
@@ -72,5 +74,4 @@ if config_env() == :prod do
     url: [host: host, port: 443, scheme: "https"],
     http: [ip: {0, 0, 0, 0}, port: port],
     secret_key_base: secret_key_base
-
 end

@@ -56,22 +56,19 @@ defmodule BackplaneWeb.MixProject do
   end
 
   defp aliases do
-    bun_path = System.get_env("MIX_BUN_PATH", "bun")
-    tailwind_path = System.get_env("MIX_TAILWIND_PATH", "bunx --bun @tailwindcss/cli@4.1.18")
-
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": ["cmd #{bun_path} install"],
+      "assets.setup": ["bun.install --if-missing", "tailwind.install --if-missing"],
       "assets.build": [
         "cmd mkdir -p priv/static/assets",
-        "cmd env NODE_PATH=../../deps #{bun_path} build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*",
-        "cmd #{tailwind_path} --input=assets/css/app.css --output=priv/static/assets/app.css"
+        "bun backplane",
+        "tailwind backplane"
       ],
       "assets.deploy": [
         "phx.digest.clean",
         "cmd mkdir -p priv/static/assets",
-        "cmd env NODE_PATH=../../deps #{bun_path} build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/* --minify",
-        "cmd #{tailwind_path} --input=assets/css/app.css --output=priv/static/assets/app.css --minify",
+        "bun backplane --minify",
+        "tailwind backplane --minify",
         "phx.digest"
       ],
       test: ["test"]
