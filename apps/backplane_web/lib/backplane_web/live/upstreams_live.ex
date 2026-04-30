@@ -39,7 +39,7 @@ defmodule BackplaneWeb.UpstreamsLive do
     changeset = Upstreams.change(%McpUpstream{}, %{transport: "http", auth_scheme: "none"})
 
     socket
-    |> assign(editing: :new, form: to_form(changeset))
+    |> assign(editing: :new, form: upstream_form(changeset))
     |> load_credentials()
     |> load_upstreams()
   end
@@ -55,7 +55,7 @@ defmodule BackplaneWeb.UpstreamsLive do
         changeset = Upstreams.change(upstream, %{})
 
         socket
-        |> assign(editing: upstream, form: to_form(changeset))
+        |> assign(editing: upstream, form: upstream_form(changeset))
         |> load_credentials()
         |> load_upstreams()
     end
@@ -85,7 +85,7 @@ defmodule BackplaneWeb.UpstreamsLive do
         %McpUpstream{} = u -> Upstreams.change(u, params)
       end
 
-    {:noreply, assign(socket, form: to_form(Map.put(changeset, :action, :validate)))}
+    {:noreply, assign(socket, form: upstream_form(Map.put(changeset, :action, :validate)))}
   end
 
   def handle_event("save", %{"mcp_upstream" => params}, socket) do
@@ -101,7 +101,7 @@ defmodule BackplaneWeb.UpstreamsLive do
              |> push_patch(to: ~p"/admin/hub/upstreams")}
 
           {:error, changeset} ->
-            {:noreply, assign(socket, form: to_form(changeset))}
+            {:noreply, assign(socket, form: upstream_form(changeset))}
         end
 
       %McpUpstream{} = upstream ->
@@ -113,7 +113,7 @@ defmodule BackplaneWeb.UpstreamsLive do
              |> push_patch(to: ~p"/admin/hub/upstreams")}
 
           {:error, changeset} ->
-            {:noreply, assign(socket, form: to_form(changeset))}
+            {:noreply, assign(socket, form: upstream_form(changeset))}
         end
     end
   end
@@ -218,6 +218,34 @@ defmodule BackplaneWeb.UpstreamsLive do
   rescue
     _ -> default
   end
+
+  defp upstream_form(%Ecto.Changeset{} = changeset) do
+    changeset
+    |> changeset_params()
+    |> to_form(
+      as: :mcp_upstream,
+      errors: changeset_errors(changeset),
+      action: changeset.action
+    )
+  end
+
+  defp changeset_params(%Ecto.Changeset{data: data, changes: changes, params: params}) do
+    data
+    |> schema_fields()
+    |> stringify_keys()
+    |> Map.merge(stringify_keys(params || %{}))
+    |> Map.merge(stringify_keys(changes))
+  end
+
+  defp schema_fields(%struct{} = data),
+    do: Map.new(struct.__schema__(:fields), fn field -> {field, Map.get(data, field)} end)
+
+  defp stringify_keys(params) do
+    Map.new(params, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp changeset_errors(%Ecto.Changeset{action: nil}), do: []
+  defp changeset_errors(%Ecto.Changeset{errors: errors}), do: errors
 
   defp start_runtime(upstream) do
     upstream
@@ -498,7 +526,7 @@ defmodule BackplaneWeb.UpstreamsLive do
                 id="upstream-transport"
                 name="mcp_upstream[transport]"
                 label="Transport"
-                options={[{"http", "HTTP"}, {"sse", "SSE (Legacy)"}, {"stdio", "Stdio"}]}
+                options={[{"http", "HTTP"}, {"stdio", "Stdio"}]}
                 value={transport_value(@form)}
               />
               <.form_error field={@form[:transport]} />
@@ -536,7 +564,7 @@ defmodule BackplaneWeb.UpstreamsLive do
             </div>
           </div>
 
-          <div :if={transport_value(@form) in ["http", "sse"]}>
+          <div :if={transport_value(@form) == "http"}>
             <.dm_input
               id="upstream-url"
               name="mcp_upstream[url]"

@@ -34,7 +34,7 @@ defmodule Backplane.Proxy.McpUpstream do
     upstream
     |> cast(attrs, @required ++ @optional)
     |> validate_required(@required)
-    |> validate_inclusion(:transport, ~w(http stdio sse))
+    |> validate_inclusion(:transport, ~w(http stdio))
     |> validate_inclusion(:auth_scheme, ~w(none bearer x_api_key custom_header))
     |> validate_transport_fields()
     |> validate_headers_deny_list()
@@ -48,7 +48,6 @@ defmodule Backplane.Proxy.McpUpstream do
     case get_field(changeset, :transport) do
       "http" -> validate_required(changeset, [:url])
       "stdio" -> validate_required(changeset, [:command])
-      "sse" -> validate_required(changeset, [:url])
       _ -> changeset
     end
   end

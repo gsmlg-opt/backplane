@@ -19,7 +19,7 @@ defmodule BackplaneWeb.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :runtime_tools],
+      extra_applications: [:logger, :runtime_tools, :phoenix_ecto],
       mod: {BackplaneWeb.Application, []}
     ]
   end

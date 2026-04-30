@@ -991,137 +991,27 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
-  describe "sse transport lifecycle" do
-    setup do
-      start_mock_sse_agent()
-      port = 4280
-      {:ok, _} = Bandit.start_link(
-        plug: Backplane.Test.MockSseMcpServer.Router,
-        port: port,
-        ip: {127, 0, 0, 1}
-      )
-
+  describe "unsupported transports" do
+    test "rejects legacy sse transport" do
       config = %{
         name: "sse-upstream",
         prefix: "sse-test",
         transport: "sse",
-        url: "http://127.0.0.1:#{port}/sse",
+        url: "http://127.0.0.1:4280/sse",
         headers: %{}
       }
 
-      {:ok, pid} = Upstream.start_link(config)
-      Process.sleep(1000)
-      %{pid: pid, port: port}
-    end
+      trap_exit = Process.flag(:trap_exit, true)
 
-    test "connects, discovers endpoint, initializes, and discovers tools", %{pid: pid} do
-      status = Upstream.status(pid)
-      assert status.status == :connected
-      assert status.tool_count == 1
-      assert status.transport == "sse"
-      assert status.post_url_known == true
-    end
-
-    test "forwards tool call and receives response via SSE", %{pid: pid} do
-      assert {:ok, result} = Upstream.forward(pid, "echo", %{"message" => "hello"})
-      assert [%{"text" => "sse legacy result"}] = result["content"]
-    end
-
-    test "reports post_url_known in status", %{pid: pid} do
-      status = Upstream.status(pid)
-      assert status.post_url_known == true
+      try do
+        assert {:error, {:unsupported_transport, "sse"}} = Upstream.start_link(config)
+      after
+        Process.flag(:trap_exit, trap_exit)
+      end
     end
   end
 
-  describe "sse transport connection failure" do
-    test "transitions to disconnected when SSE server is unreachable" do
-      config = %{
-        name: "sse-dead",
-        prefix: "sse-dead",
-        transport: "sse",
-        url: "http://127.0.0.1:19999/sse",
-        headers: %{}
-      }
-
-      {:ok, pid} = Upstream.start_link(config)
-      # SSE connection failure takes time due to Req retries — wait longer
-      Process.sleep(2000)
-
-      status = Upstream.status(pid)
-      assert status.status in [:disconnected, :connecting]
-      assert status.post_url_known == false
-      GenServer.stop(pid, :normal, 1000)
-    end
-  end
-
-  describe "sse transport reconnect" do
-    setup do
-      start_mock_sse_agent()
-      port = 4281
-      {:ok, _} = Bandit.start_link(
-        plug: Backplane.Test.MockSseMcpServer.Router,
-        port: port,
-        ip: {127, 0, 0, 1}
-      )
-
-      config = %{
-        name: "sse-reconnect",
-        prefix: "sse-rc",
-        transport: "sse",
-        url: "http://127.0.0.1:#{port}/sse",
-        headers: %{}
-      }
-
-      {:ok, pid} = Upstream.start_link(config)
-      Process.sleep(1000)
-      %{pid: pid, port: port}
-    end
-
-    test "status includes post_url_known and reconnect fields", %{pid: pid} do
-      assert Upstream.status(pid).status == :connected
-
-      status = Upstream.status(pid)
-      assert Map.has_key?(status, :post_url_known)
-      assert status.post_url_known == true
-    end
-  end
-
-  describe "sse transport health ping" do
-    setup do
-      start_mock_sse_agent()
-      port = 4282
-      {:ok, _} = Bandit.start_link(
-        plug: Backplane.Test.MockSseMcpServer.Router,
-        port: port,
-        ip: {127, 0, 0, 1}
-      )
-
-      config = %{
-        name: "sse-ping",
-        prefix: "sse-ping",
-        transport: "sse",
-        url: "http://127.0.0.1:#{port}/sse",
-        headers: %{}
-      }
-
-      {:ok, pid} = Upstream.start_link(config)
-      Process.sleep(1000)
-      %{pid: pid}
-    end
-
-    test "handles health ping without crashing", %{pid: pid} do
-      assert Upstream.status(pid).status == :connected
-
-      send(pid, :health_ping)
-      Process.sleep(500)
-
-      assert Process.alive?(pid)
-      status = Upstream.status(pid)
-      assert status.last_ping_at != nil
-    end
-  end
-
-  describe "sse transport post_url_known for non-sse transports" do
+  describe "post_url_known for supported transports" do
     test "post_url_known is false for http transport" do
       {:ok, _} = start_mock_http_server(4283)
 
@@ -1174,13 +1064,6 @@ defmodule Backplane.Proxy.UpstreamTest do
       port: port,
       ip: {127, 0, 0, 1}
     )
-  end
-
-  defp start_mock_sse_agent do
-    case Backplane.Test.MockSseMcpServer.start_link() do
-      {:ok, _} -> :ok
-      {:error, {:already_started, _}} -> :ok
-    end
   end
 
   defp start_mock_malformed_server(port) do

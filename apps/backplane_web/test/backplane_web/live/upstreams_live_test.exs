@@ -15,6 +15,13 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
     assert html =~ "Upstream MCP Servers"
   end
 
+  test "renders new upstream form", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/admin/hub/upstreams/new")
+
+    assert html =~ "New Upstream"
+    assert html =~ "mcp_upstream[name]"
+  end
+
   test "toggles an upstream enabled state", %{conn: conn} do
     {bandit, port} = start_mock_server()
     on_exit(fn -> stop_bandit(bandit) end)
@@ -61,6 +68,36 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
 
     assert eventually(fn ->
              Enum.any?(Pool.list_upstreams(), &(&1.name == "connect-upstream"))
+           end)
+  end
+
+  test "delete action stops the upstream runtime", %{conn: conn} do
+    {bandit, port} = start_mock_server()
+    on_exit(fn -> stop_bandit(bandit) end)
+
+    {:ok, upstream} =
+      create_upstream(%{
+        name: "delete-upstream",
+        prefix: "delete",
+        url: "http://127.0.0.1:#{port}/mcp"
+      })
+
+    {:ok, view, _html} = live(conn, "/admin/hub/upstreams")
+
+    view
+    |> element("[phx-click='connect'][phx-value-id='#{upstream.id}']", "Connect")
+    |> render_click()
+
+    assert eventually(fn ->
+             Enum.any?(Pool.list_upstreams(), &(&1.name == "delete-upstream"))
+           end)
+
+    view
+    |> element("[phx-click='delete'][phx-value-id='#{upstream.id}']", "Delete")
+    |> render_click()
+
+    assert eventually(fn ->
+             Enum.all?(Pool.list_upstreams(), &(&1.name != "delete-upstream"))
            end)
   end
 

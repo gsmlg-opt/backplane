@@ -2,7 +2,7 @@ defmodule BackplaneWeb.DashboardLive do
   use BackplaneWeb, :live_view
 
   alias Backplane.Metrics
-  alias Backplane.Proxy.Pool
+  alias Backplane.Proxy.{Pool, Upstreams}
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.Registry, as: SkillsRegistry
@@ -13,6 +13,7 @@ defmodule BackplaneWeb.DashboardLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Process.send_after(self(), :refresh, @refresh_interval)
+      Phoenix.PubSub.subscribe(Backplane.PubSub, Upstreams.topic())
       PubSubBroadcaster.subscribe(PubSubBroadcaster.skills_sync_topic())
       PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
@@ -33,6 +34,10 @@ defmodule BackplaneWeb.DashboardLive do
 
   def handle_info({event, _payload}, socket)
       when event in [:completed, :reloaded] do
+    {:noreply, load_dashboard_data(socket)}
+  end
+
+  def handle_info({:upstream_config, _event, _upstream}, socket) do
     {:noreply, load_dashboard_data(socket)}
   end
 

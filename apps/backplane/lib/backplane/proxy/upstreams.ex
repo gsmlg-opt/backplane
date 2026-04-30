@@ -2,7 +2,8 @@ defmodule Backplane.Proxy.Upstreams do
   @moduledoc "Context for managing MCP upstream server definitions."
 
   alias Backplane.Repo
-  alias Backplane.Proxy.McpUpstream
+  alias Backplane.Proxy.{McpUpstream, Pool}
+  alias Backplane.Registry.ToolRegistry
 
   import Ecto.Query
 
@@ -61,6 +62,7 @@ defmodule Backplane.Proxy.Upstreams do
   def delete(%McpUpstream{} = upstream) do
     case Repo.delete(upstream) do
       {:ok, upstream} ->
+        stop_runtime(upstream)
         broadcast(:deleted, upstream)
         {:ok, upstream}
 
@@ -74,6 +76,21 @@ defmodule Backplane.Proxy.Upstreams do
   end
 
   def topic, do: @topic
+
+  defp stop_runtime(upstream) do
+    upstream.name
+    |> runtime_pids_for_name()
+    |> Enum.each(&Pool.stop_upstream/1)
+
+    ToolRegistry.deregister_upstream(upstream.prefix)
+    :ok
+  end
+
+  defp runtime_pids_for_name(name) do
+    Pool.list_upstream_pids()
+    |> Enum.filter(fn {_pid, status} -> status.name == name end)
+    |> Enum.map(fn {pid, _status} -> pid end)
+  end
 
   defp broadcast(event, upstream) do
     Phoenix.PubSub.broadcast(@pubsub, @topic, {:upstream_config, event, upstream})

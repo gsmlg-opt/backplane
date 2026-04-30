@@ -2,10 +2,9 @@ defmodule Backplane.Proxy.Upstream do
   @moduledoc """
   GenServer managing a single upstream MCP server connection.
 
-  Supports three transport types:
+  Supports two transport types:
   - `"http"` — stateless HTTP requests via Req (Streamable HTTP)
   - `"stdio"` — persistent Port-based communication over stdin/stdout
-  - `"sse"` — persistent SSE GET connection with POST for requests (legacy MCP SSE)
 
   On startup, sends `initialize` then `tools/list` to discover upstream tools,
   registers them in the ToolRegistry with the configured prefix.
@@ -25,6 +24,7 @@ defmodule Backplane.Proxy.Upstream do
   @max_buffer_size 10_000_000
   @initial_backoff_ms 1_000
   @max_backoff_ms 60_000
+  @supported_transports ~w(http stdio)
 
   # Client API
 
@@ -62,6 +62,14 @@ defmodule Backplane.Proxy.Upstream do
 
   @impl true
   def init(config) do
+    unless config.transport in @supported_transports do
+      {:stop, {:unsupported_transport, config.transport}}
+    else
+      init_supported(config)
+    end
+  end
+
+  defp init_supported(config) do
     state = %{
       name: config.name,
       prefix: config.prefix,
@@ -81,12 +89,7 @@ defmodule Backplane.Proxy.Upstream do
       reconnect_attempts: 0,
       pending_ping_id: nil,
       tool_timeout: config[:timeout] || @default_timeout,
-      refresh_interval: config[:refresh_interval],
-      # SSE transport fields
-      sse_ref: nil,
-      sse_pid: nil,
-      sse_endpoint: nil,
-      sse_retry_ms: nil
+      refresh_interval: config[:refresh_interval]
     }
 
     {:ok, state, {:continue, :connect}}
@@ -176,30 +179,6 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  def handle_call({:tools_call, _tool_name, _arguments}, _from, %{transport: "sse", sse_endpoint: nil} = state) do
-    {:reply, {:error, "SSE endpoint not yet discovered"}, state}
-  end
-
-  def handle_call({:tools_call, tool_name, arguments}, from, %{transport: "sse"} = state) do
-    {id, state} = next_request_id(state)
-
-    request = %{
-      "jsonrpc" => "2.0",
-      "method" => "tools/call",
-      "id" => id,
-      "params" => %{"name" => tool_name, "arguments" => arguments}
-    }
-
-    case sse_post(state, request) do
-      :ok ->
-        state = %{state | pending_requests: Map.put(state.pending_requests, id, from)}
-        {:noreply, state}
-
-      {:error, reason} ->
-        {:reply, {:error, "Failed to send to upstream: #{inspect(reason)}"}, state}
-    end
-  end
-
   def handle_call(:status, _from, state) do
     info = %{
       name: state.name,
@@ -210,7 +189,7 @@ defmodule Backplane.Proxy.Upstream do
       last_ping_at: state.last_ping_at,
       last_pong_at: state.last_pong_at,
       consecutive_ping_failures: state.consecutive_ping_failures,
-      post_url_known: is_binary(state.sse_endpoint)
+      post_url_known: false
     }
 
     {:reply, info, state}
@@ -288,84 +267,6 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  def handle_info(:health_ping, %{transport: "sse"} = state) do
-    now = System.system_time(:second)
-    state = %{state | last_ping_at: now}
-
-    # If the previous ping never got a response, count as failure
-    state =
-      if state.pending_ping_id != nil do
-        failures = state.consecutive_ping_failures + 1
-        new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-        %{state | consecutive_ping_failures: failures, status: new_status, pending_ping_id: nil}
-      else
-        state
-      end
-
-    {id, state} = next_request_id(state)
-    state = %{state | pending_ping_id: id}
-
-    request = %{
-      "jsonrpc" => "2.0",
-      "method" => "ping",
-      "id" => id,
-      "params" => %{}
-    }
-
-    case sse_post(state, request) do
-      :ok ->
-        schedule_health_ping()
-        {:noreply, state}
-
-      {:error, reason} ->
-        state = %{state | pending_ping_id: nil}
-        handle_ping_failure(state, reason)
-    end
-  end
-
-  # SSE event handlers
-  def handle_info({:sse_event, ref, event}, %{sse_ref: ref} = state) when not is_nil(ref) do
-    handle_sse_event(state, event)
-  end
-
-  def handle_info({:sse_closed, ref, reason}, %{sse_ref: ref} = state) when not is_nil(ref) do
-    Logger.warning("SSE connection closed", upstream: state.name, reason: inspect(reason))
-
-    # Reply to all pending requests
-    for {_id, from} <- state.pending_requests do
-      GenServer.reply(from, {:error, :disconnected})
-    end
-
-    ToolRegistry.deregister_upstream(state.prefix)
-
-    # Use server-supplied retry or standard backoff
-    case state.sse_retry_ms do
-      ms when is_integer(ms) and ms > 0 ->
-        Process.send_after(self(), :reconnect, ms)
-
-      _ ->
-        schedule_reconnect(state.reconnect_attempts)
-    end
-
-    PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
-      name: state.name,
-      reason: "SSE connection closed: #{inspect(reason)}"
-    })
-
-    {:noreply,
-     %{
-       state
-       | status: :disconnected,
-         sse_ref: nil,
-         sse_pid: nil,
-         sse_endpoint: nil,
-         tools: [],
-         pending_requests: %{},
-         pending_ping_id: nil,
-         reconnect_attempts: state.reconnect_attempts + 1
-     }}
-  end
-
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     state = handle_stdio_data(state, data)
     {:noreply, state}
@@ -415,11 +316,6 @@ defmodule Backplane.Proxy.Upstream do
     end
 
     ToolRegistry.deregister_upstream(state.prefix)
-
-    # Close SSE connection
-    if state.sse_pid do
-      Backplane.Proxy.SSEClient.close(state.sse_ref, state.sse_pid)
-    end
 
     if state.port do
       try do
@@ -503,69 +399,6 @@ defmodule Backplane.Proxy.Upstream do
     end
   end
 
-  defp connect_and_initialize(%{transport: "sse"} = state) do
-    config = state.config
-
-    # Build headers for SSE GET connection
-    base_headers = Map.to_list(config[:headers] || %{})
-
-    # Inject auth headers
-    headers =
-      case Backplane.Proxy.AuthInjector.inject(
-             base_headers,
-             config[:auth_scheme],
-             config[:auth_header_name],
-             config[:credential]
-           ) do
-        {:ok, h} ->
-          h
-
-        {:error, reason} ->
-          Logger.warning("Auth injection failed for SSE connect",
-            upstream: state.name,
-            reason: inspect(reason)
-          )
-
-          base_headers
-      end
-
-    # Open SSE connection
-    {:ok, ref, pid} = Backplane.Proxy.SSEClient.connect(config.url, headers, self())
-    state = %{state | sse_ref: ref, sse_pid: pid}
-
-    # Wait for the endpoint event
-    receive do
-      {:sse_event, ^ref, %{event: "endpoint", data: endpoint_url}} ->
-        # Resolve endpoint URL (may be relative)
-        post_url = resolve_endpoint_url(config.url, endpoint_url)
-        state = %{state | sse_endpoint: post_url}
-
-        # Now send initialize via POST to the discovered endpoint
-        request =
-          jsonrpc_request("initialize", %{
-            "protocolVersion" => Backplane.protocol_version(),
-            "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
-            "capabilities" => %{}
-          })
-
-        case sse_post_and_wait(state, request) do
-          {:ok, _result, state} ->
-            {:ok, %{state | initialized: true}}
-
-          {:error, reason, state} ->
-            {:error, reason, state}
-        end
-
-      {:sse_closed, ^ref, reason} ->
-        {:error, "SSE connection closed: #{inspect(reason)}",
-         %{state | sse_ref: nil, sse_pid: nil}}
-    after
-      @default_timeout ->
-        Backplane.Proxy.SSEClient.close(ref, pid)
-        {:error, :timeout, %{state | sse_ref: nil, sse_pid: nil}}
-    end
-  end
-
   defp discover_tools(%{transport: "http"} = state) do
     request = jsonrpc_request("tools/list", %{})
 
@@ -585,21 +418,6 @@ defmodule Backplane.Proxy.Upstream do
     request = jsonrpc_request("tools/list", %{})
 
     case send_stdio_and_wait(state, request) do
-      {:ok, %{"tools" => tools}, state} ->
-        register_tools(state, tools)
-
-      {:ok, _, state} ->
-        {:error, "Unexpected response from tools/list", state}
-
-      {:error, reason, state} ->
-        {:error, reason, state}
-    end
-  end
-
-  defp discover_tools(%{transport: "sse"} = state) do
-    request = jsonrpc_request("tools/list", %{})
-
-    case sse_post_and_wait(state, request) do
       {:ok, %{"tools" => tools}, state} ->
         register_tools(state, tools)
 
@@ -946,198 +764,6 @@ defmodule Backplane.Proxy.Upstream do
     case send_stdio(state.port, request) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # SSE Transport helpers
-
-  defp sse_post(state, request) do
-    config = state.config
-    base_headers = Map.to_list(config[:headers] || %{})
-
-    headers =
-      case Backplane.Proxy.AuthInjector.inject(
-             base_headers,
-             config[:auth_scheme],
-             config[:auth_header_name],
-             config[:credential]
-           ) do
-        {:ok, h} -> h
-        {:error, reason} -> throw({:auth_error, reason})
-      end
-
-    opts = [
-      url: state.sse_endpoint,
-      method: :post,
-      json: request,
-      headers: [{"content-type", "application/json"} | headers],
-      receive_timeout: @default_timeout,
-      decode_body: false
-    ]
-
-    case Req.request(opts) do
-      {:ok, %{status: status}} when status in [200, 202] -> :ok
-      {:ok, %{status: status}} -> {:error, "HTTP #{status}"}
-      {:error, reason} -> {:error, reason}
-    end
-  catch
-    {:auth_error, reason} -> {:error, reason}
-  end
-
-  defp sse_post_and_wait(state, request) do
-    id = request["id"]
-
-    config = state.config
-    base_headers = Map.to_list(config[:headers] || %{})
-
-    headers =
-      case Backplane.Proxy.AuthInjector.inject(
-             base_headers,
-             config[:auth_scheme],
-             config[:auth_header_name],
-             config[:credential]
-           ) do
-        {:ok, h} -> h
-        {:error, reason} -> throw({:auth_error, reason})
-      end
-
-    opts = [
-      url: state.sse_endpoint,
-      method: :post,
-      json: request,
-      headers: [{"content-type", "application/json"} | headers],
-      receive_timeout: @default_timeout,
-      decode_body: false
-    ]
-
-    case Req.request(opts) do
-      {:ok, %{status: status}} when status in [200, 202] ->
-        # Wait for matching response on SSE stream
-        sse_wait_for_response(state, id)
-
-      {:ok, %{status: status}} ->
-        {:error, "HTTP #{status}", state}
-
-      {:error, reason} ->
-        {:error, inspect(reason), state}
-    end
-  catch
-    {:auth_error, reason} -> {:error, reason, state}
-  end
-
-  defp sse_wait_for_response(state, id, depth \\ 0)
-
-  defp sse_wait_for_response(state, _id, depth) when depth > 20 do
-    {:error, "Too many non-matching SSE events", state}
-  end
-
-  defp sse_wait_for_response(state, id, depth) do
-    ref = state.sse_ref
-
-    receive do
-      {:sse_event, ^ref, %{event: "message", data: data} = event} ->
-        state = maybe_update_retry(state, event)
-        dispatch_sse_wait_result(state, id, data, depth)
-
-      {:sse_event, ^ref, event} ->
-        state = maybe_update_retry(state, event)
-        sse_wait_for_response(state, id, depth + 1)
-
-      {:sse_closed, ^ref, reason} ->
-        {:error, "SSE closed: #{inspect(reason)}", state}
-    after
-      @default_timeout ->
-        {:error, :timeout, state}
-    end
-  end
-
-  defp dispatch_sse_wait_result(state, id, data, depth) do
-    case Jason.decode(data) do
-      {:ok, %{"id" => ^id, "result" => result}} ->
-        {:ok, result, state}
-
-      {:ok, %{"id" => ^id, "error" => error}} ->
-        {:error, error["message"] || "Unknown error", state}
-
-      {:ok, _other} ->
-        sse_wait_for_response(state, id, depth + 1)
-
-      {:error, _} ->
-        {:error, "Invalid JSON in SSE data", state}
-    end
-  end
-
-  defp maybe_update_retry(state, %{retry: retry}) when is_integer(retry) and retry > 0 do
-    %{state | sse_retry_ms: retry}
-  end
-
-  defp maybe_update_retry(state, _event), do: state
-
-  defp handle_sse_event(state, %{event: "message", data: data} = event) do
-    # Check for retry field
-    state =
-      if is_integer(event.retry) and event.retry > 0,
-        do: %{state | sse_retry_ms: event.retry},
-        else: state
-
-    case Jason.decode(data) do
-      {:ok, %{"id" => id} = response} ->
-        state = dispatch_sse_response(state, id, response)
-        {:noreply, state}
-
-      {:ok, notification} ->
-        Logger.debug("Upstream #{state.prefix}: SSE notification: #{inspect(notification)}")
-        {:noreply, state}
-
-      {:error, _} ->
-        Logger.warning("Upstream #{state.prefix}: invalid JSON in SSE message")
-        {:noreply, state}
-    end
-  end
-
-  defp handle_sse_event(state, event) do
-    # Handle retry on any event type
-    state =
-      if is_integer(event.retry) and event.retry > 0,
-        do: %{state | sse_retry_ms: event.retry},
-        else: state
-
-    {:noreply, state}
-  end
-
-  defp dispatch_sse_response(%{pending_ping_id: ping_id} = state, id, _response)
-       when id == ping_id and not is_nil(ping_id) do
-    now = System.system_time(:second)
-
-    %{
-      state
-      | pending_ping_id: nil,
-        last_pong_at: now,
-        consecutive_ping_failures: 0,
-        status: :connected
-    }
-  end
-
-  defp dispatch_sse_response(state, id, response) do
-    case Map.pop(state.pending_requests, id) do
-      {nil, _} ->
-        state
-
-      {from, pending} ->
-        result = parse_jsonrpc_result(response)
-        GenServer.reply(from, result)
-        state = track_call_result(%{state | pending_requests: pending}, result)
-        state
-    end
-  end
-
-  defp resolve_endpoint_url(sse_url, endpoint_url) do
-    if String.starts_with?(endpoint_url, ["http://", "https://"]) do
-      endpoint_url
-    else
-      base = URI.parse(sse_url)
-      endpoint = URI.parse(endpoint_url)
-      URI.to_string(%{base | path: endpoint.path, query: endpoint.query, fragment: nil})
     end
   end
 
