@@ -1,61 +1,40 @@
 defmodule Backplane.LLM.HealthChecker do
   @moduledoc """
-  GenServer that periodically probes all enabled LLM providers for health.
+  GenServer that periodically probes enabled LLM provider API surfaces.
 
-  Stores health state in ETS table `:llm_health_state` as `{provider_id, boolean}`.
-
-  ## API
-
-  - `healthy?(provider_id)` — returns true/false (false for unknown providers)
-  - `mark_healthy(provider_id)` — records provider as healthy
-  - `mark_unhealthy(provider_id)` — records provider as unhealthy
-
-  ## Health probe
-
-  For each enabled, non-deleted provider:
-  - `:anthropic` → GET `{api_url}/v1/models` with `x-api-key` header
-  - `:openai` → GET `{api_url}/v1/models` with `Authorization: Bearer` header
-
-  A 200 response means healthy; anything else means unhealthy.
-
-  ## Options
-
-  - `interval:` — probe interval in milliseconds. Defaults to
-    `Application.get_env(:backplane, :llm_health_check_interval, 60) * 1000`.
+  Health state is stored in ETS as `{provider_api_id, boolean}`.
   """
 
   use GenServer
 
   require Logger
 
-  alias Backplane.LLM.Provider
+  alias Backplane.LLM.{CredentialPlug, ProviderApi}
 
   @table :llm_health_state
 
-  # ── Public API ────────────────────────────────────────────────────────────────
-
-  @doc "Returns true if the provider is known-healthy, false otherwise."
+  @doc "Returns true if the provider API is known healthy, false otherwise."
   @spec healthy?(binary()) :: boolean()
-  def healthy?(provider_id) do
-    case :ets.lookup(@table, provider_id) do
-      [{^provider_id, status}] -> status
+  def healthy?(provider_api_id) do
+    case :ets.lookup(@table, provider_api_id) do
+      [{^provider_api_id, status}] -> status
       [] -> false
     end
   rescue
     ArgumentError -> false
   end
 
-  @doc "Mark a provider as healthy."
+  @doc "Mark a provider API as healthy."
   @spec mark_healthy(binary()) :: :ok
-  def mark_healthy(provider_id) do
-    :ets.insert(@table, {provider_id, true})
+  def mark_healthy(provider_api_id) do
+    :ets.insert(@table, {provider_api_id, true})
     :ok
   end
 
-  @doc "Mark a provider as unhealthy."
-  @spec mark_unhealthy(provider_id :: binary()) :: :ok
-  def mark_unhealthy(provider_id) do
-    :ets.insert(@table, {provider_id, false})
+  @doc "Mark a provider API as unhealthy."
+  @spec mark_unhealthy(binary()) :: :ok
+  def mark_unhealthy(provider_api_id) do
+    :ets.insert(@table, {provider_api_id, false})
     :ok
   end
 
@@ -74,8 +53,6 @@ defmodule Backplane.LLM.HealthChecker do
     }
   end
 
-  # ── GenServer callbacks ───────────────────────────────────────────────────────
-
   @impl GenServer
   def init(opts) do
     ensure_table()
@@ -91,12 +68,10 @@ defmodule Backplane.LLM.HealthChecker do
 
   @impl GenServer
   def handle_info(:probe, state) do
-    probe_all_providers()
+    probe_all_provider_apis()
     Process.send_after(self(), :probe, state.interval)
     {:noreply, state}
   end
-
-  # ── Private ───────────────────────────────────────────────────────────────────
 
   defp ensure_table do
     if :ets.whereis(@table) == :undefined do
@@ -112,44 +87,52 @@ defmodule Backplane.LLM.HealthChecker do
     ArgumentError -> :ok
   end
 
-  defp probe_all_providers do
-    providers =
-      Provider.list()
-      |> Enum.filter(& &1.enabled)
-
-    for provider <- providers do
-      Task.start(fn -> probe_provider(provider) end)
+  defp probe_all_provider_apis do
+    for provider_api <- ProviderApi.list_enabled() do
+      Task.start(fn -> probe_provider_api(provider_api) end)
     end
   end
 
-  defp probe_provider(provider) do
-    {url, headers} = probe_params(provider)
+  defp probe_provider_api(%ProviderApi{} = provider_api) do
+    {url, headers} = probe_params(provider_api)
 
     case Req.get(url, headers: headers, receive_timeout: 10_000) do
       {:ok, %{status: 200}} ->
-        mark_healthy(provider.id)
+        mark_healthy(provider_api.id)
 
       {:ok, %{status: status}} ->
-        Logger.debug("LLM health check failed for #{provider.name}: HTTP #{status}")
-        mark_unhealthy(provider.id)
+        Logger.debug(
+          "LLM health check failed for #{provider_label(provider_api)}: HTTP #{status}"
+        )
+
+        mark_unhealthy(provider_api.id)
 
       {:error, reason} ->
-        Logger.debug("LLM health check error for #{provider.name}: #{inspect(reason)}")
-        mark_unhealthy(provider.id)
+        Logger.debug(
+          "LLM health check error for #{provider_label(provider_api)}: #{inspect(reason)}"
+        )
+
+        mark_unhealthy(provider_api.id)
     end
   end
 
-  defp probe_params(%{api_url: api_url} = provider) do
-    alias Backplane.LLM.CredentialPlug
-
-    url = "#{api_url}/v1/models"
+  defp probe_params(%ProviderApi{} = provider_api) do
+    path = provider_api.model_discovery_path || default_discovery_path(provider_api.api_surface)
+    url = provider_api.base_url <> path
 
     headers =
-      case CredentialPlug.build_auth_headers(provider) do
+      case CredentialPlug.build_auth_headers(provider_api.provider, provider_api.api_surface) do
         {:ok, hdrs} -> hdrs
         {:error, _} -> []
       end
 
     {url, headers}
+  end
+
+  defp default_discovery_path(:openai), do: "/models"
+  defp default_discovery_path(:anthropic), do: "/v1/models"
+
+  defp provider_label(%ProviderApi{provider: %{name: name}, api_surface: surface}) do
+    "#{name}/#{surface}"
   end
 end

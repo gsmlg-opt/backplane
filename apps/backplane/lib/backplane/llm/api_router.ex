@@ -123,36 +123,51 @@ defmodule Backplane.LLM.ApiRouter do
   defp serialize_provider(%Provider{} = p) do
     %{
       id: p.id,
+      preset_key: p.preset_key,
       name: p.name,
-      api_type: to_string(p.api_type),
-      api_url: p.api_url,
       credential: p.credential,
       credential_hint: Backplane.Settings.Credentials.fetch_hint(p.credential),
-      models: p.models,
       rpm_limit: p.rpm_limit,
       default_headers: p.default_headers,
       enabled: p.enabled,
-      aliases: serialize_aliases_list(p.aliases),
+      apis: serialize_apis_list(p.apis),
+      models: serialize_models_list(p.models),
       inserted_at: p.inserted_at,
       updated_at: p.updated_at
     }
   end
 
-  defp serialize_aliases_list(%Ecto.Association.NotLoaded{}), do: []
+  defp serialize_apis_list(%Ecto.Association.NotLoaded{}), do: []
 
-  defp serialize_aliases_list(aliases) when is_list(aliases),
-    do: Enum.map(aliases, &serialize_alias_brief/1)
-
-  defp serialize_alias(%ModelAlias{} = a) do
-    %{
-      id: a.id,
-      alias: a.alias,
-      model: a.model,
-      provider_id: a.provider_id
-    }
+  defp serialize_apis_list(apis) when is_list(apis) do
+    Enum.map(apis, fn api ->
+      %{
+        id: api.id,
+        api_surface: to_string(api.api_surface),
+        base_url: api.base_url,
+        enabled: api.enabled,
+        model_discovery_enabled: api.model_discovery_enabled,
+        model_discovery_path: api.model_discovery_path,
+        last_discovered_at: api.last_discovered_at
+      }
+    end)
   end
 
-  defp serialize_alias_brief(%ModelAlias{} = a) do
+  defp serialize_models_list(%Ecto.Association.NotLoaded{}), do: []
+
+  defp serialize_models_list(models) when is_list(models) do
+    Enum.map(models, fn model ->
+      %{
+        id: model.id,
+        model: model.model,
+        display_name: model.display_name,
+        source: to_string(model.source),
+        enabled: model.enabled
+      }
+    end)
+  end
+
+  defp serialize_alias(%ModelAlias{} = a) do
     %{
       id: a.id,
       alias: a.alias,

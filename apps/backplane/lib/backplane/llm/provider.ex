@@ -2,16 +2,17 @@ defmodule Backplane.LLM.Provider do
   @moduledoc """
   Ecto schema and context for LLM providers.
 
-  Each provider represents a configured connection to an LLM API (Anthropic,
-  OpenAI, etc.). Credentials are stored in the centralized credential store
-  and referenced by name.
+  A provider represents one upstream LLM service. API protocol surfaces such as
+  OpenAI-compatible and Anthropic Messages are modeled separately by
+  `Backplane.LLM.ProviderApi`.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.LLM.ModelAlias
+  alias Backplane.LLM.ProviderApi
+  alias Backplane.LLM.ProviderModel
   alias Backplane.Repo
 
   @type t :: %__MODULE__{}
@@ -23,23 +24,22 @@ defmodule Backplane.LLM.Provider do
   @localhost_pattern ~r/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/
 
   schema "llm_providers" do
+    field(:preset_key, :string)
     field(:name, :string)
-    field(:api_type, Ecto.Enum, values: [:anthropic, :openai])
-    field(:api_url, :string)
     field(:credential, :string)
-    field(:models, {:array, :string})
     field(:default_headers, :map, default: %{})
     field(:rpm_limit, :integer)
     field(:enabled, :boolean, default: true)
     field(:deleted_at, :utc_datetime_usec)
 
-    has_many(:aliases, ModelAlias, foreign_key: :provider_id)
+    has_many(:apis, ProviderApi, foreign_key: :provider_id)
+    has_many(:models, ProviderModel, foreign_key: :provider_id)
 
     timestamps()
   end
 
-  @required_fields ~w(name api_type api_url models credential)a
-  @optional_fields ~w(default_headers rpm_limit enabled)a
+  @required_fields ~w(name credential)a
+  @optional_fields ~w(preset_key default_headers rpm_limit enabled)a
 
   # ── Changesets ───────────────────────────────────────────────────────────────
 
@@ -49,10 +49,11 @@ defmodule Backplane.LLM.Provider do
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
     |> validate_format(:name, @name_pattern,
-      message: "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"
+      message:
+        "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"
     )
-    |> validate_api_url()
-    |> validate_models_not_empty()
+    |> validate_number(:rpm_limit, greater_than: 0)
+    |> validate_default_headers()
     |> validate_credential_exists()
     |> unique_constraint(:name, name: :llm_providers_name_index)
   end
@@ -62,47 +63,20 @@ defmodule Backplane.LLM.Provider do
     provider
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_format(:name, @name_pattern,
-      message: "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"
+      message:
+        "must start with a lowercase letter or digit and contain only lowercase letters, digits, and hyphens"
     )
-    |> validate_api_url()
-    |> validate_models_not_empty()
+    |> validate_number(:rpm_limit, greater_than: 0)
+    |> validate_default_headers()
     |> validate_credential_exists()
     |> unique_constraint(:name, name: :llm_providers_name_index)
   end
 
-  defp validate_api_url(changeset) do
-    case get_change(changeset, :api_url) || get_field(changeset, :api_url) do
-      nil ->
-        changeset
-
-      url ->
-        cond do
-          Regex.match?(@localhost_pattern, url) ->
-            changeset
-
-          String.starts_with?(url, "https://") ->
-            changeset
-
-          String.starts_with?(url, "http://") ->
-            add_error(changeset, :api_url, "must use https:// (http:// is only allowed for localhost/127.0.0.1)")
-
-          true ->
-            add_error(changeset, :api_url, "must start with https://")
-        end
-    end
-  end
-
-  defp validate_models_not_empty(changeset) do
-    case get_change(changeset, :models) do
-      nil ->
-        changeset
-
-      [] ->
-        add_error(changeset, :models, "must have at least one model")
-
-      _models ->
-        changeset
-    end
+  defp validate_default_headers(changeset) do
+    validate_change(changeset, :default_headers, fn
+      :default_headers, headers when is_map(headers) -> []
+      :default_headers, _headers -> [default_headers: "must be a map"]
+    end)
   end
 
   defp validate_credential_exists(changeset) do
@@ -155,26 +129,15 @@ defmodule Backplane.LLM.Provider do
   @doc """
   Soft-delete a provider.
 
-  Runs in a transaction:
-  1. Hard-deletes all ModelAlias records for this provider
-  2. Sets deleted_at and enabled=false on the provider
-  3. Broadcasts on success
+  Sets `deleted_at` and `enabled=false`. Child rows stay in place for audit and
+  admin history, but resolvers must exclude deleted providers.
   """
   @spec soft_delete(t()) :: {:ok, t()} | {:error, any()}
   def soft_delete(%__MODULE__{} = provider) do
     result =
-      Repo.transaction(fn ->
-        # Hard-delete aliases
-        from(a in ModelAlias, where: a.provider_id == ^provider.id)
-        |> Repo.delete_all()
-
-        # Soft-delete provider
-        now = DateTime.utc_now()
-
-        provider
-        |> cast(%{deleted_at: now, enabled: false}, [:deleted_at, :enabled])
-        |> Repo.update!()
-      end)
+      provider
+      |> cast(%{deleted_at: DateTime.utc_now(), enabled: false}, [:deleted_at, :enabled])
+      |> Repo.update()
 
     if match?({:ok, _}, result) do
       broadcast()
@@ -183,23 +146,51 @@ defmodule Backplane.LLM.Provider do
     result
   end
 
-  @doc "List all active (non-deleted) providers ordered by name, with preloaded aliases."
+  @doc "List all active providers ordered by name."
   @spec list() :: [t()]
   def list do
     __MODULE__
     |> where([p], is_nil(p.deleted_at))
     |> order_by(:name)
-    |> preload(:aliases)
+    |> preload([:apis, models: [:surfaces]])
     |> Repo.all()
   end
 
-  @doc "Get a single active provider by id with preloaded aliases."
+  @doc "Get a single active provider by id."
   @spec get(binary()) :: t() | nil
   def get(id) do
     __MODULE__
     |> where([p], is_nil(p.deleted_at))
-    |> preload(:aliases)
+    |> preload([:apis, models: [:surfaces]])
     |> Repo.get(id)
+  end
+
+  @doc "Normalize and validate a provider API URL."
+  @spec validate_api_url(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_api_url(changeset, field) do
+    case get_change(changeset, field) || get_field(changeset, field) do
+      nil ->
+        changeset
+
+      url ->
+        cond do
+          Regex.match?(@localhost_pattern, url) ->
+            changeset
+
+          String.starts_with?(url, "https://") ->
+            changeset
+
+          String.starts_with?(url, "http://") ->
+            add_error(
+              changeset,
+              field,
+              "must use https:// (http:// is only allowed for localhost/127.0.0.1)"
+            )
+
+          true ->
+            add_error(changeset, field, "must start with https://")
+        end
+    end
   end
 
   # ── Private helpers ───────────────────────────────────────────────────────────

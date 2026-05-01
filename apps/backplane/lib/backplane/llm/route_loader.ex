@@ -11,7 +11,7 @@ defmodule Backplane.LLM.RouteLoader do
 
   require Logger
 
-  alias Backplane.LLM.Provider
+  alias Backplane.LLM.ProviderApi
   alias Backplane.PubSubBroadcaster
   alias Relayixir.Config.UpstreamConfig
 
@@ -24,10 +24,10 @@ defmodule Backplane.LLM.RouteLoader do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Returns the Relayixir upstream name for the given provider id."
+  @doc "Returns the Relayixir upstream name for the given provider API id."
   @spec upstream_name(binary()) :: String.t()
-  def upstream_name(provider_id) when is_binary(provider_id) do
-    "#{@llm_prefix}#{provider_id}"
+  def upstream_name(provider_api_id) when is_binary(provider_api_id) do
+    "#{@llm_prefix}#{provider_api_id}"
   end
 
   # ── GenServer callbacks ───────────────────────────────────────────────────────
@@ -56,11 +56,11 @@ defmodule Backplane.LLM.RouteLoader do
 
   defp load_all_providers do
     try do
-      providers = Provider.list()
+      provider_apis = ProviderApi.list_enabled()
 
       new_llm_upstreams =
-        Map.new(providers, fn provider ->
-          {upstream_name(provider.id), build_upstream_config(provider)}
+        Map.new(provider_apis, fn provider_api ->
+          {upstream_name(provider_api.id), build_upstream_config(provider_api)}
         end)
 
       current = UpstreamConfig.list_upstreams()
@@ -74,7 +74,9 @@ defmodule Backplane.LLM.RouteLoader do
 
       UpstreamConfig.put_upstreams(merged)
 
-      Logger.debug("RouteLoader: loaded #{map_size(new_llm_upstreams)} LLM provider upstream(s)")
+      Logger.debug(
+        "RouteLoader: loaded #{map_size(new_llm_upstreams)} LLM provider API upstream(s)"
+      )
     rescue
       e ->
         Logger.warning("RouteLoader: failed to load providers: #{Exception.message(e)}")
@@ -86,13 +88,13 @@ defmodule Backplane.LLM.RouteLoader do
     end
   end
 
-  defp build_upstream_config(%Provider{api_url: api_url}) do
-    uri = URI.parse(api_url)
+  defp build_upstream_config(%ProviderApi{base_url: base_url}) do
+    uri = URI.parse(base_url)
 
     %{
       scheme: String.to_atom(uri.scheme || "https"),
       host: uri.host,
-      port: uri.port || (if uri.scheme == "https", do: 443, else: 80),
+      port: uri.port || if(uri.scheme == "https", do: 443, else: 80),
       path_prefix_rewrite: uri.path || "",
       max_request_body_size: 50_000_000,
       max_response_body_size: 50_000_000,

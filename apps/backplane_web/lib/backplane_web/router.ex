@@ -51,6 +51,8 @@ defmodule BackplaneWeb.Router do
 
     # LLM Providers
     live("/providers", ProvidersLive, :index)
+    live("/providers/new", ProviderNewLive, :new)
+    live("/providers/:id", ProviderShowLive, :show)
 
     # Clients
     live("/clients", ClientsLive, :index)

@@ -16,7 +16,17 @@ defmodule Backplane.LLM.Router do
 
   import Plug.Conn
 
-  alias Backplane.LLM.{CredentialPlug, ModelAlias, ModelExtractor, ModelResolver, Provider, RateLimiter, UsageAccumulator}
+  alias Backplane.LLM.{
+    CredentialPlug,
+    ModelAlias,
+    ModelExtractor,
+    ModelResolver,
+    Provider,
+    ProviderApi,
+    RateLimiter,
+    UsageAccumulator
+  }
+
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
@@ -70,10 +80,11 @@ defmodule Backplane.LLM.Router do
 
       {:ok, model_string} ->
         with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
+             {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
-             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider) do
-          upstream = build_upstream(provider, auth_headers)
+             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
+          upstream = build_upstream(provider_api, auth_headers)
           do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type)
         else
           {:error, :no_provider} ->
@@ -94,8 +105,18 @@ defmodule Backplane.LLM.Router do
     end
   end
 
-  defp build_upstream(%Provider{} = provider, auth_headers) do
-    uri = URI.parse(provider.api_url)
+  defp fetch_provider_api(%Provider{} = provider, api_type) do
+    case Enum.find(
+           ProviderApi.list_for_provider(provider.id),
+           &(&1.api_surface == api_type and &1.enabled)
+         ) do
+      %ProviderApi{} = provider_api -> {:ok, provider_api}
+      nil -> {:error, :no_provider}
+    end
+  end
+
+  defp build_upstream(%ProviderApi{} = provider_api, auth_headers) do
+    uri = URI.parse(provider_api.base_url)
 
     path_prefix =
       case uri.path do
@@ -108,7 +129,7 @@ defmodule Backplane.LLM.Router do
     %Upstream{
       scheme: String.to_existing_atom(uri.scheme || "https"),
       host: uri.host,
-      port: uri.port || (if uri.scheme == "https", do: 443, else: 80),
+      port: uri.port || if(uri.scheme == "https", do: 443, else: 80),
       path_prefix_rewrite: path_prefix,
       request_timeout: 300_000,
       first_byte_timeout: 120_000,
@@ -117,11 +138,11 @@ defmodule Backplane.LLM.Router do
       max_response_body_size: 50_000_000,
       inject_request_headers: auth_headers,
       host_forward_mode: :rewrite_to_upstream,
-      metadata: %{provider_id: provider.id, api_type: provider.api_type}
+      metadata: %{provider_api_id: provider_api.id, api_surface: provider_api.api_surface}
     }
   end
 
-  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, _api_type) do
+  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type) do
     stream? = is_stream_request?(rewritten_body)
     usage_acc = if stream?, do: UsageAccumulator.new(), else: nil
     start_ms = System.monotonic_time(:millisecond)
@@ -143,7 +164,7 @@ defmodule Backplane.LLM.Router do
       if stream? do
         UsageAccumulator.get_tokens(usage_acc)
       else
-        extract_tokens_from_resp(result_conn, provider.api_type)
+        extract_tokens_from_resp(result_conn, api_type)
       end
 
     emit_telemetry(provider, raw_model, result_conn, %{
@@ -186,7 +207,14 @@ defmodule Backplane.LLM.Router do
 
   # ── Telemetry helpers ─────────────────────────────────────────────────────────
 
-  defp emit_telemetry(provider, raw_model, conn, %{status: status, stream?: stream?, input_tokens: input_tokens, output_tokens: output_tokens, error_reason: error_reason, latency_ms: latency_ms}) do
+  defp emit_telemetry(provider, raw_model, conn, %{
+         status: status,
+         stream?: stream?,
+         input_tokens: input_tokens,
+         output_tokens: output_tokens,
+         error_reason: error_reason,
+         latency_ms: latency_ms
+       }) do
     :telemetry.execute(
       [:backplane, :llm, :request],
       %{latency_ms: latency_ms, system_time: System.system_time()},
