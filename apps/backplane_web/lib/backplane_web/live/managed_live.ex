@@ -18,6 +18,11 @@ defmodule BackplaneWeb.ManagedLive do
       description: "Fetch HTTP(S) pages and convert them to Markdown"
     },
     %{
+      module: Backplane.Services.WebSearch,
+      name: "Web Search",
+      description: "Search the web with Ollama, MiniMax, Z.ai, or BigModel"
+    },
+    %{
       module: Backplane.Services.Math,
       name: "Math",
       description: "Evaluate math expressions with the native math engine"
@@ -81,6 +86,11 @@ defmodule BackplaneWeb.ManagedLive do
 
   defp set_enabled(Backplane.Services.WebFetch = mod, enabled) do
     Settings.set("services.web.enabled", enabled)
+    sync_registry(mod, enabled)
+  end
+
+  defp set_enabled(Backplane.Services.WebSearch = mod, enabled) do
+    Settings.set("services.web_search.enabled", enabled)
     sync_registry(mod, enabled)
   end
 

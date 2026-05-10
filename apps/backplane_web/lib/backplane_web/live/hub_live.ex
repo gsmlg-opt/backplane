@@ -5,7 +5,12 @@ defmodule BackplaneWeb.HubLive do
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
 
-  @managed_services [Backplane.Services.Day, Backplane.Services.WebFetch, Backplane.Services.Math]
+  @managed_services [
+    Backplane.Services.Day,
+    Backplane.Services.WebFetch,
+    Backplane.Services.WebSearch,
+    Backplane.Services.Math
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
