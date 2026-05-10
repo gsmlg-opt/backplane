@@ -618,9 +618,6 @@ defmodule BackplaneWeb.ProviderShowLive do
             <span>Credential: <code>{@provider.credential}</code></span>
           </div>
         </div>
-        <.dm_btn type="button" variant="secondary" phx-click="reload_models">
-          Reload Models
-        </.dm_btn>
       </div>
 
       <.dm_card variant="bordered" class="mb-6">
@@ -705,7 +702,14 @@ defmodule BackplaneWeb.ProviderShowLive do
       </.dm_card>
 
       <.dm_card variant="bordered" class="mb-6">
-        <:title>Add Model</:title>
+        <:title>
+          <div class="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <span>Add Model</span>
+            <.dm_btn type="button" size="sm" variant="secondary" phx-click="reload_models">
+              Load Models from API
+            </.dm_btn>
+          </div>
+        </:title>
         <.model_form
           form={@model_form}
           errors={@model_errors}

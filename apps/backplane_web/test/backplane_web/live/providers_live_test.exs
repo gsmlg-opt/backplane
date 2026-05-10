@@ -124,7 +124,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
       assert html =~ "Edit Provider"
       assert html =~ "Add Model"
-      assert html =~ "Reload Models"
+      assert html =~ "Load Models from API"
 
       view
       |> form("form[phx-submit=save_provider]", %{
@@ -210,6 +210,63 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       |> render_click()
 
       refute Repo.get(ProviderModel, model.id)
+    end
+
+    test "provider detail loads models from the API", %{conn: conn} do
+      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+
+      Application.put_env(:backplane, :llm_model_discovery_req_options,
+        plug: {Req.Test, __MODULE__}
+      )
+
+      on_exit(fn ->
+        if previous do
+          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
+        else
+          Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        end
+      end)
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.request_path == "/v1/models"
+        assert ["Bearer sk-test"] = Plug.Conn.get_req_header(conn, "authorization")
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(
+          200,
+          Jason.encode!(%{
+            "data" => [
+              %{"id" => "provider-api-model"}
+            ]
+          })
+        )
+      end)
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "api-load-provider",
+          preset_key: "custom",
+          credential: "test-cred"
+        })
+
+      {:ok, _api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://api.example.com/v1",
+          model_discovery_path: "/models"
+        })
+
+      {:ok, view, _html} = live(conn, "/admin/providers/#{provider.id}")
+
+      html =
+        view
+        |> element("[phx-click='reload_models']", "Load Models from API")
+        |> render_click()
+
+      assert html =~ "provider-api-model"
+      assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-api-model")
     end
 
     test "does not show soft-deleted providers", %{conn: conn} do

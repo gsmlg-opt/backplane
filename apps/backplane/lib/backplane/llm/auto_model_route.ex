@@ -42,10 +42,16 @@ defmodule Backplane.LLM.AutoModelRoute do
   @doc "Get a route by auto model name and API surface."
   @spec get_by_model_and_surface(String.t(), atom()) :: t() | nil
   def get_by_model_and_surface(name, api_surface) when api_surface in [:openai, :anthropic] do
+    target_query =
+      from(target in AutoModelTarget,
+        order_by: [asc: target.priority],
+        preload: [provider_model_surface: [:provider_api, provider_model: [:provider]]]
+      )
+
     __MODULE__
     |> join(:inner, [route], auto_model in assoc(route, :auto_model))
     |> where([route, auto_model], auto_model.name == ^name and route.api_surface == ^api_surface)
-    |> preload(:targets)
+    |> preload([_route, auto_model], auto_model: auto_model, targets: ^target_query)
     |> Repo.one()
   end
 end

@@ -3,7 +3,8 @@ defmodule BackplaneWeb.SettingsLive do
 
   use BackplaneWeb, :live_view
 
-  alias Backplane.Settings
+  alias Backplane.LLM.AutoModel
+  alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
 
   @impl true
@@ -26,19 +27,11 @@ defmodule BackplaneWeb.SettingsLive do
   # --- Data Loading ---
 
   defp load_data(socket, "settings") do
-    definitions = Settings.list_definitions()
-
-    groups =
-      definitions
-      |> Enum.group_by(fn d ->
-        d.key |> String.split(".") |> List.first()
-      end)
-      |> Enum.sort_by(fn {group, _} -> group end)
-
     assign(socket,
-      settings_groups: groups,
-      editing_key: nil,
-      edit_value: nil
+      auto_models: AutoModel.list_configurations(),
+      custom_aliases: ModelAlias.list(),
+      custom_alias_target_options: custom_alias_target_options(),
+      target_model_options: target_model_options()
     )
   end
 
@@ -72,28 +65,76 @@ defmodule BackplaneWeb.SettingsLive do
     {:noreply, push_patch(socket, to: ~p"/admin/settings?tab=#{tab}")}
   end
 
-  def handle_event("edit_setting", %{"key" => key}, socket) do
-    current = Settings.get(key)
-    {:noreply, assign(socket, editing_key: key, edit_value: to_string(current || ""))}
-  end
+  def handle_event("add_auto_model_target", %{"name" => name, "model" => model}, socket) do
+    model = model |> to_string() |> String.trim()
+    current_model_ids = AutoModel.configured_model_ids(name)
 
-  def handle_event("cancel_edit", _, socket) do
-    {:noreply, assign(socket, editing_key: nil, edit_value: nil)}
-  end
+    cond do
+      model == "" ->
+        {:noreply, put_flash(socket, :error, "Select a target model to add")}
 
-  def handle_event("save_setting", %{"key" => key, "value" => value}, socket) do
-    parsed = parse_setting_value(key, value)
-
-    case Settings.set(key, parsed) do
-      :ok ->
+      model in current_model_ids ->
         {:noreply,
          socket
-         |> put_flash(:info, "Setting '#{key}' updated")
-         |> assign(editing_key: nil, edit_value: nil)
+         |> put_flash(:info, "Model alias '#{name}' already includes #{model}")
          |> load_data("settings")}
 
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to update setting")}
+      true ->
+        configure_auto_model_targets(socket, name, current_model_ids ++ [model])
+    end
+  end
+
+  def handle_event("remove_auto_model_target", %{"name" => name, "model" => model}, socket) do
+    model_ids =
+      name
+      |> AutoModel.configured_model_ids()
+      |> Enum.reject(&(&1 == model))
+
+    configure_auto_model_targets(socket, name, model_ids)
+  end
+
+  def handle_event("save_auto_model_targets", %{"name" => name, "models" => models}, socket) do
+    model_ids = parse_model_list(models)
+
+    configure_auto_model_targets(socket, name, model_ids)
+  end
+
+  def handle_event(
+        "save_custom_model_alias",
+        %{"alias" => alias_name, "target" => target},
+        socket
+      ) do
+    case ModelAlias.put(alias_name, target) do
+      {:ok, model_alias} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :info,
+           "Custom alias '#{model_alias.alias}' points to #{model_alias.target}"
+         )
+         |> load_data("settings")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to save custom alias: #{changeset_error(changeset)}")
+         |> load_data("settings")}
+    end
+  end
+
+  def handle_event("remove_custom_model_alias", %{"alias" => alias_name}, socket) do
+    case ModelAlias.delete(alias_name) do
+      {:ok, model_alias} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Custom alias '#{model_alias.alias}' removed")
+         |> load_data("settings")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to remove custom alias")
+         |> load_data("settings")}
     end
   end
 
@@ -170,6 +211,31 @@ defmodule BackplaneWeb.SettingsLive do
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to delete credential")}
+    end
+  end
+
+  defp configure_auto_model_targets(socket, name, model_ids) do
+    case AutoModel.configure_targets(name, model_ids) do
+      {:ok, %{target_count: target_count}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Model alias '#{name}' updated with #{target_count} target(s)")
+         |> load_data("settings")}
+
+      {:error, {:missing_models, missing_model_ids}} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :error,
+           "No enabled provider model found for: #{Enum.join(missing_model_ids, ", ")}"
+         )
+         |> load_data("settings")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to update model alias")
+         |> load_data("settings")}
     end
   end
 
@@ -279,17 +345,64 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
-  defp parse_setting_value(key, value) do
-    definitions = Settings.list_definitions()
-    definition = Enum.find(definitions, fn d -> d.key == key end)
+  defp parse_model_list(value) do
+    value
+    |> to_string()
+    |> String.split([",", "\n"], trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
 
-    case definition && definition.value_type do
-      "boolean" -> value in ["true", "1", "yes"]
-      "integer" -> String.to_integer(value)
-      _ -> value
-    end
-  rescue
-    _ -> value
+  defp auto_model_target_ids(auto_model), do: AutoModel.configured_model_ids(auto_model.name)
+
+  defp target_model_options do
+    AutoModel.list_available_target_model_ids()
+    |> Enum.map(&{&1, &1})
+  end
+
+  defp custom_alias_target_options do
+    built_in_options =
+      AutoModel.built_in_names()
+      |> Enum.map(&{&1, "#{&1} (built-in)"})
+
+    provider_model_options =
+      AutoModel.list_available_target_model_ids()
+      |> Enum.reject(&(&1 in AutoModel.built_in_names()))
+      |> Enum.map(&{&1, &1})
+
+    built_in_options ++ provider_model_options
+  end
+
+  defp selectable_target_model_options(auto_model, target_model_options) do
+    selected_model_ids =
+      auto_model
+      |> auto_model_target_ids()
+      |> MapSet.new()
+
+    Enum.reject(target_model_options, fn {model_id, _label} ->
+      MapSet.member?(selected_model_ids, model_id)
+    end)
+  end
+
+  defp target_model_name(target), do: target.provider_model_surface.provider_model.model
+
+  defp route_label(:openai), do: "OpenAI"
+  defp route_label(:anthropic), do: "Anthropic"
+  defp route_label(other), do: to_string(other)
+
+  defp changeset_error(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
+      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Enum.flat_map(fn {field, messages} ->
+      Enum.map(messages, &"#{Phoenix.Naming.humanize(field)} #{&1}")
+    end)
+    |> List.first()
+    |> Kernel.||("invalid alias")
   end
 
   @kind_options [
@@ -339,42 +452,161 @@ defmodule BackplaneWeb.SettingsLive do
   defp render_settings_tab(assigns) do
     ~H"""
     <div class="space-y-6 mt-4">
-      <div :for={{group, settings} <- @settings_groups}>
-        <.dm_collapse id={"settings-group-#{group}"} open variant="bordered">
-          <:trigger>
-            <span class="capitalize text-lg font-semibold">{group}</span>
-          </:trigger>
-          <:content>
-            <div class="divide-y divide-outline-variant">
-              <div :for={setting <- settings} class="py-3 flex items-center justify-between gap-4">
-                <div class="flex-1 min-w-0">
-                  <div class="font-mono text-sm text-on-surface">{setting.key}</div>
-                  <div class="text-xs text-on-surface-variant">{setting.description}</div>
+      <section>
+        <h2 class="mb-3 text-lg font-semibold">Model Aliases</h2>
+        <div class="space-y-4">
+          <.dm_card :for={auto_model <- @auto_models} variant="bordered">
+            <% target_model_ids = auto_model_target_ids(auto_model) %>
+            <% selectable_options = selectable_target_model_options(auto_model, @target_model_options) %>
+            <:title>
+              <div class="flex w-full items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <code>{auto_model.name}</code>
+                  <.dm_badge variant={if auto_model.enabled, do: "success", else: "neutral"}>
+                    {if auto_model.enabled, do: "Enabled", else: "Disabled"}
+                  </.dm_badge>
                 </div>
-                <div :if={@editing_key == setting.key}>
-                  <form phx-submit="save_setting" class="flex items-center gap-2">
-                    <input type="hidden" name="key" value={setting.key} />
-                    <.dm_input
-                      id={"edit-#{setting.key}"}
-                      name="value"
-                      value={@edit_value}
-                      size="sm"
-                    />
-                    <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
-                    <.dm_btn type="button" variant="error" size="sm" phx-click="cancel_edit">Cancel</.dm_btn>
-                  </form>
+                <span class="text-xs text-on-surface-variant">
+                  {length(auto_model.routes)} routes
+                </span>
+              </div>
+            </:title>
+
+            <form
+              id={"auto-model-#{auto_model.name}-add-form"}
+              phx-submit="add_auto_model_target"
+              class="flex flex-col gap-3 md:flex-row md:items-end"
+            >
+              <input type="hidden" name="name" value={auto_model.name} />
+              <div class="min-w-0 flex-1">
+                <.dm_select
+                  id={"auto-model-#{auto_model.name}-model"}
+                  name="model"
+                  label="Target models"
+                  options={selectable_options}
+                  prompt={if selectable_options == [], do: "No available provider models", else: "Select a model"}
+                  disabled={selectable_options == []}
+                />
+              </div>
+              <.dm_btn type="submit" variant="primary" disabled={selectable_options == []}>Add</.dm_btn>
+            </form>
+
+            <div
+              id={"auto-model-#{auto_model.name}-target-list"}
+              class="mt-3 flex flex-wrap items-center gap-2"
+            >
+              <span :if={target_model_ids == []} class="text-sm text-on-surface-variant">
+                No target models selected
+              </span>
+              <span
+                :for={model_id <- target_model_ids}
+                class="inline-flex items-center gap-2 rounded-md border border-outline-variant bg-surface-container px-2 py-1 text-sm"
+              >
+                <code>{model_id}</code>
+                <button
+                  type="button"
+                  phx-click="remove_auto_model_target"
+                  phx-value-name={auto_model.name}
+                  phx-value-model={model_id}
+                  aria-label={"Remove #{model_id} from #{auto_model.name}"}
+                  class="text-xs font-medium text-on-surface-variant hover:text-error"
+                >
+                  Remove
+                </button>
+              </span>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div :for={route <- auto_model.routes} class="rounded-md border border-outline-variant p-3">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <span class="text-sm font-medium">{route_label(route.api_surface)}</span>
+                  <.dm_badge variant={if route.enabled, do: "success", else: "neutral"} size="sm">
+                    {if route.enabled, do: "Enabled", else: "Disabled"}
+                  </.dm_badge>
                 </div>
-                <div :if={@editing_key != setting.key} class="flex items-center gap-2 shrink-0">
-                  <code class="text-sm">{inspect(setting.value)}</code>
-                  <.dm_btn type="button" size="sm" phx-click="edit_setting" phx-value-key={setting.key}>
-                    Edit
-                  </.dm_btn>
+                <div class="flex flex-wrap gap-2">
+                  <.dm_badge :for={target <- route.targets} variant="ghost">
+                    {target_model_name(target)}
+                  </.dm_badge>
+                  <span :if={route.targets == []} class="text-sm text-on-surface-variant">
+                    No targets
+                  </span>
                 </div>
               </div>
             </div>
-          </:content>
-        </.dm_collapse>
-      </div>
+          </.dm_card>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="mb-3 text-lg font-semibold">Custom Aliases</h2>
+        <.dm_card variant="bordered">
+          <:title>
+            <div class="flex w-full items-center justify-between gap-3">
+              <span>Custom aliases</span>
+              <span class="text-xs text-on-surface-variant">
+                {length(@custom_aliases)} aliases
+              </span>
+            </div>
+          </:title>
+
+          <form
+            id="custom-model-alias-form"
+            phx-submit="save_custom_model_alias"
+            class="flex flex-col gap-3 md:flex-row md:items-end"
+          >
+            <div class="min-w-0 flex-1">
+              <.dm_input
+                id="custom-model-alias-name"
+                name="alias"
+                label="Alias"
+                value=""
+                placeholder="coding"
+                required
+              />
+            </div>
+            <div class="min-w-0 flex-1">
+              <.dm_select
+                id="custom-model-alias-target"
+                name="target"
+                label="Target"
+                options={@custom_alias_target_options}
+                prompt="Select a target"
+                disabled={@custom_alias_target_options == []}
+              />
+            </div>
+            <.dm_btn type="submit" variant="primary" disabled={@custom_alias_target_options == []}>
+              Save
+            </.dm_btn>
+          </form>
+
+          <div
+            id="custom-model-alias-list"
+            class="mt-3 flex flex-wrap items-center gap-2"
+          >
+            <span :if={@custom_aliases == []} class="text-sm text-on-surface-variant">
+              No custom aliases configured
+            </span>
+            <span
+              :for={model_alias <- @custom_aliases}
+              class="inline-flex items-center gap-2 rounded-md border border-outline-variant bg-surface-container px-2 py-1 text-sm"
+            >
+              <code>{model_alias.alias}</code>
+              <span class="text-on-surface-variant">-&gt;</span>
+              <code>{model_alias.target}</code>
+              <button
+                type="button"
+                phx-click="remove_custom_model_alias"
+                phx-value-alias={model_alias.alias}
+                aria-label={"Remove custom alias #{model_alias.alias}"}
+                class="text-xs font-medium text-on-surface-variant hover:text-error"
+              >
+                Remove
+              </button>
+            </span>
+          </div>
+        </.dm_card>
+      </section>
     </div>
     """
   end

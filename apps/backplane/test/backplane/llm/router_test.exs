@@ -1,50 +1,41 @@
 defmodule Backplane.LLM.RouterTest do
   use Backplane.DataCase, async: false
 
-  import Plug.Test
   import Plug.Conn
+  import Plug.Test
 
-  alias Backplane.LLM.{ModelAlias, ModelResolver, Provider, RateLimiter, Router}
+  alias Backplane.LLM.{
+    ModelAlias,
+    ModelResolver,
+    Provider,
+    ProviderApi,
+    ProviderModel,
+    ProviderModelSurface,
+    RateLimiter,
+    Router
+  }
+
   alias Backplane.Settings.Credentials
-
-  @anthropic_attrs %{
-    name: "anthropic-prod",
-    api_type: :anthropic,
-    api_url: "https://api.anthropic.com",
-    credential: "router-anthropic-cred",
-    models: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
-  }
-
-  @openai_attrs %{
-    name: "openai-prod",
-    api_type: :openai,
-    api_url: "https://api.openai.com",
-    credential: "router-openai-cred",
-    models: ["gpt-4o", "gpt-4o-mini"]
-  }
 
   setup do
     Credentials.store("router-anthropic-cred", "sk-ant-test-key-abcd", "llm")
     Credentials.store("router-openai-cred", "sk-openai-test-key", "llm")
     Credentials.store("router-anthropic-rl-cred", "sk-ant-test-rl-abcd", "llm")
     Credentials.store("router-openai-rl-cred", "sk-openai-test-rl-abcd", "llm")
-    # ModelResolver is started by the application supervision tree.
-    # Clear the cache before each test to ensure isolation.
     ModelResolver.clear_cache()
     RateLimiter.reset()
+    :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
     :ok
   end
 
   defp llm_request(method, path, body \\ nil) do
     conn_body = if body, do: Jason.encode!(body), else: ""
-    c = conn(method, path, conn_body)
-    c = put_req_header(c, "content-type", "application/json")
-    Router.call(c, Router.init([]))
+    conn = conn(method, path, conn_body)
+    conn = put_req_header(conn, "content-type", "application/json")
+    Router.call(conn, Router.init([]))
   end
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
-
-  # ── POST /v1/messages ────────────────────────────────────────────────────────
 
   describe "POST /v1/messages" do
     test "returns 404 for unknown model with anthropic error shape" do
@@ -62,8 +53,8 @@ defmodule Backplane.LLM.RouterTest do
       assert is_binary(body["error"]["message"])
     end
 
-    test "returns 400 for api_type mismatch (openai model on anthropic endpoint)" do
-      {:ok, _provider} = Provider.create(@openai_attrs)
+    test "returns 404 for OpenAI-only model on anthropic endpoint" do
+      create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
 
       conn =
         llm_request(:post, "/v1/messages", %{
@@ -72,10 +63,9 @@ defmodule Backplane.LLM.RouterTest do
           "max_tokens" => 100
         })
 
-      assert conn.status == 400
+      assert conn.status == 404
       body = json_body(conn)
-      assert body["type"] == "error"
-      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["type"] == "not_found_error"
     end
 
     test "returns 400 when model field is missing" do
@@ -92,8 +82,6 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
-  # ── POST /v1/chat/completions ─────────────────────────────────────────────────
-
   describe "POST /v1/chat/completions" do
     test "returns 404 for unknown model with openai error shape" do
       conn =
@@ -109,42 +97,43 @@ defmodule Backplane.LLM.RouterTest do
       assert body["error"]["code"] == "model_not_found"
     end
 
-    test "returns 400 for api_type mismatch (anthropic model on openai endpoint)" do
-      {:ok, _provider} = Provider.create(@anthropic_attrs)
+    test "returns 404 for Anthropic-only model on OpenAI endpoint" do
+      create_provider_model(
+        "anthropic-prod",
+        :anthropic,
+        "claude-sonnet",
+        "router-anthropic-cred"
+      )
 
       conn =
         llm_request(:post, "/v1/chat/completions", %{
-          "model" => "anthropic-prod/claude-sonnet-4-20250514",
+          "model" => "anthropic-prod/claude-sonnet",
           "messages" => [%{"role" => "user", "content" => "hi"}]
         })
 
-      assert conn.status == 400
+      assert conn.status == 404
       body = json_body(conn)
       assert is_map(body["error"])
-      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
     end
   end
 
-  # ── Rate limiting ─────────────────────────────────────────────────────────────
-
   describe "rate limiting" do
     test "returns 429 with anthropic error shape when rate limited" do
-      {:ok, provider} =
-        Provider.create(%{
-          name: "anthropic-rl",
-          api_type: :anthropic,
-          api_url: "https://api.anthropic.com",
-          credential: "router-anthropic-rl-cred",
-          models: ["claude-sonnet-4-20250514"],
+      provider =
+        create_provider_model(
+          "anthropic-rl",
+          :anthropic,
+          "claude-sonnet",
+          "router-anthropic-rl-cred",
           rpm_limit: 1
-        })
+        )
 
-      # Exhaust rate limit
       RateLimiter.check(provider.id, 1)
 
       conn =
         llm_request(:post, "/v1/messages", %{
-          "model" => "anthropic-rl/claude-sonnet-4-20250514",
+          "model" => "anthropic-rl/claude-sonnet",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
         })
@@ -157,17 +146,15 @@ defmodule Backplane.LLM.RouterTest do
     end
 
     test "returns 429 with openai error shape when rate limited" do
-      {:ok, provider} =
-        Provider.create(%{
-          name: "openai-rl",
-          api_type: :openai,
-          api_url: "https://api.openai.com",
-          credential: "router-openai-rl-cred",
-          models: ["gpt-4o"],
+      provider =
+        create_provider_model(
+          "openai-rl",
+          :openai,
+          "gpt-4o",
+          "router-openai-rl-cred",
           rpm_limit: 1
-        })
+        )
 
-      # Exhaust rate limit
       RateLimiter.check(provider.id, 1)
 
       conn =
@@ -185,11 +172,14 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
-  # ── GET /v1/models ────────────────────────────────────────────────────────────
-
   describe "GET /v1/models" do
     test "returns aggregated model list in OpenAI format" do
-      {:ok, _} = Provider.create(@anthropic_attrs)
+      create_provider_model(
+        "anthropic-prod",
+        :anthropic,
+        "claude-sonnet",
+        "router-anthropic-cred"
+      )
 
       conn = llm_request(:get, "/v1/models")
 
@@ -200,53 +190,65 @@ defmodule Backplane.LLM.RouterTest do
     end
 
     test "includes prefixed model ids" do
-      {:ok, _} = Provider.create(@anthropic_attrs)
+      create_provider_model(
+        "anthropic-prod",
+        :anthropic,
+        "claude-sonnet",
+        "router-anthropic-cred"
+      )
 
       conn = llm_request(:get, "/v1/models")
       body = json_body(conn)
 
       ids = Enum.map(body["data"], & &1["id"])
-      assert "anthropic-prod/claude-sonnet-4-20250514" in ids
-      assert "anthropic-prod/claude-haiku-4-5-20251001" in ids
+      assert "anthropic-prod/claude-sonnet" in ids
     end
 
-    test "includes alias entries for aliased models" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
-
-      {:ok, _alias} =
-        ModelAlias.create(%{
-          alias: "fast",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
-        })
+    test "includes custom alias entries for available targets" do
+      create_provider_model("anthropic-prod", :anthropic, "claude-haiku", "router-anthropic-cred")
+      {:ok, _alias} = ModelAlias.put("coding", "claude-haiku")
 
       conn = llm_request(:get, "/v1/models")
       body = json_body(conn)
 
       ids = Enum.map(body["data"], & &1["id"])
-      assert "fast" in ids
+      assert "coding" in ids
     end
 
     test "excludes models from disabled providers" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider =
+        create_provider_model(
+          "anthropic-prod",
+          :anthropic,
+          "claude-sonnet",
+          "router-anthropic-cred"
+        )
+
       {:ok, _} = Provider.update(provider, %{enabled: false})
 
       conn = llm_request(:get, "/v1/models")
       body = json_body(conn)
 
       ids = Enum.map(body["data"], & &1["id"])
-      refute "anthropic-prod/claude-sonnet-4-20250514" in ids
+      refute "anthropic-prod/claude-sonnet" in ids
     end
 
     test "excludes models from soft-deleted providers" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider =
+        create_provider_model(
+          "anthropic-prod",
+          :anthropic,
+          "claude-sonnet",
+          "router-anthropic-cred"
+        )
+
       {:ok, _} = Provider.soft_delete(provider)
 
       conn = llm_request(:get, "/v1/models")
       body = json_body(conn)
 
       ids = Enum.map(body["data"], & &1["id"])
-      refute "anthropic-prod/claude-sonnet-4-20250514" in ids
+      refute "anthropic-prod/claude-sonnet" in ids
     end
 
     test "returns empty list when no providers exist" do
@@ -257,10 +259,43 @@ defmodule Backplane.LLM.RouterTest do
       assert body["data"] == []
     end
 
-    test "returns 200 for unknown route" do
+    test "returns 404 for unknown route" do
       conn = llm_request(:get, "/v1/unknown")
-      # catch-all match returns 404
       assert conn.status == 404
     end
+  end
+
+  defp create_provider_model(name, api_surface, model_id, credential, opts \\ []) do
+    attrs =
+      %{
+        name: name,
+        credential: credential
+      }
+      |> Map.merge(Map.new(opts))
+
+    {:ok, provider} = Provider.create(attrs)
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: api_surface,
+        base_url: "https://api.example.com/v1"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: model_id,
+        source: :manual
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    provider
   end
 end

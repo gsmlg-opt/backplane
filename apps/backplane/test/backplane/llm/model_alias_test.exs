@@ -1,17 +1,12 @@
 defmodule Backplane.LLM.ModelAliasTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
   alias Backplane.LLM.ModelAlias
-  alias Backplane.LLM.Provider
-  alias Backplane.Settings.Credentials
 
-  @provider_attrs %{
-    name: "alias-test-provider",
-    api_type: :openai,
-    api_url: "https://api.openai.com",
-    credential: "alias-test-cred",
-    models: ["gpt-4o", "gpt-4o-mini"]
-  }
+  setup do
+    :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
+    :ok
+  end
 
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
@@ -21,132 +16,93 @@ defmodule Backplane.LLM.ModelAliasTest do
     end)
   end
 
-  setup do
-    Credentials.store("alias-test-cred", "sk-test-key", "llm")
-    Credentials.store("alias-ant-cred", "sk-ant-key", "llm")
-    {:ok, provider} = Provider.create(@provider_attrs)
-    {:ok, provider: provider}
-  end
-
-  # ── create/1 ──────────────────────────────────────────────────────────────────
-
   describe "create/1" do
-    test "valid attrs creates alias", %{provider: provider} do
+    test "valid attrs creates settings-backed alias" do
       assert {:ok, model_alias} =
                ModelAlias.create(%{
-                 alias: "fast",
-                 model: "gpt-4o-mini",
-                 provider_id: provider.id
+                 alias: "coding",
+                 target: "smart"
                })
 
-      assert model_alias.alias == "fast"
-      assert model_alias.model == "gpt-4o-mini"
+      assert model_alias.alias == "coding"
+      assert model_alias.target == "smart"
+      assert Backplane.Settings.get(ModelAlias.setting_key()) == %{"coding" => "smart"}
     end
 
-    test "rejects duplicate alias", %{provider: provider} do
-      {:ok, _} =
-        ModelAlias.create(%{alias: "smart", model: "gpt-4o", provider_id: provider.id})
+    test "accepts legacy model attrs as target" do
+      assert {:ok, model_alias} =
+               ModelAlias.create(%{
+                 alias: "mini",
+                 model: "gpt-4o-mini"
+               })
 
-      assert {:error, changeset} =
-               ModelAlias.create(%{alias: "smart", model: "gpt-4o-mini", provider_id: provider.id})
+      assert model_alias.target == "gpt-4o-mini"
+    end
+
+    test "replaces an existing alias" do
+      assert {:ok, _} = ModelAlias.put("coding", "smart")
+      assert {:ok, model_alias} = ModelAlias.put("coding", "expert")
+
+      assert model_alias.target == "expert"
+      assert [%{alias: "coding", target: "expert"}] = ModelAlias.list()
+    end
+
+    test "rejects built-in alias names" do
+      assert {:error, changeset} = ModelAlias.create(%{alias: "smart", target: "expert"})
 
       assert %{alias: [_ | _]} = errors_on(changeset)
     end
 
-    test "rejects slash in alias", %{provider: provider} do
+    test "rejects slash in alias" do
       assert {:error, changeset} =
                ModelAlias.create(%{
                  alias: "some/alias",
-                 model: "gpt-4o",
-                 provider_id: provider.id
+                 target: "smart"
                })
 
       assert %{alias: [_ | _]} = errors_on(changeset)
     end
 
-    test "rejects model not in provider's models list", %{provider: provider} do
-      assert {:error, changeset} =
-               ModelAlias.create(%{
-                 alias: "unknown-model",
-                 model: "claude-3-opus",
-                 provider_id: provider.id
-               })
+    test "rejects self-referential alias" do
+      assert {:error, changeset} = ModelAlias.create(%{alias: "coding", target: "coding"})
 
-      assert %{model: [_ | _]} = errors_on(changeset)
-    end
-
-    test "rejects deleted provider" do
-      {:ok, other_provider} =
-        Provider.create(%{
-          name: "to-be-deleted",
-          api_type: :anthropic,
-          api_url: "https://api.anthropic.com",
-          credential: "alias-ant-cred",
-          models: ["claude-3-5-sonnet-20241022"]
-        })
-
-      {:ok, _} = Provider.soft_delete(other_provider)
-
-      assert {:error, changeset} =
-               ModelAlias.create(%{
-                 alias: "deleted-alias",
-                 model: "claude-3-5-sonnet-20241022",
-                 provider_id: other_provider.id
-               })
-
-      assert %{provider_id: [_ | _]} = errors_on(changeset)
+      assert %{target: [_ | _]} = errors_on(changeset)
     end
   end
 
-  # ── delete/1 ──────────────────────────────────────────────────────────────────
-
   describe "delete/1" do
-    test "removes the alias", %{provider: provider} do
-      {:ok, model_alias} =
-        ModelAlias.create(%{alias: "to-delete", model: "gpt-4o", provider_id: provider.id})
+    test "removes the alias" do
+      {:ok, model_alias} = ModelAlias.put("to-delete", "smart")
 
       assert {:ok, _} = ModelAlias.delete(model_alias)
       assert ModelAlias.list() == []
     end
-  end
 
-  # ── list/0 ────────────────────────────────────────────────────────────────────
+    test "returns not found for missing alias" do
+      assert {:error, :not_found} = ModelAlias.delete("missing")
+    end
+  end
 
   describe "list/0" do
-    test "returns all aliases with preloaded provider", %{provider: provider} do
-      {:ok, _} = ModelAlias.create(%{alias: "a-fast", model: "gpt-4o-mini", provider_id: provider.id})
-      {:ok, _} = ModelAlias.create(%{alias: "a-smart", model: "gpt-4o", provider_id: provider.id})
+    test "returns aliases ordered by alias" do
+      {:ok, _} = ModelAlias.put("z-last", "expert")
+      {:ok, _} = ModelAlias.put("a-first", "smart")
 
-      aliases = ModelAlias.list()
-      assert length(aliases) == 2
-      assert hd(aliases).alias == "a-fast"
-      assert %Provider{} = hd(aliases).provider
+      assert [
+               %{alias: "a-first", target: "smart"},
+               %{alias: "z-last", target: "expert"}
+             ] = ModelAlias.list()
     end
   end
 
-  # ── resolve/1 ─────────────────────────────────────────────────────────────────
+  describe "get/1 and target_for/1" do
+    test "returns configured alias target" do
+      {:ok, _} = ModelAlias.put("coding", "smart")
 
-  describe "resolve/1" do
-    test "returns provider and model for valid alias", %{provider: provider} do
-      {:ok, _} =
-        ModelAlias.create(%{alias: "my-model", model: "gpt-4o", provider_id: provider.id})
-
-      assert {:ok, resolved_provider, model} = ModelAlias.resolve("my-model")
-      assert resolved_provider.id == provider.id
-      assert model == "gpt-4o"
-    end
-
-    test "returns error for unknown alias" do
-      assert {:error, :not_found} = ModelAlias.resolve("nonexistent")
-    end
-
-    test "returns error for disabled provider", %{provider: provider} do
-      {:ok, _} =
-        ModelAlias.create(%{alias: "disabled-alias", model: "gpt-4o", provider_id: provider.id})
-
-      {:ok, _} = Provider.update(provider, %{enabled: false})
-
-      assert {:error, :not_found} = ModelAlias.resolve("disabled-alias")
+      assert %ModelAlias{alias: "coding", target: "smart"} = ModelAlias.get("coding")
+      assert ModelAlias.target_for("coding") == "smart"
+      assert ModelAlias.get("missing") == nil
+      assert ModelAlias.target_for("missing") == nil
     end
   end
 end

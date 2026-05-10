@@ -1,170 +1,178 @@
 defmodule Backplane.LLM.ModelAlias do
   @moduledoc """
-  Ecto schema and context for LLM model aliases.
+  Settings-backed custom LLM model aliases.
 
-  An alias is a short name (e.g. "fast") that maps to a specific model on a
-  specific provider. Clients can route requests through aliases without knowing
-  provider-specific model IDs.
+  Built-in aliases such as `fast`, `smart`, and `expert` are owned by
+  `Backplane.LLM.AutoModel`. Custom aliases are one-to-one pointers to either a
+  built-in alias or a concrete provider model id.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
-  import Ecto.Query
 
-  alias Backplane.LLM.Provider
-  alias Backplane.Repo
+  alias Backplane.LLM.AutoModel
+  alias Backplane.Settings
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          alias: String.t(),
+          target: String.t()
+        }
 
-  @primary_key {:id, :binary_id, autogenerate: true}
-  @timestamps_opts [type: :utc_datetime_usec]
-
-  schema "llm_model_aliases" do
+  @primary_key false
+  embedded_schema do
     field(:alias, :string)
-    field(:model, :string)
-    belongs_to(:provider, Provider, type: :binary_id)
-
-    timestamps()
+    field(:target, :string)
   end
 
-  @required_fields ~w(alias model provider_id)a
+  @setting_key "llm.model_aliases.custom"
 
-  # ── Changesets ───────────────────────────────────────────────────────────────
+  @doc "Return the settings key used to persist custom model aliases."
+  @spec setting_key() :: String.t()
+  def setting_key, do: @setting_key
 
-  @doc "Changeset for creating a model alias."
+  @doc "Changeset for custom model aliases."
+  @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(model_alias, attrs) do
     model_alias
-    |> cast(attrs, @required_fields)
-    |> validate_required(@required_fields)
+    |> cast(normalize_attrs(attrs), [:alias, :target])
+    |> update_change(:alias, &trim_string/1)
+    |> update_change(:target, &trim_string/1)
+    |> validate_required([:alias, :target])
     |> validate_format(:alias, ~r/^[^\/]+$/, message: "must not contain /")
-    |> unique_constraint(:alias)
-    |> validate_model_in_provider()
-    |> validate_provider_not_deleted()
+    |> validate_exclusion(:alias, AutoModel.built_in_names(), message: "is built in")
+    |> validate_alias_target()
   end
 
-  defp validate_model_in_provider(%Ecto.Changeset{valid?: false} = cs), do: cs
-
-  defp validate_model_in_provider(changeset) do
-    provider_id = get_field(changeset, :provider_id)
-    model = get_field(changeset, :model)
-
-    if provider_id && model do
-      changeset
-      |> check_model_in_provider(Repo.get(Provider, provider_id), model)
-    else
-      changeset
-    end
-  end
-
-  defp check_model_in_provider(changeset, nil, _model) do
-    add_error(changeset, :provider_id, "does not exist")
-  end
-
-  defp check_model_in_provider(changeset, provider, model) do
-    if model in (provider.models || []) do
-      changeset
-    else
-      add_error(changeset, :model, "must be one of the provider's models")
-    end
-  end
-
-  defp validate_provider_not_deleted(%Ecto.Changeset{valid?: false} = cs), do: cs
-
-  defp validate_provider_not_deleted(changeset) do
-    provider_id = get_field(changeset, :provider_id)
-
-    if provider_id do
-      case Repo.get(Provider, provider_id) do
-        %Provider{deleted_at: nil} -> changeset
-        %Provider{} -> add_error(changeset, :provider_id, "provider has been deleted")
-        nil -> changeset
-      end
-    else
-      changeset
-    end
-  end
-
-  # ── Context ──────────────────────────────────────────────────────────────────
-
-  @doc "Create a model alias and broadcast the change."
-  @spec create(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
-  def create(attrs) do
-    result =
-      %__MODULE__{}
-      |> changeset(attrs)
-      |> Repo.insert()
-
-    if match?({:ok, _}, result) do
-      Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
-    end
-
-    result
-  end
-
-  @doc "Update a model alias and broadcast the change."
-  @spec update(t(), map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
-  def update(%__MODULE__{} = model_alias, attrs) do
-    result =
-      model_alias
-      |> changeset(attrs)
-      |> Repo.update()
-
-    if match?({:ok, _}, result) do
-      Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
-    end
-
-    result
-  end
-
-  @doc "Delete a model alias and broadcast the change."
-  @spec delete(t()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
-  def delete(%__MODULE__{} = model_alias) do
-    result = Repo.delete(model_alias)
-
-    if match?({:ok, _}, result) do
-      Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
-    end
-
-    result
-  end
-
-  @doc "List all model aliases ordered by alias, with preloaded provider."
+  @doc "List custom aliases ordered by alias."
   @spec list() :: [t()]
   def list do
-    __MODULE__
-    |> order_by(:alias)
-    |> preload(:provider)
-    |> Repo.all()
+    @setting_key
+    |> Settings.get()
+    |> normalize_alias_map()
+    |> Enum.map(fn {alias_name, target} ->
+      %__MODULE__{alias: alias_name, target: target}
+    end)
+    |> Enum.sort_by(& &1.alias)
   end
 
-  @doc "Get a single model alias by id, with preloaded provider."
-  @spec get(binary()) :: t() | nil
-  def get(id) do
-    __MODULE__
-    |> preload(:provider)
-    |> Repo.get(id)
-  end
+  @doc "Fetch a custom alias by name."
+  @spec get(String.t()) :: t() | nil
+  def get(alias_name) when is_binary(alias_name) do
+    alias_name = String.trim(alias_name)
 
-  @doc """
-  Resolve an alias name to a provider + model tuple.
-
-  The provider must be enabled and not deleted. Returns
-  `{:ok, provider, model}` or `{:error, :not_found}`.
-  """
-  @spec resolve(String.t()) :: {:ok, Provider.t(), String.t()} | {:error, :not_found}
-  def resolve(alias_name) when is_binary(alias_name) do
-    result =
-      from(a in __MODULE__,
-        join: p in Provider,
-        on: a.provider_id == p.id and p.enabled == true and is_nil(p.deleted_at),
-        where: a.alias == ^alias_name,
-        select: {p, a.model}
-      )
-      |> Repo.one()
-
-    case result do
-      {provider, model} -> {:ok, provider, model}
-      nil -> {:error, :not_found}
+    @setting_key
+    |> Settings.get()
+    |> normalize_alias_map()
+    |> Map.get(alias_name)
+    |> case do
+      nil -> nil
+      target -> %__MODULE__{alias: alias_name, target: target}
     end
+  end
+
+  @doc "Create or replace a custom alias."
+  @spec create(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
+  def create(attrs) when is_map(attrs) do
+    put_changeset(changeset(%__MODULE__{}, attrs))
+  end
+
+  @doc "Create or replace a custom alias."
+  @spec put(String.t(), String.t()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
+  def put(alias_name, target) when is_binary(alias_name) and is_binary(target) do
+    create(%{alias: alias_name, target: target})
+  end
+
+  @doc "Delete a custom alias."
+  @spec delete(t() | String.t()) :: {:ok, t()} | {:error, :not_found | term()}
+  def delete(%__MODULE__{alias: alias_name}), do: delete(alias_name)
+
+  def delete(alias_name) when is_binary(alias_name) do
+    alias_name = String.trim(alias_name)
+    aliases = Settings.get(@setting_key) |> normalize_alias_map()
+
+    case Map.pop(aliases, alias_name) do
+      {nil, _aliases} ->
+        {:error, :not_found}
+
+      {target, aliases} ->
+        with :ok <- Settings.set(@setting_key, aliases) do
+          broadcast()
+          {:ok, %__MODULE__{alias: alias_name, target: target}}
+        end
+    end
+  end
+
+  @doc "Return a custom alias target, if configured."
+  @spec target_for(String.t()) :: String.t() | nil
+  def target_for(alias_name) when is_binary(alias_name) do
+    case get(alias_name) do
+      %__MODULE__{target: target} -> target
+      nil -> nil
+    end
+  end
+
+  defp put_changeset(%Ecto.Changeset{valid?: false} = changeset), do: {:error, changeset}
+
+  defp put_changeset(%Ecto.Changeset{} = changeset) do
+    model_alias = apply_changes(changeset)
+
+    aliases =
+      @setting_key
+      |> Settings.get()
+      |> normalize_alias_map()
+      |> Map.put(model_alias.alias, model_alias.target)
+
+    with :ok <- Settings.set(@setting_key, aliases) do
+      broadcast()
+      {:ok, model_alias}
+    end
+  end
+
+  defp normalize_attrs(attrs) do
+    %{
+      alias: Map.get(attrs, :alias) || Map.get(attrs, "alias"),
+      target:
+        Map.get(attrs, :target) || Map.get(attrs, "target") || Map.get(attrs, :model) ||
+          Map.get(attrs, "model")
+    }
+  end
+
+  defp normalize_alias_map(aliases) when is_map(aliases) do
+    Enum.reduce(aliases, %{}, fn
+      {alias_name, target}, acc when is_binary(alias_name) and is_binary(target) ->
+        alias_name = String.trim(alias_name)
+        target = String.trim(target)
+
+        if alias_name == "" or target == "" do
+          acc
+        else
+          Map.put(acc, alias_name, target)
+        end
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp normalize_alias_map(_aliases), do: %{}
+
+  defp validate_alias_target(%Ecto.Changeset{valid?: false} = changeset), do: changeset
+
+  defp validate_alias_target(changeset) do
+    alias_name = get_field(changeset, :alias)
+    target = get_field(changeset, :target)
+
+    if alias_name == target do
+      add_error(changeset, :target, "must be different from alias")
+    else
+      changeset
+    end
+  end
+
+  defp trim_string(value) when is_binary(value), do: String.trim(value)
+  defp trim_string(value), do: value
+
+  defp broadcast do
+    Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
   end
 end

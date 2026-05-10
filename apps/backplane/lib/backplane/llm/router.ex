@@ -17,6 +17,7 @@ defmodule Backplane.LLM.Router do
   import Plug.Conn
 
   alias Backplane.LLM.{
+    AutoModel,
     CredentialPlug,
     ModelAlias,
     ModelExtractor,
@@ -252,33 +253,66 @@ defmodule Backplane.LLM.Router do
       Provider.list()
       |> Enum.filter(& &1.enabled)
 
-    aliases = ModelAlias.list()
-
     provider_entries =
       for provider <- providers,
-          model <- provider.models do
+          model <- provider.models,
+          model.enabled do
         %{
-          "id" => "#{provider.name}/#{model}",
+          "id" => "#{provider.name}/#{model.model}",
           "object" => "model",
           "created" => 1_700_000_000,
           "owned_by" => provider.name
         }
       end
 
-    alias_entries =
-      for model_alias <- aliases,
-          provider = model_alias.provider,
-          not is_nil(provider),
-          not is_nil(provider.deleted_at) == true or provider.enabled do
+    auto_model_entries =
+      for auto_model <- AutoModel.list_configurations(),
+          auto_model.enabled,
+          auto_model_available?(auto_model) do
+        %{
+          "id" => auto_model.name,
+          "object" => "model",
+          "created" => 1_700_000_000,
+          "owned_by" => "backplane"
+        }
+      end
+
+    custom_alias_entries =
+      for model_alias <- ModelAlias.list(),
+          custom_alias_available?(model_alias) do
         %{
           "id" => model_alias.alias,
           "object" => "model",
           "created" => 1_700_000_000,
-          "owned_by" => provider.name
+          "owned_by" => "backplane"
         }
       end
 
-    provider_entries ++ alias_entries
+    provider_entries ++ auto_model_entries ++ custom_alias_entries
+  end
+
+  defp custom_alias_available?(%ModelAlias{} = model_alias) do
+    Enum.any?([:openai, :anthropic], fn api_type ->
+      match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_type, model_alias.alias))
+    end)
+  end
+
+  defp auto_model_available?(auto_model) do
+    configured_model_ids = AutoModel.configured_model_ids(auto_model.name)
+
+    Enum.any?(auto_model.routes, fn route ->
+      route.enabled and
+        (AutoModel.available_surfaces_for(route.api_surface, configured_model_ids) != [] or
+           Enum.any?(route.targets, fn target ->
+             surface = target.provider_model_surface
+             model = surface.provider_model
+             provider = model.provider
+             api = surface.provider_api
+
+             target.enabled and surface.enabled and model.enabled and provider.enabled and
+               is_nil(provider.deleted_at) and api.enabled
+           end))
+    end)
   end
 
   # ── Error helpers ─────────────────────────────────────────────────────────────

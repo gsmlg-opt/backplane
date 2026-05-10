@@ -332,7 +332,7 @@ defmodule Backplane.LLM.ProviderTest do
   describe "seeded auto models" do
     test "seeds fast, smart, and expert with openai and anthropic routes" do
       models = AutoModel.list()
-      assert [%{name: "expert"}, %{name: "fast"}, %{name: "smart"}] = models
+      assert [%{name: "fast"}, %{name: "smart"}, %{name: "expert"}] = models
 
       for auto_model <- models do
         routes = Enum.sort_by(auto_model.routes, &to_string(&1.api_surface))

@@ -1,16 +1,16 @@
 defmodule Backplane.LLM.ApiRouter do
   @moduledoc """
-  REST API router for LLM provider and alias CRUD.
+  REST API router for LLM provider and custom alias CRUD.
 
   Endpoints:
-    GET    /providers           - List active providers (masked keys, preloaded aliases)
+    GET    /providers           - List active providers
     POST   /providers           - Create provider
     GET    /providers/:id       - Get single provider
     PATCH  /providers/:id       - Update provider
     DELETE /providers/:id       - Soft delete provider
-    GET    /aliases             - List all aliases
-    POST   /aliases             - Create alias
-    DELETE /aliases/:id         - Delete alias
+    GET    /aliases             - List custom aliases
+    POST   /aliases             - Create or replace custom alias
+    DELETE /aliases/:id         - Delete custom alias by alias name
   """
 
   use Plug.Router
@@ -169,10 +169,9 @@ defmodule Backplane.LLM.ApiRouter do
 
   defp serialize_alias(%ModelAlias{} = a) do
     %{
-      id: a.id,
+      id: a.alias,
       alias: a.alias,
-      model: a.model,
-      provider_id: a.provider_id
+      target: a.target
     }
   end
 

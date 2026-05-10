@@ -4,7 +4,8 @@ defmodule Backplane.LLM.ModelResolver do
 
   Supports two resolution strategies:
   1. **Prefixed format** — `"provider_name/model"` routes directly to a named provider
-  2. **Alias lookup** — unprefixed strings are looked up in the `llm_model_aliases` table
+  2. **Auto model lookup** — unprefixed names such as `fast`, `smart`, and `expert`
+     resolve through configured auto model target preferences
 
   Results are cached in an ETS table (`:llm_model_resolver_cache`) with a 30-second TTL.
   The cache is cleared whenever a `{:llm_providers_changed, _}` message arrives on the
@@ -15,7 +16,12 @@ defmodule Backplane.LLM.ModelResolver do
 
   import Ecto.Query
 
+  alias Backplane.LLM.AutoModel
+  alias Backplane.LLM.AutoModelRoute
   alias Backplane.LLM.ModelAlias
+  alias Backplane.LLM.ProviderApi
+  alias Backplane.LLM.ProviderModel
+  alias Backplane.LLM.ProviderModelSurface
   alias Backplane.LLM.Provider
   alias Backplane.PubSubBroadcaster
   alias Backplane.Repo
@@ -36,12 +42,10 @@ defmodule Backplane.LLM.ModelResolver do
   Returns:
   - `{:ok, provider, raw_model}` on success
   - `{:error, :no_provider}` when no matching provider/alias is found
-  - `{:error, :api_type_mismatch, provider}` when the found provider's api_type differs
   """
   @spec resolve(atom(), String.t()) ::
           {:ok, Provider.t(), String.t()}
           | {:error, :no_provider}
-          | {:error, :api_type_mismatch, Provider.t()}
   def resolve(api_type, model_string) when is_atom(api_type) and is_binary(model_string) do
     cache_key = {api_type, model_string}
 
@@ -105,10 +109,7 @@ defmodule Backplane.LLM.ModelResolver do
       not provider.enabled ->
         {:error, :no_provider}
 
-      provider.api_type != api_type ->
-        {:error, :api_type_mismatch, provider}
-
-      raw_model not in (provider.models || []) ->
+      not provider_model_available?(provider, api_type, raw_model) ->
         {:error, :no_provider}
 
       true ->
@@ -118,24 +119,95 @@ defmodule Backplane.LLM.ModelResolver do
 
   defp resolve_alias(api_type, alias_name) do
     result =
-      from(a in ModelAlias,
-        join: p in Provider,
-        on: a.provider_id == p.id and is_nil(p.deleted_at) and p.enabled == true,
-        where: a.alias == ^alias_name,
-        select: {p, a.model}
-      )
-      |> Repo.one()
+      case AutoModelRoute.get_by_model_and_surface(alias_name, api_type) do
+        nil ->
+          {:error, :no_provider}
+
+        route ->
+          resolve_auto_model_route(route, api_type)
+      end
 
     case result do
-      nil ->
-        {:error, :no_provider}
-
-      {provider, model} when provider.api_type == api_type ->
-        {:ok, provider, model}
-
-      {provider, _model} ->
-        {:error, :api_type_mismatch, provider}
+      {:error, :no_provider} -> resolve_custom_alias(api_type, alias_name)
+      result -> result
     end
+  end
+
+  defp resolve_custom_alias(api_type, alias_name) do
+    case ModelAlias.target_for(alias_name) do
+      nil -> {:error, :no_provider}
+      target -> resolve_custom_alias_target(api_type, target)
+    end
+  end
+
+  defp resolve_custom_alias_target(api_type, target) do
+    case AutoModelRoute.get_by_model_and_surface(target, api_type) do
+      nil ->
+        resolve_model_id_target(api_type, target)
+
+      route ->
+        resolve_auto_model_route(route, api_type)
+    end
+  end
+
+  defp resolve_model_id_target(api_type, target) do
+    case AutoModel.available_surfaces_for(api_type, [target]) do
+      [surface | _] -> {:ok, surface.provider_model.provider, surface.provider_model.model}
+      [] -> {:error, :no_provider}
+    end
+  end
+
+  defp provider_model_available?(provider, api_type, raw_model) do
+    ProviderModelSurface
+    |> join(:inner, [surface], model in ProviderModel, on: surface.provider_model_id == model.id)
+    |> join(:inner, [surface, _model], api in ProviderApi, on: surface.provider_api_id == api.id)
+    |> where(
+      [surface, model, api],
+      model.provider_id == ^provider.id and model.model == ^raw_model and
+        model.enabled == true and surface.enabled == true and api.enabled == true and
+        api.api_surface == ^api_type
+    )
+    |> Repo.exists?()
+  end
+
+  defp resolve_auto_model_route(route, api_type) do
+    route_enabled? = route.enabled and route.auto_model.enabled
+
+    target =
+      case AutoModel.available_surfaces_for(
+             api_type,
+             AutoModel.configured_model_ids(route.auto_model.name)
+           ) do
+        [surface | _] ->
+          {:surface, surface}
+
+        [] ->
+          route.targets
+          |> Enum.sort_by(& &1.priority)
+          |> Enum.find(&usable_target?(&1, api_type))
+      end
+
+    case {route_enabled?, target} do
+      {true, {:surface, surface}} ->
+        {:ok, surface.provider_model.provider, surface.provider_model.model}
+
+      {true, target} when not is_nil(target) ->
+        surface = target.provider_model_surface
+        {:ok, surface.provider_model.provider, surface.provider_model.model}
+
+      _ ->
+        {:error, :no_provider}
+    end
+  end
+
+  defp usable_target?(target, api_type) do
+    surface = target.provider_model_surface
+    model = surface.provider_model
+    provider = model.provider
+    api = surface.provider_api
+
+    target.enabled and surface.enabled and model.enabled and provider.enabled and
+      is_nil(provider.deleted_at) and api.enabled and api.api_surface == api_type
   end
 
   # ── Cache helpers ─────────────────────────────────────────────────────────────

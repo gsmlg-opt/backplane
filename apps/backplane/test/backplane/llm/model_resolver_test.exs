@@ -1,101 +1,78 @@
 defmodule Backplane.LLM.ModelResolverTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.LLM.ModelAlias
-  alias Backplane.LLM.ModelResolver
-  alias Backplane.LLM.Provider
+  alias Backplane.LLM.{
+    ModelAlias,
+    ModelResolver,
+    Provider,
+    ProviderApi,
+    ProviderModel,
+    ProviderModelSurface
+  }
+
   alias Backplane.Settings.Credentials
-
-  @anthropic_attrs %{
-    name: "anthropic-provider",
-    api_type: :anthropic,
-    api_url: "https://api.anthropic.com",
-    credential: "resolver-anthropic-cred",
-    models: ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"]
-  }
-
-  @openai_attrs %{
-    name: "openai-provider",
-    api_type: :openai,
-    api_url: "https://api.openai.com",
-    credential: "resolver-openai-cred",
-    models: ["gpt-4o", "gpt-4o-mini"]
-  }
 
   setup do
     Credentials.store("resolver-anthropic-cred", "sk-ant-test-key", "llm")
     Credentials.store("resolver-openai-cred", "sk-openai-test-key", "llm")
-    # ModelResolver is started by the application supervision tree.
-    # Clear the cache before each test to ensure isolation.
     ModelResolver.clear_cache()
+    :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
     :ok
   end
 
-  # ── resolve/2 - prefixed ──────────────────────────────────────────────────────
-
   describe "resolve/2 - prefixed" do
     test "resolves provider_name/model to provider and raw model" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
       assert {:ok, resolved_provider, raw_model} =
-               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-3-5-sonnet-20241022")
+               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-sonnet")
 
       assert resolved_provider.id == provider.id
-      assert raw_model == "claude-3-5-sonnet-20241022"
+      assert raw_model == "claude-sonnet"
     end
 
     test "returns :no_provider for unknown provider name" do
       assert {:error, :no_provider} =
-               ModelResolver.resolve(:anthropic, "nonexistent-provider/claude-3-5-sonnet-20241022")
+               ModelResolver.resolve(:anthropic, "nonexistent-provider/claude-sonnet")
     end
 
     test "returns :no_provider for known provider but unknown model" do
-      {:ok, _provider} = Provider.create(@anthropic_attrs)
+      create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
       assert {:error, :no_provider} =
                ModelResolver.resolve(:anthropic, "anthropic-provider/unknown-model")
     end
 
-    test "returns :api_type_mismatch when provider api_type differs" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+    test "returns :no_provider when API surface differs" do
+      create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
-      assert {:error, :api_type_mismatch, mismatch_provider} =
-               ModelResolver.resolve(:openai, "anthropic-provider/claude-3-5-sonnet-20241022")
-
-      assert mismatch_provider.id == provider.id
+      assert {:error, :no_provider} =
+               ModelResolver.resolve(:openai, "anthropic-provider/claude-sonnet")
     end
 
     test "skips disabled providers" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
       {:ok, _} = Provider.update(provider, %{enabled: false})
 
       assert {:error, :no_provider} =
-               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-3-5-sonnet-20241022")
+               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-sonnet")
     end
 
     test "skips soft-deleted providers" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
       {:ok, _} = Provider.soft_delete(provider)
 
       assert {:error, :no_provider} =
-               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-3-5-sonnet-20241022")
+               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-sonnet")
     end
   end
 
-  # ── resolve/2 - alias ─────────────────────────────────────────────────────────
-
   describe "resolve/2 - alias" do
-    test "resolves alias to provider and raw model" do
-      {:ok, provider} = Provider.create(@openai_attrs)
+    test "resolves custom alias to provider model target" do
+      provider = create_provider_model("openai-provider", :openai, "gpt-4o-mini")
+      {:ok, _} = ModelAlias.put("coding", "gpt-4o-mini")
 
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "fast",
-          model: "gpt-4o-mini",
-          provider_id: provider.id
-        })
-
-      assert {:ok, resolved_provider, raw_model} = ModelResolver.resolve(:openai, "fast")
+      assert {:ok, resolved_provider, raw_model} = ModelResolver.resolve(:openai, "coding")
       assert resolved_provider.id == provider.id
       assert raw_model == "gpt-4o-mini"
     end
@@ -104,69 +81,79 @@ defmodule Backplane.LLM.ModelResolverTest do
       assert {:error, :no_provider} = ModelResolver.resolve(:openai, "nonexistent-alias")
     end
 
-    test "returns :api_type_mismatch when alias provider api_type differs" do
-      {:ok, provider} = Provider.create(@openai_attrs)
+    test "returns :no_provider when alias target has no matching API surface" do
+      create_provider_model("openai-provider", :openai, "gpt-4o-mini")
+      {:ok, _} = ModelAlias.put("coding", "gpt-4o-mini")
 
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "openai-fast",
-          model: "gpt-4o-mini",
-          provider_id: provider.id
-        })
-
-      assert {:error, :api_type_mismatch, mismatch_provider} =
-               ModelResolver.resolve(:anthropic, "openai-fast")
-
-      assert mismatch_provider.id == provider.id
+      assert {:error, :no_provider} = ModelResolver.resolve(:anthropic, "coding")
     end
 
     test "skips aliases for disabled providers" do
-      {:ok, provider} = Provider.create(@openai_attrs)
-
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "disabled-provider-alias",
-          model: "gpt-4o",
-          provider_id: provider.id
-        })
-
+      provider = create_provider_model("openai-provider", :openai, "gpt-4o-mini")
+      {:ok, _} = ModelAlias.put("coding", "gpt-4o-mini")
       {:ok, _} = Provider.update(provider, %{enabled: false})
 
-      assert {:error, :no_provider} = ModelResolver.resolve(:openai, "disabled-provider-alias")
+      assert {:error, :no_provider} = ModelResolver.resolve(:openai, "coding")
     end
   end
-
-  # ── resolve/2 - no fallback ───────────────────────────────────────────────────
 
   describe "resolve/2 - no fallback" do
     test "unprefixed non-alias returns :no_provider" do
-      {:ok, _provider} = Provider.create(@anthropic_attrs)
+      create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
-      # "claude-3-5-sonnet-20241022" is a valid model name but not a registered alias
-      assert {:error, :no_provider} =
-               ModelResolver.resolve(:anthropic, "claude-3-5-sonnet-20241022")
+      assert {:error, :no_provider} = ModelResolver.resolve(:anthropic, "claude-sonnet")
     end
   end
 
-  # ── cache ─────────────────────────────────────────────────────────────────────
-
   describe "cache" do
     test "invalidates on provider change via PubSub" do
-      {:ok, provider} = Provider.create(@anthropic_attrs)
+      provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
-      # First resolve — caches the result
-      assert {:ok, _p, _m} =
-               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-3-5-sonnet-20241022")
+      assert {:ok, _provider, _model} =
+               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-sonnet")
 
-      # Update provider to disabled — broadcasts {:llm_providers_changed, %{}} on "llm:providers"
       {:ok, _} = Provider.update(provider, %{enabled: false})
-
-      # Give the GenServer time to receive the PubSub message and clear the cache
       Process.sleep(50)
 
-      # Resolve again — cache should be cleared, result re-queried
       assert {:error, :no_provider} =
-               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-3-5-sonnet-20241022")
+               ModelResolver.resolve(:anthropic, "anthropic-provider/claude-sonnet")
     end
+  end
+
+  defp create_provider_model(name, api_surface, model_id) do
+    credential =
+      case api_surface do
+        :anthropic -> "resolver-anthropic-cred"
+        :openai -> "resolver-openai-cred"
+      end
+
+    {:ok, provider} =
+      Provider.create(%{
+        name: name,
+        credential: credential
+      })
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: api_surface,
+        base_url: "https://api.example.com/v1"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: model_id,
+        source: :manual
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    provider
   end
 end

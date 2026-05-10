@@ -9,15 +9,13 @@ defmodule Backplane.LLM.ApiRouterTest do
 
   setup do
     Credentials.store("anthropic-api-key", "sk-ant-test-key-abcd", "llm")
+    :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
     :ok
   end
 
   @provider_attrs %{
     name: "anthropic-prod",
-    api_type: :anthropic,
-    api_url: "https://api.anthropic.com",
-    credential: "anthropic-api-key",
-    models: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
+    credential: "anthropic-api-key"
   }
 
   defp api_request(method, path, body \\ nil) do
@@ -28,25 +26,21 @@ defmodule Backplane.LLM.ApiRouterTest do
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
 
-  # ── POST /providers ──────────────────────────────────────────────────────────
-
   describe "POST /providers" do
     test "creates a provider and returns 201 with credential_hint" do
       conn =
         api_request(:post, "/providers", %{
           name: "anthropic-prod",
-          api_type: "anthropic",
-          api_url: "https://api.anthropic.com",
-          credential: "anthropic-api-key",
-          models: ["claude-sonnet-4-20250514"]
+          credential: "anthropic-api-key"
         })
 
       assert conn.status == 201
       body = json_body(conn)
       assert body["name"] == "anthropic-prod"
-      assert body["api_type"] == "anthropic"
       assert body["credential"] == "anthropic-api-key"
       assert body["credential_hint"] =~ ~r/^\.\.\./
+      assert body["apis"] == []
+      assert body["models"] == []
       refute Map.has_key?(body, "api_key")
       refute Map.has_key?(body, "api_key_hint")
     end
@@ -54,10 +48,7 @@ defmodule Backplane.LLM.ApiRouterTest do
     test "returns 422 with errors for invalid provider" do
       conn =
         api_request(:post, "/providers", %{
-          name: "anthropic-prod",
-          api_type: "anthropic",
-          api_url: "https://api.anthropic.com"
-          # missing credential and models
+          name: "anthropic-prod"
         })
 
       assert conn.status == 422
@@ -66,18 +57,10 @@ defmodule Backplane.LLM.ApiRouterTest do
     end
   end
 
-  # ── GET /providers ───────────────────────────────────────────────────────────
-
   describe "GET /providers" do
-    test "lists active providers with aliases" do
-      {:ok, provider} = Provider.create(@provider_attrs)
-
-      {:ok, _alias} =
-        ModelAlias.create(%{
-          alias: "fast",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
-        })
+    test "lists active providers" do
+      {:ok, _provider} = Provider.create(@provider_attrs)
+      {:ok, _alias} = ModelAlias.put("coding", "smart")
 
       conn = api_request(:get, "/providers")
 
@@ -85,15 +68,12 @@ defmodule Backplane.LLM.ApiRouterTest do
       body = json_body(conn)
       assert is_list(body)
       assert length(body) == 1
-      [p] = body
-      assert p["name"] == "anthropic-prod"
-      assert p["credential_hint"] =~ ~r/^\.\.\./
-      assert is_list(p["aliases"])
-      assert length(p["aliases"]) == 1
+      [provider] = body
+      assert provider["name"] == "anthropic-prod"
+      assert provider["credential_hint"] =~ ~r/^\.\.\./
+      refute Map.has_key?(provider, "aliases")
     end
   end
-
-  # ── PATCH /providers/:id ─────────────────────────────────────────────────────
 
   describe "PATCH /providers/:id" do
     test "updates provider fields and returns 200" do
@@ -110,8 +90,6 @@ defmodule Backplane.LLM.ApiRouterTest do
     end
   end
 
-  # ── DELETE /providers/:id ────────────────────────────────────────────────────
-
   describe "DELETE /providers/:id" do
     test "soft-deletes provider and returns 200" do
       {:ok, provider} = Provider.create(@provider_attrs)
@@ -121,47 +99,44 @@ defmodule Backplane.LLM.ApiRouterTest do
       assert conn.status == 200
       body = json_body(conn)
       assert body["ok"] == true
-
-      # Provider should no longer appear in list
       assert Provider.get(provider.id) == nil
     end
   end
 
-  # ── POST /aliases ─────────────────────────────────────────────────────────────
-
   describe "POST /aliases" do
-    test "creates alias and returns 201" do
-      {:ok, provider} = Provider.create(@provider_attrs)
-
+    test "creates custom alias and returns 201" do
       conn =
         api_request(:post, "/aliases", %{
-          alias: "fast",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
+          alias: "coding",
+          target: "smart"
         })
 
       assert conn.status == 201
       body = json_body(conn)
-      assert body["alias"] == "fast"
-      assert body["model"] == "claude-haiku-4-5-20251001"
-      assert body["provider_id"] == provider.id
+      assert body["id"] == "coding"
+      assert body["alias"] == "coding"
+      assert body["target"] == "smart"
     end
 
-    test "returns 422 for duplicate alias" do
-      {:ok, provider} = Provider.create(@provider_attrs)
-
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "fast",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
-        })
+    test "replaces duplicate alias" do
+      {:ok, _} = ModelAlias.put("coding", "smart")
 
       conn =
         api_request(:post, "/aliases", %{
-          alias: "fast",
-          model: "claude-sonnet-4-20250514",
-          provider_id: provider.id
+          alias: "coding",
+          target: "expert"
+        })
+
+      assert conn.status == 201
+      body = json_body(conn)
+      assert body["target"] == "expert"
+    end
+
+    test "returns 422 for built-in alias name" do
+      conn =
+        api_request(:post, "/aliases", %{
+          alias: "smart",
+          target: "expert"
         })
 
       assert conn.status == 422
@@ -170,57 +145,31 @@ defmodule Backplane.LLM.ApiRouterTest do
     end
   end
 
-  # ── GET /aliases ─────────────────────────────────────────────────────────────
-
   describe "GET /aliases" do
     test "lists all aliases" do
-      {:ok, provider} = Provider.create(@provider_attrs)
-
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "fast",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
-        })
-
-      {:ok, _} =
-        ModelAlias.create(%{
-          alias: "smart",
-          model: "claude-sonnet-4-20250514",
-          provider_id: provider.id
-        })
+      {:ok, _} = ModelAlias.put("coding", "smart")
+      {:ok, _} = ModelAlias.put("mini", "gpt-4o-mini")
 
       conn = api_request(:get, "/aliases")
 
       assert conn.status == 200
       body = json_body(conn)
       assert is_list(body)
-      assert length(body) == 2
       aliases = Enum.map(body, & &1["alias"])
-      assert "fast" in aliases
-      assert "smart" in aliases
+      assert "coding" in aliases
+      assert "mini" in aliases
     end
   end
 
-  # ── DELETE /aliases/:id ───────────────────────────────────────────────────────
-
   describe "DELETE /aliases/:id" do
-    test "deletes alias and returns 200" do
-      {:ok, provider} = Provider.create(@provider_attrs)
+    test "deletes alias by alias name and returns 200" do
+      {:ok, _model_alias} = ModelAlias.put("to-delete", "smart")
 
-      {:ok, model_alias} =
-        ModelAlias.create(%{
-          alias: "to-delete",
-          model: "claude-haiku-4-5-20251001",
-          provider_id: provider.id
-        })
-
-      conn = api_request(:delete, "/aliases/#{model_alias.id}")
+      conn = api_request(:delete, "/aliases/to-delete")
 
       assert conn.status == 200
       body = json_body(conn)
       assert body["ok"] == true
-
       assert ModelAlias.list() == []
     end
   end
