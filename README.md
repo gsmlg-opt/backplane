@@ -4,7 +4,7 @@ Backplane is a private, self-hosted gateway for agent infrastructure.
 
 It provides two main surfaces:
 
-- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /mcp` that aggregates upstream MCP servers and built-in managed tools.
+- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /mcp` that aggregates upstream MCP servers and built-in managed services.
 - **LLM Proxy**: a credential-injecting, model-routing reverse proxy for LLM APIs, with provider health checks and usage tracking.
 
 Operational configuration is managed through the Phoenix admin UI and persisted in PostgreSQL.
@@ -13,7 +13,7 @@ Operational configuration is managed through the Phoenix admin UI and persisted 
 
 This repository is an Elixir umbrella project:
 
-- `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, LLM proxy, clients, settings, credentials, Oban jobs.
+- `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, native math engine, LLM proxy, clients, settings, credentials, Oban jobs.
 - `apps/backplane_web`: Phoenix admin UI, LiveView routes, endpoint, assets.
 - `apps/relayixir`: HTTP/WebSocket reverse proxy library used internally by the LLM proxy.
 - `apps/day_ex`: date/time utility library exposed through the `day::` managed MCP tools.
@@ -64,6 +64,8 @@ Useful routes:
 - `GET /health`: health check JSON
 - `GET /metrics`: runtime metrics
 - `/admin`: admin UI
+- `/admin/hub`: MCP hub overview
+- `/admin/hub/managed`: managed service toggles and tool lists
 - `/api/llm/*`: LLM proxy API routes
 
 ## Common Commands
@@ -119,14 +121,16 @@ BACKPLANE_PORT=4100
 
 Production HTTP binding is controlled by `BACKPLANE_PORT` or `PORT`; if neither is set, it defaults to `4100`.
 
-Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and edited through `/admin`, including:
+Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through `/admin`, including:
 
 - upstream MCP servers
 - client tokens and scopes
 - LLM providers
 - model aliases
 - credentials
-- managed service settings
+- managed service toggles
+
+Native math limits and timeouts live in the singleton `mcp_native_math_config` table. Web search backend defaults and provider credentials use DB-backed settings and credentials rather than boot-only TOML.
 
 ## MCP Auth
 
@@ -148,11 +152,25 @@ All MCP tools use `::` as the namespace separator:
 Examples:
 
 - `day::now`
+- `math::evaluate`
+- `web::fetch`
+- `web_search::search`
 - `skills::list`
 - `hub::discover`
 - `prefix::upstream_tool`
 
 Upstream tools use their configured prefix. Managed services and hub tools use fixed prefixes.
+
+## Managed Services
+
+Managed services are built into Backplane and can be viewed from `/admin/hub` or toggled from `/admin/hub/managed`.
+
+- `day::*`: date/time tools backed by `apps/day_ex`
+- `web::fetch`: fetch an HTTP(S) URL and convert readable content to Markdown
+- `web_search::search`: search through configured Ollama, MiniMax, Z.ai, or BigModel backends
+- `math::evaluate`: parse and evaluate math expressions through the native math engine
+
+The math service accepts either an infix expression such as `2 * (3 + 4)` or a canonical JSON AST. Input is parsed into `Backplane.Math.Expression.Ast` before execution, then dispatched through `Backplane.Math.Router` into the native engine under `Backplane.Math.Sandbox` timeouts and complexity limits.
 
 ## Admin UI
 
@@ -177,11 +195,12 @@ Run the full suite:
 mix test
 ```
 
-The umbrella includes database-backed tests, LiveView tests, MCP transport tests, LLM proxy tests, Relayixir proxy tests, and DayEx utility tests.
+The umbrella includes database-backed tests, LiveView tests, MCP transport tests, managed service tests, LLM proxy tests, Relayixir proxy tests, and DayEx utility tests.
 
 ## Project Notes
 
 - PostgreSQL stores runtime configuration, credentials, upstream definitions, clients, skills, provider metadata, model aliases, and usage logs.
 - Oban handles background jobs such as usage writing and retention.
+- Native math config is stored in the singleton `mcp_native_math_config` table and cached by `Backplane.Math.Config`.
 - Relayixir is embedded as a library; its standalone server is disabled in Backplane.
 - Phoenix LiveView uses the DuskMoon UI component system.
