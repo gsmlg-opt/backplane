@@ -48,6 +48,7 @@ defmodule BackplaneWeb.Router do
     live("/hub/upstreams/new", UpstreamsLive, :new)
     live("/hub/upstreams/:id/edit", UpstreamsLive, :edit)
     live("/hub/managed", ManagedLive, :index)
+    live("/hub/managed/:prefix", ManagedServiceSettingsLive, :show)
 
     # LLM Providers
     live("/providers", ProvidersLive, :index)

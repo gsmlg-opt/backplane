@@ -12,6 +12,7 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ "Math"
     assert html =~ "math::"
     assert html =~ "math::evaluate"
+    assert html =~ ~s(href="/admin/hub/managed/math")
   end
 
   test "renders web search in managed services", %{conn: conn} do
@@ -21,6 +22,15 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ "Web Search"
     assert html =~ "web_search::"
     assert html =~ "web_search::search"
+    assert html =~ ~s(href="/admin/hub/managed/web_search")
+  end
+
+  test "links other managed services to debug pages", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/admin/hub/managed")
+
+    assert html =~ ~s(href="/admin/hub/managed/day")
+    assert html =~ ~s(href="/admin/hub/managed/web")
+    assert html =~ ~s(href="/admin/hub/managed/math")
   end
 
   test "toggles web search service through settings", %{conn: conn} do

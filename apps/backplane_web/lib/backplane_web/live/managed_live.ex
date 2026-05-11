@@ -66,7 +66,9 @@ defmodule BackplaneWeb.ManagedLive do
           prefix: prefix,
           enabled: enabled,
           tool_count: tool_count,
-          tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end)
+          tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end),
+          settings_path: "/admin/hub/managed/#{prefix}",
+          settings_label: if(prefix == "web_search", do: "Settings", else: "Debug")
         })
       end)
 
@@ -122,14 +124,19 @@ defmodule BackplaneWeb.ManagedLive do
                 </.dm_badge>
                 <span class="text-sm text-on-surface-variant">{service.tool_count} tools</span>
               </div>
-              <.dm_btn
-                size="sm"
-                variant={if service.enabled, do: "warning", else: "primary"}
-                phx-click="toggle"
-                phx-value-prefix={service.prefix}
-              >
-                {if service.enabled, do: "Disable", else: "Enable"}
-              </.dm_btn>
+              <div class="flex items-center gap-2">
+                <.link navigate={service.settings_path}>
+                  <.dm_btn size="sm" variant="outline">{service.settings_label}</.dm_btn>
+                </.link>
+                <.dm_btn
+                  size="sm"
+                  variant={if service.enabled, do: "warning", else: "primary"}
+                  phx-click="toggle"
+                  phx-value-prefix={service.prefix}
+                >
+                  {if service.enabled, do: "Disable", else: "Enable"}
+                </.dm_btn>
+              </div>
             </div>
           </:title>
           <p class="text-sm text-on-surface-variant mb-2">{service.description}</p>
