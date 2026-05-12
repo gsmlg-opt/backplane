@@ -41,15 +41,15 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
   describe "index" do
     test "renders provider list page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/providers")
+      {:ok, _view, html} = live(conn, "/admin/llama/providers")
 
       assert html =~ "LLM Providers"
-      assert html =~ ~s(href="/admin/providers/new")
+      assert html =~ ~s(href="/admin/llama/providers/new")
       refute html =~ "New Provider"
     end
 
     test "renders the dedicated new provider page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/providers/new")
+      {:ok, _view, html} = live(conn, "/admin/llama/providers/new")
 
       assert html =~ "Add LLM Provider"
       assert html =~ "DeepSeek"
@@ -76,7 +76,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
     end
 
     test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/providers/new")
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
 
       ollama_html =
         view
@@ -97,7 +97,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
     end
 
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/providers/new")
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
 
       view
       |> form("form[phx-submit=save]", %{
@@ -121,7 +121,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/providers")
+      assert_redirect(view, "/admin/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "deepseek-test")
       assert provider.preset_key == "deepseek"
@@ -137,7 +137,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
     end
 
     test "creates a provider from a selected preset", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/providers/new")
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='moonshot-cn']")
@@ -165,7 +165,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/providers")
+      assert_redirect(view, "/admin/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "moonshot-test")
       assert provider.preset_key == "moonshot-cn"
@@ -177,19 +177,19 @@ defmodule BackplaneWeb.ProvidersLiveTest do
     test "shows a created provider", %{conn: conn} do
       {provider, _openai_api, _anthropic_api} = create_provider_with_apis()
 
-      {:ok, _view, html} = live(conn, "/admin/providers")
+      {:ok, _view, html} = live(conn, "/admin/llama/providers")
 
       assert html =~ "LLM Providers"
       assert html =~ "anthropic-prod"
       assert html =~ "Anthropic"
       assert html =~ "https://api.example.com/anthropic"
-      assert html =~ ~s(href="/admin/providers/#{provider.id}")
+      assert html =~ ~s(href="/admin/llama/providers/#{provider.id}")
     end
 
     test "provider detail edits provider and manages models", %{conn: conn} do
       {provider, openai_api, anthropic_api} = create_provider_with_apis()
 
-      {:ok, view, html} = live(conn, "/admin/providers/#{provider.id}")
+      {:ok, view, html} = live(conn, "/admin/llama/providers/#{provider.id}")
 
       assert html =~ "Edit Provider"
       assert html =~ "Add Model"
@@ -327,7 +327,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
 
       html =
         view
@@ -348,7 +348,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
       Provider.soft_delete(provider)
 
-      {:ok, _view, html} = live(conn, "/admin/providers")
+      {:ok, _view, html} = live(conn, "/admin/llama/providers")
 
       refute html =~ "anthropic-prod"
     end

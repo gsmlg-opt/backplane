@@ -13,7 +13,7 @@ defmodule BackplaneWeb.ProvidersLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/providers",
+       current_path: "/admin/llama/providers",
        loading: true,
        providers: []
      )}
@@ -101,7 +101,7 @@ defmodule BackplaneWeb.ProvidersLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">LLM Providers</h1>
-        <.link navigate={~p"/admin/providers/new"} class="no-underline">
+        <.link navigate={~p"/admin/llama/providers/new"} class="no-underline">
           <.dm_btn variant="primary" size="sm">Add Provider</.dm_btn>
         </.link>
       </div>
@@ -127,7 +127,7 @@ defmodule BackplaneWeb.ProvidersLive do
                 </div>
               </div>
               <div class="flex items-center gap-2 shrink-0">
-                <.link navigate={~p"/admin/providers/#{provider.id}"} class="no-underline">
+                <.link navigate={~p"/admin/llama/providers/#{provider.id}"} class="no-underline">
                   <.dm_btn size="xs">View</.dm_btn>
                 </.link>
                 <.dm_btn

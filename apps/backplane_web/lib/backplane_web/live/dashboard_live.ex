@@ -18,7 +18,7 @@ defmodule BackplaneWeb.DashboardLive do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.config_reloaded_topic())
     end
 
-    {:ok, assign(socket, current_path: "/admin", loading: true)}
+    {:ok, assign(socket, current_path: "/admin/dashboard/overview", loading: true)}
   end
 
   @impl true

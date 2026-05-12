@@ -11,7 +11,7 @@ defmodule BackplaneWeb.ProviderNewLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/providers",
+       current_path: "/admin/llama/providers",
        presets: ProviderPreset.all(),
        selected_preset: ProviderPreset.fetch!(@default_preset),
        form: form_for_preset(ProviderPreset.fetch!(@default_preset), %{}),
@@ -69,7 +69,7 @@ defmodule BackplaneWeb.ProviderNewLive do
           {:noreply,
            socket
            |> put_flash(:info, "Provider #{provider.name} created")
-           |> push_navigate(to: ~p"/admin/providers")}
+           |> push_navigate(to: ~p"/admin/llama/providers")}
 
         {:error, errors} ->
           {:noreply,
@@ -266,7 +266,7 @@ defmodule BackplaneWeb.ProviderNewLive do
             Choose a provider preset, select a credential, then adjust OpenAI and Anthropic API surfaces.
           </p>
         </div>
-        <.link navigate={~p"/admin/providers"} class="no-underline">
+        <.link navigate={~p"/admin/llama/providers"} class="no-underline">
           <.dm_btn size="sm">Cancel</.dm_btn>
         </.link>
       </div>
@@ -318,7 +318,7 @@ defmodule BackplaneWeb.ProviderNewLive do
               />
               <p class="mt-1 text-xs text-on-surface-variant">
                 Select an LLM credential from the <.link
-                  navigate={~p"/admin/settings?tab=credentials"}
+                  navigate={~p"/admin/system/credentials"}
                   class="text-primary underline"
                 >credential store</.link>.
               </p>
@@ -381,7 +381,7 @@ defmodule BackplaneWeb.ProviderNewLive do
 
         <div class="flex gap-2">
           <.dm_btn type="submit" variant="primary">Create Provider</.dm_btn>
-          <.link navigate={~p"/admin/providers"} class="no-underline">
+          <.link navigate={~p"/admin/llama/providers"} class="no-underline">
             <.dm_btn type="button">Cancel</.dm_btn>
           </.link>
         </div>

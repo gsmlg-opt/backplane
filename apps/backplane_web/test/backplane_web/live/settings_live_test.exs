@@ -1,4 +1,4 @@
-defmodule BackplaneWeb.SettingsLiveTest do
+defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
   use Backplane.LiveCase, async: false
 
   import Phoenix.LiveViewTest
@@ -23,7 +23,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     end
 
     test "renders model alias settings instead of internal service toggles", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/settings")
+      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
 
       assert html =~ "Model Aliases"
       assert html =~ "smart"
@@ -40,7 +40,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     end
 
     test "renders model aliases in fast, smart, expert order", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/settings")
+      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
 
       fast_index = index_of!(html, "auto-model-fast-add-form")
       smart_index = index_of!(html, "auto-model-smart-add-form")
@@ -53,7 +53,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     test "renders target model picker options from enabled provider models", %{conn: conn} do
       create_provider_models(["fast-model-a"])
 
-      {:ok, _view, html} = live(conn, "/admin/settings")
+      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
 
       assert html =~ ~s(id="auto-model-fast-model")
       assert html =~ ~s(<option value="fast-model-a">)
@@ -63,7 +63,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     test "adds selected model target to alias list", %{conn: conn} do
       {openai_api, [model_id]} = create_provider_models(["fast-model-a"])
 
-      {:ok, view, _html} = live(conn, "/admin/settings")
+      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
 
       html =
         view
@@ -95,7 +95,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     test "removes a model target from the alias list", %{conn: conn} do
       {_openai_api, [model_id]} = create_provider_models(["fast-model-a"])
 
-      {:ok, view, _html} = live(conn, "/admin/settings")
+      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
 
       view
       |> form("#auto-model-fast-add-form", %{
@@ -116,7 +116,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     end
 
     test "renders custom alias form with built-in alias targets", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/settings")
+      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
 
       assert html =~ ~s(id="custom-model-alias-form")
       assert html =~ ~s(id="custom-model-alias-target")
@@ -126,7 +126,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     end
 
     test "adds custom alias pointing to a built-in alias", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/settings")
+      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
 
       html =
         view
@@ -144,7 +144,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     test "removes a custom alias", %{conn: conn} do
       {:ok, _alias} = Backplane.LLM.ModelAlias.put("coding", "smart")
 
-      {:ok, view, _html} = live(conn, "/admin/settings")
+      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
 
       html =
         view
@@ -218,13 +218,13 @@ defmodule BackplaneWeb.SettingsLiveTest do
 
   describe "credentials tab" do
     test "renders credentials tab", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/settings?tab=credentials")
+      {:ok, _view, html} = live(conn, "/admin/system/credentials")
       assert html =~ "Credential Store"
       assert html =~ "Add Credential"
     end
 
     test "show_add_form opens the form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/settings?tab=credentials")
+      {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
       html =
         view
@@ -236,7 +236,7 @@ defmodule BackplaneWeb.SettingsLiveTest do
     end
 
     test "can add a credential", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/settings?tab=credentials")
+      {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
       # Open the form
       view

@@ -2,7 +2,7 @@ defmodule BackplaneWeb.LogsLiveTest do
   use Backplane.LiveCase
 
   test "renders logs page with tabs", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/logs")
+    {:ok, _view, html} = live(conn, "/admin/system/logs")
 
     assert html =~ "Logs"
     assert html =~ "Background Jobs"
@@ -10,10 +10,9 @@ defmodule BackplaneWeb.LogsLiveTest do
   end
 
   test "can switch between tabs", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/admin/logs")
+    {:ok, view, _html} = live(conn, "/admin/system/logs")
 
-    # Click tool calls tab
-    html = view |> element("button", "Tool Calls") |> render_click()
+    html = view |> element("el-dm-button", "Tool Calls") |> render_click()
     assert html =~ "Events appear in real-time"
   end
 end

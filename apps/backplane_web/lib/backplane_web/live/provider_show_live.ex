@@ -16,7 +16,7 @@ defmodule BackplaneWeb.ProviderShowLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/providers",
+       current_path: "/admin/llama/providers",
        provider: nil,
        credential_options: [],
        provider_form: to_form(%{}, as: :provider),
@@ -36,7 +36,7 @@ defmodule BackplaneWeb.ProviderShowLive do
         {:noreply,
          socket
          |> put_flash(:error, "Provider not found")
-         |> push_navigate(to: ~p"/admin/providers")}
+         |> push_navigate(to: ~p"/admin/llama/providers")}
 
       provider ->
         {:noreply,
@@ -605,7 +605,7 @@ defmodule BackplaneWeb.ProviderShowLive do
       <div class="mb-6 flex items-center justify-between gap-4">
         <div>
           <div class="mb-1">
-            <.link navigate={~p"/admin/providers"} class="text-sm text-primary underline">
+            <.link navigate={~p"/admin/llama/providers"} class="text-sm text-primary underline">
               Back to providers
             </.link>
           </div>
