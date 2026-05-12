@@ -55,6 +55,16 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert html =~ "DeepSeek"
       assert html =~ "Z.ai"
       assert html =~ "MiniMax"
+      assert html =~ "OpenCode Go"
+      assert html =~ "OpenRouter"
+      assert html =~ "Ollama"
+      assert html =~ "Custom"
+      assert html =~ "OpenAI"
+      assert html =~ "OpenAI Codex"
+      assert html =~ "Anthropic"
+      assert html =~ "x.ai"
+      assert html =~ "Google AI Studio"
+      assert html =~ "Moonshot.cn"
       assert html =~ "OpenAI-compatible API"
       assert html =~ "Anthropic Messages API"
       assert html =~ "provider-name"
@@ -63,6 +73,27 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert html =~ "provider-openai-base-url"
       assert html =~ "provider-anthropic-base-url"
       refute html =~ "provider-api-key"
+    end
+
+    test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/providers/new")
+
+      ollama_html =
+        view
+        |> element("button[phx-value-preset='ollama']")
+        |> render_click()
+
+      assert ollama_html =~ "http://localhost:11434/v1"
+      assert ollama_html =~ "http://localhost:11434"
+
+      moonshot_html =
+        view
+        |> element("button[phx-value-preset='moonshot-cn']")
+        |> render_click()
+
+      assert moonshot_html =~ "moonshot-cn"
+      assert moonshot_html =~ "https://api.moonshot.cn/v1"
+      refute moonshot_html =~ "http://localhost:11434/v1"
     end
 
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do
@@ -103,6 +134,44 @@ defmodule BackplaneWeb.ProvidersLiveTest do
                %{api_surface: :anthropic, base_url: "https://api.deepseek.com/anthropic"},
                %{api_surface: :openai, base_url: "https://api.deepseek.com"}
              ] = apis
+    end
+
+    test "creates a provider from a selected preset", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/providers/new")
+
+      view
+      |> element("button[phx-value-preset='moonshot-cn']")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "moonshot-test",
+          "credential" => "test-cred",
+          "base_url" => "https://api.moonshot.cn/v1",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "openai_enabled" => "true",
+          "openai_base_url" => "https://api.moonshot.cn/v1",
+          "openai_model_discovery_enabled" => "true",
+          "openai_model_discovery_path" => "/models",
+          "openai_default_headers" => "{}",
+          "anthropic_enabled" => "false",
+          "anthropic_base_url" => "",
+          "anthropic_model_discovery_enabled" => "false",
+          "anthropic_model_discovery_path" => "",
+          "anthropic_default_headers" => "{}"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/admin/providers")
+
+      provider = Repo.get_by!(Provider, name: "moonshot-test")
+      assert provider.preset_key == "moonshot-cn"
+
+      assert [%{api_surface: :openai, base_url: "https://api.moonshot.cn/v1"}] =
+               ProviderApi.list_for_provider(provider.id)
     end
 
     test "shows a created provider", %{conn: conn} do
