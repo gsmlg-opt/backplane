@@ -8,12 +8,12 @@ defmodule Backplane.LLM.UsageLog do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
-  schema "llm_usage_logs" do
+  schema "llm_logs" do
     belongs_to(:provider, Backplane.LLM.Provider, type: :binary_id)
 
-    field(:model, :string)
+    field(:model, :string, source: :requested_model)
     field(:status, :integer)
-    field(:latency_ms, :integer)
+    field(:latency_ms, :integer, source: :duration_ms)
     field(:input_tokens, :integer)
     field(:output_tokens, :integer)
     field(:stream, :boolean, default: false)
