@@ -8,7 +8,7 @@
     <:menu to="/#overview">Overview</:menu>
     <:menu to="/#setup">Setup</:menu>
     <:menu to="/#agents">Agent setup</:menu>
-    <:menu to={~p"/admin"}>Admin</:menu>
+    <:menu to={~p"/admin/dashboard/overview"}>Admin</:menu>
     <:user_profile>
       <div class="hidden items-center gap-2 sm:flex">
         <.dm_badge variant="info" size="sm" soft>Documentation</.dm_badge>
@@ -31,7 +31,7 @@
               Private gateway for MCP tools and LLM APIs
             </h1>
           </div>
-          <a href={~p"/admin"} class="no-underline">
+          <a href={~p"/admin/dashboard/overview"} class="no-underline">
             <.dm_btn variant="primary" size="sm">Open admin</.dm_btn>
           </a>
         </div>
@@ -78,9 +78,9 @@
         </:title>
         <p class="mt-2 text-sm leading-6 text-on-surface-variant">
           Operational settings live in PostgreSQL and are managed from <a
-            href={~p"/admin"}
+            href={~p"/admin/dashboard/overview"}
             class="font-medium text-primary"
-          >/admin</a>.
+          >/admin/dashboard/overview</a>.
         </p>
       </.dm_card>
     </section>
@@ -96,12 +96,12 @@
         <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
           <li>
             <span class="font-semibold text-on-surface">1. Store the API key.</span>
-            Open <a href={~p"/admin/settings"} class="font-medium text-primary">/admin/settings</a>
+            Open <a href={~p"/admin/system/credentials"} class="font-medium text-primary">/admin/system/credentials</a>
             and add the provider secret in the credentials vault.
           </li>
           <li>
             <span class="font-semibold text-on-surface">2. Create a provider.</span>
-            Open <a href={~p"/admin/providers"} class="font-medium text-primary">/admin/providers</a>,
+            Open <a href={~p"/admin/llama/providers"} class="font-medium text-primary">/admin/llama/providers</a>,
             choose the upstream API format, base URL, and credential name.
           </li>
           <li>
@@ -116,7 +116,7 @@
           </li>
         </ol>
         <:action>
-          <a href={~p"/admin/providers"} class="no-underline">
+          <a href={~p"/admin/llama/providers"} class="no-underline">
             <.dm_btn variant="outline" size="sm">Configure providers</.dm_btn>
           </a>
         </:action>
@@ -132,8 +132,8 @@
         <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
           <li>
             <span class="font-semibold text-on-surface">1. Add an upstream.</span>
-            Open <a href={~p"/admin/hub/upstreams"} class="font-medium text-primary">
-              /admin/hub/upstreams
+            Open <a href={~p"/admin/mcp/upstreams"} class="font-medium text-primary">
+              /admin/mcp/upstreams
             </a>
             and create a stdio, HTTP, or SSE MCP server entry.
           </li>
@@ -144,7 +144,7 @@
           </li>
           <li>
             <span class="font-semibold text-on-surface">3. Configure client access.</span>
-            Open <a href={~p"/admin/clients"} class="font-medium text-primary">/admin/clients</a>
+            Open <a href={~p"/admin/system/clients"} class="font-medium text-primary">/admin/system/clients</a>
             to create bearer tokens and restrict which tool prefixes each client can call.
           </li>
           <li>
@@ -155,7 +155,7 @@
           </li>
         </ol>
         <:action>
-          <a href={~p"/admin/hub/upstreams"} class="no-underline">
+          <a href={~p"/admin/mcp/upstreams"} class="no-underline">
             <.dm_btn variant="outline" size="sm">Configure upstreams</.dm_btn>
           </a>
         </:action>
@@ -235,7 +235,7 @@ bearer_token_env_var = "BACKPLANE_MCP_TOKEN"</code></pre>
             <p>
               Then export the tokens before launching Codex. Backplane injects upstream provider secrets,
               so this client token can be scoped to the proxy or MCP client you created in
-              <a href={~p"/admin/clients"} class="font-medium text-primary">/admin/clients</a>.
+              <a href={~p"/admin/system/clients"} class="font-medium text-primary">/admin/system/clients</a>.
             </p>
             <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export OPENAI_API_KEY="bk-client-or-placeholder-token"
 export BACKPLANE_MCP_TOKEN="YOUR_MCP_TOKEN"
@@ -268,16 +268,16 @@ codex</code></pre>
       </p>
     </:section>
     <:section title="Configure" body_class="gap-2 text-sm">
-      <a href={~p"/admin/settings"} class="font-medium text-secondary-content underline">
+      <a href={~p"/admin/system/credentials"} class="font-medium text-secondary-content underline">
         Credentials vault
       </a>
-      <a href={~p"/admin/providers"} class="font-medium text-secondary-content underline">
+      <a href={~p"/admin/llama/providers"} class="font-medium text-secondary-content underline">
         LLM providers
       </a>
-      <a href={~p"/admin/hub/upstreams"} class="font-medium text-secondary-content underline">
+      <a href={~p"/admin/mcp/upstreams"} class="font-medium text-secondary-content underline">
         MCP upstreams
       </a>
-      <a href={~p"/admin/clients"} class="font-medium text-secondary-content underline">
+      <a href={~p"/admin/system/clients"} class="font-medium text-secondary-content underline">
         Client tokens
       </a>
     </:section>

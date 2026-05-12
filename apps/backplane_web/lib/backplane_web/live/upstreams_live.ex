@@ -14,7 +14,7 @@ defmodule BackplaneWeb.UpstreamsLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/hub/upstreams",
+       current_path: "/admin/mcp/upstreams",
        loading: true,
        upstreams: [],
        runtime_status: %{},
@@ -49,7 +49,7 @@ defmodule BackplaneWeb.UpstreamsLive do
       nil ->
         socket
         |> put_flash(:error, "Upstream not found")
-        |> push_patch(to: ~p"/admin/hub/upstreams")
+        |> push_patch(to: ~p"/admin/mcp/upstreams")
 
       upstream ->
         changeset = Upstreams.change(upstream, %{})
@@ -98,7 +98,7 @@ defmodule BackplaneWeb.UpstreamsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Upstream created")
-             |> push_patch(to: ~p"/admin/hub/upstreams")}
+             |> push_patch(to: ~p"/admin/mcp/upstreams")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: upstream_form(changeset))}
@@ -110,7 +110,7 @@ defmodule BackplaneWeb.UpstreamsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Upstream updated")
-             |> push_patch(to: ~p"/admin/hub/upstreams")}
+             |> push_patch(to: ~p"/admin/mcp/upstreams")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: upstream_form(changeset))}
@@ -400,12 +400,9 @@ defmodule BackplaneWeb.UpstreamsLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-3">
-          <.link navigate={~p"/admin/hub"} class="text-sm text-primary hover:underline">
-            &larr; Hub
-          </.link>
           <h1 class="text-2xl font-bold">Upstream MCP Servers</h1>
         </div>
-        <.link patch={~p"/admin/hub/upstreams/new"}>
+        <.link patch={~p"/admin/mcp/upstreams/new"}>
           <.dm_btn variant="primary" size="sm">New Upstream</.dm_btn>
         </.link>
       </div>
@@ -450,7 +447,7 @@ defmodule BackplaneWeb.UpstreamsLive do
                 >
                   Connect
                 </.dm_btn>
-                <.link patch={~p"/admin/hub/upstreams/#{upstream.id}/edit"}>
+                <.link patch={~p"/admin/mcp/upstreams/#{upstream.id}/edit"}>
                   <.dm_btn size="xs">Edit</.dm_btn>
                 </.link>
                 <.dm_btn
@@ -487,7 +484,7 @@ defmodule BackplaneWeb.UpstreamsLive do
     ~H"""
     <div>
       <div class="flex items-center gap-3 mb-6">
-        <.link patch={~p"/admin/hub/upstreams"} class="text-sm text-primary hover:underline">
+        <.link patch={~p"/admin/mcp/upstreams"} class="text-sm text-primary hover:underline">
           &larr; Upstreams
         </.link>
         <h1 class="text-2xl font-bold">
@@ -556,7 +553,7 @@ defmodule BackplaneWeb.UpstreamsLive do
               />
               <p class="text-xs text-on-surface-variant mt-1">
                 Select from the <.link
-                  navigate={~p"/admin/settings?tab=credentials"}
+                  navigate={~p"/admin/system/credentials"}
                   class="text-primary underline"
                 >credential store</.link>.
               </p>
@@ -647,7 +644,7 @@ defmodule BackplaneWeb.UpstreamsLive do
 
           <div class="flex gap-2 pt-2">
             <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-            <.link patch={~p"/admin/hub/upstreams"}>
+            <.link patch={~p"/admin/mcp/upstreams"}>
               <.dm_btn type="button">Cancel</.dm_btn>
             </.link>
           </div>

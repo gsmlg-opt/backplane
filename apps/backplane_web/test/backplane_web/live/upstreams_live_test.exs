@@ -10,13 +10,13 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
   end
 
   test "renders upstreams page", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/hub/upstreams")
+    {:ok, _view, html} = live(conn, "/admin/mcp/upstreams")
 
     assert html =~ "Upstream MCP Servers"
   end
 
   test "renders new upstream form", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/hub/upstreams/new")
+    {:ok, _view, html} = live(conn, "/admin/mcp/upstreams/new")
 
     assert html =~ "New Upstream"
     assert html =~ "mcp_upstream[name]"
@@ -34,7 +34,7 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
         url: "http://127.0.0.1:#{port}/mcp"
       })
 
-    {:ok, view, _html} = live(conn, "/admin/hub/upstreams")
+    {:ok, view, _html} = live(conn, "/admin/mcp/upstreams")
 
     view
     |> element("[phx-click='toggle'][phx-value-id='#{upstream.id}']", "Disable")
@@ -60,7 +60,7 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
         url: "http://127.0.0.1:#{port}/mcp"
       })
 
-    {:ok, view, _html} = live(conn, "/admin/hub/upstreams")
+    {:ok, view, _html} = live(conn, "/admin/mcp/upstreams")
 
     view
     |> element("[phx-click='connect'][phx-value-id='#{upstream.id}']", "Connect")
@@ -82,7 +82,7 @@ defmodule BackplaneWeb.UpstreamsLiveTest do
         url: "http://127.0.0.1:#{port}/mcp"
       })
 
-    {:ok, view, _html} = live(conn, "/admin/hub/upstreams")
+    {:ok, view, _html} = live(conn, "/admin/mcp/upstreams")
 
     view
     |> element("[phx-click='connect'][phx-value-id='#{upstream.id}']", "Connect")

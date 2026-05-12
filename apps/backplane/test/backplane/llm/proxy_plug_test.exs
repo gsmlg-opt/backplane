@@ -7,11 +7,11 @@ defmodule Backplane.LLM.ProxyPlugTest do
 
   describe "call/2" do
     test "passes through non-/llm paths unchanged" do
-      conn = conn(:get, "/admin/settings")
+      conn = conn(:get, "/admin/dashboard/overview")
       result = ProxyPlug.call(conn, ProxyPlug.init([]))
 
-      assert result.path_info == ["admin", "settings"]
-      assert result.request_path == "/admin/settings"
+      assert result.path_info == ["admin", "dashboard", "overview"]
+      assert result.request_path == "/admin/dashboard/overview"
       refute result.halted
     end
 

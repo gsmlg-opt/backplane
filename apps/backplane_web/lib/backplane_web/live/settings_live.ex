@@ -1,5 +1,5 @@
 defmodule BackplaneWeb.SettingsLive do
-  @moduledoc "Settings page with system settings editor and credentials management."
+  @moduledoc "Admin pages for model aliases and credentials management."
 
   use BackplaneWeb, :live_view
 
@@ -9,17 +9,21 @@ defmodule BackplaneWeb.SettingsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, current_path: "/admin/settings", active_tab: "settings")}
+    {:ok, assign(socket, page_mode: nil)}
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
-    tab = params["tab"] || "settings"
+  def handle_params(_params, _uri, socket) do
+    {page_mode, current_path, data_key} =
+      case socket.assigns.live_action do
+        :credentials -> {:credentials, "/admin/system/credentials", "credentials"}
+        _ -> {:model_aliases, "/admin/llama/model-aliases", "settings"}
+      end
 
     socket =
       socket
-      |> assign(active_tab: tab)
-      |> load_data(tab)
+      |> assign(page_mode: page_mode, current_path: current_path)
+      |> load_data(data_key)
 
     {:noreply, socket}
   end
@@ -62,7 +66,13 @@ defmodule BackplaneWeb.SettingsLive do
 
   @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/settings?tab=#{tab}")}
+    path =
+      case tab do
+        "credentials" -> ~p"/admin/system/credentials"
+        _ -> ~p"/admin/llama/model-aliases"
+      end
+
+    {:noreply, push_patch(socket, to: path)}
   end
 
   def handle_event("add_auto_model_target", %{"name" => name, "model" => model}, socket) do
@@ -419,28 +429,7 @@ defmodule BackplaneWeb.SettingsLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="text-2xl font-bold mb-6">Settings</h1>
-
-      <div class="tabs tabs-lifted" role="tablist">
-        <.link
-          patch={~p"/admin/settings?tab=settings"}
-          class={["tab tab-lg", @active_tab == "settings" && "tab-active"]}
-          role="tab"
-          aria-selected={@active_tab == "settings"}
-        >
-          Settings
-        </.link>
-        <.link
-          patch={~p"/admin/settings?tab=credentials"}
-          class={["tab tab-lg", @active_tab == "credentials" && "tab-active"]}
-          role="tab"
-          aria-selected={@active_tab == "credentials"}
-        >
-          Credentials
-        </.link>
-      </div>
-
-      <%= if @active_tab == "settings" do %>
+      <%= if @page_mode == :model_aliases do %>
         <.render_settings_tab {assigns} />
       <% else %>
         <.render_credentials_tab {assigns} />
@@ -451,9 +440,9 @@ defmodule BackplaneWeb.SettingsLive do
 
   defp render_settings_tab(assigns) do
     ~H"""
-    <div class="space-y-6 mt-4">
+    <div class="space-y-6">
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Model Aliases</h2>
+        <h1 class="mb-6 text-2xl font-bold">Model Aliases</h1>
         <div class="space-y-4">
           <.dm_card :for={auto_model <- @auto_models} variant="bordered">
             <% target_model_ids = auto_model_target_ids(auto_model) %>
@@ -615,9 +604,9 @@ defmodule BackplaneWeb.SettingsLive do
     assigns = assign(assigns, :kind_options, @kind_options)
 
     ~H"""
-    <div class="mt-4">
+    <div>
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold">Credential Store</h2>
+        <h1 class="text-2xl font-bold">Credential Store</h1>
         <.dm_btn :if={@cred_form_mode == nil} variant="primary" phx-click="show_add_form">
           Add Credential
         </.dm_btn>

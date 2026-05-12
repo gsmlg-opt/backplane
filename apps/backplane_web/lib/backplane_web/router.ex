@@ -40,29 +40,31 @@ defmodule BackplaneWeb.Router do
     pipe_through(:browser)
 
     # Dashboard
-    live("/", DashboardLive, :index)
+    get("/", PageController, :admin)
+    live("/dashboard/overview", DashboardLive, :overview)
+    live("/dashboard/usage/llm", DashboardUsageLive, :llm)
+    live("/dashboard/usage/mcp", DashboardUsageLive, :mcp)
 
-    # MCP Hub
-    live("/hub", HubLive, :index)
-    live("/hub/upstreams", UpstreamsLive, :index)
-    live("/hub/upstreams/new", UpstreamsLive, :new)
-    live("/hub/upstreams/:id/edit", UpstreamsLive, :edit)
-    live("/hub/managed", ManagedLive, :index)
-    live("/hub/managed/:prefix", ManagedServiceSettingsLive, :show)
+    # Llama
+    live("/llama/providers", ProvidersLive, :index)
+    live("/llama/providers/new", ProviderNewLive, :new)
+    live("/llama/providers/:id", ProviderShowLive, :show)
+    live("/llama/model-aliases", SettingsLive, :model_aliases)
 
-    # LLM Providers
-    live("/providers", ProvidersLive, :index)
-    live("/providers/new", ProviderNewLive, :new)
-    live("/providers/:id", ProviderShowLive, :show)
+    # MCP
+    live("/mcp/upstreams", UpstreamsLive, :index)
+    live("/mcp/upstreams/new", UpstreamsLive, :new)
+    live("/mcp/upstreams/:id/edit", UpstreamsLive, :edit)
+    live("/mcp/managed", ManagedLive, :index)
+    live("/mcp/managed/:prefix", ManagedServiceSettingsLive, :show)
 
-    # Clients
-    live("/clients", ClientsLive, :index)
+    # Skill
+    live("/skill", SkillLive, :index)
 
-    # Logs
-    live("/logs", LogsLive, :index)
-
-    # Settings
-    live("/settings", SettingsLive, :index)
+    # System
+    live("/system/clients", ClientsLive, :index)
+    live("/system/logs", LogsLive, :index)
+    live("/system/credentials", SettingsLive, :credentials)
   end
 
   # Enable LiveDashboard in development

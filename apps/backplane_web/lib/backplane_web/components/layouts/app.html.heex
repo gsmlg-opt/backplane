@@ -1,20 +1,52 @@
-<div class="min-h-full">
-  <.dm_appbar title="Backplane" title_to={~p"/admin"} class="appbar-primary">
-    <:menu to={~p"/admin"} active={@current_path == "/admin"}>Dashboard</:menu>
-    <:menu to={~p"/admin/hub"} active={String.starts_with?(@current_path, "/admin/hub")}>MCP Hub</:menu>
-    <:menu to={~p"/admin/providers"} active={String.starts_with?(@current_path, "/admin/providers")}>LLM Providers</:menu>
-    <:menu to={~p"/admin/clients"} active={String.starts_with?(@current_path, "/admin/clients")}>Clients</:menu>
-    <:menu to={~p"/admin/logs"} active={String.starts_with?(@current_path, "/admin/logs")}>Logs</:menu>
-    <:menu to={~p"/admin/settings"} active={String.starts_with?(@current_path, "/admin/settings")}>Settings</:menu>
-    <:user_profile>
-      <.dm_theme_switcher id="admin-theme-switcher" button_text="Theme" theme="moonlight" />
-    </:user_profile>
-  </.dm_appbar>
+<% current_path = assigns[:current_path] || "/admin/dashboard/overview" %>
+<% left_nav_items = BackplaneWeb.Layouts.left_nav_items(current_path) %>
 
-  <main class="bg-surface-container-low">
-    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-      <.dm_flash_group flash={@flash} />
-      {@inner_content}
+<div class="min-h-full bg-surface text-on-surface">
+  <header class="appbar appbar-sticky appbar-primary">
+    <.link navigate={~p"/admin/dashboard/overview"} class="appbar-brand no-underline">
+      <span class="appbar-title">Backplane</span>
+    </.link>
+
+    <nav class="appbar-actions admin-top-nav" aria-label="Main navigation">
+      <.link
+        :for={item <- BackplaneWeb.Layouts.top_nav_items()}
+        navigate={item.path}
+        class="appbar-action w-auto rounded-md px-3 whitespace-nowrap no-underline"
+        aria-current={BackplaneWeb.Layouts.active_top_nav?(current_path, item.section) && "page"}
+      >
+        {item.label}
+      </.link>
+    </nav>
+
+    <div class="appbar-trailing admin-appbar-tools">
+      <.dm_theme_switcher id="admin-theme-switcher" button_text="Theme" theme="moonlight" />
     </div>
-  </main>
+  </header>
+
+  <div class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex">
+    <aside class="bg-secondary text-secondary-content lg:w-60 lg:shrink-0">
+      <nav class="flex gap-1 overflow-x-auto px-4 py-3 lg:flex-col lg:gap-2 lg:overflow-visible lg:p-4">
+        <.link
+          :for={item <- left_nav_items}
+          navigate={item.path}
+          class={[
+            "whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium no-underline transition-colors",
+            BackplaneWeb.Layouts.active_left_nav?(current_path, item.path) &&
+              "bg-primary text-primary-content",
+            !BackplaneWeb.Layouts.active_left_nav?(current_path, item.path) &&
+              "text-secondary-content hover:bg-secondary-container hover:text-on-secondary-container"
+          ]}
+        >
+          {item.label}
+        </.link>
+      </nav>
+    </aside>
+
+    <main class="min-w-0 flex-1">
+      <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <.dm_flash_group flash={@flash} />
+        {@inner_content}
+      </div>
+    </main>
+  </div>
 </div>

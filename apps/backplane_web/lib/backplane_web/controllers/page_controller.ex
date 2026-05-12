@@ -7,4 +7,8 @@ defmodule BackplaneWeb.PageController do
     |> put_layout(html: false)
     |> render(:home)
   end
+
+  def admin(conn, _params) do
+    redirect(conn, to: ~p"/admin/dashboard/overview")
+  end
 end

@@ -8,7 +8,7 @@ defmodule BackplaneWeb.ClientsLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/clients",
+       current_path: "/admin/system/clients",
        loading: true,
        editing: nil,
        form: nil,

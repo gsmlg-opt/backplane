@@ -31,7 +31,7 @@ defmodule BackplaneWeb.ManagedLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, current_path: "/admin/hub/managed", loading: true)}
+    {:ok, assign(socket, current_path: "/admin/mcp/managed", loading: true)}
   end
 
   @impl true
@@ -67,7 +67,7 @@ defmodule BackplaneWeb.ManagedLive do
           enabled: enabled,
           tool_count: tool_count,
           tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end),
-          settings_path: "/admin/hub/managed/#{prefix}",
+          settings_path: "/admin/mcp/managed/#{prefix}",
           settings_label: if(prefix == "web_search", do: "Settings", else: "Debug")
         })
       end)
@@ -106,9 +106,6 @@ defmodule BackplaneWeb.ManagedLive do
     ~H"""
     <div>
       <div class="flex items-center gap-3 mb-6">
-        <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/admin/hub")}>
-          &larr; Hub
-        </.dm_btn>
         <h1 class="text-2xl font-bold">Managed Services</h1>
       </div>
 

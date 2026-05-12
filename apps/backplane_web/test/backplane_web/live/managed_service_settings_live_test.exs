@@ -39,7 +39,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
   test "renders web search settings", %{conn: conn} do
     {:ok, _credential} = Credentials.store("shared-search-key", "secret", "service")
 
-    {:ok, _view, html} = live(conn, "/admin/hub/managed/web_search")
+    {:ok, _view, html} = live(conn, "/admin/mcp/managed/web_search")
 
     assert html =~ "Web Search Settings"
     assert html =~ "Default Backend"
@@ -49,14 +49,14 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
     assert html =~ "Z.ai"
     assert html =~ "BigModel"
     assert html =~ "shared-search-key"
-    assert html =~ ~s(href="/admin/settings?tab=credentials")
+    assert html =~ ~s(href="/admin/system/credentials")
     refute html =~ "Backend API Keys"
     refute html =~ "API Key"
   end
 
   test "saves default backend and selected backend credential", %{conn: conn} do
     {:ok, _credential} = Credentials.store("mini-search-key", "mini-secret", "service")
-    {:ok, view, _html} = live(conn, "/admin/hub/managed/web_search")
+    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web_search")
 
     html =
       view
@@ -103,7 +103,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
       })
     end)
 
-    {:ok, view, html} = live(conn, "/admin/hub/managed/web_search?tab=debug")
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/web_search?tab=debug")
 
     assert html =~ "JSON Argument Schema"
     assert html =~ "web_search::search"
@@ -127,7 +127,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
   end
 
   test "day debug tab calls selected managed tool", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/admin/hub/managed/day?tab=debug")
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/day?tab=debug")
 
     assert html =~ "Day Debug"
     assert html =~ "day::diff"
@@ -172,7 +172,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
 
   test "math debug tab calls selected managed tool", %{conn: conn} do
     {:ok, _record} = Backplane.Math.Config.save(%{enabled: true})
-    {:ok, view, html} = live(conn, "/admin/hub/managed/math?tab=debug")
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/math?tab=debug")
 
     assert html =~ "Math Debug"
     assert html =~ "math::evaluate"
@@ -205,7 +205,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
       """)
     end)
 
-    {:ok, view, html} = live(conn, "/admin/hub/managed/web?tab=debug")
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
 
     assert html =~ "Web Fetch Debug"
     assert html =~ "web::fetch"
