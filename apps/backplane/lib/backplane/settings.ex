@@ -30,7 +30,7 @@ defmodule Backplane.Settings do
       desc: "Preferred target model ids for the fast auto model"
     },
     "llm.auto_models.smart.targets" => %{
-      value: ["minimax-m2.7", "kimi-k2.6", "glm-5.1"],
+      value: [],
       type: "json",
       desc: "Preferred target model ids for the smart auto model"
     },

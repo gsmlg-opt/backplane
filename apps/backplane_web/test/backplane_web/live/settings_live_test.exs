@@ -29,9 +29,10 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "smart"
       assert html =~ "fast"
       assert html =~ "expert"
-      assert html =~ "minimax-m2.7"
-      assert html =~ "kimi-k2.6"
-      assert html =~ "glm-5.1"
+      assert html =~ "No target models selected"
+      refute html =~ "minimax-m2.7"
+      refute html =~ "kimi-k2.6"
+      refute html =~ "glm-5.1"
 
       refute html =~ "services.day.enabled"
       refute html =~ "services.web.enabled"
@@ -158,14 +159,7 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
 
   defp reset_auto_model_targets do
     :ok = Backplane.Settings.set("llm.auto_models.fast.targets", [])
-
-    :ok =
-      Backplane.Settings.set("llm.auto_models.smart.targets", [
-        "minimax-m2.7",
-        "kimi-k2.6",
-        "glm-5.1"
-      ])
-
+    :ok = Backplane.Settings.set("llm.auto_models.smart.targets", [])
     :ok = Backplane.Settings.set("llm.auto_models.expert.targets", [])
   end
 
