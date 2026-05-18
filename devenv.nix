@@ -39,7 +39,10 @@ in {
       while ! pg_isready -h "$PGHOST" -d backplane_dev -q 2>/dev/null; do
         sleep 0.5
       done
-      echo "PostgreSQL is ready, starting backplane..."
+      echo "PostgreSQL is ready, preparing database..."
+      mix ecto.create --quiet
+      mix ecto.migrate
+      echo "Database is ready, starting backplane..."
       exec mix phx.server
     '';
   };
