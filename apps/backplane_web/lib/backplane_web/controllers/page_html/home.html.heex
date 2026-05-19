@@ -111,8 +111,8 @@
           </li>
           <li>
             <span class="font-semibold text-on-surface">4. Point clients at the proxy.</span>
-            Use this server as the API base URL and send requests under
-            <code class="text-on-surface">/llm/*</code>.
+            Use <code class="text-on-surface">/llm/v1</code> for OpenAI-compatible clients and
+            <code class="text-on-surface">/llm/anthropic</code> for Anthropic Messages clients.
           </li>
         </ol>
         <:action>
@@ -191,7 +191,7 @@
               Set the model gateway without <code class="text-on-surface">/v1</code>. Claude Code appends
               <code class="text-on-surface">/v1/messages</code> when it calls the Anthropic Messages API.
             </p>
-            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export ANTHROPIC_BASE_URL="http://10.100.10.17:4220/llm"
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export ANTHROPIC_BASE_URL="http://10.100.10.17:4220/llm/anthropic"
 export ANTHROPIC_API_KEY="bk-client-or-placeholder-token"
 claude</code></pre>
             <p>

@@ -4,10 +4,10 @@ defmodule Backplane.LLM.Router do
 
   Aggregates LLM providers behind a single OpenAI/Anthropic-compatible endpoint.
   Routes:
-  - GET  /v1/models              — aggregated model listing
-  - POST /v1/messages            — Anthropic Messages API
-  - POST /v1/chat/completions    — OpenAI Chat Completions API
-  - POST _                       — catch-all forwarded as :openai
+  - GET  /v1/models                    — aggregated model listing
+  - POST /anthropic/v1/messages        — Anthropic Messages API
+  - POST /v1/chat/completions          — OpenAI Chat Completions API
+  - POST _                             — catch-all forwarded as :openai
   """
 
   use Plug.Router
@@ -51,8 +51,10 @@ defmodule Backplane.LLM.Router do
     send_json(conn, 200, %{"object" => "list", "data" => models})
   end
 
-  post "/v1/messages" do
-    proxy_request(conn, :anthropic)
+  post "/anthropic/v1/messages" do
+    conn
+    |> strip_request_prefix("anthropic")
+    |> proxy_request(:anthropic)
   end
 
   post "/v1/chat/completions" do
@@ -71,6 +73,18 @@ defmodule Backplane.LLM.Router do
   end
 
   # ── Proxy dispatch ────────────────────────────────────────────────────────────
+
+  defp strip_request_prefix(conn, prefix) do
+    case conn.path_info do
+      [^prefix | rest] ->
+        conn
+        |> Map.put(:path_info, rest)
+        |> Map.put(:request_path, "/" <> Enum.join(rest, "/"))
+
+      _ ->
+        conn
+    end
+  end
 
   defp proxy_request(conn, api_type) do
     raw_body = conn.assigns[:raw_body] || ""
@@ -382,7 +396,7 @@ defmodule Backplane.LLM.Router do
     send_json(conn, 400, %{
       "error" => %{
         "message" =>
-          "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /v1/messages instead.",
+          "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /anthropic/v1/messages instead.",
         "type" => "invalid_request_error",
         "code" => "api_type_mismatch"
       }

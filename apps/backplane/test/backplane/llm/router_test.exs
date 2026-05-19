@@ -35,12 +35,36 @@ defmodule Backplane.LLM.RouterTest do
     Router.call(conn, Router.init([]))
   end
 
+  defp public_llm_request(method, path, body) do
+    conn_body = if body, do: Jason.encode!(body), else: ""
+
+    conn(method, path, conn_body)
+    |> put_req_header("content-type", "application/json")
+    |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
+  end
+
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
 
-  describe "POST /v1/messages" do
+  describe "POST /llm/anthropic/v1/messages" do
+    test "routes public Anthropic messages requests to the Anthropic surface" do
+      conn =
+        public_llm_request(:post, "/llm/anthropic/v1/messages", %{
+          "model" => "unknown-provider/unknown-model",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "max_tokens" => 100
+        })
+
+      assert conn.status == 404
+      body = json_body(conn)
+      assert body["type"] == "error"
+      assert body["error"]["type"] == "not_found_error"
+    end
+  end
+
+  describe "POST /anthropic/v1/messages" do
     test "returns 404 for unknown model with anthropic error shape" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "unknown-provider/unknown-model",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 100
@@ -57,7 +81,7 @@ defmodule Backplane.LLM.RouterTest do
       create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
 
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "openai-prod/gpt-4o",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 100
@@ -70,7 +94,7 @@ defmodule Backplane.LLM.RouterTest do
 
     test "returns 400 when model field is missing" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 100
         })
@@ -132,7 +156,7 @@ defmodule Backplane.LLM.RouterTest do
       RateLimiter.check(provider.id, 1)
 
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "anthropic-rl/claude-sonnet",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10

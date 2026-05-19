@@ -4,7 +4,16 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   import Plug.Test
   import Plug.Conn
 
-  alias Backplane.LLM.{ModelResolver, Provider, RateLimiter, Router}
+  alias Backplane.LLM.{
+    ModelResolver,
+    Provider,
+    ProviderApi,
+    ProviderModel,
+    ProviderModelSurface,
+    RateLimiter,
+    Router
+  }
+
   alias Backplane.Settings.Credentials
 
   setup do
@@ -21,10 +30,28 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     {:ok, provider} =
       Provider.create(%{
         name: "test-integration",
-        api_type: :anthropic,
-        api_url: "http://localhost:#{port}",
-        credential: "test-llm-key",
-        models: ["claude-test"]
+        credential: "test-llm-key"
+      })
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "http://localhost:#{port}"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: "claude-test",
+        source: :manual
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
       })
 
     ModelResolver.clear_cache()
@@ -50,7 +77,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     %{port: port, provider: provider}
   end
 
-  defp llm_request(method, path, body \\ nil) do
+  defp llm_request(method, path, body) do
     conn_body = if body, do: Jason.encode!(body), else: ""
 
     conn(method, path, conn_body)
@@ -61,7 +88,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "non-streaming proxy" do
     test "proxies anthropic request end-to-end" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -75,7 +102,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
     test "rewrites model field in forwarded body" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -91,7 +118,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "streaming proxy" do
     test "streams anthropic SSE events to client" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10,
@@ -114,7 +141,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "error handling" do
     test "returns 404 for unknown model" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "model" => "nonexistent/model",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -125,7 +152,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
     test "returns 400 for missing model field" do
       conn =
-        llm_request(:post, "/v1/messages", %{
+        llm_request(:post, "/anthropic/v1/messages", %{
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
         })
