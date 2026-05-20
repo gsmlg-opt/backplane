@@ -43,7 +43,35 @@ defmodule Backplane.LLM.RouterTest do
     |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
   end
 
+  defp public_llm_request(method, path) do
+    conn(method, path)
+    |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
+  end
+
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
+
+  describe "GET /llm/anthropic/models" do
+    test "returns only models available on the Anthropic surface" do
+      create_provider_model(
+        "anthropic-prod",
+        :anthropic,
+        "claude-sonnet",
+        "router-anthropic-cred"
+      )
+
+      create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
+
+      conn = public_llm_request(:get, "/llm/anthropic/models")
+
+      assert conn.status == 200
+      body = json_body(conn)
+      ids = Enum.map(body["data"], & &1["id"])
+
+      assert body["object"] == "list"
+      assert "anthropic-prod/claude-sonnet" in ids
+      refute "openai-prod/gpt-4o" in ids
+    end
+  end
 
   describe "POST /llm/anthropic/v1/messages" do
     test "routes public Anthropic messages requests to the Anthropic surface" do
@@ -58,6 +86,22 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       assert body["type"] == "error"
       assert body["error"]["type"] == "not_found_error"
+    end
+  end
+
+  describe "POST /llm/v1/responses" do
+    test "routes public Responses API requests to the OpenAI surface" do
+      conn =
+        public_llm_request(:post, "/llm/v1/responses", %{
+          "model" => "unknown-provider/unknown-model",
+          "input" => "hi"
+        })
+
+      assert conn.status == 404
+      body = json_body(conn)
+      assert is_map(body["error"])
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
     end
   end
 
