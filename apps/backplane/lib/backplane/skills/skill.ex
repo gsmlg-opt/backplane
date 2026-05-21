@@ -17,18 +17,31 @@ defmodule Backplane.Skills.Skill do
     field(:content, :string)
     field(:content_hash, :string)
     field(:enabled, :boolean, default: true)
+    field(:slug, :string)
+    field(:version, :string)
+    field(:license, :string)
+    field(:homepage, :string)
+    field(:author, :string)
+    field(:meta, :map, default: %{})
+    field(:archive_ref, :string)
+    field(:size_bytes, :integer)
+    field(:file_count, :integer)
+    field(:source_kind, :string)
+    field(:source_uri, :string)
+    field(:source_rev, :string)
 
     timestamps()
   end
 
-  @required_fields ~w(id name content)a
-  @optional_fields ~w(description tags content_hash enabled)a
+  @required_fields ~w(id slug name content)a
+  @optional_fields ~w(description tags content_hash enabled version license homepage author meta archive_ref size_bytes file_count source_kind source_uri source_rev)a
 
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(skill, attrs) do
     skill
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
+    |> unique_constraint(:slug)
   end
 
   @spec update_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()

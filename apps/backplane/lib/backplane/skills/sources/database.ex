@@ -38,11 +38,14 @@ defmodule Backplane.Skills.Sources.Database do
       |> Base.encode16(case: :lower)
 
     id = generate_id()
+    name = attrs[:name] || attrs["name"] || ""
 
     params =
       attrs
       |> Map.new(fn {k, v} -> {to_string(k), v} end)
       |> Map.merge(%{"id" => id, "content_hash" => hash})
+      |> Map.put_new("slug", derive_slug(name, id))
+      |> Map.put_new("source_kind", "database")
 
     %Skill{}
     |> Skill.changeset(params)
@@ -80,14 +83,43 @@ defmodule Backplane.Skills.Sources.Database do
     "db/" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
+  defp derive_slug(name, id) do
+    base =
+      name
+      |> to_string()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.trim("-")
+
+    hash =
+      :md5
+      |> :crypto.hash(id)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 8)
+
+    "#{if base == "", do: "skill", else: base}-#{hash}"
+  end
+
   defp to_entry(%Skill{} = s) do
     %{
       id: s.id,
+      slug: s.slug,
       name: s.name,
       description: s.description,
       tags: s.tags,
       content: s.content,
-      content_hash: s.content_hash
+      content_hash: s.content_hash,
+      version: s.version,
+      license: s.license,
+      homepage: s.homepage,
+      author: s.author,
+      meta: s.meta,
+      archive_ref: s.archive_ref,
+      size_bytes: s.size_bytes,
+      file_count: s.file_count,
+      source_kind: s.source_kind,
+      source_uri: s.source_uri,
+      source_rev: s.source_rev
     }
   end
 end
