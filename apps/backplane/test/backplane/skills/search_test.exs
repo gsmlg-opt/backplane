@@ -18,6 +18,7 @@ defmodule Backplane.Skills.SearchTest do
       homepage: "https://example.com/ecto",
       archive_ref:
         "sha256/abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd.tar.gz",
+      source_kind: "archive",
       size_bytes: 4096,
       file_count: 7
     )
@@ -75,6 +76,13 @@ defmodule Backplane.Skills.SearchTest do
     test "respects limit" do
       results = Search.query("elixir", limit: 1)
       assert length(results) <= 1
+    end
+
+    test "filters to archive-backed skills when archive_only is true" do
+      results = Search.query("elixir", archive_only: true)
+      names = Enum.map(results, & &1.name)
+
+      assert names == ["Ecto Queries"]
     end
 
     test "includes v1 metadata fields in results" do

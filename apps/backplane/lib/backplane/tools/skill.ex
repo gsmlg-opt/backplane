@@ -115,14 +115,12 @@ defmodule Backplane.Tools.Skill do
   @impl true
   @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "search"} = args) do
-    opts = search_opts(args)
     limit = normalized_limit(args["limit"])
+    opts = search_opts(args, limit)
 
     results =
       args["query"]
       |> Skills.search(opts)
-      |> Enum.filter(&archive_backed_result?/1)
-      |> Enum.take(limit)
 
     {:ok, results}
   end
@@ -181,10 +179,11 @@ defmodule Backplane.Tools.Skill do
     {:error, "Unknown skill tool handler: #{inspect(args)}"}
   end
 
-  defp search_opts(args) do
+  defp search_opts(args, limit) do
     []
     |> maybe_add(:tags, args["tags"])
-    |> maybe_add(:limit, @max_limit)
+    |> maybe_add(:archive_only, true)
+    |> maybe_add(:limit, limit)
   end
 
   defp skill_ref(args), do: args["slug"] || args["skill_id"] || ""
@@ -205,16 +204,6 @@ defmodule Backplane.Tools.Skill do
       {:error, "Skill is not archive-backed: #{skill.slug}"}
     end
   end
-
-  defp archive_backed_result?(%{id: id}) when is_binary(id) do
-    with {:ok, skill} <- Skills.get(id) do
-      archive_backed_skill?(skill)
-    else
-      _ -> false
-    end
-  end
-
-  defp archive_backed_result?(_result), do: false
 
   defp archive_backed_skill?(%SkillSchema{source_kind: "archive", archive_ref: archive_ref}) do
     valid_archive_ref?(archive_ref)

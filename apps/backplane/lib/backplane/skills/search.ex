@@ -13,16 +13,20 @@ defmodule Backplane.Skills.Search do
   Options:
     - :tags - list of tags (AND match)
     - :limit - max results (default 10)
+    - :archive_only - only return archive-backed skills with canonical archive refs
   """
+  @archive_ref_pattern "^sha256/[a-f0-9]{64}\\.tar\\.gz$"
   @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
     limit = Keyword.get(opts, :limit, 10)
+    archive_only? = Keyword.get(opts, :archive_only, false)
 
     Skill
     |> where([s], s.enabled == true)
     |> apply_text_search(search_query)
     |> apply_tag_filter(tags)
+    |> apply_archive_filter(archive_only?)
     |> order_by_relevance(search_query)
     |> limit(^limit)
     |> Repo.all()
@@ -48,6 +52,17 @@ defmodule Backplane.Skills.Search do
   defp apply_tag_filter(query, tags) do
     where(query, [s], fragment("tags @> ?::text[]", ^tags))
   end
+
+  defp apply_archive_filter(query, true) do
+    where(
+      query,
+      [s],
+      s.source_kind == "archive" and not is_nil(s.archive_ref) and
+        fragment("? ~ ?", s.archive_ref, ^@archive_ref_pattern)
+    )
+  end
+
+  defp apply_archive_filter(query, _archive_only?), do: query
 
   defp order_by_relevance(query, search) when is_binary(search) and search != "" do
     sanitized = search |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)

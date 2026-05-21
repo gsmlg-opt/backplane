@@ -117,6 +117,31 @@ defmodule Backplane.Tools.SkillTest do
                SkillTool.call(%{"_handler" => "search", "query" => "searchable"})
     end
 
+    test "returns archive skills when legacy matches exceed the SQL search cap", %{
+      tmp_dir: tmp_dir
+    } do
+      query = "crowdout"
+      repeated_query = String.duplicate("#{query} ", 20)
+
+      for index <- 1..101 do
+        Fixtures.insert_skill(
+          name: "Legacy Crowdout Skill #{index}",
+          slug: "legacy-crowdout-skill-#{index}",
+          description: repeated_query,
+          content: "# Legacy Crowdout Skill #{index}\n\n#{repeated_query}",
+          source_kind: "database"
+        )
+      end
+
+      archive_skill!(tmp_dir, "archive-crowdout-skill",
+        name: "Archive Crowdout Skill",
+        description: query
+      )
+
+      assert {:ok, [%{slug: "archive-crowdout-skill"}]} =
+               SkillTool.call(%{"_handler" => "search", "query" => query})
+    end
+
     test "clamps direct handler limit to at least one", %{tmp_dir: tmp_dir} do
       archive_skill!(tmp_dir, "first-search-skill",
         name: "First Search Skill",
