@@ -21,6 +21,18 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
 
       assert {:ok, "sha256/" <> ^hash <> ".tar.gz"} = Blob.put(bytes, root: tmp_dir)
     end
+
+    test "rejects relative roots without writing under cwd" do
+      relative_root = "tmp/blob-relative-root"
+      File.rm_rf!(relative_root)
+
+      assert {:error, {:invalid_root, ^relative_root}} =
+               LocalFS.put("archive bytes", root: relative_root)
+
+      refute File.exists?(relative_root)
+    after
+      File.rm_rf!("tmp/blob-relative-root")
+    end
   end
 
   describe "get/2" do
@@ -37,6 +49,13 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
 
       assert {:error, :not_found} = LocalFS.get(ref, root: tmp_dir)
     end
+
+    test "rejects relative roots" do
+      ref = "sha256/#{String.duplicate("0", 64)}.tar.gz"
+
+      assert {:error, {:invalid_root, "tmp/blob-relative-root"}} =
+               LocalFS.get(ref, root: "tmp/blob-relative-root")
+    end
   end
 
   describe "exists?/2" do
@@ -46,6 +65,12 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
 
       assert LocalFS.exists?(ref, root: tmp_dir)
       refute LocalFS.exists?("sha256/#{String.duplicate("0", 64)}.tar.gz", root: tmp_dir)
+    end
+
+    test "returns false for relative roots" do
+      ref = "sha256/#{String.duplicate("0", 64)}.tar.gz"
+
+      refute LocalFS.exists?(ref, root: "tmp/blob-relative-root")
     end
   end
 
@@ -57,6 +82,29 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
       assert :ok = LocalFS.delete(ref, root: tmp_dir)
       refute LocalFS.exists?(ref, root: tmp_dir)
       assert :ok = LocalFS.delete(ref, root: tmp_dir)
+    end
+
+    test "rejects relative roots" do
+      ref = "sha256/#{String.duplicate("0", 64)}.tar.gz"
+
+      assert {:error, {:invalid_root, "tmp/blob-relative-root"}} =
+               LocalFS.delete(ref, root: "tmp/blob-relative-root")
+    end
+  end
+
+  describe "root fallback" do
+    test "uses a writable user data directory instead of priv" do
+      assert LocalFS.default_root() ==
+               Path.join(:filename.basedir(:user_data, "backplane"), "skills_blobs")
+
+      refute LocalFS.default_root() == Path.join(:code.priv_dir(:backplane), "skills_blobs")
+    end
+
+    test "treats blank roots as unset", %{tmp_dir: tmp_dir} do
+      ref = "sha256/#{String.duplicate("0", 64)}.tar.gz"
+
+      assert {:error, :not_found} = LocalFS.get(ref, root: " \n\t ")
+      refute File.exists?(Path.join(tmp_dir, " \n\t "))
     end
   end
 
