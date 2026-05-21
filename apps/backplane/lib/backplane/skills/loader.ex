@@ -55,6 +55,12 @@ defmodule Backplane.Skills.Loader do
         name: name,
         description: description,
         tags: normalize_list(Map.get(meta, "tags", [])),
+        tools: normalize_list(Map.get(meta, "tools", [])),
+        model: optional_string(Map.get(meta, "model")),
+        version: version_string(Map.get(meta, "version", "1.0.0")),
+        license: optional_string(Map.get(meta, "license")),
+        homepage: optional_string(Map.get(meta, "homepage")),
+        author: optional_string(Map.get(meta, "author")),
         content: body,
         content_hash: hash
       }
@@ -90,7 +96,7 @@ defmodule Backplane.Skills.Loader do
 
         case parse(content) do
           {:ok, entry} ->
-            [Map.merge(entry, %{id: "#{source_label}/#{skill_name}"})]
+            [Map.merge(entry, %{id: "#{source_label}/#{skill_name}", source: source_label})]
 
           {:error, _} ->
             []
@@ -104,4 +110,10 @@ defmodule Backplane.Skills.Loader do
 
   defp normalize_list(list) when is_list(list), do: Enum.map(list, &to_string/1)
   defp normalize_list(_), do: []
+
+  defp optional_string(value) when is_binary(value), do: value
+  defp optional_string(_), do: nil
+
+  defp version_string(nil), do: "1.0.0"
+  defp version_string(value), do: to_string(value)
 end
