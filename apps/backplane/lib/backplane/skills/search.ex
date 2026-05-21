@@ -64,9 +64,17 @@ defmodule Backplane.Skills.Search do
   defp to_result(%Skill{} = s) do
     %{
       id: s.id,
+      slug: s.slug,
       name: s.name,
       description: s.description,
-      tags: s.tags
+      tags: s.tags,
+      version: s.version,
+      license: s.license,
+      homepage: s.homepage,
+      content_hash: s.content_hash,
+      archive_ref: s.archive_ref,
+      size_bytes: s.size_bytes,
+      file_count: s.file_count
     }
   end
 end

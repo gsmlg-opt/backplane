@@ -84,7 +84,7 @@ defmodule Backplane.Skills.Registry do
     |> Enum.filter(fn {_entry, score} -> score > 0 end)
     |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
     |> Enum.take(limit)
-    |> Enum.map(fn {entry, _score} -> entry end)
+    |> Enum.map(fn {entry, _score} -> to_result(entry) end)
   end
 
   defp score_skill(entry, terms) do
@@ -171,5 +171,22 @@ defmodule Backplane.Skills.Registry do
       entry_tags = Map.get(entry, :tags, []) |> MapSet.new()
       MapSet.subset?(tag_set, entry_tags)
     end)
+  end
+
+  defp to_result(entry) do
+    %{
+      id: entry.id,
+      slug: entry.slug,
+      name: entry.name,
+      description: entry.description,
+      tags: entry.tags,
+      version: entry.version,
+      license: entry.license,
+      homepage: entry.homepage,
+      content_hash: entry.content_hash,
+      archive_ref: entry.archive_ref,
+      size_bytes: entry.size_bytes,
+      file_count: entry.file_count
+    }
   end
 end
