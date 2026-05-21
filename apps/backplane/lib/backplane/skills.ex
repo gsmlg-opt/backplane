@@ -8,6 +8,7 @@ defmodule Backplane.Skills do
   alias Backplane.Repo
   alias Backplane.Skills.Archive
   alias Backplane.Skills.Blob
+  alias Backplane.Skills.Export
   alias Backplane.Skills.Ingest
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
@@ -104,13 +105,37 @@ defmodule Backplane.Skills do
     end
   end
 
-  @doc "Export a skill archive."
-  @spec export(String.t()) :: {:error, :not_implemented}
-  def export(_skill_id), do: {:error, :not_implemented}
+  @doc """
+  Export archive-backed skills into a collection archive.
 
-  @doc "Import a skill archive."
-  @spec import(term(), map()) :: {:error, :not_implemented}
-  def import(_archive, _opts), do: {:error, :not_implemented}
+  Options:
+
+    * `:path` - destination tar.gz path. Defaults to a temporary file.
+  """
+  @spec export(keyword() | map() | String.t()) ::
+          {:ok, Export.export_result()} | {:error, term()}
+  def export(opts \\ [])
+  def export(opts) when is_list(opts) or is_map(opts), do: Export.export(opts)
+  def export(legacy_skill_id) when is_binary(legacy_skill_id), do: {:error, :not_implemented}
+
+  @doc """
+  Import archive-backed skills from a collection archive path or upload.
+
+  Every `archives/<slug>.tar.gz` entry is passed to archive ingest unchanged.
+  """
+  @spec import(String.t() | %{path: String.t()}, keyword() | map()) ::
+          {:ok, Export.import_result()} | {:error, term()}
+  def import(collection, opts \\ [])
+
+  def import(path, opts) when is_binary(path) do
+    if File.regular?(path) do
+      Export.import(path, opts)
+    else
+      {:error, :not_implemented}
+    end
+  end
+
+  def import(collection, opts), do: Export.import(collection, opts)
 
   defp maybe_enabled_filter(query, true), do: query
   defp maybe_enabled_filter(query, false), do: where(query, [s], s.enabled == true)

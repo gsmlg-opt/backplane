@@ -36,6 +36,19 @@ defmodule Backplane.Skills.ApiRouter do
     end
   end
 
+  get "/export" do
+    path = temp_archive_path("backplane-skills-export")
+
+    try do
+      case Skills.export(path: path) do
+        {:ok, _result} -> stream_collection(conn, path)
+        {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
+      end
+    after
+      File.rm(path)
+    end
+  end
+
   get "/:slug" do
     with {:ok, skill} <- Skills.get_by_slug(slug),
          {:ok, detail} <- serialize_detail(skill) do
@@ -43,6 +56,26 @@ defmodule Backplane.Skills.ApiRouter do
     else
       {:error, :not_found} -> json(conn, 404, %{error: "not found"})
       {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
+    end
+  end
+
+  post "/import" do
+    case import_source(conn) do
+      {:ok, conn, collection, cleanup} ->
+        try do
+          case Skills.import(collection, []) do
+            {:ok, %{count: count, skills: skills}} ->
+              json(conn, 201, %{count: count, data: Enum.map(skills, &serialize_metadata/1)})
+
+            {:error, reason} ->
+              json(conn, 422, %{error: format_reason(reason)})
+          end
+        after
+          cleanup.()
+        end
+
+      {:error, conn, reason} ->
+        json(conn, 422, %{error: format_reason(reason)})
     end
   end
 
@@ -117,6 +150,14 @@ defmodule Backplane.Skills.ApiRouter do
     end
   end
 
+  defp import_source(conn) do
+    if raw_archive_upload?(conn) do
+      read_raw_archive(conn)
+    else
+      {:error, conn, :missing_archive}
+    end
+  end
+
   defp raw_archive_upload?(conn) do
     conn
     |> get_req_header("content-type")
@@ -136,11 +177,7 @@ defmodule Backplane.Skills.ApiRouter do
   defp multipart_archive(_conn), do: nil
 
   defp read_raw_archive(conn) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "backplane-skill-upload-#{System.unique_integer([:positive])}.tar.gz"
-      )
+    path = temp_archive_path("backplane-skill-upload")
 
     case File.open(path, [:write, :binary], &read_body_chunks(conn, &1)) do
       {:ok, {:ok, conn}} ->
@@ -175,6 +212,26 @@ defmodule Backplane.Skills.ApiRouter do
       conn
       |> put_resp_content_type(@raw_archive_content_type, nil)
       |> put_resp_header("content-disposition", ~s(attachment; filename="#{skill.slug}.tar.gz"))
+      |> send_chunked(200)
+
+    Enum.reduce_while(stream, conn, fn chunk, conn ->
+      case Plug.Conn.chunk(conn, chunk) do
+        {:ok, conn} -> {:cont, conn}
+        {:error, _reason} -> {:halt, conn}
+      end
+    end)
+  end
+
+  defp stream_collection(conn, path) do
+    stream = File.stream!(path, [], 2048)
+
+    conn =
+      conn
+      |> put_resp_content_type(@raw_archive_content_type, nil)
+      |> put_resp_header(
+        "content-disposition",
+        ~s(attachment; filename="skills-collection.tar.gz")
+      )
       |> send_chunked(200)
 
     Enum.reduce_while(stream, conn, fn chunk, conn ->
@@ -248,6 +305,10 @@ defmodule Backplane.Skills.ApiRouter do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, Jason.encode!(body))
+  end
+
+  defp temp_archive_path(prefix) do
+    Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}.tar.gz")
   end
 
   defp format_reason(reason) when is_binary(reason), do: reason

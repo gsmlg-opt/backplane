@@ -105,6 +105,27 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
+  describe "GET /api/skills/export" do
+    test "streams a collection archive before treating export as a slug", %{tmp_dir: tmp_dir} do
+      archive = ingest_archive!(tmp_dir, "export", name: "Export Skill")
+
+      conn = api_request(:get, "/api/skills/export")
+
+      assert conn.status == 200
+      assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
+
+      assert {:ok, entries} = extract_collection(conn.resp_body)
+
+      assert %{
+               "manifest.json" => manifest_json,
+               "archives/export.tar.gz" => archive_bytes
+             } = entries
+
+      assert %{"count" => 1} = Jason.decode!(manifest_json)
+      assert archive_bytes == File.read!(archive)
+    end
+  end
+
   describe "POST /api/skills" do
     test "ingests a raw application/x-tar+gzip body with casing and parameters", %{
       tmp_dir: tmp_dir
@@ -159,6 +180,54 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert conn.status == 422
       assert %{"error" => _reason} = json_body(conn)
       refute File.exists?(Path.join(blob_root, "sha256"))
+    end
+  end
+
+  describe "POST /api/skills/import" do
+    test "ingests a raw collection archive before the generic upload route", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "import-a", name: "Import A")
+      ingest_archive!(tmp_dir, "import-b", name: "Import B")
+      collection = Path.join(tmp_dir, "collection.tar.gz")
+
+      assert {:ok, %{count: 2}} = Skills.export(path: collection)
+
+      assert {:ok, skill} = Skills.get_by_slug("import-a")
+      assert {:ok, _deleted} = Skills.delete(skill)
+      assert {:ok, skill} = Skills.get_by_slug("import-b")
+      assert {:ok, _deleted} = Skills.delete(skill)
+
+      conn =
+        api_request(:post, "/api/skills/import", File.read!(collection), [
+          {"content-type", "APPLICATION/X-TAR+GZIP; charset=binary"}
+        ])
+
+      assert conn.status == 201
+
+      assert %{"count" => 2, "data" => [%{"slug" => "import-a"}, %{"slug" => "import-b"}]} =
+               json_body(conn)
+
+      assert {:ok, _skill} = Skills.get_by_slug("import-a")
+      assert {:ok, _skill} = Skills.get_by_slug("import-b")
+    end
+
+    test "returns 422 for unsafe collection entries", %{tmp_dir: tmp_dir} do
+      collection =
+        create_archive!(
+          tmp_dir,
+          [
+            {"manifest.json", Jason.encode!(%{"count" => 0, "skills" => []})},
+            {"archives/%2e%2e.tar.gz", "unsafe"}
+          ],
+          name: "unsafe-collection.tar.gz"
+        )
+
+      conn =
+        api_request(:post, "/api/skills/import", File.read!(collection), [
+          {"content-type", "application/x-tar+gzip"}
+        ])
+
+      assert conn.status == 422
+      assert %{"error" => _reason} = json_body(conn)
     end
   end
 
@@ -259,6 +328,33 @@ defmodule Backplane.Skills.ApiRouterTest do
       ])
 
     {body, boundary}
+  end
+
+  defp extract_collection(bytes) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "backplane-api-collection-#{System.unique_integer([:positive])}.tar.gz"
+      )
+
+    File.write!(path, bytes)
+
+    try do
+      case :erl_tar.extract(String.to_charlist(path), [:compressed, :memory]) do
+        {:ok, entries} ->
+          entries =
+            Map.new(entries, fn {name, content} ->
+              {IO.chardata_to_string(name), IO.iodata_to_binary(content)}
+            end)
+
+          {:ok, entries}
+
+        {:error, _} = error ->
+          error
+      end
+    after
+      File.rm(path)
+    end
   end
 
   defp skill_content(attrs) do
