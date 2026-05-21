@@ -8,6 +8,7 @@ defmodule Backplane.Skills.Archive do
   alias Backplane.Skills.Loader
 
   @default_max_files 500
+  @default_max_bytes 5_000_000
 
   @type result :: %{
           skill_md: binary(),
@@ -26,7 +27,9 @@ defmodule Backplane.Skills.Archive do
          {:ok, file_entries} <- validate_table_entries(table_entries, opts),
          {:ok, root, skill_path} <- skill_root(file_entries),
          :ok <- validate_single_root(file_entries, root),
-         {:ok, contents} <- extract_contents(path),
+         wanted_entries = wanted_entries(file_entries, root, skill_path),
+         :ok <- validate_content_bytes(wanted_entries, opts),
+         {:ok, contents} <- extract_contents(path, Enum.map(wanted_entries, & &1.name)),
          {:ok, skill_md} <- fetch_content(contents, skill_path),
          {:ok, skill_entry} <- parse_skill(skill_md),
          {:ok, meta} <- read_meta(contents, Path.join(root, "meta.json")) do
@@ -77,10 +80,10 @@ defmodule Backplane.Skills.Archive do
 
   defp normalize_entries(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
-      with {:ok, name, type} <- normalize_entry(entry),
+      with {:ok, name, type, size} <- normalize_entry(entry),
            :ok <- validate_entry_name(name),
            :ok <- validate_entry_type(name, type) do
-        {:cont, {:ok, [%{name: name, type: type} | acc]}}
+        {:cont, {:ok, [%{name: name, type: type, size: size} | acc]}}
       else
         {:error, _} = error -> {:halt, error}
       end
@@ -91,12 +94,12 @@ defmodule Backplane.Skills.Archive do
     end
   end
 
-  defp normalize_entry({name, type, _size, _mtime, _mode, _uid, _gid}) do
-    {:ok, IO.chardata_to_string(name), type}
+  defp normalize_entry({name, type, size, _mtime, _mode, _uid, _gid}) do
+    {:ok, IO.chardata_to_string(name), type, size}
   end
 
-  defp normalize_entry({name, _size, type}) do
-    {:ok, IO.chardata_to_string(name), type}
+  defp normalize_entry({name, size, type}) do
+    {:ok, IO.chardata_to_string(name), type, size}
   end
 
   defp normalize_entry(_), do: {:error, :malformed_tar_entry}
@@ -107,6 +110,12 @@ defmodule Backplane.Skills.Archive do
         {:error, {:unsafe_path, name}}
 
       Path.type(name) == :absolute ->
+        {:error, {:unsafe_path, name}}
+
+      windows_drive_path?(name) ->
+        {:error, {:unsafe_path, name}}
+
+      String.contains?(name, "\\") ->
         {:error, {:unsafe_path, name}}
 
       ".." in String.split(name, "/", trim: false) ->
@@ -120,6 +129,8 @@ defmodule Backplane.Skills.Archive do
   defp validate_entry_type(_name, :regular), do: :ok
   defp validate_entry_type(_name, :directory), do: :ok
   defp validate_entry_type(name, type), do: {:error, {:unsupported_entry_type, name, type}}
+
+  defp windows_drive_path?(name), do: Regex.match?(~r/^[A-Za-z]:/, name)
 
   defp skill_root(file_entries) do
     case Enum.filter(file_entries, &(Path.basename(&1.name) == "SKILL.md")) do
@@ -150,8 +161,27 @@ defmodule Backplane.Skills.Archive do
 
   defp under_root?(name, root), do: name == root or String.starts_with?(name, root <> "/")
 
-  defp extract_contents(path) do
-    case :erl_tar.extract(String.to_charlist(path), [:memory, :compressed]) do
+  defp wanted_entries(file_entries, root, skill_path) do
+    meta_path = Path.join(root, "meta.json")
+
+    Enum.filter(file_entries, &(&1.name in [skill_path, meta_path]))
+  end
+
+  defp validate_content_bytes(entries, opts) do
+    max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
+    byte_count = entries |> Enum.map(& &1.size) |> Enum.sum()
+
+    if byte_count > max_bytes do
+      {:error, {:too_many_bytes, byte_count, max_bytes}}
+    else
+      :ok
+    end
+  end
+
+  defp extract_contents(path, wanted_paths) do
+    files = Enum.map(wanted_paths, &String.to_charlist/1)
+
+    case :erl_tar.extract(String.to_charlist(path), [:memory, :compressed, {:files, files}]) do
       {:ok, entries} ->
         contents =
           Map.new(entries, fn {name, content} ->

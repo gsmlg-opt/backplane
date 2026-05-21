@@ -65,6 +65,24 @@ defmodule Backplane.Skills.ArchiveTest do
       assert {:error, {:unsafe_path, "/example-skill/SKILL.md"}} = Archive.inspect(archive)
     end
 
+    test "rejects Windows drive absolute paths", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"C:/skill/SKILL.md", skill_md()}
+        ])
+
+      assert {:error, {:unsafe_path, "C:/skill/SKILL.md"}} = Archive.inspect(archive)
+    end
+
+    test "rejects Windows drive absolute paths with backslashes", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"C:\\skill\\SKILL.md", skill_md()}
+        ])
+
+      assert {:error, {:unsafe_path, "C:\\skill\\SKILL.md"}} = Archive.inspect(archive)
+    end
+
     test "rejects .. path traversal", %{tmp_dir: tmp_dir} do
       archive =
         create_archive!(tmp_dir, [
@@ -73,6 +91,28 @@ defmodule Backplane.Skills.ArchiveTest do
         ])
 
       assert {:error, {:unsafe_path, "example-skill/../outside.txt"}} = Archive.inspect(archive)
+    end
+
+    test "rejects backslash path traversal", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/..\\outside.txt", "outside"}
+        ])
+
+      assert {:error, {:unsafe_path, "example-skill/..\\outside.txt"}} =
+               Archive.inspect(archive)
+    end
+
+    test "rejects Windows separator path traversal", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill\\..\\outside.txt", "outside"}
+        ])
+
+      assert {:error, {:unsafe_path, "example-skill\\..\\outside.txt"}} =
+               Archive.inspect(archive)
     end
 
     test "rejects symlink entries", %{tmp_dir: tmp_dir} do
@@ -91,6 +131,54 @@ defmodule Backplane.Skills.ArchiveTest do
         ])
 
       assert {:error, {:too_many_files, 3, 2}} = Archive.inspect(archive, max_files: 2)
+    end
+
+    test "rejects required archive content above configured max bytes", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()}
+        ])
+
+      assert {:error, {:too_many_bytes, _, 8}} = Archive.inspect(archive, max_bytes: 8)
+    end
+
+    test "does not need unrelated payload content for max bytes", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/payload.bin", String.duplicate("x", 2048)}
+        ])
+
+      assert {:ok, result} = Archive.inspect(archive, max_bytes: 512)
+      assert result.files == ["SKILL.md", "payload.bin"]
+      refute Map.has_key?(result, :contents)
+    end
+
+    test "rejects malformed meta.json", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/meta.json", "{"}
+        ])
+
+      assert {:error, :malformed_meta_json} = Archive.inspect(archive)
+    end
+
+    test "rejects non-object meta.json", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/meta.json", "[1, 2]"}
+        ])
+
+      assert {:error, :malformed_meta_json} = Archive.inspect(archive)
+    end
+
+    test "rejects malformed tar or gzip input", %{tmp_dir: tmp_dir} do
+      archive = Path.join(tmp_dir, "bad.tar.gz")
+      File.write!(archive, "not a tarball")
+
+      assert {:error, _reason} = Archive.inspect(archive)
     end
   end
 end
