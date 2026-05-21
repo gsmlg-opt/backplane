@@ -6,7 +6,7 @@ defmodule Backplane.Skills.ApiRouterTest do
   import Plug.Test
 
   alias Backplane.Skills
-  alias Backplane.Skills.ApiRouter
+  alias BackplaneWeb.Endpoint
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
@@ -29,7 +29,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       ingest_archive!(tmp_dir, "alpha-skill", name: "Alpha Skill", tags: ["archive", "alpha"])
       ingest_archive!(tmp_dir, "beta-skill", name: "Beta Skill", tags: ["archive", "beta"])
 
-      conn = api_request(:get, "/?q=skill&tags=archive,alpha&limit=1")
+      conn = api_request(:get, "/api/skills?q=skill&tags=archive,alpha&limit=1")
 
       assert conn.status == 200
       assert %{"data" => [%{"slug" => "alpha-skill"}]} = json_body(conn)
@@ -42,7 +42,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     } do
       ingest_archive!(tmp_dir, "detail-skill", name: "Detail Skill")
 
-      conn = api_request(:get, "/detail-skill")
+      conn = api_request(:get, "/api/skills/detail-skill")
 
       assert conn.status == 200
 
@@ -56,7 +56,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
 
     test "returns 404 for a missing skill" do
-      conn = api_request(:get, "/missing")
+      conn = api_request(:get, "/api/skills/missing")
 
       assert conn.status == 404
       assert %{"error" => "not found"} = json_body(conn)
@@ -67,7 +67,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     test "streams the stored archive", %{tmp_dir: tmp_dir} do
       archive = ingest_archive!(tmp_dir, "download-skill", name: "Download Skill")
 
-      conn = api_request(:get, "/download-skill/archive")
+      conn = api_request(:get, "/api/skills/download-skill/archive")
 
       assert conn.status == 200
       assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
@@ -77,10 +77,16 @@ defmodule Backplane.Skills.ApiRouterTest do
 
   describe "POST /api/skills" do
     test "ingests a raw application/x-tar+gzip body", %{tmp_dir: tmp_dir} do
-      archive = create_skill_archive!(tmp_dir, "raw-upload", name: "Raw Upload")
+      archive =
+        create_skill_archive!(tmp_dir, "raw-upload",
+          name: "Raw Upload",
+          entries: [{"raw-upload/payload.bin", :crypto.strong_rand_bytes(130_000)}]
+        )
+
+      assert File.stat!(archive).size > 64_000
 
       conn =
-        api_request(:post, "/", File.read!(archive), [
+        api_request(:post, "/api/skills", File.read!(archive), [
           {"content-type", "application/x-tar+gzip"}
         ])
 
@@ -93,25 +99,22 @@ defmodule Backplane.Skills.ApiRouterTest do
       archive = create_skill_archive!(tmp_dir, "multipart-upload", name: "Multipart Upload")
 
       conn =
-        :post
-        |> conn("/", "")
-        |> put_req_header("content-type", "multipart/form-data")
-        |> Map.put(:body_params, %{
+        api_request(:post, "/api/skills", %{
           "archive" => %Plug.Upload{
             path: archive,
             filename: "multipart-upload.tar.gz",
             content_type: "application/x-tar+gzip"
           }
         })
-        |> ApiRouter.call(ApiRouter.init([]))
 
       assert conn.status == 201
+      assert %Plug.Upload{filename: "multipart-upload.tar.gz"} = conn.body_params["archive"]
       assert %{"slug" => "multipart-upload", "name" => "Multipart Upload"} = json_body(conn)
     end
 
     test "returns 422 for invalid upload without committing a blob", %{blob_root: blob_root} do
       conn =
-        api_request(:post, "/", "not a tarball", [
+        api_request(:post, "/api/skills", "not a tarball", [
           {"content-type", "application/x-tar+gzip"}
         ])
 
@@ -125,7 +128,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     test "deletes the skill", %{tmp_dir: tmp_dir} do
       ingest_archive!(tmp_dir, "delete-skill", name: "Delete Skill")
 
-      conn = api_request(:delete, "/delete-skill")
+      conn = api_request(:delete, "/api/skills/delete-skill")
 
       assert conn.status == 200
       assert %{"ok" => true} = json_body(conn)
@@ -137,7 +140,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     method
     |> conn(path, body)
     |> put_headers(headers)
-    |> ApiRouter.call(ApiRouter.init([]))
+    |> Endpoint.call([])
   end
 
   defp put_headers(conn, headers) do
@@ -160,7 +163,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       [
         {"#{slug}/SKILL.md", skill_content(attrs)},
         {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
-      ],
+      ] ++ Keyword.get(attrs, :entries, []),
       name: "#{slug}.tar.gz"
     )
   end
