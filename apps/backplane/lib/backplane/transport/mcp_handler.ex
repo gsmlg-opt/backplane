@@ -349,6 +349,8 @@ defmodule Backplane.Transport.McpHandler do
   defp dispatch_tool_call_json(conn, id, name, arguments) do
     case dispatch_tool_call(name, arguments) do
       {:ok, result} ->
+        maybe_log_skill_load(conn, name, result)
+
         json_rpc_result(conn, id, %{
           content: [%{type: "text", text: format_result(result)}]
         })
@@ -369,6 +371,8 @@ defmodule Backplane.Transport.McpHandler do
     conn =
       case dispatch_tool_call(name, arguments) do
         {:ok, result} ->
+          maybe_log_skill_load(conn, name, result)
+
           SSE.send_event(conn, id, %{
             content: [%{type: "text", text: format_result(result)}]
           })
@@ -452,6 +456,36 @@ defmodule Backplane.Transport.McpHandler do
   defp execute_tool(:not_found, name, _args) do
     {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
   end
+
+  defp maybe_log_skill_load(conn, "skill::load", result) when is_map(result) do
+    case result[:name] || result["name"] do
+      skill_name when is_binary(skill_name) ->
+        result
+        |> skill_load_attrs(conn.assigns[:client], skill_name)
+        |> Backplane.Audit.log_skill_load()
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_log_skill_load(_conn, _name, _result), do: :ok
+
+  defp skill_load_attrs(result, client, skill_name) do
+    %{
+      skill_name: skill_name,
+      loaded_deps: result[:loaded_deps] || result["loaded_deps"] || []
+    }
+    |> maybe_put_client(client)
+  end
+
+  defp maybe_put_client(attrs, %{id: id, name: name}) do
+    attrs
+    |> Map.put(:client_id, id)
+    |> Map.put(:client_name, name)
+  end
+
+  defp maybe_put_client(attrs, _client), do: attrs
 
   defp forward_upstream(upstream_pid, original_tool_name, name, args, timeout) do
     case Upstream.forward(upstream_pid, original_tool_name, args, timeout) do

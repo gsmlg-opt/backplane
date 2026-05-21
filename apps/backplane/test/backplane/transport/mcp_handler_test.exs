@@ -1,10 +1,29 @@
 defmodule Backplane.Transport.McpHandlerTest do
-  use Backplane.ConnCase, async: true
+  use Backplane.ConnCase, async: false
 
-  alias Backplane.Docs.{DocChunk, Project}
+  import Backplane.SkillArchiveCase
+
+  alias Backplane.Audit.SkillLoadLog
+  alias Backplane.Fixtures
   alias Backplane.Repo
+  alias Backplane.Skills
   alias Backplane.Skills.Skill
   alias Backplane.Transport.McpPlug
+
+  @moduletag :tmp_dir
+  @blob_setting "skills.blob.local_root"
+
+  setup %{tmp_dir: tmp_dir} do
+    previous_blob_root = Backplane.Settings.get(@blob_setting)
+    :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
+    Backplane.Skills.Registry.refresh()
+
+    on_exit(fn ->
+      :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
+    end)
+
+    :ok
+  end
 
   describe "initialize" do
     test "returns protocolVersion and serverInfo" do
@@ -55,6 +74,18 @@ defmodule Backplane.Transport.McpHandlerTest do
       names = Enum.map(tools, & &1["name"])
       assert "skill::search" in names
       assert "skill::list" in names
+    end
+
+    test "exposes v1 archive skill tools and hides legacy mutation tools" do
+      resp = mcp_request("tools/list")
+
+      names = resp["result"]["tools"] |> Enum.map(& &1["name"])
+      assert "skill::load" in names
+      assert "skill::download" in names
+      assert "skill::publish" in names
+      refute "skill::create" in names
+      refute "skill::update" in names
+      refute "skill::versions" in names
     end
   end
 
@@ -125,23 +156,23 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns -32602 for missing required arguments" do
-      resp = mcp_request("tools/call", %{"name" => "docs::query-docs", "arguments" => %{}})
+      resp = mcp_request("tools/call", %{"name" => "skill::search", "arguments" => %{}})
 
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "Missing required arguments"
-      assert resp["error"]["message"] =~ "project_id"
+      assert resp["error"]["message"] =~ "query"
     end
 
     test "returns -32602 for wrong argument type" do
       resp =
         mcp_request("tools/call", %{
-          "name" => "docs::query-docs",
-          "arguments" => %{"project_id" => 123, "query" => "test"}
+          "name" => "skill::search",
+          "arguments" => %{"query" => 123}
         })
 
       assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "project_id"
-      assert resp["error"]["message"] =~ "string"
+      assert resp["error"]["message"] =~ "query"
+      assert resp["error"]["message"] =~ "must be string"
     end
   end
 
@@ -201,6 +232,31 @@ defmodule Backplane.Transport.McpHandlerTest do
       content = hd(resp["result"]["content"])
       assert content["type"] == "text"
     end
+
+    test "logs successful skill::load with authenticated client metadata", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "audit-load-skill", name: "Audit Load Skill")
+      {client, token} = Fixtures.insert_client(name: "audit-client", scopes: ["skill::*"])
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "skill::load", "arguments" => %{"slug" => "audit-load-skill"}},
+          auth_token: token
+        )
+
+      refute resp["result"]["isError"]
+
+      assert %{"slug" => "audit-load-skill"} =
+               Jason.decode!(hd(resp["result"]["content"])["text"])
+
+      assert eventually(fn ->
+               Repo.get_by(SkillLoadLog,
+                 skill_name: "Audit Load Skill",
+                 client_id: client.id,
+                 client_name: "audit-client"
+               )
+             end)
+    end
   end
 
   describe "resources/list" do
@@ -236,7 +292,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp = mcp_request("resources/read", %{"uri" => "invalid://uri"})
 
       assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "invalid URI"
+      assert resp["error"]["message"] =~ "Resource not found"
     end
 
     test "returns error for missing uri param" do
@@ -256,35 +312,12 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns error for non-numeric chunk ID in URI" do
       resp = mcp_request("resources/read", %{"uri" => "backplane://docs/project/abc"})
       assert resp["error"]["code"] == -32_602
-      assert resp["error"]["message"] =~ "invalid URI"
+      assert resp["error"]["message"] =~ "Resource not found"
     end
 
     test "returns error for backplane URI with no chunk_id" do
       resp = mcp_request("resources/read", %{"uri" => "backplane://docs/onlyproject"})
       assert resp["error"]
-    end
-
-    test "returns content for an existing doc chunk" do
-      Repo.insert(
-        %Project{id: "res-read-proj", repo: "test/read", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      {:ok, chunk} =
-        Repo.insert(%DocChunk{
-          project_id: "res-read-proj",
-          source_path: "lib/readable.ex",
-          content: "Readable doc content for testing",
-          chunk_type: "module_doc",
-          content_hash: "resread123"
-        })
-
-      uri = "backplane://docs/res-read-proj/#{chunk.id}"
-      resp = mcp_request("resources/read", %{"uri" => uri})
-      assert is_list(resp["result"]["contents"])
-      [content] = resp["result"]["contents"]
-      assert content["text"] == "Readable doc content for testing"
-      assert content["mimeType"] == "text/plain"
     end
   end
 
@@ -515,32 +548,6 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "completion/complete" do
-    test "returns completion values for project_id argument" do
-      # Insert a project so there's something to complete
-      Repo.insert(
-        %Project{id: "comp-test-project", repo: "test/repo", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      Repo.insert(%DocChunk{
-        project_id: "comp-test-project",
-        source_path: "test.md",
-        content: "test",
-        chunk_type: "markdown",
-        content_hash: "comp123"
-      })
-
-      resp =
-        mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "docs::query-docs"},
-          "argument" => %{"name" => "project_id", "value" => "comp"}
-        })
-
-      assert is_map(resp["result"]["completion"])
-      assert is_list(resp["result"]["completion"]["values"])
-      assert resp["result"]["completion"]["hasMore"] == false
-    end
-
     test "returns completion values for tool_name argument" do
       resp =
         mcp_request("completion/complete", %{
@@ -556,7 +563,7 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "returns empty completions for unknown argument" do
       resp =
         mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "docs::query-docs"},
+          "ref" => %{"type" => "ref/tool", "name" => "hub::inspect"},
           "argument" => %{"name" => "unknown_arg", "value" => ""}
         })
 
@@ -592,18 +599,13 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "returns completions for skill_id argument" do
-      # Insert a skill into the DB so the registry has something to list
-      Repo.insert(
-        %Skill{
-          id: "comp-skill-test",
-          name: "comp-test",
-          description: "test",
-          content: "# test",
-          content_hash: "comphash#{System.unique_integer([:positive])}",
-          source: "db",
-          enabled: true
-        },
-        on_conflict: :nothing
+      Fixtures.insert_skill(
+        id: "comp-skill-test",
+        slug: "comp-skill-test",
+        name: "comp-test",
+        description: "test",
+        content: "# test",
+        source_kind: "db"
       )
 
       Backplane.Skills.Registry.refresh()
@@ -617,26 +619,6 @@ defmodule Backplane.Transport.McpHandlerTest do
       values = resp["result"]["completion"]["values"]
       assert is_list(values)
       assert Enum.any?(values, &String.contains?(&1, "comp"))
-    end
-
-    test "returns completions for repo argument" do
-      Repo.insert(
-        %Project{
-          id: "comp-repo-proj",
-          repo: "https://github.com/test/comp.git",
-          ref: "main"
-        },
-        on_conflict: :nothing
-      )
-
-      resp =
-        mcp_request("completion/complete", %{
-          "ref" => %{"type" => "ref/tool", "name" => "git::repo-tree"},
-          "argument" => %{"name" => "repo", "value" => "https://"}
-        })
-
-      values = resp["result"]["completion"]["values"]
-      assert is_list(values)
     end
 
     test "returns all values (up to 20) when prefix is empty" do
@@ -662,27 +644,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
-  describe "resources/list with data" do
-    test "returns resource entries for indexed doc chunks" do
-      Repo.insert(
-        %Project{id: "res-list-proj", repo: "test/repo", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      Repo.insert(%DocChunk{
-        project_id: "res-list-proj",
-        source_path: "lib/example.ex",
-        content: "Example content",
-        chunk_type: "module_doc",
-        content_hash: "reslist123"
-      })
-
-      resp = mcp_request("resources/list")
-      resources = resp["result"]["resources"]
-      assert Enum.any?(resources, fn r -> String.contains?(r["name"], "res-list-proj") end)
-    end
-  end
-
   describe "prompts/get with inserted skill" do
     test "returns prompt messages for a skill that exists" do
       content = "# Test Skill\nFollow these instructions."
@@ -697,7 +658,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         tags: ["test"],
         content: content,
         content_hash: hash,
-        source: "db",
+        source_kind: "db",
         enabled: true
       })
       |> Repo.insert!()
@@ -824,33 +785,11 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "resources/list pagination with cursor" do
-    test "returns nextCursor when more than page_size chunks exist" do
-      # Insert enough chunks to trigger pagination (page_size is 100)
-      Repo.insert(
-        %Project{id: "paginate-proj", repo: "test/paginate", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      for i <- 1..105 do
-        Repo.insert(%DocChunk{
-          project_id: "paginate-proj",
-          source_path: "lib/mod_#{i}.ex",
-          content: "Content #{i}",
-          chunk_type: "module_doc",
-          content_hash: "paginatehash#{i}"
-        })
-      end
-
+    test "returns resources without a cursor when no resources are registered" do
       resp = mcp_request("resources/list")
       result = resp["result"]
-      assert is_list(result["resources"])
-
-      if result["nextCursor"] do
-        # Use the cursor to get the next page
-        resp2 = mcp_request("resources/list", %{"cursor" => result["nextCursor"]})
-        result2 = resp2["result"]
-        assert is_list(result2["resources"])
-      end
+      assert result["resources"] == []
+      refute Map.has_key?(result, "nextCursor")
     end
   end
 
@@ -909,29 +848,13 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["code"] == -32_602
     end
 
-    test "batch resources/read with valid chunk" do
-      Repo.insert(
-        %Project{id: "batch-read-proj", repo: "test/batch", ref: "main"},
-        on_conflict: :nothing
-      )
-
-      {:ok, chunk} =
-        Repo.insert(%DocChunk{
-          project_id: "batch-read-proj",
-          source_path: "lib/batch.ex",
-          content: "Batch read content",
-          chunk_type: "module_doc",
-          content_hash: "batchread123"
-        })
-
-      uri = "backplane://docs/batch-read-proj/#{chunk.id}"
-
+    test "batch resources/read with missing resources returns errors" do
       batch = [
         %{
           "jsonrpc" => "2.0",
           "method" => "resources/read",
           "id" => 1,
-          "params" => %{"uri" => uri}
+          "params" => %{"uri" => "backplane://docs/fake/1"}
         },
         %{
           "jsonrpc" => "2.0",
@@ -950,8 +873,8 @@ defmodule Backplane.Transport.McpHandlerTest do
       responses = Jason.decode!(conn.resp_body)
       assert length(responses) == 3
 
-      ok_resp = Enum.find(responses, &(&1["id"] == 1))
-      assert is_list(ok_resp["result"]["contents"])
+      missing = Enum.find(responses, &(&1["id"] == 1))
+      assert missing["error"]["code"] == -32_602
 
       not_found = Enum.find(responses, &(&1["id"] == 2))
       assert not_found["error"]["code"] == -32_602
@@ -973,7 +896,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         tags: ["test"],
         content: content,
         content_hash: hash,
-        source: "db",
+        source_kind: "db",
         enabled: true
       })
       |> Repo.insert!()
@@ -1144,45 +1067,6 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "must be string"
-    end
-  end
-
-  describe "prompts with tool arguments" do
-    setup do
-      content = "# Skill with Tools"
-      hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-
-      %Skill{}
-      |> Skill.changeset(%{
-        id: "prompt/with-tools",
-        slug: "prompt-with-tools",
-        name: "skill-with-tools",
-        description: "Has required tools",
-        tags: [],
-        content: content,
-        content_hash: hash,
-        source: "db",
-        tools: ["git::repo-tree", "docs::query-docs"],
-        enabled: true
-      })
-      |> Repo.insert!()
-
-      Backplane.Skills.Registry.refresh()
-      :ok
-    end
-
-    test "prompts/list includes prompt arguments for skills with tools" do
-      resp = mcp_request("prompts/list")
-      prompts = resp["result"]["prompts"]
-
-      skill_prompt = Enum.find(prompts, fn p -> p["name"] == "skill-with-tools" end)
-      assert skill_prompt != nil
-      assert is_list(skill_prompt["arguments"])
-      assert length(skill_prompt["arguments"]) == 2
-
-      arg_names = Enum.map(skill_prompt["arguments"], & &1["name"])
-      assert "git::repo-tree" in arg_names
-      assert "docs::query-docs" in arg_names
     end
   end
 
@@ -1466,6 +1350,52 @@ defmodule Backplane.Transport.McpHandlerTest do
         )
 
       assert resp["error"]["message"] =~ "git::repo-tree"
+    end
+  end
+
+  defp ingest_archive!(tmp_dir, slug, attrs) do
+    archive =
+      create_archive!(
+        tmp_dir,
+        [
+          {"#{slug}/SKILL.md", skill_content(attrs)},
+          {"#{slug}/meta.json", Jason.encode!(%{"slug" => slug})}
+        ],
+        name: "#{slug}.tar.gz"
+      )
+
+    assert {:ok, _skill} = Skills.ingest_archive(archive, [])
+    archive
+  end
+
+  defp skill_content(attrs) do
+    name = Keyword.get(attrs, :name, "Example Skill")
+
+    """
+    ---
+    name: #{name}
+    description: #{Keyword.get(attrs, :description, "Example skill")}
+    tags: [archive, test]
+    version: "1.2.3"
+    ---
+
+    # #{name}
+
+    Use this skill in MCP handler tests.
+    """
+  end
+
+  defp eventually(fun, attempts \\ 20)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        eventually(fun, attempts - 1)
+
+      value ->
+        value
     end
   end
 end
