@@ -6,6 +6,7 @@ defmodule Backplane.Skills do
   import Ecto.Query
 
   alias Backplane.Repo
+  alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
   alias Backplane.Skills.Search
 
@@ -47,7 +48,16 @@ defmodule Backplane.Skills do
   @doc "Delete a skill by ID or struct."
   @spec delete(String.t() | Skill.t()) ::
           {:ok, Skill.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def delete(%Skill{} = skill), do: Repo.delete(skill)
+  def delete(%Skill{} = skill) do
+    case Repo.delete(skill) do
+      {:ok, deleted} ->
+        Registry.refresh()
+        {:ok, deleted}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
 
   def delete(id) when is_binary(id) do
     with {:ok, skill} <- get(id) do

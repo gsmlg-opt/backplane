@@ -32,11 +32,12 @@ defmodule Backplane.Fixtures do
   @spec build_skill(keyword()) :: map()
   def build_skill(overrides \\ []) do
     name = Keyword.get(overrides, :name, "test-skill-#{unique()}")
+    id = Keyword.get(overrides, :id, name)
     content = Keyword.get(overrides, :content, "# #{name}\n\nSkill content here.")
 
     %{
-      id: Keyword.get(overrides, :id, name),
-      slug: Keyword.get(overrides, :slug, slugify(name)),
+      id: id,
+      slug: Keyword.get(overrides, :slug, slugify(name, id)),
       name: name,
       description: Keyword.get(overrides, :description, "A test skill"),
       tags: Keyword.get(overrides, :tags, ["test"]),
@@ -130,11 +131,18 @@ defmodule Backplane.Fixtures do
 
   defp hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
-  defp slugify(name) do
+  defp slugify(name, id) do
+    suffix =
+      :md5
+      |> :crypto.hash(to_string(id))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 8)
+
     name
     |> to_string()
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9]+/, "-")
     |> String.trim("-")
+    |> then(&"#{&1}-#{suffix}")
   end
 end

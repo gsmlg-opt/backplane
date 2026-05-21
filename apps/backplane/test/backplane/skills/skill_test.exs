@@ -3,7 +3,10 @@ defmodule Backplane.Skills.SkillTest do
 
   alias Backplane.Skills, as: SkillsContext
   alias Backplane.Skills.Skill
+  alias Backplane.Skills.Registry
   alias Backplane.Fixtures
+
+  @archive_ref "sha256/#{String.duplicate("a", 64)}.tar.gz"
 
   @valid_attrs %{
     id: "test/skill-1",
@@ -38,7 +41,7 @@ defmodule Backplane.Skills.SkillTest do
           homepage: "https://example.com/test-skill",
           author: "Backplane Team",
           meta: %{"entrypoint" => "SKILL.md"},
-          archive_ref: "sha256:abc123",
+          archive_ref: @archive_ref,
           size_bytes: 4096,
           file_count: 12,
           source_kind: "git",
@@ -55,13 +58,20 @@ defmodule Backplane.Skills.SkillTest do
       assert get_change(changeset, :homepage) == "https://example.com/test-skill"
       assert get_change(changeset, :author) == "Backplane Team"
       assert get_change(changeset, :meta) == %{"entrypoint" => "SKILL.md"}
-      assert get_change(changeset, :archive_ref) == "sha256:abc123"
+      assert get_change(changeset, :archive_ref) == @archive_ref
       assert get_change(changeset, :size_bytes) == 4096
       assert get_change(changeset, :file_count) == 12
       assert get_change(changeset, :source_kind) == "git"
       assert get_change(changeset, :source_uri) == "https://github.com/example/skills.git"
       assert get_change(changeset, :source_rev) == "abc123"
       assert get_change(changeset, :enabled) == false
+    end
+
+    test "rejects malformed archive_ref values" do
+      changeset = Skill.changeset(%Skill{}, Map.put(@valid_attrs, :archive_ref, "sha256:abc123"))
+
+      refute changeset.valid?
+      assert {_, [validation: :format]} = changeset.errors[:archive_ref]
     end
 
     test "uses default values for optional fields" do
@@ -120,6 +130,27 @@ defmodule Backplane.Skills.SkillTest do
       assert {:error, :not_found} = SkillsContext.get(skill.id)
     end
 
+    test "delete refreshes the skills registry" do
+      skill =
+        %Skill{}
+        |> Skill.changeset(%{
+          id: "test/registry-delete",
+          slug: "registry-delete",
+          name: "Registry Delete Skill",
+          description: "Delete refresh test",
+          tags: ["context"],
+          content: "# Registry Delete Skill",
+          content_hash: "hash"
+        })
+        |> Repo.insert!()
+
+      Registry.refresh()
+      assert {:ok, %{id: "test/registry-delete"}} = Registry.fetch(skill.id)
+
+      assert {:ok, %Skill{id: "test/registry-delete"}} = SkillsContext.delete(skill.id)
+      assert {:error, :not_found} = Registry.fetch(skill.id)
+    end
+
     test "returns explicit not implemented errors for archive operations" do
       assert {:error, :not_implemented} = SkillsContext.ingest_archive("archive bytes", %{})
       assert {:error, :not_implemented} = SkillsContext.archive_stream("test/context-skill")
@@ -139,7 +170,7 @@ defmodule Backplane.Skills.SkillTest do
           homepage: "https://example.com/fixture",
           author: "Backplane Team",
           meta: %{"entrypoint" => "SKILL.md"},
-          archive_ref: "sha256:fixture",
+          archive_ref: @archive_ref,
           size_bytes: 1024,
           file_count: 4,
           source_kind: "git",
@@ -147,18 +178,27 @@ defmodule Backplane.Skills.SkillTest do
           source_rev: "abc123"
         )
 
-      assert skill.slug == "fixture-archive-skill"
+      assert String.starts_with?(skill.slug, "fixture-archive-skill-")
       assert skill.version == "1.0.0"
       assert skill.license == "MIT"
       assert skill.homepage == "https://example.com/fixture"
       assert skill.author == "Backplane Team"
       assert skill.meta == %{"entrypoint" => "SKILL.md"}
-      assert skill.archive_ref == "sha256:fixture"
+      assert skill.archive_ref == @archive_ref
       assert skill.size_bytes == 1024
       assert skill.file_count == 4
       assert skill.source_kind == "git"
       assert skill.source_uri == "https://github.com/example/skills.git"
       assert skill.source_rev == "abc123"
+    end
+
+    test "build_skill default slugs avoid duplicate name collisions" do
+      first = Fixtures.build_skill(id: "fixture/one", name: "Duplicate Name")
+      second = Fixtures.build_skill(id: "fixture/two", name: "Duplicate Name")
+
+      assert first.slug != second.slug
+      assert String.starts_with?(first.slug, "duplicate-name-")
+      assert String.starts_with?(second.slug, "duplicate-name-")
     end
   end
 end

@@ -5,6 +5,9 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
   alias Backplane.Skills.Skill
   alias Backplane.Skills.Sources.Database
 
+  @archive_ref "sha256/#{String.duplicate("b", 64)}.tar.gz"
+  @upload_archive_ref "sha256/#{String.duplicate("c", 64)}.tar.gz"
+
   describe "list/0" do
     test "returns all enabled skills" do
       insert_skill("db/test1", true)
@@ -27,7 +30,7 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
         homepage: "https://example.com/archived",
         author: "Backplane Team",
         meta: %{"entrypoint" => "SKILL.md"},
-        archive_ref: "sha256:abc123",
+        archive_ref: @archive_ref,
         size_bytes: 2048,
         file_count: 7,
         source_kind: "git",
@@ -44,7 +47,7 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
       assert skill.homepage == "https://example.com/archived"
       assert skill.author == "Backplane Team"
       assert skill.meta == %{"entrypoint" => "SKILL.md"}
-      assert skill.archive_ref == "sha256:abc123"
+      assert skill.archive_ref == @archive_ref
       assert skill.size_bytes == 2048
       assert skill.file_count == 7
       assert skill.source_kind == "git"
@@ -95,7 +98,7 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
           content: "# Body",
           version: "0.1.0",
           meta: %{"entrypoint" => "SKILL.md"},
-          archive_ref: "sha256:def456",
+          archive_ref: @upload_archive_ref,
           size_bytes: 512,
           file_count: 3,
           source_kind: "upload",
@@ -105,7 +108,7 @@ defmodule Backplane.Skills.Sources.DatabaseTest do
 
       assert skill.version == "0.1.0"
       assert skill.meta == %{"entrypoint" => "SKILL.md"}
-      assert skill.archive_ref == "sha256:def456"
+      assert skill.archive_ref == @upload_archive_ref
       assert skill.size_bytes == 512
       assert skill.file_count == 3
       assert skill.source_kind == "upload"
