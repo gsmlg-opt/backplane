@@ -80,10 +80,30 @@ defmodule Backplane.Skills.RegistryTest do
   end
 
   describe "search/2" do
-    test "searches by keyword in name and description" do
+    test "returns matching skills for a keyword" do
       results = Registry.search("elixir")
       ids = Enum.map(results, & &1.id)
       assert "reg/s1" in ids
+    end
+
+    test "omits full content from search results" do
+      [skill | _] = Registry.search("elixir")
+
+      refute Map.has_key?(skill, :content)
+    end
+
+    test "includes v1 archive metadata in search results" do
+      assert [%{id: "reg/s2"} = skill | _] = Registry.search("otp", limit: 1)
+      assert skill.slug == "reg-s2"
+      assert skill.version == "2.0.0"
+      assert skill.license == "MIT"
+      assert skill.homepage == "https://example.com/otp"
+
+      assert skill.archive_ref ==
+               "sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.tar.gz"
+
+      assert skill.size_bytes == 128
+      assert skill.file_count == 3
     end
 
     test "respects limit option" do

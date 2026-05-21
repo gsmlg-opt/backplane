@@ -531,16 +531,22 @@ defmodule Backplane.Transport.McpHandler do
         {:error, "not found"}
 
       skill ->
-        {:ok,
-         %{
-           description: skill.description,
-           messages: [
+        case SkillsRegistry.fetch(skill.id) do
+          {:ok, full_skill} ->
+            {:ok,
              %{
-               role: "user",
-               content: %{type: "text", text: skill.content || ""}
-             }
-           ]
-         }}
+               description: full_skill.description,
+               messages: [
+                 %{
+                   role: "user",
+                   content: %{type: "text", text: full_skill.content || ""}
+                 }
+               ]
+             }}
+
+          {:error, :not_found} ->
+            {:error, "not found"}
+        end
     end
   end
 
