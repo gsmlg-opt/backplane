@@ -5,18 +5,22 @@ defmodule Backplane.Tools.SkillTest do
 
   alias Backplane.Skills
   alias Backplane.Skills.Registry
+  alias Backplane.Fixtures
   alias Backplane.Tools.Skill, as: SkillTool
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
+  @max_archive_setting "skills.archive.max_bytes"
 
   setup %{tmp_dir: tmp_dir} do
     previous_blob_root = Backplane.Settings.get(@blob_setting)
+    previous_max_archive_bytes = Backplane.Settings.get(@max_archive_setting)
     :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
     Registry.refresh()
 
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
+      :ets.insert(:backplane_settings, {@max_archive_setting, previous_max_archive_bytes})
     end)
 
     :ok
@@ -38,6 +42,15 @@ defmodule Backplane.Tools.SkillTest do
 
       assert %{input_schema: %{"required" => ["slug"]}} =
                Enum.find(tools, &(&1.name == "skill::load"))
+
+      load_schema = Enum.find(tools, &(&1.name == "skill::load")).input_schema
+      refute Map.has_key?(load_schema["properties"], "skill_id")
+
+      for tool_name <- ["skill::list", "skill::search"] do
+        schema = Enum.find(tools, &(&1.name == tool_name)).input_schema
+        assert schema["properties"]["limit"]["minimum"] == 1
+        assert schema["properties"]["limit"]["maximum"] == 100
+      end
     end
   end
 
@@ -52,6 +65,21 @@ defmodule Backplane.Tools.SkillTest do
       assert skill.size_bytes > 0
       refute Map.has_key?(skill, :content)
       refute Map.has_key?(skill, "content")
+    end
+
+    test "omits legacy database skills without archive refs", %{tmp_dir: tmp_dir} do
+      Fixtures.insert_skill(name: "Legacy Skill", slug: "legacy-skill", source_kind: "database")
+      archive_skill!(tmp_dir, "archive-list-skill", name: "Archive List Skill")
+
+      assert {:ok, [%{slug: "archive-list-skill"}]} = SkillTool.call(%{"_handler" => "list"})
+    end
+
+    test "clamps direct handler limit to at least one", %{tmp_dir: tmp_dir} do
+      archive_skill!(tmp_dir, "first-list-skill", name: "First List Skill")
+      archive_skill!(tmp_dir, "second-list-skill", name: "Second List Skill")
+
+      assert {:ok, [_skill]} = SkillTool.call(%{"_handler" => "list", "limit" => -10})
+      assert {:ok, [_skill]} = SkillTool.call(%{"_handler" => "list", "limit" => 0})
     end
   end
 
@@ -70,6 +98,41 @@ defmodule Backplane.Tools.SkillTest do
 
       assert result.tags == ["archive", "alpha"]
       refute Map.has_key?(result, :content)
+    end
+
+    test "omits legacy database skills without archive refs", %{tmp_dir: tmp_dir} do
+      Fixtures.insert_skill(
+        name: "Legacy Search Skill",
+        slug: "legacy-search-skill",
+        content: "legacy searchable content",
+        source_kind: "database"
+      )
+
+      archive_skill!(tmp_dir, "archive-search-skill",
+        name: "Archive Search Skill",
+        description: "searchable archive content"
+      )
+
+      assert {:ok, [%{slug: "archive-search-skill"}]} =
+               SkillTool.call(%{"_handler" => "search", "query" => "searchable"})
+    end
+
+    test "clamps direct handler limit to at least one", %{tmp_dir: tmp_dir} do
+      archive_skill!(tmp_dir, "first-search-skill",
+        name: "First Search Skill",
+        description: "shared searchable content"
+      )
+
+      archive_skill!(tmp_dir, "second-search-skill",
+        name: "Second Search Skill",
+        description: "shared searchable content"
+      )
+
+      assert {:ok, [_skill]} =
+               SkillTool.call(%{"_handler" => "search", "query" => "searchable", "limit" => -10})
+
+      assert {:ok, [_skill]} =
+               SkillTool.call(%{"_handler" => "search", "query" => "searchable", "limit" => 0})
     end
   end
 
@@ -103,6 +166,19 @@ defmodule Backplane.Tools.SkillTest do
       assert {:error, msg} = SkillTool.call(%{"_handler" => "load", "slug" => "missing"})
       assert msg =~ "not found"
     end
+
+    test "rejects legacy database skills" do
+      Fixtures.insert_skill(
+        name: "Legacy Load Skill",
+        slug: "legacy-load-skill",
+        source_kind: "database"
+      )
+
+      assert {:error, msg} =
+               SkillTool.call(%{"_handler" => "load", "slug" => "legacy-load-skill"})
+
+      assert msg =~ "archive-backed"
+    end
   end
 
   describe "skill::download" do
@@ -123,6 +199,19 @@ defmodule Backplane.Tools.SkillTest do
       assert result.metadata.name == "Downloadable Skill"
       assert result.metadata.tags == ["archive", "download"]
       refute Map.has_key?(result.metadata, :content)
+    end
+
+    test "rejects legacy database skills" do
+      Fixtures.insert_skill(
+        name: "Legacy Download Skill",
+        slug: "legacy-download-skill",
+        source_kind: "database"
+      )
+
+      assert {:error, msg} =
+               SkillTool.call(%{"_handler" => "download", "slug" => "legacy-download-skill"})
+
+      assert msg =~ "archive-backed"
     end
   end
 
@@ -146,6 +235,24 @@ defmodule Backplane.Tools.SkillTest do
       assert result.size_bytes == File.stat!(archive).size
       assert {:ok, skill} = Skills.get_by_slug("published-skill")
       assert skill.archive_ref == result.archive_ref
+    end
+
+    test "rejects invalid base64 archives" do
+      assert {:error, msg} =
+               SkillTool.call(%{"_handler" => "publish", "archive_base64" => "not base64!"})
+
+      assert msg == "Invalid base64 archive"
+    end
+
+    test "rejects oversized base64 input before decoding" do
+      :ets.insert(:backplane_settings, {@max_archive_setting, 1})
+
+      archive_base64 = Base.encode64(:binary.copy(<<0>>, 12))
+
+      assert {:error, msg} =
+               SkillTool.call(%{"_handler" => "publish", "archive_base64" => archive_base64})
+
+      assert msg =~ "exceeds maximum archive size"
     end
   end
 

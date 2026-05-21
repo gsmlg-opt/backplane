@@ -11,6 +11,12 @@ defmodule Backplane.Tools.Skill do
   alias Backplane.Skills.Skill, as: SkillSchema
   alias Backplane.Utils
 
+  @default_limit 20
+  @min_limit 1
+  @max_limit 100
+  @archive_ref_pattern ~r/^sha256\/[a-f0-9]{64}\.tar\.gz$/
+  @max_archive_bytes_setting "skills.archive.max_bytes"
+
   @impl true
   def tools do
     [
@@ -26,7 +32,12 @@ defmodule Backplane.Tools.Skill do
               "items" => %{"type" => "string"},
               "description" => "Filter by tags"
             },
-            "limit" => %{"type" => "integer", "description" => "Max results (default 10)"}
+            "limit" => %{
+              "type" => "integer",
+              "description" => "Max results (default 20, min 1, max 100)",
+              "minimum" => @min_limit,
+              "maximum" => @max_limit
+            }
           },
           "required" => ["query"]
         },
@@ -40,8 +51,7 @@ defmodule Backplane.Tools.Skill do
         input_schema: %{
           "type" => "object",
           "properties" => %{
-            "slug" => %{"type" => "string", "description" => "Skill slug"},
-            "skill_id" => %{"type" => "string", "description" => "Legacy skill ID fallback"}
+            "slug" => %{"type" => "string", "description" => "Skill slug"}
           },
           "required" => ["slug"]
         },
@@ -58,6 +68,12 @@ defmodule Backplane.Tools.Skill do
               "type" => "array",
               "items" => %{"type" => "string"},
               "description" => "Filter by tags"
+            },
+            "limit" => %{
+              "type" => "integer",
+              "description" => "Max results (default 20, min 1, max 100)",
+              "minimum" => @min_limit,
+              "maximum" => @max_limit
             }
           }
         },
@@ -100,8 +116,14 @@ defmodule Backplane.Tools.Skill do
   @spec call(map()) :: {:ok, term()} | {:error, term()}
   def call(%{"_handler" => "search"} = args) do
     opts = search_opts(args)
+    limit = normalized_limit(args["limit"])
 
-    results = Skills.search(args["query"], opts)
+    results =
+      args["query"]
+      |> Skills.search(opts)
+      |> Enum.filter(&archive_backed_result?/1)
+      |> Enum.take(limit)
+
     {:ok, results}
   end
 
@@ -110,7 +132,7 @@ defmodule Backplane.Tools.Skill do
     |> skill_ref()
     |> fetch_skill()
     |> case do
-      {:ok, skill} -> load_archive_skill(skill)
+      {:ok, skill} -> with_archive_skill(skill, &load_archive_skill/1)
       {:error, :not_found} -> {:error, "Skill not found: #{skill_ref(args)}"}
     end
   end
@@ -118,8 +140,9 @@ defmodule Backplane.Tools.Skill do
   def call(%{"_handler" => "list"} = args) do
     skills =
       Skills.list()
+      |> Enum.filter(&archive_backed_skill?/1)
       |> filter_tags(args["tags"])
-      |> maybe_limit(args["limit"])
+      |> Enum.take(normalized_limit(args["limit"]))
       |> Enum.map(&metadata/1)
 
     {:ok, skills}
@@ -130,19 +153,26 @@ defmodule Backplane.Tools.Skill do
     |> skill_ref()
     |> fetch_skill()
     |> case do
-      {:ok, skill} -> download_metadata(skill)
+      {:ok, skill} -> with_archive_skill(skill, &download_metadata/1)
       {:error, :not_found} -> {:error, "Skill not found: #{skill_ref(args)}"}
     end
   end
 
   def call(%{"_handler" => "publish", "archive_base64" => archive_base64}) do
-    with {:ok, archive_bytes} <- Base.decode64(archive_base64),
+    with :ok <- validate_base64_archive_size(archive_base64),
+         {:ok, archive_bytes} <- Base.decode64(archive_base64),
          {:ok, path} <- write_temp_archive(archive_bytes),
          {:ok, skill} <- ingest_temp_archive(path) do
       {:ok, metadata(skill)}
     else
-      :error -> {:error, "Invalid base64 archive"}
-      {:error, reason} -> {:error, "Failed to publish skill archive: #{inspect(reason)}"}
+      :error ->
+        {:error, "Invalid base64 archive"}
+
+      {:error, {:archive_too_large, max_bytes}} ->
+        {:error, "Archive exceeds maximum archive size of #{max_bytes} bytes"}
+
+      {:error, reason} ->
+        {:error, "Failed to publish skill archive: #{inspect(reason)}"}
     end
   end
 
@@ -154,7 +184,7 @@ defmodule Backplane.Tools.Skill do
   defp search_opts(args) do
     []
     |> maybe_add(:tags, args["tags"])
-    |> maybe_add(:limit, args["limit"])
+    |> maybe_add(:limit, @max_limit)
   end
 
   defp skill_ref(args), do: args["slug"] || args["skill_id"] || ""
@@ -167,6 +197,36 @@ defmodule Backplane.Tools.Skill do
   end
 
   defp fetch_skill(_), do: {:error, :not_found}
+
+  defp with_archive_skill(%SkillSchema{} = skill, fun) do
+    if archive_backed_skill?(skill) do
+      fun.(skill)
+    else
+      {:error, "Skill is not archive-backed: #{skill.slug}"}
+    end
+  end
+
+  defp archive_backed_result?(%{id: id}) when is_binary(id) do
+    with {:ok, skill} <- Skills.get(id) do
+      archive_backed_skill?(skill)
+    else
+      _ -> false
+    end
+  end
+
+  defp archive_backed_result?(_result), do: false
+
+  defp archive_backed_skill?(%SkillSchema{source_kind: "archive", archive_ref: archive_ref}) do
+    valid_archive_ref?(archive_ref)
+  end
+
+  defp archive_backed_skill?(_skill), do: false
+
+  defp valid_archive_ref?(archive_ref) when is_binary(archive_ref) do
+    Regex.match?(@archive_ref_pattern, archive_ref)
+  end
+
+  defp valid_archive_ref?(_archive_ref), do: false
 
   defp load_archive_skill(%SkillSchema{} = skill) do
     with {:ok, inspected} <- inspect_archive(skill) do
@@ -252,8 +312,31 @@ defmodule Backplane.Tools.Skill do
     end)
   end
 
-  defp maybe_limit(skills, limit) when is_integer(limit), do: Enum.take(skills, max(limit, 0))
-  defp maybe_limit(skills, _limit), do: skills
+  defp normalized_limit(limit) when is_integer(limit) do
+    limit
+    |> max(@min_limit)
+    |> min(@max_limit)
+  end
+
+  defp normalized_limit(_limit), do: @default_limit
+
+  defp validate_base64_archive_size(archive_base64) when is_binary(archive_base64) do
+    max_bytes = max_archive_bytes()
+    max_base64_bytes = div(max_bytes + 2, 3) * 4 + 4
+
+    if byte_size(archive_base64) > max_base64_bytes do
+      {:error, {:archive_too_large, max_bytes}}
+    else
+      :ok
+    end
+  end
+
+  defp max_archive_bytes do
+    case Backplane.Settings.get(@max_archive_bytes_setting) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> 20_000_000
+    end
+  end
 
   defp metadata(%SkillSchema{} = skill) do
     %{

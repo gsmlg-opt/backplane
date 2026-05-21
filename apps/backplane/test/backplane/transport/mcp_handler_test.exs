@@ -1098,6 +1098,30 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["code"] == -32_602
       assert resp["error"]["message"] =~ "must be string"
     end
+
+    test "returns error when skill search limit is below schema minimum" do
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "skill::search",
+          "arguments" => %{"query" => "skill", "limit" => 0}
+        })
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "limit"
+      assert resp["error"]["message"] =~ ">= 1"
+    end
+
+    test "returns error when skill list limit exceeds schema maximum" do
+      resp =
+        mcp_request("tools/call", %{
+          "name" => "skill::list",
+          "arguments" => %{"limit" => 101}
+        })
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "limit"
+      assert resp["error"]["message"] =~ "<= 100"
+    end
   end
 
   describe "format_result" do
