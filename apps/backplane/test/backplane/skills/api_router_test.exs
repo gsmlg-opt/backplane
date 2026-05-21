@@ -97,18 +97,24 @@ defmodule Backplane.Skills.ApiRouterTest do
 
     test "ingests a multipart archive upload", %{tmp_dir: tmp_dir} do
       archive = create_skill_archive!(tmp_dir, "multipart-upload", name: "Multipart Upload")
+      original_archive_path = archive
+      {body, boundary} = multipart_archive_body(archive, "multipart-upload.tar.gz")
 
       conn =
-        api_request(:post, "/api/skills", %{
-          "archive" => %Plug.Upload{
-            path: archive,
-            filename: "multipart-upload.tar.gz",
-            content_type: "application/x-tar+gzip"
-          }
-        })
+        api_request(:post, "/api/skills", body, [
+          {"content-type", "multipart/form-data; boundary=#{boundary}"}
+        ])
 
       assert conn.status == 201
-      assert %Plug.Upload{filename: "multipart-upload.tar.gz"} = conn.body_params["archive"]
+
+      assert %Plug.Upload{
+               filename: "multipart-upload.tar.gz",
+               path: parsed_upload_path
+             } = conn.body_params["archive"]
+
+      refute parsed_upload_path == original_archive_path
+      assert File.exists?(parsed_upload_path)
+
       assert %{"slug" => "multipart-upload", "name" => "Multipart Upload"} = json_body(conn)
     end
 
@@ -166,6 +172,27 @@ defmodule Backplane.Skills.ApiRouterTest do
       ] ++ Keyword.get(attrs, :entries, []),
       name: "#{slug}.tar.gz"
     )
+  end
+
+  defp multipart_archive_body(archive_path, filename) do
+    boundary = "backplane-test-#{System.unique_integer([:positive])}"
+
+    body =
+      IO.iodata_to_binary([
+        "--",
+        boundary,
+        "\r\n",
+        "Content-Disposition: form-data; name=\"archive\"; filename=\"",
+        filename,
+        "\"\r\n",
+        "Content-Type: application/x-tar+gzip\r\n\r\n",
+        File.read!(archive_path),
+        "\r\n--",
+        boundary,
+        "--\r\n"
+      ])
+
+    {body, boundary}
   end
 
   defp skill_content(attrs) do
