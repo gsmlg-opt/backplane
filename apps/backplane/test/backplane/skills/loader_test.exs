@@ -8,9 +8,6 @@ defmodule Backplane.Skills.LoaderTest do
   name: elixir-genserver
   description: Best practices for GenServer design
   tags: [elixir, otp, genserver]
-  tools: [file_read, file_write]
-  model: claude-sonnet-4
-  version: "1.2.0"
   ---
 
   # GenServer Production Patterns
@@ -43,21 +40,6 @@ defmodule Backplane.Skills.LoaderTest do
       assert entry.tags == ["elixir", "otp", "genserver"]
     end
 
-    test "extracts tools array from frontmatter" do
-      {:ok, entry} = Loader.parse(@valid_skill)
-      assert entry.tools == ["file_read", "file_write"]
-    end
-
-    test "extracts model from frontmatter (optional)" do
-      {:ok, entry} = Loader.parse(@valid_skill)
-      assert entry.model == "claude-sonnet-4"
-    end
-
-    test "extracts version from frontmatter" do
-      {:ok, entry} = Loader.parse(@valid_skill)
-      assert entry.version == "1.2.0"
-    end
-
     test "extracts markdown body after frontmatter" do
       {:ok, entry} = Loader.parse(@valid_skill)
       assert String.contains?(entry.content, "GenServer Production Patterns")
@@ -68,10 +50,9 @@ defmodule Backplane.Skills.LoaderTest do
       assert entry.name == "minimal-skill"
     end
 
-    test "defaults missing fields (tags -> [], version -> 1.0.0)" do
+    test "defaults missing tags to an empty list" do
       {:ok, entry} = Loader.parse(@minimal_skill)
       assert entry.tags == []
-      assert entry.version == "1.0.0"
     end
 
     test "computes SHA256 content_hash" do
@@ -154,18 +135,11 @@ defmodule Backplane.Skills.LoaderTest do
       assert entry.name == "whitespace-test"
     end
 
-    test "version is converted to string when given as number" do
-      skill = """
-      ---
-      name: version-num
-      version: 2
-      ---
-
-      Content.
-      """
-
-      {:ok, entry} = Loader.parse(skill)
-      assert entry.version == "2"
+    test "ignores non-v1 frontmatter keys" do
+      {:ok, entry} = Loader.parse(@valid_skill)
+      refute Map.has_key?(entry, :tools)
+      refute Map.has_key?(entry, :model)
+      refute Map.has_key?(entry, :version)
     end
   end
 
@@ -177,7 +151,6 @@ defmodule Backplane.Skills.LoaderTest do
 
       assert [entry] = Loader.parse_skill_file(filepath, "local:test")
       assert entry.id == "local:test/my-skill"
-      assert entry.source == "local:test"
       assert entry.name == "elixir-genserver"
     end
 

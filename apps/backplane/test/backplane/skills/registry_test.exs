@@ -11,9 +11,9 @@ defmodule Backplane.Skills.RegistryTest do
     end
 
     # Insert test data into PG
-    insert_skill("reg/s1", "Elixir Patterns", "elixir patterns", ["elixir", "otp"], "db")
-    insert_skill("reg/s2", "OTP Guide", "otp supervision", ["elixir", "otp"], "git:myskills")
-    insert_skill("reg/s3", "React Tips", "react frontend", ["react", "frontend"], "local:web")
+    insert_skill("reg/s1", "Elixir Patterns", "elixir patterns", ["elixir", "otp"])
+    insert_skill("reg/s2", "OTP Guide", "otp supervision", ["elixir", "otp"])
+    insert_skill("reg/s3", "React Tips", "react frontend", ["react", "frontend"])
 
     # Refresh ETS from PG
     Registry.refresh()
@@ -30,13 +30,6 @@ defmodule Backplane.Skills.RegistryTest do
       assert "reg/s3" in ids
     end
 
-    test "filters by source when option provided" do
-      skills = Registry.list(source: "git")
-      ids = Enum.map(skills, & &1.id)
-      assert "reg/s2" in ids
-      refute "reg/s1" in ids
-    end
-
     test "filters by tags (AND match)" do
       skills = Registry.list(tags: ["elixir"])
       ids = Enum.map(skills, & &1.id)
@@ -45,11 +38,19 @@ defmodule Backplane.Skills.RegistryTest do
       refute "reg/s3" in ids
     end
 
-    test "filters by tags and source combined" do
-      skills = Registry.list(source: "db", tags: ["elixir"])
-      ids = Enum.map(skills, & &1.id)
-      assert "reg/s1" in ids
-      refute "reg/s2" in ids
+    test "includes archive metadata and omits content" do
+      skill = Enum.find(Registry.list(), &(&1.id == "reg/s1"))
+      assert skill.slug == "elixir-patterns"
+      assert skill.version == "1.0.0"
+      assert skill.license == "MIT"
+      assert skill.homepage == "https://example.com/elixir-patterns"
+      assert skill.archive_ref == "sha256/#{String.duplicate("a", 64)}.tar.gz"
+      assert skill.size_bytes == 123
+      assert skill.file_count == 2
+      assert skill.source_kind == "git"
+      assert skill.source_uri == "https://github.com/org/repo"
+      assert skill.source_rev == "abc123"
+      refute Map.has_key?(skill, :content)
     end
   end
 
@@ -72,6 +73,11 @@ defmodule Backplane.Skills.RegistryTest do
       assert skill.name == "Elixir Patterns"
     end
 
+    test "returns skill by slug from ETS" do
+      {:ok, skill} = Registry.fetch("elixir-patterns")
+      assert skill.id == "reg/s1"
+    end
+
     test "returns :not_found for missing" do
       assert {:error, :not_found} = Registry.fetch("nonexistent")
     end
@@ -86,7 +92,7 @@ defmodule Backplane.Skills.RegistryTest do
   describe "refresh/0" do
     test "reloads ETS from database" do
       # Add a new skill to PG
-      insert_skill("reg/new", "New Skill", "brand new", [], "db")
+      insert_skill("reg/new", "New Skill", "brand new", [])
 
       # ETS shouldn't have it yet
       assert {:error, :not_found} = Registry.fetch("reg/new")
@@ -100,19 +106,29 @@ defmodule Backplane.Skills.RegistryTest do
     end
   end
 
-  defp insert_skill(id, name, description, tags, source) do
+  defp insert_skill(id, name, description, tags) do
     content = "# #{name}"
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+    slug = Backplane.Skills.Skill.slugify(name)
 
     %Skill{}
     |> Skill.changeset(%{
       id: id,
+      slug: slug,
       name: name,
       description: description,
       tags: tags,
       content: content,
       content_hash: hash,
-      source: source,
+      version: "1.0.0",
+      license: "MIT",
+      homepage: "https://example.com/#{slug}",
+      archive_ref: "sha256/#{String.duplicate("a", 64)}.tar.gz",
+      size_bytes: 123,
+      file_count: 2,
+      source_kind: "git",
+      source_uri: "https://github.com/org/repo",
+      source_rev: "abc123",
       enabled: true
     })
     |> Repo.insert!()

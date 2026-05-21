@@ -31,7 +31,10 @@ defmodule Backplane.Skills.Registry do
         {:noreply, state}
 
       {:error, reason} ->
-        Logger.warning("Skills registry initial refresh failed: #{inspect(reason)}, retrying in 5s")
+        Logger.warning(
+          "Skills registry initial refresh failed: #{inspect(reason)}, retrying in 5s"
+        )
+
         Process.send_after(self(), :retry_refresh, 5_000)
         {:noreply, state}
     end
@@ -102,7 +105,7 @@ defmodule Backplane.Skills.Registry do
   def fetch(skill_id) do
     case :ets.lookup(@table, skill_id) do
       [{^skill_id, entry}] -> {:ok, entry}
-      [] -> {:error, :not_found}
+      [] -> fetch_by_slug(skill_id)
     end
   end
 
@@ -122,11 +125,22 @@ defmodule Backplane.Skills.Registry do
         {skill.id,
          %{
            id: skill.id,
+           slug: skill.slug,
            name: skill.name,
            description: skill.description,
            tags: skill.tags,
-           content: skill.content,
-           content_hash: skill.content_hash
+           version: skill.version,
+           license: skill.license,
+           homepage: skill.homepage,
+           author: skill.author,
+           meta: skill.meta,
+           content_hash: skill.content_hash,
+           archive_ref: skill.archive_ref,
+           size_bytes: skill.size_bytes,
+           file_count: skill.file_count,
+           source_kind: skill.source_kind,
+           source_uri: skill.source_uri,
+           source_rev: skill.source_rev
          }}
       end)
 
@@ -155,6 +169,14 @@ defmodule Backplane.Skills.Registry do
     Enum.filter(entries, fn entry ->
       entry_tags = Map.get(entry, :tags, []) |> MapSet.new()
       MapSet.subset?(tag_set, entry_tags)
+    end)
+  end
+
+  defp fetch_by_slug(slug) do
+    @table
+    |> :ets.tab2list()
+    |> Enum.find_value({:error, :not_found}, fn {_id, entry} ->
+      if Map.get(entry, :slug) == slug, do: {:ok, entry}, else: nil
     end)
   end
 end

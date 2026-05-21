@@ -23,8 +23,8 @@ defmodule Backplane.Skills.Sources.Database do
 
   @impl true
   @spec fetch(String.t()) :: {:ok, Backplane.Skills.Source.skill_entry()} | {:error, :not_found}
-  def fetch(skill_id) do
-    case Repo.get(Skill, skill_id) do
+  def fetch(id_or_slug) do
+    case Repo.get(Skill, id_or_slug) || Repo.get_by(Skill, slug: id_or_slug) do
       nil -> {:error, :not_found}
       skill -> {:ok, to_entry(skill)}
     end
@@ -42,6 +42,7 @@ defmodule Backplane.Skills.Sources.Database do
     params =
       attrs
       |> Map.new(fn {k, v} -> {to_string(k), v} end)
+      |> Map.put_new("slug", slug_for(attrs))
       |> Map.merge(%{"id" => id, "content_hash" => hash})
 
     %Skill{}
@@ -51,8 +52,8 @@ defmodule Backplane.Skills.Sources.Database do
 
   @doc "Update a skill by ID."
   @spec update(String.t(), map()) :: {:ok, Skill.t()} | {:error, atom() | Ecto.Changeset.t()}
-  def update(skill_id, attrs) do
-    case Repo.get(Skill, skill_id) do
+  def update(id_or_slug, attrs) do
+    case Repo.get(Skill, id_or_slug) || Repo.get_by(Skill, slug: id_or_slug) do
       nil ->
         {:error, :not_found}
 
@@ -80,14 +81,30 @@ defmodule Backplane.Skills.Sources.Database do
     "db/" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
+  defp slug_for(attrs) do
+    attrs[:slug] || attrs["slug"] || Skill.slugify(attrs[:name] || attrs["name"])
+  end
+
   defp to_entry(%Skill{} = s) do
     %{
       id: s.id,
+      slug: s.slug,
       name: s.name,
       description: s.description,
       tags: s.tags,
       content: s.content,
-      content_hash: s.content_hash
+      content_hash: s.content_hash,
+      version: s.version,
+      license: s.license,
+      homepage: s.homepage,
+      author: s.author,
+      meta: s.meta || %{},
+      archive_ref: s.archive_ref,
+      size_bytes: s.size_bytes,
+      file_count: s.file_count,
+      source_kind: s.source_kind,
+      source_uri: s.source_uri,
+      source_rev: s.source_rev
     }
   end
 end

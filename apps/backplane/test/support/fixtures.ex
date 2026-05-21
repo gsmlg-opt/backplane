@@ -36,11 +36,13 @@ defmodule Backplane.Fixtures do
 
     %{
       id: Keyword.get(overrides, :id, name),
+      slug: Keyword.get(overrides, :slug, Backplane.Skills.Skill.slugify(name)),
       name: name,
       description: Keyword.get(overrides, :description, "A test skill"),
       tags: Keyword.get(overrides, :tags, ["test"]),
       content: content,
       content_hash: Keyword.get(overrides, :content_hash, hash(content)),
+      meta: Keyword.get(overrides, :meta, %{}),
       enabled: Keyword.get(overrides, :enabled, true)
     }
   end

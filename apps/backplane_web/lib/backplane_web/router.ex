@@ -25,10 +25,19 @@ defmodule BackplaneWeb.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :api do
+    plug(:accepts, ["json"])
+  end
+
   scope "/", BackplaneWeb do
     pipe_through(:public_browser)
 
     get("/", PageController, :home)
+  end
+
+  scope "/api" do
+    pipe_through(:api)
+    forward("/skills", Backplane.Skills.ApiRouter)
   end
 
   scope "/api" do
@@ -58,7 +67,8 @@ defmodule BackplaneWeb.Router do
     live("/mcp/managed", ManagedLive, :index)
     live("/mcp/managed/:prefix", ManagedServiceSettingsLive, :show)
 
-    # Skill
+    # Skills
+    live("/skills", SkillLive, :index)
     live("/skill", SkillLive, :index)
 
     # System

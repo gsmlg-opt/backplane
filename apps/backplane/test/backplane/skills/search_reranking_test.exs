@@ -21,9 +21,7 @@ defmodule Backplane.Skills.SearchRerankingTest do
   end
 
   describe "query with reranking" do
-    test "falls back to tsvector-only when embeddings not configured" do
-      refute Backplane.Embeddings.configured?()
-
+    test "uses tsvector results and does not include embedding data" do
       results = Search.query("Elixir GenServer")
       assert length(results) > 0
 

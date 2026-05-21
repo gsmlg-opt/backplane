@@ -22,5 +22,11 @@ defmodule Backplane.SettingsTest do
 
       assert Settings.get(key) == []
     end
+
+    test "skill archive defaults are available" do
+      assert Settings.get("skills.archive.max_bytes") == 20_000_000
+      assert Settings.get("skills.archive.max_files") == 500
+      assert Settings.get("skills.blob.local_root") == nil
+    end
   end
 end

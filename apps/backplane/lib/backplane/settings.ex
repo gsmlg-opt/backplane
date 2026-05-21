@@ -54,6 +54,22 @@ defmodule Backplane.Settings do
       value: true,
       type: "boolean",
       desc: "Enable web fetch service"
+    },
+    # Skill archive storage
+    "skills.archive.max_bytes" => %{
+      value: 20_000_000,
+      type: "integer",
+      desc: "Maximum uploaded skill archive size in bytes"
+    },
+    "skills.archive.max_files" => %{
+      value: 500,
+      type: "integer",
+      desc: "Maximum file count in an uploaded skill archive"
+    },
+    "skills.blob.local_root" => %{
+      value: nil,
+      type: "string",
+      desc: "Optional local filesystem root for skill archive blobs"
     }
   }
 

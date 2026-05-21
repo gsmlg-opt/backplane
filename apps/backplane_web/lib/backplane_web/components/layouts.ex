@@ -12,7 +12,7 @@ defmodule BackplaneWeb.Layouts do
       %{label: "Dashboard", path: "/admin/dashboard/overview", section: :dashboard},
       %{label: "Llama", path: "/admin/llama/providers", section: :llama},
       %{label: "MCP", path: "/admin/mcp/managed", section: :mcp},
-      %{label: "Skill", path: "/admin/skill", section: :skill},
+      %{label: "Skills", path: "/admin/skills", section: :skill},
       %{label: "System", path: "/admin/system/clients", section: :system}
     ]
   end
@@ -39,7 +39,9 @@ defmodule BackplaneWeb.Layouts do
         ]
 
       :skill ->
-        []
+        [
+          %{label: "Library", path: "/admin/skills"}
+        ]
 
       :system ->
         [
@@ -63,6 +65,7 @@ defmodule BackplaneWeb.Layouts do
       String.starts_with?(current_path, "/admin/dashboard") -> :dashboard
       String.starts_with?(current_path, "/admin/llama") -> :llama
       String.starts_with?(current_path, "/admin/mcp") -> :mcp
+      String.starts_with?(current_path, "/admin/skills") -> :skill
       String.starts_with?(current_path, "/admin/skill") -> :skill
       String.starts_with?(current_path, "/admin/system") -> :system
       true -> :dashboard

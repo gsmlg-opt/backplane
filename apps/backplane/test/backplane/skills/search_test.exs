@@ -10,7 +10,6 @@ defmodule Backplane.Skills.SearchTest do
       "GenServer Patterns",
       "Best practices for GenServer",
       ["elixir", "otp"],
-      "db",
       true
     )
 
@@ -19,7 +18,6 @@ defmodule Backplane.Skills.SearchTest do
       "Phoenix LiveView",
       "Building real-time apps with LiveView",
       ["phoenix", "elixir"],
-      "db",
       true
     )
 
@@ -28,18 +26,16 @@ defmodule Backplane.Skills.SearchTest do
       "Ecto Queries",
       "Advanced Ecto query composition",
       ["elixir", "ecto"],
-      "git:myskills",
       true
     )
 
-    insert_skill("s4", "Disabled Skill", "Should not appear", ["hidden"], "db", false)
+    insert_skill("s4", "Disabled Skill", "Should not appear", ["hidden"], false)
 
     insert_skill(
       "s5",
       "React Components",
       "React component patterns",
       ["react", "frontend"],
-      "local:web",
       true
     )
 
@@ -85,32 +81,18 @@ defmodule Backplane.Skills.SearchTest do
       refute "Phoenix LiveView" in names
     end
 
-    test "filters by source type" do
-      results = Search.query("elixir", source: "git")
-      names = Enum.map(results, & &1.name)
-      assert "Ecto Queries" in names
-      refute "GenServer Patterns" in names
-    end
+    test "includes archive metadata and omits content" do
+      [result] = Search.query("GenServer")
 
-    test "filters by required tools (AND match)" do
-      # Insert a skill with specific tools
-      insert_skill_with_tools(
-        "s6",
-        "Docker Deployment",
-        "Deploy with Docker",
-        ["devops"],
-        ["git::repo-tree", "git::file-content"],
-        "db",
-        true
-      )
-
-      results = Search.query("Docker", tools: ["git::repo-tree"])
-      names = Enum.map(results, & &1.name)
-      assert "Docker Deployment" in names
-
-      results = Search.query("Docker", tools: ["git::repo-tree", "nonexistent::tool"])
-      names = Enum.map(results, & &1.name)
-      refute "Docker Deployment" in names
+      assert result.slug == "genserver-patterns"
+      assert result.version == "1.0.0"
+      assert result.license == "MIT"
+      assert result.homepage == "https://example.com/genserver-patterns"
+      assert result.content_hash
+      assert result.archive_ref == "sha256/#{String.duplicate("a", 64)}.tar.gz"
+      assert result.size_bytes == 123
+      assert result.file_count == 2
+      refute Map.has_key?(result, :content)
     end
 
     test "excludes disabled skills" do
@@ -147,24 +129,26 @@ defmodule Backplane.Skills.SearchTest do
     end
   end
 
-  defp insert_skill(id, name, description, tags, source, enabled) do
-    insert_skill_with_tools(id, name, description, tags, [], source, enabled)
-  end
-
-  defp insert_skill_with_tools(id, name, description, tags, tools, source, enabled) do
+  defp insert_skill(id, name, description, tags, enabled) do
     content = "# #{name}\n\n#{description}\n\nDetailed content about #{Enum.join(tags, ", ")}."
     hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+    slug = Backplane.Skills.Skill.slugify(name)
 
     %Skill{}
     |> Skill.changeset(%{
       id: id,
+      slug: slug,
       name: name,
       description: description,
       tags: tags,
-      tools: tools,
       content: content,
       content_hash: hash,
-      source: source,
+      version: "1.0.0",
+      license: "MIT",
+      homepage: "https://example.com/#{slug}",
+      archive_ref: "sha256/#{String.duplicate("a", 64)}.tar.gz",
+      size_bytes: 123,
+      file_count: 2,
       enabled: enabled
     })
     |> Repo.insert!()
