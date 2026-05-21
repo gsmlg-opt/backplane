@@ -24,7 +24,8 @@ defmodule Backplane.Tools.SkillTest do
 
   describe "tool registration" do
     test "exposes v1 archive tools without legacy create/update tools" do
-      names = SkillTool.tools() |> Enum.map(& &1.name)
+      tools = SkillTool.tools()
+      names = Enum.map(tools, & &1.name)
 
       assert "skill::list" in names
       assert "skill::search" in names
@@ -34,6 +35,9 @@ defmodule Backplane.Tools.SkillTest do
       refute "skill::create" in names
       refute "skill::update" in names
       refute "skill::versions" in names
+
+      assert %{input_schema: %{"required" => ["slug"]}} =
+               Enum.find(tools, &(&1.name == "skill::load"))
     end
   end
 

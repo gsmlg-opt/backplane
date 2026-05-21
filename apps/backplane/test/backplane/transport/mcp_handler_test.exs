@@ -163,6 +163,14 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["error"]["message"] =~ "query"
     end
 
+    test "returns -32602 when skill::load omits required slug" do
+      resp = mcp_request("tools/call", %{"name" => "skill::load", "arguments" => %{}})
+
+      assert resp["error"]["code"] == -32_602
+      assert resp["error"]["message"] =~ "Missing required arguments"
+      assert resp["error"]["message"] =~ "slug"
+    end
+
     test "returns -32602 for wrong argument type" do
       resp =
         mcp_request("tools/call", %{
@@ -326,6 +334,28 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp = mcp_request("prompts/list")
 
       assert is_list(resp["result"]["prompts"])
+    end
+
+    test "lists inserted skills as prompts with empty arguments" do
+      Fixtures.insert_skill(
+        id: "prompt/list-skill",
+        slug: "prompt-list-skill",
+        name: "prompt-list-skill",
+        description: "A listed prompt skill",
+        content: "# Prompt List Skill\nFollow these instructions.",
+        source_kind: "db"
+      )
+
+      Backplane.Skills.Registry.refresh()
+
+      resp = mcp_request("prompts/list")
+
+      # Current Skill records do not have a tools field, so prompt arguments are empty.
+      assert %{
+               "name" => "prompt-list-skill",
+               "description" => "A listed prompt skill",
+               "arguments" => []
+             } in resp["result"]["prompts"]
     end
   end
 
@@ -1076,7 +1106,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       resp =
         mcp_request("tools/call", %{
           "name" => "skill::load",
-          "arguments" => %{"skill_id" => "nonexistent"}
+          "arguments" => %{"slug" => "nonexistent"}
         })
 
       # Even error results go through format_result — the isError path

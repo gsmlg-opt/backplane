@@ -43,7 +43,7 @@ defmodule Backplane.Tools.Skill do
             "slug" => %{"type" => "string", "description" => "Skill slug"},
             "skill_id" => %{"type" => "string", "description" => "Legacy skill ID fallback"}
           },
-          "required" => []
+          "required" => ["slug"]
         },
         module: __MODULE__,
         handler: :load
