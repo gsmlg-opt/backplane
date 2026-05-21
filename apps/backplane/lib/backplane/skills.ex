@@ -6,6 +6,7 @@ defmodule Backplane.Skills do
   import Ecto.Query
 
   alias Backplane.Repo
+  alias Backplane.Skills.Ingest
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
   alias Backplane.Skills.Search
@@ -66,8 +67,8 @@ defmodule Backplane.Skills do
   end
 
   @doc "Ingest an archive-backed skill."
-  @spec ingest_archive(term(), map()) :: {:error, :not_implemented}
-  def ingest_archive(_archive, _opts), do: {:error, :not_implemented}
+  @spec ingest_archive(term(), map() | keyword()) :: {:ok, Skill.t()} | {:error, term()}
+  def ingest_archive(archive, opts), do: Ingest.ingest(archive, opts)
 
   @doc "Stream a skill archive."
   @spec archive_stream(String.t()) :: {:error, :not_implemented}
