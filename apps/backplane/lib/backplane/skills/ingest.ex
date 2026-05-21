@@ -9,6 +9,8 @@ defmodule Backplane.Skills.Ingest do
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
 
+  require Logger
+
   @doc "Ingest a skill archive from a path or Plug.Upload-like map."
   @spec ingest(String.t() | %{path: String.t()}, keyword() | map()) ::
           {:ok, Skill.t()} | {:error, term()}
@@ -22,7 +24,7 @@ defmodule Backplane.Skills.Ingest do
          content_hash = sha256(bytes),
          {:ok, inspected} <- Archive.inspect(path_or_upload, archive_opts),
          slug = resolve_slug(inspected, filename),
-         :changed <- changed?(slug, content_hash),
+         :changed <- ingest_state(slug, content_hash),
          {:ok, archive_ref} <- Blob.put(bytes, blob_opts),
          attrs = build_attrs(inspected, slug, content_hash, archive_ref),
          {:ok, skill} <- transact_upsert(attrs, archive_ref, blob_opts) do
@@ -47,12 +49,26 @@ defmodule Backplane.Skills.Ingest do
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
-  defp changed?(slug, content_hash) do
+  defp ingest_state(slug, content_hash) do
     case Repo.get_by(Skill, slug: slug) do
-      %Skill{content_hash: ^content_hash} = skill -> {:unchanged, skill}
-      _ -> :changed
+      nil ->
+        :changed
+
+      %Skill{} = skill ->
+        archive_ingest_state(skill, slug, content_hash)
     end
   end
+
+  defp archive_ingest_state(%Skill{} = skill, slug, content_hash) do
+    cond do
+      not archive_backed?(skill) -> {:error, {:slug_conflict, slug}}
+      skill.content_hash == content_hash -> {:unchanged, skill}
+      true -> :changed
+    end
+  end
+
+  defp archive_backed?(%Skill{id: "skill/" <> _, source_kind: "archive"}), do: true
+  defp archive_backed?(_skill), do: false
 
   defp build_attrs(inspected, slug, content_hash, archive_ref) do
     entry = inspected.skill_entry
@@ -120,8 +136,26 @@ defmodule Backplane.Skills.Ingest do
         {:ok, skill}
 
       {:error, reason} ->
-        Blob.delete(archive_ref, blob_opts)
+        cleanup_unreferenced_blob(archive_ref, blob_opts)
         {:error, reason}
+    end
+  rescue
+    exception ->
+      cleanup_unreferenced_blob(archive_ref, blob_opts)
+      {:error, exception}
+  end
+
+  defp cleanup_unreferenced_blob(archive_ref, blob_opts) do
+    unless Repo.get_by(Skill, archive_ref: archive_ref) do
+      case Blob.delete(archive_ref, blob_opts) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to cleanup skill archive blob #{archive_ref}: #{inspect(reason)}"
+          )
+      end
     end
   end
 

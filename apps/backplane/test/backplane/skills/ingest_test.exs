@@ -116,6 +116,57 @@ defmodule Backplane.Skills.IngestTest do
       assert Repo.aggregate(Skill, :count, :id) == 1
     end
 
+    test "same slug on a non-archive skill returns a conflict without writing a blob", %{
+      tmp_dir: tmp_dir
+    } do
+      blob_root = blob_root(tmp_dir)
+
+      insert_skill!(
+        id: "db/conflict-skill",
+        slug: "conflict-skill",
+        name: "Existing Database Skill",
+        source_kind: "db"
+      )
+
+      archive =
+        create_archive!(tmp_dir, [
+          {"conflict-skill/SKILL.md", skill_md(name: "Conflict Skill")},
+          {"conflict-skill/meta.json", Jason.encode!(%{"slug" => "conflict-skill"})}
+        ])
+
+      assert {:error, {:slug_conflict, "conflict-skill"}} =
+               Ingest.ingest(archive, blob: [root: blob_root])
+
+      refute File.exists?(Path.join(blob_root, "sha256"))
+      assert Repo.aggregate(Skill, :count, :id) == 1
+      assert Repo.get!(Skill, "db/conflict-skill").source_kind == "db"
+    end
+
+    test "transaction failure keeps a blob referenced by a committed skill", %{tmp_dir: tmp_dir} do
+      blob_root = blob_root(tmp_dir)
+
+      archive =
+        create_archive!(tmp_dir, [
+          {"shared-ref/SKILL.md", skill_md(name: "Shared Ref Skill")},
+          {"shared-ref/meta.json", Jason.encode!(%{"slug" => "shared-ref"})}
+        ])
+
+      archive_bytes = File.read!(archive)
+      assert {:ok, archive_ref} = Blob.put(archive_bytes, root: blob_root)
+
+      insert_skill!(
+        id: "skill/shared-ref",
+        slug: "occupied-id",
+        name: "Existing Archive Skill",
+        content_hash: sha256(archive_bytes),
+        archive_ref: archive_ref,
+        source_kind: "archive"
+      )
+
+      assert {:error, %Ecto.ConstraintError{}} = Ingest.ingest(archive, blob: [root: blob_root])
+      assert Blob.exists?(archive_ref, root: blob_root)
+    end
+
     test "invalid archive does not write a blob", %{tmp_dir: tmp_dir} do
       archive = Path.join(tmp_dir, "invalid.tar.gz")
       blob_root = blob_root(tmp_dir)
@@ -160,4 +211,28 @@ defmodule Backplane.Skills.IngestTest do
   end
 
   defp blob_root(tmp_dir), do: Path.join(tmp_dir, "blobs")
+
+  defp insert_skill!(attrs) do
+    name = Keyword.fetch!(attrs, :name)
+    content = Keyword.get(attrs, :content, "# #{name}")
+
+    defaults = %{
+      id: Keyword.fetch!(attrs, :id),
+      slug: Keyword.fetch!(attrs, :slug),
+      name: name,
+      description: Keyword.get(attrs, :description, ""),
+      tags: Keyword.get(attrs, :tags, []),
+      content: content,
+      content_hash: Keyword.get(attrs, :content_hash, sha256(content)),
+      enabled: true,
+      archive_ref: Keyword.get(attrs, :archive_ref),
+      source_kind: Keyword.get(attrs, :source_kind)
+    }
+
+    %Skill{}
+    |> Skill.changeset(defaults)
+    |> Repo.insert!()
+  end
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 end
