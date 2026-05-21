@@ -11,6 +11,7 @@ defmodule Backplane.Tools.HubTest do
     %Skill{}
     |> Skill.changeset(%{
       id: "hub/s1",
+      slug: "hub-s1",
       name: "Hub Test Skill",
       description: "A skill for hub testing",
       tags: ["test"],

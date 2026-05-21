@@ -107,6 +107,7 @@ defmodule Backplane.Skills.RegistryTest do
     %Skill{}
     |> Skill.changeset(%{
       id: id,
+      slug: slugify(id),
       name: name,
       description: description,
       tags: tags,
@@ -116,5 +117,12 @@ defmodule Backplane.Skills.RegistryTest do
       enabled: true
     })
     |> Repo.insert!()
+  end
+
+  defp slugify(id) do
+    id
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
   end
 end

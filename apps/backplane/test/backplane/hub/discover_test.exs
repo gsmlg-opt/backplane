@@ -14,6 +14,7 @@ defmodule Backplane.Hub.DiscoverTest do
     %Skill{}
     |> Skill.changeset(%{
       id: "disc/elixir",
+      slug: "disc-elixir",
       name: "Elixir Patterns",
       description: "Design patterns for Elixir",
       tags: ["elixir"],

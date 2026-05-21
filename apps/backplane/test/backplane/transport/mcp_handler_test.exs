@@ -691,6 +691,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       %Skill{}
       |> Skill.changeset(%{
         id: "prompt/test-skill",
+        slug: "prompt-test-skill",
         name: "test-prompt-skill",
         description: "A skill for prompt testing",
         tags: ["test"],
@@ -966,6 +967,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       %Skill{}
       |> Skill.changeset(%{
         id: "batch/prompt-skill",
+        slug: "batch-prompt-skill",
         name: "batch-prompt-skill",
         description: "Batch test skill",
         tags: ["test"],
@@ -1153,6 +1155,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       %Skill{}
       |> Skill.changeset(%{
         id: "prompt/with-tools",
+        slug: "prompt-with-tools",
         name: "skill-with-tools",
         description: "Has required tools",
         tags: [],
