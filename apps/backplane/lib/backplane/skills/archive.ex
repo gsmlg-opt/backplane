@@ -121,6 +121,9 @@ defmodule Backplane.Skills.Archive do
       ".." in String.split(name, "/", trim: false) ->
         {:error, {:unsafe_path, name}}
 
+      percent_encoded_dot_path?(name) ->
+        {:error, {:unsafe_path, name}}
+
       true ->
         :ok
     end
@@ -130,7 +133,13 @@ defmodule Backplane.Skills.Archive do
   defp validate_entry_type(_name, :directory), do: :ok
   defp validate_entry_type(name, type), do: {:error, {:unsupported_entry_type, name, type}}
 
-  defp windows_drive_path?(name), do: Regex.match?(~r/^[A-Za-z]:/, name)
+  defp windows_drive_path?(name),
+    do: Enum.any?(path_segments(name), &Regex.match?(~r/^[A-Za-z]:/, &1))
+
+  defp percent_encoded_dot_path?(name),
+    do: Enum.any?(path_segments(name), &Regex.match?(~r/%2e/i, &1))
+
+  defp path_segments(name), do: String.split(name, "/", trim: false)
 
   defp skill_root(file_entries) do
     case Enum.filter(file_entries, &(Path.basename(&1.name) == "SKILL.md")) do

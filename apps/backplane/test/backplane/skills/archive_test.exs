@@ -83,6 +83,16 @@ defmodule Backplane.Skills.ArchiveTest do
       assert {:error, {:unsafe_path, "C:\\skill\\SKILL.md"}} = Archive.inspect(archive)
     end
 
+    test "rejects nested Windows drive-like path segments", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/C:/x.txt", "suspicious"}
+        ])
+
+      assert {:error, {:unsafe_path, "example-skill/C:/x.txt"}} = Archive.inspect(archive)
+    end
+
     test "rejects .. path traversal", %{tmp_dir: tmp_dir} do
       archive =
         create_archive!(tmp_dir, [
@@ -91,6 +101,17 @@ defmodule Backplane.Skills.ArchiveTest do
         ])
 
       assert {:error, {:unsafe_path, "example-skill/../outside.txt"}} = Archive.inspect(archive)
+    end
+
+    test "rejects percent-encoded traversal-like path segments", %{tmp_dir: tmp_dir} do
+      archive =
+        create_archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/%2e%2E/x.txt", "suspicious"}
+        ])
+
+      assert {:error, {:unsafe_path, "example-skill/%2e%2E/x.txt"}} =
+               Archive.inspect(archive)
     end
 
     test "rejects backslash path traversal", %{tmp_dir: tmp_dir} do
