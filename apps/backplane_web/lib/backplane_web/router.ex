@@ -46,6 +46,11 @@ defmodule BackplaneWeb.Router do
 
   scope "/api" do
     pipe_through(:skills_api)
+    forward("/host-agent", Backplane.Skills.HostAgentApiRouter)
+  end
+
+  scope "/api" do
+    pipe_through(:skills_api)
     forward("/skills", Backplane.Skills.ApiRouter)
   end
 
