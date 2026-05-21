@@ -44,6 +44,22 @@ defmodule Backplane.Settings do
       type: "json",
       desc: "Custom one-to-one model aliases"
     },
+    # Skills Hub
+    "skills.archive.max_bytes" => %{
+      value: 20_000_000,
+      type: "integer",
+      desc: "Maximum uploaded skill archive size in bytes"
+    },
+    "skills.archive.max_files" => %{
+      value: 500,
+      type: "integer",
+      desc: "Maximum uploaded skill archive file count"
+    },
+    "skills.blob.local_root" => %{
+      value: nil,
+      type: "string",
+      desc: "Local filesystem root for skill archive blob storage"
+    },
     # Managed Services
     "services.day.enabled" => %{
       value: true,
