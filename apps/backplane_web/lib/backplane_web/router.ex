@@ -25,6 +25,10 @@ defmodule BackplaneWeb.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :api do
+    plug(:accepts, ["json"])
+  end
+
   scope "/", BackplaneWeb do
     pipe_through(:public_browser)
 
@@ -34,6 +38,11 @@ defmodule BackplaneWeb.Router do
   scope "/api" do
     pipe_through(:browser)
     forward("/llm", Backplane.LLM.ApiRouter)
+  end
+
+  scope "/api" do
+    pipe_through(:api)
+    forward("/skills", Backplane.Skills.ApiRouter)
   end
 
   scope "/admin", BackplaneWeb do

@@ -6,6 +6,8 @@ defmodule Backplane.Skills do
   import Ecto.Query
 
   alias Backplane.Repo
+  alias Backplane.Skills.Archive
+  alias Backplane.Skills.Blob
   alias Backplane.Skills.Ingest
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
@@ -71,8 +73,33 @@ defmodule Backplane.Skills do
   def ingest_archive(archive, opts), do: Ingest.ingest(archive, opts)
 
   @doc "Stream a skill archive."
-  @spec archive_stream(String.t()) :: {:error, :not_implemented}
-  def archive_stream(_skill_id), do: {:error, :not_implemented}
+  @spec archive_stream(String.t() | Skill.t()) :: {:ok, Enumerable.t()} | {:error, term()}
+  def archive_stream(%Skill{archive_ref: archive_ref}) when is_binary(archive_ref) do
+    Blob.get(archive_ref)
+  end
+
+  def archive_stream(%Skill{}), do: {:error, :not_found}
+
+  def archive_stream(skill_id_or_slug) when is_binary(skill_id_or_slug) do
+    with {:ok, skill} <- get_by_slug_or_id(skill_id_or_slug) do
+      archive_stream(skill)
+    end
+  end
+
+  @doc "List files contained in a stored skill archive."
+  @spec archive_files(String.t() | Skill.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def archive_files(skill_or_id) do
+    with {:ok, stream} <- archive_stream(skill_or_id),
+         {:ok, path} <- write_stream_to_temp(stream) do
+      try do
+        with {:ok, inspected} <- Archive.inspect(path) do
+          {:ok, inspected.files}
+        end
+      after
+        File.rm(path)
+      end
+    end
+  end
 
   @doc "Export a skill archive."
   @spec export(String.t()) :: {:error, :not_implemented}
@@ -84,4 +111,26 @@ defmodule Backplane.Skills do
 
   defp maybe_enabled_filter(query, true), do: query
   defp maybe_enabled_filter(query, false), do: where(query, [s], s.enabled == true)
+
+  defp get_by_slug_or_id(value) do
+    case get_by_slug(value) do
+      {:ok, skill} -> {:ok, skill}
+      {:error, :not_found} -> get(value)
+    end
+  end
+
+  defp write_stream_to_temp(stream) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "backplane-skill-archive-#{System.unique_integer([:positive])}.tar.gz"
+      )
+
+    case File.open(path, [:write, :binary], fn io ->
+           Enum.each(stream, &IO.binwrite(io, &1))
+         end) do
+      {:ok, :ok} -> {:ok, path}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 end
