@@ -36,12 +36,24 @@ defmodule Backplane.Fixtures do
 
     %{
       id: Keyword.get(overrides, :id, name),
+      slug: Keyword.get(overrides, :slug, slugify(name)),
       name: name,
       description: Keyword.get(overrides, :description, "A test skill"),
       tags: Keyword.get(overrides, :tags, ["test"]),
       content: content,
       content_hash: Keyword.get(overrides, :content_hash, hash(content)),
-      enabled: Keyword.get(overrides, :enabled, true)
+      enabled: Keyword.get(overrides, :enabled, true),
+      version: Keyword.get(overrides, :version),
+      license: Keyword.get(overrides, :license),
+      homepage: Keyword.get(overrides, :homepage),
+      author: Keyword.get(overrides, :author),
+      meta: Keyword.get(overrides, :meta, %{}),
+      archive_ref: Keyword.get(overrides, :archive_ref),
+      size_bytes: Keyword.get(overrides, :size_bytes),
+      file_count: Keyword.get(overrides, :file_count),
+      source_kind: Keyword.get(overrides, :source_kind),
+      source_uri: Keyword.get(overrides, :source_uri),
+      source_rev: Keyword.get(overrides, :source_rev)
     }
   end
 
@@ -117,4 +129,12 @@ defmodule Backplane.Fixtures do
   defp unique, do: System.unique_integer([:positive])
 
   defp hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+  defp slugify(name) do
+    name
+    |> to_string()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
 end

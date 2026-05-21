@@ -3,6 +3,7 @@ defmodule Backplane.Skills.SkillTest do
 
   alias Backplane.Skills, as: SkillsContext
   alias Backplane.Skills.Skill
+  alias Backplane.Fixtures
 
   @valid_attrs %{
     id: "test/skill-1",
@@ -124,6 +125,40 @@ defmodule Backplane.Skills.SkillTest do
       assert {:error, :not_implemented} = SkillsContext.archive_stream("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.export("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.import("archive bytes", %{})
+    end
+  end
+
+  describe "fixtures" do
+    test "insert_skill generates slug and accepts archive metadata overrides" do
+      skill =
+        Fixtures.insert_skill(
+          id: "fixture/archive-skill",
+          name: "Fixture Archive Skill",
+          version: "1.0.0",
+          license: "MIT",
+          homepage: "https://example.com/fixture",
+          author: "Backplane Team",
+          meta: %{"entrypoint" => "SKILL.md"},
+          archive_ref: "sha256:fixture",
+          size_bytes: 1024,
+          file_count: 4,
+          source_kind: "git",
+          source_uri: "https://github.com/example/skills.git",
+          source_rev: "abc123"
+        )
+
+      assert skill.slug == "fixture-archive-skill"
+      assert skill.version == "1.0.0"
+      assert skill.license == "MIT"
+      assert skill.homepage == "https://example.com/fixture"
+      assert skill.author == "Backplane Team"
+      assert skill.meta == %{"entrypoint" => "SKILL.md"}
+      assert skill.archive_ref == "sha256:fixture"
+      assert skill.size_bytes == 1024
+      assert skill.file_count == 4
+      assert skill.source_kind == "git"
+      assert skill.source_uri == "https://github.com/example/skills.git"
+      assert skill.source_rev == "abc123"
     end
   end
 end
