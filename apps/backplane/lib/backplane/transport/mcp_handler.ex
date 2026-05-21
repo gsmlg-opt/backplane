@@ -66,6 +66,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp handle_batch(conn, requests) do
     scopes = conn.assigns[:tool_scopes] || ["*"]
+    client = conn.assigns[:client]
 
     # Partition into requests needing responses vs notifications
     {to_dispatch, notifications_count} =
@@ -98,7 +99,7 @@ defmodule Backplane.Transport.McpHandler do
         fn
           {:request, method, id, params} ->
             Telemetry.emit_mcp_request(method)
-            dispatch_single(method, id, params, scopes)
+            dispatch_single(method, id, params, scopes, client)
 
           {:invalid, response} ->
             response
@@ -133,7 +134,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   # Batch dispatch: returns a JSON-RPC response map (no conn)
-  defp dispatch_single("tools/list", id, params, scopes) do
+  defp dispatch_single("tools/list", id, params, scopes, _client) do
     case compute_result("tools/list", id, params) do
       {:result, %{tools: tools} = result} ->
         filtered = Clients.filter_tools(tools, scopes)
@@ -141,10 +142,10 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_single("tools/call", id, %{"name" => name} = params, scopes)
+  defp dispatch_single("tools/call", id, %{"name" => name} = params, scopes, client)
        when is_binary(name) and name != "" do
     if Clients.scope_matches?(scopes, name) do
-      case compute_result("tools/call", id, params) do
+      case compute_tool_call_result(params, client) do
         {:result, result} ->
           %{jsonrpc: "2.0", id: id, result: result}
 
@@ -160,7 +161,7 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_single(method, id, params, _scopes) do
+  defp dispatch_single(method, id, params, _scopes, _client) do
     case compute_result(method, id, params) do
       {:result, result} -> %{jsonrpc: "2.0", id: id, result: result}
       {:error, code, message} -> %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
@@ -183,29 +184,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("tools/call", _id, %{"name" => name} = params)
        when is_binary(name) and name != "" do
-    arguments = params["arguments"] || %{}
-
-    case validate_tool_args(name, arguments) do
-      :ok ->
-        Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
-
-        case dispatch_tool_call(name, arguments) do
-          {:ok, result} ->
-            Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
-            {:result, %{content: [%{type: "text", text: format_result(result)}]}}
-
-          {:error, message} ->
-            Backplane.PubSubBroadcaster.broadcast_tools_call(:failed, %{
-              tool: name,
-              reason: message
-            })
-
-            {:result, %{content: [%{type: "text", text: format_error(message)}], isError: true}}
-        end
-
-      {:error, reason} ->
-        {:error, -32_602, "Invalid params: #{reason}"}
-    end
+    compute_tool_call_result(params, nil)
   end
 
   defp compute_result("tools/call", _id, _params) do
@@ -266,6 +245,34 @@ defmodule Backplane.Transport.McpHandler do
   defp compute_result("ping", _id, _params), do: {:result, %{}}
 
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
+
+  defp compute_tool_call_result(%{"name" => name} = params, client)
+       when is_binary(name) and name != "" do
+    arguments = params["arguments"] || %{}
+
+    case validate_tool_args(name, arguments) do
+      :ok ->
+        Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
+
+        case dispatch_tool_call(name, arguments) do
+          {:ok, result} ->
+            maybe_log_skill_load(client, name, result)
+            Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
+            {:result, %{content: [%{type: "text", text: format_result(result)}]}}
+
+          {:error, message} ->
+            Backplane.PubSubBroadcaster.broadcast_tools_call(:failed, %{
+              tool: name,
+              reason: message
+            })
+
+            {:result, %{content: [%{type: "text", text: format_error(message)}], isError: true}}
+        end
+
+      {:error, reason} ->
+        {:error, -32_602, "Invalid params: #{reason}"}
+    end
+  end
 
   defp dispatch(conn, "initialize", id, params) do
     client_version = get_in(params || %{}, ["protocolVersion"])
@@ -457,11 +464,15 @@ defmodule Backplane.Transport.McpHandler do
     {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
   end
 
-  defp maybe_log_skill_load(conn, "skill::load", result) when is_map(result) do
+  defp maybe_log_skill_load(%Plug.Conn{} = conn, "skill::load", result) when is_map(result) do
+    maybe_log_skill_load(conn.assigns[:client], "skill::load", result)
+  end
+
+  defp maybe_log_skill_load(client, "skill::load", result) when is_map(result) do
     case result[:name] || result["name"] do
       skill_name when is_binary(skill_name) ->
         result
-        |> skill_load_attrs(conn.assigns[:client], skill_name)
+        |> skill_load_attrs(client, skill_name)
         |> Backplane.Audit.log_skill_load()
 
       _ ->

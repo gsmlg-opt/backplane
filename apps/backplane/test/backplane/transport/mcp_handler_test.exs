@@ -265,6 +265,62 @@ defmodule Backplane.Transport.McpHandlerTest do
                )
              end)
     end
+
+    test "logs successful skill::load without authenticated client metadata", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "open-audit-load-skill", name: "Open Audit Load Skill")
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "skill::load", "arguments" => %{"slug" => "open-audit-load-skill"}}
+        )
+
+      refute resp["result"]["isError"]
+
+      assert %{"slug" => "open-audit-load-skill"} =
+               Jason.decode!(hd(resp["result"]["content"])["text"])
+
+      assert eventually(fn ->
+               Repo.get_by(SkillLoadLog, skill_name: "Open Audit Load Skill")
+             end)
+    end
+
+    test "logs successful batch skill::load with authenticated client metadata", %{
+      tmp_dir: tmp_dir
+    } do
+      ingest_archive!(tmp_dir, "batch-audit-load-skill", name: "Batch Audit Load Skill")
+      {client, token} = Fixtures.insert_client(name: "batch-audit-client", scopes: ["skill::*"])
+
+      responses =
+        raw_mcp_request(
+          [
+            %{
+              "jsonrpc" => "2.0",
+              "method" => "tools/call",
+              "id" => 1,
+              "params" => %{
+                "name" => "skill::load",
+                "arguments" => %{"slug" => "batch-audit-load-skill"}
+              }
+            }
+          ],
+          auth_token: token
+        )
+
+      assert [%{"result" => result}] = responses
+      refute result["isError"]
+
+      assert %{"slug" => "batch-audit-load-skill"} =
+               Jason.decode!(hd(result["content"])["text"])
+
+      assert eventually(fn ->
+               Repo.get_by(SkillLoadLog,
+                 skill_name: "Batch Audit Load Skill",
+                 client_id: client.id,
+                 client_name: "batch-audit-client"
+               )
+             end)
+    end
   end
 
   describe "resources/list" do
