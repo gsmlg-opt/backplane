@@ -37,9 +37,12 @@ defmodule Backplane.Skills.ApiRouter do
   end
 
   get "/:slug" do
-    case Skills.get_by_slug(slug) do
-      {:ok, skill} -> json(conn, 200, serialize_detail(skill))
+    with {:ok, skill} <- Skills.get_by_slug(slug),
+         {:ok, detail} <- serialize_detail(skill) do
+      json(conn, 200, detail)
+    else
       {:error, :not_found} -> json(conn, 404, %{error: "not found"})
+      {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
     end
   end
 
@@ -117,7 +120,15 @@ defmodule Backplane.Skills.ApiRouter do
   defp raw_archive_upload?(conn) do
     conn
     |> get_req_header("content-type")
-    |> Enum.any?(&String.starts_with?(&1, @raw_archive_content_type))
+    |> Enum.any?(&(media_type(&1) == @raw_archive_content_type))
+  end
+
+  defp media_type(content_type) do
+    content_type
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
   end
 
   defp multipart_archive(%{body_params: %{"archive" => %Plug.Upload{} = upload}}), do: upload
@@ -175,16 +186,25 @@ defmodule Backplane.Skills.ApiRouter do
   end
 
   defp serialize_detail(%Skill{} = skill) do
-    skill
-    |> serialize_metadata()
-    |> Map.put(:files, archive_files(skill))
+    with {:ok, files} <- archive_files(skill) do
+      detail =
+        skill
+        |> serialize_metadata()
+        |> Map.put(:files, files)
+
+      {:ok, detail}
+    else
+      {:error, reason} -> {:error, {:archive_files, reason}}
+    end
   end
 
-  defp archive_files(%Skill{} = skill) do
-    case Skills.archive_files(skill) do
-      {:ok, files} -> files
-      {:error, _reason} -> []
-    end
+  defp archive_files(%Skill{source_kind: "archive", archive_ref: archive_ref} = skill)
+       when is_binary(archive_ref) do
+    Skills.archive_files(skill)
+  end
+
+  defp archive_files(%Skill{}) do
+    {:ok, []}
   end
 
   defp serialize_metadata(%Skill{} = skill) do

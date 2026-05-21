@@ -5,7 +5,10 @@ defmodule Backplane.Skills.ApiRouterTest do
   import Plug.Conn
   import Plug.Test
 
+  alias Backplane.Repo
   alias Backplane.Skills
+  alias Backplane.Skills.Blob
+  alias Backplane.Skills.Skill
   alias BackplaneWeb.Endpoint
 
   @moduletag :tmp_dir
@@ -61,6 +64,20 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert conn.status == 404
       assert %{"error" => "not found"} = json_body(conn)
     end
+
+    test "returns an error when archive-backed file listing cannot read the blob", %{
+      blob_root: blob_root,
+      tmp_dir: tmp_dir
+    } do
+      ingest_archive!(tmp_dir, "missing-blob-detail", name: "Missing Blob Detail")
+      assert {:ok, skill} = Skills.get_by_slug("missing-blob-detail")
+      assert :ok = Blob.delete(skill.archive_ref, root: blob_root)
+
+      conn = api_request(:get, "/api/skills/missing-blob-detail")
+
+      assert conn.status == 500
+      assert %{"error" => _reason} = json_body(conn)
+    end
   end
 
   describe "GET /api/skills/:slug/archive" do
@@ -76,7 +93,9 @@ defmodule Backplane.Skills.ApiRouterTest do
   end
 
   describe "POST /api/skills" do
-    test "ingests a raw application/x-tar+gzip body", %{tmp_dir: tmp_dir} do
+    test "ingests a raw application/x-tar+gzip body with casing and parameters", %{
+      tmp_dir: tmp_dir
+    } do
       archive =
         create_skill_archive!(tmp_dir, "raw-upload",
           name: "Raw Upload",
@@ -87,7 +106,7 @@ defmodule Backplane.Skills.ApiRouterTest do
 
       conn =
         api_request(:post, "/api/skills", File.read!(archive), [
-          {"content-type", "application/x-tar+gzip"}
+          {"content-type", "APPLICATION/X-TAR+GZIP; charset=binary"}
         ])
 
       assert conn.status == 201
@@ -131,14 +150,48 @@ defmodule Backplane.Skills.ApiRouterTest do
   end
 
   describe "DELETE /api/skills/:slug" do
-    test "deletes the skill", %{tmp_dir: tmp_dir} do
+    test "deletes the skill and unreferenced archive blob", %{
+      blob_root: blob_root,
+      tmp_dir: tmp_dir
+    } do
       ingest_archive!(tmp_dir, "delete-skill", name: "Delete Skill")
+      assert {:ok, skill} = Skills.get_by_slug("delete-skill")
+      assert Blob.exists?(skill.archive_ref, root: blob_root)
 
       conn = api_request(:delete, "/api/skills/delete-skill")
 
       assert conn.status == 200
       assert %{"ok" => true} = json_body(conn)
       assert {:error, :not_found} = Skills.get_by_slug("delete-skill")
+      refute Blob.exists?(skill.archive_ref, root: blob_root)
+    end
+
+    test "keeps a shared archive blob when another committed skill references it", %{
+      blob_root: blob_root,
+      tmp_dir: tmp_dir
+    } do
+      ingest_archive!(tmp_dir, "shared-delete-a", name: "Shared Delete A")
+      assert {:ok, original} = Skills.get_by_slug("shared-delete-a")
+
+      %Skill{}
+      |> Skill.changeset(%{
+        id: "skill/shared-delete-b",
+        slug: "shared-delete-b",
+        name: "Shared Delete B",
+        content: "# Shared Delete B",
+        content_hash: original.content_hash,
+        archive_ref: original.archive_ref,
+        source_kind: "archive"
+      })
+      |> Repo.insert!()
+
+      conn = api_request(:delete, "/api/skills/shared-delete-a")
+
+      assert conn.status == 200
+      assert %{"ok" => true} = json_body(conn)
+      assert {:error, :not_found} = Skills.get_by_slug("shared-delete-a")
+      assert {:ok, _remaining} = Skills.get_by_slug("shared-delete-b")
+      assert Blob.exists?(original.archive_ref, root: blob_root)
     end
   end
 

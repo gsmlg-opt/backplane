@@ -72,6 +72,25 @@ defmodule Backplane.Skills.IngestTest do
       assert Repo.aggregate(Skill, :count, :id) == 1
     end
 
+    test "stores archive from the upload path with unchanged hash and ref semantics", %{
+      tmp_dir: tmp_dir
+    } do
+      blob_root = blob_root(tmp_dir)
+
+      archive =
+        create_archive!(tmp_dir, [
+          {"path-backed/SKILL.md", skill_md(name: "Path Backed Skill")},
+          {"path-backed/meta.json", Jason.encode!(%{"slug" => "path-backed"})}
+        ])
+
+      archive_hash = archive |> File.stream!([], 2048) |> sha256_stream()
+
+      assert {:ok, %Skill{} = skill} = Ingest.ingest(archive, blob: [root: blob_root])
+      assert skill.content_hash == archive_hash
+      assert skill.archive_ref == "sha256/#{archive_hash}.tar.gz"
+      assert Blob.exists?(skill.archive_ref, root: blob_root)
+    end
+
     test "same slug and different hash replaces archive metadata", %{tmp_dir: tmp_dir} do
       opts = [blob: [root: blob_root(tmp_dir)]]
 
@@ -235,4 +254,11 @@ defmodule Backplane.Skills.IngestTest do
   end
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp sha256_stream(stream) do
+    stream
+    |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
 end

@@ -30,6 +30,20 @@ defmodule Backplane.Skills.Blob.LocalFS do
     end
   end
 
+  @spec put_file(String.t(), keyword()) :: {:ok, blob_ref()} | {:error, term()}
+  def put_file(source_path, opts \\ []) when is_binary(source_path) do
+    with {:ok, root} <- root(opts),
+         {:ok, tmp_path, hash} <- copy_to_temp(source_path, root),
+         ref = "sha256/#{hash}.tar.gz",
+         {:ok, path} <- path_for_ref(ref, opts),
+         :ok <- commit_temp(tmp_path, path) do
+      {:ok, ref}
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @spec get(blob_ref(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def get(ref, opts \\ []) do
     with {:ok, path} <- path_for_ref(ref, opts),
@@ -83,12 +97,80 @@ defmodule Backplane.Skills.Blob.LocalFS do
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- File.write(tmp_path, bytes, [:binary]),
-         :ok <- File.rename(tmp_path, path) do
+         :ok <- commit_temp(tmp_path, path) do
       :ok
     else
       {:error, reason} ->
         File.rm(tmp_path)
         {:error, reason}
+    end
+  end
+
+  defp copy_to_temp(source_path, root) do
+    tmp_path =
+      Path.join([
+        root,
+        "sha256",
+        ".upload.#{System.unique_integer([:positive])}.tmp"
+      ])
+
+    with :ok <- File.mkdir_p(Path.dirname(tmp_path)),
+         {:ok, hash} <- copy_file_with_hash(source_path, tmp_path) do
+      {:ok, tmp_path, hash}
+    else
+      {:error, reason} ->
+        File.rm(tmp_path)
+        {:error, reason}
+    end
+  end
+
+  defp copy_file_with_hash(source_path, tmp_path) do
+    case File.open(source_path, [:read, :binary]) do
+      {:ok, source} ->
+        try do
+          case File.open(tmp_path, [:write, :binary]) do
+            {:ok, target} ->
+              try do
+                copy_chunks(source, target, :crypto.hash_init(:sha256))
+              after
+                File.close(target)
+              end
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        after
+          File.close(source)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp copy_chunks(source, target, hash_state) do
+    case IO.binread(source, 2048) do
+      :eof ->
+        hash = hash_state |> :crypto.hash_final() |> Base.encode16(case: :lower)
+        {:ok, hash}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      chunk ->
+        case IO.binwrite(target, chunk) do
+          :ok -> copy_chunks(source, target, :crypto.hash_update(hash_state, chunk))
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp commit_temp(tmp_path, path) do
+    if File.regular?(path) do
+      File.rm(tmp_path)
+      :ok
+    else
+      File.rename(tmp_path, path)
     end
   end
 

@@ -20,12 +20,11 @@ defmodule Backplane.Skills.Ingest do
     archive_opts = Keyword.get(opts, :archive, [])
 
     with {:ok, path, filename} <- archive_path(path_or_upload),
-         {:ok, bytes} <- File.read(path),
-         content_hash = sha256(bytes),
+         {:ok, content_hash} <- sha256_file(path),
          {:ok, inspected} <- Archive.inspect(path_or_upload, archive_opts),
          slug = resolve_slug(inspected, filename),
          :changed <- ingest_state(slug, content_hash),
-         {:ok, archive_ref} <- Blob.put(bytes, blob_opts),
+         {:ok, archive_ref} <- Blob.put_file(path, blob_opts),
          attrs = build_attrs(inspected, slug, content_hash, archive_ref),
          {:ok, skill} <- transact_upsert(attrs, archive_ref, blob_opts) do
       Registry.refresh()
@@ -47,7 +46,26 @@ defmodule Backplane.Skills.Ingest do
 
   defp archive_path(_), do: {:error, :invalid_archive_path}
 
-  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+  defp sha256_file(path) do
+    case File.open(path, [:read, :binary]) do
+      {:ok, io} ->
+        try do
+          hash =
+            io
+            |> IO.binstream(2048)
+            |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+            |> :crypto.hash_final()
+            |> Base.encode16(case: :lower)
+
+          {:ok, hash}
+        after
+          File.close(io)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp ingest_state(slug, content_hash) do
     case Repo.get_by(Skill, slug: slug) do

@@ -13,6 +13,8 @@ defmodule Backplane.Skills do
   alias Backplane.Skills.Skill
   alias Backplane.Skills.Search
 
+  require Logger
+
   @doc "List enabled skills."
   @spec list(keyword()) :: [Skill.t()]
   def list(opts \\ []) do
@@ -54,6 +56,7 @@ defmodule Backplane.Skills do
   def delete(%Skill{} = skill) do
     case Repo.delete(skill) do
       {:ok, deleted} ->
+        cleanup_archive_blob(deleted)
         Registry.refresh()
         {:ok, deleted}
 
@@ -133,4 +136,21 @@ defmodule Backplane.Skills do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp cleanup_archive_blob(%Skill{source_kind: "archive", archive_ref: archive_ref})
+       when is_binary(archive_ref) do
+    unless Repo.exists?(from(s in Skill, where: s.archive_ref == ^archive_ref)) do
+      case Blob.delete(archive_ref) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to cleanup unreferenced skill archive blob #{archive_ref}: #{inspect(reason)}"
+          )
+      end
+    end
+  end
+
+  defp cleanup_archive_blob(_skill), do: :ok
 end

@@ -151,9 +151,9 @@ defmodule Backplane.Skills.SkillTest do
       assert {:error, :not_found} = Registry.fetch(skill.id)
     end
 
-    test "returns explicit not implemented errors for archive operations" do
-      assert {:error, :not_implemented} = SkillsContext.ingest_archive("archive bytes", %{})
-      assert {:error, :not_implemented} = SkillsContext.archive_stream("test/context-skill")
+    test "returns explicit errors for unavailable archive operations" do
+      assert {:error, :enoent} = SkillsContext.ingest_archive("archive bytes", %{})
+      assert {:error, :not_found} = SkillsContext.archive_stream("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.export("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.import("archive bytes", %{})
     end

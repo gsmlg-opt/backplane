@@ -35,6 +35,45 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
     end
   end
 
+  describe "put_file/2" do
+    test "stores a file under the same sha256 content address and returns a stream", %{
+      tmp_dir: tmp_dir
+    } do
+      bytes = "archive bytes from disk"
+      source_path = Path.join(tmp_dir, "source.tar.gz")
+      File.write!(source_path, bytes)
+      hash = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+      assert {:ok, "sha256/" <> ^hash <> ".tar.gz"} = LocalFS.put_file(source_path, root: tmp_dir)
+      assert File.read!(Path.join([tmp_dir, "sha256", "#{hash}.tar.gz"])) == bytes
+
+      assert {:ok, stream} = LocalFS.get("sha256/#{hash}.tar.gz", root: tmp_dir)
+      assert stream |> Enum.to_list() |> IO.iodata_to_binary() == bytes
+    end
+
+    test "facade delegates file storage to local storage", %{tmp_dir: tmp_dir} do
+      source_path = Path.join(tmp_dir, "source.tar.gz")
+      File.write!(source_path, "facade archive bytes from disk")
+
+      assert {:ok, ref} = Blob.put_file(source_path, root: tmp_dir)
+      assert LocalFS.exists?(ref, root: tmp_dir)
+    end
+
+    test "rejects relative roots without reading source into cwd", %{tmp_dir: tmp_dir} do
+      source_path = Path.join(tmp_dir, "source.tar.gz")
+      relative_root = "tmp/blob-relative-root"
+      File.write!(source_path, "archive bytes")
+      File.rm_rf!(relative_root)
+
+      assert {:error, {:invalid_root, ^relative_root}} =
+               LocalFS.put_file(source_path, root: relative_root)
+
+      refute File.exists?(relative_root)
+    after
+      File.rm_rf!("tmp/blob-relative-root")
+    end
+  end
+
   describe "get/2" do
     test "returns a stream for existing archives", %{tmp_dir: tmp_dir} do
       bytes = "streamed archive bytes"
