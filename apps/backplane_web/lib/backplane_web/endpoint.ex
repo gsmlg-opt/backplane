@@ -15,6 +15,11 @@ defmodule BackplaneWeb.Endpoint do
     longpoll: [connect_info: [session: @session_options]]
   )
 
+  socket("/host-agent/socket", BackplaneWeb.HostAgentSocket,
+    websocket: [connect_info: [:x_headers]],
+    longpoll: false
+  )
+
   # Serve static files from priv/static
   plug(Plug.Static,
     at: "/",
