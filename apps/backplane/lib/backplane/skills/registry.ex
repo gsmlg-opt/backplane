@@ -70,6 +70,7 @@ defmodule Backplane.Skills.Registry do
     |> :ets.tab2list()
     |> Enum.map(fn {_id, entry} -> entry end)
     |> maybe_filter_tags(tags_filter)
+    |> Enum.map(&to_result/1)
   end
 
   @doc "Search skills by keyword in name, description, and tags. Results are relevance-sorted."

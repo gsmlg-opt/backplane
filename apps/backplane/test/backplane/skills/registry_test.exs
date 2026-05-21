@@ -55,6 +55,12 @@ defmodule Backplane.Skills.RegistryTest do
       refute "reg/s3" in ids
     end
 
+    test "omits full content from listed entries" do
+      [skill | _] = Registry.list(tags: ["elixir"])
+
+      refute Map.has_key?(skill, :content)
+    end
+
     test "includes v1 archive metadata in entries" do
       assert {:ok, skill} = Registry.fetch("reg/s2")
       assert skill.slug == "reg-s2"
@@ -90,6 +96,12 @@ defmodule Backplane.Skills.RegistryTest do
     test "returns skill by ID from ETS" do
       {:ok, skill} = Registry.fetch("reg/s1")
       assert skill.name == "Elixir Patterns"
+    end
+
+    test "returns full content for MCP load paths" do
+      {:ok, skill} = Registry.fetch("reg/s1")
+
+      assert skill.content == "# Elixir Patterns"
     end
 
     test "returns :not_found for missing" do
