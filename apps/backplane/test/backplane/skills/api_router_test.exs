@@ -90,6 +90,19 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
       assert conn.resp_body == File.read!(archive)
     end
+
+    test "accepts archive media type negotiation", %{tmp_dir: tmp_dir} do
+      archive = ingest_archive!(tmp_dir, "accept-archive-skill", name: "Accept Archive Skill")
+
+      conn =
+        api_request(:get, "/api/skills/accept-archive-skill/archive", "", [
+          {"accept", "application/x-tar+gzip"}
+        ])
+
+      assert conn.status == 200
+      assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
+      assert conn.resp_body == File.read!(archive)
+    end
   end
 
   describe "POST /api/skills" do

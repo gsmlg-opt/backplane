@@ -29,6 +29,10 @@ defmodule BackplaneWeb.Router do
     plug(:accepts, ["json"])
   end
 
+  pipeline :skills_api do
+    plug(:accepts, ["json", "gz"])
+  end
+
   scope "/", BackplaneWeb do
     pipe_through(:public_browser)
 
@@ -41,7 +45,7 @@ defmodule BackplaneWeb.Router do
   end
 
   scope "/api" do
-    pipe_through(:api)
+    pipe_through(:skills_api)
     forward("/skills", Backplane.Skills.ApiRouter)
   end
 
