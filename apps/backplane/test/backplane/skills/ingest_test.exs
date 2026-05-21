@@ -126,6 +126,8 @@ defmodule Backplane.Skills.IngestTest do
       assert first.id == second.id
       assert first.content_hash != second.content_hash
       assert first.archive_ref != second.archive_ref
+      refute Blob.exists?(first.archive_ref, root: blob_root(tmp_dir))
+      assert Blob.exists?(second.archive_ref, root: blob_root(tmp_dir))
       assert second.name == "Replace Skill Updated"
       assert second.version == "2.0.0"
       assert second.license == "Apache-2.0"
@@ -133,6 +135,49 @@ defmodule Backplane.Skills.IngestTest do
       assert second.size_bytes == File.stat!(second_archive).size
       assert second.file_count == 2
       assert Repo.aggregate(Skill, :count, :id) == 1
+    end
+
+    test "same slug and different hash preserves old blob when another skill references it", %{
+      tmp_dir: tmp_dir
+    } do
+      opts = [blob: [root: blob_root(tmp_dir)]]
+
+      first_archive =
+        create_archive!(
+          tmp_dir,
+          [
+            {"shared-old-ref/SKILL.md", skill_md(name: "Shared Old Ref", version: "1.0.0")},
+            {"shared-old-ref/meta.json", Jason.encode!(%{"slug" => "shared-old-ref"})}
+          ],
+          name: "shared-old-ref-v1.tar.gz"
+        )
+
+      second_archive =
+        create_archive!(
+          tmp_dir,
+          [
+            {"shared-old-ref/SKILL.md",
+             skill_md(name: "Shared Old Ref Updated", version: "2.0.0")},
+            {"shared-old-ref/meta.json", Jason.encode!(%{"slug" => "shared-old-ref"})}
+          ],
+          name: "shared-old-ref-v2.tar.gz"
+        )
+
+      assert {:ok, first} = Ingest.ingest(first_archive, opts)
+
+      insert_skill!(
+        id: "skill/shared-old-ref-consumer",
+        slug: "shared-old-ref-consumer",
+        name: "Shared Old Ref Consumer",
+        archive_ref: first.archive_ref,
+        source_kind: "archive"
+      )
+
+      assert {:ok, second} = Ingest.ingest(second_archive, opts)
+
+      assert first.archive_ref != second.archive_ref
+      assert Blob.exists?(first.archive_ref, root: blob_root(tmp_dir))
+      assert Blob.exists?(second.archive_ref, root: blob_root(tmp_dir))
     end
 
     test "same slug on a non-archive skill returns a conflict without writing a blob", %{

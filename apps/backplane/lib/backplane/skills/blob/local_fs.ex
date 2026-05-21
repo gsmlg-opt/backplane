@@ -33,11 +33,8 @@ defmodule Backplane.Skills.Blob.LocalFS do
   @spec put_file(String.t(), keyword()) :: {:ok, blob_ref()} | {:error, term()}
   def put_file(source_path, opts \\ []) when is_binary(source_path) do
     with {:ok, root} <- root(opts),
-         {:ok, tmp_path, hash} <- copy_to_temp(source_path, root),
-         ref = "sha256/#{hash}.tar.gz",
-         {:ok, path} <- path_for_ref(ref, opts),
-         :ok <- commit_temp(tmp_path, path) do
-      {:ok, ref}
+         {:ok, tmp_path, hash} <- copy_to_temp(source_path, root) do
+      commit_upload(tmp_path, hash, opts)
     else
       {:error, reason} ->
         {:error, reason}
@@ -97,7 +94,7 @@ defmodule Backplane.Skills.Blob.LocalFS do
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- File.write(tmp_path, bytes, [:binary]),
-         :ok <- commit_temp(tmp_path, path) do
+         :ok <- commit_temp(tmp_path, path, hash) do
       :ok
     else
       {:error, reason} ->
@@ -165,12 +162,68 @@ defmodule Backplane.Skills.Blob.LocalFS do
     end
   end
 
-  defp commit_temp(tmp_path, path) do
-    if File.regular?(path) do
-      File.rm(tmp_path)
-      :ok
+  defp commit_upload(tmp_path, hash, opts) do
+    ref = "sha256/#{hash}.tar.gz"
+
+    with {:ok, path} <- path_for_ref(ref, opts),
+         :ok <- commit_temp(tmp_path, path, hash) do
+      {:ok, ref}
     else
+      {:error, reason} ->
+        File.rm(tmp_path)
+        {:error, reason}
+
+      :error ->
+        File.rm(tmp_path)
+        {:error, :invalid_ref}
+    end
+  end
+
+  defp commit_temp(tmp_path, path, hash) do
+    cond do
+      File.regular?(path) and existing_hash_matches?(path, hash) ->
+        File.rm(tmp_path)
+        :ok
+
+      File.regular?(path) ->
+        replace_corrupt_destination(tmp_path, path)
+
+      true ->
+        File.rename(tmp_path, path)
+    end
+  end
+
+  defp existing_hash_matches?(path, hash) do
+    case sha256_file(path) do
+      {:ok, ^hash} -> true
+      _ -> false
+    end
+  end
+
+  defp replace_corrupt_destination(tmp_path, path) do
+    with :ok <- File.rm(path) do
       File.rename(tmp_path, path)
+    end
+  end
+
+  defp sha256_file(path) do
+    case File.open(path, [:read, :binary]) do
+      {:ok, io} ->
+        try do
+          hash =
+            io
+            |> IO.binstream(2048)
+            |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+            |> :crypto.hash_final()
+            |> Base.encode16(case: :lower)
+
+          {:ok, hash}
+        after
+          File.close(io)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

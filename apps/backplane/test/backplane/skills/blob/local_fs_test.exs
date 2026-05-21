@@ -22,6 +22,18 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
       assert {:ok, "sha256/" <> ^hash <> ".tar.gz"} = Blob.put(bytes, root: tmp_dir)
     end
 
+    test "does not trust a corrupt existing content-addressed path", %{tmp_dir: tmp_dir} do
+      bytes = "correct archive bytes"
+      hash = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+      path = Path.join([tmp_dir, "sha256", "#{hash}.tar.gz"])
+
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "corrupt bytes")
+
+      assert {:ok, "sha256/" <> ^hash <> ".tar.gz"} = LocalFS.put(bytes, root: tmp_dir)
+      assert File.read!(path) == bytes
+    end
+
     test "rejects relative roots without writing under cwd" do
       relative_root = "tmp/blob-relative-root"
       File.rm_rf!(relative_root)
@@ -49,6 +61,20 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
 
       assert {:ok, stream} = LocalFS.get("sha256/#{hash}.tar.gz", root: tmp_dir)
       assert stream |> Enum.to_list() |> IO.iodata_to_binary() == bytes
+    end
+
+    test "removes upload temp file when final commit fails", %{tmp_dir: tmp_dir} do
+      bytes = "archive bytes from disk"
+      source_path = Path.join(tmp_dir, "source.tar.gz")
+      File.write!(source_path, bytes)
+
+      hash = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+      blob_dir = Path.join([tmp_dir, "sha256"])
+      final_path = Path.join(blob_dir, "#{hash}.tar.gz")
+      File.mkdir_p!(final_path)
+
+      assert {:error, _reason} = LocalFS.put_file(source_path, root: tmp_dir)
+      assert File.ls!(blob_dir) |> Enum.filter(&String.starts_with?(&1, ".upload.")) == []
     end
 
     test "facade delegates file storage to local storage", %{tmp_dir: tmp_dir} do

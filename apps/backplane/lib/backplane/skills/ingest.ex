@@ -150,7 +150,8 @@ defmodule Backplane.Skills.Ingest do
 
   defp transact_upsert(attrs, archive_ref, blob_opts) do
     case Repo.transact(fn -> upsert(attrs) end) do
-      {:ok, skill} ->
+      {:ok, {skill, previous_archive_ref}} ->
+        cleanup_replaced_blob(previous_archive_ref, archive_ref, blob_opts)
         {:ok, skill}
 
       {:error, reason} ->
@@ -162,6 +163,13 @@ defmodule Backplane.Skills.Ingest do
       cleanup_unreferenced_blob(archive_ref, blob_opts)
       {:error, exception}
   end
+
+  defp cleanup_replaced_blob(previous_archive_ref, archive_ref, blob_opts)
+       when is_binary(previous_archive_ref) and previous_archive_ref != archive_ref do
+    cleanup_unreferenced_blob(previous_archive_ref, blob_opts)
+  end
+
+  defp cleanup_replaced_blob(_previous_archive_ref, _archive_ref, _blob_opts), do: :ok
 
   defp cleanup_unreferenced_blob(archive_ref, blob_opts) do
     unless Repo.get_by(Skill, archive_ref: archive_ref) do
@@ -183,11 +191,21 @@ defmodule Backplane.Skills.Ingest do
         %Skill{}
         |> Skill.changeset(attrs)
         |> Repo.insert()
+        |> with_previous_archive_ref(nil)
 
       %Skill{} = skill ->
+        previous_archive_ref = skill.archive_ref
+
         skill
         |> Skill.changeset(attrs)
         |> Repo.update()
+        |> with_previous_archive_ref(previous_archive_ref)
     end
   end
+
+  defp with_previous_archive_ref({:ok, %Skill{} = skill}, previous_archive_ref) do
+    {:ok, {skill, previous_archive_ref}}
+  end
+
+  defp with_previous_archive_ref({:error, reason}, _previous_archive_ref), do: {:error, reason}
 end
