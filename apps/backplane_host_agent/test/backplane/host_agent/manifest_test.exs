@@ -48,12 +48,25 @@ defmodule Backplane.HostAgent.ManifestTest do
     assert is_binary(updated_at)
   end
 
+  @tag :tmp_dir
+  test "rejects non-object manifest JSON", %{tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "state/manifest.json")
+    File.mkdir_p!(Path.dirname(path))
+
+    for json <- ["[]", "null", "1", "\"value\"", "true"] do
+      File.write!(path, json)
+
+      assert {:error, {:manifest_read_error, message}} = Manifest.read(path, "t430")
+      assert is_binary(message)
+    end
+  end
+
   test "public facade delegates to worker", _context do
     assert {:error, :not_configured} = Backplane.HostAgent.sync_now()
 
     assert %{
              last_sync: nil,
-             last_error: nil
+             last_error: :not_configured
            } = Backplane.HostAgent.status()
   end
 end
