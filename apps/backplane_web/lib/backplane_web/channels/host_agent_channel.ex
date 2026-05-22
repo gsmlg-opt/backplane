@@ -1,7 +1,7 @@
 defmodule BackplaneWeb.HostAgentChannel do
   use BackplaneWeb, :channel
 
-  alias Backplane.Skills.{DesiredState, Hosts}
+  alias Backplane.Skills.{DesiredState, Hosts, SyncStatuses}
 
   @impl true
   def join("host_agent:" <> host_id, _payload, socket) do
@@ -39,7 +39,10 @@ defmodule BackplaneWeb.HostAgentChannel do
   end
 
   def handle_in("sync_result", payload, socket) when is_map(payload) do
-    {:reply, {:ok, Map.put(payload, "ok", true)}, socket}
+    case SyncStatuses.record_sync_result(socket.assigns.host, payload) do
+      {:ok, _statuses} -> {:reply, {:ok, %{"ok" => true}}, socket}
+      {:error, _reason} -> invalid_payload(socket)
+    end
   end
 
   def handle_in("sync_result", _payload, socket) do
