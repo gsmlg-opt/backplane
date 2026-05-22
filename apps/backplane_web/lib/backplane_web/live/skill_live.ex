@@ -3,6 +3,7 @@ defmodule BackplaneWeb.SkillLive do
 
   alias Backplane.Settings
   alias Backplane.Skills
+  alias Backplane.Skills.Hosts
 
   @max_results 100
   @default_upload_max_bytes 20_000_000
@@ -17,6 +18,7 @@ defmodule BackplaneWeb.SkillLive do
         current_path: "/admin/skills",
         loading: true,
         q: "",
+        hosts: [],
         skills: [],
         upload_error: nil,
         upload_max_bytes: upload_max_bytes
@@ -39,6 +41,7 @@ defmodule BackplaneWeb.SkillLive do
        current_path: current_path(uri),
        loading: false,
        q: q,
+       hosts: Hosts.list_hosts(),
        skills: Skills.search(q, archive_only: true, limit: @max_results)
      )}
   end
@@ -170,6 +173,29 @@ defmodule BackplaneWeb.SkillLive do
             {upload_error(error)}
           </p>
         </form>
+      </.dm_card>
+
+      <.dm_card variant="bordered" class="mb-6">
+        <:title>Host Agents</:title>
+
+        <div :if={@hosts == []} class="text-sm text-on-surface-variant">
+          No host agents registered.
+        </div>
+
+        <.dm_table :if={@hosts != []} id="host-agents-table" data={@hosts} hover zebra>
+          <:col :let={host} label="Name">
+            <span class="font-medium text-on-surface">{host.name}</span>
+          </:col>
+          <:col :let={host} label="Status">
+            <span class="text-sm">{host.status}</span>
+          </:col>
+          <:col :let={host} label="Agent">
+            <span class="text-sm">{host.agent_version || "-"}</span>
+          </:col>
+          <:col :let={host} label="Targets">
+            <span class="text-sm">{map_size(host.targets || %{})}</span>
+          </:col>
+        </.dm_table>
       </.dm_card>
 
       <div :if={@skills == []} class="text-sm text-on-surface-variant">

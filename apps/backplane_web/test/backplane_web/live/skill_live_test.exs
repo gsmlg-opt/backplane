@@ -4,6 +4,7 @@ defmodule BackplaneWeb.SkillLiveTest do
   import Backplane.SkillArchiveCase
 
   alias Backplane.Skills
+  alias Backplane.Skills.Hosts
 
   @moduletag :tmp_dir
 
@@ -51,6 +52,30 @@ defmodule BackplaneWeb.SkillLiveTest do
     assert html =~ "Skills Hub"
     assert html =~ ~s(href="/admin/skills")
     assert html =~ ~s(aria-current="page")
+  end
+
+  test "/admin/skills renders host sync section", %{conn: conn} do
+    assert {:ok, _host, _token} =
+             Hosts.create_host(%{
+               "name" => "t430",
+               "agent_version" => "0.1.0",
+               "targets" => [
+                 %{
+                   "name" => "agents",
+                   "runtime" => "agent-skills",
+                   "path" => "/tmp/skills",
+                   "enabled" => true
+                 }
+               ]
+             })
+
+    {:ok, view, html} = live(conn, "/admin/skills")
+
+    assert html =~ "Host Agents"
+    assert html =~ "t430"
+    assert html =~ "0.1.0"
+    assert html =~ "unknown"
+    assert has_element?(view, "#host-agents-table", "1")
   end
 
   test "search filters the skills list", %{conn: conn, tmp_dir: tmp_dir} do
