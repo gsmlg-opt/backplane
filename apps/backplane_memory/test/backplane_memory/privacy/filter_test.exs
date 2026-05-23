@@ -1,0 +1,37 @@
+defmodule BackplaneMemory.Privacy.FilterTest do
+  use ExUnit.Case, async: true
+
+  alias BackplaneMemory.Privacy.Filter
+
+  describe "apply/1" do
+    test "passes through normal content unchanged" do
+      assert Filter.apply("The meeting is at 3pm.") == {:ok, "The meeting is at 3pm."}
+    end
+
+    test "strips <private> tagged content" do
+      assert Filter.apply("<private>my secret</private>") == {:ok, "[REDACTED]"}
+    end
+
+    test "strips OpenAI/Anthropic-style API keys (sk- prefix)" do
+      input = "Use key sk-1234567890abcdefABCDEFabcdef123456"
+      {:ok, result} = Filter.apply(input)
+      refute result =~ "sk-1234567890"
+      assert result =~ "[REDACTED]"
+    end
+
+    test "strips AWS access key IDs (AKIA prefix)" do
+      input = "AKIA1234567890ABCDEF is the key"
+      {:ok, result} = Filter.apply(input)
+      refute result =~ "AKIA1234567890ABCDEF"
+      assert result =~ "[REDACTED]"
+    end
+
+    test "multi-line content: strips only the private block" do
+      input = "Facts:\n<private>my password</private>\nMore facts."
+      {:ok, result} = Filter.apply(input)
+      assert result =~ "Facts:"
+      assert result =~ "More facts."
+      refute result =~ "my password"
+    end
+  end
+end
