@@ -2,9 +2,9 @@
   "name": "backplane_web",
   "private": true,
   "dependencies": {
-    "@duskmoon-dev/core": "1.16.0",
-    "@duskmoon-dev/css-art": "1.16.0",
-    "@duskmoon-dev/elements": "1.1.1",
-    "@duskmoon-dev/art-elements": "1.1.1"
+    "@duskmoon-dev/core": "1.17.0",
+    "@duskmoon-dev/css-art": "1.17.0",
+    "@duskmoon-dev/elements": "1.5.4",
+    "@duskmoon-dev/art-elements": "1.5.4"
   }
 }

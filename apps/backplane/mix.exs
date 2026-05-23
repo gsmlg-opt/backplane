@@ -68,7 +68,7 @@ defmodule Backplane.MixProject do
       {:telemetry_poller, "~> 1.1"},
 
       # Math
-      {:decimal, "~> 2.1"},
+      {:decimal, "~> 3.0"},
       {:complex, "~> 0.5"},
       {:nx, "~> 0.7"},
       {:nimble_parsec, "~> 1.4"},
