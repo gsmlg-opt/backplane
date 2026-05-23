@@ -2,6 +2,8 @@ defmodule BackplaneMemory.Memories.Memory do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{}
+
   @valid_types ~w(working episodic semantic procedural)
 
   @primary_key {:id, :binary_id, autogenerate: true}
