@@ -46,6 +46,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql
+          PG_VERSION=$(pg_config --version | grep -oP '\d+' | head -1)
+          sudo apt-get install -y postgresql-${PG_VERSION}-pgvector
           sudo systemctl start postgresql
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
@@ -55,3 +57,4 @@ jobs:
           mix do --app backplane cmd mix test test/backplane/services/web_fetch_test.exs
           mix do --app day_ex cmd mix test
           mix do --app relayixir cmd mix test
+          mix do --app backplane_memory cmd mix test
