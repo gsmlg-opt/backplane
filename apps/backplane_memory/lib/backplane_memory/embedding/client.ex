@@ -23,8 +23,7 @@ defmodule BackplaneMemory.Embedding.Client do
     req_opts =
       [
         url: url,
-        json: %{model: @model, input: inputs, encoding_format: "float"},
-        headers: [{"content-type", "application/json"}]
+        json: %{model: @model, input: inputs, encoding_format: "float"}
       ] ++ req_options
 
     case Req.post(req_opts) do
