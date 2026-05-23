@@ -62,7 +62,7 @@ defmodule Backplane.Skills.HostAgentApiRouter do
       |> List.first()
 
     case Hosts.verify_token(token) do
-      {:ok, host} -> assign(conn, :host, host)
+      {:ok, host, _auth_token} -> assign(conn, :host, host)
       :error -> conn |> send_resp(401, "unauthorized") |> halt()
     end
   end

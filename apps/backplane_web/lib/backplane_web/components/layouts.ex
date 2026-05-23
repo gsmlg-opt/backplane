@@ -52,13 +52,40 @@ defmodule BackplaneWeb.Layouts do
         [
           %{label: "Clients", path: "/admin/system/clients"},
           %{label: "Logs", path: "/admin/system/logs"},
-          %{label: "Credentials", path: "/admin/system/credentials"}
+          %{label: "Credentials", path: "/admin/system/credentials"},
+          %{
+            label: "Host Agent Management",
+            items: [
+              %{label: "Agent Live", path: "/admin/system/host-agents", match: :host_agents},
+              %{
+                label: "Agent Management",
+                path: "/admin/system/host-agents/manage",
+                match: :exact
+              },
+              %{label: "Agent Auth", path: "/admin/system/host-agents/auth", match: :exact}
+            ]
+          }
         ]
     end
   end
 
   def active_top_nav?(current_path, section) do
     admin_section(current_path) == section
+  end
+
+  def active_left_nav?(current_path, %{path: path, match: :exact}) do
+    current_path == path
+  end
+
+  def active_left_nav?(current_path, %{path: path, match: :host_agents}) do
+    current_path == path or
+      (String.starts_with?(current_path, path <> "/") and
+         current_path != "/admin/system/host-agents/manage" and
+         current_path != "/admin/system/host-agents/auth")
+  end
+
+  def active_left_nav?(current_path, %{path: path}) do
+    active_left_nav?(current_path, path)
   end
 
   def active_left_nav?(current_path, path) do

@@ -5,7 +5,7 @@ defmodule Backplane.Skills.SyncStatusesTest do
 
   describe "record_sync_result/2" do
     test "persists a valid sync result for a host" do
-      assert {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-status-host"})
+      assert {:ok, host} = Hosts.create_agent(%{"name" => "sync-status-host"})
 
       assert {:ok, [%HostStatus{} = status]} =
                SyncStatuses.record_sync_result(host, %{
@@ -33,7 +33,7 @@ defmodule Backplane.Skills.SyncStatusesTest do
     end
 
     test "upserts by host and skill name" do
-      assert {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-status-upsert-host"})
+      assert {:ok, host} = Hosts.create_agent(%{"name" => "sync-status-upsert-host"})
 
       assert {:ok, [%HostStatus{} = first]} =
                SyncStatuses.record_sync_result(host, %{
@@ -73,7 +73,7 @@ defmodule Backplane.Skills.SyncStatusesTest do
     end
 
     test "defaults explicit nil targets and metadata" do
-      assert {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-status-nil-default-host"})
+      assert {:ok, host} = Hosts.create_agent(%{"name" => "sync-status-nil-default-host"})
 
       assert {:ok, [%HostStatus{} = status]} =
                SyncStatuses.record_sync_result(host, %{
@@ -92,7 +92,7 @@ defmodule Backplane.Skills.SyncStatusesTest do
     end
 
     test "rolls back all statuses when a later result is invalid" do
-      assert {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-status-rollback-host"})
+      assert {:ok, host} = Hosts.create_agent(%{"name" => "sync-status-rollback-host"})
 
       assert {:error, %Ecto.Changeset{}} =
                SyncStatuses.record_sync_result(host, %{
@@ -110,7 +110,7 @@ defmodule Backplane.Skills.SyncStatusesTest do
     end
 
     test "rejects invalid payloads" do
-      assert {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-status-invalid-host"})
+      assert {:ok, host} = Hosts.create_agent(%{"name" => "sync-status-invalid-host"})
 
       assert {:error, :invalid_payload} = SyncStatuses.record_sync_result(host, %{})
 

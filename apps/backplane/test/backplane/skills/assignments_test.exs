@@ -5,7 +5,7 @@ defmodule Backplane.Skills.AssignmentsTest do
   alias Backplane.Skills.{Assignments, Hosts, Skill}
 
   setup do
-    {:ok, host, _token} = Hosts.create_host(%{"name" => "t430"})
+    {:ok, host} = Hosts.create_agent(%{"name" => "t430"})
 
     skill =
       Repo.insert!(%Skill{
@@ -43,13 +43,16 @@ defmodule Backplane.Skills.AssignmentsTest do
     assert [] = Assignments.list_enabled_for_host(host)
   end
 
-  test "assign_skill returns changeset errors for stale host or skill", %{host: host, skill: skill} do
+  test "assign_skill returns changeset errors for stale host or skill", %{
+    host: host,
+    skill: skill
+  } do
     Repo.delete!(host)
 
     assert {:error, host_changeset} = Assignments.assign_skill(host, skill, %{})
     assert {"does not exist", _} = host_changeset.errors[:host_id]
 
-    {:ok, fresh_host, _token} = Hosts.create_host(%{"name" => "fresh-host"})
+    {:ok, fresh_host} = Hosts.create_agent(%{"name" => "fresh-host"})
     Repo.delete!(skill)
 
     assert {:error, skill_changeset} = Assignments.assign_skill(fresh_host, skill, %{})

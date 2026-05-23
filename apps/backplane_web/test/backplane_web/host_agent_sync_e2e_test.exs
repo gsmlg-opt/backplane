@@ -7,7 +7,7 @@ defmodule BackplaneWeb.HostAgentSyncE2ETest do
   test "host receives desired state for an assigned archive-backed skill" do
     archive_hash = String.duplicate("c", 64)
 
-    {:ok, host, _token} = Hosts.create_host(%{"name" => "sync-host"})
+    {:ok, host} = Hosts.create_agent(%{"name" => "sync-host"})
 
     skill =
       Fixtures.insert_skill(

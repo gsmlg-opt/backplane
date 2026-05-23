@@ -326,6 +326,8 @@ Add migrations for:
 
 ```text
 skill_hosts
+skill_host_auth_tokens
+skill_host_agent_tokens
 skill_host_assignments
 skill_host_statuses
 ```
@@ -336,18 +338,51 @@ skill_host_statuses
 create table(:skill_hosts, primary_key: false) do
   add :id, :binary_id, primary_key: true
   add :name, :string, null: false
-  add :hostname, :string
-  add :token_hash, :string, null: false
-  add :agent_version, :string
-  add :last_seen_at, :utc_datetime_usec
-  add :status, :string, null: false, default: "unknown"
-  add :metadata, :map, null: false, default: %{}
 
   timestamps(type: :utc_datetime_usec)
 end
 
 create unique_index(:skill_hosts, [:name])
 ```
+
+`skill_hosts` contains durable agent records only. Runtime state such as
+connected status, agent version, targets, last seen time, and reported config is
+kept in the live WebSocket connection registry only.
+
+#### `skill_host_auth_tokens`
+
+```elixir
+create table(:skill_host_auth_tokens, primary_key: false) do
+  add :id, :binary_id, primary_key: true
+  add :name, :string, null: false
+  add :token_hash, :string, null: false
+
+  timestamps(type: :utc_datetime_usec)
+end
+
+create unique_index(:skill_host_auth_tokens, [:name])
+```
+
+Auth tokens are created independently from agents. The plaintext token is shown
+only once on creation; Backplane stores only the hash.
+
+#### `skill_host_agent_tokens`
+
+```elixir
+create table(:skill_host_agent_tokens, primary_key: false) do
+  add :id, :binary_id, primary_key: true
+  add :host_id, references(:skill_hosts, type: :binary_id, on_delete: :delete_all), null: false
+  add :auth_token_id, references(:skill_host_auth_tokens, type: :binary_id), null: false
+
+  timestamps(type: :utc_datetime_usec)
+end
+
+create index(:skill_host_agent_tokens, [:host_id])
+create unique_index(:skill_host_agent_tokens, [:auth_token_id])
+```
+
+An agent may have multiple tokens for rotation. A token may be assigned to at
+most one agent. Unassigned tokens cannot authenticate a host agent.
 
 #### `skill_host_assignments`
 
@@ -405,7 +440,7 @@ Do not build a full `skill_versions` model in v1 unless the current implementati
 
 ## 10. Server API
 
-Add authenticated Host Agent API routes.
+Add an authenticated Host Agent WebSocket channel plus the archive download API.
 
 Recommended route prefix:
 
@@ -413,35 +448,40 @@ Recommended route prefix:
 /api/host-agent
 ```
 
-Routes:
+Routes and channels:
 
 ```text
-POST /api/host-agent/heartbeat
-GET  /api/host-agent/desired
+WS   /host-agent/socket/websocket
+JOIN host_agent:<host_id>
+PUSH heartbeat
+PUSH config_report
+PUSH get_desired
+PUSH sync_result
 GET  /api/host-agent/skills/:skill_id/download
-POST /api/host-agent/sync-result
 ```
 
 ### 10.1 Auth
 
-Use bearer token:
+Use the host-agent WebSocket/header token:
 
 ```http
-Authorization: Bearer <token>
+X-Backplane-Host-Token: <token>
 ```
 
-Server stores only token hash.
-
-For v1, use one token per host.
+Server stores only token hashes. Tokens are created in Agent Auth and assigned
+to agents in Agent Management. Only DB-created agents with assigned tokens can
+connect. Agents without assigned tokens may exist but cannot authenticate.
 
 ### 10.2 Heartbeat
 
-Request:
+Heartbeat is a channel event after a successful join. It updates only the live
+connection registry, not `skill_hosts`.
+
+Payload:
 
 ```json
 {
-  "machine_name": "t430",
-  "hostname": "t430",
+  "status": "online",
   "agent_version": "0.1.0",
   "targets": [
     {
@@ -458,17 +498,23 @@ Request:
 }
 ```
 
-Response:
+Reply:
 
 ```json
 {
-  "ok": true,
-  "host_id": "uuid",
-  "server_time": "2026-05-21T12:00:00Z"
+  "ok": true
 }
 ```
 
-### 10.3 Desired state
+### 10.3 Config report
+
+`config_report` is a separate channel event. It stores the latest agent-reported
+runtime config in the live connection registry only. It is not persisted.
+
+Payload is the agent config as JSON. Invalid non-object payloads are rejected
+with `invalid_payload`.
+
+### 10.4 Desired state
 
 Response:
 
@@ -493,7 +539,7 @@ Response:
 }
 ```
 
-### 10.4 Sync result
+### 10.5 Sync result
 
 Request:
 
@@ -730,7 +776,13 @@ Worker reports failure on download/checksum error
 Add tests for:
 
 ```text
-host heartbeat creates/updates skill_host
+auth token creation shows plaintext once and stores only hash
+unassigned tokens cannot authenticate
+agents can have zero or multiple assigned tokens
+one token cannot be assigned to multiple agents
+connected agents live registry tracks one connection per agent
+heartbeat updates live registry only
+config_report stores runtime config in memory only
 desired endpoint returns assigned skills
 download endpoint requires host token
 sync result updates skill_host_statuses
@@ -791,16 +843,19 @@ Partial failed install does not corrupt previous skill.
 ### Phase 4 — Server API
 
 1. Add `skill_hosts`.
-2. Add `skill_host_assignments`.
-3. Add `skill_host_statuses`.
-4. Add API routes.
-5. Add bearer-token auth for host agent endpoints.
-6. Implement heartbeat, desired, download, sync-result.
+2. Add `skill_host_auth_tokens` and `skill_host_agent_tokens`.
+3. Add `skill_host_assignments`.
+4. Add `skill_host_statuses`.
+5. Add WebSocket channel and archive download route.
+6. Add host token auth for host agent socket/download endpoints.
+7. Implement heartbeat, config_report, desired, download, sync-result.
 
 Acceptance:
 
 ```text
-Host can heartbeat.
+DB-created host with assigned token can connect.
+Connected host can heartbeat.
+Connected host can report runtime config.
 Host can fetch desired assignments.
 Host can download assigned skill.
 Host can report sync status.
@@ -831,13 +886,16 @@ v1 is complete when:
 ```text
 backplane_host_agent compiles as an umbrella app
 agent config can point to a Backplane server
-host heartbeat works
+agent can connect over WebSocket with an assigned token
+host heartbeat updates live connection state
+host config report is visible while connected
 desired skills can be fetched
 skill bundle can be downloaded and checksum verified
 skill can be installed into one or more local target directories
 local manifest is updated
 sync result is reported to Backplane
 server records per-host skill status
+Backplane UI separates connected agents, agent management, and agent auth
 sync is idempotent
 tests cover core behavior
 ```

@@ -88,6 +88,10 @@ defmodule BackplaneWeb.Router do
     live("/system/clients", ClientsLive, :index)
     live("/system/logs", LogsLive, :index)
     live("/system/credentials", SettingsLive, :credentials)
+    live("/system/host-agents", HostAgentsLive, :index)
+    live("/system/host-agents/manage", HostAgentsLive, :manage)
+    live("/system/host-agents/auth", HostAgentsLive, :auth)
+    live("/system/host-agents/:id/config", HostAgentsLive, :config)
   end
 
   # Enable LiveDashboard in development

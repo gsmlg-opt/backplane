@@ -26,6 +26,7 @@ defmodule Backplane.Application do
         Backplane.Repo,
         {Oban, Application.fetch_env!(:backplane, Oban)},
         {Phoenix.PubSub, name: Backplane.PubSub},
+        Backplane.Skills.HostConnectionRegistry,
         Backplane.Settings.TokenCache,
         Backplane.Settings,
         ToolRegistry,

@@ -50,7 +50,7 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
   test "streams an archive for a valid host token through the mounted route", %{tmp_dir: tmp_dir} do
     archive_path = ingest_archive!(tmp_dir, "repo-review", name: "Repo Review")
     assert {:ok, skill} = Skills.get_by_slug("repo-review")
-    {:ok, host, token} = Hosts.create_host(%{"name" => "t430"})
+    {host, token} = create_agent_with_token!("t430")
     {:ok, _assignment} = Assignments.assign_skill(host, skill, %{"targets" => ["agents"]})
 
     conn =
@@ -70,8 +70,8 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
   } do
     ingest_archive!(tmp_dir, "repo-review", name: "Repo Review")
     assert {:ok, skill} = Skills.get_by_slug("repo-review")
-    {:ok, host_a, _token_a} = Hosts.create_host(%{"name" => "t430"})
-    {:ok, _host_b, token_b} = Hosts.create_host(%{"name" => "x1"})
+    {host_a, _token_a} = create_agent_with_token!("t430")
+    {_host_b, token_b} = create_agent_with_token!("x1")
     {:ok, _assignment} = Assignments.assign_skill(host_a, skill, %{"targets" => ["agents"]})
 
     conn =
@@ -86,7 +86,7 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
   end
 
   test "returns 404 for a missing skill with a valid host token" do
-    {:ok, _host, token} = Hosts.create_host(%{"name" => "t430"})
+    {_host, token} = create_agent_with_token!("t430")
 
     conn =
       :get
@@ -114,5 +114,14 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
     assert {:ok, _skill} = Skills.ingest_archive(upload, %{})
 
     archive_path
+  end
+
+  defp create_agent_with_token!(name) do
+    assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "#{name} token"})
+
+    assert {:ok, host} =
+             Hosts.create_agent(%{"name" => name, "auth_token_ids" => [auth_token.id]})
+
+    {host, token}
   end
 end

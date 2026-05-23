@@ -11,8 +11,11 @@ defmodule BackplaneWeb.HostAgentSocket do
     |> host_token()
     |> Hosts.verify_token()
     |> case do
-      {:ok, host} -> {:ok, assign(socket, :host, host)}
-      :error -> :error
+      {:ok, host, auth_token} ->
+        {:ok, socket |> assign(:host, host) |> assign(:auth_token, auth_token)}
+
+      :error ->
+        :error
     end
   end
 

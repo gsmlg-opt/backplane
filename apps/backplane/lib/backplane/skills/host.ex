@@ -1,10 +1,12 @@
 defmodule Backplane.Skills.Host do
   @moduledoc """
-  Ecto schema for host agents that sync assigned skills.
+  Ecto schema for durable host agent identities.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
+
+  alias Backplane.Skills.{HostAgentToken, HostAuthToken}
 
   @type t :: %__MODULE__{}
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -13,26 +15,24 @@ defmodule Backplane.Skills.Host do
 
   schema "skill_hosts" do
     field(:name, :string)
-    field(:hostname, :string)
-    field(:token_hash, :string)
-    field(:agent_version, :string)
-    field(:last_seen_at, :utc_datetime_usec)
-    field(:status, :string, default: "unknown")
-    field(:targets, :map, default: %{})
-    field(:active, :boolean, default: true)
-    field(:metadata, :map, default: %{})
+
+    has_many(:agent_tokens, HostAgentToken)
+
+    many_to_many(:auth_tokens, HostAuthToken,
+      join_through: HostAgentToken,
+      join_keys: [host_id: :id, auth_token_id: :id]
+    )
 
     timestamps()
   end
 
-  @required_fields ~w(name token_hash)a
-  @optional_fields ~w(hostname agent_version last_seen_at status targets active metadata)a
+  @required_fields ~w(name)a
 
-  @doc "Changeset for creating or updating a host agent."
+  @doc "Changeset for creating or updating a host agent identity."
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(host, attrs) do
     host
-    |> cast(attrs, @required_fields ++ @optional_fields)
+    |> cast(attrs, @required_fields)
     |> validate_required(@required_fields)
     |> unique_constraint(:name)
   end

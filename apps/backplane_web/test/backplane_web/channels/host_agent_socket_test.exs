@@ -16,7 +16,7 @@ defmodule BackplaneWeb.HostAgentSocketTest do
 
   describe "connect/3" do
     test "connects with valid x-backplane-host-token and assigns the host" do
-      assert {:ok, host, token} = Hosts.create_host(%{"name" => "socket-host"})
+      {host, auth_token, token} = create_agent_with_token!("socket-host")
 
       assert {:ok, socket} =
                connect(HostAgentSocket, %{},
@@ -26,11 +26,12 @@ defmodule BackplaneWeb.HostAgentSocketTest do
                )
 
       assert socket.assigns.host.id == host.id
+      assert socket.assigns.auth_token.id == auth_token.id
       assert HostAgentSocket.id(socket) == "host_agent:#{host.id}"
     end
 
     test "connects with valid uppercase X-Backplane-Host-Token header" do
-      assert {:ok, host, token} = Hosts.create_host(%{"name" => "uppercase-socket-host"})
+      {host, _auth_token, token} = create_agent_with_token!("uppercase-socket-host")
 
       assert {:ok, socket} =
                connect(HostAgentSocket, %{},
@@ -50,5 +51,14 @@ defmodule BackplaneWeb.HostAgentSocketTest do
                  }
                )
     end
+  end
+
+  defp create_agent_with_token!(name) do
+    assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "#{name} token"})
+
+    assert {:ok, host} =
+             Hosts.create_agent(%{"name" => name, "auth_token_ids" => [auth_token.id]})
+
+    {host, auth_token, token}
   end
 end
