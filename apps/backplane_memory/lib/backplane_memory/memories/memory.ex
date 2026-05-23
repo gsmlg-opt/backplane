@@ -55,6 +55,10 @@ defmodule BackplaneMemory.Memories.Memory do
     |> validate_required([:content, :agent_id, :host_id])
     |> validate_inclusion(:memory_type, @valid_types)
     |> derive_content_hash()
+    |> unique_constraint([:content_hash, :scope],
+      name: :bpm_memories_dedup_uniq,
+      message: "duplicate memory"
+    )
   end
 
   def embed_changeset(memory, vector) do

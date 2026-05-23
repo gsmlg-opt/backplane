@@ -29,11 +29,11 @@ defmodule BackplaneMemory.Workers.EmbedWorkerTest do
       assert embedding_after != nil
     end
 
-    test "returns :ok and leaves embedding nil when embed client fails" do
+    test "returns {:error, reason} when embed client fails so Oban retries" do
       {:ok, mem} = Memory.remember("Madrid is in Spain.", agent_id: "a", host_id: "h")
       failing_embed = fn _texts, _mode, _opts -> {:error, "vLLM unavailable"} end
 
-      assert :ok =
+      assert {:error, "vLLM unavailable"} =
                EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, failing_embed)
 
       embedding =

@@ -29,7 +29,9 @@ defmodule BackplaneMemory.Privacy.Filter do
     [
       ~r/sk-[A-Za-z0-9_\-]{20,}/,
       ~r/AKIA[0-9A-Z]{16}/,
-      ~r/(?i)(?:api[_-]?key|access[_-]?token|bearer)[[:space:]]*[:=][[:space:]]*["']?(?:[A-Za-z0-9+\/\-_]{20,})["']?/
+      ~r/gh[pohur]_[A-Za-z0-9]{36,}/,
+      ~r/(?i)(?:api[_-]?key|access[_-]?token)[[:space:]]*[:=][[:space:]]*["']?(?:[A-Za-z0-9+\/\-_]{20,})["']?/,
+      ~r/(?i)Authorization[[:space:]]*:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9\-._~+\/]+=*/
     ]
   end
 end

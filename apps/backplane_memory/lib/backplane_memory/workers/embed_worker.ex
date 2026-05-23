@@ -12,7 +12,7 @@ defmodule BackplaneMemory.Workers.EmbedWorker do
     perform_with_client(job, &Client.embed/3)
   end
 
-  @doc "Testable entry-point: accepts an embed_fn instead of the real client."
+  @doc false
   def perform_with_client(%Oban.Job{args: %{"id" => id}}, embed_fn) do
     case Repo.get(Memory, id) do
       nil ->
@@ -24,9 +24,8 @@ defmodule BackplaneMemory.Workers.EmbedWorker do
             mem |> Memory.embed_changeset(vector) |> Repo.update!()
             :ok
 
-          {:error, _reason} ->
-            # Non-fatal: leave embedding nil; recall degrades to keyword-only
-            :ok
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end

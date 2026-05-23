@@ -54,7 +54,7 @@ defmodule BackplaneMemory.Memory do
           %MemorySchema{}
           |> MemorySchema.changeset(attrs)
           |> Repo.insert()
-          |> tap_enqueue_embed()
+          |> handle_insert(filtered, attrs.scope)
       end
     end
   end
@@ -133,10 +133,25 @@ defmodule BackplaneMemory.Memory do
     |> Repo.one()
   end
 
-  defp tap_enqueue_embed({:ok, mem} = result) do
-    EmbedWorker.enqueue(mem.id)
+  defp handle_insert({:ok, mem} = result, _content, _scope) do
+    if Application.get_env(:backplane_memory, :embed_enabled, true) do
+      EmbedWorker.enqueue(mem.id)
+    end
+
     result
   end
 
-  defp tap_enqueue_embed(error), do: error
+  defp handle_insert({:error, %Ecto.Changeset{errors: errors}} = error, content, scope) do
+    if Keyword.has_key?(errors, :content_hash) do
+      # Lost the TOCTOU race — return the row the winner inserted
+      case find_duplicate(content, scope) do
+        %MemorySchema{} = existing -> {:ok, existing}
+        nil -> error
+      end
+    else
+      error
+    end
+  end
+
+  defp handle_insert(error, _content, _scope), do: error
 end

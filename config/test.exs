@@ -19,4 +19,6 @@ config :backplane_web, BackplaneWeb.Endpoint,
   secret_key_base: "test_secret_key_base_that_is_at_least_64_bytes_long_for_testing_only_please",
   server: false
 
+config :backplane_memory, embed_enabled: false
+
 config :logger, level: :warning
