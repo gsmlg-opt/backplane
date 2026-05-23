@@ -46,12 +46,12 @@ jobs:
         run: |
           sudo apt-get update
           # PGDG repo is pre-configured; use versioned packages to avoid conflicts with Ubuntu's postgresql-server-dev-all
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 build-essential clang-18
+          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 build-essential
           # Build pgvector 0.8.0 from source (halfvec requires >= 0.7.0)
           git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
-          # PGDG pg16 was compiled with clang-19; override with clang-18 which is available on ubuntu-24.04
-          make -C /tmp/pgvector CLANG=/usr/bin/clang-18
-          sudo make -C /tmp/pgvector install CLANG=/usr/bin/clang-18
+          # Disable LLVM JIT: PGDG pg16 expects llvm-lto-19 which is not available on this runner
+          make -C /tmp/pgvector with_llvm=no
+          sudo make -C /tmp/pgvector with_llvm=no install
           sudo systemctl start postgresql
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
