@@ -1,0 +1,123 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to build from"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.git_ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18"
+  OTP_VERSION: "28"
+  MIX_ENV: prod
+  SECRET_KEY_BASE: release_build_secret_key_base_for_ci_only_1234567890_release_build_secret
+
+jobs:
+  otp-release:
+    name: ${{ matrix.release }} (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: backplane
+            target:
+              name: linux-x64
+              runner: ubuntu-24.04
+          - release: backplane
+            target:
+              name: linux-arm64
+              runner: ubuntu-24.04-arm
+          - release: host_agent
+            target:
+              name: linux-x64
+              runner: ubuntu-24.04
+          - release: host_agent
+            target:
+              name: linux-arm64
+              runner: ubuntu-24.04-arm
+          - release: host_agent
+            target:
+              name: macos-x64
+              runner: macos-13
+          - release: host_agent
+            target:
+              name: macos-arm64
+              runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Resolve project version
+        id: version
+        shell: bash
+        run: |
+          version="$(awk -F '"' '/^[[:space:]]*version:/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$version" ]]; then
+            echo "Could not read project version from mix.exs" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Mix cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build/prod
+          key: build-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          restore-keys: |
+            build-${{ matrix.target.name }}-${{ matrix.release }}-
+            build-${{ matrix.target.name }}-
+
+      - name: Install dependencies
+        run: mix deps.get --only prod
+
+      - name: Install asset tools
+        if: matrix.release == 'backplane'
+        run: mix "do" --app backplane_web assets.setup
+
+      - name: Build web assets
+        if: matrix.release == 'backplane'
+        run: mix "do" --app backplane_web assets.deploy
+
+      - name: Build OTP release
+        run: mix release "${{ matrix.release }}" --overwrite
+
+      - name: Archive OTP release
+        shell: bash
+        run: |
+          mkdir -p dist
+          artifact="${{ matrix.release }}-${{ steps.version.outputs.version }}-${{ matrix.target.name }}.tar.gz"
+          tar -czf "dist/$artifact" -C "_build/prod/rel" "${{ matrix.release }}"
+          shasum -a 256 "dist/$artifact" > "dist/$artifact.sha256"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.release }}-${{ matrix.target.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

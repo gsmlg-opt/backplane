@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to release from"
+        required: true
+        default: "main"
+        type: string
+      version:
+        description: "Release version, with or without leading v"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.git_ref }}-${{ inputs.version }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18"
+  OTP_VERSION: "28"
+  MIX_ENV: prod
+  SECRET_KEY_BASE: release_build_secret_key_base_for_ci_only_1234567890_release_build_secret
+
+jobs:
+  build:
+    name: ${{ matrix.release }} (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: backplane
+            target:
+              name: linux-x64
+              runner: ubuntu-24.04
+          - release: backplane
+            target:
+              name: linux-arm64
+              runner: ubuntu-24.04-arm
+          - release: host_agent
+            target:
+              name: linux-x64
+              runner: ubuntu-24.04
+          - release: host_agent
+            target:
+              name: linux-arm64
+              runner: ubuntu-24.04-arm
+          - release: host_agent
+            target:
+              name: macos-x64
+              runner: macos-13
+          - release: host_agent
+            target:
+              name: macos-arm64
+              runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          version="${version#v}"
+
+          if [[ -z "$version" ]]; then
+            echo "Release version is required" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Mix cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build/prod
+          key: release-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          restore-keys: |
+            release-${{ matrix.target.name }}-${{ matrix.release }}-
+            release-${{ matrix.target.name }}-
+
+      - name: Install dependencies
+        run: mix deps.get --only prod
+
+      - name: Install asset tools
+        if: matrix.release == 'backplane'
+        run: mix "do" --app backplane_web assets.setup
+
+      - name: Build web assets
+        if: matrix.release == 'backplane'
+        run: mix "do" --app backplane_web assets.deploy
+
+      - name: Build OTP release
+        run: mix release "${{ matrix.release }}" --overwrite --version "${{ steps.version.outputs.version }}"
+
+      - name: Archive OTP release
+        shell: bash
+        run: |
+          mkdir -p dist
+          artifact="${{ matrix.release }}-${{ steps.version.outputs.version }}-${{ matrix.target.name }}.tar.gz"
+          tar -czf "dist/$artifact" -C "_build/prod/rel" "${{ matrix.release }}"
+          shasum -a 256 "dist/$artifact" > "dist/$artifact.sha256"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.release }}-${{ matrix.target.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          version="${version#v}"
+
+          if [[ -z "$version" ]]; then
+            echo "Release version is required" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ inputs.git_ref }}
+          name: Backplane v${{ steps.version.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
