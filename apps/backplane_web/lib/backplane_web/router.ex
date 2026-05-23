@@ -76,6 +76,10 @@ defmodule BackplaneWeb.Router do
     live("/mcp/managed", ManagedLive, :index)
     live("/mcp/managed/:prefix", ManagedServiceSettingsLive, :show)
 
+    # Memory
+    live("/memory/browse", MemoryLive, :index)
+    live("/memory/stats", MemoryStatsLive, :index)
+
     # Skills
     live("/skills", SkillLive, :index)
     live("/skill", SkillLive, :index)

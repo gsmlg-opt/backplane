@@ -12,6 +12,7 @@ defmodule BackplaneWeb.Layouts do
       %{label: "Dashboard", path: "/admin/dashboard/overview", section: :dashboard},
       %{label: "Llama", path: "/admin/llama/providers", section: :llama},
       %{label: "MCP", path: "/admin/mcp/managed", section: :mcp},
+      %{label: "Memory", path: "/admin/memory/browse", section: :memory},
       %{label: "Skills", path: "/admin/skills", section: :skill},
       %{label: "System", path: "/admin/system/clients", section: :system}
     ]
@@ -36,6 +37,12 @@ defmodule BackplaneWeb.Layouts do
         [
           %{label: "Managed MCP", path: "/admin/mcp/managed"},
           %{label: "Upstream MCP", path: "/admin/mcp/upstreams"}
+        ]
+
+      :memory ->
+        [
+          %{label: "Browse", path: "/admin/memory/browse"},
+          %{label: "Stats", path: "/admin/memory/stats"}
         ]
 
       :skill ->
@@ -63,6 +70,7 @@ defmodule BackplaneWeb.Layouts do
       String.starts_with?(current_path, "/admin/dashboard") -> :dashboard
       String.starts_with?(current_path, "/admin/llama") -> :llama
       String.starts_with?(current_path, "/admin/mcp") -> :mcp
+      String.starts_with?(current_path, "/admin/memory") -> :memory
       skill_path?(current_path) -> :skill
       String.starts_with?(current_path, "/admin/system") -> :system
       true -> :dashboard

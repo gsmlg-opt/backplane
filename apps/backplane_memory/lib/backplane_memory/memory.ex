@@ -105,6 +105,84 @@ defmodule BackplaneMemory.Memory do
     |> Repo.all()
   end
 
+  @doc """
+  List memories with optional filters and pagination. Returns rows ordered by
+  inserted_at desc. The embedding column is omitted from the projection.
+
+  Options:
+  - `:type` — filter by memory_type
+  - `:scope` — filter by exact scope
+  - `:agent_id` — filter by exact agent_id
+  - `:tag` — return rows where tags contain the value
+  - `:q` — substring match on content (case-insensitive)
+  - `:include_deleted` — when true, include soft-deleted rows (default false)
+  - `:limit` (default 50) and `:offset` (default 0)
+  """
+  @spec list(keyword()) :: [MemorySchema.t()]
+  def list(opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+    offset = Keyword.get(opts, :offset, 0)
+
+    MemorySchema
+    |> apply_list_filters(opts)
+    |> order_by([m], desc: m.inserted_at)
+    |> limit(^limit)
+    |> offset(^offset)
+    |> select([m], struct(m, ^@non_vector_fields))
+    |> Repo.all()
+  end
+
+  @doc "Count memories matching the same filter options as list/1 (ignores :limit/:offset)."
+  @spec count(keyword()) :: integer()
+  def count(opts \\ []) do
+    MemorySchema
+    |> apply_list_filters(opts)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  @doc "Return counts grouped by scope (non-deleted rows only)."
+  @spec scope_stats() :: [%{scope: String.t(), count: integer()}]
+  def scope_stats do
+    MemorySchema
+    |> where([m], is_nil(m.deleted_at))
+    |> group_by([m], m.scope)
+    |> order_by([m], desc: count(m.id))
+    |> select([m], %{scope: m.scope, count: count(m.id)})
+    |> Repo.all()
+  end
+
+  defp apply_list_filters(query, opts) do
+    query =
+      if Keyword.get(opts, :include_deleted, false) do
+        query
+      else
+        where(query, [m], is_nil(m.deleted_at))
+      end
+
+    opts
+    |> Keyword.delete(:include_deleted)
+    |> Enum.reduce(query, &apply_list_filter/2)
+  end
+
+  defp apply_list_filter({:type, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.memory_type == ^v)
+
+  defp apply_list_filter({:scope, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.scope == ^v)
+
+  defp apply_list_filter({:agent_id, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.agent_id == ^v)
+
+  defp apply_list_filter({:tag, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], ^v in m.tags)
+
+  defp apply_list_filter({:q, v}, q) when is_binary(v) and v != "" do
+    pattern = "%" <> v <> "%"
+    where(q, [m], ilike(m.content, ^pattern))
+  end
+
+  defp apply_list_filter(_, q), do: q
+
   defp build_attrs(content, opts) do
     %{
       content: content,

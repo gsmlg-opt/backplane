@@ -13,6 +13,7 @@ defmodule BackplaneWeb.DashboardLiveTest do
     assert html =~ ~s(href="/admin/dashboard/usage/mcp")
     assert html =~ ~s(href="/admin/llama/providers")
     assert html =~ ~s(href="/admin/mcp/managed")
+    assert html =~ ~s(href="/admin/memory/browse")
     assert html =~ ~s(href="/admin/skills")
     assert html =~ ~s(href="/admin/system/clients")
     assert html =~ "theme-controller-dropdown"

@@ -89,4 +89,69 @@ defmodule BackplaneMemory.MemoryTest do
       assert %{memory_type: "working", count: 1} in stats
     end
   end
+
+  describe "list/1 + count/1" do
+    test "filters by type" do
+      {:ok, _} = Memory.remember("a", agent_id: "a", host_id: "h", type: "semantic")
+      {:ok, _} = Memory.remember("b", agent_id: "a", host_id: "h", type: "working")
+
+      assert [%{memory_type: "semantic"}] = Memory.list(type: "semantic")
+      assert Memory.count(type: "semantic") == 1
+    end
+
+    test "filters by scope and agent_id" do
+      {:ok, _} = Memory.remember("a", agent_id: "agent-1", host_id: "h", scope: "s1")
+      {:ok, _} = Memory.remember("b", agent_id: "agent-2", host_id: "h", scope: "s2")
+
+      assert [%{scope: "s1"}] = Memory.list(scope: "s1")
+      assert [%{agent_id: "agent-2"}] = Memory.list(agent_id: "agent-2")
+    end
+
+    test "ilike search on content" do
+      {:ok, _} = Memory.remember("London is in the UK.", agent_id: "a", host_id: "h")
+      {:ok, _} = Memory.remember("Madrid is in Spain.", agent_id: "a", host_id: "h")
+
+      results = Memory.list(q: "london")
+      assert length(results) == 1
+      assert hd(results).content =~ "London"
+    end
+
+    test "excludes soft-deleted by default" do
+      {:ok, mem} = Memory.remember("to-be-forgotten", agent_id: "a", host_id: "h")
+      :ok = Memory.forget(mem.id)
+      assert Memory.list() == []
+      assert Memory.count() == 0
+    end
+
+    test "include_deleted: true returns tombstoned rows" do
+      {:ok, mem} = Memory.remember("soft-deleted", agent_id: "a", host_id: "h")
+      :ok = Memory.forget(mem.id)
+      assert [%{id: id}] = Memory.list(include_deleted: true)
+      assert id == mem.id
+      assert Memory.count(include_deleted: true) == 1
+    end
+
+    test "pagination via limit + offset" do
+      for i <- 1..3, do: Memory.remember("row #{i}", agent_id: "a", host_id: "h")
+      assert length(Memory.list(limit: 2, offset: 0)) == 2
+      assert length(Memory.list(limit: 2, offset: 2)) == 1
+    end
+
+    test "list result does not include embedding column" do
+      {:ok, _} = Memory.remember("x", agent_id: "a", host_id: "h")
+      [mem] = Memory.list()
+      assert match?(%Ecto.Association.NotLoaded{}, mem.embedding) or is_nil(mem.embedding)
+    end
+  end
+
+  describe "scope_stats/0" do
+    test "returns counts grouped by scope (non-deleted)" do
+      Memory.remember("a", agent_id: "a", host_id: "h", scope: "alpha")
+      Memory.remember("b", agent_id: "a", host_id: "h", scope: "alpha")
+      Memory.remember("c", agent_id: "a", host_id: "h", scope: "beta")
+      counts = Memory.scope_stats()
+      assert %{scope: "alpha", count: 2} in counts
+      assert %{scope: "beta", count: 1} in counts
+    end
+  end
 end
