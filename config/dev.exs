@@ -6,7 +6,8 @@ config :backplane, Backplane.Repo,
   socket_dir: System.get_env("PGHOST", "/tmp"),
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
-  pool_size: 10
+  pool_size: 10,
+  types: Backplane.PostgrexTypes
 
 config :backplane_web, dev_routes: true
 

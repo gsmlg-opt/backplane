@@ -12,6 +12,8 @@ if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable
 end
 
 if config_env() == :prod do
+  config :backplane, Backplane.Repo, types: Backplane.PostgrexTypes
+
   config_path = System.get_env("BACKPLANE_CONFIG", "backplane.toml")
 
   if File.exists?(config_path) do
