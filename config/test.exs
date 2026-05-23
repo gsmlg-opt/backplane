@@ -21,4 +21,6 @@ config :backplane_web, BackplaneWeb.Endpoint,
 
 config :backplane_memory, embed_enabled: false
 
+config :backplane_host_agent, start_on_application: false
+
 config :logger, level: :warning

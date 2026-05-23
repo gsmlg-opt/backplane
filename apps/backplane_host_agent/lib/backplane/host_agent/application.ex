@@ -5,10 +5,17 @@ defmodule Backplane.HostAgent.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      Backplane.HostAgent.Worker
-    ]
+    Supervisor.start_link(child_specs(),
+      strategy: :one_for_one,
+      name: Backplane.HostAgent.Supervisor
+    )
+  end
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: Backplane.HostAgent.Supervisor)
+  def child_specs do
+    if Application.get_env(:backplane_host_agent, :start_on_application, true) do
+      [Backplane.HostAgent.Worker]
+    else
+      []
+    end
   end
 end

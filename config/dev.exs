@@ -35,3 +35,5 @@ config :logger, level: :debug
 
 config :phoenix, :stacktrace_depth, 20
 config :phoenix, :plug_init_mode, :runtime
+
+config :backplane_host_agent, start_on_application: false

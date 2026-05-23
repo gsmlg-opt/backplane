@@ -6,10 +6,18 @@ defmodule Backplane.HostAgent do
   alias Backplane.HostAgent.Worker
 
   def sync_now do
-    Worker.sync_now()
+    if Process.whereis(Worker) do
+      Worker.sync_now()
+    else
+      {:error, :not_configured}
+    end
   end
 
   def status do
-    Worker.status()
+    if Process.whereis(Worker) do
+      Worker.status()
+    else
+      %{last_sync: nil, last_error: :not_configured}
+    end
   end
 end

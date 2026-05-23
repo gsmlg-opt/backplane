@@ -71,4 +71,6 @@ config :phoenix, :json_library, Jason
 # Relayixir — used as a library, BackplaneWeb handles HTTP serving
 config :relayixir, start_server: false
 
+config :backplane_host_agent, start_on_application: true
+
 import_config "#{config_env()}.exs"
