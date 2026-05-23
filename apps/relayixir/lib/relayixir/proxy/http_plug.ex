@@ -465,5 +465,4 @@ defmodule Relayixir.Proxy.HttpPlug do
   end
 
   defp upstream_label(%Upstream{} = upstream), do: "#{upstream.host}:#{upstream.port}"
-  defp upstream_label(_), do: nil
 end

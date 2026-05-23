@@ -13,6 +13,12 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
   alias Relayixir.Proxy.Upstream
   alias Relayixir.Config.HookConfig
 
+  # UpstreamClient.connect/2 returns {:ok, conn, ref, websocket} | {:error, reason}, but
+  # dialyzer narrows the inferred return to {:error, _} only because of an upstream Mint.WebSocket
+  # spec false positive (see UpstreamClient @dialyzer comment). Silencing handle_continue/2 also
+  # clears the cascade flag on flush_pending_frames/2 below.
+  @dialyzer {:nowarn_function, [handle_continue: 2, flush_pending_frames: 2]}
+
   defstruct [
     :session_id,
     :upstream,

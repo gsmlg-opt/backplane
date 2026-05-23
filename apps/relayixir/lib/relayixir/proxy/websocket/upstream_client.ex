@@ -7,6 +7,13 @@ defmodule Relayixir.Proxy.WebSocket.UpstreamClient do
 
   alias Relayixir.Proxy.WebSocket.Frame
 
+  # Mint.WebSocket.new/4 has a typespec that returns {:ok, conn, websocket} | {:error, conn, error},
+  # but dialyzer narrows the inferred return to only the error variant — see do_new/4 in
+  # mint_web_socket 1.0.5 where the success path is buried under a `with` chain dialyzer cannot
+  # see through. The {:ok, ...} match IS reachable at runtime (every successful WebSocket upgrade
+  # exercises it); silencing the false positive here also clears the cascade in Bridge.flush_pending_frames/2.
+  @dialyzer {:nowarn_function, do_upgrade: 4, process_upgrade_message: 3}
+
   @doc """
   Connects to upstream WebSocket. Returns `{:ok, conn, ref, websocket}` or `{:error, reason}`.
   """
