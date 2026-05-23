@@ -6,7 +6,8 @@ config :backplane, Backplane.Repo,
   database: "backplane_test#{System.get_env("MIX_TEST_PARTITION")}",
   socket_dir: System.get_env("PGHOST", "/tmp"),
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size: System.schedulers_online() * 2,
+  types: Backplane.PostgrexTypes
 
 config :backplane, env: :test
 config :backplane, llm_route_loader_enabled: false
@@ -17,5 +18,7 @@ config :backplane_web, BackplaneWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "test_secret_key_base_that_is_at_least_64_bytes_long_for_testing_only_please",
   server: false
+
+config :backplane_memory, embed_enabled: false
 
 config :logger, level: :warning

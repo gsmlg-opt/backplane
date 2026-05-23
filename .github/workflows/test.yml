@@ -42,10 +42,16 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Start PostgreSQL
+      - name: Start PostgreSQL with pgvector
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql
+          # PGDG repo is pre-configured; use versioned packages to avoid conflicts with Ubuntu's postgresql-server-dev-all
+          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 build-essential
+          # Build pgvector 0.8.0 from source (halfvec requires >= 0.7.0)
+          git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          # Disable LLVM JIT: PGDG pg16 expects llvm-lto-19 which is not available on this runner
+          make -C /tmp/pgvector with_llvm=no
+          sudo make -C /tmp/pgvector with_llvm=no install
           sudo systemctl start postgresql
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
@@ -55,3 +61,4 @@ jobs:
           mix do --app backplane cmd mix test test/backplane/services/web_fetch_test.exs
           mix do --app day_ex cmd mix test
           mix do --app relayixir cmd mix test
+          mix do --app backplane_memory cmd mix test

@@ -123,7 +123,7 @@ jobs:
         id: dialyzer-cache
         with:
           path: priv/plts
-          key: ${{ runner.os }}-otp28-elixir1.18-dialyzer-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp28-elixir1.18-dialyzer-${{ hashFiles('**/mix.lock', 'apps/*/mix.exs', 'mix.exs') }}
           restore-keys: |
             ${{ runner.os }}-otp28-elixir1.18-dialyzer-
 
