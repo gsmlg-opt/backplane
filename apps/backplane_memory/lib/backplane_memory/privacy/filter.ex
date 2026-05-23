@@ -2,12 +2,12 @@ defmodule BackplaneMemory.Privacy.Filter do
   @moduledoc "Strips secrets and <private>-tagged content before memory storage."
 
   @secret_patterns [
-    # OpenAI / Anthropic keys: sk- prefix + 20+ alphanumeric chars
-    ~r/sk-[A-Za-z0-9]{20,}/,
+    # OpenAI / Anthropic keys: sk- prefix + 20+ alphanumeric/hyphen/underscore chars
+    ~r/sk-[A-Za-z0-9_\-]{20,}/,
     # AWS access key IDs
     ~r/AKIA[0-9A-Z]{16}/,
     # Explicit api_key / access_token assignments
-    ~r/(?i)(?:api[_-]?key|access[_-]?token|bearer)[[:space:]]*[:=][[:space:]]*["']?([A-Za-z0-9+\/\-_]{20,})["']?/
+    ~r/(?i)(?:api[_-]?key|access[_-]?token|bearer)[[:space:]]*[:=][[:space:]]*["']?(?:[A-Za-z0-9+\/\-_]{20,})["']?/
   ]
 
   @spec apply(String.t()) :: {:ok, String.t()}
@@ -19,6 +19,8 @@ defmodule BackplaneMemory.Privacy.Filter do
 
     {:ok, result}
   end
+
+  def apply(_content), do: {:ok, ""}
 
   defp strip_private_tags(content) do
     Regex.replace(~r/<private>.*?<\/private>/s, content, "[REDACTED]")

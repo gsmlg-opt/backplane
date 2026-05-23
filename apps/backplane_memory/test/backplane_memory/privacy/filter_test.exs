@@ -26,6 +26,13 @@ defmodule BackplaneMemory.Privacy.FilterTest do
       assert result =~ "[REDACTED]"
     end
 
+    test "strips api_key assignment patterns" do
+      input = ~s(api_key = "abcdefghijklmnopqrstuvwxyz12345")
+      {:ok, result} = Filter.apply(input)
+      refute result =~ "abcdefghijklmnopqrstuvwxyz12345"
+      assert result =~ "[REDACTED]"
+    end
+
     test "multi-line content: strips only the private block" do
       input = "Facts:\n<private>my password</private>\nMore facts."
       {:ok, result} = Filter.apply(input)
