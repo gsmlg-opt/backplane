@@ -13,8 +13,8 @@ defmodule BackplaneMemory.Memories.MemoryTest do
         })
 
       assert cs.valid?
-      assert Ecto.Changeset.get_change(cs, :memory_type) == "semantic"
-      assert Ecto.Changeset.get_change(cs, :scope) == "global"
+      assert Ecto.Changeset.get_field(cs, :memory_type) == "semantic"
+      assert Ecto.Changeset.get_field(cs, :scope) == "global"
     end
 
     test "content is required" do
@@ -64,14 +64,7 @@ defmodule BackplaneMemory.Memories.MemoryTest do
       assert mem.id != nil
       assert mem.memory_type == "semantic"
       assert mem.scope == "global"
+      assert mem.content_hash == :crypto.hash(:sha256, "Rome is the capital of Italy.")
     end
-  end
-
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
   end
 end

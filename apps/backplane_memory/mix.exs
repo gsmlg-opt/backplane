@@ -31,7 +31,8 @@ defmodule BackplaneMemory.MixProject do
       {:backplane, in_umbrella: true},
       {:jason, "~> 1.4"},
       {:req, "~> 0.5", override: true},
-      {:oban, "~> 2.18"}
+      {:oban, "~> 2.18"},
+      {:pgvector, "~> 0.3"}
     ]
   end
 end

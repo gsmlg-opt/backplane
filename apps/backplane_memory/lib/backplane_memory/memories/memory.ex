@@ -42,7 +42,6 @@ defmodule BackplaneMemory.Memories.Memory do
       :session_id,
       :tags,
       :metadata,
-      :embedding,
       :embedding_model,
       :confidence,
       :access_count,
@@ -52,22 +51,12 @@ defmodule BackplaneMemory.Memories.Memory do
       :deleted_at
     ])
     |> validate_required([:content, :agent_id, :host_id])
-    |> put_default(:memory_type, "semantic")
-    |> put_default(:scope, "global")
     |> validate_inclusion(:memory_type, @valid_types)
     |> derive_content_hash()
   end
 
   def embed_changeset(memory, vector) do
     change(memory, embedding: Pgvector.HalfVector.new(vector))
-  end
-
-  defp put_default(changeset, field, default) do
-    if get_change(changeset, field) == nil do
-      force_change(changeset, field, default)
-    else
-      changeset
-    end
   end
 
   defp derive_content_hash(changeset) do
