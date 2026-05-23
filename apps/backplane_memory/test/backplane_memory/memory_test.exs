@@ -80,15 +80,13 @@ defmodule BackplaneMemory.MemoryTest do
   end
 
   describe "stats/0" do
-    test "returns a list with memory_type and count keys" do
+    test "returns counts grouped by memory_type" do
       Memory.remember("s1", agent_id: "a", host_id: "h", type: "semantic")
-      Memory.remember("s2", agent_id: "a", host_id: "h", type: "working")
+      Memory.remember("s2", agent_id: "a", host_id: "h", type: "semantic")
+      Memory.remember("w1", agent_id: "a", host_id: "h", type: "working")
       stats = Memory.stats()
-      assert is_list(stats)
-
-      assert Enum.any?(stats, fn s ->
-               Map.has_key?(s, :memory_type) and Map.has_key?(s, :count)
-             end)
+      assert %{memory_type: "semantic", count: 2} in stats
+      assert %{memory_type: "working", count: 1} in stats
     end
   end
 end

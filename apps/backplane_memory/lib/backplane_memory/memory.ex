@@ -10,6 +10,9 @@ defmodule BackplaneMemory.Memory do
 
   @dedup_window_seconds 86_400
 
+  # All schema fields except :embedding — halfvec columns require Pgvector.Extensions
+  # to be loaded in Postgrex; queries use struct/2 projection to exclude it.
+  # If more vector fields are added to the schema, add them to the exclusion list here.
   @non_vector_fields [
     :id,
     :content,
@@ -42,9 +45,8 @@ defmodule BackplaneMemory.Memory do
   def remember(content, opts \\ []) do
     with {:ok, filtered} <- Filter.apply(content) do
       attrs = build_attrs(filtered, opts)
-      hash = :crypto.hash(:sha256, filtered)
 
-      case find_duplicate(hash, attrs.scope) do
+      case find_duplicate(filtered, attrs.scope) do
         %MemorySchema{} = existing ->
           {:ok, existing}
 
@@ -117,7 +119,8 @@ defmodule BackplaneMemory.Memory do
     }
   end
 
-  defp find_duplicate(content_hash, scope) do
+  defp find_duplicate(content, scope) do
+    content_hash = :crypto.hash(:sha256, content)
     window_start = DateTime.add(DateTime.utc_now(), -@dedup_window_seconds, :second)
 
     MemorySchema
