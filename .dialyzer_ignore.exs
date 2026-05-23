@@ -2,6 +2,10 @@
 # dialyzer warnings unrelated to recent memory module work. Uses {file, warning_type}
 # tuples (line-agnostic) so refactors within the same file/check don't break CI.
 [
+  # CI-only baseline (PLT cache differs from local). Math engine uses Rustler NIFs
+  # whose types dialyzer can't see through.
+  {"lib/backplane/math/engine/native.ex", :call_without_opaque},
+  {"lib/backplane/math/sandbox.ex", :call_without_opaque},
   {"lib/backplane_web/live/provider_new_live.ex", :pattern_match_cov},
   {"lib/backplane_web/live/provider_show_live.ex", :pattern_match_cov},
   {"lib/backplane_web/live/settings_live.ex", :unused_fun},
@@ -39,5 +43,5 @@
   {"lib/backplane/skills/host_agent_api_router.ex", :pattern_match},
   {"lib/backplane/skills/host_agent_api_router.ex", :unused_fun},
   {"lib/backplane/tools/skill.ex", :pattern_match},
-  {"lib/backplane/tools/skill.ex", :unused_fun},
+  {"lib/backplane/tools/skill.ex", :unused_fun}
 ]
