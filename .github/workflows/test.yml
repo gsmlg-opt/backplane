@@ -45,8 +45,9 @@ jobs:
       - name: Start PostgreSQL with pgvector
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql postgresql-server-dev-all build-essential
-          # Build pgvector 0.8.0 from source — Ubuntu apt ships < 0.7.0 which lacks halfvec
+          # PGDG repo is pre-configured on this runner; use its versioned packages to avoid conflicts
+          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 build-essential
+          # Build pgvector 0.8.0 from source (halfvec requires >= 0.7.0)
           git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
           make -C /tmp/pgvector
           sudo make -C /tmp/pgvector install
