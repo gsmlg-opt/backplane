@@ -28,14 +28,20 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
     end
 
     # halfvec(2560) — added via raw SQL; pgvector >= 0.7 required
-    execute("ALTER TABLE bpm_memories ADD COLUMN embedding halfvec(2560)")
+    execute(
+      "ALTER TABLE bpm_memories ADD COLUMN embedding halfvec(2560)",
+      "ALTER TABLE bpm_memories DROP COLUMN IF EXISTS embedding"
+    )
 
     # generated tsvector for FTS (Postgres 12+)
-    execute("""
-    ALTER TABLE bpm_memories
-      ADD COLUMN search_tsv tsvector
-      GENERATED ALWAYS AS (to_tsvector('english', coalesce(content, ''))) STORED
-    """)
+    execute(
+      """
+      ALTER TABLE bpm_memories
+        ADD COLUMN search_tsv tsvector
+        GENERATED ALWAYS AS (to_tsvector('english', coalesce(content, ''))) STORED
+      """,
+      "ALTER TABLE bpm_memories DROP COLUMN IF EXISTS search_tsv"
+    )
 
     create(
       constraint(:bpm_memories, :bpm_memories_memory_type_check,
@@ -45,7 +51,8 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
 
     # HNSW index for halfvec cosine similarity
     execute(
-      "CREATE INDEX bpm_memories_embedding_hnsw_idx ON bpm_memories USING hnsw (embedding halfvec_cosine_ops)"
+      "CREATE INDEX bpm_memories_embedding_hnsw_idx ON bpm_memories USING hnsw (embedding halfvec_cosine_ops) WHERE embedding IS NOT NULL",
+      "DROP INDEX IF EXISTS bpm_memories_embedding_hnsw_idx"
     )
 
     create(
