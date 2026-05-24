@@ -11,7 +11,16 @@ config :backplane_system, Backplane.Repo,
 
 config :backplane, Oban,
   repo: Backplane.Repo,
-  queues: [default: 10, indexing: 5, sync: 3, embeddings: 2, llm: 5, memory: 3]
+  queues: [default: 10, indexing: 5, sync: 3, embeddings: 2, llm: 5, memory: 3],
+  plugins: [
+    {Oban.Plugins.Cron,
+     crontab: [
+       # Procedural extraction: nightly at 02:00
+       {"0 2 * * *", BackplaneMemory.Workers.ProceduralWorker},
+       # Fallback sweep: every 4 hours
+       {"0 */4 * * *", BackplaneMemory.Workers.FallbackSweepWorker}
+     ]}
+  ]
 
 config :backplane_memory, repo: Backplane.Repo
 

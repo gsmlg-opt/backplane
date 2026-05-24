@@ -51,5 +51,94 @@ defmodule BackplaneMemory.LLM do
     {:ok, candidates}
   end
 
+  @doc "Extract durable semantic facts from a session summary. Returns {:ok, [string]} or {:skip, :no_llm}."
+  @spec extract_facts(String.t()) :: {:ok, [String.t()]} | {:skip, :no_llm} | {:error, String.t()}
+  def extract_facts(summary) when is_binary(summary) do
+    case model() do
+      nil -> {:skip, :no_llm}
+      m -> do_extract_facts(summary, m)
+    end
+  end
+
+  defp do_extract_facts(summary, model) do
+    prompt = """
+    Extract 3-7 durable, reusable facts from this session summary. Output one fact per line. Only include facts that would be useful in future sessions. Do not include session-specific details.
+
+    Session summary:
+    #{summary}
+    """
+
+    url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
+
+    case Req.post("#{url}/api/llm/v1/chat/completions",
+           json: %{
+             model: model,
+             messages: [%{role: "user", content: prompt}]
+           }
+         ) do
+      {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}} ->
+        facts =
+          text
+          |> String.split("\n")
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.map(&Regex.replace(~r/^[-*\d.]+\s*/, &1, ""))
+          |> Enum.reject(&(&1 == ""))
+
+        {:ok, facts}
+
+      {:ok, %{status: status}} ->
+        {:error, "LLM proxy returned status #{status}"}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
+  @doc "Extract reusable workflows/procedures from semantic memories. Returns {:ok, [string]} or {:skip, :no_llm}."
+  @spec extract_procedures(String.t()) ::
+          {:ok, [String.t()]} | {:skip, :no_llm} | {:error, String.t()}
+  def extract_procedures(content) when is_binary(content) do
+    case model() do
+      nil -> {:skip, :no_llm}
+      m -> do_extract_procedures(content, m)
+    end
+  end
+
+  defp do_extract_procedures(content, model) do
+    prompt = """
+    Extract 3-7 reusable workflows or procedures from these semantic memories. Output one procedure per line. Only include patterns that represent repeatable steps or processes useful across sessions.
+
+    Memories:
+    #{content}
+    """
+
+    url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
+
+    case Req.post("#{url}/api/llm/v1/chat/completions",
+           json: %{
+             model: model,
+             messages: [%{role: "user", content: prompt}]
+           }
+         ) do
+      {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}} ->
+        procedures =
+          text
+          |> String.split("\n")
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.map(&Regex.replace(~r/^[-*\d.]+\s*/, &1, ""))
+          |> Enum.reject(&(&1 == ""))
+
+        {:ok, procedures}
+
+      {:ok, %{status: status}} ->
+        {:error, "LLM proxy returned status #{status}"}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
   defp model, do: Backplane.Settings.get("memory.llm_model")
 end

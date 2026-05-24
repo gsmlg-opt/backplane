@@ -33,12 +33,15 @@ defmodule BackplaneMemory.Observations do
     |> repo().insert(on_conflict: :nothing, conflict_target: [:session_id])
   end
 
-  @doc "Mark a session as ended."
+  @doc "Mark a session as ended and enqueue consolidation."
   def end_session(session_id) do
     repo().update_all(
       from(s in Session, where: s.session_id == ^session_id and is_nil(s.ended_at)),
       set: [ended_at: DateTime.utc_now()]
     )
+
+    BackplaneMemory.Workers.SummaryWorker.enqueue(session_id)
+    :ok
   end
 
   @doc "Return observations referencing any of the listed file paths, newest first."
