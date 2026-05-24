@@ -37,7 +37,7 @@ defmodule BackplaneWeb.MemoryConfigLive do
     results =
       Enum.map(params, fn {key, value} ->
         if key in @settings_keys do
-          safe_call(fn -> Backplane.Settings.put(key, value) end, {:error, :unavailable})
+          safe_call(fn -> Backplane.Settings.set(key, value) end, {:error, :unavailable})
         else
           :ok
         end

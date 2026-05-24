@@ -7,14 +7,13 @@ defmodule BackplaneWeb.MemoryActionsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {actions, leases} = load_data()
+    {:ok, assign(socket, current_path: "/admin/memory/actions", actions: [], leases: [])}
+  end
 
-    {:ok,
-     assign(socket,
-       current_path: "/admin/memory/actions",
-       actions: actions,
-       leases: leases
-     )}
+  @impl true
+  def handle_params(_params, _uri, socket) do
+    {actions, leases} = load_data()
+    {:noreply, assign(socket, actions: actions, leases: leases)}
   end
 
   defp load_data do
