@@ -6,8 +6,6 @@ defmodule Backplane.DataCase do
 
   use ExUnit.CaseTemplate
 
-  alias Ecto.Adapters.SQL.Sandbox
-
   using do
     quote do
       alias Backplane.Repo
@@ -24,8 +22,5 @@ defmodule Backplane.DataCase do
     :ok
   end
 
-  def setup_sandbox(tags) do
-    pid = Sandbox.start_owner!(Backplane.Repo, shared: not tags[:async])
-    on_exit(fn -> Sandbox.stop_owner(pid) end)
-  end
+  def setup_sandbox(tags), do: BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
 end

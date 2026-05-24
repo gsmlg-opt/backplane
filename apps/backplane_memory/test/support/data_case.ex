@@ -3,7 +3,6 @@ defmodule BackplaneMemory.DataCase do
 
   using do
     quote do
-      alias Backplane.Repo
       import Ecto
       import Ecto.Changeset
       import Ecto.Query
@@ -12,9 +11,12 @@ defmodule BackplaneMemory.DataCase do
   end
 
   setup tags do
-    Backplane.DataCase.setup_sandbox(tags)
+    BackplaneDataCase.setup_sandbox(repo(), tags)
     :ok
   end
+
+  @doc "Repo configured for backplane_memory (runtime-resolved to avoid compile-time cross-app coupling)."
+  def repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   def errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->

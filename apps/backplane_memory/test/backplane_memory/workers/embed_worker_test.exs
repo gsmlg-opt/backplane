@@ -13,7 +13,7 @@ defmodule BackplaneMemory.Workers.EmbedWorkerTest do
 
       embedding_before =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
-        |> Backplane.Repo.one()
+        |> repo().one()
 
       assert is_nil(embedding_before)
 
@@ -24,7 +24,7 @@ defmodule BackplaneMemory.Workers.EmbedWorkerTest do
 
       embedding_after =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
-        |> Backplane.Repo.one()
+        |> repo().one()
 
       assert embedding_after != nil
     end
@@ -38,7 +38,7 @@ defmodule BackplaneMemory.Workers.EmbedWorkerTest do
 
       embedding =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
-        |> Backplane.Repo.one()
+        |> repo().one()
 
       assert is_nil(embedding)
     end
