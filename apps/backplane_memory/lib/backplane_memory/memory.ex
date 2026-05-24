@@ -76,7 +76,7 @@ defmodule BackplaneMemory.Memory do
     end
   end
 
-  @doc "Soft-delete a memory by id."
+  @doc "Soft-delete (or hard-delete if enabled) a memory by id. Writes an audit entry."
   @spec forget(String.t()) :: :ok | {:error, :not_found}
   def forget(id) do
     case repo().one(
@@ -89,12 +89,25 @@ defmodule BackplaneMemory.Memory do
         {:error, :not_found}
 
       mem ->
-        mem
-        |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
-        |> repo().update!()
+        if hard_delete_enabled?() do
+          repo().delete_all(from(m in MemorySchema, where: m.id == ^id))
+          BackplaneMemory.Audit.log("hard_delete", "system", [mem.id])
+        else
+          mem
+          |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
+          |> repo().update!()
+
+          BackplaneMemory.Audit.log("forget", "system", [mem.id])
+        end
 
         :ok
     end
+  end
+
+  defp hard_delete_enabled? do
+    Backplane.Settings.get("memory.hard_delete_enabled") == "true"
+  rescue
+    _ -> false
   end
 
   @doc "Return counts grouped by memory_type (non-deleted rows only)."

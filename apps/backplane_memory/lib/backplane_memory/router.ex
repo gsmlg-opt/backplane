@@ -175,6 +175,69 @@ defmodule BackplaneMemory.Router do
     |> send_resp(200, Jason.encode!(%{results: result}))
   end
 
+  get "/api/memory/audit" do
+    limit = String.to_integer(conn.query_params["limit"] || "50")
+    offset = String.to_integer(conn.query_params["offset"] || "0")
+    operation = conn.query_params["operation"]
+    actor = conn.query_params["actor"]
+
+    opts = [limit: limit, offset: offset]
+    opts = if operation && operation != "", do: opts ++ [operation: operation], else: opts
+    opts = if actor && actor != "", do: opts ++ [actor: actor], else: opts
+
+    entries = BackplaneMemory.Audit.list(opts)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{results: entries}))
+  end
+
+  get "/api/memory/diagnose" do
+    alias BackplaneMemory.Embedding.CircuitBreaker
+
+    stats = BackplaneMemory.Memory.stats()
+    cb_state = CircuitBreaker.state()
+
+    repo = Application.fetch_env!(:backplane_memory, :repo)
+    lease_count = repo.aggregate(BackplaneMemory.Coordination.Lease, :count, :id)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(
+      200,
+      Jason.encode!(%{
+        status: "ok",
+        circuit_breaker: to_string(cb_state),
+        memory_stats: stats,
+        active_leases: lease_count
+      })
+    )
+  end
+
+  post "/api/memory/heal" do
+    alias BackplaneMemory.Embedding.CircuitBreaker
+    import Ecto.Query
+
+    repo = Application.fetch_env!(:backplane_memory, :repo)
+    now = DateTime.utc_now()
+
+    {deleted, _} =
+      repo.delete_all(from(l in BackplaneMemory.Coordination.Lease, where: l.expires_at < ^now))
+
+    CircuitBreaker.reset()
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(
+      200,
+      Jason.encode!(%{
+        status: "healed",
+        expired_leases_cleared: deleted,
+        circuit_breaker: "closed"
+      })
+    )
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")

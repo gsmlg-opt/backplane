@@ -1374,6 +1374,7 @@ defmodule BackplaneMemory.Service do
   def handle_governance_delete(_), do: {:error, "memory_id is required"}
 
   def handle_diagnose(_args) do
+    alias BackplaneMemory.Embedding.CircuitBreaker
     stats = Memory.stats()
 
     repo = Application.fetch_env!(:backplane_memory, :repo)
@@ -1382,19 +1383,23 @@ defmodule BackplaneMemory.Service do
     {:ok,
      %{
        status: "ok",
+       circuit_breaker: to_string(CircuitBreaker.state()),
        memory_stats: stats,
        active_leases: lease_count
      }}
   end
 
   def handle_heal(_args) do
+    alias BackplaneMemory.Embedding.CircuitBreaker
     repo = Application.fetch_env!(:backplane_memory, :repo)
     now = DateTime.utc_now()
 
     {deleted, _} =
       repo.delete_all(from(l in BackplaneMemory.Coordination.Lease, where: l.expires_at < ^now))
 
-    {:ok, %{status: "healed", expired_leases_cleared: deleted}}
+    CircuitBreaker.reset()
+
+    {:ok, %{status: "healed", expired_leases_cleared: deleted, circuit_breaker: "closed"}}
   end
 
   # ──────────────────────────────────────────────
