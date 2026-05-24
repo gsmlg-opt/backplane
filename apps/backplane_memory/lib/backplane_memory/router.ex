@@ -8,6 +8,7 @@ defmodule BackplaneMemory.Router do
 
   plug(:match)
   plug(:fetch_query_params)
+  plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
   plug(:dispatch)
 
   get "/api/memory/graph/stats" do
@@ -54,6 +55,32 @@ defmodule BackplaneMemory.Router do
             })
           )
       end
+    end
+  end
+
+  post "/api/memory/query/expand" do
+    query = conn.body_params["query"]
+
+    if is_binary(query) and query != "" do
+      llm_module =
+        Application.get_env(:backplane_memory, :llm_module, BackplaneMemory.LLM)
+
+      body =
+        case llm_module.expand_query(query) do
+          {:ok, expansions} ->
+            Jason.encode!(%{query: query, expansions: expansions})
+
+          {:skip, _} ->
+            Jason.encode!(%{query: query, expansions: [query], note: "LLM not configured"})
+        end
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, body)
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{error: "query is required"}))
     end
   end
 

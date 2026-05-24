@@ -112,23 +112,77 @@ defmodule BackplaneMemory.Memories.Search do
   @spec hybrid_recall(String.t(), keyword()) :: {:ok, [result()]} | {:error, term()}
   def hybrid_recall(query, opts \\ []) when is_binary(query) do
     limit = Keyword.get(opts, :limit, @default_limit)
+    queries = maybe_expand_query(query, opts)
 
-    vector_stream =
-      case recall(query, opts) do
-        {:ok, rows} -> rows
-        {:error, _} -> []
-      end
+    all_vector =
+      queries
+      |> Enum.flat_map(fn q ->
+        case recall(q, opts) do
+          {:ok, rows} -> rows
+          {:error, _} -> []
+        end
+      end)
+      |> dedup_by_id()
 
-    fts_stream = fts_search(query, opts)
-
+    all_fts = queries |> Enum.flat_map(&fts_search(&1, opts)) |> dedup_by_id()
     graph_stream = graph_search(query, opts)
 
-    fused =
-      [vector_stream, fts_stream, graph_stream]
+    fused_unlimited =
+      [all_vector, all_fts, graph_stream]
       |> rrf_fuse()
-      |> Enum.take(limit)
 
-    {:ok, fused}
+    reranked = maybe_rerank(query, fused_unlimited, opts)
+    result = Enum.take(reranked, limit)
+
+    {:ok, result}
+  end
+
+  defp maybe_expand_query(query, opts) do
+    enabled = Backplane.Settings.get("memory.query_expansion_enabled") == "true"
+
+    llm_module =
+      Keyword.get(
+        opts,
+        :llm_module,
+        Application.get_env(:backplane_memory, :llm_module, BackplaneMemory.LLM)
+      )
+
+    if enabled do
+      case llm_module.expand_query(query) do
+        {:ok, queries} -> Enum.uniq([query | queries])
+        {:skip, _} -> [query]
+      end
+    else
+      [query]
+    end
+  end
+
+  defp maybe_rerank(query, candidates, opts) do
+    enabled = Backplane.Settings.get("memory.reranker_enabled") == "true"
+
+    llm_module =
+      Keyword.get(
+        opts,
+        :llm_module,
+        Application.get_env(:backplane_memory, :llm_module, BackplaneMemory.LLM)
+      )
+
+    k = Application.get_env(:backplane_memory, :reranker_top_k, 20)
+
+    if enabled and length(candidates) > 0 do
+      top_k = Enum.take(candidates, k)
+
+      case llm_module.rerank(query, top_k) do
+        {:ok, reranked} -> reranked
+        {:skip, _} -> candidates
+      end
+    else
+      candidates
+    end
+  end
+
+  defp dedup_by_id(rows) do
+    rows |> Enum.uniq_by(& &1.id)
   end
 
   defp fts_search(query, opts) do

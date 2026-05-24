@@ -112,6 +112,18 @@ defmodule BackplaneMemory.Service do
           "required" => ["project"]
         },
         handler: &handle_profile_refresh/1
+      },
+      %{
+        name: "memory::expand_query",
+        description: "Expand a query into alternative phrasings for broader search coverage.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{"type" => "string", "description" => "Query to expand"}
+          },
+          "required" => ["query"]
+        },
+        handler: &handle_expand_query/1
       }
     ]
   end
@@ -225,6 +237,17 @@ defmodule BackplaneMemory.Service do
   end
 
   def handle_profile_refresh(_), do: {:error, "project is required"}
+
+  def handle_expand_query(%{"query" => query}) when is_binary(query) do
+    llm_module = Application.get_env(:backplane_memory, :llm_module, BackplaneMemory.LLM)
+
+    case llm_module.expand_query(query) do
+      {:ok, expansions} -> {:ok, %{query: query, expansions: expansions}}
+      {:skip, _} -> {:ok, %{query: query, expansions: [query], note: "LLM not configured"}}
+    end
+  end
+
+  def handle_expand_query(_), do: {:error, "query is required"}
 
   defp add_if(opts, args, key, opt_key) do
     case args[key] do
