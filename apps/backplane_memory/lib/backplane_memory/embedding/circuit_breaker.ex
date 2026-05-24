@@ -53,19 +53,23 @@ defmodule BackplaneMemory.Embedding.CircuitBreaker do
   @doc "Call after a failed embed."
   def record_failure do
     ensure_table()
+    # update_counter is atomic; failure_count is at tuple position 3
+    new_failures =
+      :ets.update_counter(@table, :state, {3, 1}, {:state, :closed, 0, nil, 0})
 
-    case :ets.lookup(@table, :state) do
-      [{:state, _circuit_state, failures, _last_failure_at, _successes}] ->
-        new_failures = failures + 1
+    if new_failures >= @max_failures do
+      :ets.insert(@table, {:state, :open, new_failures, DateTime.utc_now(), 0})
+    else
+      case :ets.lookup(@table, :state) do
+        [{:state, circuit_state, _f, _last, successes}] ->
+          :ets.insert(
+            @table,
+            {:state, circuit_state, new_failures, DateTime.utc_now(), successes}
+          )
 
-        if new_failures >= @max_failures do
-          :ets.insert(@table, {:state, :open, new_failures, DateTime.utc_now(), 0})
-        else
+        [] ->
           :ets.insert(@table, {:state, :closed, new_failures, DateTime.utc_now(), 0})
-        end
-
-      [] ->
-        :ets.insert(@table, {:state, :closed, 1, DateTime.utc_now(), 0})
+      end
     end
   end
 
@@ -77,8 +81,13 @@ defmodule BackplaneMemory.Embedding.CircuitBreaker do
 
   defp ensure_table do
     if :ets.info(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set])
-      :ets.insert(@table, {:state, :closed, 0, nil, 0})
+      try do
+        :ets.new(@table, [:named_table, :public, :set])
+        :ets.insert(@table, {:state, :closed, 0, nil, 0})
+      rescue
+        # Another process won the creation race — table already exists
+        ArgumentError -> :ok
+      end
     end
   end
 

@@ -176,8 +176,8 @@ defmodule BackplaneMemory.Router do
   end
 
   get "/api/memory/audit" do
-    limit = String.to_integer(conn.query_params["limit"] || "50")
-    offset = String.to_integer(conn.query_params["offset"] || "0")
+    limit = parse_int(conn.query_params["limit"], 50)
+    offset = parse_int(conn.query_params["offset"], 0)
     operation = conn.query_params["operation"]
     actor = conn.query_params["actor"]
 
@@ -242,5 +242,14 @@ defmodule BackplaneMemory.Router do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(404, Jason.encode!(%{error: "not found"}))
+  end
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(str, default) do
+    case Integer.parse(str) do
+      {n, ""} when n >= 0 -> n
+      _ -> default
+    end
   end
 end
