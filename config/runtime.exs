@@ -12,7 +12,7 @@ if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable
 end
 
 if config_env() == :prod do
-  config :backplane, Backplane.Repo, types: Backplane.PostgrexTypes
+  config :backplane_system, Backplane.Repo, types: Backplane.PostgrexTypes
 
   config_path = System.get_env("BACKPLANE_CONFIG", "backplane.toml")
 
@@ -21,7 +21,7 @@ if config_env() == :prod do
 
     # Database
     if db_url = get_in(backplane_config, [:database, :url]) do
-      config :backplane, Backplane.Repo, url: db_url
+      config :backplane_system, Backplane.Repo, url: db_url
     end
 
     # Backplane server settings

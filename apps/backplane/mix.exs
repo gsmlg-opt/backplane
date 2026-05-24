@@ -29,49 +29,18 @@ defmodule Backplane.MixProject do
 
   defp deps do
     [
-      {:relayixir, in_umbrella: true},
-      {:day_ex, in_umbrella: true},
-
-      # Web — Phoenix core (for PubSub, JSON, Plug)
-      {:phoenix, "~> 1.8"},
-      {:phoenix_ecto, "~> 4.6"},
-      {:bandit, "~> 1.5"},
-      {:jason, "~> 1.4"},
-
-      # HTTP client
-      {:req, "~> 0.5", override: true},
-      {:lazy_html, ">= 0.1.0"},
-
-      # Database
-      {:ecto_sql, "~> 3.12"},
-      {:postgrex, "~> 0.19"},
-      {:pgvector, "~> 0.3"},
+      {:backplane_system, in_umbrella: true},
+      {:backplane_llama, in_umbrella: true},
+      {:backplane_mcp, in_umbrella: true},
+      {:backplane_skills, in_umbrella: true},
+      {:backplane_memory, in_umbrella: true},
+      {:backplane_data_case, in_umbrella: true, only: :test},
 
       # Job processing
       {:oban, "~> 2.18"},
 
-      # Auth
-      {:bcrypt_elixir, "~> 3.0"},
-
-      # Config
-      {:toml, "~> 0.7"},
-      {:yaml_elixir, "~> 2.9"},
-
-      # File watching (local skill sources)
-      {:file_system, "~> 1.0"},
-
-      # Timezone data (must start before Oban to avoid DateTime.add failures)
+      # Timezone data (must start before Oban)
       {:tzdata, "~> 1.1"},
-
-      # Telemetry
-      {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.1"},
-
-      # Math
-      {:decimal, "~> 3.0"},
-      {:complex, "~> 0.5"},
-      {:nx, "~> 0.7"},
-      {:nimble_parsec, "~> 1.4"},
 
       # Dev/Test
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -84,10 +53,8 @@ defmodule Backplane.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get", "ecto.setup"],
-      "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+      setup: ["deps.get"],
+      test: ["test"]
     ]
   end
 end

@@ -1,6 +1,6 @@
 import Config
 
-config :backplane, Backplane.Repo,
+config :backplane_system, Backplane.Repo,
   username: System.get_env("PGUSER", System.get_env("USER", "postgres")),
   password: System.get_env("PGPASSWORD", "postgres"),
   socket_dir: System.get_env("PGHOST", "/tmp"),

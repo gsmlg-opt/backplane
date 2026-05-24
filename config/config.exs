@@ -2,9 +2,9 @@ import Config
 
 config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
 
-config :backplane, ecto_repos: [Backplane.Repo]
+config :backplane_system, ecto_repos: [Backplane.Repo]
 
-config :backplane, Backplane.Repo,
+config :backplane_system, Backplane.Repo,
   database: "backplane_#{config_env()}",
   hostname: "localhost",
   show_sensitive_data_on_connection_error: true
@@ -12,6 +12,8 @@ config :backplane, Backplane.Repo,
 config :backplane, Oban,
   repo: Backplane.Repo,
   queues: [default: 10, indexing: 5, sync: 3, embeddings: 2, llm: 5, memory: 3]
+
+config :backplane_memory, repo: Backplane.Repo
 
 # Phoenix Endpoint
 config :backplane_web, BackplaneWeb.Endpoint,

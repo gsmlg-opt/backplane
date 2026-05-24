@@ -21,9 +21,9 @@ defmodule Backplane.Umbrella.MixProject do
     [
       release: &release/1,
       setup: ["cmd mix setup"],
-      "ecto.setup": ["do --app backplane cmd mix ecto.setup"],
-      "ecto.reset": ["do --app backplane cmd mix ecto.reset"],
-      "ecto.migrate": ["do --app backplane cmd mix ecto.migrate"],
+      "ecto.setup": ["do --app backplane_system cmd mix ecto.setup"],
+      "ecto.reset": ["do --app backplane_system cmd mix ecto.reset"],
+      "ecto.migrate": ["do --app backplane_system cmd mix ecto.migrate"],
       "agent.run": [
         "do --app backplane_host_agent cmd mix compile",
         "do --app backplane_host_agent cmd mix agent.run"
