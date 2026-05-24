@@ -107,7 +107,7 @@ defmodule Mix.Tasks.Memory.Eval do
     end)
 
     # Aggregate
-    n = length(results)
+    n = max(length(results), 1)
     mean_p = Enum.sum(Enum.map(results, & &1.precision_at_5)) / n
     mean_r = Enum.sum(Enum.map(results, & &1.recall_at_5)) / n
     mrr = Enum.sum(Enum.map(results, & &1.rr)) / n
@@ -129,14 +129,25 @@ defmodule Mix.Tasks.Memory.Eval do
   # Fetch DB records by content substring to resolve corpus indices to actual UUIDs.
   # Uses the first 60 characters of each memory's content as the lookup key.
   defp lookup_memories(memories) do
-    Enum.map(memories, fn mem ->
-      snippet = String.slice(mem["content"], 0, 60)
+    results =
+      Enum.map(memories, fn mem ->
+        snippet = String.slice(mem["content"], 0, 60)
 
-      case BackplaneMemory.Memory.list(q: snippet, limit: 1) do
-        [%{id: id} = m] -> %{id: id, content: m.content}
-        _ -> nil
-      end
-    end)
+        case BackplaneMemory.Memory.list(q: snippet, limit: 1) do
+          [%{id: id} = m] -> %{id: id, content: m.content}
+          _ -> nil
+        end
+      end)
+
+    missing = Enum.count(results, &is_nil/1)
+
+    if missing > 0 do
+      Mix.shell().info(
+        "WARNING: #{missing}/#{length(memories)} corpus entries could not be resolved in DB (run mix memory.seed_bench first)"
+      )
+    end
+
+    results
   end
 
   defp format_pct(f) when is_float(f) do
