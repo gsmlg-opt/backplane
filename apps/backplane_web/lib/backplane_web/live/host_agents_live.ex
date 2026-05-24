@@ -855,8 +855,9 @@ defmodule BackplaneWeb.HostAgentsLive do
           </summary>
           <div class="mt-3 space-y-2">
             <p>
-              Set <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">agent.http_port</code>
-              in the config to expose a local memory API to other processes on the host.
+              The agent exposes a local memory API on
+              <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">agent.http_port</code>
+              to other processes on the host.
               The agent proxies these calls to Backplane through the WebSocket channel.
             </p>
             <ul class="list-disc space-y-1 pl-5">

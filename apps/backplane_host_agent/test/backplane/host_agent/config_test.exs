@@ -60,7 +60,9 @@ defmodule Backplane.HostAgent.ConfigTest do
   end
 
   @tag :tmp_dir
-  test "http_port defaults to nil and http_bind to localhost", %{tmp_dir: tmp_dir} do
+  test "http_port defaults to the local memory API port and http_bind to localhost", %{
+    tmp_dir: tmp_dir
+  } do
     config_path = Path.join(tmp_dir, "agent.yaml")
 
     File.write!(config_path, """
@@ -74,7 +76,15 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert {:ok, config} = Config.load(config_path)
     assert config.http_bind == "127.0.0.1"
-    assert config.http_port == nil
+    assert config.http_port == 4221
+  end
+
+  test "sample config includes the local memory API listen port" do
+    sample = Config.sample_yaml(machine_name: "t430")
+
+    assert sample =~ "http_bind: 127.0.0.1"
+    assert sample =~ "\n  http_port: 4221\n"
+    refute sample =~ "# http_port"
   end
 
   @tag :tmp_dir

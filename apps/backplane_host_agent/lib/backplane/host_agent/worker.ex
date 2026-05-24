@@ -116,8 +116,8 @@ defmodule Backplane.HostAgent.Worker do
 
     with {:ok, config} <- config_module.load_default(),
          :ok <- validate_required_config(config),
-         {:ok, %{channel: channel}} <- connector_module.connect(config),
-         :ok <- memory_proxy_module.set_channel(channel),
+         {:ok, %{channel: channel} = connection} <- connector_module.connect(config),
+         :ok <- set_memory_connection(memory_proxy_module, connection, config),
          {:ok, http_supervisor} <- maybe_start_http_server(http_server_module, config) do
       opts =
         opts
@@ -147,6 +147,14 @@ defmodule Backplane.HostAgent.Worker do
       last_sync: nil,
       last_error: nil
     }
+  end
+
+  defp set_memory_connection(memory_proxy_module, connection, config) do
+    if function_exported?(memory_proxy_module, :set_connection, 2) do
+      memory_proxy_module.set_connection(connection, config)
+    else
+      memory_proxy_module.set_channel(connection.channel)
+    end
   end
 
   defp validate_required_config(config) do

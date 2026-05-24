@@ -72,11 +72,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     :ok
   end
 
-  describe "POST /:agent_id/call/:method" do
+  describe "POST /memory/:agent_id/call/:method" do
     test "forwards a remember call and injects agent_id" do
       conn =
         :post
-        |> conn("/agt_42/call/remember", Jason.encode!(%{"content" => "hello"}))
+        |> conn("/memory/agt_42/call/remember", Jason.encode!(%{"content" => "hello"}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -92,7 +92,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     test "returns 404 for unknown memory methods" do
       conn =
         :post
-        |> conn("/agt_42/call/teleport", Jason.encode!(%{}))
+        |> conn("/memory/agt_42/call/teleport", Jason.encode!(%{}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -107,7 +107,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn =
         :post
-        |> conn("/agt_42/call/recall", Jason.encode!(%{"query" => "x"}))
+        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "x"}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -120,7 +120,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn =
         :post
         |> conn(
-          "/agt_42/call/recall",
+          "/memory/agt_42/call/recall",
           Jason.encode!(%{"query" => "hello", "limit" => 5, "scope" => "/tmp/proj"})
         )
         |> put_req_header("content-type", "application/json")
@@ -145,7 +145,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       conn =
         :post
         |> conn(
-          "/agt_42/call/list",
+          "/memory/agt_42/call/list",
           Jason.encode!(%{"scope" => "/tmp/proj", "limit" => 10})
         )
         |> put_req_header("content-type", "application/json")
@@ -168,7 +168,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     test "forget forwards the id and returns deletion status" do
       conn =
         :post
-        |> conn("/agt_42/call/forget", Jason.encode!(%{"id" => "m1"}))
+        |> conn("/memory/agt_42/call/forget", Jason.encode!(%{"id" => "m1"}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -185,7 +185,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     test "stats returns aggregated counts" do
       conn =
         :post
-        |> conn("/agt_42/call/stats", Jason.encode!(%{}))
+        |> conn("/memory/agt_42/call/stats", Jason.encode!(%{}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -201,7 +201,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       # FakeChannel returns ok=false for remember without content.
       conn =
         :post
-        |> conn("/agt_42/call/remember", Jason.encode!(%{}))
+        |> conn("/memory/agt_42/call/remember", Jason.encode!(%{}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -212,7 +212,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     test "accepts requests with no JSON body" do
       conn =
         :post
-        |> conn("/agt_42/call/stats", "")
+        |> conn("/memory/agt_42/call/stats", "")
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -220,15 +220,52 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert_received {:proxy_push, "memory_call", %{"method" => "stats", "arguments" => args}}
       assert args["agent_id"] == "agt_42"
     end
+
+    test "keeps the root call path as a compatibility alias" do
+      conn =
+        :post
+        |> conn("/agt_42/call/stats", Jason.encode!(%{}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}} =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "unwraps JSON-RPC params when posted to the direct call endpoint" do
+      conn =
+        :post
+        |> conn(
+          "/memory/agt_42/call/list",
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => 1,
+            "method" => "list",
+            "params" => %{"scope" => "/tmp/proj", "limit" => 5}
+          })
+        )
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert_received {:proxy_push, "memory_call", %{"method" => "list", "arguments" => args}}
+      assert args["agent_id"] == "agt_42"
+      assert args["scope"] == "/tmp/proj"
+      assert args["limit"] == 5
+      refute Map.has_key?(args, "jsonrpc")
+    end
   end
 
-  describe "POST /:agent_id/mcp" do
+  describe "POST /memory/:agent_id/mcp" do
     test "lists memory tools via tools/list" do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
 
       conn =
         :post
-        |> conn("/agt_42/mcp", body)
+        |> conn("/memory/agt_42/mcp", body)
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -254,7 +291,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn =
         :post
-        |> conn("/agt_42/mcp", body)
+        |> conn("/memory/agt_42/mcp", body)
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -272,7 +309,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       conn =
         :post
-        |> conn("/agt_42/mcp", body)
+        |> conn("/memory/agt_42/mcp", body)
         |> put_req_header("content-type", "application/json")
         |> call_router()
 

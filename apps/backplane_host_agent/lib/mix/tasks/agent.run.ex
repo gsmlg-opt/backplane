@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Agent.Run do
 
   use Mix.Task
 
-  alias Backplane.HostAgent.{Config, Connector, HttpServer, MemoryProxy, Worker}
+  alias Backplane.HostAgent.{Config, Connector, HttpServer, MemoryProxy, RunLock, Worker}
 
   @impl true
   def run(_args) do
@@ -34,7 +34,7 @@ defmodule Mix.Tasks.Agent.Run do
     case Config.load_default() do
       {:ok, config} ->
         ensure_required!(config)
-        connect_and_run(config)
+        acquire_lock_and_run(config)
 
       {:error, {:missing, path}} ->
         :ok = Config.write_sample(path)
@@ -69,6 +69,23 @@ defmodule Mix.Tasks.Agent.Run do
     end
   end
 
+  defp acquire_lock_and_run(config) do
+    case RunLock.acquire(Config.resolved_path()) do
+      {:ok, lock} ->
+        try do
+          connect_and_run(config)
+        after
+          RunLock.release(lock)
+        end
+
+      {:error, {:already_running, pid, path}} ->
+        Mix.raise("host agent is already running with OS pid #{pid} (lock: #{path})")
+
+      {:error, reason} ->
+        Mix.raise("failed to acquire host agent run lock: #{inspect(reason)}")
+    end
+  end
+
   defp connect_and_run(config) do
     Mix.shell().info("Connecting host agent #{config.machine_name} to #{config.hub_url}…")
 
@@ -76,7 +93,7 @@ defmodule Mix.Tasks.Agent.Run do
       {:ok, %{host_name: host_name, channel: channel} = link} ->
         Mix.shell().info("Connected as host \"#{host_name}\" (id=#{link.host_id}).")
 
-        MemoryProxy.set_channel(channel)
+        MemoryProxy.set_connection(link, config)
         maybe_start_http_server(config)
 
         {:ok, worker} =

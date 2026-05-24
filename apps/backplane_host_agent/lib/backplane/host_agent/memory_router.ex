@@ -31,11 +31,31 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   plug(:dispatch)
 
+  post "/memory/:agent_id/call/:method" do
+    handle_call(conn, agent_id, method)
+  end
+
   post "/:agent_id/call/:method" do
+    handle_call(conn, agent_id, method)
+  end
+
+  post "/memory/:agent_id/mcp" do
+    handle_mcp(conn, agent_id)
+  end
+
+  post "/:agent_id/mcp" do
+    handle_mcp(conn, agent_id)
+  end
+
+  match _ do
+    send_json(conn, 404, %{"ok" => false, "error" => "not found"})
+  end
+
+  defp handle_call(conn, agent_id, method) do
     args =
       case conn.body_params do
         %Plug.Conn.Unfetched{} -> %{}
-        map when is_map(map) -> map
+        map when is_map(map) -> direct_call_args(map, method)
         _ -> %{}
       end
 
@@ -54,13 +74,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  post "/:agent_id/mcp" do
+  defp handle_mcp(conn, agent_id) do
     body = conn.body_params || %{}
     handle_jsonrpc(conn, agent_id, body)
-  end
-
-  match _ do
-    send_json(conn, 404, %{"ok" => false, "error" => "not found"})
   end
 
   defp handle_jsonrpc(conn, agent_id, %{"jsonrpc" => "2.0", "id" => id, "method" => method} = req) do
@@ -140,6 +156,20 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp strip_prefix("memory::" <> rest), do: rest
   defp strip_prefix(name), do: name
+
+  defp direct_call_args(
+         %{"jsonrpc" => "2.0", "method" => body_method, "params" => params} = body,
+         path_method
+       )
+       when is_binary(body_method) and is_map(params) do
+    if strip_prefix(body_method) == path_method do
+      params
+    else
+      body
+    end
+  end
+
+  defp direct_call_args(args, _method), do: args
 
   defp tool_descriptors do
     Enum.map(MemoryProxy.methods(), fn method ->

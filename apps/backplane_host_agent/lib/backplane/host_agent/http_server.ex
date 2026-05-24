@@ -11,12 +11,12 @@ defmodule Backplane.HostAgent.HttpServer do
   @doc """
   Build a Bandit child spec for the supplied config.
 
-  Returns `nil` if `http_port` is not set, so callers can use the result
+  Returns `nil` if `http_port` is set to `0` or not available, so callers can use the result
   directly in `Enum.reject(&is_nil/1)` style child lists.
   """
   @spec child_spec(map() | struct()) :: Supervisor.child_spec() | nil
-  def child_spec(%{http_port: nil}), do: nil
   def child_spec(%{http_port: 0}), do: nil
+  def child_spec(%{http_port: nil}), do: nil
 
   def child_spec(%{http_port: port, http_bind: bind}) when is_integer(port) do
     {:ok, ip} = parse_bind(bind)

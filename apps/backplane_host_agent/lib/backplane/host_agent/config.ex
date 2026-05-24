@@ -7,6 +7,8 @@ defmodule Backplane.HostAgent.Config do
   an explicit path to `load/1`.
   """
 
+  @default_http_port 4221
+
   defstruct [
     :machine_name,
     :hub_url,
@@ -17,7 +19,7 @@ defmodule Backplane.HostAgent.Config do
     interval_ms: 60_000,
     targets: [],
     http_bind: "127.0.0.1",
-    http_port: nil
+    http_port: @default_http_port
   ]
 
   @socket_path "/host-agent/socket/websocket"
@@ -47,9 +49,9 @@ defmodule Backplane.HostAgent.Config do
 
       # Local Memory HTTP API. Bind 127.0.0.1 and set http_port to expose
       # /memory/:agent_id/mcp and /memory/:agent_id/call/:method to processes
-      # on this host. Leave http_port unset to disable.
+      # on this host. Set http_port to 0 to disable.
       http_bind: 127.0.0.1
-      # http_port: 4221
+      http_port: #{@default_http_port}
 
     targets:
       - name: agents
@@ -137,7 +139,7 @@ defmodule Backplane.HostAgent.Config do
     }
   end
 
-  defp parse_port(nil), do: nil
+  defp parse_port(nil), do: @default_http_port
   defp parse_port(port) when is_integer(port) and port >= 0, do: port
   defp parse_port(_), do: nil
 
