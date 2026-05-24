@@ -1,0 +1,26 @@
+name: backplane-memory
+version: 0.1.0
+description: "Persistent cross-session memory for OpenClaw via the Backplane host agent."
+author: "Backplane"
+homepage: "https://github.com/gsmlg-opt/backplane"
+license: Apache-2.0
+
+category: memory
+tags:
+  - memory
+  - backplane
+  - mcp
+  - context
+
+hooks:
+  - before_agent_start
+  - agent_end
+
+config:
+  enabled: true
+  base_url: http://127.0.0.1:4221
+  agent_id: openclaw
+  token_budget: 2000
+  min_confidence: 0.5
+  fallback_on_error: true
+  timeout_ms: 5000

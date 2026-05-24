@@ -74,3 +74,4 @@ Mnesia.nonode@nohost/
 
 # Git worktrees
 /.trees/
+__pycache__/

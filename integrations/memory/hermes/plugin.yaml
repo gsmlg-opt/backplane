@@ -1,0 +1,20 @@
+name: backplane-memory
+version: 0.1.0
+description: "Persistent cross-session memory for Hermes Agent via the Backplane host agent."
+author: "Backplane"
+homepage: "https://github.com/gsmlg-opt/backplane"
+license: Apache-2.0
+
+category: memory
+tags:
+  - memory
+  - backplane
+  - mcp
+
+hooks:
+  - prefetch
+  - sync_turn
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - system_prompt_block
