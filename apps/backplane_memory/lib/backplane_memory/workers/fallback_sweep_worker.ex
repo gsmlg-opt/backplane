@@ -23,10 +23,12 @@ defmodule BackplaneMemory.Workers.FallbackSweepWorker do
         )
       )
 
-    Enum.each(orphaned, fn session ->
-      SummaryWorker.enqueue(session.session_id)
-    end)
+    results = Enum.map(orphaned, fn session -> SummaryWorker.enqueue(session.session_id) end)
+    errors = Enum.filter(results, &match?({:error, _}, &1))
 
-    {:ok, %{swept: length(orphaned)}}
+    case errors do
+      [] -> {:ok, %{swept: length(orphaned)}}
+      [{:error, reason} | _] -> {:error, reason}
+    end
   end
 end

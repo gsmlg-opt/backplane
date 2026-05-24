@@ -32,20 +32,25 @@ defmodule BackplaneMemory.Workers.SummaryWorker do
         else
           content = build_summary(session, observations)
 
-          %Summary{}
-          |> Summary.changeset(%{
-            session_id: session_id,
-            project: session.project || "",
-            content: content,
-            observation_count: length(observations)
-          })
-          |> repo().insert!(on_conflict: :nothing, conflict_target: [])
+          result =
+            %Summary{}
+            |> Summary.changeset(%{
+              session_id: session_id,
+              project: session.project || "",
+              content: content,
+              observation_count: length(observations)
+            })
+            |> repo().insert(on_conflict: :nothing)
 
-          mark_consolidated(session_id)
+          case result do
+            {:ok, _} ->
+              mark_consolidated(session_id)
+              EpisodicWorker.enqueue(session_id)
+              :ok
 
-          EpisodicWorker.enqueue(session_id)
-
-          :ok
+            {:error, changeset} ->
+              {:error, changeset}
+          end
         end
     end
   end

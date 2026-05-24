@@ -30,12 +30,14 @@ defmodule BackplaneMemory.Workers.ProceduralWorker do
     scopes =
       repo().all(
         from(m in MemorySchema,
-          where: m.memory_type == "semantic" and is_nil(m.deleted_at),
+          where: m.memory_type == "semantic" and is_nil(m.deleted_at) and not is_nil(m.scope),
           group_by: m.scope,
           having: count(m.id) >= @min_semantic_count,
           select: m.scope
         )
       )
+
+    require Logger
 
     Enum.each(scopes, fn scope ->
       memories =
@@ -51,13 +53,24 @@ defmodule BackplaneMemory.Workers.ProceduralWorker do
       case llm_module.extract_procedures(Enum.join(memories, "\n")) do
         {:ok, procedures} when is_list(procedures) ->
           Enum.each(procedures, fn procedure ->
-            Memory.remember(procedure,
-              type: "procedural",
-              scope: scope,
-              agent_id: "consolidation",
-              host_id: "system"
-            )
+            case Memory.remember(procedure,
+                   type: "procedural",
+                   scope: scope,
+                   agent_id: "consolidation",
+                   host_id: "system"
+                 ) do
+              {:ok, _} ->
+                :ok
+
+              {:error, reason} ->
+                Logger.warning("[memory] procedural worker: failed to insert: #{inspect(reason)}")
+            end
           end)
+
+        {:error, reason} ->
+          Logger.warning(
+            "[memory] procedural worker: LLM extract failed for scope=#{scope}: #{inspect(reason)}"
+          )
 
         _ ->
           :ok

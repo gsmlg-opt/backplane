@@ -68,31 +68,7 @@ defmodule BackplaneMemory.LLM do
     #{summary}
     """
 
-    url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
-
-    case Req.post("#{url}/api/llm/v1/chat/completions",
-           json: %{
-             model: model,
-             messages: [%{role: "user", content: prompt}]
-           }
-         ) do
-      {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}} ->
-        facts =
-          text
-          |> String.split("\n")
-          |> Enum.map(&String.trim/1)
-          |> Enum.reject(&(&1 == ""))
-          |> Enum.map(&Regex.replace(~r/^[-*\d.]+\s*/, &1, ""))
-          |> Enum.reject(&(&1 == ""))
-
-        {:ok, facts}
-
-      {:ok, %{status: status}} ->
-        {:error, "LLM proxy returned status #{status}"}
-
-      {:error, reason} ->
-        {:error, inspect(reason)}
-    end
+    do_llm_call(prompt, model)
   end
 
   @doc "Extract reusable workflows/procedures from semantic memories. Returns {:ok, [string]} or {:skip, :no_llm}."
@@ -113,16 +89,17 @@ defmodule BackplaneMemory.LLM do
     #{content}
     """
 
+    do_llm_call(prompt, model)
+  end
+
+  defp do_llm_call(prompt, model) do
     url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
 
     case Req.post("#{url}/api/llm/v1/chat/completions",
-           json: %{
-             model: model,
-             messages: [%{role: "user", content: prompt}]
-           }
+           json: %{model: model, messages: [%{role: "user", content: prompt}]}
          ) do
       {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}} ->
-        procedures =
+        items =
           text
           |> String.split("\n")
           |> Enum.map(&String.trim/1)
@@ -130,7 +107,10 @@ defmodule BackplaneMemory.LLM do
           |> Enum.map(&Regex.replace(~r/^[-*\d.]+\s*/, &1, ""))
           |> Enum.reject(&(&1 == ""))
 
-        {:ok, procedures}
+        {:ok, items}
+
+      {:ok, %{status: 200, body: body}} ->
+        {:error, "unexpected LLM response shape: #{inspect(body)}"}
 
       {:ok, %{status: status}} ->
         {:error, "LLM proxy returned status #{status}"}

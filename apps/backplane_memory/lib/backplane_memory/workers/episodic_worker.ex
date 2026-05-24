@@ -34,16 +34,32 @@ defmodule BackplaneMemory.Workers.EpisodicWorker do
       %Summary{content: content, project: project} ->
         case llm_module.extract_facts(content) do
           {:ok, facts} when is_list(facts) ->
-            Enum.each(facts, fn fact ->
-              Memory.remember(fact,
-                type: "semantic",
-                scope: project,
-                agent_id: "consolidation",
-                host_id: "system"
-              )
-            end)
+            require Logger
 
-            :ok
+            errors =
+              Enum.flat_map(facts, fn fact ->
+                case Memory.remember(fact,
+                       type: "semantic",
+                       scope: project,
+                       agent_id: "consolidation",
+                       host_id: "system"
+                     ) do
+                  {:ok, _} -> []
+                  {:error, reason} -> [reason]
+                end
+              end)
+
+            case errors do
+              [] ->
+                :ok
+
+              [first | rest] ->
+                Logger.warning(
+                  "[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert"
+                )
+
+                {:error, first}
+            end
 
           {:skip, _} ->
             :ok

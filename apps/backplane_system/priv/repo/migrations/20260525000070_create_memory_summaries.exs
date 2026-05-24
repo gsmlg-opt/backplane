@@ -11,7 +11,7 @@ defmodule Backplane.Repo.Migrations.CreateMemorySummaries do
       add(:created_at, :utc_datetime_usec, null: false)
     end
 
-    create(index(:memory_summaries, [:session_id]))
+    create(unique_index(:memory_summaries, [:session_id]))
     create(index(:memory_summaries, [:project]))
   end
 end
