@@ -17,9 +17,23 @@ defmodule BackplaneMemory.Graph do
 
     existing = repo().all(from(n in Node, where: n.type == ^type, select: {n.id, n.name}))
 
+    new_obs_ids = List.wrap(attrs[:source_observation_ids] || attrs["source_observation_ids"])
+
     case find_fuzzy_match(existing, name) do
       {existing_id, _} ->
-        {:ok, repo().get!(Node, existing_id)}
+        node = repo().get!(Node, existing_id)
+
+        merged_ids =
+          (node.source_observation_ids ++ new_obs_ids)
+          |> Enum.uniq()
+
+        node
+        |> Ecto.Changeset.change(source_observation_ids: merged_ids)
+        |> repo().update()
+        |> case do
+          {:ok, updated} -> {:ok, updated}
+          {:error, _} -> {:ok, node}
+        end
 
       nil ->
         %Node{}
