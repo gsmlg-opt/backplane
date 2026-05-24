@@ -3,7 +3,7 @@ defmodule BackplaneMemory.Service do
 
   @behaviour Backplane.Services.ManagedService
 
-  alias BackplaneMemory.Memories.Search
+  alias BackplaneMemory.Memories.{Profiles, Search}
   alias BackplaneMemory.Memory
 
   @impl true
@@ -88,6 +88,30 @@ defmodule BackplaneMemory.Service do
         description: "Return counts grouped by memory_type.",
         input_schema: %{"type" => "object", "properties" => %{}},
         handler: &handle_stats/1
+      },
+      %{
+        name: "memory::profile",
+        description: "Get the project intelligence profile (top concepts, files, patterns).",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "project" => %{"type" => "string", "description" => "Project path / scope key"}
+          },
+          "required" => ["project"]
+        },
+        handler: &handle_profile/1
+      },
+      %{
+        name: "memory::profile_refresh",
+        description: "Trigger an async rebuild of the project profile.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "project" => %{"type" => "string"}
+          },
+          "required" => ["project"]
+        },
+        handler: &handle_profile_refresh/1
       }
     ]
   end
@@ -174,6 +198,33 @@ defmodule BackplaneMemory.Service do
   def handle_forget(_), do: {:error, "id is required and must be a string"}
 
   def handle_stats(_args), do: {:ok, %{stats: Memory.stats()}}
+
+  def handle_profile(%{"project" => project}) when is_binary(project) do
+    case Profiles.get_or_build(project) do
+      {:ok, p} ->
+        {:ok,
+         %{
+           project: p.project,
+           top_concepts: p.top_concepts,
+           top_files: p.top_files,
+           patterns: p.patterns,
+           session_count: p.session_count,
+           total_observations: p.total_observations
+         }}
+
+      {:building, nil} ->
+        {:ok, %{status: "building"}}
+    end
+  end
+
+  def handle_profile(_), do: {:error, "project is required"}
+
+  def handle_profile_refresh(%{"project" => project}) when is_binary(project) do
+    BackplaneMemory.Workers.ProfileBuildWorker.enqueue(project)
+    {:ok, %{status: "queued", project: project}}
+  end
+
+  def handle_profile_refresh(_), do: {:error, "project is required"}
 
   defp add_if(opts, args, key, opt_key) do
     case args[key] do
