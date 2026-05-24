@@ -19,6 +19,7 @@ defmodule BackplaneMemory.Memories.Memory do
     field(:session_id, :string)
     field(:tags, {:array, :string}, default: [])
     field(:metadata, :map, default: %{})
+    field(:namespace, :string, default: "private")
     field(:embedding, Pgvector.Ecto.HalfVector)
     field(:embedding_model, :string, default: "Qwen/Qwen3-Embedding-4B")
     field(:content_hash, :binary)
@@ -37,6 +38,7 @@ defmodule BackplaneMemory.Memories.Memory do
     |> cast(attrs, [
       :content,
       :memory_type,
+      :namespace,
       :scope,
       :agent_id,
       :host_id,

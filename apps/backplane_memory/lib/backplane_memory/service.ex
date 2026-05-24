@@ -3,6 +3,7 @@ defmodule BackplaneMemory.Service do
 
   @behaviour Backplane.Services.ManagedService
 
+  alias BackplaneMemory.Coordination.{Action, Lease, Signal}
   alias BackplaneMemory.Memories.{Profiles, Search}
   alias BackplaneMemory.Memory
 
@@ -183,6 +184,142 @@ defmodule BackplaneMemory.Service do
           "required" => ["files"]
         },
         handler: &handle_file_history/1
+      },
+      %{
+        name: "memory::team_share",
+        description: "Share a memory with a team by setting namespace to team:<team_id>.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "memory_id" => %{"type" => "string"},
+            "team_id" => %{"type" => "string"}
+          },
+          "required" => ["memory_id", "team_id"]
+        },
+        handler: &handle_team_share/1
+      },
+      %{
+        name: "memory::team_feed",
+        description: "Return recent memories shared with a team, newest first.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "team_id" => %{"type" => "string"},
+            "limit" => %{"type" => "integer", "default" => 20}
+          },
+          "required" => ["team_id"]
+        },
+        handler: &handle_team_feed/1
+      },
+      %{
+        name: "memory::lease",
+        description: "Acquire an exclusive lease on an action_id for distributed coordination.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "action_id" => %{"type" => "string"},
+            "agent_id" => %{"type" => "string"},
+            "ttl_seconds" => %{"type" => "integer", "default" => 300}
+          },
+          "required" => ["action_id", "agent_id"]
+        },
+        handler: &handle_lease/1
+      },
+      %{
+        name: "memory::signal_send",
+        description: "Send a signal from one agent to another.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "sender_agent_id" => %{"type" => "string"},
+            "recipient_agent_id" => %{"type" => "string"},
+            "topic" => %{"type" => "string"},
+            "payload" => %{"type" => "object"}
+          },
+          "required" => ["sender_agent_id", "recipient_agent_id", "topic"]
+        },
+        handler: &handle_signal_send/1
+      },
+      %{
+        name: "memory::signal_read",
+        description: "Read and mark-read unread signals for an agent.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "agent_id" => %{"type" => "string"},
+            "topic" => %{"type" => "string"},
+            "limit" => %{"type" => "integer", "default" => 20}
+          },
+          "required" => ["agent_id"]
+        },
+        handler: &handle_signal_read/1
+      },
+      %{
+        name: "memory::action_create",
+        description: "Create an action item with optional dependency edges.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "title" => %{"type" => "string"},
+            "description" => %{"type" => "string"},
+            "priority" => %{"type" => "integer", "default" => 0},
+            "project" => %{"type" => "string"},
+            "tags" => %{"type" => "array", "items" => %{"type" => "string"}},
+            "created_by" => %{"type" => "string"},
+            "edges" => %{
+              "type" => "array",
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "source_id" => %{"type" => "string"},
+                  "target_id" => %{"type" => "string"},
+                  "edge_type" => %{"type" => "string"}
+                },
+                "required" => ["source_id", "target_id", "edge_type"]
+              }
+            }
+          },
+          "required" => ["title"]
+        },
+        handler: &handle_action_create/1
+      },
+      %{
+        name: "memory::action_update",
+        description: "Update the status of an action.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "action_id" => %{"type" => "string"},
+            "status" => %{
+              "type" => "string",
+              "enum" => ["pending", "in_progress", "done", "blocked", "cancelled"]
+            }
+          },
+          "required" => ["action_id", "status"]
+        },
+        handler: &handle_action_update/1
+      },
+      %{
+        name: "memory::frontier",
+        description: "Return actions with no pending prerequisites, sorted by priority.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "project" => %{"type" => "string"}
+          }
+        },
+        handler: &handle_frontier/1
+      },
+      %{
+        name: "memory::next",
+        description: "Return the single highest-priority unblocked action.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "project" => %{"type" => "string"}
+          }
+        },
+        handler: &handle_next/1
       }
     ]
   end
@@ -412,6 +549,186 @@ defmodule BackplaneMemory.Service do
   end
 
   def handle_facet_query(_), do: {:error, "facets array is required"}
+
+  def handle_team_share(%{"memory_id" => memory_id, "team_id" => team_id})
+      when is_binary(memory_id) and is_binary(team_id) do
+    case Memory.team_share(memory_id, team_id) do
+      :ok -> {:ok, %{memory_id: memory_id, namespace: "team:#{team_id}"}}
+      {:error, :not_found} -> {:error, "memory not found"}
+    end
+  end
+
+  def handle_team_share(_), do: {:error, "memory_id and team_id are required"}
+
+  def handle_team_feed(%{"team_id" => team_id} = args) when is_binary(team_id) do
+    limit = args["limit"] || 20
+    rows = Memory.team_feed(team_id, limit)
+
+    {:ok,
+     %{
+       team_id: team_id,
+       results:
+         Enum.map(rows, fn r ->
+           %{
+             id: r.id,
+             content: r.content,
+             namespace: r.namespace,
+             memory_type: r.memory_type,
+             tags: r.tags,
+             inserted_at: r.inserted_at
+           }
+         end)
+     }}
+  end
+
+  def handle_team_feed(_), do: {:error, "team_id is required"}
+
+  def handle_lease(%{"action_id" => action_id, "agent_id" => agent_id} = args)
+      when is_binary(action_id) and is_binary(agent_id) do
+    ttl = args["ttl_seconds"] || 300
+
+    case Lease.acquire(action_id, agent_id, ttl) do
+      {:ok, lease_id} ->
+        {:ok, %{lease_id: lease_id, action_id: action_id}}
+
+      {:error, %{held_by: held_by, expires_at: expires_at}} ->
+        {:error, "lease held by #{held_by} until #{DateTime.to_iso8601(expires_at)}"}
+
+      {:error, :not_found} ->
+        {:error, "failed to acquire lease"}
+    end
+  end
+
+  def handle_lease(_), do: {:error, "action_id and agent_id are required"}
+
+  def handle_signal_send(
+        %{
+          "sender_agent_id" => sender,
+          "recipient_agent_id" => recipient,
+          "topic" => topic
+        } = args
+      )
+      when is_binary(sender) and is_binary(recipient) and is_binary(topic) do
+    payload = args["payload"] || %{}
+
+    case Signal.send_signal(sender, recipient, topic, payload) do
+      {:ok, sig} -> {:ok, %{id: sig.id, sent_at: sig.sent_at}}
+      {:error, changeset} -> {:error, format_changeset(changeset)}
+    end
+  end
+
+  def handle_signal_send(_),
+    do: {:error, "sender_agent_id, recipient_agent_id, and topic are required"}
+
+  def handle_signal_read(%{"agent_id" => agent_id} = args) when is_binary(agent_id) do
+    topic = args["topic"]
+    limit = args["limit"] || 20
+
+    case Signal.read_signals(agent_id, topic, limit) do
+      {:ok, signals} ->
+        {:ok,
+         %{
+           results:
+             Enum.map(signals, fn s ->
+               %{
+                 id: s.id,
+                 sender_agent_id: s.sender_agent_id,
+                 topic: s.topic,
+                 payload: s.payload,
+                 sent_at: s.sent_at
+               }
+             end)
+         }}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
+  def handle_signal_read(_), do: {:error, "agent_id is required"}
+
+  def handle_action_create(%{"title" => title} = args) when is_binary(title) do
+    edges = args["edges"] || []
+
+    attrs =
+      %{"title" => title}
+      |> maybe_put(args, "description")
+      |> maybe_put(args, "priority")
+      |> maybe_put(args, "project")
+      |> maybe_put(args, "tags")
+      |> maybe_put(args, "created_by")
+
+    case Action.create(attrs, edges) do
+      {:ok, action} ->
+        {:ok,
+         %{
+           id: action.id,
+           title: action.title,
+           status: action.status,
+           priority: action.priority
+         }}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        {:error, format_changeset(cs)}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
+  def handle_action_create(_), do: {:error, "title is required"}
+
+  def handle_action_update(%{"action_id" => action_id, "status" => status})
+      when is_binary(action_id) and is_binary(status) do
+    case Action.update_status(action_id, status) do
+      :ok -> {:ok, %{action_id: action_id, status: status}}
+      {:error, :not_found} -> {:error, "action not found"}
+      {:error, {:invalid_status, s}} -> {:error, "invalid status: #{s}"}
+    end
+  end
+
+  def handle_action_update(_), do: {:error, "action_id and status are required"}
+
+  def handle_frontier(args) when is_map(args) do
+    project = args["project"]
+    actions = Action.frontier(project)
+
+    {:ok,
+     %{
+       results:
+         Enum.map(actions, fn a ->
+           %{id: a.id, title: a.title, status: a.status, priority: a.priority, project: a.project}
+         end)
+     }}
+  end
+
+  def handle_next(args) when is_map(args) do
+    project = args["project"]
+
+    case Action.next(project) do
+      nil ->
+        {:ok, %{action: nil}}
+
+      a ->
+        {:ok,
+         %{
+           action: %{
+             id: a.id,
+             title: a.title,
+             status: a.status,
+             priority: a.priority,
+             project: a.project
+           }
+         }}
+    end
+  end
+
+  defp maybe_put(map, args, key) do
+    case args[key] do
+      nil -> map
+      val -> Map.put(map, key, val)
+    end
+  end
 
   defp add_if(opts, args, key, opt_key) do
     case args[key] do

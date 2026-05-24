@@ -33,6 +33,7 @@ defmodule BackplaneMemory.Memory do
     :superseded_by,
     :expires_at,
     :deleted_at,
+    :namespace,
     :inserted_at,
     :updated_at
   ]
@@ -196,11 +197,43 @@ defmodule BackplaneMemory.Memory do
     |> Enum.reduce(query, &apply_list_filter/2)
   end
 
+  @doc "Set the namespace of a memory to team:<team_id>."
+  @spec team_share(String.t(), String.t()) :: :ok | {:error, :not_found}
+  def team_share(memory_id, team_id) when is_binary(team_id) do
+    case repo().update_all(
+           from(m in MemorySchema,
+             where: m.id == ^memory_id and is_nil(m.deleted_at)
+           ),
+           set: [namespace: "team:#{team_id}"]
+         ) do
+      {1, _} -> :ok
+      {0, _} -> {:error, :not_found}
+    end
+  end
+
+  @doc "Return recent shared memories in a team namespace, newest first."
+  @spec team_feed(String.t(), pos_integer()) :: [MemorySchema.t()]
+  def team_feed(team_id, limit \\ 20) when is_binary(team_id) do
+    namespace = "team:#{team_id}"
+
+    repo().all(
+      from(m in MemorySchema,
+        where: m.namespace == ^namespace and is_nil(m.deleted_at),
+        order_by: [desc: m.inserted_at],
+        limit: ^limit,
+        select: struct(m, ^@non_vector_fields)
+      )
+    )
+  end
+
   defp apply_list_filter({:type, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.memory_type == ^v)
 
   defp apply_list_filter({:scope, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.scope == ^v)
+
+  defp apply_list_filter({:namespace, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.namespace == ^v)
 
   defp apply_list_filter({:agent_id, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.agent_id == ^v)
