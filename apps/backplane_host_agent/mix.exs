@@ -33,7 +33,8 @@ defmodule Backplane.HostAgent.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
       {:plug, "~> 1.16"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      {:telemetry, "~> 1.2"}
     ]
   end
 end

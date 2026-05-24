@@ -9,7 +9,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
   channel process dies.
   """
 
-  alias Backplane.HostAgent.{Channel, Connector}
+  alias Backplane.HostAgent.{Channel, Connector, Telemetry}
 
   @methods ~w(remember recall list forget stats)
   @method_set MapSet.new(@methods)
@@ -73,6 +73,12 @@ defmodule Backplane.HostAgent.MemoryProxy do
   def call(method, args, opts \\ []) when is_binary(method) and is_map(args) do
     agent_id = Keyword.fetch!(opts, :agent_id)
 
+    Telemetry.span_memory_call(method, agent_id, args, fn ->
+      do_call(method, args, opts, agent_id)
+    end)
+  end
+
+  defp do_call(method, args, opts, agent_id) do
     cond do
       not valid_method?(method) ->
         {:error, {:unknown_method, method}}
@@ -99,12 +105,12 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp push_with_reconnect(push_module, connector_module, payload) do
-    with {:ok, channel} <- ensure_channel(connector_module) do
+    with {:ok, channel} <- ensure_channel(connector_module, push_module) do
       case push_channel(push_module, channel, payload) do
         {:error, :not_connected} ->
           mark_channel_dead()
 
-          with {:ok, reconnected_channel} <- reconnect(connector_module) do
+          with {:ok, reconnected_channel} <- reconnect(connector_module, push_module) do
             push_channel(push_module, reconnected_channel, payload)
           end
 
@@ -114,14 +120,14 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
-  defp ensure_channel(connector_module) do
+  defp ensure_channel(connector_module, channel_module) do
     case state() do
       %{channel: channel} when is_pid(channel) ->
         if Process.alive?(channel) do
           {:ok, channel}
         else
           mark_channel_dead()
-          reconnect(connector_module)
+          reconnect(connector_module, channel_module)
         end
 
       channel when is_pid(channel) ->
@@ -133,7 +139,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
         end
 
       %{config: _config} ->
-        reconnect(connector_module)
+        reconnect(connector_module, channel_module)
 
       _ ->
         {:error, :not_connected}
@@ -158,7 +164,40 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
-  defp reconnect(connector_module) do
+  defp reconnect(connector_module, channel_module) do
+    case rejoin_existing_socket(channel_module) do
+      {:ok, channel} -> {:ok, channel}
+      {:error, _reason} -> connect_new_socket(connector_module)
+    end
+  end
+
+  defp rejoin_existing_socket(channel_module) do
+    case state() do
+      %{socket: socket, host_id: host_id} when is_pid(socket) and is_binary(host_id) ->
+        if Process.alive?(socket) and function_exported?(channel_module, :join, 2) do
+          case channel_module.join(socket, host_id) do
+            {:ok, _reply, channel} when is_pid(channel) ->
+              store_rejoined_channel(channel)
+
+            {:ok, channel} when is_pid(channel) ->
+              store_rejoined_channel(channel)
+
+            {:error, reason} ->
+              {:error, reason}
+
+            other ->
+              {:error, {:unexpected_join_reply, other}}
+          end
+        else
+          {:error, :not_connected}
+        end
+
+      _ ->
+        {:error, :not_connected}
+    end
+  end
+
+  defp connect_new_socket(connector_module) do
     case state() do
       %{config: config} when not is_nil(config) ->
         case connector_module.connect(config) do
@@ -172,6 +211,18 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
       _ ->
         {:error, :not_connected}
+    end
+  end
+
+  defp store_rejoined_channel(channel) do
+    case state() do
+      %{} = current ->
+        :persistent_term.put(__MODULE__, Map.put(current, :channel, channel))
+        {:ok, channel}
+
+      _ ->
+        set_channel(channel)
+        {:ok, channel}
     end
   end
 

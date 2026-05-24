@@ -5,6 +5,8 @@ defmodule Backplane.HostAgent.Application do
 
   @impl true
   def start(_type, _args) do
+    maybe_attach_telemetry_logger()
+
     Supervisor.start_link(child_specs(),
       strategy: :one_for_one,
       name: Backplane.HostAgent.Supervisor
@@ -16,6 +18,14 @@ defmodule Backplane.HostAgent.Application do
       [Backplane.HostAgent.Worker]
     else
       []
+    end
+  end
+
+  defp maybe_attach_telemetry_logger do
+    if Application.get_env(:backplane_host_agent, :telemetry_logger, false) do
+      Backplane.HostAgent.TelemetryLogger.attach()
+    else
+      :ok
     end
   end
 end

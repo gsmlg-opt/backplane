@@ -7,14 +7,23 @@ defmodule Backplane.HostAgent.Channel do
   def start_socket(config) do
     headers = [{"X-Backplane-Host-Token", Map.fetch!(config, :token)}]
 
-    Phoenix.SocketClient.start_link(
-      url: Map.fetch!(config, :socket_url),
-      headers: headers,
-      reconnect?: true,
-      reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
-      transport_opts: [headers: headers]
-    )
+    socket_client_module =
+      Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
+
+    with {:ok, socket} <-
+           socket_client_module.start_link(
+             url: Map.fetch!(config, :socket_url),
+             headers: headers,
+             reconnect?: true,
+             reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
+             # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
+             auto_connect: false,
+             # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
+             transport_opts: [headers: headers]
+           ),
+         :ok <- socket_client_module.connect(socket) do
+      {:ok, socket}
+    end
   end
 
   @doc "Joins the host-agent channel for the authenticated host."
