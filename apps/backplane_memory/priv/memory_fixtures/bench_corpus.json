@@ -1,0 +1,396 @@
+{
+  "memories": [
+    {
+      "content": "JWT tokens are validated using the jose library in src/middleware/auth.ts",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "jwt"]
+    },
+    {
+      "content": "Session tokens expire after 24 hours by default, configurable via SESSION_TTL env var",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "session"]
+    },
+    {
+      "content": "The authenticate() function checks bearer token format before DB lookup",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "jwt"]
+    },
+    {
+      "content": "Password hashing uses bcrypt with cost factor 12",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "security"]
+    },
+    {
+      "content": "OAuth2 callback URL must be registered in the provider dashboard",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "oauth"]
+    },
+    {
+      "content": "Refresh tokens are stored in Redis with a 7-day TTL",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "redis"]
+    },
+    {
+      "content": "The /api/auth/login endpoint rate limits to 5 attempts per minute per IP",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "rate-limiting"]
+    },
+    {
+      "content": "User roles are stored as a JSON array in the users table role column",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "roles"]
+    },
+    {
+      "content": "CORS is configured to allow credentials from the frontend domain only",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "cors"]
+    },
+    {
+      "content": "The JWT secret is rotated monthly using a secrets management service",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "jwt", "security"]
+    },
+    {
+      "content": "Auth middleware runs before all /api routes except /api/health and /api/auth",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "middleware"]
+    },
+    {
+      "content": "SSO integration uses SAML 2.0 with the identity provider metadata",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "sso", "saml"]
+    },
+    {
+      "content": "API keys for service accounts never expire but can be revoked via admin panel",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "api-keys"]
+    },
+    {
+      "content": "The auth service logs all failed login attempts with IP and user agent",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "logging"]
+    },
+    {
+      "content": "Two-factor authentication uses TOTP via the speakeasy library",
+      "type": "semantic",
+      "scope": "auth",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["auth", "2fa", "totp"]
+    },
+    {
+      "content": "PostgreSQL connection pool size is 20 connections per instance",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "postgres", "connections"]
+    },
+    {
+      "content": "Database migrations use Ecto and run automatically on deploy",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "ecto", "migrations"]
+    },
+    {
+      "content": "The users table has a GIN index on the tags jsonb column",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "indexes", "jsonb"]
+    },
+    {
+      "content": "Soft deletes are implemented via a deleted_at timestamp column",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "soft-delete"]
+    },
+    {
+      "content": "Database queries timeout after 30 seconds by default",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "timeouts"]
+    },
+    {
+      "content": "Read replicas are used for analytics queries to reduce load on the primary",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "replicas", "analytics"]
+    },
+    {
+      "content": "The schema uses UUIDs as primary keys for all tables",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "schema", "uuid"]
+    },
+    {
+      "content": "Database backups run nightly at 2 AM UTC and are retained for 30 days",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "backups"]
+    },
+    {
+      "content": "Connection strings are stored as encrypted secrets in the credentials vault",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "credentials", "security"]
+    },
+    {
+      "content": "The audit_log table is append-only with no soft delete support",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "audit", "append-only"]
+    },
+    {
+      "content": "Indexes on created_at columns use BRIN rather than B-tree for large tables",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "indexes", "brin"]
+    },
+    {
+      "content": "The search functionality uses tsvector columns with GIN indexes",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "search", "tsvector"]
+    },
+    {
+      "content": "Foreign key constraints are enforced with ON DELETE RESTRICT",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "constraints", "foreign-keys"]
+    },
+    {
+      "content": "Database seeding is done via mix ecto.seed which runs priv/repo/seeds.exs",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "seeding", "ecto"]
+    },
+    {
+      "content": "Ecto changesets validate all input before touching the database",
+      "type": "semantic",
+      "scope": "database",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["database", "ecto", "validation"]
+    },
+    {
+      "content": "Rate limiting uses a sliding window algorithm with Redis as the backend",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "redis", "sliding-window"]
+    },
+    {
+      "content": "The default rate limit is 100 requests per minute per authenticated user",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "limits"]
+    },
+    {
+      "content": "Rate limit headers X-RateLimit-Limit, X-RateLimit-Remaining are included in all responses",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "headers"]
+    },
+    {
+      "content": "IP-based rate limiting applies to unauthenticated endpoints at 20 req/min",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "ip-based"]
+    },
+    {
+      "content": "Rate limit buckets are partitioned by user_id and endpoint path",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "buckets"]
+    },
+    {
+      "content": "Burst allowance of 20 extra requests is available for premium users",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "burst", "premium"]
+    },
+    {
+      "content": "Rate limit exceeded returns HTTP 429 with Retry-After header",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "http-429"]
+    },
+    {
+      "content": "The rate limiter uses Lua scripts in Redis for atomic increment and check",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "redis", "lua"]
+    },
+    {
+      "content": "Webhooks have separate rate limits: 10 deliveries per second per destination",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "webhooks"]
+    },
+    {
+      "content": "Rate limit state is replicated across Redis cluster nodes with 100ms sync",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "redis", "cluster"]
+    },
+    {
+      "content": "Admin API endpoints have a separate 1000 req/min limit for automation",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "admin", "api"]
+    },
+    {
+      "content": "The rate limiter middleware is applied via Plug.Builder in the router",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "plug", "middleware"]
+    },
+    {
+      "content": "Distributed rate limiting across multiple app instances uses Redis pub/sub",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "distributed", "redis"]
+    },
+    {
+      "content": "Rate limit violations are logged with user_id, endpoint, and timestamp",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "logging"]
+    },
+    {
+      "content": "Service-to-service calls use API keys that bypass user rate limits",
+      "type": "semantic",
+      "scope": "rate-limiting",
+      "agent_id": "bench-agent",
+      "host_id": "bench",
+      "tags": ["rate-limiting", "api-keys", "service-accounts"]
+    }
+  ],
+  "queries": [
+    {
+      "query": "How does JWT authentication work?",
+      "topic": "auth",
+      "relevant_ids": [0, 1, 2, 10]
+    },
+    {
+      "query": "What is the session expiry configuration?",
+      "topic": "auth",
+      "relevant_ids": [1, 5, 6]
+    },
+    {
+      "query": "How are database connections managed?",
+      "topic": "database",
+      "relevant_ids": [15, 16, 19, 24]
+    },
+    {
+      "query": "How are database migrations handled?",
+      "topic": "database",
+      "relevant_ids": [16, 21, 29]
+    },
+    {
+      "query": "How does the rate limiter work?",
+      "topic": "rate-limiting",
+      "relevant_ids": [30, 31, 33, 37]
+    },
+    {
+      "query": "What happens when rate limit is exceeded?",
+      "topic": "rate-limiting",
+      "relevant_ids": [36, 38, 43]
+    }
+  ]
+}
