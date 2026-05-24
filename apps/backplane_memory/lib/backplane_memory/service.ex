@@ -124,6 +124,20 @@ defmodule BackplaneMemory.Service do
           "required" => ["query"]
         },
         handler: &handle_expand_query/1
+      },
+      %{
+        name: "memory::file_history",
+        description: "Return observations referencing the given file paths.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "files" => %{"type" => "array", "items" => %{"type" => "string"}},
+            "exclude_session" => %{"type" => "string"},
+            "limit" => %{"type" => "integer", "default" => 50}
+          },
+          "required" => ["files"]
+        },
+        handler: &handle_file_history/1
       }
     ]
   end
@@ -248,6 +262,34 @@ defmodule BackplaneMemory.Service do
   end
 
   def handle_expand_query(_), do: {:error, "query is required"}
+
+  def handle_file_history(%{"files" => files} = args) when is_list(files) do
+    opts =
+      [limit: args["limit"] || 50]
+      |> then(fn o ->
+        case args["exclude_session"] do
+          s when is_binary(s) and s != "" -> Keyword.put(o, :exclude_session, s)
+          _ -> o
+        end
+      end)
+
+    rows = BackplaneMemory.Observations.file_history(files, opts)
+
+    results =
+      Enum.map(rows, fn o ->
+        %{
+          id: o.id,
+          session_id: o.session_id,
+          tool_name: o.tool_name,
+          content: o.content,
+          created_at: o.created_at
+        }
+      end)
+
+    {:ok, %{results: results}}
+  end
+
+  def handle_file_history(_), do: {:error, "files is required and must be an array"}
 
   defp add_if(opts, args, key, opt_key) do
     case args[key] do

@@ -84,6 +84,97 @@ defmodule BackplaneMemory.Router do
     end
   end
 
+  post "/api/memory/session/start" do
+    case conn.body_params do
+      %{"session_id" => session_id, "project" => project}
+      when is_binary(session_id) and is_binary(project) ->
+        BackplaneMemory.Observations.register_session(session_id, project)
+        context = BackplaneMemory.Context.build(project, session_id)
+        response = %{session_id: session_id}
+        response = if context, do: Map.put(response, :context, context), else: response
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(response))
+
+      _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{error: "session_id and project are required"}))
+    end
+  end
+
+  post "/api/memory/session/end" do
+    case conn.body_params do
+      %{"session_id" => session_id} when is_binary(session_id) ->
+        BackplaneMemory.Observations.end_session(session_id)
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{session_id: session_id, status: "ended"}))
+
+      _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{error: "session_id is required"}))
+    end
+  end
+
+  post "/api/memory/observations" do
+    session_id = Map.get(conn.body_params, "session_id", "")
+    content = Map.get(conn.body_params, "content", "")
+
+    if content == "" do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{error: "content is required"}))
+    else
+      opts = [
+        tool_name: conn.body_params["tool_name"],
+        is_error: conn.body_params["is_error"] == true
+      ]
+
+      case BackplaneMemory.Observations.record(session_id, content, opts) do
+        {:ok, obs} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(201, Jason.encode!(%{id: obs.id}))
+
+        {:error, :filtered} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(204, "")
+
+        {:error, changeset} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(422, Jason.encode!(%{error: inspect(changeset)}))
+      end
+    end
+  end
+
+  get "/api/memory/file-history" do
+    files = String.split(conn.query_params["files"] || "", ",", trim: true)
+    exclude = conn.query_params["exclude_session"]
+    opts = [exclude_session: exclude, limit: 50]
+    rows = BackplaneMemory.Observations.file_history(files, opts)
+
+    result =
+      Enum.map(rows, fn o ->
+        %{
+          id: o.id,
+          session_id: o.session_id,
+          tool_name: o.tool_name,
+          content: o.content,
+          created_at: o.created_at
+        }
+      end)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{results: result}))
+  end
+
   match _ do
     conn
     |> put_resp_content_type("application/json")
