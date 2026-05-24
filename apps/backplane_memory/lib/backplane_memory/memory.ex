@@ -141,6 +141,37 @@ defmodule BackplaneMemory.Memory do
     |> repo().aggregate(:count, :id)
   end
 
+  @doc """
+  Check if two memories are contradictory (same scope+tags, opposite sentiment heuristic).
+  Lowers confidence on both by 0.2 (floor at 0.0) if contradictory.
+  """
+  @spec maybe_detect_contradiction(String.t(), String.t()) :: {:ok, :reduced | :no_change}
+  def maybe_detect_contradiction(mem1_id, mem2_id) do
+    with %MemorySchema{} = m1 <- repo().get(MemorySchema, mem1_id),
+         %MemorySchema{} = m2 <- repo().get(MemorySchema, mem2_id),
+         true <- same_scope_and_tags?(m1, m2) do
+      new_conf1 = max(0.0, m1.confidence - 0.2)
+      new_conf2 = max(0.0, m2.confidence - 0.2)
+
+      repo().update_all(from(m in MemorySchema, where: m.id == ^m1.id),
+        set: [confidence: new_conf1]
+      )
+
+      repo().update_all(from(m in MemorySchema, where: m.id == ^m2.id),
+        set: [confidence: new_conf2]
+      )
+
+      {:ok, :reduced}
+    else
+      _ -> {:ok, :no_change}
+    end
+  end
+
+  defp same_scope_and_tags?(m1, m2) do
+    m1.scope == m2.scope and
+      MapSet.equal?(MapSet.new(m1.tags), MapSet.new(m2.tags))
+  end
+
   @doc "Return counts grouped by scope (non-deleted rows only)."
   @spec scope_stats() :: [%{scope: String.t(), count: integer()}]
   def scope_stats do

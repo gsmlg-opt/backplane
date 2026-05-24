@@ -31,7 +31,8 @@ defmodule BackplaneMemory.Memories.Search do
           tags: [String.t()],
           metadata: map(),
           inserted_at: DateTime.t(),
-          distance: float()
+          distance: float(),
+          confidence: float()
         }
 
   @doc """
@@ -66,9 +67,15 @@ defmodule BackplaneMemory.Memories.Search do
           tags: m.tags,
           metadata: m.metadata,
           inserted_at: m.inserted_at,
-          distance: fragment("? <=> ?", m.embedding, ^hv)
+          distance: fragment("? <=> ?", m.embedding, ^hv),
+          confidence: m.confidence
         })
         |> repo().all()
+
+      writeback_fn =
+        Keyword.get(opts, :writeback_fn, &BackplaneMemory.Workers.AccessWritebackWorker.enqueue/1)
+
+      if rows != [], do: writeback_fn.(Enum.map(rows, & &1.id))
 
       {:ok, rows}
     end
@@ -89,6 +96,9 @@ defmodule BackplaneMemory.Memories.Search do
 
   defp apply_filter({:tag, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], ^v in m.tags)
+
+  defp apply_filter({:min_confidence, v}, q) when is_float(v),
+    do: where(q, [m], m.confidence >= ^v)
 
   defp apply_filter(_, q), do: q
 
@@ -133,6 +143,11 @@ defmodule BackplaneMemory.Memories.Search do
 
     reranked = maybe_rerank(query, fused_unlimited, opts)
     result = Enum.take(reranked, limit)
+
+    writeback_fn =
+      Keyword.get(opts, :writeback_fn, &BackplaneMemory.Workers.AccessWritebackWorker.enqueue/1)
+
+    if result != [], do: writeback_fn.(Enum.map(result, & &1.id))
 
     {:ok, result}
   end
@@ -201,7 +216,8 @@ defmodule BackplaneMemory.Memories.Search do
       tags: m.tags,
       metadata: m.metadata,
       inserted_at: m.inserted_at,
-      distance: 0.0
+      distance: 0.0,
+      confidence: m.confidence
     })
     |> repo().all()
   end
@@ -246,14 +262,15 @@ defmodule BackplaneMemory.Memories.Search do
           tags: m.tags,
           metadata: m.metadata,
           inserted_at: m.inserted_at,
-          distance: 0.0
+          distance: 0.0,
+          confidence: m.confidence
         })
         |> repo().all()
       end
     end
   end
 
-  # RRF: score = sum(1 / (k + rank)) across streams; rank is 1-based
+  # RRF: score = sum(1 / (k + rank)) across streams, multiplied by confidence; rank is 1-based
   defp rrf_fuse(streams) do
     streams
     |> Enum.flat_map(fn stream ->
@@ -271,7 +288,8 @@ defmodule BackplaneMemory.Memories.Search do
         |> Enum.map(fn {_, row, _} -> row end)
         |> Enum.min_by(fn row -> if row.distance > 0.0, do: row.distance, else: 1.0 end)
 
-      {total_score, best_row}
+      final_score = total_score * best_row.confidence
+      {final_score, best_row}
     end)
     |> Enum.sort_by(fn {score, _} -> score end, :desc)
     |> Enum.map(fn {_score, row} -> row end)

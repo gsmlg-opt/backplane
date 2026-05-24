@@ -16,6 +16,51 @@ defmodule BackplaneMemory.Service do
   def tools do
     [
       %{
+        name: "memory::facet_tag",
+        description: "Tag an existing memory with dimension:value facets.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "memory_id" => %{"type" => "string"},
+            "facets" => %{
+              "type" => "array",
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "dimension" => %{"type" => "string"},
+                  "value" => %{"type" => "string"}
+                },
+                "required" => ["dimension", "value"]
+              }
+            }
+          },
+          "required" => ["memory_id", "facets"]
+        },
+        handler: &handle_facet_tag/1
+      },
+      %{
+        name: "memory::facet_query",
+        description: "Query memories by facet filter (AND across dimensions).",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "facets" => %{
+              "type" => "array",
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "dimension" => %{"type" => "string"},
+                  "value" => %{"type" => "string"}
+                }
+              }
+            },
+            "limit" => %{"type" => "integer", "default" => 20}
+          },
+          "required" => ["facets"]
+        },
+        handler: &handle_facet_query/1
+      },
+      %{
         name: "memory::remember",
         description: "Persist a memory entry. Deduplicates by content+scope over 24h.",
         input_schema: %{
@@ -157,7 +202,22 @@ defmodule BackplaneMemory.Service do
 
     case Memory.remember(content, opts) do
       {:ok, mem} ->
-        {:ok, %{id: mem.id, scope: mem.scope, memory_type: mem.memory_type}}
+        case args["facets"] do
+          facets when is_list(facets) and facets != [] ->
+            case BackplaneMemory.Facets.tag(mem.id, facets) do
+              {:ok, _count} ->
+                {:ok, %{id: mem.id, scope: mem.scope, memory_type: mem.memory_type}}
+
+              {:error, {:unknown_dimension, dim}} ->
+                {:error, "unknown facet dimension: #{dim}"}
+
+              {:error, reason} ->
+                {:error, inspect(reason)}
+            end
+
+          _ ->
+            {:ok, %{id: mem.id, scope: mem.scope, memory_type: mem.memory_type}}
+        end
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:error, format_changeset(changeset)}
@@ -177,9 +237,29 @@ defmodule BackplaneMemory.Service do
       |> add_if(args, "host_id", :host_id)
       |> add_if(args, "tag", :tag)
 
-    case Search.recall(query, opts) do
-      {:ok, results} -> {:ok, %{results: results}}
-      {:error, reason} -> {:error, inspect(reason)}
+    case args["facets"] do
+      facets when is_list(facets) and facets != [] ->
+        facet_ids = BackplaneMemory.Facets.query(facets)
+
+        if facet_ids == [] do
+          {:ok, %{results: []}}
+        else
+          case Search.recall(query, opts) do
+            {:ok, results} ->
+              id_set = MapSet.new(facet_ids)
+              filtered = Enum.filter(results, fn r -> MapSet.member?(id_set, r.id) end)
+              {:ok, %{results: filtered}}
+
+            {:error, reason} ->
+              {:error, inspect(reason)}
+          end
+        end
+
+      _ ->
+        case Search.recall(query, opts) do
+          {:ok, results} -> {:ok, %{results: results}}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
     end
   end
 
@@ -290,6 +370,48 @@ defmodule BackplaneMemory.Service do
   end
 
   def handle_file_history(_), do: {:error, "files is required and must be an array"}
+
+  def handle_facet_tag(%{"memory_id" => id, "facets" => facets}) do
+    case BackplaneMemory.Facets.tag(id, facets) do
+      {:ok, count} -> {:ok, %{tagged: count}}
+      {:error, {:unknown_dimension, dim}} -> {:error, "unknown facet dimension: #{dim}"}
+      {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
+  def handle_facet_tag(_), do: {:error, "memory_id and facets are required"}
+
+  def handle_facet_query(%{"facets" => facets} = args) when is_list(facets) do
+    import Ecto.Query
+    limit = args["limit"] || 20
+    memory_ids = BackplaneMemory.Facets.query(facets)
+
+    if memory_ids == [] do
+      {:ok, %{results: []}}
+    else
+      repo = Application.fetch_env!(:backplane_memory, :repo)
+
+      rows =
+        repo.all(
+          from(m in BackplaneMemory.Memories.Memory,
+            where: m.id in ^memory_ids and is_nil(m.deleted_at),
+            limit: ^limit,
+            select: %{
+              id: m.id,
+              content: m.content,
+              scope: m.scope,
+              memory_type: m.memory_type,
+              tags: m.tags,
+              confidence: m.confidence
+            }
+          )
+        )
+
+      {:ok, %{results: rows}}
+    end
+  end
+
+  def handle_facet_query(_), do: {:error, "facets array is required"}
 
   defp add_if(opts, args, key, opt_key) do
     case args[key] do
