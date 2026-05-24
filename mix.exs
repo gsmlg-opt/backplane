@@ -46,6 +46,7 @@ defmodule Backplane.Umbrella.MixProject do
       ],
       host_agent: [
         include_executables_for: [:unix],
+        runtime_config_path: "config/host_agent_runtime.exs",
         applications: [
           backplane_host_agent: :permanent,
           runtime_tools: :permanent

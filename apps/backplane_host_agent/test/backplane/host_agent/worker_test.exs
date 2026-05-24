@@ -26,10 +26,67 @@ defmodule Backplane.HostAgent.WorkerTest do
     end
   end
 
+  defmodule FakeRuntimeConfig do
+    def load_default do
+      {:ok,
+       %{
+         hub_url: "http://localhost:4220",
+         machine_name: "t430",
+         manifest_path: "/tmp/manifest.json",
+         token: "host-token"
+       }}
+    end
+  end
+
+  defmodule FakeConnector do
+    def connect(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:connect, config})
+      {:ok, %{channel: self(), host_id: "host-1", host_name: "t430", socket: self()}}
+    end
+  end
+
+  defmodule FakeMemoryProxy do
+    def set_channel(channel) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:set_channel, channel})
+      :ok
+    end
+  end
+
+  defmodule FakeHttpServer do
+    def child_spec(_config), do: nil
+  end
+
   test "status returns last sync state" do
-    {:ok, pid} = Worker.start_link(name: nil)
+    {:ok, pid} = Worker.start_link(name: nil, connect?: false)
 
     assert %{last_sync: nil, last_error: nil} = GenServer.call(pid, :status)
+  end
+
+  test "loads config and connects when started by the release supervisor" do
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+    end)
+
+    {:ok, pid} =
+      Worker.start_link(
+        name: nil,
+        config_module: FakeRuntimeConfig,
+        connector_module: FakeConnector,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy
+      )
+
+    assert_receive {:connect, %{machine_name: "t430", token: "host-token"}}
+    assert_receive {:set_channel, ^pid}
+
+    assert %{channel: ^pid, config: %{machine_name: "t430"}, last_error: nil} =
+             GenServer.call(pid, :status)
   end
 
   @tag :tmp_dir

@@ -3,7 +3,17 @@ defmodule Backplane.HostAgent.Worker do
 
   use GenServer
 
-  alias Backplane.HostAgent.{Channel, Installer, Manifest, Reconciler, Reporter}
+  alias Backplane.HostAgent.{
+    Channel,
+    Config,
+    Connector,
+    HttpServer,
+    Installer,
+    Manifest,
+    MemoryProxy,
+    Reconciler,
+    Reporter
+  }
 
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -48,16 +58,10 @@ defmodule Backplane.HostAgent.Worker do
 
   @impl true
   def init(opts) do
-    {:ok,
-     %{
-       channel: Keyword.get(opts, :channel),
-       channel_module: Keyword.get(opts, :channel_module, Channel),
-       config: Keyword.get(opts, :config),
-       desired: Keyword.get(opts, :desired),
-       installer_module: Keyword.get(opts, :installer_module, Installer),
-       last_sync: nil,
-       last_error: nil
-     }}
+    case initial_state(opts) do
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   @impl true
@@ -86,6 +90,96 @@ defmodule Backplane.HostAgent.Worker do
     channel_module = Map.get(state, :channel_module, Channel)
 
     push(channel_module, channel, "get_desired", %{})
+  end
+
+  defp initial_state(opts) do
+    if connect_on_start?(opts) do
+      connect_state(opts)
+    else
+      {:ok, state_from_opts(opts)}
+    end
+  end
+
+  defp connect_on_start?(opts) do
+    Keyword.get(
+      opts,
+      :connect?,
+      is_nil(Keyword.get(opts, :channel)) and is_nil(Keyword.get(opts, :config))
+    )
+  end
+
+  defp connect_state(opts) do
+    config_module = Keyword.get(opts, :config_module, Config)
+    connector_module = Keyword.get(opts, :connector_module, Connector)
+    http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
+    memory_proxy_module = Keyword.get(opts, :memory_proxy_module, MemoryProxy)
+
+    with {:ok, config} <- config_module.load_default(),
+         :ok <- validate_required_config(config),
+         {:ok, %{channel: channel}} <- connector_module.connect(config),
+         :ok <- memory_proxy_module.set_channel(channel),
+         {:ok, http_supervisor} <- maybe_start_http_server(http_server_module, config) do
+      opts =
+        opts
+        |> Keyword.put(:channel, channel)
+        |> Keyword.put(:config, config)
+        |> Keyword.put(:http_supervisor, http_supervisor)
+
+      {:ok, state_from_opts(opts)}
+    else
+      {:error, {:missing, path}} ->
+        maybe_write_sample(config_module, path)
+        {:error, {:missing_config, path}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp state_from_opts(opts) do
+    %{
+      channel: Keyword.get(opts, :channel),
+      channel_module: Keyword.get(opts, :channel_module, Channel),
+      config: Keyword.get(opts, :config),
+      desired: Keyword.get(opts, :desired),
+      http_supervisor: Keyword.get(opts, :http_supervisor),
+      installer_module: Keyword.get(opts, :installer_module, Installer),
+      last_sync: nil,
+      last_error: nil
+    }
+  end
+
+  defp validate_required_config(config) do
+    missing =
+      [:hub_url, :token, :machine_name]
+      |> Enum.filter(fn key ->
+        value = field(config, key)
+        is_nil(value) or value == "" or value == "REPLACE_WITH_AUTH_TOKEN"
+      end)
+
+    case missing do
+      [] -> :ok
+      fields -> {:error, {:missing_required_config, fields}}
+    end
+  end
+
+  defp maybe_start_http_server(http_server_module, config) do
+    case http_server_module.child_spec(config) do
+      nil ->
+        {:ok, nil}
+
+      spec ->
+        case Supervisor.start_link([spec], strategy: :one_for_one) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, reason} -> {:error, {:http_server_start_failed, reason}}
+        end
+    end
+  end
+
+  defp maybe_write_sample(config_module, path) do
+    if function_exported?(config_module, :write_sample, 1) do
+      config_module.write_sample(path)
+    end
   end
 
   defp read_manifest(config) do
