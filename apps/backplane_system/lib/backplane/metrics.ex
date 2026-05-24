@@ -10,9 +10,8 @@ defmodule Backplane.Metrics do
 
   require Logger
 
-  alias Backplane.Proxy.Pool
-
   @table __MODULE__
+  @upstream_pool Backplane.Proxy.Pool
 
   # Client API
 
@@ -63,7 +62,7 @@ defmodule Backplane.Metrics do
   end
 
   defp upstream_status do
-    Pool.list_upstreams()
+    apply(@upstream_pool, :list_upstreams, [])
     |> Enum.map(fn u ->
       %{
         name: u.name,

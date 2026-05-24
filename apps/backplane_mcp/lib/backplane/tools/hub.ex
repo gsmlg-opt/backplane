@@ -133,7 +133,7 @@ defmodule Backplane.Tools.Hub do
        skill_sources: skill_sources,
        total_tools: ToolRegistry.count(),
        total_skills: Registry.count(),
-       version: Backplane.version()
+       version: Backplane.MCP.Info.version()
      }}
   end
 

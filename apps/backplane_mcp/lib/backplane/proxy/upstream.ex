@@ -348,8 +348,8 @@ defmodule Backplane.Proxy.Upstream do
   defp connect_and_initialize(%{transport: "http"} = state) do
     request =
       jsonrpc_request("initialize", %{
-        "protocolVersion" => Backplane.protocol_version(),
-        "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
+        "protocolVersion" => Backplane.MCP.Info.protocol_version(),
+        "clientInfo" => %{"name" => "backplane", "version" => Backplane.MCP.Info.version()},
         "capabilities" => %{}
       })
 
@@ -380,8 +380,8 @@ defmodule Backplane.Proxy.Upstream do
 
       request =
         jsonrpc_request("initialize", %{
-          "protocolVersion" => Backplane.protocol_version(),
-          "clientInfo" => %{"name" => "backplane", "version" => Backplane.version()},
+          "protocolVersion" => Backplane.MCP.Info.protocol_version(),
+          "clientInfo" => %{"name" => "backplane", "version" => Backplane.MCP.Info.version()},
           "capabilities" => %{}
         })
 

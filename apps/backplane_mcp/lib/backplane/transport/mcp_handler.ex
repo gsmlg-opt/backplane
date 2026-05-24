@@ -31,8 +31,8 @@ defmodule Backplane.Transport.McpHandler do
 
   defp initialize_result do
     %{
-      protocolVersion: Backplane.protocol_version(),
-      serverInfo: %{name: @server_name, version: Backplane.version()},
+      protocolVersion: Backplane.MCP.Info.protocol_version(),
+      serverInfo: %{name: @server_name, version: Backplane.MCP.Info.version()},
       capabilities: server_capabilities()
     }
   end
@@ -277,9 +277,9 @@ defmodule Backplane.Transport.McpHandler do
   defp dispatch(conn, "initialize", id, params) do
     client_version = get_in(params || %{}, ["protocolVersion"])
 
-    if client_version && client_version != Backplane.protocol_version() do
+    if client_version && client_version != Backplane.MCP.Info.protocol_version() do
       Logger.warning(
-        "Client requested unsupported protocol version: #{client_version} (server supports #{Backplane.protocol_version()})"
+        "Client requested unsupported protocol version: #{client_version} (server supports #{Backplane.MCP.Info.protocol_version()})"
       )
     end
 

@@ -4,13 +4,14 @@ defmodule Backplane.Metrics.Prometheus do
   Reads from ETS counters maintained by Backplane.Metrics.
   """
 
-  alias Backplane.Cache
   alias Backplane.Metrics
-  alias Backplane.Proxy.Pool
   alias Backplane.Registry.ToolRegistry
-  alias Backplane.Skills.Registry, as: SkillsRegistry
 
   require Logger
+
+  @upstream_pool Backplane.Proxy.Pool
+  @cache Backplane.Cache
+  @skills_registry Backplane.Skills.Registry
 
   @doc "Render all metrics in Prometheus text exposition format."
   @spec render() :: String.t()
@@ -57,7 +58,7 @@ defmodule Backplane.Metrics.Prometheus do
   defp render_upstream_status do
     upstreams =
       try do
-        Pool.list_upstreams()
+        apply(@upstream_pool, :list_upstreams, [])
       rescue
         _ -> []
       end
@@ -77,7 +78,7 @@ defmodule Backplane.Metrics.Prometheus do
   end
 
   defp render_cache_metrics do
-    stats = Cache.stats()
+    stats = apply(@cache, :stats, [])
 
     [
       "# HELP backplane_cache_hit_ratio Cache hit ratio",
@@ -102,7 +103,7 @@ defmodule Backplane.Metrics.Prometheus do
 
     skill_count =
       try do
-        SkillsRegistry.count()
+        apply(@skills_registry, :count, [])
       rescue
         _ -> 0
       end

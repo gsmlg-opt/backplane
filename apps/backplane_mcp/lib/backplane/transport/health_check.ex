@@ -23,7 +23,7 @@ defmodule Backplane.Transport.HealthCheck do
 
     %{
       status: status,
-      version: Backplane.version(),
+      version: Backplane.MCP.Info.version(),
       engines: %{
         proxy: %{
           upstreams: upstreams,
