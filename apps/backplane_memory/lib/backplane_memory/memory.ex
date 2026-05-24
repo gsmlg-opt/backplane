@@ -3,10 +3,11 @@ defmodule BackplaneMemory.Memory do
 
   import Ecto.Query
 
-  alias Backplane.Repo
   alias BackplaneMemory.Memories.Memory, as: MemorySchema
   alias BackplaneMemory.Privacy.Filter
   alias BackplaneMemory.Workers.EmbedWorker
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @dedup_window_seconds 86_400
 
@@ -53,7 +54,7 @@ defmodule BackplaneMemory.Memory do
         nil ->
           %MemorySchema{}
           |> MemorySchema.changeset(attrs)
-          |> Repo.insert()
+          |> repo().insert()
           |> handle_insert(filtered, attrs.scope)
       end
     end
@@ -68,7 +69,7 @@ defmodule BackplaneMemory.Memory do
         select: struct(m, ^@non_vector_fields)
       )
 
-    case Repo.one(query) do
+    case repo().one(query) do
       nil -> {:error, :not_found}
       mem -> {:ok, mem}
     end
@@ -77,7 +78,7 @@ defmodule BackplaneMemory.Memory do
   @doc "Soft-delete a memory by id."
   @spec forget(String.t()) :: :ok | {:error, :not_found}
   def forget(id) do
-    case Repo.one(
+    case repo().one(
            from(m in MemorySchema,
              where: m.id == ^id and is_nil(m.deleted_at),
              select: struct(m, ^@non_vector_fields)
@@ -89,7 +90,7 @@ defmodule BackplaneMemory.Memory do
       mem ->
         mem
         |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
-        |> Repo.update!()
+        |> repo().update!()
 
         :ok
     end
@@ -102,7 +103,7 @@ defmodule BackplaneMemory.Memory do
     |> where([m], is_nil(m.deleted_at))
     |> group_by([m], m.memory_type)
     |> select([m], %{memory_type: m.memory_type, count: count(m.id)})
-    |> Repo.all()
+    |> repo().all()
   end
 
   @doc """
@@ -129,7 +130,7 @@ defmodule BackplaneMemory.Memory do
     |> limit(^limit)
     |> offset(^offset)
     |> select([m], struct(m, ^@non_vector_fields))
-    |> Repo.all()
+    |> repo().all()
   end
 
   @doc "Count memories matching the same filter options as list/1 (ignores :limit/:offset)."
@@ -137,7 +138,7 @@ defmodule BackplaneMemory.Memory do
   def count(opts \\ []) do
     MemorySchema
     |> apply_list_filters(opts)
-    |> Repo.aggregate(:count, :id)
+    |> repo().aggregate(:count, :id)
   end
 
   @doc "Return counts grouped by scope (non-deleted rows only)."
@@ -148,7 +149,7 @@ defmodule BackplaneMemory.Memory do
     |> group_by([m], m.scope)
     |> order_by([m], desc: count(m.id))
     |> select([m], %{scope: m.scope, count: count(m.id)})
-    |> Repo.all()
+    |> repo().all()
   end
 
   defp apply_list_filters(query, opts) do
@@ -208,7 +209,7 @@ defmodule BackplaneMemory.Memory do
     |> where([m], m.inserted_at >= ^window_start)
     |> select([m], struct(m, ^@non_vector_fields))
     |> limit(1)
-    |> Repo.one()
+    |> repo().one()
   end
 
   defp handle_insert({:ok, mem} = result, _content, _scope) do

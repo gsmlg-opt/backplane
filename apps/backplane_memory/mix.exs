@@ -18,7 +18,7 @@ defmodule BackplaneMemory.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto],
+      extra_applications: [:logger, :crypto, :tzdata],
       mod: {BackplaneMemory.Application, []}
     ]
   end
@@ -28,11 +28,13 @@ defmodule BackplaneMemory.MixProject do
 
   defp deps do
     [
-      {:backplane, in_umbrella: true},
+      {:backplane_system, in_umbrella: true},
+      {:backplane_data_case, in_umbrella: true, only: :test},
+      {:pgvector, "~> 0.3"},
       {:jason, "~> 1.4"},
       {:req, "~> 0.5", override: true},
       {:oban, "~> 2.18"},
-      {:pgvector, "~> 0.3"}
+      {:tzdata, "~> 1.1"}
     ]
   end
 end
