@@ -13,14 +13,40 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       send(__owner__(), {:proxy_push, event, payload})
 
       case payload do
-        %{"method" => "remember"} ->
+        %{"method" => "remember", "arguments" => %{"content" => content}}
+        when is_binary(content) and content != "" ->
           {:ok, %{"ok" => true, "result" => %{"id" => "mem_123", "scope" => "global"}}}
 
+        %{"method" => "remember"} ->
+          {:ok, %{"ok" => false, "error" => "content is required"}}
+
         %{"method" => "recall"} ->
-          {:ok, %{"ok" => true, "result" => %{"results" => []}}}
+          {:ok,
+           %{
+             "ok" => true,
+             "result" => %{
+               "results" => [
+                 %{"id" => "m1", "content" => "hello world", "scope" => "/tmp/proj"}
+               ]
+             }
+           }}
+
+        %{"method" => "list"} ->
+          {:ok,
+           %{
+             "ok" => true,
+             "result" => %{
+               "results" => [
+                 %{"id" => "m1", "content" => "older", "scope" => "/tmp/proj"}
+               ]
+             }
+           }}
+
+        %{"method" => "forget"} ->
+          {:ok, %{"ok" => true, "result" => %{"id" => "m1", "status" => "deleted"}}}
 
         %{"method" => "stats"} ->
-          {:ok, %{"ok" => true, "result" => %{"stats" => %{}}}}
+          {:ok, %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}}}
 
         _ ->
           {:ok, %{"ok" => true, "result" => %{}}}
@@ -87,6 +113,112 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 503
       assert %{"error" => "host agent is not connected"} = Jason.decode!(conn.resp_body)
+    end
+
+    # Mirrors Hermes prefetch / OpenClaw before_agent_start.
+    test "recall forwards query+scope+limit and returns memory rows" do
+      conn =
+        :post
+        |> conn(
+          "/agt_42/call/recall",
+          Jason.encode!(%{"query" => "hello", "limit" => 5, "scope" => "/tmp/proj"})
+        )
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{
+               "ok" => true,
+               "result" => %{"results" => [%{"id" => "m1", "content" => "hello world"}]}
+             } = Jason.decode!(conn.resp_body)
+
+      assert_received {:proxy_push, "memory_call", %{"method" => "recall", "arguments" => args}}
+      assert args["agent_id"] == "agt_42"
+      assert args["query"] == "hello"
+      assert args["limit"] == 5
+      assert args["scope"] == "/tmp/proj"
+    end
+
+    # Mirrors Hermes system_prompt_block / memory_list tool.
+    test "list forwards scope+limit and returns memory rows" do
+      conn =
+        :post
+        |> conn(
+          "/agt_42/call/list",
+          Jason.encode!(%{"scope" => "/tmp/proj", "limit" => 10})
+        )
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{
+               "ok" => true,
+               "result" => %{"results" => [%{"id" => "m1", "content" => "older"}]}
+             } = Jason.decode!(conn.resp_body)
+
+      assert_received {:proxy_push, "memory_call", %{"method" => "list", "arguments" => args}}
+      assert args["agent_id"] == "agt_42"
+      assert args["scope"] == "/tmp/proj"
+      assert args["limit"] == 10
+    end
+
+    # Mirrors Hermes memory_forget tool.
+    test "forget forwards the id and returns deletion status" do
+      conn =
+        :post
+        |> conn("/agt_42/call/forget", Jason.encode!(%{"id" => "m1"}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"id" => "m1", "status" => "deleted"}} =
+               Jason.decode!(conn.resp_body)
+
+      assert_received {:proxy_push, "memory_call", %{"method" => "forget", "arguments" => args}}
+      assert args["id"] == "m1"
+      assert args["agent_id"] == "agt_42"
+    end
+
+    test "stats returns aggregated counts" do
+      conn =
+        :post
+        |> conn("/agt_42/call/stats", Jason.encode!(%{}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}} =
+               Jason.decode!(conn.resp_body)
+
+      assert_received {:proxy_push, "memory_call", %{"method" => "stats"}}
+    end
+
+    test "propagates service errors back to the caller as 400" do
+      # FakeChannel returns ok=false for remember without content.
+      conn =
+        :post
+        |> conn("/agt_42/call/remember", Jason.encode!(%{}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 400
+      assert %{"ok" => false, "error" => "content is required"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "accepts requests with no JSON body" do
+      conn =
+        :post
+        |> conn("/agt_42/call/stats", "")
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+      assert_received {:proxy_push, "memory_call", %{"method" => "stats", "arguments" => args}}
+      assert args["agent_id"] == "agt_42"
     end
   end
 

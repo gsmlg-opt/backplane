@@ -177,6 +177,63 @@ defmodule BackplaneWeb.HostAgentChannelTest do
       assert args["content"] == "hi"
     end
 
+    # Hermes prefetch / OpenClaw before_agent_start route here.
+    test "recall dispatches with host_id injected", %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "recall",
+          "arguments" => %{"query" => "what", "limit" => 5, "agent_id" => "agt_1"}
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "recall"}})
+      assert_received {:memory_service, {:recall, args}}
+      assert args["host_id"] == host.id
+      assert args["query"] == "what"
+      assert args["limit"] == 5
+    end
+
+    # Hermes system_prompt_block / memory_list tool routes here.
+    test "list dispatches with scope+limit and host_id injected",
+         %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "list",
+          "arguments" => %{"scope" => "/tmp/proj", "limit" => 10, "agent_id" => "agt_1"}
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "list"}})
+      assert_received {:memory_service, {:list, args}}
+      assert args["host_id"] == host.id
+      assert args["scope"] == "/tmp/proj"
+      assert args["limit"] == 10
+    end
+
+    # Hermes memory_forget tool routes here.
+    test "forget dispatches the id with host_id injected", %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "forget",
+          "arguments" => %{"id" => "mem_42", "agent_id" => "agt_1"}
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "forget"}})
+      assert_received {:memory_service, {:forget, args}}
+      assert args["host_id"] == host.id
+      assert args["id"] == "mem_42"
+    end
+
+    test "stats dispatches with host_id injected", %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "stats",
+          "arguments" => %{"agent_id" => "agt_1"}
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "stats"}})
+      assert_received {:memory_service, {:stats, args}}
+      assert args["host_id"] == host.id
+    end
+
     test "unknown method returns an error reply", %{socket: socket} do
       ref = push(socket, "memory_call", %{"method" => "teleport", "arguments" => %{}})
       assert_reply(ref, :ok, %{"ok" => false, "error" => "unknown memory method: teleport"})
