@@ -5,10 +5,7 @@ defmodule Backplane.Application do
   require Logger
 
   alias Backplane.Config.Validator
-  alias Backplane.Metrics
-  alias Backplane.Proxy.Pool
   alias Backplane.Registry.{Tool, ToolRegistry}
-  alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Tools.{Admin, Hub, Skill}
 
   @drain_timeout 15_000
@@ -17,51 +14,16 @@ defmodule Backplane.Application do
   def start(_type, _args) do
     validate_config_at_boot()
 
-    cache_opts = [
-      max_entries: Application.get_env(:backplane, :cache_max_entries, 10_000)
-    ]
-
-    children =
-      [
-        Backplane.Repo,
-        {Oban, Application.fetch_env!(:backplane, Oban)},
-        {Phoenix.PubSub, name: Backplane.PubSub},
-        Backplane.Skills.HostConnectionRegistry,
-        Backplane.Settings.TokenCache,
-        Backplane.Settings,
-        ToolRegistry,
-        Backplane.Math.Supervisor,
-        SkillsRegistry,
-        Pool,
-        {Backplane.Cache, cache_opts},
-        Metrics,
-        Relayixir,
-        Backplane.LLM.ModelResolver,
-        route_loader_child(),
-        Backplane.LLM.RateLimiter,
-        {Backplane.LLM.HealthChecker, []}
-      ]
-      |> Enum.reject(&is_nil/1)
+    children = [{Oban, Application.fetch_env!(:backplane, Oban)}]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
-      # Register native tools after supervisor starts
       register_native_tools()
-
-      # Register managed service tools
       register_managed_services()
-
-      # Start configured upstream MCP connections
       start_configured_upstreams()
-
-      # Start DB-backed upstream MCP connections
       start_db_upstreams()
-
-      # Attach telemetry handlers for usage collection
       Backplane.LLM.UsageCollector.attach()
-
-      # Initialize clients ETS cache and upsert pre-seeded clients
       Backplane.Clients.init_cache()
       upsert_config_clients()
 
@@ -72,10 +34,7 @@ defmodule Backplane.Application do
   @impl true
   def prep_stop(state) do
     Logger.info("Shutting down — draining connections (#{@drain_timeout}ms timeout)")
-
-    # Pause Oban to stop picking up new jobs; running jobs finish naturally
     Oban.pause_all_queues(Oban)
-
     state
   rescue
     e ->
@@ -100,34 +59,6 @@ defmodule Backplane.Application do
     end
   end
 
-  defp route_loader_child do
-    if Application.get_env(:backplane, :llm_route_loader_enabled, true) do
-      Backplane.LLM.RouteLoader
-    end
-  end
-
-  defp start_configured_upstreams do
-    upstreams = Application.get_env(:backplane, :upstreams, [])
-
-    for upstream <- upstreams do
-      Pool.start_upstream(upstream)
-    end
-  end
-
-  defp upsert_config_clients do
-    seeds = Application.get_env(:backplane, :client_seeds, [])
-
-    for %{name: name} = seed when is_binary(name) <- seeds do
-      case Backplane.Clients.upsert_from_config(seed) do
-        {:ok, _client} ->
-          Logger.info("Upserted client from config: #{name}")
-
-        {:error, reason} ->
-          Logger.warning("Failed to upsert client #{name}: #{inspect(reason)}")
-      end
-    end
-  end
-
   defp register_managed_services do
     services = [
       Backplane.Services.Day,
@@ -138,6 +69,14 @@ defmodule Backplane.Application do
 
     for service <- services, service.enabled?() do
       ToolRegistry.register_managed(service.prefix(), service.tools())
+    end
+  end
+
+  defp start_configured_upstreams do
+    upstreams = Application.get_env(:backplane, :upstreams, [])
+
+    for upstream <- upstreams do
+      Backplane.Proxy.Pool.start_upstream(upstream)
     end
   end
 
@@ -158,11 +97,25 @@ defmodule Backplane.Application do
         auth_header_name: upstream.auth_header_name
       }
 
-      Pool.start_upstream(config)
+      Backplane.Proxy.Pool.start_upstream(config)
     end
   rescue
     e ->
       Logger.warning("Failed to load DB upstreams: #{Exception.message(e)}")
+  end
+
+  defp upsert_config_clients do
+    seeds = Application.get_env(:backplane, :client_seeds, [])
+
+    for %{name: name} = seed when is_binary(name) <- seeds do
+      case Backplane.Clients.upsert_from_config(seed) do
+        {:ok, _client} ->
+          Logger.info("Upserted client from config: #{name}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to upsert client #{name}: #{inspect(reason)}")
+      end
+    end
   end
 
   defp validate_config_at_boot do

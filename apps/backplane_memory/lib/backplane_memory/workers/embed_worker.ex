@@ -3,9 +3,10 @@ defmodule BackplaneMemory.Workers.EmbedWorker do
 
   use Oban.Worker, queue: :memory, max_attempts: 5
 
-  alias Backplane.Repo
   alias BackplaneMemory.Embedding.Client
   alias BackplaneMemory.Memories.Memory
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @impl Oban.Worker
   def perform(%Oban.Job{} = job) do
@@ -14,14 +15,14 @@ defmodule BackplaneMemory.Workers.EmbedWorker do
 
   @doc false
   def perform_with_client(%Oban.Job{args: %{"id" => id}}, embed_fn) do
-    case Repo.get(Memory, id) do
+    case repo().get(Memory, id) do
       nil ->
         :ok
 
       %Memory{} = mem ->
         case embed_fn.([mem.content], :document, []) do
           {:ok, [vector]} ->
-            mem |> Memory.embed_changeset(vector) |> Repo.update!()
+            mem |> Memory.embed_changeset(vector) |> repo().update!()
             :ok
 
           {:error, reason} ->

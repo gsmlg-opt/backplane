@@ -1,5 +1,5 @@
 defmodule Backplane.SettingsTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSystem.DataCase, async: false
 
   import Ecto.Query
 

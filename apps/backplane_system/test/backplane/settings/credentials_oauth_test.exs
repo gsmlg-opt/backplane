@@ -1,5 +1,5 @@
 defmodule Backplane.Settings.CredentialsOAuthTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSystem.DataCase, async: false
 
   alias Backplane.Settings.{Credentials, TokenCache}
 
@@ -34,7 +34,8 @@ defmodule Backplane.Settings.CredentialsOAuthTest do
         "token_url" => "http://auth.example.com/token"
       }
 
-      assert {:error, :insecure_token_url} = Credentials.store("bad-oauth3", "secret", "llm", meta)
+      assert {:error, :insecure_token_url} =
+               Credentials.store("bad-oauth3", "secret", "llm", meta)
     end
 
     test "accepts oauth2 with http://localhost token_url" do
