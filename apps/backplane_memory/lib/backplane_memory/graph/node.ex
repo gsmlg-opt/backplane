@@ -6,14 +6,14 @@ defmodule BackplaneMemory.Graph.Node do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts false
+  @timestamps_opts [type: :utc_datetime_usec, updated_at: false, inserted_at: :created_at]
 
   schema "memory_graph_nodes" do
     field(:type, :string)
     field(:name, :string)
     field(:properties, :map, default: %{})
     field(:source_observation_ids, {:array, :binary_id}, default: [])
-    field(:created_at, :utc_datetime_usec)
+    timestamps()
   end
 
   def changeset(node, attrs) do

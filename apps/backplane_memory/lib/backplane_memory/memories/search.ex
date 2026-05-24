@@ -121,7 +121,7 @@ defmodule BackplaneMemory.Memories.Search do
 
     fts_stream = fts_search(query, opts)
 
-    graph_stream = graph_search(query)
+    graph_stream = graph_search(query, opts)
 
     fused =
       [vector_stream, fts_stream, graph_stream]
@@ -152,41 +152,50 @@ defmodule BackplaneMemory.Memories.Search do
     |> repo().all()
   end
 
-  defp graph_search(query) do
-    # Use each word as a potential entity name for BFS
+  defp graph_search(query, opts) do
     words =
       query
       |> String.split(~r/\s+/, trim: true)
       |> Enum.filter(&(String.length(&1) > 3))
 
-    obs_ids =
-      words
-      |> Enum.flat_map(fn word ->
-        case BFS.query(word, 1) do
+    if words == [] do
+      []
+    else
+      # Single batch query: find all seed nodes matching any word
+      seed_nodes =
+        repo().all(
+          from(n in BackplaneMemory.Graph.Node,
+            where: fragment("? ILIKE ANY(?)", n.name, ^Enum.map(words, &"%#{&1}%"))
+          )
+        )
+
+      obs_ids =
+        case BFS.query_from_nodes(seed_nodes, 1) do
           {:ok, %{nodes: nodes}} -> Enum.flat_map(nodes, & &1.source_observation_ids)
           _ -> []
         end
-      end)
-      |> Enum.uniq()
+        |> Enum.uniq()
 
-    if obs_ids == [] do
-      []
-    else
-      M
-      |> where([m], m.id in ^obs_ids and is_nil(m.deleted_at))
-      |> select([m], %{
-        id: m.id,
-        content: m.content,
-        scope: m.scope,
-        memory_type: m.memory_type,
-        agent_id: m.agent_id,
-        host_id: m.host_id,
-        tags: m.tags,
-        metadata: m.metadata,
-        inserted_at: m.inserted_at,
-        distance: 0.0
-      })
-      |> repo().all()
+      if obs_ids == [] do
+        []
+      else
+        M
+        |> where([m], m.id in ^obs_ids and is_nil(m.deleted_at))
+        |> apply_filters(opts)
+        |> select([m], %{
+          id: m.id,
+          content: m.content,
+          scope: m.scope,
+          memory_type: m.memory_type,
+          agent_id: m.agent_id,
+          host_id: m.host_id,
+          tags: m.tags,
+          metadata: m.metadata,
+          inserted_at: m.inserted_at,
+          distance: 0.0
+        })
+        |> repo().all()
+      end
     end
   end
 
@@ -200,9 +209,15 @@ defmodule BackplaneMemory.Memories.Search do
     end)
     |> Enum.group_by(fn {id, _row, _score} -> id end)
     |> Enum.map(fn {_id, entries} ->
-      {_id, row, _} = hd(entries)
       total_score = Enum.reduce(entries, 0.0, fn {_, _, score}, acc -> acc + score end)
-      {total_score, row}
+
+      # Prefer the row with the smallest real (non-zero) distance (i.e. vector result)
+      best_row =
+        entries
+        |> Enum.map(fn {_, row, _} -> row end)
+        |> Enum.min_by(fn row -> if row.distance > 0.0, do: row.distance, else: 1.0 end)
+
+      {total_score, best_row}
     end)
     |> Enum.sort_by(fn {score, _} -> score end, :desc)
     |> Enum.map(fn {_score, row} -> row end)

@@ -29,6 +29,19 @@ defmodule BackplaneMemory.Graph.BFS do
     bfs(seed_ids, seed_nodes, [], relation_filter, depth)
   end
 
+  @doc """
+  BFS starting from a pre-fetched list of seed nodes up to depth hops.
+
+  Avoids a redundant DB lookup when the caller already has the seed nodes.
+  Returns `{:ok, %{nodes: [...], edges: [...]}}`.
+  """
+  @spec query_from_nodes([Node.t()], pos_integer(), String.t() | nil) ::
+          {:ok, %{nodes: [Node.t()], edges: [Edge.t()]}}
+  def query_from_nodes(seed_nodes, depth, relation_filter \\ nil) when is_list(seed_nodes) do
+    seed_ids = Enum.map(seed_nodes, & &1.id)
+    bfs(seed_ids, seed_nodes, [], relation_filter, depth)
+  end
+
   defp bfs([], visited_nodes, visited_edges, _filter, _depth),
     do: {:ok, %{nodes: visited_nodes, edges: visited_edges}}
 

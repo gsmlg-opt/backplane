@@ -12,7 +12,12 @@ defmodule BackplaneMemory.Workers.GraphExtractWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"session_id" => session_id}}) do
-    min_obs = Backplane.Settings.get("memory.graph_min_observations") || 3
+    min_obs =
+      case Backplane.Settings.get("memory.graph_min_observations") do
+        v when is_binary(v) -> String.to_integer(v)
+        v when is_integer(v) -> v
+        _ -> 3
+      end
 
     obs_count =
       repo().aggregate(

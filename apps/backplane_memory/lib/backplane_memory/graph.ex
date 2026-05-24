@@ -42,11 +42,11 @@ defmodule BackplaneMemory.Graph do
     end
   end
 
-  @doc "Insert an edge between two node IDs."
+  @doc "Insert an edge between two node IDs. Silently ignores duplicate (source, target, relation) combinations."
   def insert_edge(attrs) do
     %Edge{}
     |> Edge.changeset(attrs)
-    |> repo().insert()
+    |> repo().insert(on_conflict: :nothing, conflict_target: [:source_id, :target_id, :relation])
   end
 
   @doc "Return node count by type and edge count by relation."

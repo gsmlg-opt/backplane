@@ -6,14 +6,14 @@ defmodule BackplaneMemory.Graph.Edge do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts false
+  @timestamps_opts [type: :utc_datetime_usec, updated_at: false, inserted_at: :created_at]
 
   schema "memory_graph_edges" do
     field(:source_id, :binary_id)
     field(:target_id, :binary_id)
     field(:relation, :string)
     field(:weight, :float, default: 1.0)
-    field(:created_at, :utc_datetime_usec)
+    timestamps()
   end
 
   def changeset(edge, attrs) do
