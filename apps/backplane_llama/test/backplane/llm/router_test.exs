@@ -105,6 +105,23 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
+  describe "POST /api/llm/v1/embeddings" do
+    test "routes API-prefixed OpenAI-compatible requests to the LLM proxy" do
+      conn =
+        public_llm_request(:post, "/api/llm/v1/embeddings", %{
+          "model" => "unknown-provider/text-embedding-3-small",
+          "input" => ["hello"]
+        })
+
+      assert conn.halted
+      assert conn.status == 404
+      body = json_body(conn)
+      assert is_map(body["error"])
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
+    end
+  end
+
   describe "POST /anthropic/v1/messages" do
     test "returns 404 for unknown model with anthropic error shape" do
       conn =

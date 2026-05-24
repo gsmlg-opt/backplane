@@ -30,5 +30,14 @@ defmodule Backplane.LLM.ProxyPlugTest do
       assert result.path_info == []
       refute result.halted
     end
+
+    test "passes through LLM admin API paths" do
+      conn = conn(:get, "/api/llm/providers")
+      result = ProxyPlug.call(conn, ProxyPlug.init([]))
+
+      assert result.path_info == ["api", "llm", "providers"]
+      assert result.request_path == "/api/llm/providers"
+      refute result.halted
+    end
   end
 end
