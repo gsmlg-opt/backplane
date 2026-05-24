@@ -12,7 +12,7 @@ defmodule BackplaneWeb.Layouts do
       %{label: "Dashboard", path: "/admin/dashboard/overview", section: :dashboard},
       %{label: "Llama", path: "/admin/llama/providers", section: :llama},
       %{label: "MCP", path: "/admin/mcp/managed", section: :mcp},
-      %{label: "Memory", path: "/admin/memory/browse", section: :memory},
+      %{label: "Memory", path: "/admin/memory", section: :memory},
       %{label: "Skills", path: "/admin/skills", section: :skill},
       %{label: "System", path: "/admin/system/clients", section: :system}
     ]
@@ -41,8 +41,15 @@ defmodule BackplaneWeb.Layouts do
 
       :memory ->
         [
+          %{label: "Overview", path: "/admin/memory", match: :exact},
           %{label: "Browse", path: "/admin/memory/browse"},
-          %{label: "Stats", path: "/admin/memory/stats"}
+          %{label: "Stats", path: "/admin/memory/stats"},
+          %{label: "Observations", path: "/admin/memory/observations"},
+          %{label: "Sessions", path: "/admin/memory/sessions"},
+          %{label: "Graph", path: "/admin/memory/graph"},
+          %{label: "Actions", path: "/admin/memory/actions"},
+          %{label: "Audit", path: "/admin/memory/audit"},
+          %{label: "Config", path: "/admin/memory/config"}
         ]
 
       :skill ->
