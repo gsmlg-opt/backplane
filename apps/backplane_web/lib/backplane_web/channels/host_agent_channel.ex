@@ -71,10 +71,44 @@ defmodule BackplaneWeb.HostAgentChannel do
     invalid_payload(socket)
   end
 
+  def handle_in("memory_call", %{"method" => method, "arguments" => args}, socket)
+      when is_binary(method) and is_map(args) do
+    case dispatch_memory(method, args, socket.assigns.host.id) do
+      {:ok, result} ->
+        {:reply, {:ok, %{"ok" => true, "result" => result}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:ok, %{"ok" => false, "error" => format_memory_error(reason)}}, socket}
+    end
+  end
+
+  def handle_in("memory_call", _payload, socket) do
+    invalid_payload(socket)
+  end
+
   @impl true
   def handle_info(:disconnect, socket) do
     {:stop, :normal, socket}
   end
+
+  defp dispatch_memory(method, args, host_id) do
+    args = Map.put(args, "host_id", host_id)
+    service = Application.get_env(:backplane_web, :memory_service, BackplaneMemory.Service)
+
+    case method do
+      "remember" -> service.handle_remember(args)
+      "recall" -> service.handle_recall(args)
+      "list" -> service.handle_list(args)
+      "forget" -> service.handle_forget(args)
+      "stats" -> service.handle_stats(args)
+      _ -> {:error, {:unknown_method, method}}
+    end
+  end
+
+  defp format_memory_error(reason) when is_binary(reason), do: reason
+  defp format_memory_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_memory_error({:unknown_method, name}), do: "unknown memory method: #{name}"
+  defp format_memory_error(reason), do: inspect(reason)
 
   defp invalid_payload(socket) do
     {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}

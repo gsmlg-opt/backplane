@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.HostAgentApiRouterTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   import Backplane.SkillArchiveCase
   import Plug.Conn
@@ -25,6 +25,31 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
     end)
 
     :ok
+  end
+
+  test "whoami returns host info for a valid token" do
+    {host, token} = create_agent_with_token!("t430")
+
+    conn =
+      :get
+      |> conn("/whoami")
+      |> put_req_header("x-backplane-host-token", token)
+
+    conn = HostAgentApiRouter.call(conn, HostAgentApiRouter.init([]))
+
+    assert conn.status == 200
+    assert Jason.decode!(conn.resp_body) == %{"id" => host.id, "name" => host.name}
+  end
+
+  test "whoami rejects an invalid token" do
+    conn =
+      :get
+      |> conn("/whoami")
+      |> put_req_header("x-backplane-host-token", "bogus")
+
+    conn = HostAgentApiRouter.call(conn, HostAgentApiRouter.init([]))
+
+    assert conn.status == 401
   end
 
   test "rejects missing host token" do

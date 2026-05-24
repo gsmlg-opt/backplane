@@ -134,6 +134,60 @@ defmodule BackplaneWeb.HostAgentChannelTest do
     assert_reply(ref, :error, %{"reason" => "invalid_payload"})
   end
 
+  defmodule StubMemoryService do
+    def handle_remember(args), do: send_and_ok({:remember, args})
+    def handle_recall(args), do: send_and_ok({:recall, args})
+    def handle_list(args), do: send_and_ok({:list, args})
+    def handle_forget(args), do: send_and_ok({:forget, args})
+    def handle_stats(args), do: send_and_ok({:stats, args})
+
+    defp send_and_ok(message) do
+      owner = :persistent_term.get({__MODULE__, :owner}, nil)
+      if owner, do: send(owner, {:memory_service, message})
+      {:ok, %{"echo" => elem(message, 0) |> to_string()}}
+    end
+  end
+
+  describe "memory_call" do
+    setup %{host: host, socket: socket} do
+      :persistent_term.put({StubMemoryService, :owner}, self())
+      Application.put_env(:backplane_web, :memory_service, StubMemoryService)
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      on_exit(fn ->
+        Application.delete_env(:backplane_web, :memory_service)
+        _ = :persistent_term.erase({StubMemoryService, :owner})
+      end)
+
+      %{socket: socket}
+    end
+
+    test "remember injects host_id and dispatches to the memory service",
+         %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "remember",
+          "arguments" => %{"content" => "hi", "agent_id" => "agt_1"}
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "remember"}})
+      assert_received {:memory_service, {:remember, args}}
+      assert args["host_id"] == host.id
+      assert args["agent_id"] == "agt_1"
+      assert args["content"] == "hi"
+    end
+
+    test "unknown method returns an error reply", %{socket: socket} do
+      ref = push(socket, "memory_call", %{"method" => "teleport", "arguments" => %{}})
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "unknown memory method: teleport"})
+    end
+
+    test "malformed payload returns an invalid_payload error", %{socket: socket} do
+      ref = push(socket, "memory_call", %{"bad" => true})
+      assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+  end
+
   defp create_agent_with_token!(name) do
     assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "#{name} token"})
 

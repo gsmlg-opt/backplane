@@ -31,7 +31,9 @@ defmodule Backplane.HostAgent.MixProject do
       {:phoenix_socket_client, "~> 0.7.0"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
-      {:toml, "~> 0.7"}
+      {:yaml_elixir, "~> 2.9"},
+      {:plug, "~> 1.16"},
+      {:bandit, "~> 1.5"}
     ]
   end
 end

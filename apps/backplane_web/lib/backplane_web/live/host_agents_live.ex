@@ -455,6 +455,8 @@ defmodule BackplaneWeb.HostAgentsLive do
         </p>
       </div>
 
+      <.connect_guide />
+
       <div :if={@connections == []} class="text-sm text-on-surface-variant">
         No host agents connected.
       </div>
@@ -808,6 +810,100 @@ defmodule BackplaneWeb.HostAgentsLive do
       </div>
     </div>
     """
+  end
+
+  defp connect_guide(assigns) do
+    ~H"""
+    <.dm_card variant="bordered" class="mb-6">
+      <:title>Connect a host agent</:title>
+      <div class="space-y-3 text-sm">
+        <ol class="list-decimal space-y-2 pl-5">
+          <li>
+            In <strong>Agent Auth</strong>, create a token and copy it (shown once).
+          </li>
+          <li>
+            In <strong>Agent Management</strong>, add an agent and assign the token.
+          </li>
+          <li>
+            On the host machine, install Backplane (or check out the repo) and run
+            <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">mix agent.run</code>.
+            The agent writes a sample config to
+            <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">~/.config/backplane/host_agent.yaml</code>
+            on first run. Edit it (see below) and re-run.
+          </li>
+        </ol>
+
+        <details class="mt-2">
+          <summary class="cursor-pointer text-sm font-medium text-primary">
+            Sample <code>~/.config/backplane/host_agent.yaml</code>
+          </summary>
+          <pre class="mt-3 overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{sample_yaml()}</code></pre>
+        </details>
+
+        <p class="text-on-surface-variant">
+          The agent reads YAML from
+          <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">$BACKPLANE_HOST_AGENT_CONFIG</code>
+          if set, otherwise from
+          <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">$XDG_CONFIG_HOME/backplane/host_agent.yaml</code>
+          (defaults to
+          <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">~/.config/backplane/host_agent.yaml</code>).
+        </p>
+
+        <details class="mt-3">
+          <summary class="cursor-pointer text-sm font-medium text-primary">
+            Local Memory HTTP API
+          </summary>
+          <div class="mt-3 space-y-2">
+            <p>
+              Set <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">agent.http_port</code>
+              in the config to expose a local memory API to other processes on the host.
+              The agent proxies these calls to Backplane through the WebSocket channel.
+            </p>
+            <ul class="list-disc space-y-1 pl-5">
+              <li>
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">POST /memory/:agent_id/call/:method</code>
+                — direct call. JSON body becomes the method args.
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">:method</code>
+                is one of: remember, recall, list, forget, stats.
+              </li>
+              <li>
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">POST /memory/:agent_id/mcp</code>
+                — JSON-RPC MCP endpoint. Supports
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">initialize</code>,
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">tools/list</code>,
+                <code class="rounded bg-surface-container-high px-1.5 py-0.5 text-xs">tools/call</code>.
+              </li>
+            </ul>
+          </div>
+        </details>
+      </div>
+    </.dm_card>
+    """
+  end
+
+  defp sample_yaml do
+    """
+    agent:
+      machine_name: my-host
+      hub_url: #{hub_url_hint()}
+      token: PASTE_TOKEN_HERE
+      interval_ms: 60000
+      manifest_path: ~/.local/share/backplane/host_agent/manifest.json
+      work_dir: ~/.local/share/backplane/host_agent
+
+    targets:
+      - name: agents
+        runtime: agent-skills
+        path: ~/.local/share/backplane/host_agent/skills
+        enabled: true
+    """
+  end
+
+  defp hub_url_hint do
+    case Application.get_env(:backplane_web, BackplaneWeb.Endpoint, []) |> Keyword.get(:url) do
+      [host: host, port: port] -> "http://#{host}:#{port}"
+      _ -> "http://localhost:4220"
+    end
   end
 
   defp token_notice(assigns) do

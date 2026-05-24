@@ -18,6 +18,16 @@ defmodule Backplane.Skills.HostAgentApiRouter do
   plug(:auth_host)
   plug(:dispatch)
 
+  get "/whoami" do
+    host = conn.assigns.host
+
+    body = Jason.encode!(%{id: host.id, name: host.name})
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, body)
+  end
+
   get "/skills/:slug/download" do
     case authorized_archive_stream(conn.assigns.host, slug) do
       {:ok, stream} ->
