@@ -1,0 +1,5 @@
+{
+  "name": "forget",
+  "description": "Delete a memory by query or ID. Usage: /forget <query or id>",
+  "content": "If the argument looks like a UUID, call memory::governance_delete with memory_id. Otherwise, call memory::smart_search first to find matches, show them, and ask for confirmation before calling memory::governance_delete. Write an audit entry."
+}

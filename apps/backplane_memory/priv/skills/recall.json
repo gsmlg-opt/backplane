@@ -1,0 +1,5 @@
+{
+  "name": "recall",
+  "description": "Search your memory for relevant context. Usage: /recall <query>",
+  "content": "Run memory::smart_search with the user's query and print the top 5 results formatted as a numbered list."
+}

@@ -1,0 +1,5 @@
+{
+  "name": "remember",
+  "description": "Save something to memory. Usage: /remember <content>",
+  "content": "Call memory::remember with the provided content. Infer type as 'semantic' by default, 'procedural' if it describes a workflow, 'working' if it's temporary context. Confirm what was saved."
+}

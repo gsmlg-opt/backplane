@@ -1,0 +1,5 @@
+{
+  "name": "session-history",
+  "description": "Show the last 10 sessions. Usage: /session-history",
+  "content": "Call memory::sessions and display the last 10 sessions as a table with: session ID (truncated to 8 chars), project, observation count, start time, and one-line summary if available."
+}
