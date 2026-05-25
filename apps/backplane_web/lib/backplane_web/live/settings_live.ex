@@ -262,8 +262,6 @@ defmodule BackplaneWeb.SettingsLive do
      )}
   end
 
-  def handle_info(_, socket), do: {:noreply, socket}
-
   def handle_event("cancel_cred_form", _, socket) do
     {:noreply, assign(socket, cred_form_mode: nil, cred_editing_name: nil)}
   end
@@ -293,6 +291,9 @@ defmodule BackplaneWeb.SettingsLive do
         {:noreply, put_flash(socket, :error, "Failed to delete credential")}
     end
   end
+
+  @impl true
+  def handle_info(_, socket), do: {:noreply, socket}
 
   defp configure_auto_model_targets(socket, name, model_ids) do
     case AutoModel.configure_targets(name, model_ids) do
@@ -677,17 +678,53 @@ defmodule BackplaneWeb.SettingsLive do
     <div>
       <div class="flex items-center justify-between mb-4">
         <h1 class="text-2xl font-bold">Credential Store</h1>
-        <div :if={@cred_form_mode == nil} class="flex flex-wrap items-center gap-2">
-          <.dm_btn variant="primary" phx-click="show_add_form">Add Credential</.dm_btn>
-          <.dm_btn phx-click="show_device_auth" phx-value-vendor="anthropic_oauth">
-            Connect Claude Plan
-          </.dm_btn>
-          <.dm_btn phx-click="show_device_auth" phx-value-vendor="openai_oauth">
-            Connect OpenAI Codex
-          </.dm_btn>
-          <.dm_btn phx-click="show_device_auth" phx-value-vendor="google_oauth">
-            Connect Google AI
-          </.dm_btn>
+        <div :if={@cred_form_mode == nil} class="flex items-center">
+          <button
+            type="button"
+            class="btn btn-primary split-btn-left"
+            phx-click="show_add_form"
+          >
+            Add Credential
+          </button>
+          <.dm_dropdown id="cred-add-dropdown" position="bottom" dropdown_class="popover-end split-btn-dropdown">
+            <:trigger class="split-btn-trigger">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                class="size-4"
+              >
+                <path
+                  fill-rule="evenodd"
+                  d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </:trigger>
+            <:content>
+              <button
+                phx-click="show_device_auth"
+                phx-value-vendor="anthropic_oauth"
+                class="popover-menu-item"
+              >
+                Connect Claude Plan
+              </button>
+              <button
+                phx-click="show_device_auth"
+                phx-value-vendor="openai_oauth"
+                class="popover-menu-item"
+              >
+                Connect OpenAI Codex
+              </button>
+              <button
+                phx-click="show_device_auth"
+                phx-value-vendor="google_oauth"
+                class="popover-menu-item"
+              >
+                Connect Google AI
+              </button>
+            </:content>
+          </.dm_dropdown>
         </div>
       </div>
 

@@ -25,6 +25,71 @@
   padding: 0.375rem 0.75rem;
 }
 
+.split-btn-left {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  height: 42px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+.split-btn-trigger {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 42px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+  font-family: inherit !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  line-height: 1.25rem !important;
+  text-align: center !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  vertical-align: middle !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  border: 1px solid transparent !important;
+  border-left: 1px solid color-mix(in oklch, currentColor 20%, transparent) !important;
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  border-top-right-radius: var(--radius-sm) !important;
+  border-bottom-right-radius: var(--radius-sm) !important;
+  background-color: var(--color-primary) !important;
+  color: var(--color-primary-content) !important;
+  transition: all 150ms ease-in-out !important;
+}
+
+.split-btn-trigger:hover {
+  background-color: color-mix(in oklch, var(--color-primary), black 10%) !important;
+}
+.split-btn-dropdown {
+  background-color: var(--color-primary) !important;
+  color: var(--color-primary-content) !important;
+  border-color: var(--color-primary) !important;
+
+  /* Force correct anchor positioning alignment */
+  position: fixed !important;
+  top: anchor(bottom) !important;
+  right: anchor(right) !important;
+  left: auto !important;
+  margin-top: 0.5rem !important;
+}
+
+.split-btn-dropdown .popover-menu-item {
+  color: var(--color-primary-content) !important;
+}
+
+.split-btn-dropdown .popover-menu-item:hover {
+  background-color: color-mix(in oklch, var(--color-primary), black 10%) !important;
+  color: var(--color-primary-content) !important;
+}
+
 .admin-top-nav {
   flex: 1 1 auto;
   flex-shrink: 1;
