@@ -13,6 +13,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   @methods ~w(remember recall list forget stats)
   @method_set MapSet.new(@methods)
+  @reconnect_lock_resource {__MODULE__, :reconnect}
 
   @doc "List of memory methods exposed by the HTTP API."
   def methods, do: @methods
@@ -53,12 +54,19 @@ defmodule Backplane.HostAgent.MemoryProxy do
   """
   @spec set_connection(map(), map() | struct()) :: :ok
   def set_connection(%{channel: channel} = connection, config) when is_pid(channel) do
+    previous = state_map()
+    socket = Map.get(connection, :socket)
+
+    unlink_process(channel)
+    unlink_process(socket)
+    close_replaced_socket(Map.get(previous, :socket), socket)
+
     :persistent_term.put(__MODULE__, %{
       channel: channel,
       config: config,
       host_id: Map.get(connection, :host_id),
       host_name: Map.get(connection, :host_name),
-      socket: Map.get(connection, :socket)
+      socket: socket
     })
 
     :ok
@@ -171,9 +179,38 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp reconnect(connector_module, channel_module) do
-    case rejoin_existing_socket(channel_module) do
-      {:ok, channel} -> {:ok, channel}
-      {:error, _reason} -> connect_new_socket(connector_module)
+    :global.trans(
+      {@reconnect_lock_resource, self()},
+      fn -> reconnect_locked(connector_module, channel_module) end,
+      [node()]
+    )
+  catch
+    :exit, reason -> {:error, {:reconnect_lock_failed, reason}}
+  end
+
+  defp reconnect_locked(connector_module, channel_module) do
+    case live_channel() do
+      {:ok, channel} ->
+        {:ok, channel}
+
+      {:error, _reason} ->
+        case rejoin_existing_socket(channel_module) do
+          {:ok, channel} -> {:ok, channel}
+          {:error, _reason} -> connect_new_socket(connector_module)
+        end
+    end
+  end
+
+  defp live_channel do
+    case state() do
+      %{channel: channel} when is_pid(channel) ->
+        if Process.alive?(channel), do: {:ok, channel}, else: {:error, :not_connected}
+
+      channel when is_pid(channel) ->
+        if Process.alive?(channel), do: {:ok, channel}, else: {:error, :not_connected}
+
+      _ ->
+        {:error, :not_connected}
     end
   end
 
@@ -186,6 +223,12 @@ defmodule Backplane.HostAgent.MemoryProxy do
               store_rejoined_channel(channel)
 
             {:ok, channel} when is_pid(channel) ->
+              store_rejoined_channel(channel)
+
+            {:error, {:already_joined, channel}} when is_pid(channel) ->
+              store_rejoined_channel(channel)
+
+            {:error, {:already_started, channel}} when is_pid(channel) ->
               store_rejoined_channel(channel)
 
             {:error, reason} ->
@@ -221,6 +264,8 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp store_rejoined_channel(channel) do
+    unlink_process(channel)
+
     case state() do
       %{} = current ->
         :persistent_term.put(__MODULE__, Map.put(current, :channel, channel))
@@ -250,6 +295,34 @@ defmodule Backplane.HostAgent.MemoryProxy do
       _ -> %{}
     end
   end
+
+  defp close_replaced_socket(socket, socket), do: :ok
+
+  defp close_replaced_socket(socket, _new_socket) when is_pid(socket) do
+    if Process.alive?(socket) do
+      socket_client_module =
+        Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
+
+      if function_exported?(socket_client_module, :disconnect, 1) do
+        socket_client_module.disconnect(socket)
+      end
+    end
+
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp close_replaced_socket(_socket, _new_socket), do: :ok
+
+  defp unlink_process(pid) when is_pid(pid) do
+    Process.unlink(pid)
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp unlink_process(_), do: :ok
 
   defp push_exit_reason({:noproc, _}), do: :not_connected
   defp push_exit_reason(:noproc), do: :not_connected
