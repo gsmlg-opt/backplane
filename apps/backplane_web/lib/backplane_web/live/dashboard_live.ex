@@ -5,6 +5,7 @@ defmodule BackplaneWeb.DashboardLive do
   alias Backplane.Proxy.{Pool, Upstreams}
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
+  alias Backplane.Settings.Credentials
   alias Backplane.Skills.Registry, as: SkillsRegistry
 
   @refresh_interval 5_000
@@ -72,6 +73,8 @@ defmodule BackplaneWeb.DashboardLive do
     native_tools = Enum.filter(tools, &(&1.origin == :native))
     upstream_tools = Enum.reject(tools, &(&1.origin == :native))
 
+    plan_credentials = safe_call(&load_plan_credentials/0, [])
+
     assign(socket,
       loading: false,
       tool_count: length(tools),
@@ -80,7 +83,8 @@ defmodule BackplaneWeb.DashboardLive do
       skill_count: length(skills),
       upstream_count: length(upstreams),
       upstreams: upstreams,
-      metrics: metrics
+      metrics: metrics,
+      plan_credentials: plan_credentials
     )
   end
 
@@ -88,6 +92,13 @@ defmodule BackplaneWeb.DashboardLive do
     fun.()
   rescue
     _ -> default
+  end
+
+  defp load_plan_credentials do
+    Credentials.list()
+    |> Enum.filter(fn cred ->
+      (cred.metadata || %{})["auth_type"] in ["anthropic_oauth", "openai_oauth", "google_oauth"]
+    end)
   end
 
   @impl true
@@ -118,6 +129,58 @@ defmodule BackplaneWeb.DashboardLive do
         />
       </div>
 
+      <div :if={@plan_credentials != []} class="mt-8">
+        <h2 class="text-lg font-semibold mb-4">AI Plan Usage</h2>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <.dm_card :for={cred <- @plan_credentials} variant="bordered">
+            <:title>
+              <div class="flex items-center justify-between">
+                <span>{plan_label((cred.metadata || %{})["auth_type"])}</span>
+                <.dm_badge variant="success">Active</.dm_badge>
+              </div>
+            </:title>
+            <div class="text-sm space-y-1">
+              <p class="text-on-surface-variant">
+                Credential: <span class="text-on-surface font-mono">{cred.name}</span>
+              </p>
+              <%= case (cred.metadata || %{})["auth_type"] do %>
+                <% "anthropic_oauth" -> %>
+                  <p :if={(cred.metadata || %{})["subscription_type"]} class="text-on-surface-variant">
+                    Plan:
+                    <span class="text-on-surface font-medium">
+                      {(cred.metadata || %{})["subscription_type"]}
+                    </span>
+                  </p>
+                  <p :if={(cred.metadata || %{})["organization_uuid"]} class="text-on-surface-variant">
+                    Org:
+                    <span class="text-on-surface font-mono text-xs">
+                      {(cred.metadata || %{})["organization_uuid"]}
+                    </span>
+                  </p>
+                <% "openai_oauth" -> %>
+                  <p :if={(cred.metadata || %{})["account_id"]} class="text-on-surface-variant">
+                    Account:
+                    <span class="text-on-surface font-mono text-xs">
+                      {(cred.metadata || %{})["account_id"]}
+                    </span>
+                  </p>
+                <% "google_oauth" -> %>
+                  <p :if={(cred.metadata || %{})["client_id"]} class="text-on-surface-variant">
+                    Client ID:
+                    <span class="text-on-surface font-mono text-xs">
+                      {(cred.metadata || %{})["client_id"]}
+                    </span>
+                  </p>
+                <% _ -> %>
+              <% end %>
+              <p class="text-xs text-on-surface-variant mt-2">
+                Updated {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
+              </p>
+            </div>
+          </.dm_card>
+        </div>
+      </div>
+
       <div class="mt-8">
         <h2 class="text-lg font-semibold mb-4">Upstream Status</h2>
         <div :if={@upstreams == []} class="text-on-surface-variant text-sm">
@@ -144,6 +207,11 @@ defmodule BackplaneWeb.DashboardLive do
     </div>
     """
   end
+
+  defp plan_label("anthropic_oauth"), do: "Claude Plan"
+  defp plan_label("openai_oauth"), do: "OpenAI Codex"
+  defp plan_label("google_oauth"), do: "Google AI"
+  defp plan_label(other), do: other
 
   defp upstream_status(%{status: :connected}), do: :connected
   defp upstream_status(%{status: :degraded}), do: :degraded

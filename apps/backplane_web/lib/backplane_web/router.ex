@@ -99,6 +99,9 @@ defmodule BackplaneWeb.Router do
     live("/system/host-agents/manage", HostAgentsLive, :manage)
     live("/system/host-agents/auth", HostAgentsLive, :auth)
     live("/system/host-agents/:id/config", HostAgentsLive, :config)
+
+    # OAuth callbacks
+    get("/oauth/callback", OAuthCallbackController, :callback)
   end
 
   # Enable LiveDashboard in development

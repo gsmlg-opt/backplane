@@ -31,6 +31,7 @@ defmodule Backplane.LLM.Provider do
     field(:rpm_limit, :integer)
     field(:enabled, :boolean, default: true)
     field(:deleted_at, :utc_datetime_usec)
+    field(:api_type, Ecto.Enum, values: [:anthropic, :openai], virtual: true)
 
     has_many(:apis, ProviderApi, foreign_key: :provider_id)
     has_many(:models, ProviderModel, foreign_key: :provider_id)
@@ -39,7 +40,7 @@ defmodule Backplane.LLM.Provider do
   end
 
   @required_fields ~w(name credential)a
-  @optional_fields ~w(preset_key default_headers rpm_limit enabled)a
+  @optional_fields ~w(preset_key default_headers rpm_limit enabled api_type)a
 
   # ── Changesets ───────────────────────────────────────────────────────────────
 

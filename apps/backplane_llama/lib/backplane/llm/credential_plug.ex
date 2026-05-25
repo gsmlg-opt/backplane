@@ -1,6 +1,15 @@
 defmodule Backplane.LLM.CredentialPlug do
   @moduledoc """
   Strips client auth headers and injects provider API credentials into a conn.
+
+  Dispatches on both `provider.api_type` and the credential's `auth_type`:
+
+  - api_type `:anthropic` + auth_type `api_key` / `oauth2_client_credentials`:
+    sets `x-api-key`, adds `anthropic-version`.
+  - api_type `:anthropic` + auth_type `anthropic_oauth`:
+    sets `Authorization: Bearer …`, adds `anthropic-beta: oauth-2025-04-20`
+    and `anthropic-version`.
+  - api_type `:openai` (any auth_type): sets `Authorization: Bearer …`.
   """
 
   alias Backplane.LLM.Provider
@@ -10,81 +19,56 @@ defmodule Backplane.LLM.CredentialPlug do
   @default_anthropic_version "2023-06-01"
 
   @doc """
-  Inject provider credentials into `conn` for a concrete API surface.
-
-  For `:anthropic`:
-  - Deletes the `authorization` header
-  - Sets `x-api-key` to the resolved API key
-  - Injects `anthropic-version: 2023-06-01` if not already present
-  - Merges `provider.default_headers`
-
-  For `:openai`:
-  - Deletes the `x-api-key` header
-  - Sets `authorization` to `Bearer <resolved_key>`
-  - Merges `provider.default_headers`
-
-  API key resolution:
-  - `provider.credential` — name referencing the centralized credentials store
-  - Returns 503 if credential is not set or not found
+  Inject provider credentials into `conn`. Derives `api_type` from
+  `provider.api_type`.
   """
-  @spec inject(Plug.Conn.t(), Provider.t(), :openai | :anthropic) :: Plug.Conn.t()
-  def inject(%Plug.Conn{} = conn, %Provider{} = provider, :anthropic) do
-    case resolve_api_key(provider) do
-      {:ok, api_key} ->
-        conn
-        |> delete_req_header("authorization")
-        |> put_req_header("x-api-key", api_key)
-        |> maybe_inject_anthropic_version()
-        |> merge_default_headers(provider.default_headers)
-
-      {:error, _reason} ->
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
-        |> halt()
-    end
-  end
-
-  def inject(%Plug.Conn{} = conn, %Provider{} = provider, :openai) do
-    case resolve_api_key(provider) do
-      {:ok, api_key} ->
-        conn
-        |> delete_req_header("x-api-key")
-        |> put_req_header("authorization", "Bearer #{api_key}")
-        |> merge_default_headers(provider.default_headers)
-
-      {:error, _reason} ->
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
-        |> halt()
-    end
-  end
-
-  @doc false
   @spec inject(Plug.Conn.t(), Provider.t()) :: Plug.Conn.t()
-  def inject(%Plug.Conn{} = conn, %Provider{} = _provider) do
+  def inject(%Plug.Conn{} = conn, %Provider{api_type: api_type} = provider)
+      when api_type in [:anthropic, :openai] do
+    case resolve_credential(provider) do
+      {:ok, token, meta} ->
+        conn
+        |> apply_auth_headers(api_type, meta.auth_type, token)
+        |> apply_extra_headers(meta.extra_headers)
+        |> maybe_apply_anthropic_version(api_type)
+        |> merge_default_headers(provider.default_headers)
+
+      {:error, _reason} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(503, Jason.encode!(%{error: "provider credential not configured"}))
+        |> halt()
+    end
+  end
+
+  def inject(%Plug.Conn{} = conn, %Provider{}) do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(503, Jason.encode!(%{error: "provider API surface not configured"}))
     |> halt()
   end
 
-  # ── Public helpers ────────────────────────────────────────────────────────────
-
   @doc """
   Build authentication headers for a provider without a conn.
 
   Returns `{:ok, headers}` where headers is a list of `{key, value}` tuples,
   or `{:error, reason}`.
+
+  Accepts an optional explicit `api_type` — used by production callers (router,
+  health checker, model discovery) that know the surface from context.  When
+  omitted the `api_type` virtual field on the provider struct is used instead
+  (set when the struct was created in-process via `Provider.create/1`).
   """
-  @spec build_auth_headers(Provider.t(), :openai | :anthropic) ::
+  @spec build_auth_headers(Provider.t(), atom()) ::
           {:ok, [{String.t(), String.t()}]} | {:error, atom()}
-  def build_auth_headers(%Provider{} = provider, :anthropic) do
-    case resolve_api_key(provider) do
-      {:ok, api_key} ->
+  def build_auth_headers(%Provider{} = provider, api_type)
+      when api_type in [:anthropic, :openai] do
+    case resolve_credential(provider) do
+      {:ok, token, meta} ->
         headers =
-          [{"x-api-key", api_key}, {"anthropic-version", @default_anthropic_version}] ++
+          base_headers(api_type, meta.auth_type, token) ++
+            meta.extra_headers ++
+            anthropic_version_pair(api_type) ++
             default_header_pairs(provider.default_headers)
 
         {:ok, headers}
@@ -94,23 +78,67 @@ defmodule Backplane.LLM.CredentialPlug do
     end
   end
 
-  def build_auth_headers(%Provider{} = provider, :openai) do
-    case resolve_api_key(provider) do
-      {:ok, api_key} ->
-        headers =
-          [{"authorization", "Bearer #{api_key}"}] ++
-            default_header_pairs(provider.default_headers)
+  def build_auth_headers(%Provider{}, _api_type), do: {:error, :api_surface_required}
 
-        {:ok, headers}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc false
   @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def build_auth_headers(%Provider{api_type: api_type} = provider)
+      when api_type in [:anthropic, :openai],
+      do: build_auth_headers(provider, api_type)
+
   def build_auth_headers(%Provider{}), do: {:error, :api_surface_required}
+
+  # ── Private helpers ───────────────────────────────────────────────────────────
+
+  defp resolve_credential(%Provider{credential: credential})
+       when is_binary(credential) and credential != "" do
+    Credentials.fetch_with_meta(credential)
+  end
+
+  defp resolve_credential(_provider), do: {:error, :no_credential}
+
+  defp apply_auth_headers(conn, :anthropic, "anthropic_oauth", token) do
+    conn
+    |> delete_req_header("x-api-key")
+    |> put_req_header("authorization", "Bearer #{token}")
+  end
+
+  defp apply_auth_headers(conn, :anthropic, _auth_type, token) do
+    conn
+    |> delete_req_header("authorization")
+    |> put_req_header("x-api-key", token)
+  end
+
+  defp apply_auth_headers(conn, :openai, _auth_type, token) do
+    conn
+    |> delete_req_header("x-api-key")
+    |> put_req_header("authorization", "Bearer #{token}")
+  end
+
+  defp apply_extra_headers(conn, []), do: conn
+
+  defp apply_extra_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {k, v}, acc -> put_req_header(acc, k, v) end)
+  end
+
+  defp maybe_apply_anthropic_version(conn, :anthropic) do
+    case get_req_header(conn, "anthropic-version") do
+      [] -> put_req_header(conn, "anthropic-version", @default_anthropic_version)
+      _ -> conn
+    end
+  end
+
+  defp maybe_apply_anthropic_version(conn, _), do: conn
+
+  defp base_headers(:anthropic, "anthropic_oauth", token),
+    do: [{"authorization", "Bearer #{token}"}]
+
+  defp base_headers(:anthropic, _auth_type, token), do: [{"x-api-key", token}]
+
+  defp base_headers(:openai, _auth_type, token),
+    do: [{"authorization", "Bearer #{token}"}]
+
+  defp anthropic_version_pair(:anthropic), do: [{"anthropic-version", @default_anthropic_version}]
+  defp anthropic_version_pair(_), do: []
 
   defp default_header_pairs(nil), do: []
 
@@ -118,26 +146,11 @@ defmodule Backplane.LLM.CredentialPlug do
     Enum.map(headers, fn {k, v} -> {String.downcase(k), v} end)
   end
 
-  # ── Private helpers ───────────────────────────────────────────────────────────
-
-  # Resolve the plaintext API key for a provider via the centralized credential store.
-  defp resolve_api_key(%Provider{credential: credential})
-       when is_binary(credential) and credential != "" do
-    Credentials.fetch(credential)
-  end
-
-  defp resolve_api_key(_provider), do: {:error, :no_credential}
-
-  defp maybe_inject_anthropic_version(conn) do
-    case get_req_header(conn, "anthropic-version") do
-      [] -> put_req_header(conn, "anthropic-version", @default_anthropic_version)
-      _existing -> conn
-    end
-  end
-
   defp merge_default_headers(conn, headers) when is_map(headers) do
     Enum.reduce(headers, conn, fn {key, value}, acc ->
       put_req_header(acc, String.downcase(key), value)
     end)
   end
+
+  defp merge_default_headers(conn, _), do: conn
 end

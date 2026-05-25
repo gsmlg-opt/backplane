@@ -82,6 +82,11 @@ config :phoenix, :json_library, Jason
 # Relayixir — used as a library, BackplaneWeb handles HTTP serving
 config :relayixir, start_server: false
 
+config :backplane, Backplane.Settings.OAuthRefresher,
+  anthropic_token_url: "https://console.anthropic.com/v1/oauth/token",
+  openai_token_url: "https://auth.openai.com/oauth/token",
+  google_token_url: "https://oauth2.googleapis.com/token"
+
 config :backplane_host_agent, start_on_application: true
 
 import_config "#{config_env()}.exs"

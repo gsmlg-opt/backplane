@@ -6,6 +6,8 @@ defmodule BackplaneWeb.SettingsLive do
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
+  alias Backplane.Settings.OAuthDeviceFlow
+  alias Backplane.Settings.OAuthStateStore
 
   @impl true
   def mount(_params, _session, socket) do
@@ -56,7 +58,16 @@ defmodule BackplaneWeb.SettingsLive do
       cred_auth_type: "api_key",
       cred_client_id: "",
       cred_token_url: "",
-      cred_scope: ""
+      cred_scope: "",
+      device_flow_vendor: nil,
+      device_flow_state: :idle,
+      device_flow_cred_name: "",
+      device_flow_client_id: "",
+      device_flow_code: nil,
+      device_flow_user_code: nil,
+      device_flow_verification_uri: nil,
+      device_flow_interval: 5,
+      device_flow_error: nil
     )
   end
 
@@ -193,6 +204,166 @@ defmodule BackplaneWeb.SettingsLive do
        cred_secret: ""
      )}
   end
+
+  def handle_event("show_device_auth", %{"vendor" => vendor}, socket) do
+    default_name =
+      case vendor do
+        "anthropic_oauth" -> "claude-plan"
+        "openai_oauth" -> "openai-codex"
+        "google_oauth" -> "google-ai"
+        _ -> "oauth-cred"
+      end
+
+    {:noreply,
+     assign(socket,
+       cred_form_mode: :device_auth,
+       device_flow_vendor: vendor,
+       device_flow_state: :idle,
+       device_flow_cred_name: default_name,
+       device_flow_client_id: "",
+       device_flow_code: nil,
+       device_flow_user_code: nil,
+       device_flow_verification_uri: nil,
+       device_flow_error: nil
+     )}
+  end
+
+  def handle_event("start_device_auth", params, socket) do
+    vendor = socket.assigns.device_flow_vendor
+    name = String.trim(params["cred_name"] || "")
+    client_id = String.trim(params["client_id"] || "")
+
+    cond do
+      name == "" ->
+        {:noreply, put_flash(socket, :error, "Credential name is required")}
+
+      vendor == "google_oauth" and client_id == "" ->
+        {:noreply, put_flash(socket, :error, "Client ID is required for Google AI")}
+
+      vendor in ["anthropic_oauth", "openai_oauth"] ->
+        redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
+        {verifier, challenge} = pkce_pair()
+
+        state =
+          OAuthStateStore.put(%{
+            "vendor" => vendor,
+            "cred_name" => name,
+            "code_verifier" => verifier,
+            "redirect_uri" => redirect_uri
+          })
+
+        auth_url = build_auth_url(vendor, state, challenge, redirect_uri)
+        {:noreply, redirect(socket, external: auth_url)}
+
+      true ->
+        opts = [client_id: client_id]
+
+        case OAuthDeviceFlow.request_device_code(:google_oauth, opts) do
+          {:ok, resp} ->
+            hints = %{"client_id" => client_id}
+
+            Process.send_after(
+              self(),
+              {:poll_device_auth, vendor, resp.device_code, name, hints, resp.interval},
+              resp.interval * 1000
+            )
+
+            {:noreply,
+             assign(socket,
+               device_flow_state: :polling,
+               device_flow_cred_name: name,
+               device_flow_client_id: client_id,
+               device_flow_code: resp.device_code,
+               device_flow_user_code: resp.user_code,
+               device_flow_verification_uri: resp.verification_uri,
+               device_flow_interval: resp.interval,
+               device_flow_error: nil
+             )}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_error: "Failed to start device auth: #{inspect(reason)}"
+             )}
+        end
+    end
+  end
+
+  def handle_event("cancel_device_auth", _, socket) do
+    {:noreply,
+     assign(socket,
+       cred_form_mode: nil,
+       device_flow_vendor: nil,
+       device_flow_state: :idle,
+       device_flow_code: nil,
+       device_flow_user_code: nil,
+       device_flow_verification_uri: nil,
+       device_flow_error: nil
+     )}
+  end
+
+  @impl true
+  def handle_info({:poll_device_auth, vendor, device_code, cred_name, hints, interval}, socket) do
+    vendor_atom = String.to_existing_atom(vendor)
+    opts = if vendor == "google_oauth", do: [client_id: hints["client_id"] || ""], else: []
+
+    case OAuthDeviceFlow.poll(vendor_atom, device_code, opts) do
+      {:ok, tokens} ->
+        auth_type = vendor
+
+        case Credentials.store_device_token(cred_name, auth_type, tokens, hints) do
+          {:ok, _} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
+             |> assign(cred_form_mode: nil, device_flow_state: :idle)
+             |> load_data("credentials")}
+
+          {:error, _} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Token obtained but failed to store credential"
+             )}
+        end
+
+      {:pending} ->
+        Process.send_after(
+          self(),
+          {:poll_device_auth, vendor, device_code, cred_name, hints, interval},
+          interval * 1000
+        )
+
+        {:noreply, socket}
+
+      {:slow_down} ->
+        new_interval = interval + 5
+
+        Process.send_after(
+          self(),
+          {:poll_device_auth, vendor, device_code, cred_name, hints, new_interval},
+          new_interval * 1000
+        )
+
+        {:noreply, assign(socket, device_flow_interval: new_interval)}
+
+      {:expired} ->
+        {:noreply,
+         assign(socket,
+           device_flow_state: :error,
+           device_flow_error: "Device code expired. Please start over."
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           device_flow_state: :error,
+           device_flow_error: "Auth failed: #{inspect(reason)}"
+         )}
+    end
+  end
+
+  def handle_info(_, socket), do: {:noreply, socket}
 
   def handle_event("cancel_cred_form", _, socket) do
     {:noreply, assign(socket, cred_form_mode: nil, cred_editing_name: nil)}
@@ -607,12 +778,22 @@ defmodule BackplaneWeb.SettingsLive do
     <div>
       <div class="flex items-center justify-between mb-4">
         <h1 class="text-2xl font-bold">Credential Store</h1>
-        <.dm_btn :if={@cred_form_mode == nil} variant="primary" phx-click="show_add_form">
-          Add Credential
-        </.dm_btn>
+        <div :if={@cred_form_mode == nil} class="flex flex-wrap items-center gap-2">
+          <.dm_btn variant="primary" phx-click="show_add_form">Add Credential</.dm_btn>
+          <.dm_btn phx-click="show_device_auth" phx-value-vendor="anthropic_oauth">
+            Connect Claude Plan
+          </.dm_btn>
+          <.dm_btn phx-click="show_device_auth" phx-value-vendor="openai_oauth">
+            Connect OpenAI Codex
+          </.dm_btn>
+          <.dm_btn phx-click="show_device_auth" phx-value-vendor="google_oauth">
+            Connect Google AI
+          </.dm_btn>
+        </div>
       </div>
 
-      <.render_cred_form :if={@cred_form_mode != nil} kind_options={@kind_options} {assigns} />
+      <.render_cred_form :if={@cred_form_mode in [:add, :edit, :rotate]} kind_options={@kind_options} {assigns} />
+      <.render_device_auth_form :if={@cred_form_mode == :device_auth} {assigns} />
 
       <.dm_card variant="bordered">
         <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
@@ -624,7 +805,22 @@ defmodule BackplaneWeb.SettingsLive do
               <code>{cred.name}</code>
             </:col>
             <:col :let={cred} label="Kind">
-              <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
+              <div class="flex items-center gap-1">
+                <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
+                <.dm_badge
+                  :if={
+                    (cred.metadata || %{})["auth_type"] in [
+                      "anthropic_oauth",
+                      "openai_oauth",
+                      "google_oauth",
+                      "oauth2_client_credentials"
+                    ]
+                  }
+                  variant="info"
+                >
+                  {(cred.metadata || %{})["auth_type"]}
+                </.dm_badge>
+              </div>
             </:col>
             <:col :let={cred} label="Hint">
               <code class="text-on-surface-variant">{cred.hint}</code>
@@ -633,11 +829,22 @@ defmodule BackplaneWeb.SettingsLive do
               {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
             </:col>
             <:col :let={cred} label="Actions">
+              <% auth_type = (cred.metadata || %{})["auth_type"] %>
+              <% is_device_oauth = auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"] %>
               <div class="flex items-center gap-1">
-                <.dm_btn size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
+                <.dm_btn :if={!is_device_oauth} size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
                   Edit
                 </.dm_btn>
-                <.dm_btn variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
+                <.dm_btn
+                  :if={is_device_oauth}
+                  size="sm"
+                  phx-click="show_device_auth"
+                  phx-value-vendor={auth_type}
+                  title="Re-connect via device code"
+                >
+                  Reconnect
+                </.dm_btn>
+                <.dm_btn :if={!is_device_oauth} variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
                   Rotate
                 </.dm_btn>
                 <.dm_btn
@@ -751,5 +958,128 @@ defmodule BackplaneWeb.SettingsLive do
       </form>
     </.dm_card>
     """
+  end
+
+  defp render_device_auth_form(assigns) do
+    ~H"""
+    <.dm_card variant="bordered" class="mb-6">
+      <:title>Connect {device_flow_label(@device_flow_vendor)}</:title>
+
+      <%= if @device_flow_state == :idle do %>
+        <p class="text-sm text-on-surface-variant mb-4">
+          Authorise via your browser. You will be given a short code to enter on the provider's site.
+        </p>
+        <form phx-submit="start_device_auth" class="space-y-4">
+          <.dm_input
+            id="device-cred-name"
+            name="cred_name"
+            label="Credential Name"
+            value={@device_flow_cred_name}
+            placeholder="claude-plan"
+            required
+          />
+          <%= if @device_flow_vendor == "google_oauth" do %>
+            <.dm_input
+              id="device-client-id"
+              name="client_id"
+              label="OAuth Client ID"
+              value={@device_flow_client_id}
+              placeholder="xxxxxxxxx.apps.googleusercontent.com"
+              required
+            />
+          <% end %>
+          <div class="flex gap-2 pt-2">
+            <.dm_btn type="submit" variant="primary">Start</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+          </div>
+        </form>
+      <% end %>
+
+      <%= if @device_flow_state == :polling do %>
+        <div class="space-y-4">
+          <p class="text-sm text-on-surface-variant">
+            Open the link below and enter the code to authorise. This page will update automatically.
+          </p>
+          <div class="rounded-md bg-surface-container p-4 space-y-3">
+            <div>
+              <p class="text-xs text-on-surface-variant mb-1">Authorisation URL</p>
+              <a
+                href={@device_flow_verification_uri}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-sm text-primary underline break-all"
+              >
+                {@device_flow_verification_uri}
+              </a>
+            </div>
+            <div>
+              <p class="text-xs text-on-surface-variant mb-1">Enter this code</p>
+              <code class="text-2xl font-bold tracking-widest">{@device_flow_user_code}</code>
+            </div>
+          </div>
+          <p class="text-xs text-on-surface-variant">Polling every {@device_flow_interval}s…</p>
+          <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+        </div>
+      <% end %>
+
+      <%= if @device_flow_state == :error do %>
+        <div class="space-y-4">
+          <.dm_badge variant="error">{@device_flow_error}</.dm_badge>
+          <div class="flex gap-2">
+            <.dm_btn
+              variant="primary"
+              phx-click="show_device_auth"
+              phx-value-vendor={@device_flow_vendor}
+            >
+              Try Again
+            </.dm_btn>
+            <.dm_btn phx-click="cancel_device_auth">Cancel</.dm_btn>
+          </div>
+        </div>
+      <% end %>
+    </.dm_card>
+    """
+  end
+
+  defp device_flow_label("anthropic_oauth"), do: "Claude Plan"
+  defp device_flow_label("openai_oauth"), do: "OpenAI Codex"
+  defp device_flow_label("google_oauth"), do: "Google AI"
+  defp device_flow_label(other), do: other || "OAuth"
+
+  defp pkce_pair do
+    verifier = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    challenge = :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
+    {verifier, challenge}
+  end
+
+  @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+  @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
+
+  defp build_auth_url("anthropic_oauth", state, challenge, redirect_uri) do
+    params = %{
+      "response_type" => "code",
+      "client_id" => @anthropic_client_id,
+      "redirect_uri" => redirect_uri,
+      "scope" => "user:profile user:inference",
+      "state" => state,
+      "code_challenge" => challenge,
+      "code_challenge_method" => "S256"
+    }
+
+    "https://platform.claude.com/oauth/authorize?" <> URI.encode_query(params)
+  end
+
+  defp build_auth_url("openai_oauth", state, challenge, redirect_uri) do
+    params = %{
+      "response_type" => "code",
+      "client_id" => @openai_client_id,
+      "redirect_uri" => redirect_uri,
+      "scope" => "openid profile email offline_access api.connectors.read api.connectors.invoke",
+      "state" => state,
+      "code_challenge" => challenge,
+      "code_challenge_method" => "S256"
+    }
+
+    "https://auth.openai.com/authorize?" <> URI.encode_query(params)
   end
 end

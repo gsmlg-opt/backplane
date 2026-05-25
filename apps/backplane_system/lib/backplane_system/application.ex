@@ -9,6 +9,7 @@ defmodule BackplaneSystem.Application do
       Backplane.Repo,
       {Phoenix.PubSub, name: Backplane.PubSub},
       Backplane.Settings.TokenCache,
+      Backplane.Settings.OAuthStateStore,
       Backplane.Settings,
       Backplane.Registry.ToolRegistry,
       Backplane.Metrics
