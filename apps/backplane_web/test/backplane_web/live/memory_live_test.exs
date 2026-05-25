@@ -8,10 +8,13 @@ defmodule BackplaneWeb.MemoryLiveTest do
       {:ok, view, html} = live(conn, "/admin/memory/browse")
       assert html =~ "Memories"
       assert has_element?(view, "h1", "Memories")
+      assert has_element?(view, ~s|select[name="filters[type]"].select|)
+      assert has_element?(view, ~s|input[name="filters[scope]"].input|)
+      assert has_element?(view, ~s|input[name="filters[q]"].input|)
       assert render(view) =~ "No memories match"
     end
 
-    test "lists existing memories with type and scope badges", %{conn: conn} do
+    test "lists existing memories in a table", %{conn: conn} do
       {:ok, _} =
         Memory.remember("Paris is in France.",
           agent_id: "a",
@@ -20,10 +23,14 @@ defmodule BackplaneWeb.MemoryLiveTest do
           scope: "global"
         )
 
-      {:ok, _view, html} = live(conn, "/admin/memory/browse")
+      {:ok, view, html} = live(conn, "/admin/memory/browse")
+      assert has_element?(view, "#memories-table")
+      assert has_element?(view, ~s|#memories-table th|, "Type")
+      assert has_element?(view, ~s|#memories-table th|, "Content")
+      assert has_element?(view, ~s|#memories-table th|, "Scope")
       assert html =~ "Paris is in France."
       assert html =~ "semantic"
-      assert html =~ "scope: global"
+      assert html =~ "global"
     end
 
     test "filters by type via URL params", %{conn: conn} do

@@ -156,6 +156,21 @@ defmodule BackplaneWeb.MemoryLive do
     dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
   end
 
+  defp present?(value), do: value not in [nil, ""]
+
+  defp tag_list(tags) when is_list(tags), do: tags
+  defp tag_list(_tags), do: []
+
+  defp short_id(nil), do: ""
+  defp short_id(id) when is_binary(id), do: String.slice(id, 0, 8)
+
+  defp format_confidence(nil), do: "-"
+
+  defp format_confidence(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 2)
+
+  defp format_confidence(value), do: to_string(value)
+
   # ── Template ───────────────────────────────────────────────────────────────
 
   @impl true
@@ -180,7 +195,7 @@ defmodule BackplaneWeb.MemoryLive do
               <label class="block text-xs font-medium mb-1">Type</label>
               <select
                 name="filters[type]"
-                class="dm-input w-full"
+                class="select select-bordered w-full"
               >
                 <option value="" selected={@filters["type"] == ""}>All types</option>
                 <option :for={t <- @memory_types} value={t} selected={@filters["type"] == t}>
@@ -195,7 +210,7 @@ defmodule BackplaneWeb.MemoryLive do
                 name="filters[scope]"
                 value={@filters["scope"]}
                 placeholder="global"
-                class="dm-input w-full"
+                class="input input-bordered w-full"
                 phx-debounce="400"
               />
             </div>
@@ -206,7 +221,7 @@ defmodule BackplaneWeb.MemoryLive do
                 name="filters[agent_id]"
                 value={@filters["agent_id"]}
                 placeholder="agent-..."
-                class="dm-input w-full"
+                class="input input-bordered w-full"
                 phx-debounce="400"
               />
             </div>
@@ -217,7 +232,7 @@ defmodule BackplaneWeb.MemoryLive do
                 name="filters[q]"
                 value={@filters["q"]}
                 placeholder="substring match"
-                class="dm-input w-full"
+                class="input input-bordered w-full"
                 phx-debounce="400"
               />
             </div>
@@ -229,6 +244,7 @@ defmodule BackplaneWeb.MemoryLive do
                 name="filters[deleted]"
                 value="true"
                 checked={@filters["deleted"] == "true"}
+                class="checkbox checkbox-sm"
               />
               Include soft-deleted
             </label>
@@ -241,79 +257,107 @@ defmodule BackplaneWeb.MemoryLive do
         No memories match these filters.
       </div>
 
-      <div class="space-y-3">
-        <.dm_card :for={mem <- @memories} variant="bordered">
-          <:title>
-            <div class="flex items-center justify-between gap-3">
-              <div class="flex items-center gap-2 flex-wrap min-w-0">
-                <.dm_badge variant={type_badge_variant(mem.memory_type)}>{mem.memory_type}</.dm_badge>
-                <.dm_badge variant="ghost">scope: {mem.scope}</.dm_badge>
-                <span :if={mem.agent_id not in [nil, ""]} class="text-xs text-on-surface-variant">
-                  agent: <span class="font-mono">{mem.agent_id}</span>
-                </span>
-                <span :if={mem.deleted_at} class="text-xs text-error">deleted</span>
-              </div>
-              <div class="flex items-center gap-2 shrink-0">
-                <.dm_btn size="xs" phx-click="expand" phx-value-id={mem.id}>
-                  {if @expanded == mem.id, do: "Collapse", else: "Expand"}
-                </.dm_btn>
-                <.dm_btn
-                  :if={is_nil(mem.deleted_at)}
-                  size="xs"
-                  variant="error"
-                  phx-click="delete"
-                  phx-value-id={mem.id}
-                  data-confirm="Forget this memory? It will be soft-deleted."
-                >
-                  Forget
-                </.dm_btn>
-              </div>
-            </div>
-          </:title>
-
-          <div :if={@expanded != mem.id} class="text-sm">
-            {truncate(mem.content, 280)}
+      <.dm_table :if={@memories != []} id="memories-table" data={@memories} hover zebra>
+        <:col :let={mem} label="Type" class="align-top">
+          <div class="space-y-1">
+            <.dm_badge variant={type_badge_variant(mem.memory_type)} size="sm">
+              {mem.memory_type}
+            </.dm_badge>
+            <div class="font-mono text-xs text-on-surface-variant">{short_id(mem.id)}</div>
+            <div :if={mem.deleted_at} class="text-xs text-error">deleted</div>
           </div>
-
-          <div :if={@expanded == mem.id} class="space-y-3">
-            <pre class="text-sm whitespace-pre-wrap break-words bg-surface-container p-3 rounded">{mem.content}</pre>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-on-surface-variant">
-              <div><span class="font-medium">ID:</span> <span class="font-mono">{mem.id}</span></div>
-              <div><span class="font-medium">Inserted:</span> {format_dt(mem.inserted_at)}</div>
-              <div :if={mem.host_id not in [nil, ""]}>
-                <span class="font-medium">Host:</span> <span class="font-mono">{mem.host_id}</span>
-              </div>
-              <div :if={mem.client_id not in [nil, ""]}>
-                <span class="font-medium">Client:</span> <span class="font-mono">{mem.client_id}</span>
-              </div>
-              <div :if={mem.session_id not in [nil, ""]}>
-                <span class="font-medium">Session:</span> <span class="font-mono">{mem.session_id}</span>
-              </div>
-              <div :if={mem.embedding_model}>
-                <span class="font-medium">Embedding model:</span> {mem.embedding_model}
-              </div>
-              <div :if={mem.expires_at}>
-                <span class="font-medium">Expires:</span> {format_dt(mem.expires_at)}
-              </div>
-              <div :if={mem.deleted_at}>
-                <span class="font-medium">Deleted:</span> {format_dt(mem.deleted_at)}
-              </div>
-              <div><span class="font-medium">Confidence:</span> {mem.confidence}</div>
-              <div><span class="font-medium">Access count:</span> {mem.access_count}</div>
+        </:col>
+        <:col :let={mem} label="Content" class="align-top">
+          <div class="max-w-2xl">
+            <div :if={@expanded != mem.id} class="text-sm break-words">
+              {truncate(mem.content, 240)}
             </div>
 
-            <div :if={mem.tags != []} class="flex flex-wrap gap-1">
-              <.dm_badge :for={tag <- mem.tags} variant="ghost">{tag}</.dm_badge>
-            </div>
+            <div :if={@expanded == mem.id} class="space-y-3">
+              <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-3 text-xs">{mem.content}</pre>
 
-            <div :if={mem.metadata not in [nil, %{}]}>
-              <div class="text-xs font-medium text-on-surface-variant mb-1">Metadata</div>
-              <pre class="text-xs bg-surface-container p-2 rounded overflow-x-auto">{Jason.encode!(mem.metadata, pretty: true)}</pre>
+              <div class="grid grid-cols-1 gap-2 text-xs text-on-surface-variant sm:grid-cols-2">
+                <div><span class="font-medium">ID:</span> <span class="font-mono">{mem.id}</span></div>
+                <div :if={present?(mem.host_id)}>
+                  <span class="font-medium">Host:</span> <span class="font-mono">{mem.host_id}</span>
+                </div>
+                <div :if={present?(mem.client_id)}>
+                  <span class="font-medium">Client:</span> <span class="font-mono">{mem.client_id}</span>
+                </div>
+                <div :if={present?(mem.session_id)}>
+                  <span class="font-medium">Session:</span> <span class="font-mono">{mem.session_id}</span>
+                </div>
+                <div :if={present?(mem.embedding_model)}>
+                  <span class="font-medium">Embedding model:</span> {mem.embedding_model}
+                </div>
+                <div :if={mem.expires_at}>
+                  <span class="font-medium">Expires:</span> {format_dt(mem.expires_at)}
+                </div>
+              </div>
+
+              <div :if={mem.metadata not in [nil, %{}]}>
+                <div class="mb-1 text-xs font-medium text-on-surface-variant">Metadata</div>
+                <pre class="overflow-x-auto rounded bg-surface-container p-2 text-xs">{Jason.encode!(mem.metadata, pretty: true)}</pre>
+              </div>
             </div>
           </div>
-        </.dm_card>
-      </div>
+        </:col>
+        <:col :let={mem} label="Scope" class="align-top">
+          <div class="space-y-1 text-xs">
+            <div class="font-mono break-all">{mem.scope}</div>
+            <div :if={present?(mem.namespace)} class="text-on-surface-variant">
+              namespace: <span class="font-mono">{mem.namespace}</span>
+            </div>
+          </div>
+        </:col>
+        <:col :let={mem} label="Agent" class="align-top">
+          <div class="space-y-1 text-xs">
+            <div :if={present?(mem.agent_id)} class="font-mono break-all">{mem.agent_id}</div>
+            <div :if={!present?(mem.agent_id)} class="text-on-surface-variant">-</div>
+            <div :if={present?(mem.session_id)} class="text-on-surface-variant">
+              session: <span class="font-mono">{short_id(mem.session_id)}</span>
+            </div>
+          </div>
+        </:col>
+        <:col :let={mem} label="Tags" class="align-top">
+          <div class="flex flex-wrap gap-1">
+            <.dm_badge :for={tag <- tag_list(mem.tags)} variant="ghost" size="sm">{tag}</.dm_badge>
+            <span :if={tag_list(mem.tags) == []} class="text-xs text-on-surface-variant">-</span>
+          </div>
+        </:col>
+        <:col :let={mem} label="Activity" class="align-top">
+          <div class="space-y-1 text-xs">
+            <div>{format_dt(mem.inserted_at)}</div>
+            <div class="text-on-surface-variant">
+              confidence: {format_confidence(mem.confidence)}
+            </div>
+            <div class="text-on-surface-variant">
+              access: {mem.access_count || 0}
+            </div>
+            <div :if={mem.deleted_at} class="text-error">
+              deleted: {format_dt(mem.deleted_at)}
+            </div>
+          </div>
+        </:col>
+        <:col :let={mem} label="Actions" class="align-top">
+          <div class="flex flex-wrap gap-2">
+            <.dm_btn type="button" size="xs" phx-click="expand" phx-value-id={mem.id}>
+              {if @expanded == mem.id, do: "Collapse", else: "Expand"}
+            </.dm_btn>
+            <.dm_btn
+              :if={is_nil(mem.deleted_at)}
+              type="button"
+              size="xs"
+              variant="error"
+              phx-click="delete"
+              phx-value-id={mem.id}
+              data-confirm="Forget this memory? It will be soft-deleted."
+            >
+              Forget
+            </.dm_btn>
+          </div>
+        </:col>
+      </.dm_table>
 
       <div :if={@total > 0} class="flex items-center justify-between mt-4 text-sm">
         <div class="text-on-surface-variant">
