@@ -1,5 +1,6 @@
 <% current_path = assigns[:current_path] || "/admin/dashboard/overview" %>
 <% left_nav_items = BackplaneWeb.Layouts.left_nav_items(current_path) %>
+<% left_nav_heading = BackplaneWeb.Layouts.left_nav_heading(current_path) %>
 
 <div class="min-h-full bg-surface text-on-surface">
   <header class="appbar appbar-sticky appbar-primary">
@@ -24,25 +25,26 @@
   </header>
 
   <div class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex">
-    <aside class="bg-secondary text-secondary-content lg:w-60 lg:shrink-0">
-      <nav class="flex gap-1 overflow-x-auto px-4 py-3 lg:flex-col lg:gap-2 lg:overflow-visible lg:p-4">
+    <aside class="admin-sidebar lg:w-60 lg:shrink-0 xl:w-64">
+      <nav class="admin-sidebar-nav" aria-label={left_nav_heading <> " navigation"}>
+        <div class="admin-sidebar-section">{left_nav_heading}</div>
         <div :for={item <- left_nav_items} class="contents lg:block">
-          <div :if={Map.has_key?(item, :items)} class="flex shrink-0 flex-col gap-1 lg:mt-2">
-            <div class="px-3 pt-2 text-xs font-semibold uppercase text-secondary-content">
-              {item.label}
+          <div :if={Map.has_key?(item, :items)} class="admin-sidebar-group">
+            <div class="admin-sidebar-group-title">
+              <.dm_mdi :if={item[:icon]} name={item[:icon]} class="admin-sidebar-icon" />
+              <span>{item.label}</span>
             </div>
             <.link
               :for={child <- item.items}
               navigate={child.path}
               class={[
-                "whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium no-underline transition-colors",
-                BackplaneWeb.Layouts.active_left_nav?(current_path, child) &&
-                  "bg-primary text-primary-content",
-                !BackplaneWeb.Layouts.active_left_nav?(current_path, child) &&
-                  "text-secondary-content hover:bg-secondary-container hover:text-on-secondary-container"
+                "admin-sidebar-link",
+                BackplaneWeb.Layouts.active_left_nav?(current_path, child) && "is-active"
               ]}
+              aria-current={BackplaneWeb.Layouts.active_left_nav?(current_path, child) && "page"}
             >
-              {child.label}
+              <.dm_mdi :if={child[:icon]} name={child[:icon]} class="admin-sidebar-icon" />
+              <span>{child.label}</span>
             </.link>
           </div>
 
@@ -50,14 +52,13 @@
             :if={!Map.has_key?(item, :items)}
             navigate={item.path}
             class={[
-              "whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium no-underline transition-colors",
-              BackplaneWeb.Layouts.active_left_nav?(current_path, item) &&
-                "bg-primary text-primary-content",
-              !BackplaneWeb.Layouts.active_left_nav?(current_path, item) &&
-                "text-secondary-content hover:bg-secondary-container hover:text-on-secondary-container"
+              "admin-sidebar-link",
+              BackplaneWeb.Layouts.active_left_nav?(current_path, item) && "is-active"
             ]}
+            aria-current={BackplaneWeb.Layouts.active_left_nav?(current_path, item) && "page"}
           >
-            {item.label}
+            <.dm_mdi :if={item[:icon]} name={item[:icon]} class="admin-sidebar-icon" />
+            <span>{item.label}</span>
           </.link>
         </div>
       </nav>

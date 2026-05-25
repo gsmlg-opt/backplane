@@ -22,34 +22,34 @@ defmodule BackplaneWeb.Layouts do
     case admin_section(current_path) do
       :dashboard ->
         [
-          %{label: "Overview", path: "/admin/dashboard/overview"},
-          %{label: "LLM Usage", path: "/admin/dashboard/usage/llm"},
-          %{label: "MCP Usage", path: "/admin/dashboard/usage/mcp"}
+          %{label: "Overview", path: "/admin/dashboard/overview", icon: "view-dashboard-outline"},
+          %{label: "LLM Usage", path: "/admin/dashboard/usage/llm", icon: "chart-line"},
+          %{label: "MCP Usage", path: "/admin/dashboard/usage/mcp", icon: "chart-bar"}
         ]
 
       :llama ->
         [
-          %{label: "Providers", path: "/admin/llama/providers"},
-          %{label: "Model Alias", path: "/admin/llama/model-aliases"}
+          %{label: "Providers", path: "/admin/llama/providers", icon: "cloud"},
+          %{label: "Model Alias", path: "/admin/llama/model-aliases", icon: "tune-vertical"}
         ]
 
       :mcp ->
         [
-          %{label: "Managed MCP", path: "/admin/mcp/managed"},
-          %{label: "Upstream MCP", path: "/admin/mcp/upstreams"}
+          %{label: "Managed MCP", path: "/admin/mcp/managed", icon: "server"},
+          %{label: "Upstream MCP", path: "/admin/mcp/upstreams", icon: "application-braces"}
         ]
 
       :memory ->
         [
-          %{label: "Overview", path: "/admin/memory", match: :exact},
-          %{label: "Browse", path: "/admin/memory/browse"},
-          %{label: "Stats", path: "/admin/memory/stats"},
-          %{label: "Observations", path: "/admin/memory/observations"},
-          %{label: "Sessions", path: "/admin/memory/sessions"},
-          %{label: "Graph", path: "/admin/memory/graph"},
-          %{label: "Actions", path: "/admin/memory/actions"},
-          %{label: "Audit", path: "/admin/memory/audit"},
-          %{label: "Config", path: "/admin/memory/config"}
+          %{label: "Overview", path: "/admin/memory", match: :exact, icon: "brain"},
+          %{label: "Browse", path: "/admin/memory/browse", icon: "database-search"},
+          %{label: "Stats", path: "/admin/memory/stats", icon: "chart-bar"},
+          %{label: "Observations", path: "/admin/memory/observations", icon: "text-box-search"},
+          %{label: "Sessions", path: "/admin/memory/sessions", icon: "history"},
+          %{label: "Graph", path: "/admin/memory/graph", icon: "graph"},
+          %{label: "Actions", path: "/admin/memory/actions", icon: "application-braces"},
+          %{label: "Audit", path: "/admin/memory/audit", icon: "shield-key"},
+          %{label: "Config", path: "/admin/memory/config", icon: "cog"}
         ]
 
       :skill ->
@@ -57,22 +57,45 @@ defmodule BackplaneWeb.Layouts do
 
       :system ->
         [
-          %{label: "Clients", path: "/admin/system/clients"},
-          %{label: "Logs", path: "/admin/system/logs"},
-          %{label: "Credentials", path: "/admin/system/credentials"},
+          %{label: "Clients", path: "/admin/system/clients", icon: "account-group"},
+          %{label: "Logs", path: "/admin/system/logs", icon: "text-box-search"},
+          %{label: "Credentials", path: "/admin/system/credentials", icon: "key-variant"},
           %{
             label: "Host Agent Management",
+            icon: "server",
             items: [
-              %{label: "Agent Live", path: "/admin/system/host-agents", match: :host_agents},
+              %{
+                label: "Agent Live",
+                path: "/admin/system/host-agents",
+                match: :host_agents,
+                icon: "cloud"
+              },
               %{
                 label: "Agent Management",
                 path: "/admin/system/host-agents/manage",
-                match: :exact
+                match: :exact,
+                icon: "tune-vertical"
               },
-              %{label: "Agent Auth", path: "/admin/system/host-agents/auth", match: :exact}
+              %{
+                label: "Agent Auth",
+                path: "/admin/system/host-agents/auth",
+                match: :exact,
+                icon: "key-variant"
+              }
             ]
           }
         ]
+    end
+  end
+
+  def left_nav_heading(current_path) do
+    case admin_section(current_path) do
+      :dashboard -> "Dashboard"
+      :llama -> "LLM Proxy"
+      :mcp -> "MCP Hub"
+      :memory -> "Memory"
+      :skill -> "Skills"
+      :system -> "System"
     end
   end
 
