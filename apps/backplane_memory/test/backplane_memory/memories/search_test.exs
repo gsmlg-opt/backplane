@@ -132,4 +132,49 @@ defmodule BackplaneMemory.Memories.SearchTest do
       refute Map.has_key?(result, :embedding)
     end
   end
+
+  describe "hybrid_recall/2" do
+    test "falls back to full-text search when vector search is unavailable" do
+      {:ok, mem} =
+        Memory.remember("fallback keyword memory",
+          agent_id: "agent-text",
+          host_id: "host-text",
+          scope: "text-scope"
+        )
+
+      assert {:ok, [%{id: id}]} =
+               Search.hybrid_recall("fallback keyword",
+                 scope: "text-scope",
+                 embed_fn: embed_error(:embedding_model_not_configured)
+               )
+
+      assert id == mem.id
+    end
+
+    test "uses vector results only when vector search is available" do
+      vector_mem =
+        insert_with_embedding(
+          "vector memory",
+          vec(%{0 => 1.0}),
+          agent_id: "agent-vector",
+          host_id: "host-vector",
+          scope: "vector-scope"
+        )
+
+      {:ok, _text_only_mem} =
+        Memory.remember("text-only keyword",
+          agent_id: "agent-vector",
+          host_id: "host-vector",
+          scope: "vector-scope"
+        )
+
+      assert {:ok, [%{id: id}]} =
+               Search.hybrid_recall("text-only keyword",
+                 scope: "vector-scope",
+                 embed_fn: embed_const(vec(%{0 => 1.0}))
+               )
+
+      assert id == vector_mem.id
+    end
+  end
 end

@@ -5,13 +5,13 @@ defmodule BackplaneMemory.Memories.Search do
   Embedding is generated through an injectable function so tests can run without
   the LLM proxy. Production callers use the default `Embedding.Client.embed/3`.
 
-  `hybrid_recall/2` fuses three streams — vector, FTS, and graph — via RRF.
+  `hybrid_recall/2` prefers vector search when it is configured and available,
+  and falls back to full-text search when vector search is not ready.
   """
 
   import Ecto.Query
 
   alias BackplaneMemory.Embedding.Client
-  alias BackplaneMemory.Graph.BFS
   alias BackplaneMemory.Memories.Memory, as: M
   alias Pgvector.HalfVector
 
@@ -103,46 +103,36 @@ defmodule BackplaneMemory.Memories.Search do
   defp apply_filter(_, q), do: q
 
   @doc """
-  Hybrid recall fusing three ranked streams via Reciprocal Rank Fusion (RRF).
+  Vector-preferred recall with full-text fallback.
 
-  Streams:
-  1. Vector recall (`recall/2`) — ranked by cosine distance
-  2. FTS — `plainto_tsquery` match on `search_tsv`
-  3. Graph — BFS from nouns in query; returns memories referenced in
-     `source_observation_ids` of matched nodes
+  When vector search is configured and returns rows, only vector rows are
+  returned. When vector search is unavailable, fails, or has no embedded rows
+  for the active filters, recall degrades to FTS-only and does not expose
+  embedder/provider errors to clients.
 
-  RRF score = sum(1 / (#{@rrf_k} + rank)) across all streams.
-  Returns top-N results deduped by memory ID, ordered by descending score.
+  FTS fallback uses Reciprocal Rank Fusion (RRF) across expanded text queries.
+  Returns top-N results deduped by memory ID.
 
   Options:
   - `:limit` (default #{@default_limit})
   - `:embed_fn` — injectable embed function (same as `recall/2`)
   - other opts forwarded to `recall/2` as filters
   """
-  @spec hybrid_recall(String.t(), keyword()) :: {:ok, [result()]} | {:error, term()}
+  @spec hybrid_recall(String.t(), keyword()) :: {:ok, [result()]}
   def hybrid_recall(query, opts \\ []) when is_binary(query) do
     limit = Keyword.get(opts, :limit, @default_limit)
     queries = maybe_expand_query(query, opts)
 
-    all_vector =
-      queries
-      |> Enum.flat_map(fn q ->
-        case recall(q, opts) do
-          {:ok, rows} -> rows
-          {:error, _} -> []
-        end
-      end)
-      |> dedup_by_id()
+    result =
+      case vector_recall(queries, opts) do
+        {:ok, rows} when rows != [] ->
+          rows
+          |> rerank_results(query, opts)
+          |> Enum.take(limit)
 
-    all_fts = queries |> Enum.flat_map(&fts_search(&1, opts)) |> dedup_by_id()
-    graph_stream = graph_search(query, opts)
-
-    fused_unlimited =
-      [all_vector, all_fts, graph_stream]
-      |> rrf_fuse()
-
-    reranked = maybe_rerank(query, fused_unlimited, opts)
-    result = Enum.take(reranked, limit)
+        _ ->
+          text_recall(query, queries, opts)
+      end
 
     writeback_fn =
       Keyword.get(opts, :writeback_fn, &BackplaneMemory.Workers.AccessWritebackWorker.enqueue/1)
@@ -200,11 +190,65 @@ defmodule BackplaneMemory.Memories.Search do
     rows |> Enum.uniq_by(& &1.id)
   end
 
+  defp vector_recall(queries, opts) do
+    if vector_search_configured?(opts) do
+      rows =
+        queries
+        |> Enum.flat_map(fn q ->
+          case recall(q, Keyword.put(opts, :writeback_fn, fn _ids -> :ok end)) do
+            {:ok, rows} -> rows
+            {:error, _reason} -> []
+          end
+        end)
+        |> dedup_by_id()
+
+      {:ok, rows}
+    else
+      {:error, :vector_search_not_configured}
+    end
+  end
+
+  defp vector_search_configured?(opts) do
+    Keyword.has_key?(opts, :embed_fn) or
+      (embeddings_enabled?() and Client.configured?())
+  end
+
+  defp embeddings_enabled? do
+    case settings_value("memory.embed_enabled") do
+      false -> false
+      "false" -> false
+      "0" -> false
+      _ -> Application.get_env(:backplane_memory, :embed_enabled, true)
+    end
+  end
+
+  defp settings_value(key) do
+    if Code.ensure_loaded?(Backplane.Settings), do: Backplane.Settings.get(key)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp text_recall(query, queries, opts) do
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    queries
+    |> Enum.map(&fts_search(&1, opts))
+    |> rrf_fuse()
+    |> rerank_results(query, opts)
+    |> Enum.take(limit)
+  end
+
   defp fts_search(query, opts) do
     M
     |> where([m], is_nil(m.deleted_at))
     |> where([m], fragment("? @@ plainto_tsquery('english', ?)", m.search_tsv, ^query))
     |> apply_filters(opts)
+    |> order_by([m],
+      desc: fragment("ts_rank(?, plainto_tsquery('english', ?))", m.search_tsv, ^query),
+      desc: m.inserted_at
+    )
     |> limit(50)
     |> select([m], %{
       id: m.id,
@@ -222,52 +266,8 @@ defmodule BackplaneMemory.Memories.Search do
     |> repo().all()
   end
 
-  defp graph_search(query, opts) do
-    words =
-      query
-      |> String.split(~r/\s+/, trim: true)
-      |> Enum.filter(&(String.length(&1) > 3))
-
-    if words == [] do
-      []
-    else
-      # Single batch query: find all seed nodes matching any word
-      seed_nodes =
-        repo().all(
-          from(n in BackplaneMemory.Graph.Node,
-            where: fragment("? ILIKE ANY(?)", n.name, ^Enum.map(words, &"%#{&1}%"))
-          )
-        )
-
-      obs_ids =
-        case BFS.query_from_nodes(seed_nodes, 1) do
-          {:ok, %{nodes: nodes}} -> Enum.flat_map(nodes, & &1.source_observation_ids)
-          _ -> []
-        end
-        |> Enum.uniq()
-
-      if obs_ids == [] do
-        []
-      else
-        M
-        |> where([m], m.id in ^obs_ids and is_nil(m.deleted_at))
-        |> apply_filters(opts)
-        |> select([m], %{
-          id: m.id,
-          content: m.content,
-          scope: m.scope,
-          memory_type: m.memory_type,
-          agent_id: m.agent_id,
-          host_id: m.host_id,
-          tags: m.tags,
-          metadata: m.metadata,
-          inserted_at: m.inserted_at,
-          distance: 0.0,
-          confidence: m.confidence
-        })
-        |> repo().all()
-      end
-    end
+  defp rerank_results(results, query, opts) do
+    maybe_rerank(query, results, opts)
   end
 
   # RRF: score = sum(1 / (k + rank)) across streams, multiplied by confidence; rank is 1-based

@@ -97,7 +97,8 @@ defmodule BackplaneMemory.Service do
       },
       %{
         name: "memory::recall",
-        description: "Vector-search memories by query using cosine similarity.",
+        description:
+          "Search memories by query. Uses vector search when configured, with full-text fallback.",
         input_schema: %{
           "type" => "object",
           "properties" => %{
@@ -333,7 +334,7 @@ defmodule BackplaneMemory.Service do
       },
       %{
         name: "memory::smart_search",
-        description: "Hybrid search (vector + FTS + graph) returning top-N results.",
+        description: "Vector-preferred memory search with full-text fallback.",
         input_schema: %{
           "type" => "object",
           "properties" => %{
@@ -776,22 +777,15 @@ defmodule BackplaneMemory.Service do
         if facet_ids == [] do
           {:ok, %{results: []}}
         else
-          case Search.recall(query, opts) do
-            {:ok, results} ->
-              id_set = MapSet.new(facet_ids)
-              filtered = Enum.filter(results, fn r -> MapSet.member?(id_set, r.id) end)
-              {:ok, %{results: filtered}}
-
-            {:error, reason} ->
-              {:error, inspect(reason)}
-          end
+          {:ok, results} = Search.hybrid_recall(query, opts)
+          id_set = MapSet.new(facet_ids)
+          filtered = Enum.filter(results, fn r -> MapSet.member?(id_set, r.id) end)
+          {:ok, %{results: filtered}}
         end
 
       _ ->
-        case Search.recall(query, opts) do
-          {:ok, results} -> {:ok, %{results: results}}
-          {:error, reason} -> {:error, inspect(reason)}
-        end
+        {:ok, results} = Search.hybrid_recall(query, opts)
+        {:ok, %{results: results}}
     end
   end
 
@@ -1129,28 +1123,23 @@ defmodule BackplaneMemory.Service do
 
   def handle_smart_search(%{"query" => query} = args) when is_binary(query) do
     limit = args["limit"] || 5
+    {:ok, results} = Search.hybrid_recall(query, limit: limit)
 
-    case Search.hybrid_recall(query, limit: limit) do
-      {:ok, results} ->
-        {:ok,
-         %{
-           results:
-             Enum.map(results, fn r ->
-               %{
-                 id: r.id,
-                 content: r.content,
-                 scope: r.scope,
-                 memory_type: r.memory_type,
-                 tags: r.tags,
-                 confidence: r.confidence,
-                 inserted_at: r.inserted_at
-               }
-             end)
-         }}
-
-      {:error, reason} ->
-        {:error, inspect(reason)}
-    end
+    {:ok,
+     %{
+       results:
+         Enum.map(results, fn r ->
+           %{
+             id: r.id,
+             content: r.content,
+             scope: r.scope,
+             memory_type: r.memory_type,
+             tags: r.tags,
+             confidence: r.confidence,
+             inserted_at: r.inserted_at
+           }
+         end)
+     }}
   end
 
   def handle_smart_search(_), do: {:error, "query is required"}

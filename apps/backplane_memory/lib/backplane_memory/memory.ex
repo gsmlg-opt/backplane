@@ -5,6 +5,7 @@ defmodule BackplaneMemory.Memory do
 
   alias BackplaneMemory.Memories.Memory, as: MemorySchema
   alias BackplaneMemory.Privacy.Filter
+  alias BackplaneMemory.Embedding.Client, as: EmbeddingClient
   alias BackplaneMemory.Workers.EmbedWorker
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
@@ -290,7 +291,7 @@ defmodule BackplaneMemory.Memory do
   end
 
   defp handle_insert({:ok, mem} = result, _content, _scope) do
-    if Application.get_env(:backplane_memory, :embed_enabled, true) do
+    if embeddings_enabled?() do
       EmbedWorker.enqueue(mem.id)
     end
 
@@ -310,4 +311,8 @@ defmodule BackplaneMemory.Memory do
   end
 
   defp handle_insert(error, _content, _scope), do: error
+
+  defp embeddings_enabled? do
+    Application.get_env(:backplane_memory, :embed_enabled, true) and EmbeddingClient.configured?()
+  end
 end

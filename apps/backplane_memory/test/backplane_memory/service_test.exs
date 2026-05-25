@@ -50,11 +50,22 @@ defmodule BackplaneMemory.ServiceTest do
   end
 
   describe "handle_recall/1" do
-    test "returns {:error, _} when LLM proxy unreachable" do
-      # Service.handle_recall calls Embedding.Client.embed/3 directly (no embed_fn injection
-      # in the MCP path). Vector-search behaviour with mocked embeddings is covered in
-      # BackplaneMemory.Memories.SearchTest.
-      assert {:error, _reason} = Service.handle_recall(%{"query" => "anything", "limit" => 5})
+    test "falls back to text search when embedding is not configured" do
+      {:ok, mem} =
+        Memory.remember("service recall fallback",
+          agent_id: "a",
+          host_id: "h",
+          scope: "service"
+        )
+
+      assert {:ok, %{results: [%{id: id}]}} =
+               Service.handle_recall(%{
+                 "query" => "service recall",
+                 "limit" => 5,
+                 "scope" => "service"
+               })
+
+      assert id == mem.id
     end
 
     test "returns error when query is missing" do
