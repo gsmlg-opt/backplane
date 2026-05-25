@@ -13,7 +13,8 @@ defmodule BackplaneWeb.MemorySessionsLive do
      assign(socket,
        current_path: "/admin/memory/sessions",
        sessions: [],
-       page: 1
+       page: 1,
+       page_size: @page_size
      )}
   end
 

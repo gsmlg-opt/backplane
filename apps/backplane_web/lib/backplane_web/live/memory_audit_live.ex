@@ -11,7 +11,8 @@ defmodule BackplaneWeb.MemoryAuditLive do
      assign(socket,
        current_path: "/admin/memory/audit",
        entries: [],
-       page: 1
+       page: 1,
+       page_size: @page_size
      )}
   end
 

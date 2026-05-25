@@ -62,4 +62,20 @@ defmodule BackplaneWeb.MemoryLiveTest do
       assert html =~ "alpha"
     end
   end
+
+  describe "GET /admin/memory/audit" do
+    test "renders audit log page", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/admin/memory/audit")
+      assert html =~ "Audit Log"
+      assert has_element?(view, "h1", "Audit Log")
+    end
+  end
+
+  describe "GET /admin/memory/sessions" do
+    test "renders observation sessions page", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/admin/memory/sessions")
+      assert html =~ "Sessions"
+      assert has_element?(view, "h1", "Sessions")
+    end
+  end
 end
