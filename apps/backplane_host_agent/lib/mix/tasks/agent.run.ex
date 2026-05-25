@@ -24,6 +24,8 @@ defmodule Mix.Tasks.Agent.Run do
 
   alias Backplane.HostAgent.{Config, Connector, HttpServer, MemoryProxy, RunLock, Worker}
 
+  @retry_interval_ms 4_000
+
   @impl true
   def run(_args) do
     Mix.Task.run("app.config")
@@ -87,27 +89,38 @@ defmodule Mix.Tasks.Agent.Run do
   end
 
   defp connect_and_run(config) do
+    MemoryProxy.set_config(config)
+    maybe_start_http_server(config)
+
+    %{channel: channel} = link = connect_with_retry(config)
+    MemoryProxy.set_connection(link, config)
+
+    {:ok, worker} =
+      Worker.start_link(
+        channel: channel,
+        config: config,
+        name: Backplane.HostAgent.Worker
+      )
+
+    Mix.shell().info("Host agent worker started (pid=#{inspect(worker)}). Idling…")
+    Process.sleep(:infinity)
+  end
+
+  defp connect_with_retry(config) do
     Mix.shell().info("Connecting host agent #{config.machine_name} to #{config.hub_url}…")
 
     case Connector.connect(config) do
-      {:ok, %{host_name: host_name, channel: channel} = link} ->
+      {:ok, %{host_name: host_name} = link} ->
         Mix.shell().info("Connected as host \"#{host_name}\" (id=#{link.host_id}).")
-
-        MemoryProxy.set_connection(link, config)
-        maybe_start_http_server(config)
-
-        {:ok, worker} =
-          Worker.start_link(
-            channel: channel,
-            config: config,
-            name: Backplane.HostAgent.Worker
-          )
-
-        Mix.shell().info("Host agent worker started (pid=#{inspect(worker)}). Idling…")
-        Process.sleep(:infinity)
+        link
 
       {:error, reason} ->
-        Mix.raise("failed to connect to Backplane hub: #{inspect(reason)}")
+        Mix.shell().error(
+          "Failed to connect to Backplane hub: #{inspect(reason)}; retrying in #{@retry_interval_ms}ms."
+        )
+
+        Process.sleep(@retry_interval_ms)
+        connect_with_retry(config)
     end
   end
 

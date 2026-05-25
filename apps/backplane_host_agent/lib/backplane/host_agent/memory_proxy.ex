@@ -31,7 +31,16 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   def set_channel(pid) when is_pid(pid) do
-    :persistent_term.put(__MODULE__, %{channel: pid})
+    :persistent_term.put(__MODULE__, Map.put(state_map(), :channel, pid))
+    :ok
+  end
+
+  @doc """
+  Keep the agent config for future reconnect attempts before a channel exists.
+  """
+  @spec set_config(map() | struct()) :: :ok
+  def set_config(config) when not is_nil(config) do
+    :persistent_term.put(__MODULE__, Map.put(state_map(), :config, config))
     :ok
   end
 
@@ -82,9 +91,6 @@ defmodule Backplane.HostAgent.MemoryProxy do
     cond do
       not valid_method?(method) ->
         {:error, {:unknown_method, method}}
-
-      is_nil(channel()) ->
-        {:error, :not_connected}
 
       true ->
         payload = %{
@@ -235,6 +241,14 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   defp state do
     :persistent_term.get(__MODULE__, nil)
+  end
+
+  defp state_map do
+    case state() do
+      %{} = current -> current
+      channel when is_pid(channel) -> %{channel: channel}
+      _ -> %{}
+    end
   end
 
   defp push_exit_reason({:noproc, _}), do: :not_connected

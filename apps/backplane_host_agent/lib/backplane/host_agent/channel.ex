@@ -10,19 +10,37 @@ defmodule Backplane.HostAgent.Channel do
     socket_client_module =
       Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
 
-    with {:ok, socket} <-
-           socket_client_module.start_link(
-             url: Map.fetch!(config, :socket_url),
-             headers: headers,
-             reconnect?: true,
-             reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
-             # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
-             auto_connect: false,
-             # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
-             transport_opts: [headers: headers]
-           ),
-         :ok <- socket_client_module.connect(socket) do
+    opts = [
+      url: Map.fetch!(config, :socket_url),
+      headers: headers,
+      reconnect?: true,
+      reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
+      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
+      auto_connect: false,
+      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
+      transport_opts: [headers: headers]
+    ]
+
+    with {:ok, socket} <- start_or_reuse_socket(socket_client_module, opts),
+         :ok <- ensure_connected(socket_client_module, socket) do
       {:ok, socket}
+    end
+  end
+
+  defp start_or_reuse_socket(socket_client_module, opts) do
+    case socket_client_module.start_link(opts) do
+      {:ok, socket} -> {:ok, socket}
+      {:error, {:already_started, socket}} when is_pid(socket) -> {:ok, socket}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_connected(socket_client_module, socket) do
+    if function_exported?(socket_client_module, :connected?, 1) and
+         socket_client_module.connected?(socket) do
+      :ok
+    else
+      socket_client_module.connect(socket)
     end
   end
 

@@ -97,6 +97,24 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     assert MemoryProxy.channel() == self()
   end
 
+  test "reconnects with stored config before any channel exists" do
+    config = %{hub_url: "http://localhost:4220", token: "host-token", machine_name: "t430"}
+
+    MemoryProxy.set_config(config)
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("list", %{"scope" => "/tmp"},
+               agent_id: "hermes",
+               channel_module: FakeChannel,
+               connector_module: FakeConnector
+             )
+
+    assert_receive {:connect, ^config}
+    assert_receive {:push, channel, "memory_call", %{"method" => "list"}}
+    assert channel == self()
+    assert MemoryProxy.channel() == self()
+  end
+
   test "rejoins stored live socket before starting a new socket" do
     config = %{hub_url: "http://localhost:4220", token: "host-token", machine_name: "t430"}
 
