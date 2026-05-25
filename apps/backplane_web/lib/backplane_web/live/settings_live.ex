@@ -6,7 +6,6 @@ defmodule BackplaneWeb.SettingsLive do
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
-  alias Backplane.Settings.OAuthDeviceFlow
   alias Backplane.Settings.OAuthStateStore
 
   @impl true
@@ -62,11 +61,6 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_vendor: nil,
       device_flow_state: :idle,
       device_flow_cred_name: "",
-      device_flow_client_id: "",
-      device_flow_code: nil,
-      device_flow_user_code: nil,
-      device_flow_verification_uri: nil,
-      device_flow_interval: 5,
       device_flow_error: nil
     )
   end
@@ -220,10 +214,6 @@ defmodule BackplaneWeb.SettingsLive do
        device_flow_vendor: vendor,
        device_flow_state: :idle,
        device_flow_cred_name: default_name,
-       device_flow_client_id: "",
-       device_flow_code: nil,
-       device_flow_user_code: nil,
-       device_flow_verification_uri: nil,
        device_flow_error: nil
      )}
   end
@@ -231,16 +221,12 @@ defmodule BackplaneWeb.SettingsLive do
   def handle_event("start_device_auth", params, socket) do
     vendor = socket.assigns.device_flow_vendor
     name = String.trim(params["cred_name"] || "")
-    client_id = String.trim(params["client_id"] || "")
 
     cond do
       name == "" ->
         {:noreply, put_flash(socket, :error, "Credential name is required")}
 
-      vendor == "google_oauth" and client_id == "" ->
-        {:noreply, put_flash(socket, :error, "Client ID is required for Google AI")}
-
-      vendor in ["anthropic_oauth", "openai_oauth"] ->
+      true ->
         redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
         {verifier, challenge} = pkce_pair()
 
@@ -252,39 +238,16 @@ defmodule BackplaneWeb.SettingsLive do
             "redirect_uri" => redirect_uri
           })
 
-        auth_url = build_auth_url(vendor, state, challenge, redirect_uri)
-        {:noreply, redirect(socket, external: auth_url)}
-
-      true ->
-        opts = [client_id: client_id]
-
-        case OAuthDeviceFlow.request_device_code(:google_oauth, opts) do
-          {:ok, resp} ->
-            hints = %{"client_id" => client_id}
-
-            Process.send_after(
-              self(),
-              {:poll_device_auth, vendor, resp.device_code, name, hints, resp.interval},
-              resp.interval * 1000
-            )
-
-            {:noreply,
-             assign(socket,
-               device_flow_state: :polling,
-               device_flow_cred_name: name,
-               device_flow_client_id: client_id,
-               device_flow_code: resp.device_code,
-               device_flow_user_code: resp.user_code,
-               device_flow_verification_uri: resp.verification_uri,
-               device_flow_interval: resp.interval,
-               device_flow_error: nil
-             )}
-
+        case build_auth_url(vendor, state, challenge, redirect_uri) do
           {:error, reason} ->
             {:noreply,
              assign(socket,
-               device_flow_error: "Failed to start device auth: #{inspect(reason)}"
+               device_flow_state: :error,
+               device_flow_error: "Authorization is not configured: #{inspect(reason)}"
              )}
+
+          auth_url ->
+            {:noreply, redirect(socket, external: auth_url)}
         end
     end
   end
@@ -295,72 +258,8 @@ defmodule BackplaneWeb.SettingsLive do
        cred_form_mode: nil,
        device_flow_vendor: nil,
        device_flow_state: :idle,
-       device_flow_code: nil,
-       device_flow_user_code: nil,
-       device_flow_verification_uri: nil,
        device_flow_error: nil
      )}
-  end
-
-  @impl true
-  def handle_info({:poll_device_auth, vendor, device_code, cred_name, hints, interval}, socket) do
-    vendor_atom = String.to_existing_atom(vendor)
-    opts = if vendor == "google_oauth", do: [client_id: hints["client_id"] || ""], else: []
-
-    case OAuthDeviceFlow.poll(vendor_atom, device_code, opts) do
-      {:ok, tokens} ->
-        auth_type = vendor
-
-        case Credentials.store_device_token(cred_name, auth_type, tokens, hints) do
-          {:ok, _} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
-             |> assign(cred_form_mode: nil, device_flow_state: :idle)
-             |> load_data("credentials")}
-
-          {:error, _} ->
-            {:noreply,
-             assign(socket,
-               device_flow_state: :error,
-               device_flow_error: "Token obtained but failed to store credential"
-             )}
-        end
-
-      {:pending} ->
-        Process.send_after(
-          self(),
-          {:poll_device_auth, vendor, device_code, cred_name, hints, interval},
-          interval * 1000
-        )
-
-        {:noreply, socket}
-
-      {:slow_down} ->
-        new_interval = interval + 5
-
-        Process.send_after(
-          self(),
-          {:poll_device_auth, vendor, device_code, cred_name, hints, new_interval},
-          new_interval * 1000
-        )
-
-        {:noreply, assign(socket, device_flow_interval: new_interval)}
-
-      {:expired} ->
-        {:noreply,
-         assign(socket,
-           device_flow_state: :error,
-           device_flow_error: "Device code expired. Please start over."
-         )}
-
-      {:error, reason} ->
-        {:noreply,
-         assign(socket,
-           device_flow_state: :error,
-           device_flow_error: "Auth failed: #{inspect(reason)}"
-         )}
-    end
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -967,7 +866,7 @@ defmodule BackplaneWeb.SettingsLive do
 
       <%= if @device_flow_state == :idle do %>
         <p class="text-sm text-on-surface-variant mb-4">
-          Authorise via your browser. You will be given a short code to enter on the provider's site.
+          You will be redirected to the provider's login page to authorise.
         </p>
         <form phx-submit="start_device_auth" class="space-y-4">
           <.dm_input
@@ -978,48 +877,11 @@ defmodule BackplaneWeb.SettingsLive do
             placeholder="claude-plan"
             required
           />
-          <%= if @device_flow_vendor == "google_oauth" do %>
-            <.dm_input
-              id="device-client-id"
-              name="client_id"
-              label="OAuth Client ID"
-              value={@device_flow_client_id}
-              placeholder="xxxxxxxxx.apps.googleusercontent.com"
-              required
-            />
-          <% end %>
           <div class="flex gap-2 pt-2">
-            <.dm_btn type="submit" variant="primary">Start</.dm_btn>
+            <.dm_btn type="submit" variant="primary">Connect</.dm_btn>
             <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
           </div>
         </form>
-      <% end %>
-
-      <%= if @device_flow_state == :polling do %>
-        <div class="space-y-4">
-          <p class="text-sm text-on-surface-variant">
-            Open the link below and enter the code to authorise. This page will update automatically.
-          </p>
-          <div class="rounded-md bg-surface-container p-4 space-y-3">
-            <div>
-              <p class="text-xs text-on-surface-variant mb-1">Authorisation URL</p>
-              <a
-                href={@device_flow_verification_uri}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-sm text-primary underline break-all"
-              >
-                {@device_flow_verification_uri}
-              </a>
-            </div>
-            <div>
-              <p class="text-xs text-on-surface-variant mb-1">Enter this code</p>
-              <code class="text-2xl font-bold tracking-widest">{@device_flow_user_code}</code>
-            </div>
-          </div>
-          <p class="text-xs text-on-surface-variant">Polling every {@device_flow_interval}s…</p>
-          <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
-        </div>
       <% end %>
 
       <%= if @device_flow_state == :error do %>
@@ -1082,4 +944,41 @@ defmodule BackplaneWeb.SettingsLive do
 
     "https://auth.openai.com/authorize?" <> URI.encode_query(params)
   end
+
+  defp build_auth_url("google_oauth", state, challenge, redirect_uri) do
+    with {:ok, client_id} <- google_client_id() do
+      params = %{
+        "response_type" => "code",
+        "client_id" => client_id,
+        "redirect_uri" => redirect_uri,
+        "scope" =>
+          "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+        "access_type" => "offline",
+        "prompt" => "consent",
+        "state" => state,
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      }
+
+      "https://accounts.google.com/o/oauth2/v2/auth?" <> URI.encode_query(params)
+    end
+  end
+
+  defp google_client_id do
+    value =
+      :backplane
+      |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
+      |> Keyword.get(:google_client_id)
+      |> Kernel.||(System.get_env("GOOGLE_OAUTH_CLIENT_ID"))
+      |> normalize_optional_string()
+
+    if value, do: {:ok, value}, else: {:error, :missing_google_oauth_client_id}
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp normalize_optional_string(_), do: nil
 end

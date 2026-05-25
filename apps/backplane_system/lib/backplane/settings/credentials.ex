@@ -70,8 +70,7 @@ defmodule Backplane.Settings.Credentials do
   Store a device-code-obtained OAuth token set.
 
   Encodes the token map as JSON, encrypts it, and stores with the given
-  `auth_type` in metadata. Extra hints (e.g. `client_id` for Google AI) are
-  stored unencrypted in metadata.
+  `auth_type` in metadata. Extra hints are stored unencrypted in metadata.
   """
   @spec store_device_token(String.t(), String.t(), map(), map()) ::
           {:ok, Credential.t()} | {:error, term()}
@@ -420,25 +419,6 @@ defmodule Backplane.Settings.Credentials do
   end
 
   defp maybe_short_circuit(_vendor, _parsed), do: :stale
-
-  # Google OAuth: pass client_id from metadata when refreshing.
-  defp refresh_and_persist_locked(locked, :google_oauth, parsed, refresh_token) do
-    alias Backplane.Settings.OAuthRefresher
-
-    client_id = get_in(locked.metadata, ["client_id"]) || ""
-
-    with {:ok, refreshed} <-
-           OAuthRefresher.refresh(:google_oauth, refresh_token, client_id: client_id),
-         updated = update_blob(:google_oauth, parsed, refreshed),
-         encoded = Jason.encode!(updated),
-         encrypted = Encryption.encrypt(encoded),
-         {:ok, _} <-
-           locked
-           |> Credential.changeset(%{encrypted_value: encrypted})
-           |> Repo.update() do
-      cache_and_return(locked.name, refreshed.access_token, refreshed.expires_at)
-    end
-  end
 
   defp refresh_and_persist_locked(locked, vendor, parsed, refresh_token) do
     alias Backplane.Settings.OAuthRefresher

@@ -11,7 +11,8 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
-      openai_token_url: "http://localhost:#{port}/openai/token"
+      openai_token_url: "http://localhost:#{port}/openai/token",
+      google_token_url: "http://localhost:#{port}/google/token"
     )
 
     on_exit(fn ->
@@ -77,6 +78,29 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       end
     end
 
+    post "/google/token" do
+      cond do
+        conn.body_params["refresh_token"] == "good-google" and
+          conn.body_params["client_id"] == "test-google-client" and
+            conn.body_params["client_secret"] == "test-google-secret" ->
+          resp = %{
+            "access_token" => "goog-new-access",
+            "refresh_token" => "goog-new-refresh",
+            "expires_in" => 3600,
+            "token_type" => "Bearer"
+          }
+
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, Jason.encode!(resp))
+
+        true ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+      end
+    end
+
     match _ do
       send_resp(conn, 404, "not found")
     end
@@ -121,6 +145,29 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do
       assert {:error, {:refresh_failed, 401}} =
                OAuthRefresher.refresh(:openai_oauth, "wrong")
+    end
+  end
+
+  describe "refresh/3 :google_oauth" do
+    test "requires configured Google OAuth client credentials" do
+      assert {:error, :missing_google_oauth_client_id} =
+               OAuthRefresher.refresh(:google_oauth, "good-google")
+    end
+
+    test "returns rotated tokens with configured Google OAuth client credentials" do
+      assert {:ok,
+              %{
+                access_token: "goog-new-access",
+                refresh_token: "goog-new-refresh",
+                expires_at: expires_at
+              }} =
+               OAuthRefresher.refresh(:google_oauth, "good-google",
+                 google_client_id: "test-google-client",
+                 google_client_secret: "test-google-secret"
+               )
+
+      now_ms = System.system_time(:millisecond)
+      assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
     end
   end
 end
