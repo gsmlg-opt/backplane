@@ -88,20 +88,7 @@ defmodule Mix.Tasks.Memory.Connect do
   end
 
   defp do_merge_hooks(existing, hooks_dir) do
-    # Build a map of script-path → existing entry for dedup
-    existing_by_script =
-      existing
-      |> Enum.with_index()
-      |> Enum.reduce(%{}, fn {entry, _idx}, acc ->
-        hooks = get_in(entry, ["hooks"]) || []
-
-        Enum.reduce(hooks, acc, fn hook, acc2 ->
-          cmd = hook["command"] || ""
-          Map.put(acc2, cmd, entry)
-        end)
-      end)
-
-    # Collect entries keyed by {event, script} to detect duplicates we add
+    # Collect canonical entries for every hook script we manage.
     new_entries =
       @hooks
       |> Enum.map(fn {event, script} ->
