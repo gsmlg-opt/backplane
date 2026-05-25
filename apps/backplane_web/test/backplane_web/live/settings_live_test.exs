@@ -211,20 +211,50 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
   end
 
   describe "credentials tab" do
+    setup do
+      {:ok, pid} =
+        Bandit.start_link(
+          plug: BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint,
+          port: 0
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+
+      prior = Application.get_env(:backplane, Backplane.Settings.OAuthDeviceFlow, [])
+
+      Application.put_env(:backplane, Backplane.Settings.OAuthDeviceFlow,
+        openai_device_url: "http://localhost:#{port}/device/code",
+        openai_token_url: "http://localhost:#{port}/token"
+      )
+
+      on_exit(fn ->
+        Application.put_env(:backplane, Backplane.Settings.OAuthDeviceFlow, prior)
+
+        try do
+          ThousandIsland.stop(pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      :ok
+    end
+
     test "renders credentials tab", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/admin/system/credentials")
       assert html =~ "Credential Store"
       assert html =~ "Add Credential"
     end
 
-    test "show_add_form opens the form", %{conn: conn} do
+    test "clicking Add Credential patches the URL to the new form", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
       html =
         view
-        |> element("el-dm-button[phx-click=show_add_form]")
+        |> element("a[href=\"/admin/system/credentials/new\"]")
         |> render_click()
 
+      assert_patched(view, "/admin/system/credentials/new")
       assert html =~ "New Credential"
       assert html =~ "save_credential"
     end
@@ -232,9 +262,9 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
     test "can add a credential", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
-      # Open the form
+      # Open the form via patching
       view
-      |> element("el-dm-button[phx-click=show_add_form]")
+      |> element("a[href=\"/admin/system/credentials/new\"]")
       |> render_click()
 
       # Submit the form
@@ -247,8 +277,92 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
+      assert_patched(view, "/admin/system/credentials")
       assert html =~ "test-key"
       refute html =~ "New Credential"
     end
+
+    test "clicking Connect Claude Plan patches the URL to the oauth form", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+
+      html =
+        view
+        |> element("a[href=\"/admin/system/credentials/new/anthropic_oauth\"]")
+        |> render_click()
+
+      assert_patched(view, "/admin/system/credentials/new/anthropic_oauth")
+      assert html =~ "Connect Claude Plan"
+    end
+
+    test "submitting device auth form for OpenAI requests device code and polls", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/openai_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{
+          "cred_name" => "my-openai-codex"
+        })
+        |> render_submit()
+
+      assert html =~ "Follow these steps to sign in with ChatGPT"
+      assert html =~ "https://auth.openai.com/codex/device"
+      assert html =~ "LNKB-13LTY"
+
+      send(view.pid, {:poll_device_auth, :openai_oauth, "mock-device-code", "my-openai-codex"})
+
+      render(view)
+
+      assert_patched(view, "/admin/system/credentials")
+      assert render(view) =~ "my-openai-codex"
+    end
+
+    test "submitting Google auth form without client config shows an error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{
+          "cred_name" => "my-google-ai"
+        })
+        |> render_submit()
+
+      assert html =~ "Authorization is not configured"
+      assert html =~ "missing_google_oauth_client_id"
+    end
+  end
+end
+
+defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
+  use Plug.Router
+  plug(:match)
+  plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
+  plug(:dispatch)
+
+  post "/device/code" do
+    resp = %{
+      "device_code" => "mock-device-code",
+      "user_code" => "LNKB-13LTY",
+      "verification_uri" => "https://auth.openai.com/codex/device",
+      "expires_in" => 900,
+      "interval" => 1
+    }
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(resp))
+  end
+
+  post "/token" do
+    resp = %{
+      "access_token" => "mock-access-token",
+      "refresh_token" => "mock-refresh-token",
+      "expires_in" => 3600,
+      "token_type" => "Bearer",
+      "account_id" => "mock-account-id"
+    }
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(resp))
   end
 end

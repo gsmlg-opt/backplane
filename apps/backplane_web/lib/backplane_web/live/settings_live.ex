@@ -14,20 +14,64 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
+  def handle_params(params, _uri, socket) do
     {page_mode, current_path, data_key} =
       case socket.assigns.live_action do
-        :credentials -> {:credentials, "/admin/system/credentials", "credentials"}
-        _ -> {:model_aliases, "/admin/llama/model-aliases", "settings"}
+        action when action in [:credentials, :credentials_new, :credentials_new_oauth] ->
+          {:credentials, "/admin/system/credentials", "credentials"}
+
+        _ ->
+          {:model_aliases, "/admin/llama/model-aliases", "settings"}
       end
 
     socket =
       socket
       |> assign(page_mode: page_mode, current_path: current_path)
       |> load_data(data_key)
+      |> apply_action(socket.assigns.live_action, params)
 
     {:noreply, socket}
   end
+
+  defp apply_action(socket, :credentials, _params) do
+    assign(socket, cred_form_mode: nil)
+  end
+
+  defp apply_action(socket, :credentials_new, _params) do
+    assign(socket,
+      cred_form_mode: :add,
+      cred_editing_name: nil,
+      cred_name: "",
+      cred_kind: "llm",
+      cred_secret: "",
+      cred_auth_type: "api_key",
+      cred_client_id: "",
+      cred_token_url: "",
+      cred_scope: ""
+    )
+  end
+
+  defp apply_action(socket, :credentials_new_oauth, %{"vendor" => vendor}) do
+    default_name =
+      case vendor do
+        "anthropic_oauth" -> "claude-plan"
+        "openai_oauth" -> "openai-codex"
+        "google_oauth" -> "google-ai"
+        _ -> "oauth-cred"
+      end
+
+    assign(socket,
+      cred_form_mode: :device_auth,
+      device_flow_vendor: vendor,
+      device_flow_state: :idle,
+      device_flow_cred_name: default_name,
+      device_flow_user_code: nil,
+      device_flow_verification_uri: nil,
+      device_flow_error: nil
+    )
+  end
+
+  defp apply_action(socket, _action, _params), do: socket
 
   # --- Data Loading ---
 
@@ -61,6 +105,8 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_vendor: nil,
       device_flow_state: :idle,
       device_flow_cred_name: "",
+      device_flow_user_code: nil,
+      device_flow_verification_uri: nil,
       device_flow_error: nil
     )
   end
@@ -155,21 +201,6 @@ defmodule BackplaneWeb.SettingsLive do
 
   # --- Credentials Events ---
 
-  def handle_event("show_add_form", _, socket) do
-    {:noreply,
-     assign(socket,
-       cred_form_mode: :add,
-       cred_editing_name: nil,
-       cred_name: "",
-       cred_kind: "llm",
-       cred_secret: "",
-       cred_auth_type: "api_key",
-       cred_client_id: "",
-       cred_token_url: "",
-       cred_scope: ""
-     )}
-  end
-
   def handle_event("show_edit_form", %{"name" => name}, socket) do
     cred = Enum.find(socket.assigns.credentials, &(&1.name == name))
     metadata = (cred && cred.metadata) || %{}
@@ -199,23 +230,16 @@ defmodule BackplaneWeb.SettingsLive do
      )}
   end
 
-  def handle_event("show_device_auth", %{"vendor" => vendor}, socket) do
-    default_name =
-      case vendor do
-        "anthropic_oauth" -> "claude-plan"
-        "openai_oauth" -> "openai-codex"
-        "google_oauth" -> "google-ai"
-        _ -> "oauth-cred"
-      end
+  def handle_event("cancel_device_auth", _, socket) do
+    {:noreply, push_patch(socket, to: ~p"/admin/system/credentials")}
+  end
 
-    {:noreply,
-     assign(socket,
-       cred_form_mode: :device_auth,
-       device_flow_vendor: vendor,
-       device_flow_state: :idle,
-       device_flow_cred_name: default_name,
-       device_flow_error: nil
-     )}
+  def handle_event("cancel_cred_form", _, socket) do
+    {:noreply, push_patch(socket, to: ~p"/admin/system/credentials")}
+  end
+
+  def handle_event("retry_device_auth", _, socket) do
+    {:noreply, assign(socket, device_flow_state: :idle, device_flow_error: nil)}
   end
 
   def handle_event("start_device_auth", params, socket) do
@@ -225,6 +249,31 @@ defmodule BackplaneWeb.SettingsLive do
     cond do
       name == "" ->
         {:noreply, put_flash(socket, :error, "Credential name is required")}
+
+      vendor == "openai_oauth" ->
+        case Backplane.Settings.OAuthDeviceFlow.request_device_code(:openai_oauth, []) do
+          {:ok, res} ->
+            Process.send_after(
+              self(),
+              {:poll_device_auth, :openai_oauth, res.device_code, name},
+              res.interval * 1000
+            )
+
+            {:noreply,
+             assign(socket,
+               device_flow_state: :waiting_code,
+               device_flow_user_code: res.user_code,
+               device_flow_verification_uri: res.verification_uri,
+               device_flow_error: nil
+             )}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Failed to request device code: #{inspect(reason)}"
+             )}
+        end
 
       true ->
         redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
@@ -247,23 +296,14 @@ defmodule BackplaneWeb.SettingsLive do
              )}
 
           auth_url ->
-            {:noreply, redirect(socket, external: auth_url)}
+            socket =
+              socket
+              |> push_event("open_external_oauth", %{url: auth_url})
+              |> push_patch(to: ~p"/admin/system/credentials")
+
+            {:noreply, socket}
         end
     end
-  end
-
-  def handle_event("cancel_device_auth", _, socket) do
-    {:noreply,
-     assign(socket,
-       cred_form_mode: nil,
-       device_flow_vendor: nil,
-       device_flow_state: :idle,
-       device_flow_error: nil
-     )}
-  end
-
-  def handle_event("cancel_cred_form", _, socket) do
-    {:noreply, assign(socket, cred_form_mode: nil, cred_editing_name: nil)}
   end
 
   def handle_event("change_auth_type", %{"auth_type" => auth_type}, socket) do
@@ -289,6 +329,67 @@ defmodule BackplaneWeb.SettingsLive do
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to delete credential")}
+    end
+  end
+
+  @impl true
+  def handle_info({:poll_device_auth, :openai_oauth, device_code, cred_name}, socket) do
+    if socket.assigns.device_flow_state == :waiting_code and
+         socket.assigns.device_flow_vendor == "openai_oauth" do
+      case Backplane.Settings.OAuthDeviceFlow.poll(:openai_oauth, device_code, []) do
+        {:ok, tokens} ->
+          hints = %{"account_id" => tokens["account_id"]}
+
+          case Credentials.store_device_token(cred_name, "openai_oauth", tokens, hints) do
+            {:ok, _} ->
+              {:noreply,
+               socket
+               |> put_flash(:info, "Connected OpenAI Codex as '#{cred_name}'")
+               |> push_patch(to: ~p"/admin/system/credentials")}
+
+            {:error, reason} ->
+              {:noreply,
+               assign(socket,
+                 device_flow_state: :error,
+                 device_flow_error:
+                   "Auth succeeded but failed to save credential: #{inspect(reason)}"
+               )}
+          end
+
+        {:pending} ->
+          Process.send_after(
+            self(),
+            {:poll_device_auth, :openai_oauth, device_code, cred_name},
+            5000
+          )
+
+          {:noreply, socket}
+
+        {:slow_down} ->
+          Process.send_after(
+            self(),
+            {:poll_device_auth, :openai_oauth, device_code, cred_name},
+            10000
+          )
+
+          {:noreply, socket}
+
+        {:expired} ->
+          {:noreply,
+           assign(socket,
+             device_flow_state: :error,
+             device_flow_error: "Device authorization code expired. Please try again."
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           assign(socket,
+             device_flow_state: :error,
+             device_flow_error: "Authorization failed: #{inspect(reason)}"
+           )}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -336,8 +437,7 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' created")
-           |> assign(cred_form_mode: nil)
-           |> load_data("credentials")}
+           |> push_patch(to: ~p"/admin/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to store credential")}
@@ -362,8 +462,7 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' updated")
-           |> assign(cred_form_mode: nil)
-           |> load_data("credentials")}
+           |> push_patch(to: ~p"/admin/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to update credential")}
@@ -372,8 +471,7 @@ defmodule BackplaneWeb.SettingsLive do
       {:noreply,
        socket
        |> put_flash(:info, "Credential '#{name}' updated")
-       |> assign(cred_form_mode: nil)
-       |> load_data("credentials")}
+       |> push_patch(to: ~p"/admin/system/credentials")}
     end
   end
 
@@ -389,8 +487,7 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' rotated")
-           |> assign(cred_form_mode: nil)
-           |> load_data("credentials")}
+           |> push_patch(to: ~p"/admin/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to rotate credential")}
@@ -676,127 +773,143 @@ defmodule BackplaneWeb.SettingsLive do
 
     ~H"""
     <div>
-      <div class="flex items-center justify-between mb-4">
-        <h1 class="text-2xl font-bold">Credential Store</h1>
-        <div :if={@cred_form_mode == nil} class="flex items-center">
-          <button
-            type="button"
-            class="btn btn-primary split-btn-left"
-            phx-click="show_add_form"
-          >
-            Add Credential
-          </button>
-          <.dm_dropdown id="cred-add-dropdown" position="bottom" dropdown_class="popover-end split-btn-dropdown">
-            <:trigger class="split-btn-trigger">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                class="size-4"
+      <%= case @live_action do %>
+        <% :credentials -> %>
+          <div class="flex items-center justify-between mb-4">
+            <h1 class="text-2xl font-bold">Credential Store</h1>
+            <div :if={@cred_form_mode == nil} class="flex items-center">
+              <.link
+                patch={~p"/admin/system/credentials/new"}
+                class="btn btn-primary split-btn-left"
               >
-                <path
-                  fill-rule="evenodd"
-                  d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-            </:trigger>
-            <:content>
-              <button
-                phx-click="show_device_auth"
-                phx-value-vendor="anthropic_oauth"
-                class="popover-menu-item"
-              >
-                Connect Claude Plan
-              </button>
-              <button
-                phx-click="show_device_auth"
-                phx-value-vendor="openai_oauth"
-                class="popover-menu-item"
-              >
-                Connect OpenAI Codex
-              </button>
-              <button
-                phx-click="show_device_auth"
-                phx-value-vendor="google_oauth"
-                class="popover-menu-item"
-              >
-                Connect Google AI
-              </button>
-            </:content>
-          </.dm_dropdown>
-        </div>
-      </div>
+                Add Credential
+              </.link>
+              <.dm_dropdown id="cred-add-dropdown" position="bottom" dropdown_class="popover-end split-btn-dropdown">
+                <:trigger class="split-btn-trigger">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    class="size-4"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                </:trigger>
+                <:content>
+                  <.link
+                    patch={~p"/admin/system/credentials/new/anthropic_oauth"}
+                    class="popover-menu-item"
+                  >
+                    Connect Claude Plan
+                  </.link>
+                  <.link
+                    patch={~p"/admin/system/credentials/new/openai_oauth"}
+                    class="popover-menu-item"
+                  >
+                    Connect OpenAI Codex
+                  </.link>
+                  <.link
+                    patch={~p"/admin/system/credentials/new/google_oauth"}
+                    class="popover-menu-item"
+                  >
+                    Connect Google AI
+                  </.link>
+                </:content>
+              </.dm_dropdown>
+            </div>
+          </div>
 
-      <.render_cred_form :if={@cred_form_mode in [:add, :edit, :rotate]} kind_options={@kind_options} {assigns} />
-      <.render_device_auth_form :if={@cred_form_mode == :device_auth} {assigns} />
+          <.render_cred_form :if={@cred_form_mode in [:edit, :rotate]} kind_options={@kind_options} {assigns} />
 
-      <.dm_card variant="bordered">
-        <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
-          No credentials stored yet. Click "Add Credential" to create one.
-        </div>
-        <div :if={@credentials != []}>
-          <.dm_table id="credentials-table" data={@credentials} hover zebra>
-            <:col :let={cred} label="Name">
-              <code>{cred.name}</code>
-            </:col>
-            <:col :let={cred} label="Kind">
-              <div class="flex items-center gap-1">
-                <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
-                <.dm_badge
-                  :if={
-                    (cred.metadata || %{})["auth_type"] in [
-                      "anthropic_oauth",
-                      "openai_oauth",
-                      "google_oauth",
-                      "oauth2_client_credentials"
-                    ]
-                  }
-                  variant="info"
-                >
-                  {(cred.metadata || %{})["auth_type"]}
-                </.dm_badge>
-              </div>
-            </:col>
-            <:col :let={cred} label="Hint">
-              <code class="text-on-surface-variant">{cred.hint}</code>
-            </:col>
-            <:col :let={cred} label="Updated">
-              {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
-            </:col>
-            <:col :let={cred} label="Actions">
-              <% auth_type = (cred.metadata || %{})["auth_type"] %>
-              <% is_device_oauth = auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"] %>
-              <div class="flex items-center gap-1">
-                <.dm_btn :if={!is_device_oauth} size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
-                  Edit
-                </.dm_btn>
-                <.dm_btn
-                  :if={is_device_oauth}
-                  size="sm"
-                  phx-click="show_device_auth"
-                  phx-value-vendor={auth_type}
-                  title="Re-connect via device code"
-                >
-                  Reconnect
-                </.dm_btn>
-                <.dm_btn :if={!is_device_oauth} variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
-                  Rotate
-                </.dm_btn>
-                <.dm_btn
-                  variant="error"
-                  size="sm"
-                  data-confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
-                  phx-click="delete_credential"
-                  phx-value-name={cred.name}
-                >
-                  Delete
-                </.dm_btn>
-              </div>
-            </:col>
-          </.dm_table>
-        </div>
-      </.dm_card>
+          <.dm_card variant="bordered">
+            <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
+              No credentials stored yet. Click "Add Credential" to create one.
+            </div>
+            <div :if={@credentials != []}>
+              <.dm_table id="credentials-table" data={@credentials} hover zebra>
+                <:col :let={cred} label="Name">
+                  <code>{cred.name}</code>
+                </:col>
+                <:col :let={cred} label="Kind">
+                  <div class="flex items-center gap-1">
+                    <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
+                    <.dm_badge
+                      :if={
+                        (cred.metadata || %{})["auth_type"] in [
+                          "anthropic_oauth",
+                          "openai_oauth",
+                          "google_oauth",
+                          "oauth2_client_credentials"
+                        ]
+                      }
+                      variant="info"
+                    >
+                      {(cred.metadata || %{})["auth_type"]}
+                    </.dm_badge>
+                  </div>
+                </:col>
+                <:col :let={cred} label="Hint">
+                  <code class="text-on-surface-variant">{cred.hint}</code>
+                </:col>
+                <:col :let={cred} label="Updated">
+                  {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
+                </:col>
+                <:col :let={cred} label="Actions">
+                  <% auth_type = (cred.metadata || %{})["auth_type"] %>
+                  <% is_device_oauth = auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"] %>
+                  <div class="flex items-center gap-1">
+                    <.dm_btn :if={!is_device_oauth} size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
+                      Edit
+                    </.dm_btn>
+                    <.link
+                      :if={is_device_oauth}
+                      patch={~p"/admin/system/credentials/new/#{auth_type}"}
+                    >
+                      <.dm_btn
+                        size="sm"
+                        title="Re-connect via device code"
+                      >
+                        Reconnect
+                      </.dm_btn>
+                    </.link>
+                    <.dm_btn :if={!is_device_oauth} variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
+                      Rotate
+                    </.dm_btn>
+                    <.dm_btn
+                      variant="error"
+                      size="sm"
+                      data-confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
+                      phx-click="delete_credential"
+                      phx-value-name={cred.name}
+                    >
+                      Delete
+                    </.dm_btn>
+                  </div>
+                </:col>
+              </.dm_table>
+            </div>
+          </.dm_card>
+
+        <% :credentials_new -> %>
+          <div class="flex items-center gap-3 mb-6">
+            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+              &larr; Credentials
+            </.link>
+          </div>
+          <.render_cred_form kind_options={@kind_options} {assigns} />
+
+        <% :credentials_new_oauth -> %>
+          <div class="flex items-center gap-3 mb-6">
+            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+              &larr; Credentials
+            </.link>
+          </div>
+          <.render_device_auth_form {assigns} />
+      <% end %>
     </div>
     """
   end
@@ -921,14 +1034,46 @@ defmodule BackplaneWeb.SettingsLive do
         </form>
       <% end %>
 
+      <%= if @device_flow_state == :waiting_code do %>
+        <div class="space-y-6">
+          <p class="text-sm text-on-surface">
+            Follow these steps to sign in with ChatGPT using device code authorization:
+          </p>
+          <ol class="list-decimal list-inside space-y-4 text-sm text-on-surface-variant">
+            <li>
+              Open this link in your browser and sign in to your account
+              <a href={@device_flow_verification_uri} target="_blank" class="text-primary underline ml-1 font-medium">
+                {@device_flow_verification_uri}
+              </a>
+            </li>
+            <li>
+              Enter this one-time code (expires in 15 minutes)
+              <span class="block mt-1 font-mono text-lg font-bold text-primary tracking-wider bg-surface-container px-3 py-1.5 rounded-md border border-outline-variant w-fit">
+                {@device_flow_user_code}
+              </span>
+            </li>
+          </ol>
+
+          <div class="flex items-center gap-3 py-3 border-t border-outline-variant">
+            <span class="loading loading-spinner text-primary"></span>
+            <span class="text-sm text-on-surface-variant animate-pulse">
+              Waiting for you to complete authorization...
+            </span>
+          </div>
+
+          <div class="flex gap-2">
+            <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+          </div>
+        </div>
+      <% end %>
+
       <%= if @device_flow_state == :error do %>
         <div class="space-y-4">
           <.dm_badge variant="error">{@device_flow_error}</.dm_badge>
           <div class="flex gap-2">
             <.dm_btn
               variant="primary"
-              phx-click="show_device_auth"
-              phx-value-vendor={@device_flow_vendor}
+              phx-click="retry_device_auth"
             >
               Try Again
             </.dm_btn>

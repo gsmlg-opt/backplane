@@ -56,6 +56,10 @@ if (document.readyState === "loading") {
 
 window.addEventListener("phx:page-loading-stop", () => initThemeSwitchers())
 
+window.addEventListener("phx:open_external_oauth", (e) => {
+  window.open(e.detail.url, "_blank");
+})
+
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
