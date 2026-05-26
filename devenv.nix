@@ -49,7 +49,9 @@ in {
 
   services.postgres = {
     enable = true;
-    package = pkgs-stable.postgresql_17;
+    package = pkgs-stable.postgresql_17.withPackages (ps: [
+      ps.pgvector
+    ]);
     initialDatabases = [
       {name = "backplane_dev";}
       {name = "backplane_test";}

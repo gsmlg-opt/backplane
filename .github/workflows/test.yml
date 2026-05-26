@@ -56,9 +56,12 @@ jobs:
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
 
+      - name: Prepare test database
+        run: mix ecto.setup
+
       - name: Run tests
         run: |
-          mix do --app backplane cmd mix test test/backplane/services/web_fetch_test.exs
+          mix do --app backplane_mcp cmd mix test test/backplane/services/web_fetch_test.exs
           mix do --app day_ex cmd mix test
           mix do --app relayixir cmd mix test
           mix do --app backplane_memory cmd mix test

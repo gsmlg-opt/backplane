@@ -9,7 +9,12 @@ defmodule Backplane.Umbrella.MixProject do
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
       releases: releases(),
-      aliases: aliases()
+      aliases: aliases(),
+      dialyzer: [
+        ignore_warnings: ".dialyzer_ignore.exs",
+        plt_local_path: "priv/plts",
+        plt_core_path: "priv/plts"
+      ]
     ]
   end
 
