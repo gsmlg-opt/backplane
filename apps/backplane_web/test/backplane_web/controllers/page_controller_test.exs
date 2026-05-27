@@ -31,7 +31,7 @@ defmodule BackplaneWeb.PageControllerTest do
     assert html_response(conn, 200) =~ "~/.codex/config.toml"
     assert html_response(conn, 200) =~ "http://10.100.10.17:4220/llm/anthropic"
     assert html_response(conn, 200) =~ "http://10.100.10.17:4220/llm/v1"
-    assert html_response(conn, 200) =~ "/llm/anthropic/models"
+    assert html_response(conn, 200) =~ "/llm/anthropic/v1/models"
     assert html_response(conn, 200) =~ "/llm/v1/responses"
     assert html_response(conn, 200) =~ "http://10.100.10.17:4220/mcp"
     assert html_response(conn, 200) =~ "appbar"

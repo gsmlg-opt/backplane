@@ -5,7 +5,7 @@ defmodule Backplane.LLM.Router do
   Aggregates LLM providers behind a single OpenAI/Anthropic-compatible endpoint.
   Routes:
   - GET  /v1/models                    — aggregated model listing
-  - GET  /anthropic/models             — Anthropic model listing
+  - GET  /anthropic/v1/models          — Anthropic model listing
   - POST /anthropic/v1/messages        — Anthropic Messages API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
@@ -33,18 +33,19 @@ defmodule Backplane.LLM.Router do
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
-  plug Backplane.Transport.CORS
-  plug :match
-  plug Backplane.Transport.AuthPlug
+  plug(Backplane.Transport.CORS)
+  plug(:match)
+  plug(Backplane.Transport.AuthPlug)
 
-  plug Plug.Parsers,
+  plug(Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
     json_decoder: Jason,
     length: 50_000_000,
     body_reader: {CacheBodyReader, :read_body, []}
+  )
 
-  plug :dispatch
+  plug(:dispatch)
 
   # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ defmodule Backplane.LLM.Router do
     send_json(conn, 200, %{"object" => "list", "data" => models})
   end
 
-  get "/anthropic/models" do
+  get "/anthropic/v1/models" do
     models = build_model_list(:anthropic)
     send_json(conn, 200, %{"object" => "list", "data" => models})
   end

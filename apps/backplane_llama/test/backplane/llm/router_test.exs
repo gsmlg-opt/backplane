@@ -50,7 +50,7 @@ defmodule Backplane.LLM.RouterTest do
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
 
-  describe "GET /llm/anthropic/models" do
+  describe "GET /llm/anthropic/v1/models" do
     test "returns only models available on the Anthropic surface" do
       create_provider_model(
         "anthropic-prod",
@@ -61,7 +61,7 @@ defmodule Backplane.LLM.RouterTest do
 
       create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
 
-      conn = public_llm_request(:get, "/llm/anthropic/models")
+      conn = public_llm_request(:get, "/llm/anthropic/v1/models")
 
       assert conn.status == 200
       body = json_body(conn)
