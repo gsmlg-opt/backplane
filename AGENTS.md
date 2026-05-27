@@ -85,7 +85,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
 - `Backplane.Services.Skills.*` — Managed service for skill upload, browse, serve (`skills::*`)
 - `Backplane.Tools.*` — Native tool modules (Hub, Skill, Admin) registered at boot
-- `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, HealthChecker, UsageLog, UsageCollector
+- `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector
 - `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
 - `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
 - `Backplane.Clients` — Client access control (bearer tokens, scopes, ETS-cached)
@@ -109,8 +109,7 @@ Backplane.Application (apps/backplane)
 ├── Relayixir (HTTP proxy for LLM forwarding)
 ├── Backplane.LLM.ModelResolver (ETS)
 ├── Backplane.LLM.RouteLoader
-├── Backplane.LLM.RateLimiter (ETS sliding window)
-└── Backplane.LLM.HealthChecker
+└── Backplane.LLM.RateLimiter (ETS sliding window)
 
 BackplaneWeb.Application (apps/backplane_web)
 └── BackplaneWeb.Endpoint (Bandit HTTP server)

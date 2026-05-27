@@ -1,7 +1,6 @@
 defmodule BackplaneWeb.ProvidersLive do
   use BackplaneWeb, :live_view
 
-  alias Backplane.LLM.HealthChecker
   alias Backplane.LLM.Provider
   alias Backplane.PubSubBroadcaster
 
@@ -165,14 +164,7 @@ defmodule BackplaneWeb.ProvidersLive do
                     {provider_enabled_text(api.enabled)}
                   </.dm_badge>
                 </div>
-                <span
-                  class={[
-                    "inline-block h-2 w-2 rounded-full",
-                    if(HealthChecker.healthy?(api.id), do: "bg-success", else: "bg-error")
-                  ]}
-                  title={if HealthChecker.healthy?(api.id), do: "Healthy", else: "Unhealthy"}
-                >
-                </span>
+
               </div>
               <div class="truncate font-mono text-xs text-on-surface">{api.base_url}</div>
               <div class="mt-1 text-xs text-on-surface-variant">

@@ -10,8 +10,7 @@ defmodule BackplaneLlama.Application do
         Relayixir,
         Backplane.LLM.ModelResolver,
         route_loader_child(),
-        Backplane.LLM.RateLimiter,
-        {Backplane.LLM.HealthChecker, []}
+        Backplane.LLM.RateLimiter
       ]
       |> Enum.reject(&is_nil/1)
 
