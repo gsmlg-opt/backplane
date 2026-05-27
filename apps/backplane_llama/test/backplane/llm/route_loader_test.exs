@@ -1,16 +1,13 @@
 defmodule Backplane.LLM.RouteLoaderTest do
   use Backplane.DataCase, async: false
 
-  alias Backplane.LLM.{Provider, RouteLoader}
+  alias Backplane.LLM.{Provider, ProviderApi, RouteLoader}
   alias Backplane.Settings.Credentials
   alias Relayixir.Config.UpstreamConfig
 
   @provider_attrs %{
     name: "anthropic-prod",
-    api_type: :anthropic,
-    api_url: "https://api.anthropic.com",
-    credential: "route-loader-cred",
-    models: ["claude-3-5-sonnet-20241022"]
+    credential: "route-loader-cred"
   }
 
   setup do
@@ -26,12 +23,17 @@ defmodule Backplane.LLM.RouteLoaderTest do
   describe "boot" do
     test "registers upstream for each active provider after receiving load message" do
       {:ok, provider} = Provider.create(@provider_attrs)
+      {:ok, api} = ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "https://api.anthropic.com"
+      })
 
       # Trigger a reload by broadcasting the change event
       Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
       Process.sleep(100)
 
-      upstream_name = RouteLoader.upstream_name(provider.id)
+      upstream_name = RouteLoader.upstream_name(api.id)
       config = UpstreamConfig.get_upstream(upstream_name)
 
       assert config != nil
@@ -41,14 +43,19 @@ defmodule Backplane.LLM.RouteLoaderTest do
     end
   end
 
-  describe "provider create" do
-    test "registers new upstream after provider is created" do
+  describe "provider API create" do
+    test "registers new upstream after provider API is created" do
       {:ok, provider} = Provider.create(@provider_attrs)
+      {:ok, api} = ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "https://api.anthropic.com"
+      })
 
       # Give PubSub time to deliver the message
       Process.sleep(100)
 
-      upstream_name = RouteLoader.upstream_name(provider.id)
+      upstream_name = RouteLoader.upstream_name(api.id)
       config = UpstreamConfig.get_upstream(upstream_name)
 
       assert config != nil
@@ -61,15 +68,19 @@ defmodule Backplane.LLM.RouteLoaderTest do
     end
   end
 
-  describe "provider update" do
-    test "updates upstream config when provider api_url changes" do
+  describe "provider API update" do
+    test "updates upstream config when provider API base_url changes" do
       {:ok, provider} = Provider.create(@provider_attrs)
+      {:ok, api} = ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "https://api.anthropic.com"
+      })
       Process.sleep(100)
 
       {:ok, updated} =
-        Provider.update(provider, %{
-          api_url: "https://api.openai.com",
-          models: ["claude-3-5-sonnet-20241022"]
+        ProviderApi.update(api, %{
+          base_url: "https://api.openai.com"
         })
 
       Process.sleep(100)
@@ -85,9 +96,14 @@ defmodule Backplane.LLM.RouteLoaderTest do
   describe "provider delete" do
     test "removes upstream config when provider is soft-deleted" do
       {:ok, provider} = Provider.create(@provider_attrs)
+      {:ok, api} = ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "https://api.anthropic.com"
+      })
       Process.sleep(100)
 
-      upstream_name = RouteLoader.upstream_name(provider.id)
+      upstream_name = RouteLoader.upstream_name(api.id)
       assert UpstreamConfig.get_upstream(upstream_name) != nil
 
       {:ok, _} = Provider.soft_delete(provider)
@@ -108,7 +124,12 @@ defmodule Backplane.LLM.RouteLoaderTest do
       # Manually insert a non-LLM upstream
       UpstreamConfig.put_upstreams(%{"other-upstream" => %{host: "example.com", port: 80}})
 
-      {:ok, _provider} = Provider.create(@provider_attrs)
+      {:ok, provider} = Provider.create(@provider_attrs)
+      {:ok, _api} = ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :anthropic,
+        base_url: "https://api.anthropic.com"
+      })
       Process.sleep(100)
 
       # Non-LLM upstream should still be present

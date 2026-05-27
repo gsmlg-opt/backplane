@@ -32,8 +32,6 @@ defmodule Backplane.Tools.HubTest do
 
       for module <- [
             Backplane.Tools.Skill,
-            Backplane.Tools.Docs,
-            Backplane.Tools.Git,
             Backplane.Tools.Hub
           ],
           tool_def <- module.tools() do
@@ -143,66 +141,10 @@ defmodule Backplane.Tools.HubTest do
       assert is_integer(result.total_skills)
     end
 
-    test "returns git_providers list" do
+    test "skill_sources returns counts" do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
-      assert is_list(result.git_providers)
-    end
-
-
-    test "skill_sources groups by source" do
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      assert Enum.any?(result.skill_sources, fn s -> s.name == "db" end)
-    end
-
-    test "skill_sources includes last_synced timestamp" do
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      db_source = Enum.find(result.skill_sources, fn s -> s.name == "db" end)
-      assert db_source
-      # The skill was inserted in setup, so last_synced should be populated
-      assert db_source.last_synced != nil
-    end
-  end
-
-  describe "git provider status derivation" do
-    test "shows rate_limited when remaining is 0 and reset in future" do
-      alias Backplane.Git.RateLimitCache
-
-      # Simulate a rate-limited provider
-      RateLimitCache.put("github", %{
-        remaining: 0,
-        limit: 5000,
-        reset: System.system_time(:second) + 3600
-      })
-
-      Application.put_env(:backplane, :git_providers, %{
-        github: [%{name: "github", token: "test", api_url: "https://api.github.com"}],
-        gitlab: []
-      })
-
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      gh = Enum.find(result.git_providers, &(&1.name == "github"))
-      assert gh.status == "rate_limited"
-
-      # Cleanup
-      Application.delete_env(:backplane, :git_providers)
-    end
-
-    test "shows unknown when no rate limit data exists" do
-      Application.put_env(:backplane, :git_providers, %{
-        github: [%{name: "github", token: "test", api_url: "https://api.github.com"}],
-        gitlab: []
-      })
-
-      # Clear the rate limit cache for github
-      alias Backplane.Git.RateLimitCache
-
-      # Put nil-equivalent — there's no delete, but we can verify unknown by checking a fresh key
-      {:ok, result} = Hub.call(%{"_handler" => "status"})
-      gh = Enum.find(result.git_providers, &(&1.name == "github"))
-      # Status should be either "unknown" or "rate_limited" (from previous test) or "ok"
-      assert gh.status in ["unknown", "rate_limited", "ok"]
-
-      Application.delete_env(:backplane, :git_providers)
+      assert [%{skill_count: count}] = result.skill_sources
+      assert is_integer(count)
     end
   end
 
@@ -339,6 +281,5 @@ defmodule Backplane.Tools.HubDbRescueTest do
 
     assert {:ok, status} = result
     assert status.skill_sources == []
-    assert status.doc_projects == []
   end
 end

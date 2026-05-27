@@ -61,17 +61,7 @@ defmodule Backplane.Config.ValidatorTest do
     assert Enum.any?(warnings, &(&1 =~ "unknown transport 'grpc'"))
   end
 
-  test "validate warns about missing project fields" do
-    config = [
-      backplane: %{port: 4100},
-      upstream: [],
-      projects: [%{id: nil, repo: nil}]
-    ]
 
-    warnings = Validator.validate(config)
-    assert Enum.any?(warnings, &(&1 =~ "missing required field 'id'"))
-    assert Enum.any?(warnings, &(&1 =~ "missing required field 'repo'"))
-  end
 
   test "validate warns about invalid port" do
     config = [
@@ -218,30 +208,14 @@ defmodule Backplane.Config.ValidatorTest do
       assert Enum.any?(warnings, &(&1 =~ "duplicate upstream name 'same'"))
     end
 
-    test "warns about duplicate project ids" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [
-          %{id: "proj", repo: "github:a/b"},
-          %{id: "proj", repo: "github:c/d"}
-        ]
-      ]
 
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "duplicate project id 'proj'"))
-    end
 
-    test "no warnings when all upstream prefixes and project ids are unique" do
+    test "no warnings when all upstream prefixes are unique" do
       config = [
         backplane: %{port: 4100},
         upstream: [
           %{name: "first", prefix: "a", transport: "http", url: "http://a/mcp"},
           %{name: "second", prefix: "b", transport: "http", url: "http://b/mcp"}
-        ],
-        projects: [
-          %{id: "proj1", repo: "github:a/b"},
-          %{id: "proj2", repo: "github:c/d"}
         ]
       ]
 
@@ -250,108 +224,5 @@ defmodule Backplane.Config.ValidatorTest do
     end
   end
 
-  describe "skill validation" do
-    test "validate returns no warnings for valid git skill config" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "my-skill", source: "git", repo: "https://github.com/o/r.git"}]
-      ]
 
-      warnings = Validator.validate(config)
-      refute Enum.any?(warnings, &(&1 =~ "skill"))
-    end
-
-    test "validate returns no warnings for valid local skill config" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "local-skill", source: "local", path: "/opt/skills"}]
-      ]
-
-      warnings = Validator.validate(config)
-      refute Enum.any?(warnings, &(&1 =~ "skill"))
-    end
-
-    test "validate warns about missing skill name" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{source: "git", repo: "https://github.com/o/r.git"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "missing required field 'name'"))
-    end
-
-    test "validate warns about missing skill source" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "no-source"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "missing required field 'source'"))
-    end
-
-    test "validate warns about missing repo for git skill" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "git-skill", source: "git"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "missing required field 'repo'"))
-    end
-
-    test "validate warns about missing path for local skill" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "local-skill", source: "local"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "missing required field 'path'"))
-    end
-
-    test "validate warns about unknown skill source" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "bad-skill", source: "s3"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "unknown source 's3'"))
-    end
-
-    test "validate returns no warnings when skills section is absent" do
-      config = [backplane: %{port: 4100}, upstream: [], projects: []]
-
-      warnings = Validator.validate(config)
-      refute Enum.any?(warnings, &(&1 =~ "skill"))
-    end
-
-    test "validate warns about empty skill name" do
-      config = [
-        backplane: %{port: 4100},
-        upstream: [],
-        projects: [],
-        skills: [%{name: "", source: "git", repo: "https://github.com/o/r.git"}]
-      ]
-
-      warnings = Validator.validate(config)
-      assert Enum.any?(warnings, &(&1 =~ "'name' cannot be empty"))
-    end
-  end
 end

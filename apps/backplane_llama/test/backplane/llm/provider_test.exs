@@ -60,7 +60,7 @@ defmodule Backplane.LLM.ProviderTest do
       assert provider.preset_key == "deepseek"
       assert provider.default_headers == %{"x-provider" => "test"}
       assert provider.rpm_limit == 100
-      refute Map.has_key?(Map.from_struct(provider), :api_type)
+      assert is_nil(provider.api_type)
     end
 
     test "rejects missing name" do

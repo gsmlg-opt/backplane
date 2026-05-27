@@ -18,6 +18,21 @@ defmodule Backplane.Transport.McpHandlerTest do
     :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
     Backplane.Skills.Registry.refresh()
 
+    # Ensure native tools are registered for the test
+    alias Backplane.Registry.{Tool, ToolRegistry}
+    for module <- [Backplane.Tools.Skill, Backplane.Tools.Hub, Backplane.Tools.Admin],
+        tool_def <- module.tools() do
+      tool = %Tool{
+        name: tool_def.name,
+        description: tool_def.description,
+        input_schema: tool_def.input_schema,
+        origin: :native,
+        module: tool_def.module,
+        handler: tool_def.handler
+      }
+      ToolRegistry.register_native(tool)
+    end
+
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
     end)
