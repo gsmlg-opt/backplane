@@ -24,6 +24,8 @@ config :backplane, Oban,
 
 config :backplane_memory, repo: Backplane.Repo
 
+config :backplane_monitor, repo: Backplane.Repo
+
 # Phoenix Endpoint
 config :backplane_web, BackplaneWeb.Endpoint,
   url: [host: "localhost"],

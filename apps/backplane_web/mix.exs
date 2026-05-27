@@ -31,6 +31,7 @@ defmodule BackplaneWeb.MixProject do
     [
       {:backplane, in_umbrella: true},
       {:backplane_memory, in_umbrella: true},
+      {:backplane_monitor, in_umbrella: true},
       {:relayixir, in_umbrella: true},
 
       # Web

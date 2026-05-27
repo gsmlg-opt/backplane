@@ -94,6 +94,7 @@ defmodule BackplaneWeb.Router do
     # System
     live("/system/clients", ClientsLive, :index)
     live("/system/logs", LogsLive, :index)
+    live("/system/monitor/plans", MonitorPlansLive, :index)
     live("/system/credentials", SettingsLive, :credentials)
     live("/system/credentials/new", SettingsLive, :credentials_new)
     live("/system/credentials/new/:vendor", SettingsLive, :credentials_new_oauth)
@@ -102,6 +103,9 @@ defmodule BackplaneWeb.Router do
     live("/system/host-agents/manage", HostAgentsLive, :manage)
     live("/system/host-agents/auth", HostAgentsLive, :auth)
     live("/system/host-agents/:id/config", HostAgentsLive, :config)
+
+    # Dashboard → Plan Usage
+    live("/dashboard/usage/plans", DashboardPlanUsageLive, :index)
 
     # OAuth callbacks
     get("/oauth/callback", OAuthCallbackController, :callback)

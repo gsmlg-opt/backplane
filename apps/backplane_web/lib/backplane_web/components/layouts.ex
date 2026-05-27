@@ -24,7 +24,8 @@ defmodule BackplaneWeb.Layouts do
         [
           %{label: "Overview", path: "/admin/dashboard/overview", icon: "view-dashboard-outline"},
           %{label: "LLM Usage", path: "/admin/dashboard/usage/llm", icon: "chart-line"},
-          %{label: "MCP Usage", path: "/admin/dashboard/usage/mcp", icon: "chart-bar"}
+          %{label: "MCP Usage", path: "/admin/dashboard/usage/mcp", icon: "chart-bar"},
+          %{label: "Plan Usage", path: "/admin/dashboard/usage/plans", icon: "chart-donut"}
         ]
 
       :llama ->
@@ -58,8 +59,23 @@ defmodule BackplaneWeb.Layouts do
       :system ->
         [
           %{label: "Clients", path: "/admin/system/clients", icon: "account-group"},
-          %{label: "Logs", path: "/admin/system/logs", icon: "text-box-search"},
           %{label: "Credentials", path: "/admin/system/credentials", icon: "key-variant"},
+          %{
+            label: "Monitor",
+            icon: "monitor-eye",
+            items: [
+              %{
+                label: "Logs",
+                path: "/admin/system/logs",
+                icon: "text-box-search"
+              },
+              %{
+                label: "Plan Usage",
+                path: "/admin/system/monitor/plans",
+                icon: "chart-donut"
+              }
+            ]
+          },
           %{
             label: "Host Agent Management",
             icon: "server",
