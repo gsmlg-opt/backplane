@@ -97,6 +97,7 @@ defmodule BackplaneWeb.Router do
     live("/system/credentials", SettingsLive, :credentials)
     live("/system/credentials/new", SettingsLive, :credentials_new)
     live("/system/credentials/new/:vendor", SettingsLive, :credentials_new_oauth)
+    live("/system/credentials/:name/edit", SettingsLive, :credentials_edit)
     live("/system/host-agents", HostAgentsLive, :index)
     live("/system/host-agents/manage", HostAgentsLive, :manage)
     live("/system/host-agents/auth", HostAgentsLive, :auth)

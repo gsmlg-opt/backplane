@@ -60,4 +60,16 @@ defmodule Backplane.PubSubBroadcaster do
   def broadcast_llm_providers(event, payload \\ %{}) do
     Phoenix.PubSub.broadcast(@pubsub, llm_providers_topic(), {event, payload})
   end
+
+  # Credentials
+
+  def credentials_topic, do: "credentials:changed"
+
+  def broadcast_credential_changed(name) when is_binary(name) do
+    Phoenix.PubSub.broadcast(@pubsub, credentials_topic(), {:credential_changed, name})
+  end
+
+  def broadcast_credentials_reloaded do
+    Phoenix.PubSub.broadcast(@pubsub, credentials_topic(), :credentials_reloaded)
+  end
 end

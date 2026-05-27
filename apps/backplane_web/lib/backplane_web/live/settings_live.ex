@@ -10,14 +10,14 @@ defmodule BackplaneWeb.SettingsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, page_mode: nil)}
+    {:ok, assign(socket, page_mode: nil, delete_confirm_name: nil)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     {page_mode, current_path, data_key} =
       case socket.assigns.live_action do
-        action when action in [:credentials, :credentials_new, :credentials_new_oauth] ->
+        action when action in [:credentials, :credentials_new, :credentials_new_oauth, :credentials_edit] ->
           {:credentials, "/admin/system/credentials", "credentials"}
 
         _ ->
@@ -34,7 +34,7 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp apply_action(socket, :credentials, _params) do
-    assign(socket, cred_form_mode: nil)
+    assign(socket, cred_form_mode: nil, delete_confirm_name: nil)
   end
 
   defp apply_action(socket, :credentials_new, _params) do
@@ -67,7 +67,26 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_cred_name: default_name,
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
-      device_flow_error: nil
+      device_flow_error: nil,
+      device_flow_code_verifier: nil,
+      device_flow_redirect_uri: nil
+    )
+  end
+
+  defp apply_action(socket, :credentials_edit, %{"name" => name}) do
+    cred = Enum.find(socket.assigns.credentials, &(&1.name == name))
+    metadata = (cred && cred.metadata) || %{}
+
+    assign(socket,
+      cred_form_mode: :edit,
+      cred_editing_name: name,
+      cred_name: name,
+      cred_kind: (cred && cred.kind) || "llm",
+      cred_secret: "",
+      cred_auth_type: metadata["auth_type"] || "api_key",
+      cred_client_id: metadata["client_id"] || "",
+      cred_token_url: metadata["token_url"] || "",
+      cred_scope: metadata["scope"] || ""
     )
   end
 
@@ -85,6 +104,9 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp load_data(socket, "credentials") do
+    alias Backplane.Settings.Credentials.Vault
+    Vault.reload()
+
     credentials =
       Credentials.list()
       |> Enum.map(fn cred ->
@@ -107,7 +129,9 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_cred_name: "",
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
-      device_flow_error: nil
+      device_flow_error: nil,
+      device_flow_code_verifier: nil,
+      device_flow_redirect_uri: nil
     )
   end
 
@@ -201,33 +225,12 @@ defmodule BackplaneWeb.SettingsLive do
 
   # --- Credentials Events ---
 
-  def handle_event("show_edit_form", %{"name" => name}, socket) do
-    cred = Enum.find(socket.assigns.credentials, &(&1.name == name))
-    metadata = (cred && cred.metadata) || %{}
-
-    {:noreply,
-     assign(socket,
-       cred_form_mode: :edit,
-       cred_editing_name: name,
-       cred_name: name,
-       cred_kind: (cred && cred.kind) || "llm",
-       cred_secret: "",
-       cred_auth_type: metadata["auth_type"] || "api_key",
-       cred_client_id: metadata["client_id"] || "",
-       cred_token_url: metadata["token_url"] || "",
-       cred_scope: metadata["scope"] || ""
-     )}
+  def handle_event("show_delete_confirm", %{"name" => name}, socket) do
+    {:noreply, assign(socket, delete_confirm_name: name)}
   end
 
-  def handle_event("show_rotate_form", %{"name" => name}, socket) do
-    {:noreply,
-     assign(socket,
-       cred_form_mode: :rotate,
-       cred_editing_name: name,
-       cred_name: name,
-       cred_kind: "",
-       cred_secret: ""
-     )}
+  def handle_event("cancel_delete", _, socket) do
+    {:noreply, assign(socket, delete_confirm_name: nil)}
   end
 
   def handle_event("cancel_device_auth", _, socket) do
@@ -275,6 +278,23 @@ defmodule BackplaneWeb.SettingsLive do
              )}
         end
 
+      vendor == "anthropic_oauth" ->
+        redirect_uri = "https://platform.claude.com/oauth/code/callback"
+        {verifier, challenge} = pkce_pair()
+        state = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+        auth_url = build_auth_url("anthropic_oauth", state, challenge, redirect_uri)
+
+        {:noreply,
+         socket
+         |> assign(
+           device_flow_state: :waiting_code_input,
+           device_flow_cred_name: name,
+           device_flow_code_verifier: verifier,
+           device_flow_redirect_uri: redirect_uri,
+           device_flow_error: nil
+         )
+         |> push_event("open_external_oauth", %{url: auth_url})}
+
       true ->
         redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
         {verifier, challenge} = pkce_pair()
@@ -306,6 +326,44 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
+  def handle_event("submit_auth_code", %{"code" => code}, socket) do
+    code = String.trim(code)
+    vendor = socket.assigns.device_flow_vendor
+    cred_name = socket.assigns.device_flow_cred_name
+    verifier = socket.assigns.device_flow_code_verifier
+    redirect_uri = socket.assigns.device_flow_redirect_uri
+
+    if code == "" do
+      {:noreply, put_flash(socket, :error, "Authorization code is required")}
+    else
+      case exchange_auth_code(vendor, code, verifier, redirect_uri) do
+        {:ok, tokens, hints} ->
+          case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
+            {:ok, _} ->
+              {:noreply,
+               socket
+               |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
+               |> push_patch(to: ~p"/admin/system/credentials")}
+
+            {:error, reason} ->
+              {:noreply,
+               assign(socket,
+                 device_flow_state: :error,
+                 device_flow_error:
+                   "Auth succeeded but failed to save credential: #{inspect(reason)}"
+               )}
+          end
+
+        {:error, reason} ->
+          {:noreply,
+           assign(socket,
+             device_flow_state: :error,
+             device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}"
+           )}
+      end
+    end
+  end
+
   def handle_event("change_auth_type", %{"auth_type" => auth_type}, socket) do
     {:noreply, assign(socket, cred_auth_type: auth_type)}
   end
@@ -319,16 +377,22 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
-  def handle_event("delete_credential", %{"name" => name}, socket) do
+  def handle_event("confirm_delete", _, socket) do
+    name = socket.assigns.delete_confirm_name
+
     case Credentials.delete(name) do
       :ok ->
         {:noreply,
          socket
+         |> assign(delete_confirm_name: nil)
          |> put_flash(:info, "Credential '#{name}' deleted")
          |> load_data("credentials")}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete credential")}
+        {:noreply,
+         socket
+         |> assign(delete_confirm_name: nil)
+         |> put_flash(:error, "Failed to delete credential")}
     end
   end
 
@@ -823,7 +887,7 @@ defmodule BackplaneWeb.SettingsLive do
             </div>
           </div>
 
-          <.render_cred_form :if={@cred_form_mode in [:edit, :rotate]} kind_options={@kind_options} {assigns} />
+
 
           <.dm_card variant="bordered">
             <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
@@ -862,9 +926,11 @@ defmodule BackplaneWeb.SettingsLive do
                   <% auth_type = (cred.metadata || %{})["auth_type"] %>
                   <% is_device_oauth = auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"] %>
                   <div class="flex items-center gap-1">
-                    <.dm_btn :if={!is_device_oauth} size="sm" phx-click="show_edit_form" phx-value-name={cred.name}>
-                      Edit
-                    </.dm_btn>
+                    <.link :if={!is_device_oauth} patch={~p"/admin/system/credentials/#{cred.name}/edit"}>
+                      <.dm_btn size="sm">
+                        Edit
+                      </.dm_btn>
+                    </.link>
                     <.link
                       :if={is_device_oauth}
                       patch={~p"/admin/system/credentials/new/#{auth_type}"}
@@ -876,14 +942,11 @@ defmodule BackplaneWeb.SettingsLive do
                         Reconnect
                       </.dm_btn>
                     </.link>
-                    <.dm_btn :if={!is_device_oauth} variant="warning" size="sm" phx-click="show_rotate_form" phx-value-name={cred.name}>
-                      Rotate
-                    </.dm_btn>
+
                     <.dm_btn
                       variant="error"
                       size="sm"
-                      data-confirm={"Delete credential '#{cred.name}'? This cannot be undone."}
-                      phx-click="delete_credential"
+                      phx-click="show_delete_confirm"
                       phx-value-name={cred.name}
                     >
                       Delete
@@ -909,7 +972,35 @@ defmodule BackplaneWeb.SettingsLive do
             </.link>
           </div>
           <.render_device_auth_form {assigns} />
+
+        <% :credentials_edit -> %>
+          <div class="flex items-center gap-3 mb-6">
+            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+              &larr; Credentials
+            </.link>
+          </div>
+          <.render_cred_form kind_options={@kind_options} {assigns} />
       <% end %>
+
+      <div
+        :if={@delete_confirm_name}
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+        phx-window-keydown="cancel_delete"
+        phx-key="Escape"
+      >
+        <div class="bg-surface-container rounded-lg shadow-xl p-6 max-w-md w-full mx-4 border border-outline-variant">
+          <h3 class="text-lg font-semibold text-on-surface mb-2">Delete Credential</h3>
+          <p class="text-sm text-on-surface-variant mb-6">
+            Are you sure you want to delete credential
+            <code class="text-error font-mono">{@delete_confirm_name}</code>?
+            This cannot be undone.
+          </p>
+          <div class="flex justify-end gap-2">
+            <.dm_btn phx-click="cancel_delete">Cancel</.dm_btn>
+            <.dm_btn variant="error" phx-click="confirm_delete">Delete</.dm_btn>
+          </div>
+        </div>
+      </div>
     </div>
     """
   end
@@ -921,7 +1012,6 @@ defmodule BackplaneWeb.SettingsLive do
         <%= case @cred_form_mode do %>
           <% :add -> %>New Credential
           <% :edit -> %>Edit Credential: {@cred_editing_name}
-          <% :rotate -> %>Rotate Secret: {@cred_editing_name}
         <% end %>
       </:title>
       <form phx-submit="save_credential" class="space-y-4">
@@ -988,7 +1078,7 @@ defmodule BackplaneWeb.SettingsLive do
           value={@cred_secret}
           label={cred_secret_label(@cred_form_mode, @cred_auth_type)}
           placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type)}
-          {if @cred_form_mode in [:add, :rotate], do: [required: true], else: []}
+          {if @cred_form_mode == :add, do: [required: true], else: []}
         />
         <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant -mt-2">
           Leave empty to keep the current secret. Enter a new value to rotate it.
@@ -999,7 +1089,6 @@ defmodule BackplaneWeb.SettingsLive do
             <%= case @cred_form_mode do %>
               <% :add -> %>Store Credential
               <% :edit -> %>Save Changes
-              <% :rotate -> %>Rotate Secret
             <% end %>
           </.dm_btn>
           <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
@@ -1032,6 +1121,29 @@ defmodule BackplaneWeb.SettingsLive do
             <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
           </div>
         </form>
+      <% end %>
+
+      <%= if @device_flow_state == :waiting_code_input do %>
+        <div class="space-y-4">
+          <p class="text-sm text-on-surface-variant">
+            Complete authorization in the browser window that just opened,
+            then paste the code below.
+          </p>
+          <form phx-submit="submit_auth_code" class="space-y-4">
+            <.dm_input
+              id="oauth-code-input"
+              name="code"
+              label="Authorization Code"
+              value=""
+              placeholder="Paste the code from the browser"
+              required
+            />
+            <div class="flex gap-2 pt-2">
+              <.dm_btn type="submit" variant="primary">Submit Code</.dm_btn>
+              <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+            </div>
+          </form>
+        </div>
       <% end %>
 
       <%= if @device_flow_state == :waiting_code do %>
@@ -1097,20 +1209,23 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+  @anthropic_token_url "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
 
   defp build_auth_url("anthropic_oauth", state, challenge, redirect_uri) do
     params = %{
+      "code" => "true",
       "response_type" => "code",
       "client_id" => @anthropic_client_id,
       "redirect_uri" => redirect_uri,
-      "scope" => "user:profile user:inference",
+      "scope" =>
+        "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
       "state" => state,
       "code_challenge" => challenge,
       "code_challenge_method" => "S256"
     }
 
-    "https://platform.claude.com/oauth/authorize?" <> URI.encode_query(params)
+    "https://claude.com/cai/oauth/authorize?" <> URI.encode_query(params)
   end
 
   defp build_auth_url("openai_oauth", state, challenge, redirect_uri) do
@@ -1163,4 +1278,50 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp normalize_optional_string(_), do: nil
+
+  # --- Auth Code Exchange (Claude Code CLI flow) ---
+
+  defp exchange_auth_code("anthropic_oauth", code, code_verifier, redirect_uri) do
+    body = %{
+      "grant_type" => "authorization_code",
+      "code" => code,
+      "redirect_uri" => redirect_uri,
+      "client_id" => @anthropic_client_id,
+      "code_verifier" => code_verifier
+    }
+
+    case Req.post(@anthropic_token_url, json: body, receive_timeout: 15_000) do
+      {:ok, %{status: 200, body: resp}} ->
+        access = resp["access_token"] || resp["api_key"]
+        refresh = resp["refresh_token"] || ""
+        expires_in = resp["expires_in"] || 3600
+        expires_at = System.system_time(:millisecond) + expires_in * 1_000
+
+        tokens = %{access_token: access, refresh_token: refresh, expires_at: expires_at}
+
+        hints =
+          %{}
+          |> maybe_put_hint("subscription_type", resp["subscription_type"] || resp["plan"])
+          |> maybe_put_hint("organization_uuid", resp["organization_uuid"] || resp["org_id"])
+
+        {:ok, tokens, hints}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:http, status, body}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp maybe_put_hint(map, _key, nil), do: map
+  defp maybe_put_hint(map, _key, ""), do: map
+  defp maybe_put_hint(map, key, value), do: Map.put(map, key, value)
+
+  defp format_exchange_error({:http, status, %{"error_description" => desc}}),
+    do: "#{desc} (#{status})"
+
+  defp format_exchange_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
+  defp format_exchange_error({:http, status, _}), do: "HTTP #{status}"
+  defp format_exchange_error(other), do: inspect(other)
 end

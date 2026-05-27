@@ -15,6 +15,7 @@ defmodule Backplane.Settings.Credentials do
 
   alias Backplane.Repo
   alias Backplane.Settings.Credential
+  alias Backplane.Settings.Credentials.Vault
   alias Backplane.Settings.Encryption
 
   import Ecto.Query
@@ -26,26 +27,30 @@ defmodule Backplane.Settings.Credentials do
     with :ok <- validate_oauth_metadata(metadata) do
       encrypted = Encryption.encrypt(plaintext)
 
-      case Repo.get_by(Credential, name: name) do
-        nil ->
-          %Credential{}
-          |> Credential.changeset(%{
-            name: name,
-            kind: kind,
-            encrypted_value: encrypted,
-            metadata: metadata
-          })
-          |> Repo.insert()
+      result =
+        case Repo.get_by(Credential, name: name) do
+          nil ->
+            %Credential{}
+            |> Credential.changeset(%{
+              name: name,
+              kind: kind,
+              encrypted_value: encrypted,
+              metadata: metadata
+            })
+            |> Repo.insert()
 
-        existing ->
-          existing
-          |> Credential.changeset(%{
-            kind: kind,
-            encrypted_value: encrypted,
-            metadata: metadata
-          })
-          |> Repo.update()
-      end
+          existing ->
+            existing
+            |> Credential.changeset(%{
+              kind: kind,
+              encrypted_value: encrypted,
+              metadata: metadata
+            })
+            |> Repo.update()
+        end
+
+      notify_changed(result)
+      result
     end
   end
 
@@ -84,7 +89,7 @@ defmodule Backplane.Settings.Credentials do
   @spec fetch(String.t()) ::
           {:ok, String.t()} | {:error, :not_found | :decryption_failed | term()}
   def fetch(name) do
-    case Repo.get_by(Credential, name: name) do
+    case Vault.get(name) do
       nil ->
         {:error, :not_found}
 
@@ -116,7 +121,7 @@ defmodule Backplane.Settings.Credentials do
           {:ok, String.t(), %{auth_type: String.t(), extra_headers: [{String.t(), String.t()}]}}
           | {:error, term()}
   def fetch_with_meta(name) do
-    case Repo.get_by(Credential, name: name) do
+    case Vault.get(name) do
       nil ->
         {:error, :not_found}
 
@@ -140,6 +145,8 @@ defmodule Backplane.Settings.Credentials do
         case Repo.delete(credential) do
           {:ok, _} ->
             Backplane.Settings.TokenCache.invalidate(name)
+            Vault.remove(name)
+            Backplane.PubSubBroadcaster.broadcast_credential_changed(name)
             :ok
 
           {:error, _} ->
@@ -148,28 +155,16 @@ defmodule Backplane.Settings.Credentials do
     end
   end
 
-  @doc "List all credentials. Never returns plaintext values."
+  @doc "List all credentials. Never returns plaintext values. Reads from the in-memory Vault."
   @spec list() :: [map()]
   def list do
-    Credential
-    |> select([c], %{
-      id: c.id,
-      name: c.name,
-      kind: c.kind,
-      metadata: c.metadata,
-      inserted_at: c.inserted_at,
-      updated_at: c.updated_at
-    })
-    |> order_by([c], c.name)
-    |> Repo.all()
+    Vault.list()
   end
 
-  @doc "Check if a credential exists by name."
+  @doc "Check if a credential exists by name. Reads from the in-memory Vault."
   @spec exists?(String.t()) :: boolean()
   def exists?(name) do
-    Credential
-    |> where([c], c.name == ^name)
-    |> Repo.exists?()
+    Vault.exists?(name)
   end
 
   @doc "Rotate a credential's secret (update only the encrypted value). Invalidates any cached OAuth2 token."
@@ -189,6 +184,7 @@ defmodule Backplane.Settings.Credentials do
 
         if match?({:ok, _}, result) do
           Backplane.Settings.TokenCache.invalidate(name)
+          notify_changed(result)
         end
 
         result
@@ -207,9 +203,13 @@ defmodule Backplane.Settings.Credentials do
         {:error, :not_found}
 
       existing ->
-        existing
-        |> Credential.changeset(Map.take(attrs, [:kind, :metadata, "kind", "metadata"]))
-        |> Repo.update()
+        result =
+          existing
+          |> Credential.changeset(Map.take(attrs, [:kind, :metadata, "kind", "metadata"]))
+          |> Repo.update()
+
+        notify_changed(result)
+        result
     end
   end
 
@@ -427,10 +427,11 @@ defmodule Backplane.Settings.Credentials do
          updated = update_blob(vendor, parsed, refreshed),
          encoded = Jason.encode!(updated),
          encrypted = Encryption.encrypt(encoded),
-         {:ok, _} <-
+         {:ok, updated_cred} <-
            locked
            |> Credential.changeset(%{encrypted_value: encrypted})
            |> Repo.update() do
+      notify_changed({:ok, updated_cred})
       cache_and_return(locked.name, refreshed.access_token, refreshed.expires_at)
     end
   end
@@ -487,4 +488,11 @@ defmodule Backplane.Settings.Credentials do
     Backplane.Settings.TokenCache.put(name, access_token, expires_in_seconds)
     {:ok, access_token}
   end
+
+  defp notify_changed({:ok, %Credential{} = cred}) do
+    Vault.put(cred)
+    Backplane.PubSubBroadcaster.broadcast_credential_changed(cred.name)
+  end
+
+  defp notify_changed(_), do: :ok
 end
