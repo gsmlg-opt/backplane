@@ -43,4 +43,4 @@ config :backplane_host_agent,
 config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_logger: true,
   log_to_console: true,
-  log_to_file: "log/telemetry.jsonl"
+  log_to_file: "/tmp/backplane-telemetry.jsonl"
