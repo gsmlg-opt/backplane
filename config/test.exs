@@ -23,4 +23,11 @@ config :backplane_memory, embed_enabled: false
 
 config :backplane_host_agent, start_on_application: false
 
+config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
+  log_to_logger: false,
+  log_to_console: false,
+  log_to_file: nil
+
+config :backplane_telemetry, start_logger: false
+
 config :logger, level: :warning

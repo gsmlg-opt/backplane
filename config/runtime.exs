@@ -54,6 +54,14 @@ if config_env() == :prod do
         cache_enabled: cache.enabled,
         cache_max_entries: cache.max_entries
     end
+
+    # Telemetry settings
+    if telemetry = backplane_config[:telemetry] do
+      config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
+        log_to_logger: telemetry.log_to_logger,
+        log_to_console: telemetry.log_to_console,
+        log_to_file: telemetry.log_to_file
+    end
   end
 
   # Phoenix Endpoint — production configuration

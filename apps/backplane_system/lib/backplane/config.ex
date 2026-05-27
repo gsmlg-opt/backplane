@@ -39,7 +39,8 @@ defmodule Backplane.Config do
       upstream: parse_upstreams(raw["upstream"] || []),
       clients: parse_clients(raw["clients"] || []),
       cache: parse_cache(raw["cache"] || %{}),
-      audit: parse_audit(raw["audit"] || %{})
+      audit: parse_audit(raw["audit"] || %{}),
+      telemetry: parse_telemetry(raw["telemetry"] || %{})
     ]
   end
 
@@ -98,6 +99,14 @@ defmodule Backplane.Config do
     %{
       enabled: section["enabled"] != false,
       retention_days: section["retention_days"] || 30
+    }
+  end
+
+  defp parse_telemetry(section) do
+    %{
+      log_to_logger: section["log_to_logger"] != false,
+      log_to_console: section["log_to_console"] == true,
+      log_to_file: section["log_to_file"]
     }
   end
 

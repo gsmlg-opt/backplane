@@ -90,7 +90,7 @@ defmodule Backplane.Skills.HostConnectionRegistry do
 
     state =
       state
-      |> remove_connection(host.id, notify?: notify?)
+      |> remove_connection(host.id, notify?: notify?, reason: :replaced)
       |> put_connection(host, auth_token, pid)
 
     broadcast_changed()
@@ -99,7 +99,7 @@ defmodule Backplane.Skills.HostConnectionRegistry do
   end
 
   def handle_call({:disconnect, host_id}, _from, state) do
-    state = remove_connection(state, host_id, notify?: true)
+    state = remove_connection(state, host_id, notify?: true, reason: :explicit)
     broadcast_changed()
 
     {:reply, :ok, state}
@@ -140,13 +140,13 @@ defmodule Backplane.Skills.HostConnectionRegistry do
   end
 
   @impl true
-  def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
     case Map.fetch(state.monitors, monitor_ref) do
       {:ok, host_id} ->
         state =
           case state.connections[host_id] do
             %{monitor_ref: ^monitor_ref} ->
-              remove_connection(state, host_id, notify?: false)
+              remove_connection(state, host_id, notify?: false, reason: reason)
 
             _stale_entry ->
               %{state | monitors: Map.delete(state.monitors, monitor_ref)}
@@ -162,6 +162,12 @@ defmodule Backplane.Skills.HostConnectionRegistry do
 
   defp put_connection(state, host, auth_token, pid) do
     monitor_ref = Process.monitor(pid)
+
+    :telemetry.execute(
+      [:backplane, :host_agent, :connect],
+      %{system_time: System.system_time()},
+      %{host_id: host.id, host_name: host.name, auth_token_id: auth_token.id}
+    )
 
     entry = %{
       host: host,
@@ -199,6 +205,13 @@ defmodule Backplane.Skills.HostConnectionRegistry do
         if Keyword.get(opts, :notify?, false) do
           send(entry.pid, :disconnect)
         end
+
+        reason = Keyword.get(opts, :reason, :normal)
+        :telemetry.execute(
+          [:backplane, :host_agent, :disconnect],
+          %{system_time: System.system_time()},
+          %{host_id: host_id, host_name: entry.host.name, reason: reason}
+        )
 
         %{
           connections: Map.delete(state.connections, host_id),

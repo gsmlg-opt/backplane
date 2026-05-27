@@ -46,63 +46,105 @@ defmodule BackplaneMemory.Memory do
   """
   @spec remember(String.t(), keyword()) :: {:ok, MemorySchema.t()} | {:error, term()}
   def remember(content, opts \\ []) do
-    with {:ok, filtered} <- Filter.apply(content) do
-      attrs = build_attrs(filtered, opts)
+    metadata = %{action: "remember", scope: Keyword.get(opts, :scope, "global")}
 
-      case find_duplicate(filtered, attrs.scope) do
-        %MemorySchema{} = existing ->
-          {:ok, existing}
+    :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+      result =
+        with {:ok, filtered} <- Filter.apply(content) do
+          attrs = build_attrs(filtered, opts)
 
-        nil ->
-          %MemorySchema{}
-          |> MemorySchema.changeset(attrs)
-          |> repo().insert()
-          |> handle_insert(filtered, attrs.scope)
-      end
-    end
+          case find_duplicate(filtered, attrs.scope) do
+            %MemorySchema{} = existing ->
+              {:ok, existing}
+
+            nil ->
+              %MemorySchema{}
+              |> MemorySchema.changeset(attrs)
+              |> repo().insert()
+              |> handle_insert(filtered, attrs.scope)
+          end
+        end
+
+      status =
+        case result do
+          {:ok, mem} -> %{status: :ok, memory_id: mem.id}
+          {:error, reason} -> %{status: :error, error: inspect(reason)}
+          _ -> %{status: :ok}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   @doc "Fetch a non-deleted memory by id."
   @spec get(String.t()) :: {:ok, MemorySchema.t()} | {:error, :not_found}
   def get(id) do
-    query =
-      from(m in MemorySchema,
-        where: m.id == ^id and is_nil(m.deleted_at),
-        select: struct(m, ^@non_vector_fields)
-      )
+    metadata = %{action: "get", memory_id: id}
 
-    case repo().one(query) do
-      nil -> {:error, :not_found}
-      mem -> {:ok, mem}
-    end
+    :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+      query =
+        from(m in MemorySchema,
+          where: m.id == ^id and is_nil(m.deleted_at),
+          select: struct(m, ^@non_vector_fields)
+        )
+
+      result =
+        case repo().one(query) do
+          nil -> {:error, :not_found}
+          mem -> {:ok, mem}
+        end
+
+      status =
+        case result do
+          {:ok, _} -> %{status: :ok}
+          {:error, :not_found} -> %{status: :not_found}
+          _ -> %{status: :error}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   @doc "Soft-delete (or hard-delete if enabled) a memory by id. Writes an audit entry."
   @spec forget(String.t()) :: :ok | {:error, :not_found}
   def forget(id) do
-    case repo().one(
-           from(m in MemorySchema,
-             where: m.id == ^id and is_nil(m.deleted_at),
-             select: struct(m, ^@non_vector_fields)
-           )
-         ) do
-      nil ->
-        {:error, :not_found}
+    metadata = %{action: "forget", memory_id: id}
 
-      mem ->
-        if hard_delete_enabled?() do
-          repo().delete_all(from(m in MemorySchema, where: m.id == ^id))
-          BackplaneMemory.Audit.log("hard_delete", "system", [mem.id])
-        else
-          mem
-          |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
-          |> repo().update!()
+    :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+      result =
+        case repo().one(
+               from(m in MemorySchema,
+                 where: m.id == ^id and is_nil(m.deleted_at),
+                 select: struct(m, ^@non_vector_fields)
+               )
+             ) do
+          nil ->
+            {:error, :not_found}
 
-          BackplaneMemory.Audit.log("forget", "system", [mem.id])
+          mem ->
+            if hard_delete_enabled?() do
+              repo().delete_all(from(m in MemorySchema, where: m.id == ^id))
+              BackplaneMemory.Audit.log("hard_delete", "system", [mem.id])
+            else
+              mem
+              |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
+              |> repo().update!()
+
+              BackplaneMemory.Audit.log("forget", "system", [mem.id])
+            end
+
+            :ok
         end
 
-        :ok
-    end
+      status =
+        case result do
+          :ok -> %{status: :ok}
+          {:error, :not_found} -> %{status: :not_found}
+          _ -> %{status: :error}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   defp hard_delete_enabled? do
@@ -136,16 +178,23 @@ defmodule BackplaneMemory.Memory do
   """
   @spec list(keyword()) :: [MemorySchema.t()]
   def list(opts \\ []) do
-    limit = Keyword.get(opts, :limit, 50)
-    offset = Keyword.get(opts, :offset, 0)
+    metadata = %{action: "list", limit: Keyword.get(opts, :limit, 50), offset: Keyword.get(opts, :offset, 0)}
 
-    MemorySchema
-    |> apply_list_filters(opts)
-    |> order_by([m], desc: m.inserted_at)
-    |> limit(^limit)
-    |> offset(^offset)
-    |> select([m], struct(m, ^@non_vector_fields))
-    |> repo().all()
+    :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+      limit = Keyword.get(opts, :limit, 50)
+      offset = Keyword.get(opts, :offset, 0)
+
+      result =
+        MemorySchema
+        |> apply_list_filters(opts)
+        |> order_by([m], desc: m.inserted_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> select([m], struct(m, ^@non_vector_fields))
+        |> repo().all()
+
+      {result, Map.put(metadata, :count, length(result))}
+    end)
   end
 
   @doc "Count memories matching the same filter options as list/1 (ignores :limit/:offset)."

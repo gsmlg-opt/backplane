@@ -39,3 +39,8 @@ config :phoenix, :plug_init_mode, :runtime
 config :backplane_host_agent,
   start_on_application: false,
   telemetry_logger: true
+
+config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
+  log_to_logger: true,
+  log_to_console: true,
+  log_to_file: "log/telemetry.jsonl"

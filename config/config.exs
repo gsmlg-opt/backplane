@@ -89,4 +89,9 @@ config :backplane, Backplane.Settings.OAuthRefresher,
 
 config :backplane_host_agent, start_on_application: true
 
+config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
+  log_to_logger: true,
+  log_to_console: false,
+  log_to_file: nil
+
 import_config "#{config_env()}.exs"

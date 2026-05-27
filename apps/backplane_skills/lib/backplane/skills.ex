@@ -36,10 +36,23 @@ defmodule Backplane.Skills do
   @doc "Fetch a skill by ID."
   @spec get(String.t()) :: {:ok, Skill.t()} | {:error, :not_found}
   def get(id) when is_binary(id) do
-    case Repo.get(Skill, id) do
-      nil -> {:error, :not_found}
-      skill -> {:ok, skill}
-    end
+    metadata = %{action: "get", skill_id: id}
+
+    :telemetry.span([:backplane, :skills, :access], metadata, fn ->
+      result =
+        case Repo.get(Skill, id) do
+          nil -> {:error, :not_found}
+          skill -> {:ok, skill}
+        end
+
+      status =
+        case result do
+          {:ok, skill} -> %{status: :ok, slug: skill.slug}
+          {:error, :not_found} -> %{status: :not_found}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   @doc "Fetch a skill by slug."
@@ -55,15 +68,28 @@ defmodule Backplane.Skills do
   @spec delete(String.t() | Skill.t()) ::
           {:ok, Skill.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def delete(%Skill{} = skill) do
-    case Repo.delete(skill) do
-      {:ok, deleted} ->
-        cleanup_archive_blob(deleted)
-        Registry.refresh()
-        {:ok, deleted}
+    metadata = %{action: "delete", skill_id: skill.id, slug: skill.slug}
 
-      {:error, changeset} ->
-        {:error, changeset}
-    end
+    :telemetry.span([:backplane, :skills, :access], metadata, fn ->
+      result =
+        case Repo.delete(skill) do
+          {:ok, deleted} ->
+            cleanup_archive_blob(deleted)
+            Registry.refresh()
+            {:ok, deleted}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+
+      status =
+        case result do
+          {:ok, _} -> %{status: :ok}
+          {:error, reason} -> %{status: :error, error: inspect(reason)}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   def delete(id) when is_binary(id) do
@@ -74,12 +100,38 @@ defmodule Backplane.Skills do
 
   @doc "Ingest an archive-backed skill."
   @spec ingest_archive(term(), map() | keyword()) :: {:ok, Skill.t()} | {:error, term()}
-  def ingest_archive(archive, opts), do: Ingest.ingest(archive, opts)
+  def ingest_archive(archive, opts) do
+    metadata = %{action: "ingest"}
+
+    :telemetry.span([:backplane, :skills, :access], metadata, fn ->
+      result = Ingest.ingest(archive, opts)
+
+      status =
+        case result do
+          {:ok, skill} -> %{status: :ok, skill_id: skill.id, slug: skill.slug}
+          {:error, reason} -> %{status: :error, error: inspect(reason)}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
+  end
 
   @doc "Stream a skill archive."
   @spec archive_stream(String.t() | Skill.t()) :: {:ok, Enumerable.t()} | {:error, term()}
-  def archive_stream(%Skill{archive_ref: archive_ref}) when is_binary(archive_ref) do
-    Blob.get(archive_ref)
+  def archive_stream(%Skill{archive_ref: archive_ref} = skill) when is_binary(archive_ref) do
+    metadata = %{action: "archive_stream", skill_id: skill.id, slug: skill.slug}
+
+    :telemetry.span([:backplane, :skills, :access], metadata, fn ->
+      result = Blob.get(archive_ref)
+
+      status =
+        case result do
+          {:ok, _} -> %{status: :ok}
+          {:error, reason} -> %{status: :error, error: inspect(reason)}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
   end
 
   def archive_stream(%Skill{}), do: {:error, :not_found}
