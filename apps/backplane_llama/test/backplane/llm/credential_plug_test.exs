@@ -159,5 +159,42 @@ defmodule Backplane.LLM.CredentialPlugTest do
       provider = %Provider{api_type: :openai, credential: "nonexistent"}
       assert {:error, :not_found} = CredentialPlug.build_auth_headers(provider)
     end
+
+    test "returns authorization bearer header for third-party anthropic-compatible provider" do
+      Credentials.store("minimax-cred", "sk-minimax-key-9999", "llm")
+      {:ok, provider} = Provider.create(%{
+        name: "cred-plug-minimax",
+        preset_key: "minimax",
+        api_type: :anthropic,
+        api_url: "https://api.minimaxi.com/anthropic",
+        credential: "minimax-cred",
+        models: ["minimax-m2.7"]
+      })
+
+      assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+      assert {"authorization", "Bearer sk-minimax-key-9999"} in headers
+      refute {"x-api-key", "sk-minimax-key-9999"} in headers
+    end
+  end
+
+  describe "inject/2 with third-party anthropic-compatible provider" do
+    setup do
+      Credentials.store("minimax-cred", "sk-minimax-key-9999", "llm")
+      {:ok, provider} = Provider.create(%{
+        name: "cred-plug-minimax",
+        preset_key: "minimax",
+        api_type: :anthropic,
+        api_url: "https://api.minimaxi.com/anthropic",
+        credential: "minimax-cred",
+        models: ["minimax-m2.7"]
+      })
+      {:ok, provider: provider}
+    end
+
+    test "injects Authorization Bearer header", %{provider: provider} do
+      conn = conn(:post, "/") |> CredentialPlug.inject(provider)
+      assert get_req_header(conn, "authorization") == ["Bearer sk-minimax-key-9999"]
+      assert get_req_header(conn, "x-api-key") == []
+    end
   end
 end

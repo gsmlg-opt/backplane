@@ -183,6 +183,11 @@ defmodule Backplane.LLM.Router do
       [body: rewritten_body]
       |> then(fn o -> if on_chunk, do: Keyword.put(o, :on_response_chunk, on_chunk), else: o end)
 
+    conn =
+      conn
+      |> delete_req_header("authorization")
+      |> delete_req_header("x-api-key")
+
     result_conn = HttpPlug.call(conn, upstream, opts)
 
     latency_ms = System.monotonic_time(:millisecond) - start_ms

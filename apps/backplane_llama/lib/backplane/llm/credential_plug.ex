@@ -28,7 +28,7 @@ defmodule Backplane.LLM.CredentialPlug do
     case resolve_credential(provider) do
       {:ok, token, meta} ->
         conn
-        |> apply_auth_headers(api_type, meta.auth_type, token)
+        |> apply_auth_headers(provider, api_type, meta.auth_type, token)
         |> apply_extra_headers(meta.extra_headers)
         |> maybe_apply_anthropic_version(api_type)
         |> merge_default_headers(provider.default_headers)
@@ -66,7 +66,7 @@ defmodule Backplane.LLM.CredentialPlug do
     case resolve_credential(provider) do
       {:ok, token, meta} ->
         headers =
-          base_headers(api_type, meta.auth_type, token) ++
+          base_headers(provider, api_type, meta.auth_type, token) ++
             meta.extra_headers ++
             anthropic_version_pair(api_type) ++
             default_header_pairs(provider.default_headers)
@@ -96,19 +96,25 @@ defmodule Backplane.LLM.CredentialPlug do
 
   defp resolve_credential(_provider), do: {:error, :no_credential}
 
-  defp apply_auth_headers(conn, :anthropic, "anthropic_oauth", token) do
+  defp apply_auth_headers(conn, _provider, :anthropic, "anthropic_oauth", token) do
     conn
     |> delete_req_header("x-api-key")
     |> put_req_header("authorization", "Bearer #{token}")
   end
 
-  defp apply_auth_headers(conn, :anthropic, _auth_type, token) do
-    conn
-    |> delete_req_header("authorization")
-    |> put_req_header("x-api-key", token)
+  defp apply_auth_headers(conn, provider, :anthropic, _auth_type, token) do
+    if is_anthropic_api?(provider) do
+      conn
+      |> delete_req_header("authorization")
+      |> put_req_header("x-api-key", token)
+    else
+      conn
+      |> delete_req_header("x-api-key")
+      |> put_req_header("authorization", "Bearer #{token}")
+    end
   end
 
-  defp apply_auth_headers(conn, :openai, _auth_type, token) do
+  defp apply_auth_headers(conn, _provider, :openai, _auth_type, token) do
     conn
     |> delete_req_header("x-api-key")
     |> put_req_header("authorization", "Bearer #{token}")
@@ -129,13 +135,28 @@ defmodule Backplane.LLM.CredentialPlug do
 
   defp maybe_apply_anthropic_version(conn, _), do: conn
 
-  defp base_headers(:anthropic, "anthropic_oauth", token),
+  defp base_headers(_provider, :anthropic, "anthropic_oauth", token),
     do: [{"authorization", "Bearer #{token}"}]
 
-  defp base_headers(:anthropic, _auth_type, token), do: [{"x-api-key", token}]
+  defp base_headers(provider, :anthropic, _auth_type, token) do
+    if is_anthropic_api?(provider) do
+      [{"x-api-key", token}]
+    else
+      [{"authorization", "Bearer #{token}"}]
+    end
+  end
 
-  defp base_headers(:openai, _auth_type, token),
+  defp base_headers(_provider, :openai, _auth_type, token),
     do: [{"authorization", "Bearer #{token}"}]
+
+  defp is_anthropic_api?(%Provider{} = provider) do
+    preset_key = provider.preset_key
+    name = provider.name || ""
+
+    preset_key == "anthropic" or
+      name == "anthropic" or
+      String.contains?(String.downcase(name), "anthropic")
+  end
 
   defp anthropic_version_pair(:anthropic), do: [{"anthropic-version", @default_anthropic_version}]
   defp anthropic_version_pair(_), do: []
