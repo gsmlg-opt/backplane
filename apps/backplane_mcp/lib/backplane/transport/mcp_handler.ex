@@ -175,6 +175,7 @@ defmodule Backplane.Transport.McpHandler do
   defp compute_result("tools/list", _id, _params) do
     tools =
       ToolRegistry.list_all()
+      |> Enum.reject(fn tool -> management_tool?(tool.name) end)
       |> Enum.map(fn tool ->
         %{name: tool.name, description: tool.description, inputSchema: tool.input_schema}
       end)
@@ -654,6 +655,10 @@ defmodule Backplane.Transport.McpHandler do
   defp tools_etag(tools) do
     hash = :erlang.phash2(tools)
     "\"bp-tools-#{hash}\""
+  end
+
+  defp management_tool?(name) when is_binary(name) do
+    String.starts_with?(name, "admin::") or String.starts_with?(name, "hub::")
   end
 
   defp generate_session_id do

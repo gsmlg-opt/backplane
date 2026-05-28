@@ -1523,4 +1523,15 @@ defmodule Backplane.Transport.McpHandlerTest do
         value
     end
   end
+
+  describe "management tools filtering" do
+    test "tools/list does not return admin::* or hub::* tools" do
+      resp = mcp_request("tools/list")
+      tools = resp["result"]["tools"]
+      names = Enum.map(tools, & &1["name"])
+
+      refute Enum.any?(names, &String.starts_with?(&1, "admin::"))
+      refute Enum.any?(names, &String.starts_with?(&1, "hub::"))
+    end
+  end
 end
