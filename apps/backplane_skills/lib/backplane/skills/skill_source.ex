@@ -22,20 +22,49 @@ defmodule Backplane.Skills.SkillSource do
     field(:last_sync_status, :string)
     field(:last_sync_error, :string)
     field(:sync_metadata, :map, default: %{})
+    field(:selected_skills, {:array, :string}, default: [])
+    field(:sync_tags, {:array, :string}, default: [])
 
     timestamps()
   end
 
   @required_fields ~w(name url)a
-  @optional_fields ~w(source_type branch path_prefix enabled last_synced_at last_sync_status last_sync_error sync_metadata)a
+  @optional_fields ~w(source_type branch path_prefix enabled last_synced_at last_sync_status last_sync_error sync_metadata selected_skills sync_tags)a
 
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(source, attrs) do
     source
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
-    |> validate_inclusion(:source_type, ~w(github))
-    |> validate_format(:url, ~r/^https?:\/\//, message: "must be an HTTP(S) URL")
+    |> validate_inclusion(:source_type, ~w(github git))
+    |> validate_url_by_type()
     |> unique_constraint([:url, :branch])
+  end
+
+  defp validate_url_by_type(changeset) do
+    source_type = get_field(changeset, :source_type)
+    url = get_field(changeset, :url)
+
+    case source_type do
+      "git" ->
+        # Git requires full URL
+        validate_format(changeset, :url, ~r/^https?:\/\//, message: "must be a full HTTP(S) URL for git sources")
+
+      "github" ->
+        # GitHub allows full URL or org/repo shorthand
+        if url && !String.match?(url, ~r/^https?:\/\//) do
+          if String.match?(url, ~r/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/) do
+            # Expand org/repo to full GitHub URL
+            put_change(changeset, :url, "https://github.com/#{url}")
+          else
+            add_error(changeset, :url, "must be a GitHub URL or org/repo shorthand (e.g. owner/repo)")
+          end
+        else
+          changeset
+        end
+
+      _ ->
+        changeset
+    end
   end
 end

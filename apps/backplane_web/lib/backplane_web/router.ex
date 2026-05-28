@@ -95,6 +95,7 @@ defmodule BackplaneWeb.Router do
     live("/skills/upstream", SkillUpstreamLive, :index)
     live("/skills/upstream/new", SkillUpstreamLive, :new)
     live("/skills/upstream/:id", SkillUpstreamLive, :show)
+    live("/skills/upstream/:id/edit", SkillUpstreamLive, :edit)
     live("/skills/draft", SkillDraftLive, :index)
     live("/skills/draft/new", SkillDraftLive, :new)
     live("/skills/draft/:id/edit", SkillDraftLive, :edit)

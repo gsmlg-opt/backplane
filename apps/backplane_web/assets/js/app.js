@@ -70,3 +70,16 @@ let liveSocket = new LiveSocket("/live", Socket, {
 liveSocket.connect()
 
 window.liveSocket = liveSocket
+
+window.addEventListener("phx:download", (e) => {
+  const {content, filename, content_type} = e.detail
+  const blob = new Blob([content], {type: content_type || "application/octet-stream"})
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename || "download"
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+})

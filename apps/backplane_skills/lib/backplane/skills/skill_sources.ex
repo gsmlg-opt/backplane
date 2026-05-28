@@ -71,11 +71,23 @@ defmodule Backplane.Skills.SkillSources do
   @doc """
   Sync selected skills from a remote source into the local database.
   `skill_entries` is a list of skill entry maps returned by `list_remote_skills/1`.
+  If `extra_tags` is provided, they are merged into each skill's tags.
   """
-  @spec sync_skills(SkillSource.t(), [map()]) :: {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
-  def sync_skills(%SkillSource{} = source, skill_entries) when is_list(skill_entries) do
+  @spec sync_skills(SkillSource.t(), [map()], [String.t()]) ::
+          {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
+  def sync_skills(%SkillSource{} = source, skill_entries, extra_tags \\ [])
+      when is_list(skill_entries) do
     results =
       Enum.map(skill_entries, fn entry ->
+        entry =
+          if extra_tags != [] do
+            existing = entry[:tags] || []
+            merged = Enum.uniq(existing ++ extra_tags)
+            put_entry(entry, :tags, merged)
+          else
+            entry
+          end
+
         upsert_synced_skill(source, entry)
       end)
 
@@ -90,10 +102,11 @@ defmodule Backplane.Skills.SkillSources do
       last_synced_at: now,
       last_sync_status: status,
       last_sync_error: if(errors == [], do: nil, else: inspect(Enum.take(errors, 3))),
-      sync_metadata: Map.merge(source.sync_metadata, %{
-        "last_synced_count" => synced,
-        "last_error_count" => length(errors)
-      })
+      sync_metadata:
+        Map.merge(source.sync_metadata, %{
+          "last_synced_count" => synced,
+          "last_error_count" => length(errors)
+        })
     })
 
     # Refresh registry
@@ -101,6 +114,44 @@ defmodule Backplane.Skills.SkillSources do
 
     {:ok, %{synced: synced, errors: errors}}
   end
+
+  @doc """
+  One-click sync: fetches remote skills, filters to selected_skills,
+  merges sync_tags, and upserts into the local database.
+  """
+  @spec sync_from_source(SkillSource.t()) ::
+          {:ok, %{synced: non_neg_integer(), errors: [term()]}} | {:error, term()}
+  def sync_from_source(%SkillSource{} = source) do
+    case list_remote_skills(source) do
+      {:ok, remote_skills} ->
+        selected = source.selected_skills || []
+
+        entries =
+          if selected == [] do
+            # If no specific selection, sync all
+            remote_skills
+          else
+            Enum.filter(remote_skills, fn skill ->
+              skill[:slug] in selected
+            end)
+          end
+
+        sync_skills(source, entries, source.sync_tags || [])
+
+      {:error, reason} ->
+        # Record the failure on the source
+        __MODULE__.update(source, %{
+          last_synced_at: DateTime.utc_now(),
+          last_sync_status: "failed",
+          last_sync_error: inspect(reason)
+        })
+
+        {:error, reason}
+    end
+  end
+
+  defp put_entry(entry, key, value) when is_map(entry), do: Map.put(entry, key, value)
+  defp put_entry(entry, key, value) when is_list(entry), do: Keyword.put(entry, key, value)
 
   defp upsert_synced_skill(source, entry) do
     alias Backplane.Skills.Skill
