@@ -86,6 +86,8 @@ defmodule BackplaneWeb.SkillDraftLive do
   end
 
   def handle_event("validate", %{"skill" => params}, socket) do
+    params = Map.update(params, "tags", [], &parse_tags/1)
+
     changeset =
       (socket.assigns.editing_skill || %Skill{})
       |> Skill.changeset(params)
@@ -201,16 +203,6 @@ defmodule BackplaneWeb.SkillDraftLive do
 
   defp format_dt(_), do: ""
 
-  defp truncate(nil, _len), do: ""
-
-  defp truncate(content, len) when is_binary(content) do
-    if String.length(content) > len do
-      String.slice(content, 0, len) <> "…"
-    else
-      content
-    end
-  end
-
   # ── Template ───────────────────────────────────────────────────────────────
 
   @impl true
@@ -224,8 +216,13 @@ defmodule BackplaneWeb.SkillDraftLive do
             Create and edit self-managed skills. Upstream and archive skills are managed elsewhere.
           </p>
         </div>
-        <.link :if={!@show_form} patch={~p"/admin/skills/draft/new"}>
-          <.dm_btn variant="primary" size="sm">New Skill</.dm_btn>
+        <.link :if={!@show_form} patch={~p"/admin/skills/draft/new"} class="no-underline">
+          <.dm_btn variant="primary" size="sm" shape="circle" class="group relative">
+            <.dm_mdi name="plus" class="w-5 h-5" />
+            <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
+              New Skill
+            </span>
+          </.dm_btn>
         </.link>
       </div>
 
@@ -261,7 +258,7 @@ defmodule BackplaneWeb.SkillDraftLive do
               <input
                 type="text"
                 name="skill[tags]"
-                value={tags_to_string((@editing_skill || %{tags: []}).tags)}
+                value={tags_to_string(Phoenix.HTML.Form.input_value(@form, :tags) || [])}
                 placeholder="tag1, tag2, tag3"
                 class="input input-bordered w-full"
               />
@@ -285,7 +282,7 @@ defmodule BackplaneWeb.SkillDraftLive do
               rows="16"
               placeholder="# Skill content&#10;&#10;Write your skill instructions here..."
               class="w-full rounded-md border border-outline-variant bg-surface-container p-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            >{(@editing_skill || %{content: ""}).content}</textarea>
+            >{Phoenix.HTML.Form.input_value(@form, :content) || ""}</textarea>
             <p class="mt-1 text-xs text-on-surface-variant">
               Markdown format. This is the skill content that agents will read.
             </p>
@@ -309,12 +306,18 @@ defmodule BackplaneWeb.SkillDraftLive do
 
       <.dm_table :if={@skills != [] and not @show_form} id="draft-skills-table" data={@skills} hover zebra>
         <:col :let={skill} label="Name">
-          <div class="min-w-0">
-            <div class="font-medium text-on-surface">{skill.name}</div>
-            <div class="truncate text-xs text-on-surface-variant">
-              {truncate(skill.description, 100)}
+          <div class="font-medium text-on-surface">{skill.name}</div>
+        </:col>
+        <:col :let={skill} label="Description">
+          <div :if={skill.description && skill.description != ""} class="group relative max-w-[240px]">
+            <span class="block truncate text-sm text-on-surface-variant cursor-default">
+              {skill.description}
+            </span>
+            <div class="invisible group-hover:visible absolute left-0 top-full z-50 mt-1 max-w-sm rounded-lg border border-outline-variant bg-surface-container-high p-3 text-sm text-on-surface shadow-lg">
+              {skill.description}
             </div>
           </div>
+          <span :if={!skill.description || skill.description == ""} class="text-xs text-on-surface-variant">-</span>
         </:col>
         <:col :let={skill} label="Slug">
           <code class="text-xs">{skill.slug}</code>
@@ -329,28 +332,33 @@ defmodule BackplaneWeb.SkillDraftLive do
             <span :if={skill.tags == []} class="text-xs text-on-surface-variant">-</span>
           </div>
         </:col>
-        <:col :let={skill} label="Content">
-          <span class="text-xs text-on-surface-variant">
-            {truncate(skill.content, 80)}
-          </span>
-        </:col>
+
         <:col :let={skill} label="Updated">
           <span class="text-xs text-on-surface-variant">{format_dt(skill.updated_at)}</span>
         </:col>
         <:col :let={skill} label="Actions">
-          <div class="flex gap-2">
-            <.dm_btn type="button" size="xs" phx-click="edit" phx-value-id={skill.id}>
-              Edit
+          <div class="flex gap-1">
+            <.dm_btn type="button" size="xs" shape="circle" class="group relative" phx-click="edit" phx-value-id={skill.id}>
+              <.dm_mdi name="pencil" class="w-4 h-4" />
+              <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
+                Edit
+              </span>
             </.dm_btn>
             <.dm_btn
               type="button"
               size="xs"
+              shape="circle"
               variant="error"
-              data-confirm={"Delete skill #{skill.name}?"}
+              class="group relative"
+              confirm={"Delete skill '#{skill.name}'?"}
+              confirm_title="Confirm Delete"
               phx-click="delete"
               phx-value-id={skill.id}
             >
-              Delete
+              <.dm_mdi name="delete" class="w-4 h-4" />
+              <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
+                Delete
+              </span>
             </.dm_btn>
           </div>
         </:col>

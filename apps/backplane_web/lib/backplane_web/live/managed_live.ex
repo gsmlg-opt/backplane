@@ -13,14 +13,9 @@ defmodule BackplaneWeb.ManagedLive do
       setting_key: "services.day.enabled"
     },
     %{
-      module: Backplane.Services.WebFetch,
-      name: "Web Fetch",
-      description: "Fetch HTTP(S) pages and convert them to Markdown"
-    },
-    %{
-      module: Backplane.Services.WebSearch,
-      name: "Web Search",
-      description: "Search the web with Ollama, MiniMax, Z.ai, or BigModel"
+      module: Backplane.Services.Web,
+      name: "Web",
+      description: "Fetch HTTP(S) pages and search the web"
     },
     %{
       module: Backplane.Services.Math,
@@ -67,8 +62,7 @@ defmodule BackplaneWeb.ManagedLive do
           enabled: enabled,
           tool_count: tool_count,
           tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end),
-          settings_path: "/admin/mcp/managed/#{prefix}",
-          settings_label: if(prefix == "web_search", do: "Settings", else: "Debug")
+          settings_path: "/admin/mcp/managed/#{prefix}"
         })
       end)
 
@@ -86,13 +80,8 @@ defmodule BackplaneWeb.ManagedLive do
     sync_registry(mod, enabled)
   end
 
-  defp set_enabled(Backplane.Services.WebFetch = mod, enabled) do
+  defp set_enabled(Backplane.Services.Web = mod, enabled) do
     Settings.set("services.web.enabled", enabled)
-    sync_registry(mod, enabled)
-  end
-
-  defp set_enabled(Backplane.Services.WebSearch = mod, enabled) do
-    Settings.set("services.web_search.enabled", enabled)
     sync_registry(mod, enabled)
   end
 
@@ -100,6 +89,13 @@ defmodule BackplaneWeb.ManagedLive do
 
   defp sync_registry(mod, true), do: ToolRegistry.register_managed(mod.prefix(), mod.tools())
   defp sync_registry(mod, false), do: ToolRegistry.deregister_managed(mod.prefix())
+
+  defp tool_short_name(tool_name) do
+    case String.split(tool_name, "::", parts: 2) do
+      [_prefix, short] -> short
+      _ -> tool_name
+    end
+  end
 
   @impl true
   def render(assigns) do
@@ -121,18 +117,28 @@ defmodule BackplaneWeb.ManagedLive do
                 </.dm_badge>
                 <span class="text-sm text-on-surface-variant">{service.tool_count} tools</span>
               </div>
-              <div class="flex items-center gap-2">
-                <.link navigate={service.settings_path}>
-                  <.dm_btn size="sm" variant="outline">{service.settings_label}</.dm_btn>
-                </.link>
-                <.dm_btn
-                  size="sm"
-                  variant={if service.enabled, do: "warning", else: "primary"}
-                  phx-click="toggle"
-                  phx-value-prefix={service.prefix}
-                >
-                  {if service.enabled, do: "Disable", else: "Enable"}
-                </.dm_btn>
+              <div class="flex items-center gap-1">
+                <.dm_tooltip content="Settings">
+                  <.link navigate={service.settings_path}>
+                    <.dm_btn size="xs" variant="outline" shape="circle">
+                      <.dm_mdi name="cog" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.link>
+                </.dm_tooltip>
+                <.dm_tooltip content={if service.enabled, do: "Disable", else: "Enable"}>
+                  <.dm_btn
+                    size="xs"
+                    shape="circle"
+                    variant={if service.enabled, do: "warning", else: "primary"}
+                    phx-click="toggle"
+                    phx-value-prefix={service.prefix}
+                  >
+                    <.dm_mdi
+                      name={if service.enabled, do: "pause", else: "play"}
+                      class="w-4 h-4"
+                    />
+                  </.dm_btn>
+                </.dm_tooltip>
               </div>
             </div>
           </:title>
@@ -143,9 +149,14 @@ defmodule BackplaneWeb.ManagedLive do
           >
             <h4 class="text-xs font-medium text-on-surface-variant mb-1">Tools</h4>
             <div class="flex flex-wrap gap-2">
-              <.dm_badge :for={tool <- service.tools} variant="ghost">
-                {tool.name}
-              </.dm_badge>
+              <.link
+                :for={tool <- service.tools}
+                navigate={"/admin/mcp/managed/#{service.prefix}/tool/#{tool_short_name(tool.name)}"}
+              >
+                <.dm_badge variant="ghost" class="cursor-pointer hover:bg-surface-container-high transition-colors">
+                  {tool.name}
+                </.dm_badge>
+              </.link>
             </div>
           </div>
         </.dm_card>

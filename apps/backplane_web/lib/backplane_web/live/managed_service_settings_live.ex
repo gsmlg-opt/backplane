@@ -1,7 +1,6 @@
 defmodule BackplaneWeb.ManagedServiceSettingsLive do
   use BackplaneWeb, :live_view
 
-  alias Backplane.Services.WebSearch
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -13,16 +12,10 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
       description: "Date/time utilities"
     },
     %{
-      module: Backplane.Services.WebFetch,
-      name: "Web Fetch",
+      module: Backplane.Services.Web,
+      name: "Web",
       prefix: "web",
-      description: "Fetch HTTP(S) pages and convert them to Markdown"
-    },
-    %{
-      module: Backplane.Services.WebSearch,
-      name: "Web Search",
-      prefix: "web_search",
-      description: "Search the web with Ollama, MiniMax, Z.ai, or BigModel"
+      description: "Fetch HTTP(S) pages and search the web"
     },
     %{
       module: Backplane.Services.Math,
@@ -81,7 +74,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   def handle_event(
         "save",
         %{"settings" => params},
-        %{assigns: %{service: %{prefix: "web_search"}}} = socket
+        %{assigns: %{service: %{prefix: "web"}}} = socket
       ) do
     case save_web_search_settings(params) do
       :ok ->
@@ -92,35 +85,6 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
       {:error, message} ->
         {:noreply, put_flash(socket, :error, message)}
-    end
-  end
-
-  def handle_event("debug_search", %{"debug" => params}, socket) do
-    query = params["query"] |> to_string() |> String.trim()
-    backend = params["backend"] || socket.assigns.default_backend
-
-    with {:ok, backend} <- parse_search_backend(backend),
-         {:ok, query} <- parse_debug_query(query),
-         {:ok, result} <-
-           WebSearch.handle_search(%{
-             "query" => query,
-             "backend" => backend,
-             "max_results" => 5
-           }) do
-      {:noreply,
-       assign(socket,
-         debug_backend: backend,
-         debug_query: query,
-         debug_result: result,
-         debug_result_text: nil,
-         debug_error: nil
-       )}
-    else
-      {:error, %{message: message}} ->
-        {:noreply, assign_debug_error(socket, backend, query, message)}
-
-      {:error, message} ->
-        {:noreply, assign_debug_error(socket, backend, query, message)}
     end
   end
 
@@ -185,7 +149,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     |> maybe_load_web_search_settings()
   end
 
-  defp maybe_load_web_search_settings(%{assigns: %{service: %{prefix: "web_search"}}} = socket) do
+  defp maybe_load_web_search_settings(%{assigns: %{service: %{prefix: "web"}}} = socket) do
     configured_backend =
       Settings.get("services.web_search.default_backend")
       |> normalize_search_backend()
@@ -237,19 +201,6 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     else
       {:error, "Choose a supported web search backend"}
     end
-  end
-
-  defp parse_debug_query(""), do: {:error, "Enter a search query"}
-  defp parse_debug_query(query), do: {:ok, query}
-
-  defp assign_debug_error(socket, backend, query, message) do
-    assign(socket,
-      debug_backend: normalize_search_backend(backend) || socket.assigns.default_backend,
-      debug_query: query,
-      debug_result: nil,
-      debug_result_text: nil,
-      debug_error: to_string(message)
-    )
   end
 
   defp save_web_search_credentials(credentials) when is_map(credentials) do
@@ -383,6 +334,10 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
       })
 
   defp sample_arguments("web::fetch"), do: format_value(%{"url" => "https://example.com"})
+
+  defp sample_arguments("web::search"),
+    do: format_value(%{"query" => "elixir programming language", "max_results" => 5})
+
   defp sample_arguments("math::evaluate"), do: format_value(%{"expr" => "2 * (3 + 4)"})
   defp sample_arguments(_tool_name), do: "{}"
 
@@ -408,18 +363,14 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp normalize_credential(value) when is_binary(value), do: String.trim(value)
   defp normalize_credential(_value), do: ""
 
-  defp active_tab("settings", %{prefix: "web_search"}), do: "settings"
+  defp active_tab("settings", %{prefix: "web"}), do: "settings"
   defp active_tab("debug", _service), do: "debug"
-  defp active_tab(_tab, %{prefix: "web_search"}), do: "settings"
+  defp active_tab(_tab, %{prefix: "web"}), do: "settings"
   defp active_tab(_tab, _service), do: "debug"
 
   defp find_service(prefix), do: Enum.find(@services, &(&1.prefix == prefix))
   defp search_backend_ids, do: Enum.map(@search_backends, & &1.id)
   defp search_backend_options, do: Enum.map(@search_backends, &{&1.id, &1.label})
-  defp search_results(%{"results" => results}) when is_list(results), do: results
-  defp search_results(_result), do: []
-  defp related_searches(%{"related_searches" => searches}) when is_list(searches), do: searches
-  defp related_searches(_result), do: []
 
   @impl true
   def render(assigns) do
@@ -437,7 +388,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
       <div class="tabs tabs-lifted mb-4" role="tablist">
         <.link
-          :if={@service.prefix == "web_search"}
+          :if={@service.prefix == "web"}
           patch={~p"/admin/mcp/managed/#{@service.prefix}?tab=settings"}
           class={["tab tab-lg", @active_tab == "settings" && "tab-active"]}
           role="tab"
@@ -525,41 +476,6 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     """
   end
 
-  defp render_debug_tab(%{service: %{prefix: "web_search"}} = assigns) do
-    ~H"""
-    <div class="space-y-4">
-      <.dm_card variant="bordered">
-        <:title>Debug Search</:title>
-        <form id="web-search-debug-form" phx-submit="debug_search" class="space-y-4">
-          <div class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_14rem_auto]">
-            <.dm_input
-              id="web-search-debug-query"
-              name="debug[query]"
-              label="Query"
-              value={@debug_query}
-              placeholder="Search query"
-              required
-            />
-            <.dm_select
-              id="web-search-debug-backend"
-              name="debug[backend]"
-              label="Backend"
-              options={@backend_options}
-              value={@debug_backend}
-            />
-            <div class="flex items-end">
-              <.dm_btn type="submit" variant="primary">Search</.dm_btn>
-            </div>
-          </div>
-        </form>
-      </.dm_card>
-
-      <.render_tool_schema_docs {assigns} />
-      <.render_web_search_results {assigns} />
-    </div>
-    """
-  end
-
   defp render_debug_tab(assigns) do
     ~H"""
     <div class="space-y-4">
@@ -628,46 +544,6 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
           </p>
         </div>
         <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-sm"><code>{@schema_text}</code></pre>
-      </div>
-    </.dm_card>
-    """
-  end
-
-  defp render_web_search_results(assigns) do
-    ~H"""
-    <.dm_card :if={@debug_error} variant="bordered">
-      <:title>Search Error</:title>
-      <p class="text-sm text-error">{@debug_error}</p>
-    </.dm_card>
-
-    <.dm_card :if={@debug_result} variant="bordered">
-      <:title>Results</:title>
-      <div class="space-y-4">
-        <div
-          :for={result <- search_results(@debug_result)}
-          class="border-b border-outline-variant pb-3 last:border-b-0 last:pb-0"
-        >
-          <a
-            :if={result["url"] != ""}
-            href={result["url"]}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="font-medium text-primary underline"
-          >
-            {result["title"]}
-          </a>
-          <h3 :if={result["url"] == ""} class="font-medium">{result["title"]}</h3>
-          <p class="mt-1 text-sm text-on-surface-variant">{result["snippet"]}</p>
-        </div>
-
-        <div :if={related_searches(@debug_result) != []} class="border-t border-outline-variant pt-3">
-          <h3 class="mb-2 text-sm font-medium">Related Searches</h3>
-          <div class="flex flex-wrap gap-2">
-            <.dm_badge :for={search <- related_searches(@debug_result)} variant="ghost">
-              {search}
-            </.dm_badge>
-          </div>
-        </div>
       </div>
     </.dm_card>
     """

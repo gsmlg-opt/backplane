@@ -37,7 +37,9 @@ defmodule BackplaneWeb.Layouts do
       :mcp ->
         [
           %{label: "Managed MCP", path: "/admin/mcp/managed", icon: "server"},
-          %{label: "Upstream MCP", path: "/admin/mcp/upstreams", icon: "application-braces"}
+          %{label: "Upstream MCP", path: "/admin/mcp/upstreams", icon: "application-braces"},
+          %{label: "Agent MCP", path: "/admin/mcp/agent", icon: "robot"},
+          %{label: "MCP Inspector", path: "/admin/mcp/inspector", icon: "magnify-scan"}
         ]
 
       :memory ->
@@ -55,11 +57,17 @@ defmodule BackplaneWeb.Layouts do
 
       :skill ->
         [
-          %{label: "Overview", path: "/admin/skills", match: :exact, icon: "view-dashboard-outline"},
+          %{
+            label: "Overview",
+            path: "/admin/skills",
+            match: :exact,
+            icon: "view-dashboard-outline"
+          },
           %{label: "Skills", path: "/admin/skills/browse", icon: "book-open-variant"},
           %{label: "Metadata", path: "/admin/skills/metadata", icon: "tag-multiple"},
           %{label: "Upstream", path: "/admin/skills/upstream", icon: "cloud-download"},
-          %{label: "Draft", path: "/admin/skills/draft", icon: "pencil-box-outline"}
+          %{label: "Draft", path: "/admin/skills/draft", icon: "pencil-box-outline"},
+          %{label: "Upload", path: "/admin/skills/upload", icon: "upload"}
         ]
 
       :system ->

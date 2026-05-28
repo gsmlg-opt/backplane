@@ -39,9 +39,9 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
   test "renders web search settings", %{conn: conn} do
     {:ok, _credential} = Credentials.store("shared-search-key", "secret", "service")
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed/web_search")
+    {:ok, _view, html} = live(conn, "/admin/mcp/managed/web")
 
-    assert html =~ "Web Search Settings"
+    assert html =~ "Web Settings"
     assert html =~ "Default Backend"
     assert html =~ "Backend Credentials"
     assert html =~ "Ollama"
@@ -56,7 +56,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
 
   test "saves default backend and selected backend credential", %{conn: conn} do
     {:ok, _credential} = Credentials.store("mini-search-key", "mini-secret", "service")
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web_search")
+    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
 
     html =
       view
@@ -80,16 +80,15 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
     refute Credentials.exists?("web-search-minimax")
   end
 
-  test "debug tab searches with the configured web search service", %{conn: conn} do
+  test "debug tab calls web::search through the generic tool debugger", %{conn: conn} do
     {:ok, _credential} = Credentials.store("ollama-debug-key", "ollama-secret", "service")
     Settings.set("services.web_search.ollama.credential", "ollama-debug-key")
 
     Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      {:ok, _body, conn} = Plug.Conn.read_body(conn)
 
       assert conn.request_path == "/api/web_search"
       assert {"authorization", "Bearer ollama-secret"} in conn.req_headers
-      assert %{"query" => "phoenix liveview", "max_results" => 5} = Jason.decode!(body)
 
       Req.Test.json(conn, %{
         "results" => [
@@ -103,27 +102,33 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
       })
     end)
 
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/web_search?tab=debug")
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
 
+    assert html =~ "Web Debug"
+    assert html =~ "web::fetch"
+    assert html =~ "web::search"
     assert html =~ "JSON Argument Schema"
-    assert html =~ "web_search::search"
-    assert html =~ "&quot;query&quot;"
-    assert html =~ "&quot;max_results&quot;"
 
     html =
       view
-      |> form("#web-search-debug-form", %{
+      |> form("#managed-tool-debug-form", %{
         "debug" => %{
-          "query" => "phoenix liveview",
-          "backend" => "ollama"
+          "tool_name" => "web::search",
+          "arguments" =>
+            Jason.encode!(%{
+              "query" => "phoenix liveview",
+              "backend" => "ollama",
+              "credential" => "ollama-debug-key",
+              "max_results" => 5
+            })
         }
       })
       |> render_submit()
 
+    assert html =~ "Tool Result"
     assert html =~ "Phoenix LiveView"
     assert html =~ "https://hexdocs.pm/phoenix_live_view"
     assert html =~ "Rich realtime user experiences"
-    assert html =~ "phoenix liveview testing"
   end
 
   test "day debug tab calls selected managed tool", %{conn: conn} do
@@ -207,7 +212,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
 
     {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
 
-    assert html =~ "Web Fetch Debug"
+    assert html =~ "Web Debug"
     assert html =~ "web::fetch"
     assert html =~ "JSON Argument Schema"
     assert html =~ "&quot;url&quot;"

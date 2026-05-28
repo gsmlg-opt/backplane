@@ -1,9 +1,9 @@
 defmodule Backplane.Services.WebSearch do
   @moduledoc """
-  Managed MCP service providing `web_search::search`.
+  Managed MCP service handler for `web::search`.
 
   Searches the web through a configured provider backend and returns a normalized
-  result shape.
+  result shape. Used by the unified `Backplane.Services.Web` module.
   """
 
   @behaviour Backplane.Services.ManagedService
@@ -85,7 +85,7 @@ defmodule Backplane.Services.WebSearch do
   def handle_search(_args), do: error("missing query")
 
   defp ensure_enabled do
-    if enabled?(), do: :ok, else: {:error, "web_search::search is disabled"}
+    if enabled?(), do: :ok, else: {:error, "web::search is disabled"}
   end
 
   defp validate_query(query) do

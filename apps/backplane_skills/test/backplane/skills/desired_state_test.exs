@@ -14,9 +14,10 @@ defmodule Backplane.Skills.DesiredStateTest do
       assert {:ok, desired} = DesiredState.for_host(host)
 
       assert %{
-               schema_version: 1,
+               schema_version: 2,
                host: %{id: host_id, name: "t430"},
-               skills: [entry]
+               skills: [entry],
+               mcp_servers: []
              } = desired
 
       assert host_id == host.id

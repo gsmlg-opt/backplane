@@ -7,7 +7,6 @@ defmodule BackplaneWeb.SkillBrowseLive do
   use BackplaneWeb, :live_view
 
   alias Backplane.Skills
-  alias Backplane.Skills.Skill
 
   @per_page 25
 
@@ -54,7 +53,11 @@ defmodule BackplaneWeb.SkillBrowseLive do
 
         case Skills.get(skill_id) do
           {:ok, skill} ->
-            {:noreply, assign(socket, selected_skill: skill, current_path: "/admin/skills/browse/#{skill_id}")}
+            {:noreply,
+             assign(socket,
+               selected_skill: skill,
+               current_path: "/admin/skills/browse/#{skill_id}"
+             )}
 
           {:error, :not_found} ->
             {:noreply,
@@ -107,6 +110,19 @@ defmodule BackplaneWeb.SkillBrowseLive do
   def handle_event("select-all", _params, socket) do
     all_ids = Enum.map(socket.assigns.skills, & &1.id) |> MapSet.new()
     {:noreply, assign(socket, selected: all_ids)}
+  end
+
+  def handle_event("toggle-select-all", _params, socket) do
+    all_ids = Enum.map(socket.assigns.skills, & &1.id) |> MapSet.new()
+
+    selected =
+      if MapSet.equal?(socket.assigns.selected, all_ids) do
+        MapSet.new()
+      else
+        all_ids
+      end
+
+    {:noreply, assign(socket, selected: selected)}
   end
 
   def handle_event("clear-selection", _params, socket) do
@@ -239,6 +255,10 @@ defmodule BackplaneWeb.SkillBrowseLive do
 
   defp total_pages(total), do: max(1, div(total + @per_page - 1, @per_page))
 
+  defp all_selected?(skills, selected) do
+    skills != [] and MapSet.equal?(MapSet.new(Enum.map(skills, & &1.id)), selected)
+  end
+
   defp source_kind_label(nil), do: "-"
   defp source_kind_label("archive"), do: "Archive"
   defp source_kind_label("database"), do: "Database"
@@ -340,11 +360,15 @@ defmodule BackplaneWeb.SkillBrowseLive do
         class="mb-4 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2"
       >
         <span class="text-sm font-medium">{MapSet.size(@selected)} selected</span>
-        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="tags">Set Tags</.dm_btn>
-        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="category">
-          Set Category
+        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="tags" title="Set Tags">
+          <.dm_mdi name="tag-multiple" class="w-4 h-4" />
         </.dm_btn>
-        <.dm_btn size="xs" variant="ghost" phx-click="clear-selection">Clear</.dm_btn>
+        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="category" title="Set Category">
+          <.dm_mdi name="shape" class="w-4 h-4" />
+        </.dm_btn>
+        <.dm_btn size="xs" variant="ghost" phx-click="clear-selection" title="Clear Selection">
+          <.dm_mdi name="close" class="w-4 h-4" />
+        </.dm_btn>
       </div>
 
       <%!-- Bulk tag modal --%>
@@ -390,84 +414,106 @@ defmodule BackplaneWeb.SkillBrowseLive do
         No skills match the current filters.
       </div>
 
-      <.dm_table :if={@skills != []} id="skills-browse-table" data={@skills} hover zebra>
-        <:caption class="text-left text-base font-semibold py-2">
-          Skills Library
-        </:caption>
-        <:col :let={skill} label="">
-          <input
-            type="checkbox"
-            checked={MapSet.member?(@selected, skill.id)}
-            phx-click="toggle-select"
-            phx-value-id={skill.id}
-            class="checkbox checkbox-sm"
-          />
-        </:col>
-        <:col :let={skill} label="Name">
-          <.link
-            patch={~p"/admin/skills/browse/#{skill.id}"}
-            class="font-medium text-primary hover:underline no-underline whitespace-nowrap"
-          >
-            {skill.name}
-          </.link>
-        </:col>
-        <:col :let={skill} label="Description" class="max-w-[200px]">
-          <div :if={skill.description && skill.description != ""} class="desc-tooltip-wrap max-w-[200px]">
-            <span class="block truncate text-xs text-on-surface-variant cursor-default">
-              {skill.description}
-            </span>
-            <div class="desc-tooltip-content">
-              {skill.description}
-            </div>
-          </div>
-          <span :if={!skill.description || skill.description == ""} class="text-xs text-on-surface-variant">-</span>
-        </:col>
-        <:col :let={skill} label="Slug">
-          <code class="text-xs">{skill.slug}</code>
-        </:col>
-        <:col :let={skill} label="Source">
-          <.dm_badge variant={source_kind_variant(skill.source_kind)} size="sm">
-            {source_kind_label(skill.source_kind)}
-          </.dm_badge>
-        </:col>
-        <:col :let={skill} label="Category">
-          <span :if={skill.category} class="text-sm">{skill.category}</span>
-          <span :if={!skill.category} class="text-xs text-on-surface-variant">-</span>
-        </:col>
-        <:col :let={skill} label="Tags">
-          <div class="flex flex-wrap gap-1">
-            <.dm_badge :for={tag <- skill.tags} variant="ghost" size="sm">{tag}</.dm_badge>
-            <span :if={skill.tags == []} class="text-xs text-on-surface-variant">-</span>
-          </div>
-        </:col>
-        <:col :let={skill} label="Size">
-          <span class="text-sm">{format_size(skill.size_bytes)}</span>
-        </:col>
-        <:col :let={skill} label="Actions">
-          <div class="flex gap-2">
-            <.dm_btn
-              type="button"
-              size="xs"
-              variant="error"
-              data-confirm={"Delete skill #{skill.name}?"}
-              phx-click="delete"
-              phx-value-id={skill.id}
-            >
-              Delete
-            </.dm_btn>
-          </div>
-        </:col>
-      </.dm_table>
+      <table :if={@skills != []} role="table" id="skills-browse-table" class={["table", "table-hover", "table-zebra"]}>
+        <caption class="text-left text-base font-semibold py-2">Skills Library</caption>
+        <thead role="row-group" class="hidden md:table-header-group sticky top-0">
+          <tr role="row">
+            <th role="columnheader" scope="col">
+              <input
+                type="checkbox"
+                checked={all_selected?(@skills, @selected)}
+                phx-click="toggle-select-all"
+                class="checkbox checkbox-sm"
+                title="Select all"
+              />
+            </th>
+            <th role="columnheader" scope="col">Name</th>
+            <th role="columnheader" scope="col">Description</th>
+            <th role="columnheader" scope="col">Slug</th>
+            <th role="columnheader" scope="col">Source</th>
+            <th role="columnheader" scope="col">Category</th>
+            <th role="columnheader" scope="col">Tags</th>
+            <th role="columnheader" scope="col">Size</th>
+            <th role="columnheader" scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody role="row-group">
+          <tr :for={skill <- @skills} role="row">
+            <td role="cell">
+              <input
+                type="checkbox"
+                checked={MapSet.member?(@selected, skill.id)}
+                phx-click="toggle-select"
+                phx-value-id={skill.id}
+                class="checkbox checkbox-sm"
+              />
+            </td>
+            <td role="cell">
+              <.link
+                patch={~p"/admin/skills/browse/#{skill.id}"}
+                class="font-medium text-primary hover:underline no-underline whitespace-nowrap"
+              >
+                {skill.name}
+              </.link>
+            </td>
+            <td role="cell" class="max-w-[200px]">
+              <div :if={skill.description && skill.description != ""} class="desc-tooltip-wrap max-w-[200px]">
+                <span class="block truncate text-xs text-on-surface-variant cursor-default">
+                  {skill.description}
+                </span>
+                <div class="desc-tooltip-content">
+                  {skill.description}
+                </div>
+              </div>
+              <span :if={!skill.description || skill.description == ""} class="text-xs text-on-surface-variant">-</span>
+            </td>
+            <td role="cell">
+              <code class="text-xs">{skill.slug}</code>
+            </td>
+            <td role="cell">
+              <.dm_badge variant={source_kind_variant(skill.source_kind)} size="sm">
+                {source_kind_label(skill.source_kind)}
+              </.dm_badge>
+            </td>
+            <td role="cell">
+              <span :if={skill.category} class="text-sm">{skill.category}</span>
+              <span :if={!skill.category} class="text-xs text-on-surface-variant">-</span>
+            </td>
+            <td role="cell">
+              <div class="flex flex-wrap gap-1">
+                <.dm_badge :for={tag <- skill.tags} variant="ghost" size="sm">{tag}</.dm_badge>
+                <span :if={skill.tags == []} class="text-xs text-on-surface-variant">-</span>
+              </div>
+            </td>
+            <td role="cell">
+              <span class="text-sm">{format_size(skill.size_bytes)}</span>
+            </td>
+            <td role="cell">
+              <div class="flex gap-2">
+                <.dm_btn
+                  type="button"
+                  size="xs"
+                  variant="error"
+                  data-confirm={"Delete skill #{skill.name}?"}
+                  phx-click="delete"
+                  phx-value-id={skill.id}
+                  title="Delete"
+                >
+                  <.dm_mdi name="delete" class="w-4 h-4" />
+                </.dm_btn>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
 
       <%!-- Pagination --%>
       <div :if={@total > 0} class="flex items-center justify-between mt-4 text-sm">
-        <div class="text-on-surface-variant">
-          Page {@page} of {total_pages(@total)}
-          <span class="ml-2">
-            <.dm_btn :if={MapSet.size(@selected) == 0} size="xs" phx-click="select-all">
-              Select page
-            </.dm_btn>
-          </span>
+        <div class="flex items-center gap-2 text-on-surface-variant">
+          <span>Page {@page} of {total_pages(@total)}</span>
+          <.dm_btn :if={MapSet.size(@selected) == 0} size="xs" phx-click="select-all" title="Select page">
+            <.dm_mdi name="checkbox-multiple-marked-outline" class="w-4 h-4" />
+          </.dm_btn>
         </div>
         <div class="flex items-center gap-2">
           <.dm_btn
@@ -475,16 +521,18 @@ defmodule BackplaneWeb.SkillBrowseLive do
             size="xs"
             phx-click="page"
             phx-value-page={@page - 1}
+            title="Previous"
           >
-            Previous
+            <.dm_mdi name="chevron-left" class="w-4 h-4" />
           </.dm_btn>
           <.dm_btn
             :if={@page < total_pages(@total)}
             size="xs"
             phx-click="page"
             phx-value-page={@page + 1}
+            title="Next"
           >
-            Next
+            <.dm_mdi name="chevron-right" class="w-4 h-4" />
           </.dm_btn>
         </div>
       </div>
@@ -503,7 +551,9 @@ defmodule BackplaneWeb.SkillBrowseLive do
         >
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-outline-variant bg-surface px-6 py-4">
             <h2 class="text-lg font-bold">{@selected_skill.name}</h2>
-            <.dm_btn size="xs" phx-click="close-detail">Close</.dm_btn>
+            <.dm_btn size="xs" phx-click="close-detail" title="Close">
+              <.dm_mdi name="close" class="w-4 h-4" />
+            </.dm_btn>
           </div>
 
           <div class="p-6 space-y-4">

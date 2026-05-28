@@ -62,8 +62,7 @@ defmodule Backplane.Application do
   defp register_managed_services do
     services = [
       Backplane.Services.Day,
-      Backplane.Services.WebFetch,
-      Backplane.Services.WebSearch,
+      Backplane.Services.Web,
       Backplane.Services.Math
     ]
 

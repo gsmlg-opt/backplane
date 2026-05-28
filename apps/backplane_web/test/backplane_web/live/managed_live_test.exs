@@ -15,17 +15,21 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ ~s(href="/admin/mcp/managed/math")
   end
 
-  test "renders web search in managed services", %{conn: conn} do
+  test "renders web service in managed services", %{conn: conn} do
+    Backplane.Settings.set("services.web.enabled", true)
+    Backplane.Registry.ToolRegistry.register_managed("web", Backplane.Services.Web.tools())
+
     {:ok, _view, html} = live(conn, "/admin/mcp/managed")
 
     assert html =~ "Managed Services"
-    assert html =~ "Web Search"
-    assert html =~ "web_search::"
-    assert html =~ "web_search::search"
-    assert html =~ ~s(href="/admin/mcp/managed/web_search")
+    assert html =~ "Web"
+    assert html =~ "web::"
+    assert html =~ "web::fetch"
+    assert html =~ "web::search"
+    assert html =~ ~s(href="/admin/mcp/managed/web")
   end
 
-  test "links other managed services to debug pages", %{conn: conn} do
+  test "links managed services to settings pages", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/admin/mcp/managed")
 
     assert html =~ ~s(href="/admin/mcp/managed/day")
@@ -33,20 +37,21 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ ~s(href="/admin/mcp/managed/math")
   end
 
-  test "toggles web search service through settings", %{conn: conn} do
+  test "toggles web service through settings", %{conn: conn} do
+    Backplane.Settings.set("services.web.enabled", true)
     {:ok, view, _html} = live(conn, "/admin/mcp/managed")
 
     view
-    |> element("[phx-value-prefix='web_search']", "Disable")
+    |> element("[phx-value-prefix='web']")
     |> render_click()
 
-    refute Backplane.Services.WebSearch.enabled?()
+    refute Backplane.Services.Web.enabled?()
 
     view
-    |> element("[phx-value-prefix='web_search']", "Enable")
+    |> element("[phx-value-prefix='web']")
     |> render_click()
 
-    assert Backplane.Services.WebSearch.enabled?()
+    assert Backplane.Services.Web.enabled?()
   end
 
   test "toggles math service through math config", %{conn: conn} do
@@ -54,13 +59,13 @@ defmodule BackplaneWeb.ManagedLiveTest do
     {:ok, view, _html} = live(conn, "/admin/mcp/managed")
 
     view
-    |> element("[phx-value-prefix='math']", "Disable")
+    |> element("[phx-value-prefix='math']")
     |> render_click()
 
     refute Config.get(:enabled)
 
     view
-    |> element("[phx-value-prefix='math']", "Enable")
+    |> element("[phx-value-prefix='math']")
     |> render_click()
 
     assert Config.get(:enabled)

@@ -184,30 +184,44 @@ defmodule BackplaneWeb.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_btn type="submit" size="xs" variant="primary">Save</.dm_btn>
-                  <.dm_btn type="button" size="xs" phx-click="cancel-edit-tag">Cancel</.dm_btn>
+                  <.dm_tooltip content="Save">
+                    <.dm_btn type="submit" size="xs" variant="primary" shape="circle">
+                      <.dm_mdi name="check" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip content="Cancel">
+                    <.dm_btn type="button" size="xs" shape="circle" phx-click="cancel-edit-tag">
+                      <.dm_mdi name="close" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
                 </.form>
               </div>
 
               <div :if={@editing_tag != tag_info.tag} class="flex gap-1">
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  phx-click="edit-tag"
-                  phx-value-tag={tag_info.tag}
-                >
-                  Rename
-                </.dm_btn>
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  variant="error"
-                  data-confirm={"Remove tag '#{tag_info.tag}' from all #{tag_info.count} skill(s)?"}
-                  phx-click="delete-tag"
-                  phx-value-tag={tag_info.tag}
-                >
-                  Delete
-                </.dm_btn>
+                <.dm_tooltip content="Rename">
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    phx-click="edit-tag"
+                    phx-value-tag={tag_info.tag}
+                  >
+                    <.dm_mdi name="pencil" class="w-4 h-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
+                <.dm_tooltip content="Delete">
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant="error"
+                    data-confirm={"Remove tag '#{tag_info.tag}' from all #{tag_info.count} skill(s)?"}
+                    phx-click="delete-tag"
+                    phx-value-tag={tag_info.tag}
+                  >
+                    <.dm_mdi name="delete" class="w-4 h-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
               </div>
             </div>
           </div>
@@ -249,32 +263,44 @@ defmodule BackplaneWeb.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_btn type="submit" size="xs" variant="primary">Save</.dm_btn>
-                  <.dm_btn type="button" size="xs" phx-click="cancel-edit-category">
-                    Cancel
-                  </.dm_btn>
+                  <.dm_tooltip content="Save">
+                    <.dm_btn type="submit" size="xs" variant="primary" shape="circle">
+                      <.dm_mdi name="check" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip content="Cancel">
+                    <.dm_btn type="button" size="xs" shape="circle" phx-click="cancel-edit-category">
+                      <.dm_mdi name="close" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
                 </.form>
               </div>
 
               <div :if={@editing_category != cat_info.category} class="flex gap-1">
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  phx-click="edit-category"
-                  phx-value-category={cat_info.category}
-                >
-                  Rename
-                </.dm_btn>
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  variant="error"
-                  data-confirm={"Remove category '#{cat_info.category}' from all #{cat_info.count} skill(s)?"}
-                  phx-click="delete-category"
-                  phx-value-category={cat_info.category}
-                >
-                  Delete
-                </.dm_btn>
+                <.dm_tooltip content="Rename">
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    phx-click="edit-category"
+                    phx-value-category={cat_info.category}
+                  >
+                    <.dm_mdi name="pencil" class="w-4 h-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
+                <.dm_tooltip content="Delete">
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant="error"
+                    data-confirm={"Remove category '#{cat_info.category}' from all #{cat_info.count} skill(s)?"}
+                    phx-click="delete-category"
+                    phx-value-category={cat_info.category}
+                  >
+                    <.dm_mdi name="delete" class="w-4 h-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
               </div>
             </div>
           </div>
@@ -296,7 +322,11 @@ defmodule BackplaneWeb.SkillMetadataLive do
                   class="input input-bordered input-sm w-full"
                 />
               </div>
-              <.dm_btn type="submit" size="sm" variant="primary">Add</.dm_btn>
+              <.dm_tooltip content="Add">
+                <.dm_btn type="submit" size="sm" variant="primary" shape="circle">
+                  <.dm_mdi name="plus" class="w-4 h-4" />
+                </.dm_btn>
+              </.dm_tooltip>
             </.form>
           </div>
         </.dm_card>

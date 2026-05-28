@@ -75,6 +75,11 @@ defmodule BackplaneWeb.Router do
     live("/mcp/upstreams/:id/edit", UpstreamsLive, :edit)
     live("/mcp/managed", ManagedLive, :index)
     live("/mcp/managed/:prefix", ManagedServiceSettingsLive, :show)
+    live("/mcp/managed/:prefix/tool/:tool_name", ManagedToolDetailLive, :show)
+    live("/mcp/agent", AgentMcpLive, :index)
+    live("/mcp/agent/new", AgentMcpLive, :new)
+    live("/mcp/agent/:id/edit", AgentMcpLive, :edit)
+    live("/mcp/inspector", McpInspectorLive, :index)
 
     # Memory
     live("/memory", MemoryOverviewLive, :index)
@@ -99,6 +104,8 @@ defmodule BackplaneWeb.Router do
     live("/skills/draft", SkillDraftLive, :index)
     live("/skills/draft/new", SkillDraftLive, :new)
     live("/skills/draft/:id/edit", SkillDraftLive, :edit)
+    live("/skills/upload", SkillUploadLive, :index)
+    live("/skills/upload/:id", SkillUploadLive, :show)
 
     # System
     live("/system/clients", ClientsLive, :index)
