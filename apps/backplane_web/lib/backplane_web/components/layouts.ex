@@ -54,7 +54,13 @@ defmodule BackplaneWeb.Layouts do
         ]
 
       :skill ->
-        []
+        [
+          %{label: "Overview", path: "/admin/skills", match: :exact, icon: "view-dashboard-outline"},
+          %{label: "Skills", path: "/admin/skills/browse", icon: "book-open-variant"},
+          %{label: "Metadata", path: "/admin/skills/metadata", icon: "tag-multiple"},
+          %{label: "Upstream", path: "/admin/skills/upstream", icon: "cloud-download"},
+          %{label: "Draft", path: "/admin/skills/draft", icon: "pencil-box-outline"}
+        ]
 
       :system ->
         [

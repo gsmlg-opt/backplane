@@ -88,8 +88,16 @@ defmodule BackplaneWeb.Router do
     live("/memory/stats", MemoryStatsLive, :index)
 
     # Skills
-    live("/skills", SkillLive, :index)
-    live("/skill", SkillLive, :index)
+    live("/skills", SkillOverviewLive, :index)
+    live("/skills/browse", SkillBrowseLive, :index)
+    live("/skills/browse/:id", SkillBrowseLive, :show)
+    live("/skills/metadata", SkillMetadataLive, :index)
+    live("/skills/upstream", SkillUpstreamLive, :index)
+    live("/skills/upstream/new", SkillUpstreamLive, :new)
+    live("/skills/upstream/:id", SkillUpstreamLive, :show)
+    live("/skills/draft", SkillDraftLive, :index)
+    live("/skills/draft/new", SkillDraftLive, :new)
+    live("/skills/draft/:id/edit", SkillDraftLive, :edit)
 
     # System
     live("/system/clients", ClientsLive, :index)

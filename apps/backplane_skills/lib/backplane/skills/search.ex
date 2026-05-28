@@ -83,6 +83,7 @@ defmodule Backplane.Skills.Search do
       name: s.name,
       description: s.description,
       tags: s.tags,
+      category: s.category,
       version: s.version,
       license: s.license,
       homepage: s.homepage,

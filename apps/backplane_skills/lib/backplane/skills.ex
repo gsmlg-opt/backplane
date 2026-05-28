@@ -192,6 +192,204 @@ defmodule Backplane.Skills do
   defp maybe_enabled_filter(query, true), do: query
   defp maybe_enabled_filter(query, false), do: where(query, [s], s.enabled == true)
 
+  # ── Stats & Helpers ───────────────────────────────────────────────────────
+
+  @doc "List all skills (including disabled), with optional filters."
+  @spec list_all(keyword()) :: [Skill.t()]
+  def list_all(opts \\ []) do
+    source_kind = Keyword.get(opts, :source_kind)
+    category = Keyword.get(opts, :category)
+
+    Skill
+    |> maybe_source_kind_filter(source_kind)
+    |> maybe_category_filter(category)
+    |> order_by([s], asc: s.name)
+    |> Repo.all()
+  end
+
+  @doc "Paginated skill list with filters."
+  @spec paginated_list(keyword()) :: %{skills: [Skill.t()], total: non_neg_integer()}
+  def paginated_list(opts \\ []) do
+    page = max(Keyword.get(opts, :page, 1), 1)
+    per_page = Keyword.get(opts, :per_page, 25)
+    q = Keyword.get(opts, :q, "")
+    source_kind = Keyword.get(opts, :source_kind)
+    category = Keyword.get(opts, :category)
+    tag = Keyword.get(opts, :tag)
+    include_disabled? = Keyword.get(opts, :include_disabled, false)
+
+    base =
+      Skill
+      |> maybe_enabled_filter(include_disabled?)
+      |> maybe_source_kind_filter(source_kind)
+      |> maybe_category_filter(category)
+      |> maybe_tag_filter(tag)
+      |> maybe_text_filter(q)
+
+    total = Repo.aggregate(base, :count, :id)
+
+    skills =
+      base
+      |> order_by([s], asc: s.name)
+      |> offset(^((page - 1) * per_page))
+      |> limit(^per_page)
+      |> Repo.all()
+
+    %{skills: skills, total: total}
+  end
+
+  @doc "Total skill count."
+  @spec count(keyword()) :: non_neg_integer()
+  def count(opts \\ []) do
+    include_disabled? = Keyword.get(opts, :include_disabled, false)
+
+    Skill
+    |> maybe_enabled_filter(include_disabled?)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  @doc "Count skills grouped by source_kind."
+  @spec count_by_source_kind() :: %{String.t() => non_neg_integer()}
+  def count_by_source_kind do
+    Skill
+    |> group_by([s], s.source_kind)
+    |> select([s], {s.source_kind, count(s.id)})
+    |> Repo.all()
+    |> Enum.into(%{})
+  end
+
+  @doc "Count skills grouped by category."
+  @spec count_by_category() :: %{String.t() => non_neg_integer()}
+  def count_by_category do
+    Skill
+    |> where([s], not is_nil(s.category) and s.category != "")
+    |> group_by([s], s.category)
+    |> select([s], {s.category, count(s.id)})
+    |> Repo.all()
+    |> Enum.into(%{})
+  end
+
+  @doc "List all unique tags across skills."
+  @spec list_tags() :: [%{tag: String.t(), count: non_neg_integer()}]
+  def list_tags do
+    Skill
+    |> select([s], s.tags)
+    |> Repo.all()
+    |> List.flatten()
+    |> Enum.frequencies()
+    |> Enum.map(fn {tag, count} -> %{tag: tag, count: count} end)
+    |> Enum.sort_by(& &1.count, :desc)
+  end
+
+  @doc "List all unique categories across skills."
+  @spec list_categories() :: [%{category: String.t(), count: non_neg_integer()}]
+  def list_categories do
+    Skill
+    |> where([s], not is_nil(s.category) and s.category != "")
+    |> group_by([s], s.category)
+    |> select([s], %{category: s.category, count: count(s.id)})
+    |> order_by([s], desc: count(s.id))
+    |> Repo.all()
+  end
+
+  @doc "Bulk update tags for a list of skill IDs."
+  @spec bulk_update_tags([String.t()], [String.t()]) :: {non_neg_integer(), nil}
+  def bulk_update_tags(skill_ids, tags) when is_list(skill_ids) and is_list(tags) do
+    from(s in Skill, where: s.id in ^skill_ids)
+    |> Repo.update_all(set: [tags: tags, updated_at: DateTime.utc_now()])
+  end
+
+  @doc "Bulk update category for a list of skill IDs."
+  @spec bulk_update_category([String.t()], String.t() | nil) :: {non_neg_integer(), nil}
+  def bulk_update_category(skill_ids, category) when is_list(skill_ids) do
+    from(s in Skill, where: s.id in ^skill_ids)
+    |> Repo.update_all(set: [category: category, updated_at: DateTime.utc_now()])
+  end
+
+  @doc "Rename a tag across all skills that have it."
+  @spec rename_tag(String.t(), String.t()) :: :ok
+  def rename_tag(old_tag, new_tag) do
+    skills =
+      Skill
+      |> where([s], ^old_tag in s.tags)
+      |> Repo.all()
+
+    Enum.each(skills, fn skill ->
+      new_tags =
+        skill.tags
+        |> Enum.map(fn t -> if t == old_tag, do: new_tag, else: t end)
+        |> Enum.uniq()
+
+      skill
+      |> Skill.update_changeset(%{tags: new_tags})
+      |> Repo.update()
+    end)
+
+    :ok
+  end
+
+  @doc "Remove a tag from all skills."
+  @spec delete_tag(String.t()) :: :ok
+  def delete_tag(tag) do
+    skills =
+      Skill
+      |> where([s], ^tag in s.tags)
+      |> Repo.all()
+
+    Enum.each(skills, fn skill ->
+      new_tags = Enum.reject(skill.tags, &(&1 == tag))
+
+      skill
+      |> Skill.update_changeset(%{tags: new_tags})
+      |> Repo.update()
+    end)
+
+    :ok
+  end
+
+  @doc "Rename a category across all skills."
+  @spec rename_category(String.t(), String.t()) :: {non_neg_integer(), nil}
+  def rename_category(old_category, new_category) do
+    from(s in Skill, where: s.category == ^old_category)
+    |> Repo.update_all(set: [category: new_category, updated_at: DateTime.utc_now()])
+  end
+
+  @doc "Delete a category (set to nil) across all skills."
+  @spec delete_category(String.t()) :: {non_neg_integer(), nil}
+  def delete_category(category) do
+    from(s in Skill, where: s.category == ^category)
+    |> Repo.update_all(set: [category: nil, updated_at: DateTime.utc_now()])
+  end
+
+  @doc "List recent skills by updated_at."
+  @spec recent(non_neg_integer()) :: [Skill.t()]
+  def recent(limit \\ 5) do
+    Skill
+    |> order_by([s], desc: s.updated_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  defp maybe_source_kind_filter(query, nil), do: query
+  defp maybe_source_kind_filter(query, ""), do: query
+  defp maybe_source_kind_filter(query, kind), do: where(query, [s], s.source_kind == ^kind)
+
+  defp maybe_category_filter(query, nil), do: query
+  defp maybe_category_filter(query, ""), do: query
+  defp maybe_category_filter(query, cat), do: where(query, [s], s.category == ^cat)
+
+  defp maybe_tag_filter(query, nil), do: query
+  defp maybe_tag_filter(query, ""), do: query
+  defp maybe_tag_filter(query, tag), do: where(query, [s], ^tag in s.tags)
+
+  defp maybe_text_filter(query, nil), do: query
+  defp maybe_text_filter(query, ""), do: query
+
+  defp maybe_text_filter(query, q) do
+    sanitized = q |> String.replace(<<0>>, "") |> String.slice(0, 500)
+    where(query, [s], fragment("search_vector @@ plainto_tsquery('english', ?)", ^sanitized))
+  end
+
   defp get_by_slug_or_id(value) do
     case get_by_slug(value) do
       {:ok, skill} -> {:ok, skill}

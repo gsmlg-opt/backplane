@@ -107,6 +107,7 @@ defmodule Backplane.Skills.Sources.Database do
       name: s.name,
       description: s.description,
       tags: s.tags,
+      category: s.category,
       content: s.content,
       content_hash: s.content_hash,
       version: s.version,

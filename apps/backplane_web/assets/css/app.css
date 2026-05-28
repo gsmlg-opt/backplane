@@ -19,6 +19,45 @@
   }
 }
 
+/* Force table thead visible — Tailwind v4 scanner misses md:table-header-group
+   from EEx inside deps/phoenix_duskmoon */
+.table thead {
+  display: table-header-group;
+}
+
+/* Pure CSS description tooltip for skill browse table */
+.desc-tooltip-wrap {
+  position: relative;
+}
+
+.desc-tooltip-content {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 16rem;
+  max-width: 24rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-outline-variant, #444);
+  background: var(--color-surface-container, #1e1e1e);
+  color: var(--color-on-surface, #e0e0e0);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: opacity 150ms ease, visibility 150ms ease;
+  pointer-events: none;
+}
+
+.desc-tooltip-wrap:hover .desc-tooltip-content {
+  visibility: visible;
+  opacity: 1;
+}
+
 .appbar-actions .appbar-action {
   width: auto;
   height: auto;

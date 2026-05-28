@@ -14,6 +14,7 @@ defmodule Backplane.Skills.Skill do
     field(:name, :string)
     field(:description, :string, default: "")
     field(:tags, {:array, :string}, default: [])
+    field(:category, :string)
     field(:content, :string)
     field(:content_hash, :string)
     field(:enabled, :boolean, default: true)
@@ -34,7 +35,7 @@ defmodule Backplane.Skills.Skill do
   end
 
   @required_fields ~w(id slug name content)a
-  @optional_fields ~w(description tags content_hash enabled version license homepage author meta archive_ref size_bytes file_count source_kind source_uri source_rev)a
+  @optional_fields ~w(description tags category content_hash enabled version license homepage author meta archive_ref size_bytes file_count source_kind source_uri source_rev)a
   @archive_ref_pattern ~r/^sha256\/[a-f0-9]{64}\.tar\.gz$/
 
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
@@ -49,7 +50,7 @@ defmodule Backplane.Skills.Skill do
   @spec update_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def update_changeset(skill, attrs) do
     skill
-    |> cast(attrs, ~w(content content_hash description tags enabled)a)
+    |> cast(attrs, ~w(content content_hash description tags category enabled)a)
   end
 
   defp validate_archive_ref(changeset) do
