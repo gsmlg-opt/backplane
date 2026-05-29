@@ -6,7 +6,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 Backplane is a private, self-hosted gateway with exactly two features:
 
-1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
+1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /api/mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
 2. **LLM Proxy** — A credential-injecting, model-routing reverse proxy for LLM APIs (Anthropic/OpenAI format) with usage tracking.
 
 Everything else — git access, documentation search, skill libraries — is delivered as either an upstream MCP server or a managed MCP service. Backplane proxies tool calls to services that implement those concerns.
@@ -19,12 +19,14 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/mcp` | MCP JSON-RPC endpoint |
-| `GET` | `/mcp` | MCP SSE notification stream |
-| `DELETE` | `/mcp` | MCP session cleanup |
+| `POST` | `/api/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/api/mcp` | MCP SSE notification stream |
+| `DELETE` | `/api/mcp` | MCP session cleanup |
 | `GET` | `/health` | Health check JSON |
 | `GET` | `/metrics` | Runtime metrics |
-| `*` | `/api/llm/*` | LLM proxy API routes |
+| `*` | `/api/v1/*` | LLM proxy (OpenAI-compatible) |
+| `*` | `/api/anthropic/*` | LLM proxy (Anthropic Messages) |
+| `*` | `/api/llm/*` | LLM admin API (providers, aliases) |
 | `*` | `/admin` | Admin UI (LiveView) |
 
 ### MCP Auth Modes
@@ -72,8 +74,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 
 ### Key Internal Modules
 
-- `Backplane.Transport.Router` — Plug router dispatching `POST /mcp`, `GET /mcp` (SSE), `DELETE /mcp`, health, and metrics
-- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
+- `Backplane.Transport.Router` — Plug router dispatching `POST /api/mcp`, `GET /api/mcp` (SSE), `DELETE /api/mcp`, health, and metrics
+- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /api/mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Transport.AuthPlug` — Client bearer token validation with scope filtering
 - `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub + native)

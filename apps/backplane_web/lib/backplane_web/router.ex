@@ -2,7 +2,7 @@ defmodule BackplaneWeb.Router do
   use BackplaneWeb, :router
 
   # MCP transport — forwarded to Plug handler, no Phoenix pipeline
-  forward("/mcp", Backplane.Transport.McpPlug)
+  forward("/api/mcp", Backplane.Transport.McpPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
 

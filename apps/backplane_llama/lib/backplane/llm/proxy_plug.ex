@@ -9,12 +9,12 @@ defmodule Backplane.LLM.ProxyPlug do
   def init(opts), do: opts
 
   @impl true
-  def call(%Plug.Conn{path_info: ["llm" | rest]} = conn, _opts) do
-    forward_to_llm_router(conn, rest)
+  def call(%Plug.Conn{path_info: ["api", "v1" | rest]} = conn, _opts) do
+    forward_to_llm_router(conn, ["v1" | rest])
   end
 
-  def call(%Plug.Conn{path_info: ["api", "llm", "v1" | rest]} = conn, _opts) do
-    forward_to_llm_router(conn, ["v1" | rest])
+  def call(%Plug.Conn{path_info: ["api", "anthropic" | rest]} = conn, _opts) do
+    forward_to_llm_router(conn, ["anthropic" | rest])
   end
 
   def call(conn, _opts), do: conn

@@ -6,20 +6,12 @@ defmodule Backplane.LLM.ProxyPlugTest do
   alias Backplane.LLM.ProxyPlug
 
   describe "call/2" do
-    test "passes through non-/llm paths unchanged" do
+    test "passes through non-/api paths unchanged" do
       conn = conn(:get, "/admin/dashboard/overview")
       result = ProxyPlug.call(conn, ProxyPlug.init([]))
 
       assert result.path_info == ["admin", "dashboard", "overview"]
       assert result.request_path == "/admin/dashboard/overview"
-      refute result.halted
-    end
-
-    test "passes through /llm-other paths (not exact prefix)" do
-      conn = conn(:get, "/llm-other/foo")
-      result = ProxyPlug.call(conn, ProxyPlug.init([]))
-
-      assert result.path_info == ["llm-other", "foo"]
       refute result.halted
     end
 
@@ -37,6 +29,14 @@ defmodule Backplane.LLM.ProxyPlugTest do
 
       assert result.path_info == ["api", "llm", "providers"]
       assert result.request_path == "/api/llm/providers"
+      refute result.halted
+    end
+
+    test "passes through /api/mcp paths (handled by Phoenix router)" do
+      conn = conn(:get, "/api/mcp")
+      result = ProxyPlug.call(conn, ProxyPlug.init([]))
+
+      assert result.path_info == ["api", "mcp"]
       refute result.halted
     end
   end

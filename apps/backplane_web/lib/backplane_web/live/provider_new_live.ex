@@ -354,7 +354,7 @@ defmodule BackplaneWeb.ProviderNewLive do
             key="openai"
             title="OpenAI-compatible API"
             badge="OpenAI"
-            description="Used by clients calling /llm/v1."
+            description="Used by clients calling /api/v1."
           />
 
           <.api_surface_section
@@ -363,7 +363,7 @@ defmodule BackplaneWeb.ProviderNewLive do
             key="anthropic"
             title="Anthropic Messages API"
             badge="Anthropic"
-            description="Used by clients calling /llm/anthropic."
+            description="Used by clients calling /api/anthropic."
           />
         </div>
 

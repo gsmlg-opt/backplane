@@ -50,7 +50,7 @@ defmodule Backplane.LLM.RouterTest do
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
 
-  describe "GET /llm/anthropic/v1/models" do
+  describe "GET /api/anthropic/v1/models" do
     test "returns only models available on the Anthropic surface" do
       create_provider_model(
         "anthropic-prod",
@@ -61,7 +61,7 @@ defmodule Backplane.LLM.RouterTest do
 
       create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
 
-      conn = public_llm_request(:get, "/llm/anthropic/v1/models")
+      conn = public_llm_request(:get, "/api/anthropic/v1/models")
 
       assert conn.status == 200
       body = json_body(conn)
@@ -73,10 +73,10 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
-  describe "POST /llm/anthropic/v1/messages" do
+  describe "POST /api/anthropic/v1/messages" do
     test "routes public Anthropic messages requests to the Anthropic surface" do
       conn =
-        public_llm_request(:post, "/llm/anthropic/v1/messages", %{
+        public_llm_request(:post, "/api/anthropic/v1/messages", %{
           "model" => "unknown-provider/unknown-model",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 100
@@ -89,10 +89,10 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
-  describe "POST /llm/v1/responses" do
+  describe "POST /api/v1/responses" do
     test "routes public Responses API requests to the OpenAI surface" do
       conn =
-        public_llm_request(:post, "/llm/v1/responses", %{
+        public_llm_request(:post, "/api/v1/responses", %{
           "model" => "unknown-provider/unknown-model",
           "input" => "hi"
         })
@@ -105,10 +105,10 @@ defmodule Backplane.LLM.RouterTest do
     end
   end
 
-  describe "POST /api/llm/v1/embeddings" do
+  describe "POST /api/v1/embeddings" do
     test "routes API-prefixed OpenAI-compatible requests to the LLM proxy" do
       conn =
-        public_llm_request(:post, "/api/llm/v1/embeddings", %{
+        public_llm_request(:post, "/api/v1/embeddings", %{
           "model" => "unknown-provider/text-embedding-3-small",
           "input" => ["hello"]
         })

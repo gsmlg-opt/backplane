@@ -49,11 +49,11 @@
         <:title>
           <div class="flex items-center justify-between gap-3">
             <span>MCP Hub</span>
-            <.dm_badge variant="success" size="sm">/mcp</.dm_badge>
+            <.dm_badge variant="success" size="sm">/api/mcp</.dm_badge>
           </div>
         </:title>
         <p class="mt-2 text-sm leading-6 text-on-surface-variant">
-          Connect clients to <code class="text-on-surface">/mcp</code> and access upstream and managed
+          Connect clients to <code class="text-on-surface">/api/mcp</code> and access upstream and managed
           tools through namespaced tool names like <code class="text-on-surface">day::now</code>.
         </p>
       </.dm_card>
@@ -61,11 +61,11 @@
         <:title>
           <div class="flex items-center justify-between gap-3">
             <span>LLM Proxy</span>
-            <.dm_badge variant="secondary" size="sm">/llm</.dm_badge>
+            <.dm_badge variant="secondary" size="sm">/api</.dm_badge>
           </div>
         </:title>
         <p class="mt-2 text-sm leading-6 text-on-surface-variant">
-          Send LLM traffic through <code class="text-on-surface">/llm/*</code>. Backplane resolves
+          Send LLM traffic through <code class="text-on-surface">/api/v1</code> or <code class="text-on-surface">/api/anthropic</code>. Backplane resolves
           model aliases, injects credentials, and tracks provider usage.
         </p>
       </.dm_card>
@@ -111,11 +111,11 @@
           </li>
           <li>
             <span class="font-semibold text-on-surface">4. Point clients at the proxy.</span>
-            Use <code class="text-on-surface">/llm/v1</code> for OpenAI-compatible clients and
-            <code class="text-on-surface">/llm/anthropic</code> for Anthropic Messages clients.
-            Model lists are available at <code class="text-on-surface">/llm/v1/models</code> and
-            <code class="text-on-surface">/llm/anthropic/v1/models</code>. OpenAI Responses requests use
-            <code class="text-on-surface">/llm/v1/responses</code>.
+            Use <code class="text-on-surface">/api/v1</code> for OpenAI-compatible clients and
+            <code class="text-on-surface">/api/anthropic</code> for Anthropic Messages clients.
+            Model lists are available at <code class="text-on-surface">/api/v1/models</code> and
+            <code class="text-on-surface">/api/anthropic/v1/models</code>. OpenAI Responses requests use
+            <code class="text-on-surface">/api/v1/responses</code>.
           </li>
         </ol>
         <:action>
@@ -152,9 +152,9 @@
           </li>
           <li>
             <span class="font-semibold text-on-surface">4. Connect MCP clients.</span>
-            Use <code class="text-on-surface">POST /mcp</code> for JSON-RPC,
-            <code class="text-on-surface">GET /mcp</code> for SSE notifications, and
-            <code class="text-on-surface">DELETE /mcp</code> for session cleanup.
+            Use <code class="text-on-surface">POST /api/mcp</code> for JSON-RPC,
+            <code class="text-on-surface">GET /api/mcp</code> for SSE notifications, and
+            <code class="text-on-surface">DELETE /api/mcp</code> for session cleanup.
           </li>
         </ol>
         <:action>
@@ -170,8 +170,8 @@
         <div>
           <h2 class="text-2xl font-semibold">Agent client setup</h2>
           <p class="mt-2 max-w-3xl text-sm leading-6 text-on-surface-variant">
-            Use Backplane as the model gateway and the MCP hub for local coding agents. These examples
-            assume this node is reachable at <code class="text-on-surface">10.100.10.17:4220</code>.
+            Use Backplane as the model gateway and the MCP hub for local coding agents. The examples
+            below use this server's address.
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -194,17 +194,17 @@
               Set the model gateway without <code class="text-on-surface">/v1</code>. Claude Code appends
               <code class="text-on-surface">/v1/messages</code> when it calls the Anthropic Messages API.
             </p>
-            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export ANTHROPIC_BASE_URL="http://10.100.10.17:4220/llm/anthropic"
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export ANTHROPIC_BASE_URL="{@base_url}/api/anthropic"
 export ANTHROPIC_API_KEY="bk-client-or-placeholder-token"
 claude</code></pre>
             <p>
               Add Backplane as the project or user MCP server. If Backplane clients are enabled, include
               the bearer token your admin created.
             </p>
-            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>claude mcp add --transport http backplane http://10.100.10.17:4220/mcp
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>claude mcp add --transport http backplane {@base_url}/api/mcp
 
 claude mcp add-json backplane \
-'&#123;"type":"http","url":"http://10.100.10.17:4220/mcp","headers":&#123;"Authorization":"Bearer YOUR_MCP_TOKEN"&#125;&#125;'</code></pre>
+'&#123;"type":"http","url":"{@base_url}/api/mcp","headers":&#123;"Authorization":"Bearer YOUR_MCP_TOKEN"&#125;&#125;'</code></pre>
           </div>
 
           <:action>
@@ -228,10 +228,10 @@ claude mcp add-json backplane \
               <code class="text-on-surface">openai_base_url</code> for the built-in OpenAI provider and
               add Backplane under <code class="text-on-surface">mcp_servers</code>.
             </p>
-            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>openai_base_url = "http://10.100.10.17:4220/llm/v1"
+            <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>openai_base_url = "{@base_url}/api/v1"
 
 [mcp_servers.backplane]
-url = "http://10.100.10.17:4220/mcp"
+url = "{@base_url}/api/mcp"
 
 # If Backplane clients are enabled:
 bearer_token_env_var = "BACKPLANE_MCP_TOKEN"</code></pre>
