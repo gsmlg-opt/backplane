@@ -66,7 +66,7 @@ defmodule Backplane.Application do
       Backplane.Services.Math
     ]
 
-    for service <- services, service.enabled?() do
+    for service <- services do
       ToolRegistry.register_managed(service.prefix(), service.tools())
     end
   end

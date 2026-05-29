@@ -168,8 +168,10 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp compute_result("initialize", _id, _params) do
-    {:result, initialize_result()}
+  defp compute_result("initialize", _id, params) do
+    client_version = get_in(params || %{}, ["protocolVersion"])
+    negotiated = Backplane.MCP.Info.negotiate_version(client_version)
+    {:result, %{initialize_result() | protocolVersion: negotiated}}
   end
 
   defp compute_result("tools/list", _id, _params) do
@@ -277,18 +279,14 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "initialize", id, params) do
     client_version = get_in(params || %{}, ["protocolVersion"])
-
-    if client_version && client_version != Backplane.MCP.Info.protocol_version() do
-      Logger.warning(
-        "Client requested unsupported protocol version: #{client_version} (server supports #{Backplane.MCP.Info.protocol_version()})"
-      )
-    end
-
+    negotiated = Backplane.MCP.Info.negotiate_version(client_version)
     session_id = generate_session_id()
+
+    result = %{initialize_result() | protocolVersion: negotiated}
 
     conn
     |> put_resp_header("mcp-session-id", session_id)
-    |> json_rpc_result(id, initialize_result())
+    |> json_rpc_result(id, result)
   end
 
   defp dispatch(conn, "tools/list", id, params) do
@@ -455,7 +453,9 @@ defmodule Backplane.Transport.McpHandler do
   defp execute_tool({:managed, handler}, name, args) when is_function(handler, 1) do
     case handler.(args) do
       {:ok, result} -> {:ok, result}
-      {:error, reason} -> {:error, "Managed tool #{name} failed: #{reason}"}
+      {:error, %{message: message}} -> {:error, "Managed tool #{name} failed: #{message}"}
+      {:error, reason} when is_binary(reason) -> {:error, "Managed tool #{name} failed: #{reason}"}
+      {:error, reason} -> {:error, "Managed tool #{name} failed: #{inspect(reason)}"}
     end
   rescue
     e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
@@ -658,7 +658,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp management_tool?(name) when is_binary(name) do
-    String.starts_with?(name, "admin::") or String.starts_with?(name, "hub::")
+    String.starts_with?(name, "admin::") or String.starts_with?(name, "hub::") or
+      String.starts_with?(name, "skill::")
   end
 
   defp generate_session_id do

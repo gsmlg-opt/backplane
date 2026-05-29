@@ -9,7 +9,6 @@ defmodule Backplane.Math.Config do
   use GenServer
 
   alias Backplane.Math.Config.Record
-  alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   require Logger
 
@@ -111,14 +110,15 @@ defmodule Backplane.Math.Config do
     Phoenix.PubSub.broadcast(Backplane.PubSub, @topic, {:math_config_changed, record})
   end
 
-  defp sync_registry(%Record{enabled: true}) do
-    ToolRegistry.register_managed(
-      Backplane.Services.Math.prefix(),
-      Backplane.Services.Math.tools()
-    )
+  defp sync_registry(%{enabled: true}) do
+    service = Backplane.Services.Math
+    Backplane.Registry.ToolRegistry.register_managed(service.prefix(), service.tools())
   end
 
-  defp sync_registry(%Record{enabled: false}) do
-    ToolRegistry.deregister_managed(Backplane.Services.Math.prefix())
+  defp sync_registry(%{enabled: false}) do
+    service = Backplane.Services.Math
+    Backplane.Registry.ToolRegistry.deregister_managed(service.prefix())
   end
+
+  defp sync_registry(_record), do: :ok
 end

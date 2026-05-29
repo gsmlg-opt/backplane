@@ -1,66 +1,38 @@
 defmodule Backplane.Services.WebFetch do
   @moduledoc """
-  Managed MCP service providing `web::fetch`.
+  Web fetch implementation used by `Backplane.Services.Web`.
 
   Fetches an HTTP(S) URL and returns cleaned Markdown content.
+  Called via `handle_fetch/1`.
   """
 
-  @behaviour Backplane.Services.ManagedService
-
-  @prefix "web"
   @max_body_bytes 10_000_000
   @user_agent "Backplane-WebFetch/1.0 (+https://github.com/gsmlg-opt/backplane)"
   @ignored_tags ~w(script style nav header footer aside svg canvas)
 
-  @impl true
-  def prefix, do: @prefix
-
-  @impl true
-  def enabled?, do: Backplane.Settings.get("services.web.enabled") == true
-
-  @impl true
-  def tools do
-    [
-      %{
-        name: "web::fetch",
-        description:
-          "Fetches an HTTP(S) URL and converts the content to clean, readable Markdown. Supports optional instructions for targeted extraction.",
-        input_schema: %{
-          "type" => "object",
-          "properties" => %{
-            "url" => %{
-              "type" => "string",
-              "format" => "uri",
-              "description" => "Full URL to fetch (http or https only)"
-            },
-            "instructions" => %{
-              "type" => "string",
-              "description" => "Optional extraction or summarization instruction"
-            }
-          },
-          "required" => ["url"],
-          "additionalProperties" => false
-        },
-        handler: &handle_fetch/1
-      }
-    ]
-  end
-
   def handle_fetch(%{"url" => url} = params) when is_binary(url) do
-    instructions = Map.get(params, "instructions")
+    with :ok <- ensure_enabled() do
+      instructions = Map.get(params, "instructions")
 
-    with :ok <- validate_url(url),
-         {:ok, response} <- fetch_url(url),
-         {:ok, markdown, metadata} <- convert_to_markdown(response, instructions) do
-      {:ok, Map.put(metadata, :content, markdown)}
-    else
-      {:error, reason} -> {:error, %{code: "web_fetch_error", message: to_string(reason)}}
+      with :ok <- validate_url(url),
+           {:ok, response} <- fetch_url(url),
+           {:ok, markdown, metadata} <- convert_to_markdown(response, instructions) do
+        {:ok, Map.put(metadata, :content, markdown)}
+      else
+        {:error, reason} -> {:error, %{code: "web_fetch_error", message: to_string(reason)}}
+      end
     end
   rescue
     e -> {:error, %{code: "web_fetch_error", message: Exception.message(e)}}
   end
 
   def handle_fetch(_args), do: {:error, %{code: "web_fetch_error", message: "missing url"}}
+
+  defp ensure_enabled do
+    if Backplane.Settings.get("services.web.enabled") == true,
+      do: :ok,
+      else: {:error, %{code: "web_fetch_error", message: "web service is disabled"}}
+  end
 
   defp validate_url(url) do
     case URI.parse(url) do

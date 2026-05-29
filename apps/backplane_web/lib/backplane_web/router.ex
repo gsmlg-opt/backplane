@@ -80,6 +80,7 @@ defmodule BackplaneWeb.Router do
     live("/mcp/agent/new", AgentMcpLive, :new)
     live("/mcp/agent/:id/edit", AgentMcpLive, :edit)
     live("/mcp/inspector", McpInspectorLive, :index)
+    live("/mcp/inspector/internal", McpInspectorLive, :internal)
 
     # Memory
     live("/memory", MemoryOverviewLive, :index)

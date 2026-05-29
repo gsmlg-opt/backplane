@@ -152,6 +152,29 @@
   color: var(--color-on-primary-container);
 }
 
+/* Make LiveView content stretch to fill available vertical space.
+   Cascade flex-column through classless wrapper divs (Phoenix LV container,
+   render root, view root). Styled divs with classes are not affected. */
+.admin-content > div:not([class]),
+.admin-content > div > div:not([class]),
+.admin-content > div > div > div:not([class]) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The admin-content itself has a class, so we target it explicitly */
+.admin-content > div[class*="phx-"] {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-content .overflow-x-auto {
+  flex: 1 1 auto;
+}
+
+
 .admin-sidebar {
   --admin-sidebar-bg: #efc886;
   --admin-sidebar-text: #120607;

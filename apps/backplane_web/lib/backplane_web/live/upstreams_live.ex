@@ -411,70 +411,109 @@ defmodule BackplaneWeb.UpstreamsLive do
         No upstream MCP servers configured. Click "New Upstream" to add one.
       </div>
 
-      <div class="space-y-3">
-        <.dm_card :for={upstream <- @upstreams} variant="bordered">
-          <:title>
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
+      <div :if={@upstreams != []} class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-surface-container-high text-on-surface">
+            <tr>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Transport</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Connection</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Credential</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-outline-variant">
+            <tr :for={upstream <- @upstreams} class="hover:bg-surface-container-high">
+              <td class="px-3 py-1.5 align-middle">
                 <span class="font-medium">{upstream.name}</span>
+                <.dm_badge :if={!upstream.enabled} variant="ghost" class="ml-1">disabled</.dm_badge>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
                 <span class="text-xs text-on-surface-variant font-mono">{upstream.prefix}::</span>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
                 <.dm_badge variant="info">{upstream.transport}</.dm_badge>
-                <.dm_badge :if={!upstream.enabled} variant="ghost">disabled</.dm_badge>
-              </div>
-              <div class="flex items-center gap-2">
+              </td>
+              <td class="px-3 py-1.5 align-middle max-w-xs truncate">
+                <span :if={upstream.url} class="text-on-surface">{upstream.url}</span>
+                <span :if={upstream.command} class="text-on-surface">{upstream.command}</span>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
+                <span :if={upstream.credential} class="text-on-surface">
+                  {upstream.credential}
+                  <span class="text-on-surface-variant">({upstream.auth_scheme})</span>
+                </span>
+                <span :if={!upstream.credential} class="text-on-surface-variant">&mdash;</span>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
                 <.dm_badge
                   :if={rs = @runtime_status[upstream.name]}
                   variant={runtime_badge_color(rs)}
                 >
                   {rs.status |> to_string() |> String.capitalize()}
                 </.dm_badge>
+                <span :if={!@runtime_status[upstream.name]} class="text-on-surface-variant">&mdash;</span>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
                 <.dm_badge :if={rs = @runtime_status[upstream.name]} variant="ghost">
-                  {rs.tool_count || 0} tools
+                  {rs.tool_count || 0}
                 </.dm_badge>
-                <.dm_btn
-                  size="xs"
-                  variant={if upstream.enabled, do: "warning", else: "primary"}
-                  phx-click="toggle"
-                  phx-value-id={upstream.id}
-                >
-                  {if upstream.enabled, do: "Disable", else: "Enable"}
-                </.dm_btn>
-                <.dm_btn
-                  size="xs"
-                  variant="primary"
-                  phx-click="connect"
-                  phx-value-id={upstream.id}
-                >
-                  Connect
-                </.dm_btn>
-                <.link patch={~p"/admin/mcp/upstreams/#{upstream.id}/edit"}>
-                  <.dm_btn size="xs">Edit</.dm_btn>
-                </.link>
-                <.dm_btn
-                  size="xs"
-                  variant="error"
-                  phx-click="delete"
-                  phx-value-id={upstream.id}
-                  data-confirm={"Delete upstream #{upstream.name}?"}
-                >
-                  Delete
-                </.dm_btn>
-              </div>
-            </div>
-          </:title>
-          <div class="text-sm text-on-surface-variant mt-1">
-            <span :if={upstream.url}>
-              URL: <span class="text-on-surface">{upstream.url}</span>
-            </span>
-            <span :if={upstream.command}>
-              Command: <span class="text-on-surface">{upstream.command}</span>
-            </span>
-            <span :if={upstream.credential} class="ml-4">
-              Credential: <span class="text-on-surface">{upstream.credential}</span>
-              (<span class="text-on-surface">{upstream.auth_scheme}</span>)
-            </span>
-          </div>
-        </.dm_card>
+                <span :if={!@runtime_status[upstream.name]} class="text-on-surface-variant">&mdash;</span>
+              </td>
+              <td class="px-3 py-1.5 align-middle">
+                <div class="flex items-center gap-1">
+                  <.dm_tooltip content={if upstream.enabled, do: "Disable", else: "Enable"} position="bottom">
+                    <.dm_btn
+                      size="xs"
+                      shape="circle"
+                      variant={if upstream.enabled, do: "warning", else: "primary"}
+                      phx-click="toggle"
+                      phx-value-id={upstream.id}
+                    >
+                      <.dm_mdi
+                        name={if upstream.enabled, do: "pause", else: "play"}
+                        class="w-4 h-4"
+                      />
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip content="Connect" position="bottom">
+                    <.dm_btn
+                      size="xs"
+                      shape="circle"
+                      variant="primary"
+                      phx-click="connect"
+                      phx-value-id={upstream.id}
+                    >
+                      <.dm_mdi name="connection" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip content="Edit" position="bottom">
+                    <.link patch={~p"/admin/mcp/upstreams/#{upstream.id}/edit"}>
+                      <.dm_btn size="xs" shape="circle" variant="outline">
+                        <.dm_mdi name="pencil" class="w-4 h-4" />
+                      </.dm_btn>
+                    </.link>
+                  </.dm_tooltip>
+                  <.dm_tooltip content="Delete" position="bottom">
+                    <.dm_btn
+                      size="xs"
+                      shape="circle"
+                      variant="error"
+                      phx-click="delete"
+                      phx-value-id={upstream.id}
+                      data-confirm={"Delete upstream #{upstream.name}?"}
+                    >
+                      <.dm_mdi name="delete" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
     """

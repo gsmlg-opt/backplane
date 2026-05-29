@@ -73,60 +73,72 @@ defmodule Backplane.Services.Day do
   end
 
   def handle_now(args) do
-    tz = args["timezone"] || "Etc/UTC"
-    day = DayEx.utc() |> DayEx.tz(tz)
-    {:ok, %{iso: to_string(day), timezone: tz, unix: DayEx.to_unix(day)}}
+    with :ok <- ensure_enabled() do
+      tz = args["timezone"] || "Etc/UTC"
+      day = DayEx.utc() |> DayEx.tz(tz)
+      {:ok, %{iso: to_string(day), timezone: tz, unix: DayEx.to_unix(day)}}
+    end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   def handle_format(args) do
-    format = args["format"] || "YYYY-MM-DDTHH:mm:ssZ"
+    with :ok <- ensure_enabled() do
+      format = args["format"] || "YYYY-MM-DDTHH:mm:ssZ"
 
-    with {:ok, day} <- DayEx.parse(args["datetime"]) do
-      day =
-        if tz = args["timezone"] do
-          DayEx.tz(day, tz)
-        else
-          day
-        end
+      with {:ok, day} <- DayEx.parse(args["datetime"]) do
+        day =
+          if tz = args["timezone"] do
+            DayEx.tz(day, tz)
+          else
+            day
+          end
 
-      {:ok, %{formatted: DayEx.format(day, format)}}
-    else
-      {:error, reason} -> {:error, reason}
+        {:ok, %{formatted: DayEx.format(day, format)}}
+      else
+        {:error, reason} -> {:error, reason}
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   def handle_parse(args) do
-    result =
-      case args["format"] do
-        nil -> DayEx.parse(args["input"])
-        fmt -> DayEx.parse(args["input"], fmt)
-      end
+    with :ok <- ensure_enabled() do
+      result =
+        case args["format"] do
+          nil -> DayEx.parse(args["input"])
+          fmt -> DayEx.parse(args["input"], fmt)
+        end
 
-    case result do
-      {:ok, day} -> {:ok, %{iso: to_string(day), unix: DayEx.to_unix(day)}}
-      {:error, reason} -> {:error, reason}
+      case result do
+        {:ok, day} -> {:ok, %{iso: to_string(day), unix: DayEx.to_unix(day)}}
+        {:error, reason} -> {:error, reason}
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   def handle_diff(args) do
-    unit_str = args["unit"] || "day"
-    unit = string_to_unit(unit_str)
+    with :ok <- ensure_enabled() do
+      unit_str = args["unit"] || "day"
+      unit = string_to_unit(unit_str)
 
-    with {:ok, from} <- DayEx.parse(args["from"]),
-         {:ok, to} <- DayEx.parse(args["to"]) do
-      diff = DayEx.diff(from, to, unit)
-      {:ok, %{diff: diff, unit: unit_str}}
-    else
-      {:error, reason} -> {:error, reason}
+      with {:ok, from} <- DayEx.parse(args["from"]),
+           {:ok, to} <- DayEx.parse(args["to"]) do
+        diff = DayEx.diff(from, to, unit)
+        {:ok, %{diff: diff, unit: unit_str}}
+      else
+        {:error, reason} -> {:error, reason}
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  defp ensure_enabled do
+    if enabled?(), do: :ok, else: {:error, "day service is disabled"}
   end
 
   # Map user-facing unit strings to DayEx atoms

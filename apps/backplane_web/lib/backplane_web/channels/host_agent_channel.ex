@@ -1,13 +1,16 @@
 defmodule BackplaneWeb.HostAgentChannel do
   use BackplaneWeb, :channel
 
+  alias Backplane.PubSubBroadcaster
   alias Backplane.Skills.{DesiredState, HostConnectionRegistry, SyncStatuses}
 
   @impl true
   def join("host_agent:" <> host_id, _payload, socket) do
     if socket.assigns.host.id == host_id do
       case HostConnectionRegistry.register(socket.assigns.host, socket.assigns.auth_token, self()) do
-        :ok -> {:ok, socket}
+        :ok ->
+          PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
+          {:ok, socket}
         {:error, :not_started} -> {:error, %{reason: "registry_unavailable"}}
       end
     else
@@ -87,6 +90,11 @@ defmodule BackplaneWeb.HostAgentChannel do
   end
 
   @impl true
+  def handle_info({:mcp_notification, notification}, socket) do
+    push(socket, "mcp_notification", notification)
+    {:noreply, socket}
+  end
+
   def handle_info(:disconnect, socket) do
     {:stop, :normal, socket}
   end

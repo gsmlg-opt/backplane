@@ -171,13 +171,11 @@ defmodule BackplaneWeb.AgentMcpLive do
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
 
     tools
+    |> Enum.filter(fn tool ->
+      match?({:managed, _}, tool.origin)
+    end)
     |> Enum.group_by(fn tool ->
-      case tool.origin do
-        {:managed, prefix} -> {:managed, prefix}
-        {:upstream, prefix} -> {:upstream, prefix}
-        :native -> {:native, "native"}
-        _ -> {:other, "other"}
-      end
+      {:managed, elem(tool.origin, 1)}
     end)
     |> Enum.map(fn {{kind, prefix}, tools} ->
       %{
@@ -187,22 +185,13 @@ defmodule BackplaneWeb.AgentMcpLive do
         tools: Enum.map(tools, fn t -> %{name: t.name, description: t.description} end)
       }
     end)
-    |> Enum.sort_by(fn m -> {kind_order(m.kind), m.prefix} end)
+    |> Enum.sort_by(fn m -> m.prefix end)
   end
 
-  defp kind_order(:managed), do: 0
-  defp kind_order(:upstream), do: 1
-  defp kind_order(:native), do: 2
-  defp kind_order(_), do: 3
-
   defp kind_label(:managed), do: "Managed"
-  defp kind_label(:upstream), do: "Upstream"
-  defp kind_label(:native), do: "Native"
   defp kind_label(_), do: "Other"
 
   defp kind_icon(:managed), do: "cog"
-  defp kind_icon(:upstream), do: "cloud-outline"
-  defp kind_icon(:native), do: "chip"
   defp kind_icon(_), do: "puzzle-outline"
 
   defp tool_short_name(name) do
@@ -410,68 +399,94 @@ defmodule BackplaneWeb.AgentMcpLive do
           No MCP servers configured for host agents. Click "Add MCP Server" to create one.
         </div>
 
-        <div class="space-y-3">
-          <.dm_card :for={server <- @mcp_servers} variant="bordered">
-            <:title>
-              <div class="flex w-full items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
+        <div :if={@mcp_servers != []} class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-surface-container-high text-on-surface">
+              <tr>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Transport</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Target</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Connection</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                <th scope="col" class="px-3 py-2 text-right font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-outline-variant">
+              <tr :for={server <- @mcp_servers} class="hover:bg-surface-container-high">
+                <td class="px-3 py-1.5 align-middle">
                   <span class="font-medium">{server.name}</span>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <span class="text-xs text-on-surface-variant font-mono">{server.prefix}::</span>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <.dm_badge variant="info">{server.transport}</.dm_badge>
-                  <.dm_badge :if={!server.enabled} variant="ghost">disabled</.dm_badge>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <.dm_badge variant="neutral" size="sm">
                     {host_name_for(server.host_id, @hosts)}
                   </.dm_badge>
-                </div>
-                <div class="flex items-center gap-1">
-                  <.dm_tooltip content={if server.enabled, do: "Disable", else: "Enable"}>
-                    <.dm_btn
-                      size="xs"
-                      shape="circle"
-                      variant={if server.enabled, do: "warning", else: "primary"}
-                      phx-click="toggle_server"
-                      phx-value-id={server.id}
-                    >
-                      <.dm_mdi
-                        name={if server.enabled, do: "pause", else: "play"}
-                        class="w-4 h-4"
-                      />
-                    </.dm_btn>
-                  </.dm_tooltip>
-                  <.dm_tooltip content="Edit">
-                    <.link patch={~p"/admin/mcp/agent/#{server.id}/edit"}>
-                      <.dm_btn size="xs" shape="circle" variant="outline">
-                        <.dm_mdi name="pencil" class="w-4 h-4" />
+                </td>
+                <td class="px-3 py-1.5 align-middle text-on-surface-variant">
+                  <span :if={server.url}>
+                    <span class="text-on-surface">{server.url}</span>
+                  </span>
+                  <span :if={server.command}>
+                    <span class="text-on-surface">{server.command}</span>
+                    <span :if={server.args != []} class="ml-1 text-xs">
+                      [{Enum.join(server.args, ", ")}]
+                    </span>
+                  </span>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
+                  <.dm_badge
+                    variant={if server.enabled, do: "success", else: "ghost"}
+                    size="sm"
+                  >
+                    {if server.enabled, do: "Enabled", else: "Disabled"}
+                  </.dm_badge>
+                </td>
+                <td class="px-3 py-1.5 align-middle text-right">
+                  <div class="flex items-center justify-end gap-1">
+                    <.dm_tooltip content={if server.enabled, do: "Disable", else: "Enable"}>
+                      <.dm_btn
+                        size="xs"
+                        shape="circle"
+                        variant={if server.enabled, do: "warning", else: "primary"}
+                        phx-click="toggle_server"
+                        phx-value-id={server.id}
+                      >
+                        <.dm_mdi
+                          name={if server.enabled, do: "pause", else: "play"}
+                          class="w-4 h-4"
+                        />
                       </.dm_btn>
-                    </.link>
-                  </.dm_tooltip>
-                  <.dm_tooltip content="Delete">
-                    <.dm_btn
-                      size="xs"
-                      shape="circle"
-                      variant="error"
-                      phx-click="delete"
-                      phx-value-id={server.id}
-                      data-confirm={"Delete MCP server #{server.name}?"}
-                    >
-                      <.dm_mdi name="delete" class="w-4 h-4" />
-                    </.dm_btn>
-                  </.dm_tooltip>
-                </div>
-              </div>
-            </:title>
-            <div class="text-sm text-on-surface-variant">
-              <span :if={server.url}>
-                URL: <span class="text-on-surface">{server.url}</span>
-              </span>
-              <span :if={server.command}>
-                Command: <span class="text-on-surface">{server.command}</span>
-                <span :if={server.args != []} class="ml-1">
-                  [{Enum.join(server.args, ", ")}]
-                </span>
-              </span>
-            </div>
-          </.dm_card>
+                    </.dm_tooltip>
+                    <.dm_tooltip content="Edit">
+                      <.link patch={~p"/admin/mcp/agent/#{server.id}/edit"}>
+                        <.dm_btn size="xs" shape="circle" variant="outline">
+                          <.dm_mdi name="pencil" class="w-4 h-4" />
+                        </.dm_btn>
+                      </.link>
+                    </.dm_tooltip>
+                    <.dm_tooltip content="Delete">
+                      <.dm_btn
+                        size="xs"
+                        shape="circle"
+                        variant="error"
+                        phx-click="delete"
+                        phx-value-id={server.id}
+                        data-confirm={"Delete MCP server #{server.name}?"}
+                      >
+                        <.dm_mdi name="delete" class="w-4 h-4" />
+                      </.dm_btn>
+                    </.dm_tooltip>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -486,110 +501,154 @@ defmodule BackplaneWeb.AgentMcpLive do
           </.link>
         </div>
 
-        <div :if={@connections != []} class="space-y-3">
-          <.dm_card :for={conn <- @connections} variant="bordered">
-            <:title>
-              <div class="flex w-full items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
-                  <.dm_mdi name="robot" class="admin-sidebar-icon" />
-                  <span class="font-medium">{conn.host.name}</span>
-                  <.dm_badge variant={status_variant(agent_status(conn))} size="sm">
-                    {agent_status(conn)}
-                  </.dm_badge>
-                  <span class="text-xs text-on-surface-variant">v{agent_version(conn)}</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <span class="text-xs text-on-surface-variant">
-                    Connected {relative_time(conn.connected_at)}
-                  </span>
-                  <.link navigate={~p"/admin/system/host-agents/#{conn.host.id}/config"}>
-                    <.dm_btn size="xs" variant="outline">Config</.dm_btn>
-                  </.link>
-                </div>
-              </div>
-            </:title>
-
-            <div :if={targets_list(conn) == []} class="text-sm text-on-surface-variant">
-              No MCP targets reported.
-            </div>
-
-            <div :if={targets_list(conn) != []} class="mt-1">
-              <h4 class="text-xs font-medium text-on-surface-variant mb-2">MCP Targets</h4>
-              <div class="overflow-x-auto">
-                <table class="min-w-full text-sm">
-                  <thead class="bg-surface-container-high text-on-surface">
-                    <tr>
-                      <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                      <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
-                      <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-outline-variant">
-                    <tr :for={target <- targets_list(conn)} class="hover:bg-surface-container-high">
-                      <td class="px-3 py-2 align-top">
-                        <span class="font-medium">{target_name(target)}</span>
-                      </td>
-                      <td class="px-3 py-2 align-top text-on-surface-variant">
-                        {target_runtime(target) || "—"}
-                      </td>
-                      <td class="px-3 py-2 align-top">
-                        <.dm_badge
-                          variant={if target_enabled?(target), do: "success", else: "error"}
-                          size="sm"
-                        >
-                          {if target_enabled?(target), do: "Enabled", else: "Disabled"}
-                        </.dm_badge>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </.dm_card>
+        <div :if={@connections != []} class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-surface-container-high text-on-surface">
+              <tr>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Version</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Connected</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Targets</th>
+                <th scope="col" class="px-3 py-2 text-right font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-outline-variant">
+              <%= for conn <- @connections do %>
+                <tr class="hover:bg-surface-container-high">
+                  <td class="px-3 py-1.5 align-middle">
+                    <div class="flex items-center gap-2">
+                      <.dm_mdi name="robot" class="admin-sidebar-icon" />
+                      <span class="font-medium">{conn.host.name}</span>
+                    </div>
+                  </td>
+                  <td class="px-3 py-1.5 align-middle">
+                    <.dm_badge variant={status_variant(agent_status(conn))} size="sm">
+                      {agent_status(conn)}
+                    </.dm_badge>
+                  </td>
+                  <td class="px-3 py-1.5 align-middle">
+                    <span class="text-xs text-on-surface-variant">v{agent_version(conn)}</span>
+                  </td>
+                  <td class="px-3 py-1.5 align-middle">
+                    <span class="text-xs text-on-surface-variant">
+                      {relative_time(conn.connected_at)}
+                    </span>
+                  </td>
+                  <td class="px-3 py-1.5 align-middle">
+                    <span class="text-xs text-on-surface-variant">
+                      {length(targets_list(conn))} targets
+                    </span>
+                  </td>
+                  <td class="px-3 py-1.5 align-middle text-right">
+                    <.link navigate={~p"/admin/system/host-agents/#{conn.host.id}/config"}>
+                      <.dm_btn size="xs" variant="outline">Config</.dm_btn>
+                    </.link>
+                  </td>
+                </tr>
+                <tr :if={targets_list(conn) != []} class="bg-surface-container">
+                  <td colspan="6" class="px-3 py-2">
+                    <h4 class="text-xs font-medium text-on-surface-variant mb-2">MCP Targets</h4>
+                    <div class="overflow-x-auto">
+                      <table class="min-w-full text-sm">
+                        <thead class="bg-surface-container-high text-on-surface">
+                          <tr>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-outline-variant">
+                          <tr :for={target <- targets_list(conn)} class="hover:bg-surface-container-high">
+                            <td class="px-3 py-1.5 align-middle">
+                              <span class="font-medium">{target_name(target)}</span>
+                            </td>
+                            <td class="px-3 py-1.5 align-middle text-on-surface-variant">
+                              {target_runtime(target) || "—"}
+                            </td>
+                            <td class="px-3 py-1.5 align-middle">
+                              <.dm_badge
+                                variant={if target_enabled?(target), do: "success", else: "error"}
+                                size="sm"
+                              >
+                                {if target_enabled?(target), do: "Enabled", else: "Disabled"}
+                              </.dm_badge>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
         </div>
       </section>
 
-      <%!-- Section 3: Available MCP Servers --%>
+      <%!-- Section 3: Managed Services on Backplane MCP --%>
       <section>
-        <h2 class="text-lg font-semibold mb-3">Available MCP Servers</h2>
+        <h2 class="text-lg font-semibold mb-3">Backplane MCP Services</h2>
         <p class="text-sm text-on-surface-variant mb-4">
-          All MCP servers currently registered on Backplane. These are accessible to host agents via the MCP endpoint.
+          Managed services running on the Backplane MCP server. Host agents access these via the MCP endpoint.
         </p>
 
         <div :if={@available_mcps == []} class="text-sm text-on-surface-variant">
-          No MCP servers registered.
+          No managed services registered.
         </div>
 
-        <div class="space-y-3">
-          <.dm_card :for={mcp <- @available_mcps} variant="bordered">
-            <:title>
-              <div class="flex w-full items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
-                  <.dm_mdi name={kind_icon(mcp.kind)} class="w-5 h-5 text-on-surface-variant" />
-                  <span class="font-medium">{mcp.prefix}</span>
+        <div :if={@available_mcps != []} class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-surface-container-high text-on-surface">
+              <tr>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Namespace</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Type</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Tool List</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-outline-variant">
+              <tr :for={mcp <- @available_mcps} class="hover:bg-surface-container-high">
+                <td class="px-3 py-1.5 align-middle">
+                  <div class="flex items-center gap-2">
+                    <.dm_mdi name={kind_icon(mcp.kind)} class="w-5 h-5 text-on-surface-variant" />
+                    <span class="font-medium">{mcp.prefix}</span>
+                  </div>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <span class="text-xs text-on-surface-variant font-mono">{mcp.prefix}::</span>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <.dm_badge variant="info" size="sm">{kind_label(mcp.kind)}</.dm_badge>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
                   <.dm_badge variant="success" size="sm">Enabled</.dm_badge>
-                </div>
-                <span class="text-sm text-on-surface-variant">{mcp.tool_count} tools</span>
-              </div>
-            </:title>
-            <div class="flex flex-wrap gap-2">
-              <.link
-                :for={tool <- mcp.tools}
-                navigate={
-                  case mcp.kind do
-                    :managed -> "/admin/mcp/managed/#{mcp.prefix}/tool/#{tool_short_name(tool.name)}"
-                    _ -> "/admin/mcp/tools"
-                  end
-                }
-              >
-                <.dm_badge variant="ghost" class="cursor-pointer hover:bg-surface-container-high transition-colors">
-                  {tool_short_name(tool.name)}
-                </.dm_badge>
-              </.link>
-            </div>
-          </.dm_card>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
+                  <span class="text-on-surface-variant">{mcp.tool_count}</span>
+                </td>
+                <td class="px-3 py-1.5 align-middle">
+                  <div class="flex flex-wrap gap-1">
+                    <.link
+                      :for={tool <- mcp.tools}
+                      navigate={
+                        case mcp.kind do
+                          :managed -> "/admin/mcp/managed/#{mcp.prefix}/tool/#{tool_short_name(tool.name)}"
+                          _ -> "/admin/mcp/tools"
+                        end
+                      }
+                    >
+                      <.dm_badge variant="ghost" class="cursor-pointer hover:bg-surface-container-high transition-colors">
+                        {tool_short_name(tool.name)}
+                      </.dm_badge>
+                    </.link>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
     </div>

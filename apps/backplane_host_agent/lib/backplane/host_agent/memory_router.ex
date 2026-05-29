@@ -90,11 +90,14 @@ defmodule Backplane.HostAgent.MemoryRouter do
         tool_call(conn, id, agent_id, params)
 
       "initialize" ->
+        client_version = params["protocolVersion"]
+        negotiated = Backplane.MCP.Info.negotiate_version(client_version)
+
         send_json(
           conn,
           200,
           jsonrpc_result(id, %{
-            "protocolVersion" => "2025-03-26",
+            "protocolVersion" => negotiated,
             "serverInfo" => %{"name" => "backplane-host-agent-memory", "version" => "0.1.0"},
             "capabilities" => %{"tools" => %{}}
           })

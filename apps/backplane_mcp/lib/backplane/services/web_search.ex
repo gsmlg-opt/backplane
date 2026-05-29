@@ -1,70 +1,17 @@
 defmodule Backplane.Services.WebSearch do
   @moduledoc """
-  Managed MCP service handler for `web::search`.
+  Web search implementation used by `Backplane.Services.Web`.
 
   Searches the web through a configured provider backend and returns a normalized
-  result shape. Used by the unified `Backplane.Services.Web` module.
+  result shape. Called via `handle_search/1`.
   """
-
-  @behaviour Backplane.Services.ManagedService
 
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
-  @prefix "web_search"
   @backends ~w(ollama minimax z_ai bigmodel)
   @default_max_results 5
   @max_results 10
-
-  @impl true
-  def prefix, do: @prefix
-
-  @impl true
-  def enabled?, do: Settings.get("services.web_search.enabled") != false
-
-  @impl true
-  def tools do
-    [
-      %{
-        name: "web_search::search",
-        description:
-          "Search the web through Ollama, MiniMax, Z.ai, or BigModel and return normalized results.",
-        input_schema: %{
-          "type" => "object",
-          "properties" => %{
-            "query" => %{
-              "type" => "string",
-              "minLength" => 1,
-              "description" => "Search query"
-            },
-            "backend" => %{
-              "type" => "string",
-              "enum" => @backends,
-              "description" => "Search backend. Defaults to the configured service backend."
-            },
-            "credential" => %{
-              "type" => "string",
-              "description" => "Optional credentials vault name for the selected backend"
-            },
-            "max_results" => %{
-              "type" => "integer",
-              "minimum" => 1,
-              "maximum" => @max_results,
-              "description" => "Maximum result count, up to #{@max_results}"
-            },
-            "search_engine" => %{
-              "type" => "string",
-              "description" =>
-                "Optional search engine for Z.ai/BigModel, for example search_std or search_pro"
-            }
-          },
-          "required" => ["query"],
-          "additionalProperties" => false
-        },
-        handler: &handle_search/1
-      }
-    ]
-  end
 
   def handle_search(%{"query" => query} = params) when is_binary(query) do
     with :ok <- ensure_enabled(),
@@ -85,7 +32,7 @@ defmodule Backplane.Services.WebSearch do
   def handle_search(_args), do: error("missing query")
 
   defp ensure_enabled do
-    if enabled?(), do: :ok, else: {:error, "web::search is disabled"}
+    if Settings.get("services.web.enabled") == true, do: :ok, else: {:error, "web::search is disabled"}
   end
 
   defp validate_query(query) do
