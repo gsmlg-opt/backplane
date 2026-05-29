@@ -8,7 +8,7 @@ while IFS= read -r line; do
 
   case "$method" in
     initialize)
-      echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":\"2025-03-26\",\"serverInfo\":{\"name\":\"mock-stdio\",\"version\":\"0.1.0\"},\"capabilities\":{}}}"
+      echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":\"2025-11-25\",\"serverInfo\":{\"name\":\"mock-stdio\",\"version\":\"0.1.0\"},\"capabilities\":{}}}"
       ;;
     tools/list)
       echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}}}}]}}"

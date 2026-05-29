@@ -18,6 +18,8 @@ defmodule Backplane.HostAgent.McpManager do
   @max_retries 3
   @retry_delays [1_000, 5_000, 30_000]
   @max_buffer_size 10_000_000
+  @mcp_protocol_version "2025-11-25"
+  @agent_version "0.1.0"
 
   # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -375,7 +377,10 @@ defmodule Backplane.HostAgent.McpManager do
             "name" => prefixed_name,
             "original_name" => tool["name"],
             "description" => tool["description"],
-            "inputSchema" => tool["inputSchema"]
+            "inputSchema" => tool["inputSchema"],
+            "outputSchema" => tool["outputSchema"],
+            "annotations" => tool["annotations"],
+            "icon" => tool["icon"]
           }
         end)
 
@@ -587,9 +592,9 @@ defmodule Backplane.HostAgent.McpManager do
       "id" => id,
       "method" => "initialize",
       "params" => %{
-        "protocolVersion" => "2024-11-05",
+        "protocolVersion" => @mcp_protocol_version,
         "capabilities" => %{},
-        "clientInfo" => %{"name" => "backplane-host-agent", "version" => "0.1.0"}
+        "clientInfo" => %{"name" => "backplane-host-agent", "version" => @agent_version}
       }
     }
   end

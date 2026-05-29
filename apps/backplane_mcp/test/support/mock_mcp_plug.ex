@@ -17,7 +17,7 @@ defmodule Backplane.Test.MockMcpPlug do
             "jsonrpc" => "2.0",
             "id" => request["id"],
             "result" => %{
-              "protocolVersion" => "2025-03-26",
+              "protocolVersion" => Backplane.MCP.Info.protocol_version(),
               "serverInfo" => %{"name" => "mock", "version" => "0.1.0"},
               "capabilities" => %{"tools" => %{"listChanged" => false}}
             }

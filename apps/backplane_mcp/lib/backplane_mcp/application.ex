@@ -10,6 +10,8 @@ defmodule BackplaneMcp.Application do
     ]
 
     children = [
+      Backplane.Transport.Session,
+      Backplane.Transport.TaskManager,
       Backplane.Math.Supervisor,
       Backplane.Proxy.Pool,
       {Backplane.Cache, cache_opts}

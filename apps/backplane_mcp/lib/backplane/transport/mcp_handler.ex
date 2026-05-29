@@ -3,7 +3,14 @@ defmodule Backplane.Transport.McpHandler do
   JSON-RPC dispatcher for MCP protocol messages.
 
   Handles: initialize, tools/list, tools/call, resources/list, resources/read,
-  prompts/list, prompts/get, completion/complete, logging/setLevel, ping.
+  prompts/list, prompts/get, completion/complete, logging/setLevel, ping,
+  elicitation/create, tasks/create, tasks/get, tasks/result, tasks/cancel.
+
+  Adapts responses based on the negotiated MCP protocol version:
+  - 2024-11-05: Base capabilities (no completions)
+  - 2025-03-26: Adds completions, tool annotations
+  - 2025-06-18: Adds outputSchema, structuredContent, elicitation
+  - 2025-11-25: Adds icon metadata, experimental tasks, extensions
   """
 
   import Plug.Conn
@@ -11,30 +18,50 @@ defmodule Backplane.Transport.McpHandler do
   require Logger
 
   alias Backplane.Clients
+  alias Backplane.MCP.Info
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Telemetry
-  alias Backplane.Transport.SSE
+  alias Backplane.Transport.{Extensions, Session, SSE, TaskManager}
 
   @server_name "backplane"
 
-  defp server_capabilities do
-    %{
-      tools: %{listChanged: true},
-      resources: %{listChanged: true},
-      prompts: %{listChanged: true},
-      completions: %{},
-      logging: %{}
+  defp initialize_result(version, params) do
+    capabilities = Info.capabilities_for_version(version)
+
+    # For 2025-11-25, include negotiated extensions
+    capabilities =
+      if Info.version_gte?(version, "2025-11-25") do
+        client_extensions = get_in(params || %{}, ["capabilities", "extensions"]) || %{}
+        negotiated = Extensions.negotiate(client_extensions)
+
+        if map_size(negotiated) > 0 do
+          Map.put(capabilities, :extensions, negotiated)
+        else
+          capabilities
+        end
+      else
+        capabilities
+      end
+
+    result = %{
+      protocolVersion: version,
+      serverInfo: %{name: @server_name, version: Info.version()},
+      capabilities: capabilities
     }
+
+    # Add instructions for 2025-03-26+ (optional server guidance)
+    if Info.version_gte?(version, "2025-03-26") do
+      Map.put(result, :instructions, server_instructions())
+    else
+      result
+    end
   end
 
-  defp initialize_result do
-    %{
-      protocolVersion: Backplane.MCP.Info.protocol_version(),
-      serverInfo: %{name: @server_name, version: Backplane.MCP.Info.version()},
-      capabilities: server_capabilities()
-    }
+  defp server_instructions do
+    "Backplane is an MCP hub. Tools are namespaced as prefix::tool_name. " <>
+      "Use hub::discover to find tools by keyword."
   end
 
   @spec handle(Plug.Conn.t()) :: Plug.Conn.t()
@@ -170,17 +197,18 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("initialize", _id, params) do
     client_version = get_in(params || %{}, ["protocolVersion"])
-    negotiated = Backplane.MCP.Info.negotiate_version(client_version)
-    {:result, %{initialize_result() | protocolVersion: negotiated}}
+    negotiated = Info.negotiate_version(client_version)
+    {:result, initialize_result(negotiated, params)}
   end
 
-  defp compute_result("tools/list", _id, _params) do
+  defp compute_result("tools/list", _id, params) do
+    # Determine version from session if available
+    version = session_version_from_params(params)
+
     tools =
       ToolRegistry.list_all()
       |> Enum.reject(fn tool -> management_tool?(tool.name) end)
-      |> Enum.map(fn tool ->
-        %{name: tool.name, description: tool.description, inputSchema: tool.input_schema}
-      end)
+      |> Enum.map(fn tool -> tool_to_json(tool, version) end)
 
     {:result, %{tools: tools}}
   end
@@ -247,6 +275,63 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("ping", _id, _params), do: {:result, %{}}
 
+  # Elicitation (2025-06-18+) — stub that always declines
+  defp compute_result("elicitation/create", _id, _params) do
+    {:result, %{action: "decline", content: %{}}}
+  end
+
+  # Tasks (2025-11-25 experimental)
+  defp compute_result("tasks/create", _id, %{"name" => tool_name} = params)
+       when is_binary(tool_name) and tool_name != "" do
+    arguments = params["arguments"] || %{}
+    session_id = params["_session_id"]
+
+    case TaskManager.create(tool_name, arguments, session_id) do
+      {:ok, task_id} ->
+        {:result, %{id: task_id, status: "working"}}
+
+      {:error, reason} ->
+        {:error, -32_603, "Failed to create task: #{reason}"}
+    end
+  end
+
+  defp compute_result("tasks/create", _id, _params) do
+    {:error, -32_602, "Invalid params: 'name' is required"}
+  end
+
+  defp compute_result("tasks/get", _id, %{"id" => task_id}) when is_binary(task_id) do
+    case TaskManager.get(task_id) do
+      nil -> {:error, -32_602, "Task not found: #{task_id}"}
+      task -> {:result, format_task(task)}
+    end
+  end
+
+  defp compute_result("tasks/get", _id, _params) do
+    {:error, -32_602, "Invalid params: 'id' is required"}
+  end
+
+  defp compute_result("tasks/result", _id, %{"id" => task_id}) when is_binary(task_id) do
+    case TaskManager.result(task_id) do
+      {:ok, result} -> {:result, result}
+      {:error, reason} -> {:error, -32_602, reason}
+    end
+  end
+
+  defp compute_result("tasks/result", _id, _params) do
+    {:error, -32_602, "Invalid params: 'id' is required"}
+  end
+
+  defp compute_result("tasks/cancel", _id, %{"id" => task_id}) when is_binary(task_id) do
+    case TaskManager.cancel(task_id) do
+      :ok -> {:result, %{id: task_id, status: "cancelled"}}
+      {:error, reason} -> {:error, -32_602, reason}
+    end
+  end
+
+  defp compute_result("tasks/cancel", _id, _params) do
+    {:error, -32_602, "Invalid params: 'id' is required"}
+  end
+
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
 
   defp compute_tool_call_result(%{"name" => name} = params, client)
@@ -261,7 +346,7 @@ defmodule Backplane.Transport.McpHandler do
           {:ok, result} ->
             maybe_log_skill_load(client, name, result)
             Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
-            {:result, %{content: [%{type: "text", text: format_result(result)}]}}
+            {:result, build_tool_call_result(name, result)}
 
           {:error, message} ->
             Backplane.PubSubBroadcaster.broadcast_tools_call(:failed, %{
@@ -279,18 +364,29 @@ defmodule Backplane.Transport.McpHandler do
 
   defp dispatch(conn, "initialize", id, params) do
     client_version = get_in(params || %{}, ["protocolVersion"])
-    negotiated = Backplane.MCP.Info.negotiate_version(client_version)
+    negotiated = Info.negotiate_version(client_version)
     session_id = generate_session_id()
 
-    result = %{initialize_result() | protocolVersion: negotiated}
+    # Store session state for version-aware responses
+    client_info = get_in(params || %{}, ["clientInfo"]) || %{}
+    client_capabilities = get_in(params || %{}, ["capabilities"]) || %{}
+    Session.create(session_id, negotiated, client_info, client_capabilities)
+
+    result = initialize_result(negotiated, params)
 
     conn
     |> put_resp_header("mcp-session-id", session_id)
     |> json_rpc_result(id, result)
   end
 
-  defp dispatch(conn, "tools/list", id, params) do
-    {:result, %{tools: tools}} = compute_result("tools/list", id, params)
+  defp dispatch(conn, "tools/list", id, _params) do
+    version = session_version(conn)
+
+    tools =
+      ToolRegistry.list_all()
+      |> Enum.reject(fn tool -> management_tool?(tool.name) end)
+      |> Enum.map(fn tool -> tool_to_json(tool, version) end)
+
     scopes = conn.assigns[:tool_scopes] || ["*"]
     filtered = Clients.filter_tools(tools, scopes)
     result = %{tools: filtered}
@@ -356,10 +452,7 @@ defmodule Backplane.Transport.McpHandler do
     case dispatch_tool_call(name, arguments) do
       {:ok, result} ->
         maybe_log_skill_load(conn, name, result)
-
-        json_rpc_result(conn, id, %{
-          content: [%{type: "text", text: format_result(result)}]
-        })
+        json_rpc_result(conn, id, build_tool_call_result(name, result))
 
       {:error, message} ->
         json_rpc_result(conn, id, %{
@@ -378,10 +471,7 @@ defmodule Backplane.Transport.McpHandler do
       case dispatch_tool_call(name, arguments) do
         {:ok, result} ->
           maybe_log_skill_load(conn, name, result)
-
-          SSE.send_event(conn, id, %{
-            content: [%{type: "text", text: format_result(result)}]
-          })
+          SSE.send_event(conn, id, build_tool_call_result(name, result))
 
         {:error, message} ->
           SSE.send_event(conn, id, %{
@@ -666,6 +756,89 @@ defmodule Backplane.Transport.McpHandler do
     :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
   end
 
+  # Version-aware tool serialization
+
+  defp tool_to_json(tool, version) do
+    base = %{name: tool.name, description: tool.description, inputSchema: tool.input_schema}
+
+    base =
+      if Info.version_gte?(version, "2025-03-26") && tool.annotations do
+        Map.put(base, :annotations, tool.annotations)
+      else
+        base
+      end
+
+    base =
+      if Info.version_gte?(version, "2025-06-18") && tool.output_schema do
+        Map.put(base, :outputSchema, tool.output_schema)
+      else
+        base
+      end
+
+    base =
+      if Info.version_gte?(version, "2025-11-25") && tool.icon do
+        Map.put(base, :icon, tool.icon)
+      else
+        base
+      end
+
+    base
+  end
+
+  # Build tool call result, preserving structuredContent from upstream results
+
+  defp build_tool_call_result(name, result) do
+    cond do
+      # Upstream result already has content array (passthrough)
+      is_map(result) && is_list(result["content"]) ->
+        base = %{content: result["content"]}
+        base = if result["structuredContent"], do: Map.put(base, :structuredContent, result["structuredContent"]), else: base
+        base = if result["isError"], do: Map.put(base, :isError, true), else: base
+        base
+
+      # Check if tool has output_schema — include structuredContent
+      true ->
+        tool = ToolRegistry.lookup(name)
+
+        base = %{content: [%{type: "text", text: format_result(result)}]}
+
+        if tool && tool.output_schema && is_map(result) do
+          Map.put(base, :structuredContent, result)
+        else
+          base
+        end
+    end
+  end
+
+  # Session version helpers
+
+  defp session_version(conn) do
+    case get_req_header(conn, "mcp-session-id") do
+      [session_id | _] -> Session.protocol_version(session_id)
+      [] -> Info.protocol_version()
+    end
+  end
+
+  defp session_version_from_params(_params) do
+    # In batch mode we don't have conn, use latest version
+    Info.protocol_version()
+  end
+
+  # Task formatting
+
+  defp format_task(task) do
+    %{
+      id: task.id,
+      status: to_string(task.status),
+      toolName: task.tool_name
+    }
+    |> maybe_put(:createdAt, task[:created_at])
+    |> maybe_put(:updatedAt, task[:updated_at])
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
   defp format_result(result) when is_binary(result), do: result
 
   defp format_result(result) do
@@ -704,3 +877,4 @@ defmodule Backplane.Transport.McpHandler do
     |> send_resp(200, body)
   end
 end
+

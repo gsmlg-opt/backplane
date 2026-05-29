@@ -47,6 +47,14 @@ defmodule Backplane.PubSubBroadcaster do
     )
   end
 
+  def broadcast_prompts_list_changed do
+    broadcast_mcp_notification("notifications/prompts/list_changed")
+  end
+
+  def broadcast_resources_list_changed do
+    broadcast_mcp_notification("notifications/resources/list_changed")
+  end
+
   def broadcast_tools_call(event, payload \\ %{}) do
     Phoenix.PubSub.broadcast(@pubsub, tools_call_topic(), {event, payload})
   end

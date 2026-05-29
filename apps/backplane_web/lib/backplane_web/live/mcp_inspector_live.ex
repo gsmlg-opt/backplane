@@ -400,7 +400,7 @@ defmodule BackplaneWeb.McpInspectorLive do
   defp handle_http_connect(socket) do
     request =
       jsonrpc_request("initialize", %{
-        "protocolVersion" => "2024-11-05",
+        "protocolVersion" => Backplane.MCP.Info.protocol_version(),
         "capabilities" => %{},
         "clientInfo" => %{"name" => "Backplane Inspector", "version" => "1.0.0"}
       })
@@ -606,7 +606,7 @@ defmodule BackplaneWeb.McpInspectorLive do
         # Send initialize request
         request =
           jsonrpc_request("initialize", %{
-            "protocolVersion" => "2024-11-05",
+            "protocolVersion" => Backplane.MCP.Info.protocol_version(),
             "capabilities" => %{},
             "clientInfo" => %{"name" => "Backplane Inspector", "version" => "1.0.0"}
           })

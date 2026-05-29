@@ -45,6 +45,9 @@ defmodule Backplane.Registry.ToolRegistry do
           name: namespaced,
           description: tool.description,
           input_schema: tool.input_schema,
+          output_schema: tool.output_schema,
+          annotations: tool.annotations,
+          icon: tool.icon,
           origin: {:upstream, prefix},
           upstream_pid: upstream_pid,
           original_name: tool.name,
@@ -69,6 +72,9 @@ defmodule Backplane.Registry.ToolRegistry do
           name: tool.name,
           description: tool.description,
           input_schema: tool.input_schema,
+          output_schema: Map.get(tool, :output_schema),
+          annotations: Map.get(tool, :annotations),
+          icon: Map.get(tool, :icon),
           origin: {:managed, prefix},
           handler: tool.handler
         }

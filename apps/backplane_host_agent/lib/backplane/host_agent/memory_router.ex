@@ -21,6 +21,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   alias Backplane.HostAgent.{McpManager, MemoryProxy}
 
+  @mcp_protocol_version "2025-11-25"
+  @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+
   plug(:match)
 
   plug(Plug.Parsers,
@@ -91,7 +94,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
       "initialize" ->
         client_version = params["protocolVersion"]
-        negotiated = Backplane.MCP.Info.negotiate_version(client_version)
+        negotiated = negotiate_version(client_version)
 
         send_json(
           conn,
@@ -239,4 +242,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_error(%{"reason" => reason}) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
+
+  defp negotiate_version(nil), do: @mcp_protocol_version
+  defp negotiate_version(v) when v in @supported_versions, do: v
+  defp negotiate_version(_), do: @mcp_protocol_version
 end

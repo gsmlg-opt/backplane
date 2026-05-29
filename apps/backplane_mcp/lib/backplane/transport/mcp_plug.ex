@@ -33,6 +33,11 @@ defmodule Backplane.Transport.McpPlug do
   end
 
   delete "/" do
+    case get_req_header(conn, "mcp-session-id") do
+      [session_id | _] -> Backplane.Transport.Session.delete(session_id)
+      [] -> :ok
+    end
+
     send_resp(conn, 200, "")
   end
 

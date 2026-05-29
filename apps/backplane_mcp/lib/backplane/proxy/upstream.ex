@@ -89,7 +89,9 @@ defmodule Backplane.Proxy.Upstream do
       reconnect_attempts: 0,
       pending_ping_id: nil,
       tool_timeout: config[:timeout] || @default_timeout,
-      refresh_interval: config[:refresh_interval]
+      refresh_interval: config[:refresh_interval],
+      upstream_version: nil,
+      upstream_capabilities: %{}
     }
 
     {:ok, state, {:continue, :connect}}
@@ -354,8 +356,17 @@ defmodule Backplane.Proxy.Upstream do
       })
 
     case http_request(state, request) do
-      {:ok, %{"result" => _result}} ->
-        {:ok, %{state | initialized: true}}
+      {:ok, %{"result" => result}} ->
+        upstream_version = result["protocolVersion"]
+        upstream_caps = result["capabilities"] || %{}
+
+        {:ok,
+         %{
+           state
+           | initialized: true,
+             upstream_version: upstream_version,
+             upstream_capabilities: upstream_caps
+         }}
 
       {:error, reason} ->
         {:error, reason, state}
@@ -386,8 +397,17 @@ defmodule Backplane.Proxy.Upstream do
         })
 
       case send_stdio_and_wait(state, request) do
-        {:ok, _result, state} ->
-          {:ok, %{state | initialized: true}}
+        {:ok, result, state} ->
+          upstream_version = result["protocolVersion"]
+          upstream_caps = result["capabilities"] || %{}
+
+          {:ok,
+           %{
+             state
+             | initialized: true,
+               upstream_version: upstream_version,
+               upstream_capabilities: upstream_caps
+           }}
 
         {:error, reason, state} ->
           {:error, reason, state}
@@ -444,6 +464,9 @@ defmodule Backplane.Proxy.Upstream do
           name: tool_name,
           description: raw["description"] || "",
           input_schema: raw["inputSchema"] || %{},
+          output_schema: raw["outputSchema"],
+          annotations: raw["annotations"],
+          icon: raw["icon"],
           origin: {:upstream, state.prefix},
           timeout: timeout
         }

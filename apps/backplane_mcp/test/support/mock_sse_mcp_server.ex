@@ -85,7 +85,7 @@ defmodule Backplane.Test.MockSseMcpServer do
           "jsonrpc" => "2.0",
           "id" => request["id"],
           "result" => %{
-            "protocolVersion" => "2024-11-05",
+            "protocolVersion" => Backplane.MCP.Info.protocol_version(),
             "serverInfo" => %{"name" => "mock-sse-legacy", "version" => "0.1.0"},
             "capabilities" => %{"tools" => %{"listChanged" => false}}
           }
