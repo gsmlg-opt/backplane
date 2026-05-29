@@ -85,7 +85,13 @@ defmodule BackplaneWeb.HostAgentChannelTest do
     assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
     ref = push(socket, "get_desired", %{})
-    assert_reply(ref, :ok, %{"schema_version" => 1, "skills" => []})
+    host_id = host.id
+    assert_reply(ref, :ok, %{
+      "schema_version" => 2,
+      "skills" => [],
+      "mcp_servers" => [],
+      "host" => %{"id" => ^host_id, "name" => "channel-host"}
+    })
   end
 
   test "sync_result replies ok and persists reported skill status", %{host: host, socket: socket} do

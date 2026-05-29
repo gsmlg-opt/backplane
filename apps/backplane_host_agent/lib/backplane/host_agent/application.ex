@@ -15,7 +15,7 @@ defmodule Backplane.HostAgent.Application do
 
   def child_specs do
     if Application.get_env(:backplane_host_agent, :start_on_application, true) do
-      [Backplane.HostAgent.Worker]
+      [Backplane.HostAgent.McpManager, Backplane.HostAgent.Worker]
     else
       []
     end

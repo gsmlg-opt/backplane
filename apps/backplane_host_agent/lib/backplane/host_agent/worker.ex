@@ -3,6 +3,8 @@ defmodule Backplane.HostAgent.Worker do
 
   use GenServer
 
+  require Logger
+
   alias Backplane.HostAgent.{
     Channel,
     Config,
@@ -10,6 +12,7 @@ defmodule Backplane.HostAgent.Worker do
     HttpServer,
     Installer,
     Manifest,
+    McpManager,
     MemoryProxy,
     Reconciler,
     Reporter
@@ -35,6 +38,11 @@ defmodule Backplane.HostAgent.Worker do
     with {:ok, _reply} <- push(channel_module, channel, "heartbeat", Reporter.heartbeat(config)),
          {:ok, desired_state} <- desired_state(state),
          {:ok, manifest} <- read_manifest(config) do
+      # Reconcile MCP servers
+      mcp_manager = Map.get(state, :mcp_manager_module, McpManager)
+      reconcile_mcp_servers(mcp_manager, desired_state)
+
+      # Reconcile skills
       desired = skills(desired_state)
       actions = Reconciler.plan(desired, manifest)
       results = execute_actions(actions, state)
@@ -268,6 +276,18 @@ defmodule Backplane.HostAgent.Worker do
   defp skills(%{"skills" => skills}) when is_list(skills), do: skills
   defp skills(%{skills: skills}) when is_list(skills), do: skills
   defp skills(_desired_state), do: []
+
+  defp mcp_servers(%{"mcp_servers" => servers}) when is_list(servers), do: servers
+  defp mcp_servers(%{mcp_servers: servers}) when is_list(servers), do: servers
+  defp mcp_servers(_desired_state), do: []
+
+  defp reconcile_mcp_servers(mcp_manager, desired_state) do
+    servers = mcp_servers(desired_state)
+    mcp_manager.reconcile(servers)
+  catch
+    kind, reason ->
+      Logger.warning("MCP server reconciliation failed: #{inspect(kind)} #{inspect(reason)}")
+  end
 
   defp status_for(:install), do: :installed
   defp status_for(:update), do: :updated

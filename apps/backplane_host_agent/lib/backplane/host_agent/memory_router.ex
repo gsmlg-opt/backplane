@@ -19,7 +19,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   use Plug.Router
 
-  alias Backplane.HostAgent.MemoryProxy
+  alias Backplane.HostAgent.{McpManager, MemoryProxy}
 
   plug(:match)
 
@@ -124,6 +124,52 @@ defmodule Backplane.HostAgent.MemoryRouter do
        when is_binary(name) and is_map(args) do
     method = strip_prefix(name)
 
+    # Try memory proxy first for memory:: tools, otherwise route to McpManager
+    if String.starts_with?(name, "memory::") do
+      call_memory_tool(conn, id, agent_id, method, args)
+    else
+      call_mcp_tool(conn, id, name, args)
+    end
+  end
+
+  defp tool_call(conn, id, _agent_id, _params) do
+    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
+  end
+
+  defp strip_prefix("memory::" <> rest), do: rest
+  defp strip_prefix(name), do: name
+
+  defp direct_call_args(
+         %{"jsonrpc" => "2.0", "method" => body_method, "params" => params} = body,
+         path_method
+       )
+       when is_binary(body_method) and is_map(params) do
+    if strip_prefix(body_method) == path_method do
+      params
+    else
+      body
+    end
+  end
+
+  defp direct_call_args(args, _method), do: args
+
+  defp tool_descriptors do
+    memory_tools =
+      Enum.map(MemoryProxy.methods(), fn method ->
+        %{"name" => "memory::#{method}", "description" => "Memory operation: #{method}"}
+      end)
+
+    mcp_tools =
+      try do
+        McpManager.list_tools()
+      catch
+        _, _ -> []
+      end
+
+    memory_tools ++ mcp_tools
+  end
+
+  defp call_memory_tool(conn, id, agent_id, method, args) do
     case MemoryProxy.call(method, args, agent_id: agent_id) do
       {:ok, result} ->
         send_json(
@@ -150,31 +196,28 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  defp tool_call(conn, id, _agent_id, _params) do
-    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
-  end
+  defp call_mcp_tool(conn, id, name, args) do
+    case McpManager.call_tool(name, args) do
+      {:ok, result} ->
+        send_json(
+          conn,
+          200,
+          jsonrpc_result(id, %{
+            "content" => [%{"type" => "text", "text" => Jason.encode!(result)}],
+            "isError" => false
+          })
+        )
 
-  defp strip_prefix("memory::" <> rest), do: rest
-  defp strip_prefix(name), do: name
-
-  defp direct_call_args(
-         %{"jsonrpc" => "2.0", "method" => body_method, "params" => params} = body,
-         path_method
-       )
-       when is_binary(body_method) and is_map(params) do
-    if strip_prefix(body_method) == path_method do
-      params
-    else
-      body
+      {:error, reason} ->
+        send_json(
+          conn,
+          200,
+          jsonrpc_result(id, %{
+            "content" => [%{"type" => "text", "text" => format_error(reason)}],
+            "isError" => true
+          })
+        )
     end
-  end
-
-  defp direct_call_args(args, _method), do: args
-
-  defp tool_descriptors do
-    Enum.map(MemoryProxy.methods(), fn method ->
-      %{"name" => "memory::#{method}", "description" => "Memory operation: #{method}"}
-    end)
   end
 
   defp jsonrpc_result(id, result), do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}

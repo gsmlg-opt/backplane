@@ -24,6 +24,6 @@ defmodule Backplane.HostAgent.ApplicationTest do
   test "supervises the worker when application autostart is enabled" do
     Application.put_env(:backplane_host_agent, :start_on_application, true)
 
-    assert HostAgentApplication.child_specs() == [Backplane.HostAgent.Worker]
+    assert HostAgentApplication.child_specs() == [Backplane.HostAgent.McpManager, Backplane.HostAgent.Worker]
   end
 end
