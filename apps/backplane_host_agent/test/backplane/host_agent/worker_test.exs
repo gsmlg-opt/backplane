@@ -5,12 +5,21 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defmodule FakeChannel do
     def push(_channel, event, payload) do
-      send(self(), {:push, event, payload})
+      owner = Process.get(:test_owner) || :persistent_term.get({__MODULE__, :owner}, self())
+      send(owner, {:push, event, payload})
 
       case Process.get({__MODULE__, event}) do
         nil -> {:ok, %{"ok" => true}}
         reply -> reply
       end
+    end
+  end
+
+  defmodule FakeMcpManager do
+    def reconcile(servers) do
+      owner = Process.get(:test_owner) || :persistent_term.get({__MODULE__, :owner}, self())
+      send(owner, {:reconcile_mcp_servers, servers})
+      :ok
     end
   end
 
@@ -79,7 +88,8 @@ defmodule Backplane.HostAgent.WorkerTest do
         config_module: FakeRuntimeConfig,
         connector_module: FakeConnector,
         http_server_module: FakeHttpServer,
-        memory_proxy_module: FakeMemoryProxy
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
       )
 
     assert_receive {:connect, %{machine_name: "t430", token: "host-token"}}
@@ -87,6 +97,39 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert %{channel: ^pid, config: %{machine_name: "t430"}, last_error: nil} =
              GenServer.call(pid, :status)
+  end
+
+  @tag :tmp_dir
+  test "schedules an immediate sync after startup", %{tmp_dir: tmp_dir} do
+    config = config(tmp_dir)
+    :persistent_term.put({FakeChannel, :owner}, self())
+    :persistent_term.put({FakeMcpManager, :owner}, self())
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeChannel, :owner})
+      :persistent_term.erase({FakeMcpManager, :owner})
+    end)
+
+    {:ok, pid} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        channel: self(),
+        channel_module: FakeChannel,
+        config: Map.put(config, :interval_ms, 60_000),
+        desired: %{"skills" => []},
+        installer_module: FakeInstaller,
+        mcp_manager_module: FakeMcpManager
+      )
+
+    assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
+    assert_receive {:reconcile_mcp_servers, []}
+    assert_receive {:push, "sync_result", %{"status" => "synced", "results" => []}}
+
+    assert %{last_sync: %DateTime{}, last_error: nil, sync_timer_ref: timer_ref} =
+             GenServer.call(pid, :status)
+
+    assert is_reference(timer_ref)
   end
 
   @tag :tmp_dir
@@ -363,7 +406,8 @@ defmodule Backplane.HostAgent.WorkerTest do
       desired: Keyword.get(opts, :desired),
       installer_module: FakeInstaller,
       last_error: nil,
-      last_sync: nil
+      last_sync: nil,
+      mcp_manager_module: FakeMcpManager
     }
   end
 

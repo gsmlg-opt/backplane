@@ -67,8 +67,11 @@ defmodule Backplane.HostAgent.Worker do
   @impl true
   def init(opts) do
     case initial_state(opts) do
-      {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:stop, reason}
+      {:ok, state} ->
+        {:ok, maybe_schedule_initial_sync(state)}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
@@ -87,8 +90,8 @@ defmodule Backplane.HostAgent.Worker do
   @impl true
   def handle_info(:sync, state) do
     case run_once(state) do
-      {:ok, updated_state} -> {:noreply, updated_state}
-      {:error, _reason, updated_state} -> {:noreply, updated_state}
+      {:ok, updated_state} -> {:noreply, schedule_next_sync(updated_state)}
+      {:error, _reason, updated_state} -> {:noreply, schedule_next_sync(updated_state)}
     end
   end
 
@@ -152,9 +155,36 @@ defmodule Backplane.HostAgent.Worker do
       desired: Keyword.get(opts, :desired),
       http_supervisor: Keyword.get(opts, :http_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
+      mcp_manager_module: Keyword.get(opts, :mcp_manager_module, McpManager),
       last_sync: nil,
-      last_error: nil
+      last_error: nil,
+      sync_on_start?: Keyword.get(opts, :sync_on_start?, true),
+      sync_timer_ref: nil
     }
+  end
+
+  defp maybe_schedule_initial_sync(
+         %{sync_on_start?: true, channel: channel, config: config} = state
+       )
+       when not is_nil(channel) and not is_nil(config) do
+    schedule_sync(state, 0)
+  end
+
+  defp maybe_schedule_initial_sync(state), do: state
+
+  defp schedule_next_sync(state) do
+    schedule_sync(state, sync_interval_ms(state.config))
+  end
+
+  defp schedule_sync(state, interval_ms) do
+    %{state | sync_timer_ref: Process.send_after(self(), :sync, interval_ms)}
+  end
+
+  defp sync_interval_ms(config) do
+    case Map.get(config, :interval_ms, 60_000) do
+      interval_ms when is_integer(interval_ms) and interval_ms > 0 -> interval_ms
+      _ -> 60_000
+    end
   end
 
   defp set_memory_connection(memory_proxy_module, connection, config) do
