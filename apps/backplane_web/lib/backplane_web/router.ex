@@ -67,6 +67,7 @@ defmodule BackplaneWeb.Router do
     live("/llama/providers", ProvidersLive, :index)
     live("/llama/providers/new", ProviderNewLive, :new)
     live("/llama/providers/:id", ProviderShowLive, :show)
+    live("/llama/embedding", EmbeddingLive, :index)
     live("/llama/model-aliases", SettingsLive, :model_aliases)
 
     # MCP

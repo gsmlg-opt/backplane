@@ -31,6 +31,7 @@ defmodule BackplaneWeb.Layouts do
       :llama ->
         [
           %{label: "Providers", path: "/admin/llama/providers", icon: "cloud"},
+          %{label: "Embedding", path: "/admin/llama/embedding", icon: "vector-point"},
           %{label: "Model Alias", path: "/admin/llama/model-aliases", icon: "tune-vertical"}
         ]
 
