@@ -1,10 +1,13 @@
 defmodule Backplane.Skills.AssignmentsTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
   alias Backplane.Repo
-  alias Backplane.Skills.{Assignments, Hosts, Skill}
+  alias Backplane.Skills.{AgentManage, Assignments, Hosts, Skill}
 
   setup do
+    AgentManage.clear()
+    on_exit(fn -> AgentManage.clear() end)
+
     {:ok, host} = Hosts.create_agent(%{"name" => "t430"})
 
     skill =

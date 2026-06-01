@@ -28,9 +28,9 @@ defmodule BackplaneWeb.HostAgentSyncE2ETest do
     assert %{
              slug: "sync-review",
              targets: ["agents", "commands"],
-             download_url: download_url
+             bundle: %{transport: "websocket", event: "get_skill_bundle"}
            } = desired_skill
 
-    assert download_url == "/api/host-agent/skills/sync-review/download"
+    refute Map.has_key?(desired_skill, :download_url)
   end
 end

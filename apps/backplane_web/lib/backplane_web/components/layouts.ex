@@ -91,28 +91,9 @@ defmodule BackplaneWeb.Layouts do
             ]
           },
           %{
-            label: "Host Agent Management",
-            icon: "server",
-            items: [
-              %{
-                label: "Agent Live",
-                path: "/admin/system/host-agents",
-                match: :host_agents,
-                icon: "cloud"
-              },
-              %{
-                label: "Agent Management",
-                path: "/admin/system/host-agents/manage",
-                match: :exact,
-                icon: "tune-vertical"
-              },
-              %{
-                label: "Agent Auth",
-                path: "/admin/system/host-agents/auth",
-                match: :exact,
-                icon: "key-variant"
-              }
-            ]
+            label: "Host Agents",
+            path: "/admin/system/host-agents",
+            icon: "server"
           }
         ]
     end
@@ -135,13 +116,6 @@ defmodule BackplaneWeb.Layouts do
 
   def active_left_nav?(current_path, %{path: path, match: :exact}) do
     current_path == path
-  end
-
-  def active_left_nav?(current_path, %{path: path, match: :host_agents}) do
-    current_path == path or
-      (String.starts_with?(current_path, path <> "/") and
-         current_path != "/admin/system/host-agents/manage" and
-         current_path != "/admin/system/host-agents/auth")
   end
 
   def active_left_nav?(current_path, %{path: path}) do

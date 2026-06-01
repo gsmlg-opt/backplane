@@ -1,18 +1,32 @@
 defmodule BackplaneWeb.HostAgentChannelTest do
   use Backplane.ChannelCase, async: false
 
+  import Backplane.SkillArchiveCase
+
   alias Backplane.Repo
-  alias Backplane.Skills.{HostConnectionRegistry, HostStatus, Hosts}
+  alias Backplane.Skills
+  alias Backplane.Skills.{AgentManage, Assignments, HostStatus, Hosts}
   alias BackplaneWeb.HostAgentSocket
 
-  setup do
-    HostConnectionRegistry.clear()
-    on_exit(fn -> HostConnectionRegistry.clear() end)
+  @moduletag :tmp_dir
+  @blob_setting "skills.blob.local_root"
+
+  setup %{tmp_dir: tmp_dir} do
+    previous_blob_root = Backplane.Settings.get(@blob_setting)
+    blob_root = Path.join(tmp_dir, "blobs")
+
+    :ets.insert(:backplane_settings, {@blob_setting, blob_root})
+    AgentManage.clear()
+
+    on_exit(fn ->
+      :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
+      AgentManage.clear()
+    end)
 
     {host, _auth_token, token} = create_agent_with_token!("channel-host")
 
     assert {:ok, socket} =
-             connect(HostAgentSocket, %{},
+             connect(HostAgentSocket, %{"host_id" => host.id},
                connect_info: %{
                  x_headers: [{"x-backplane-host-token", token}]
                }
@@ -23,7 +37,7 @@ defmodule BackplaneWeb.HostAgentChannelTest do
 
   test "joins only its own host topic", %{host: host, socket: socket} do
     assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
-    assert %{host: connected_host} = HostConnectionRegistry.get(host.id)
+    assert {:ok, %{host: connected_host}} = AgentManage.get_agent(host.id)
     assert connected_host.id == host.id
 
     assert {:error, %{reason: "unauthorized"}} =
@@ -42,7 +56,7 @@ defmodule BackplaneWeb.HostAgentChannelTest do
 
     assert_reply(ref, :ok, %{"ok" => true})
 
-    assert %{runtime: runtime} = HostConnectionRegistry.get(host.id)
+    assert {:ok, %{runtime: runtime}} = AgentManage.get_agent(host.id)
     assert runtime.status == "syncing"
     assert runtime.agent_version == "0.3.0"
     assert runtime.targets == [%{"name" => "agents"}]
@@ -67,7 +81,7 @@ defmodule BackplaneWeb.HostAgentChannelTest do
 
     assert_reply(ref, :ok, %{"ok" => true})
 
-    assert %{config: config} = HostConnectionRegistry.get(host.id)
+    assert {:ok, %{config: config}} = AgentManage.get_agent(host.id)
     assert config["agent"]["machine_name"] == "channel-host"
   end
 
@@ -86,12 +100,48 @@ defmodule BackplaneWeb.HostAgentChannelTest do
 
     ref = push(socket, "get_desired", %{})
     host_id = host.id
+
     assert_reply(ref, :ok, %{
       "schema_version" => 2,
       "skills" => [],
       "mcp_servers" => [],
       "host" => %{"id" => ^host_id, "name" => "channel-host"}
     })
+  end
+
+  test "get_skill_bundle returns an assigned archive chunk", %{
+    host: host,
+    socket: socket,
+    tmp_dir: tmp_dir
+  } do
+    archive_path =
+      create_archive!(
+        tmp_dir,
+        [
+          {"repo-review/SKILL.md", skill_md(name: "Repo Review")},
+          {"repo-review/meta.json", Jason.encode!(%{"slug" => "repo-review"})}
+        ],
+        name: "repo-review.tar.gz"
+      )
+
+    assert {:ok, skill} = Skills.ingest_archive(archive_path, [])
+    assert {:ok, _assignment} = Assignments.assign_skill(host, skill, %{"targets" => ["agents"]})
+    assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+    ref =
+      push(socket, "get_skill_bundle", %{
+        "slug" => "repo-review",
+        "chunk_index" => 0,
+        "chunk_size" => 8
+      })
+
+    assert_reply(ref, :ok, %{"ok" => true, "result" => chunk})
+    assert chunk["slug"] == "repo-review"
+    assert chunk["chunk_index"] == 0
+    assert chunk["chunk_count"] > 1
+    assert chunk["chunk_size"] == 8
+    assert chunk["encoding"] == "base64"
+    assert Base.decode64!(chunk["data"]) == binary_part(File.read!(archive_path), 0, 8)
   end
 
   test "sync_result replies ok and persists reported skill status", %{host: host, socket: socket} do
@@ -252,11 +302,7 @@ defmodule BackplaneWeb.HostAgentChannelTest do
   end
 
   defp create_agent_with_token!(name) do
-    assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "#{name} token"})
-
-    assert {:ok, host} =
-             Hosts.create_agent(%{"name" => name, "auth_token_ids" => [auth_token.id]})
-
+    assert {:ok, host, auth_token, token} = Hosts.create_agent_with_token(%{"name" => name})
     {host, auth_token, token}
   end
 end

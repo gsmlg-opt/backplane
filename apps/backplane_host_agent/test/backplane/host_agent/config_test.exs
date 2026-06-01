@@ -13,6 +13,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     agent:
       machine_name: t430
       hub_url: http://localhost:4220
+      host_id: host-123
       token: secret-token
       interval_ms: 15000
       manifest_path: #{manifest_path}
@@ -26,7 +27,8 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert {:ok, config} = Config.load(config_path)
     assert config.machine_name == "t430"
-    assert config.socket_url == "ws://localhost:4220/host-agent/socket/websocket"
+    assert config.host_id == "host-123"
+    assert config.socket_url == "ws://localhost:4220/host-agent/socket/websocket?host_id=host-123"
     assert config.interval_ms == 15_000
 
     assert [
@@ -47,6 +49,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     agent:
       machine_name: t430
       hub_url: http://localhost:4220
+      host_id: host-123
       token: secret-token
       manifest_path: #{Path.join(tmp_dir, "manifest.json")}
       work_dir: #{Path.join(tmp_dir, "work")}
@@ -69,6 +72,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     agent:
       machine_name: t430
       hub_url: http://localhost:4220
+      host_id: host-123
       token: secret-token
       manifest_path: #{Path.join(tmp_dir, "manifest.json")}
       work_dir: #{Path.join(tmp_dir, "work")}
@@ -83,6 +87,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     sample = Config.sample_yaml(machine_name: "t430")
 
     assert sample =~ "http_bind: 127.0.0.1"
+    assert sample =~ "host_id: REPLACE_WITH_AGENT_ID"
     assert sample =~ "\n  http_port: 4221\n"
     refute sample =~ "# http_port"
   end
@@ -95,13 +100,14 @@ defmodule Backplane.HostAgent.ConfigTest do
     agent:
       machine_name: t430
       hub_url: https://example.test/
+      host_id: host-123
       token: secret-token
       manifest_path: #{Path.join(tmp_dir, "manifest.json")}
       work_dir: #{Path.join(tmp_dir, "work")}
     """)
 
     assert {:ok, config} = Config.load(config_path)
-    assert config.socket_url == "wss://example.test/host-agent/socket/websocket"
+    assert config.socket_url == "wss://example.test/host-agent/socket/websocket?host_id=host-123"
   end
 
   test "default_path uses XDG_CONFIG_HOME when set" do

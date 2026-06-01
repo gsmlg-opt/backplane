@@ -8,11 +8,12 @@ defmodule BackplaneWeb.AgentMcpLive do
   use BackplaneWeb, :live_view
 
   alias Backplane.Registry.ToolRegistry
-  alias Backplane.Skills.{AgentMcpServer, AgentMcpServers, HostConnectionRegistry, Hosts}
+  alias Backplane.Skills.{AgentManage, AgentMcpServer, AgentMcpServers, Hosts}
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
-      HostConnectionRegistry.subscribe()
+      AgentManage.subscribe()
       AgentMcpServers.subscribe()
     end
 
@@ -66,7 +67,7 @@ defmodule BackplaneWeb.AgentMcpLive do
   # ── PubSub ──────────────────────────────────────────────────────────────────
 
   @impl true
-  def handle_info(:connections_changed, socket) do
+  def handle_info(:agents_changed, socket) do
     {:noreply, assign(socket, connections: load_connections())}
   end
 
@@ -160,7 +161,7 @@ defmodule BackplaneWeb.AgentMcpLive do
   end
 
   defp load_connections do
-    safe_call(fn -> HostConnectionRegistry.list_connected() end, [])
+    safe_call(fn -> AgentManage.list_connected() end, [])
   end
 
   defp load_hosts do
@@ -541,7 +542,7 @@ defmodule BackplaneWeb.AgentMcpLive do
                     </span>
                   </td>
                   <td class="px-3 py-1.5 align-middle text-right">
-                    <.link navigate={~p"/admin/system/host-agents/#{conn.host.id}/config"}>
+                    <.link navigate={~p"/admin/system/host-agents/#{conn.host.id}"}>
                       <.dm_btn size="xs" variant="outline">Config</.dm_btn>
                     </.link>
                   </td>

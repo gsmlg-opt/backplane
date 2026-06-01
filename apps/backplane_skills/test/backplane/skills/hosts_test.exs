@@ -1,7 +1,12 @@
 defmodule Backplane.Skills.HostsTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
-  alias Backplane.Skills.Hosts
+  alias Backplane.Skills.{AgentManage, Hosts}
+
+  setup do
+    AgentManage.clear()
+    on_exit(fn -> AgentManage.clear() end)
+  end
 
   describe "agent auth tokens" do
     test "creates auth tokens without creating agents" do
@@ -10,6 +15,7 @@ defmodule Backplane.Skills.HostsTest do
       assert String.starts_with?(token, "bha_")
       refute token == auth_token.token_hash
       assert Bcrypt.verify_pass(token, auth_token.token_hash)
+      assert {:ok, ^token} = Hosts.reveal_auth_token(auth_token)
       assert Hosts.list_hosts() == []
       assert Enum.map(Hosts.list_auth_tokens(), & &1.name) == ["workstations"]
       assert :error = Hosts.verify_token(token)
@@ -113,7 +119,7 @@ defmodule Backplane.Skills.HostsTest do
       assert {"is already assigned", _} = changeset.errors[:auth_token_ids]
     end
 
-    test "deleting an agent leaves tokens unassigned" do
+    test "deleting an agent revokes assigned tokens" do
       assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "workstations"})
 
       assert {:ok, host} =
@@ -122,9 +128,9 @@ defmodule Backplane.Skills.HostsTest do
       assert {:ok, _host} = Hosts.delete_agent(host)
 
       refute Hosts.get_host(host.id)
-      assert %{} = Hosts.get_auth_token(auth_token.id)
+      refute Hosts.get_auth_token(auth_token.id)
       assert :error = Hosts.verify_token(token)
-      assert [%{assigned_host: nil}] = Hosts.list_auth_tokens_with_assignments()
+      assert [] = Hosts.list_auth_tokens_with_assignments()
     end
 
     test "rejects an invalid token" do

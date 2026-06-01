@@ -7,7 +7,8 @@ defmodule Backplane.Skills.Hosts do
   import Ecto.Query
 
   alias Backplane.Repo
-  alias Backplane.Skills.{Host, HostAgentToken, HostAuthToken, HostConnectionRegistry}
+  alias Backplane.Settings.Encryption
+  alias Backplane.Skills.{AgentManage, Host, HostAgentToken, HostAuthToken}
 
   @token_prefix "bha_"
 
@@ -63,9 +64,49 @@ defmodule Backplane.Skills.Hosts do
   def create_auth_token(attrs) when is_map(attrs) do
     token = generate_token()
 
-    case insert_auth_token(attrs, Bcrypt.hash_pwd_salt(token)) do
+    case insert_auth_token(attrs, token) do
       {:ok, auth_token} -> {:ok, auth_token, token}
       {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc "Create a revealable auth token and assign it to a host agent."
+  @spec create_auth_token_for_agent(Host.t(), map()) ::
+          {:ok, HostAuthToken.t(), String.t()} | {:error, Ecto.Changeset.t()}
+  def create_auth_token_for_agent(%Host{} = host, attrs) when is_map(attrs) do
+    token = generate_token()
+
+    result =
+      Repo.transaction(fn ->
+        with {:ok, auth_token} <- insert_auth_token(attrs, token),
+             :ok <- replace_auth_tokens(host, auth_token_ids_for_host(host) ++ [auth_token.id]) do
+          auth_token
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, auth_token} ->
+        refresh_agent_manager(host.id)
+        {:ok, auth_token, token}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc "Reveal the plaintext value for a stored host-agent auth token."
+  @spec reveal_auth_token(HostAuthToken.t() | Ecto.UUID.t()) ::
+          {:ok, String.t()} | {:error, :not_found | :decryption_failed}
+  def reveal_auth_token(%HostAuthToken{encrypted_token: encrypted}) do
+    Encryption.decrypt(encrypted)
+  end
+
+  def reveal_auth_token(id) when is_binary(id) do
+    case get_auth_token(id) do
+      nil -> {:error, :not_found}
+      auth_token -> reveal_auth_token(auth_token)
     end
   end
 
@@ -84,6 +125,41 @@ defmodule Backplane.Skills.Hosts do
     end
   end
 
+  @doc "Unassign and delete one token from a specific host agent."
+  @spec revoke_auth_token_for_agent(Host.t(), Ecto.UUID.t()) ::
+          {:ok, HostAuthToken.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def revoke_auth_token_for_agent(%Host{} = host, auth_token_id) when is_binary(auth_token_id) do
+    case Repo.get(HostAuthToken, auth_token_id) do
+      nil ->
+        {:error, :not_found}
+
+      auth_token ->
+        result =
+          Repo.transaction(fn ->
+            HostAgentToken
+            |> where(
+              [agent_token],
+              agent_token.host_id == ^host.id and agent_token.auth_token_id == ^auth_token.id
+            )
+            |> Repo.delete_all()
+
+            case Repo.delete(auth_token) do
+              {:ok, deleted} -> deleted
+              {:error, changeset} -> Repo.rollback(changeset)
+            end
+          end)
+
+        case result do
+          {:ok, deleted} ->
+            refresh_agent_manager(host.id)
+            {:ok, deleted}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+    end
+  end
+
   @doc "Create a durable host agent identity."
   @spec create_agent(map()) :: {:ok, Host.t()} | {:error, Ecto.Changeset.t()}
   def create_agent(attrs) when is_map(attrs) do
@@ -91,14 +167,54 @@ defmodule Backplane.Skills.Hosts do
     auth_token_ids = normalize_auth_token_ids(attrs["auth_token_ids"])
     host_attrs = Map.delete(attrs, "auth_token_ids")
 
-    Repo.transaction(fn ->
-      with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
-           :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs) do
-        host
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
+    result =
+      Repo.transaction(fn ->
+        with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
+             :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs) do
+          host
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, host} ->
+        ensure_agent_manager(host)
+        {:ok, host}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Create a durable host agent with one immediately assigned revealable token."
+  @spec create_agent_with_token(map()) ::
+          {:ok, Host.t(), HostAuthToken.t(), String.t()} | {:error, Ecto.Changeset.t()}
+  def create_agent_with_token(attrs) when is_map(attrs) do
+    attrs = normalize_agent_attrs(attrs)
+    token_name = Map.get(attrs, "token_name", "#{attrs["name"]} token")
+    host_attrs = Map.drop(attrs, ["auth_token_ids", "token_name"])
+    plaintext = generate_token()
+
+    result =
+      Repo.transaction(fn ->
+        with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
+             {:ok, auth_token} <- insert_auth_token(%{"name" => token_name}, plaintext),
+             :ok <- replace_auth_tokens(host, [auth_token.id]) do
+          {host, auth_token}
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, {host, auth_token}} ->
+        ensure_agent_manager(host)
+        {:ok, host, auth_token, plaintext}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
   end
 
   @doc "Update a durable host agent identity and token assignments."
@@ -115,21 +231,49 @@ defmodule Backplane.Skills.Hosts do
 
     host_attrs = Map.delete(attrs, "auth_token_ids")
 
+    result =
+      Repo.transaction(fn ->
+        with {:ok, updated_host} <- host |> Host.changeset(host_attrs) |> Repo.update(),
+             :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs) do
+          updated_host
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, updated_host} ->
+        refresh_agent_manager(updated_host.id)
+        {:ok, updated_host}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Delete a host agent and revoke its assigned auth tokens."
+  @spec delete_agent(Host.t()) :: {:ok, Host.t()} | {:error, Ecto.Changeset.t()}
+  def delete_agent(%Host{} = host) do
+    AgentManage.stop_agent(host.id)
+
     Repo.transaction(fn ->
-      with {:ok, updated_host} <- host |> Host.changeset(host_attrs) |> Repo.update(),
-           :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs) do
-        updated_host
-      else
+      auth_token_ids = auth_token_ids_for_host(host)
+
+      HostAgentToken
+      |> where([agent_token], agent_token.host_id == ^host.id)
+      |> Repo.delete_all()
+
+      if auth_token_ids != [] do
+        HostAuthToken
+        |> where([auth_token], auth_token.id in ^auth_token_ids)
+        |> Repo.delete_all()
+      end
+
+      case Repo.delete(host) do
+        {:ok, deleted} -> deleted
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
-  end
-
-  @doc "Delete a host agent and leave its auth tokens unassigned."
-  @spec delete_agent(Host.t()) :: {:ok, Host.t()} | {:error, Ecto.Changeset.t()}
-  def delete_agent(%Host{} = host) do
-    disconnect_if_running(host.id)
-    Repo.delete(host)
   end
 
   @doc "List assigned auth token IDs for a host."
@@ -250,12 +394,13 @@ defmodule Backplane.Skills.Hosts do
     |> add_error(:auth_token_ids, message)
   end
 
-  defp insert_auth_token(attrs, token_hash) do
+  defp insert_auth_token(attrs, plaintext) do
     attrs =
       attrs
       |> stringify_keys()
       |> normalize_auth_token_params()
-      |> Map.put("token_hash", token_hash)
+      |> Map.put("token_hash", Bcrypt.hash_pwd_salt(plaintext))
+      |> Map.put("encrypted_token", Encryption.encrypt(plaintext))
 
     %HostAuthToken{}
     |> HostAuthToken.changeset(attrs)
@@ -296,9 +441,17 @@ defmodule Backplane.Skills.Hosts do
   defp stringify_keys(values) when is_list(values), do: Enum.map(values, &stringify_keys/1)
   defp stringify_keys(value), do: value
 
-  defp disconnect_if_running(host_id) do
-    if Process.whereis(HostConnectionRegistry) do
-      HostConnectionRegistry.disconnect(host_id)
+  defp ensure_agent_manager(%Host{} = host) do
+    case AgentManage.ensure_agent(host) do
+      {:ok, _pid} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp refresh_agent_manager(host_id) do
+    case AgentManage.refresh_tokens(host_id) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
     end
   end
 end

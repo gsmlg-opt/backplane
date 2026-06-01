@@ -46,7 +46,7 @@ defmodule Backplane.Skills.DesiredState do
       checksum: skill.content_hash,
       targets: assignment.targets,
       enabled: assignment.enabled,
-      download_url: "/api/host-agent/skills/#{URI.encode_www_form(skill.slug)}/download"
+      bundle: %{transport: "websocket", event: "get_skill_bundle"}
     }
   end
 

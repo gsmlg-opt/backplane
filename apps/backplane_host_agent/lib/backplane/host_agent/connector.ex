@@ -2,14 +2,12 @@ defmodule Backplane.HostAgent.Connector do
   @moduledoc """
   Establishes a connection from a host agent to a Backplane hub.
 
-  Wraps the three-step bootstrap: HTTP whoami → WebSocket connect → channel join.
+  Wraps the bootstrap: WebSocket connect with host_id → channel join.
   Returns the socket pid, channel pid, and resolved host metadata so a worker
   can be started with a ready-to-use channel.
   """
 
   alias Backplane.HostAgent.Channel
-
-  @whoami_path "/api/host-agent/whoami"
 
   @type result :: %{
           host_id: String.t(),
@@ -23,14 +21,14 @@ defmodule Backplane.HostAgent.Connector do
   """
   @spec connect(map()) :: {:ok, result()} | {:error, term()}
   def connect(config) do
-    with {:ok, host} <- fetch_whoami(config),
+    with {:ok, host_id} <- host_id(config),
          {:ok, socket} <- Channel.start_socket(config),
          :ok <- wait_for_socket(socket),
-         {:ok, channel} <- join_channel(socket, host["id"]) do
+         {:ok, channel} <- join_channel(socket, host_id) do
       {:ok,
        %{
-         host_id: host["id"],
-         host_name: host["name"],
+         host_id: host_id,
+         host_name: Map.get(config, :machine_name),
          socket: socket,
          channel: channel
        }}
@@ -45,31 +43,13 @@ defmodule Backplane.HostAgent.Connector do
     end
   end
 
-  defp fetch_whoami(config) do
-    hub_url = Map.fetch!(config, :hub_url)
-    token = Map.fetch!(config, :token)
-    url = hub_url <> @whoami_path
+  defp host_id(config) do
+    case Map.get(config, :host_id) do
+      host_id when is_binary(host_id) and host_id != "" and host_id != "REPLACE_WITH_AGENT_ID" ->
+        {:ok, host_id}
 
-    headers = [{"x-backplane-host-token", token}, {"accept", "application/json"}]
-
-    case Req.get(url, headers: headers, receive_timeout: 10_000) do
-      {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
-        {:ok, body}
-
-      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
-        case Jason.decode(body) do
-          {:ok, decoded} -> {:ok, decoded}
-          {:error, reason} -> {:error, {:whoami_decode, reason}}
-        end
-
-      {:ok, %Req.Response{status: 401}} ->
-        {:error, :unauthorized}
-
-      {:ok, %Req.Response{status: status}} ->
-        {:error, {:whoami_status, status}}
-
-      {:error, reason} ->
-        {:error, {:whoami_transport, reason}}
+      _ ->
+        {:error, {:missing_required_config, [:host_id]}}
     end
   end
 

@@ -15,6 +15,14 @@ defmodule Backplane.HostAgent.WorkerTest do
     end
   end
 
+  defmodule ExitingChannel do
+    def push(_channel, event, payload) do
+      owner = Process.get(:test_owner) || :persistent_term.get({__MODULE__, :owner}, self())
+      send(owner, {:push, event, payload})
+      exit(:shutdown)
+    end
+  end
+
   defmodule FakeMcpManager do
     def reconcile(servers) do
       owner = Process.get(:test_owner) || :persistent_term.get({__MODULE__, :owner}, self())
@@ -39,6 +47,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     def load_default do
       {:ok,
        %{
+         host_id: "host-1",
          hub_url: "http://localhost:4220",
          machine_name: "t430",
          manifest_path: "/tmp/manifest.json",
@@ -92,7 +101,7 @@ defmodule Backplane.HostAgent.WorkerTest do
         sync_on_start?: false
       )
 
-    assert_receive {:connect, %{machine_name: "t430", token: "host-token"}}
+    assert_receive {:connect, %{host_id: "host-1", machine_name: "t430", token: "host-token"}}
     assert_receive {:set_channel, ^pid}
 
     assert %{channel: ^pid, config: %{machine_name: "t430"}, last_error: nil} =
@@ -156,8 +165,9 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
     refute_received {:push, "get_desired", %{}}
 
-    assert_receive {:install, desired_skill, ^config}
+    assert_receive {:install, desired_skill, install_config}
     assert desired_skill["slug"] == "repo-review"
+    assert_install_config(install_config, config)
 
     assert_receive {:push, "sync_result", %{"status" => "synced", "results" => [result]}}
 
@@ -211,8 +221,9 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
     assert_receive {:push, "get_desired", %{}}
-    assert_receive {:install, desired_skill, ^config}
+    assert_receive {:install, desired_skill, install_config}
     assert desired_skill["slug"] == "repo-review"
+    assert_install_config(install_config, config)
     assert_receive {:push, "sync_result", %{"status" => "synced"}}
   end
 
@@ -235,11 +246,23 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert {:error, :socket_down, updated} = Worker.run_once(state(config, desired: desired))
     assert updated.last_error == :socket_down
 
-    assert_receive {:install, _desired_skill, ^config}
+    assert_receive {:install, _desired_skill, install_config}
+    assert_install_config(install_config, config)
     assert_receive {:push, "sync_result", %{"status" => "synced"}}
 
     assert {:ok, manifest} = Manifest.read(config.manifest_path, config.machine_name)
     assert manifest.skills == []
+  end
+
+  @tag :tmp_dir
+  test "run_once records channel exits instead of crashing", %{tmp_dir: tmp_dir} do
+    config = config(tmp_dir)
+
+    assert {:error, {:channel_exit, :shutdown}, updated} =
+             Worker.run_once(%{state(config) | channel_module: ExitingChannel})
+
+    assert updated.last_error == {:channel_exit, :shutdown}
+    assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
   end
 
   @tag :tmp_dir
@@ -413,6 +436,7 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defp config(tmp_dir) do
     %{
+      host_id: "host-1",
       machine_name: "t430",
       manifest_path: Path.join(tmp_dir, "manifest.json"),
       targets: [%{name: "agents", runtime: "agent-skills", path: tmp_dir, enabled: true}]
@@ -421,5 +445,13 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defp write_manifest(path, skills) do
     File.write!(path, Jason.encode!(%{schema_version: 1, machine_name: "t430", skills: skills}))
+  end
+
+  defp assert_install_config(install_config, config) do
+    assert install_config.machine_name == config.machine_name
+    assert install_config.manifest_path == config.manifest_path
+    assert install_config.targets == config.targets
+    assert install_config.channel == self()
+    assert install_config.channel_module == FakeChannel
   end
 end

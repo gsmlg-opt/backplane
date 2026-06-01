@@ -117,9 +117,7 @@ defmodule BackplaneWeb.Router do
     live("/system/credentials/new/:vendor", SettingsLive, :credentials_new_oauth)
     live("/system/credentials/:name/edit", SettingsLive, :credentials_edit)
     live("/system/host-agents", HostAgentsLive, :index)
-    live("/system/host-agents/manage", HostAgentsLive, :manage)
-    live("/system/host-agents/auth", HostAgentsLive, :auth)
-    live("/system/host-agents/:id/config", HostAgentsLive, :config)
+    live("/system/host-agents/:id", HostAgentsLive, :show)
 
     # Dashboard → Plan Usage
     live("/dashboard/usage/plans", DashboardPlanUsageLive, :index)

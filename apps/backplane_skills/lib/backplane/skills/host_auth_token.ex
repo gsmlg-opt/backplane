@@ -9,13 +9,15 @@ defmodule Backplane.Skills.HostAuthToken do
   alias Backplane.Skills.{Host, HostAgentToken}
 
   @type t :: %__MODULE__{}
+  @derive_inspect_for_redacted_fields false
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "skill_host_auth_tokens" do
     field(:name, :string)
-    field(:token_hash, :string)
+    field(:token_hash, :string, redact: true)
+    field(:encrypted_token, :binary, redact: true)
 
     has_one(:agent_token, HostAgentToken, foreign_key: :auth_token_id)
 
@@ -27,7 +29,7 @@ defmodule Backplane.Skills.HostAuthToken do
     timestamps()
   end
 
-  @required_fields ~w(name token_hash)a
+  @required_fields ~w(name token_hash encrypted_token)a
 
   @doc "Changeset for creating a host agent auth token."
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()

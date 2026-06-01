@@ -1,11 +1,16 @@
 defmodule Backplane.Skills.DesiredStateTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
   alias Backplane.Repo
-  alias Backplane.Skills.{Assignments, DesiredState, Hosts, Skill}
+  alias Backplane.Skills.{AgentManage, Assignments, DesiredState, Hosts, Skill}
+
+  setup do
+    AgentManage.clear()
+    on_exit(fn -> AgentManage.clear() end)
+  end
 
   describe "for_host/1" do
-    test "returns enabled assignments with slug download URLs" do
+    test "returns enabled assignments with websocket bundle metadata" do
       {:ok, host} = Hosts.create_agent(%{"name" => "t430"})
       skill = insert_skill!("db/repo-review", "repo-review", "Repo Review")
 
@@ -30,13 +35,13 @@ defmodule Backplane.Skills.DesiredStateTest do
                checksum: checksum,
                targets: ["agents"],
                enabled: true,
-               download_url: "/api/host-agent/skills/repo-review/download"
+               bundle: %{transport: "websocket", event: "get_skill_bundle"}
              } = entry
 
       assert checksum == skill.content_hash
 
       assert Map.keys(entry) |> Enum.sort() ==
-               [:checksum, :download_url, :enabled, :id, :name, :slug, :targets, :version]
+               [:bundle, :checksum, :enabled, :id, :name, :slug, :targets, :version]
     end
 
     test "excludes disabled assignments and disabled skills" do

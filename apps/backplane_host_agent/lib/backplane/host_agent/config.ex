@@ -10,6 +10,7 @@ defmodule Backplane.HostAgent.Config do
   @default_http_port 4221
 
   defstruct [
+    :host_id,
     :machine_name,
     :hub_url,
     :socket_url,
@@ -32,6 +33,7 @@ defmodule Backplane.HostAgent.Config do
 
   @doc "Returns a sample YAML config body."
   def sample_yaml(opts \\ []) do
+    host_id = Keyword.get(opts, :host_id, "REPLACE_WITH_AGENT_ID")
     machine_name = Keyword.get(opts, :machine_name, hostname())
     hub_url = Keyword.get(opts, :hub_url, "http://localhost:4220")
     work_dir = Keyword.get(opts, :work_dir, default_work_dir())
@@ -40,6 +42,7 @@ defmodule Backplane.HostAgent.Config do
     """
     # Backplane host agent configuration
     agent:
+      host_id: #{host_id}
       machine_name: #{machine_name}
       hub_url: #{hub_url}
       token: REPLACE_WITH_AUTH_TOKEN
@@ -124,11 +127,13 @@ defmodule Backplane.HostAgent.Config do
   defp parse(raw) do
     agent = raw["agent"] || %{}
     hub_url = trim_trailing_slash(agent["hub_url"])
+    host_id = agent["host_id"]
 
     %__MODULE__{
+      host_id: host_id,
       machine_name: agent["machine_name"],
       hub_url: hub_url,
-      socket_url: socket_url(hub_url),
+      socket_url: socket_url(hub_url, host_id),
       token: agent["token"],
       interval_ms: agent["interval_ms"] || 60_000,
       manifest_path: agent["manifest_path"],
@@ -159,9 +164,15 @@ defmodule Backplane.HostAgent.Config do
   defp trim_trailing_slash(nil), do: nil
   defp trim_trailing_slash(url), do: String.trim_trailing(url, "/")
 
-  defp socket_url("http://" <> rest), do: "ws://" <> rest <> @socket_path
-  defp socket_url("https://" <> rest), do: "wss://" <> rest <> @socket_path
-  defp socket_url(_hub_url), do: nil
+  defp socket_url("http://" <> rest, host_id), do: "ws://" <> rest <> socket_path(host_id)
+  defp socket_url("https://" <> rest, host_id), do: "wss://" <> rest <> socket_path(host_id)
+  defp socket_url(_hub_url, _host_id), do: nil
+
+  defp socket_path(host_id) when is_binary(host_id) and host_id != "" do
+    @socket_path <> "?host_id=" <> URI.encode_www_form(host_id)
+  end
+
+  defp socket_path(_host_id), do: @socket_path
 
   defp config_home do
     case System.get_env("XDG_CONFIG_HOME") do

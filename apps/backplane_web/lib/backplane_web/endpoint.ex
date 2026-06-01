@@ -16,7 +16,7 @@ defmodule BackplaneWeb.Endpoint do
   )
 
   socket("/host-agent/socket", BackplaneWeb.HostAgentSocket,
-    websocket: [connect_info: [:x_headers]],
+    websocket: [connect_info: [:x_headers, :peer_data]],
     longpoll: false
   )
 

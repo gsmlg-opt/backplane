@@ -3,9 +3,10 @@ defmodule Backplane.HostAgent.Installer do
   Installs validated extracted skills into configured local target roots.
   """
 
-  alias Backplane.HostAgent.{Checksum, LocalStore, SkillBundle}
+  alias Backplane.HostAgent.{Channel, Checksum, LocalStore, SkillBundle}
 
   @slug_format ~r/\A[a-z0-9][a-z0-9-]*\z/
+  @bundle_chunk_size 49_152
 
   def install(skill, config) do
     slug = field(skill, :slug)
@@ -196,8 +197,23 @@ defmodule Backplane.HostAgent.Installer do
   end
 
   defp download_archive(skill, config, archive_path) do
-    with {:ok, url} <- download_url(skill, config),
-         :ok <- File.mkdir_p(Path.dirname(archive_path)) do
+    with :ok <- File.mkdir_p(Path.dirname(archive_path)),
+         :ok <- fetch_archive(skill, config, archive_path) do
+      {:ok, archive_path}
+    end
+  rescue
+    error in File.Error -> {:error, {:file_error, error.reason}}
+  end
+
+  defp fetch_archive(skill, config, archive_path) do
+    case field(skill, :bundle) do
+      bundle when is_map(bundle) -> fetch_bundle_archive(skill, bundle, config, archive_path)
+      _bundle -> fetch_http_archive(skill, config, archive_path)
+    end
+  end
+
+  defp fetch_http_archive(skill, config, archive_path) do
+    with {:ok, url} <- download_url(skill, config) do
       headers = download_headers(config)
 
       case field(config, :download_fun) do
@@ -227,8 +243,105 @@ defmodule Backplane.HostAgent.Installer do
           end
       end
     end
-  rescue
-    error in File.Error -> {:error, {:file_error, error.reason}}
+    |> case do
+      {:ok, ^archive_path} -> :ok
+      other -> other
+    end
+  end
+
+  defp fetch_bundle_archive(skill, bundle, config, archive_path) do
+    with {:ok, first_chunk} <- request_bundle_chunk(skill, bundle, config, 0),
+         {:ok, chunk_count} <- chunk_count(first_chunk),
+         {:ok, chunks} <- bundle_chunks(skill, bundle, config, first_chunk, chunk_count),
+         :ok <- File.write(archive_path, chunks, [:binary]) do
+      :ok
+    end
+  end
+
+  defp bundle_chunks(skill, bundle, config, first_chunk, chunk_count) do
+    0..(chunk_count - 1)
+    |> Enum.reduce_while({:ok, []}, fn
+      0, {:ok, chunks} ->
+        case decode_chunk(first_chunk, 0) do
+          {:ok, chunk} -> {:cont, {:ok, [chunk | chunks]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      chunk_index, {:ok, chunks} ->
+        with {:ok, chunk} <- request_bundle_chunk(skill, bundle, config, chunk_index),
+             {:ok, decoded} <- decode_chunk(chunk, chunk_index) do
+          {:cont, {:ok, [decoded | chunks]}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+    end)
+    |> case do
+      {:ok, chunks} -> {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp request_bundle_chunk(skill, bundle, config, chunk_index) do
+    chunk_size = field(config, :bundle_chunk_size, @bundle_chunk_size)
+
+    case field(config, :bundle_fun) do
+      fun when is_function(fun, 4) ->
+        fun.(skill, bundle, chunk_index, chunk_size) |> normalize_bundle_reply()
+
+      _fun ->
+        push_bundle_request(skill, bundle, config, chunk_index, chunk_size)
+    end
+  end
+
+  defp push_bundle_request(skill, bundle, config, chunk_index, chunk_size) do
+    with event when is_binary(event) <- field(bundle, :event),
+         channel when is_pid(channel) <- field(config, :channel) do
+      channel_module = field(config, :channel_module, Channel)
+
+      payload = %{
+        "id" => field(skill, :id),
+        "slug" => field(skill, :slug),
+        "chunk_index" => chunk_index,
+        "chunk_size" => chunk_size
+      }
+
+      safe_channel_push(channel_module, channel, event, payload)
+    else
+      _missing -> {:error, :missing_bundle_channel}
+    end
+  end
+
+  defp safe_channel_push(channel_module, channel, event, payload) do
+    channel_module.push(channel, event, payload) |> normalize_bundle_reply()
+  catch
+    :exit, reason -> {:error, {:channel_exit, reason}}
+  end
+
+  defp normalize_bundle_reply({:ok, %{"ok" => true, "result" => chunk}}), do: {:ok, chunk}
+  defp normalize_bundle_reply({:ok, %{ok: true, result: chunk}}), do: {:ok, chunk}
+  defp normalize_bundle_reply({:ok, %{"ok" => false, "error" => reason}}), do: {:error, reason}
+  defp normalize_bundle_reply({:ok, %{ok: false, error: reason}}), do: {:error, reason}
+  defp normalize_bundle_reply({:ok, chunk}) when is_map(chunk), do: {:ok, chunk}
+  defp normalize_bundle_reply({:error, reason}), do: {:error, reason}
+  defp normalize_bundle_reply(other), do: {:error, {:bundle_failed, other}}
+
+  defp chunk_count(chunk) do
+    case field(chunk, :chunk_count) do
+      count when is_integer(count) and count > 0 -> {:ok, count}
+      _count -> {:error, :invalid_bundle_chunk}
+    end
+  end
+
+  defp decode_chunk(chunk, expected_index) do
+    with ^expected_index <- field(chunk, :chunk_index),
+         "base64" <- field(chunk, :encoding),
+         data when is_binary(data) <- field(chunk, :data),
+         {:ok, decoded} <- Base.decode64(data) do
+      {:ok, decoded}
+    else
+      :error -> {:error, :invalid_bundle_chunk}
+      _value -> {:error, :invalid_bundle_chunk}
+    end
   end
 
   defp download_url(skill, config) do

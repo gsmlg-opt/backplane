@@ -197,10 +197,12 @@ defmodule Backplane.HostAgent.Worker do
 
   defp validate_required_config(config) do
     missing =
-      [:hub_url, :token, :machine_name]
+      [:host_id, :hub_url, :token, :machine_name]
       |> Enum.filter(fn key ->
         value = field(config, key)
-        is_nil(value) or value == "" or value == "REPLACE_WITH_AUTH_TOKEN"
+
+        is_nil(value) or value == "" or
+          value in ["REPLACE_WITH_AUTH_TOKEN", "REPLACE_WITH_AGENT_ID"]
       end)
 
     case missing do
@@ -243,7 +245,7 @@ defmodule Backplane.HostAgent.Worker do
        when action in [:install, :update, :repair] do
     installer_module = Map.get(state, :installer_module, Installer)
 
-    case installer_module.install(skill, Map.fetch!(state, :config)) do
+    case installer_module.install(skill, installer_config(state)) do
       {:ok, installed_targets} ->
         result(planned, status_for(action), installed_targets)
 
@@ -301,6 +303,8 @@ defmodule Backplane.HostAgent.Worker do
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected_reply, other}}
     end
+  catch
+    :exit, reason -> {:error, {:channel_exit, reason}}
   end
 
   defp skills(%{"skills" => skills}) when is_list(skills), do: skills
@@ -355,6 +359,13 @@ defmodule Backplane.HostAgent.Worker do
   defp installed_version(_status, skill), do: field(skill, :version)
 
   defp targets(skill), do: field(skill, :targets, [])
+
+  defp installer_config(state) do
+    state
+    |> Map.fetch!(:config)
+    |> Map.put(:channel, Map.get(state, :channel))
+    |> Map.put(:channel_module, Map.get(state, :channel_module, Channel))
+  end
 
   defp field(map, key, default \\ nil) do
     Map.get(map, key, Map.get(map, Atom.to_string(key), default))

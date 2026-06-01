@@ -1,7 +1,12 @@
 defmodule Backplane.Skills.SyncStatusesTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
-  alias Backplane.Skills.{HostStatus, Hosts, SyncStatuses}
+  alias Backplane.Skills.{AgentManage, HostStatus, Hosts, SyncStatuses}
+
+  setup do
+    AgentManage.clear()
+    on_exit(fn -> AgentManage.clear() end)
+  end
 
   describe "record_sync_result/2" do
     test "persists a valid sync result for a host" do

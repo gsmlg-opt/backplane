@@ -17,7 +17,9 @@ defmodule Backplane.HostAgent.InstallerTest do
   end
 
   @tag :tmp_dir
-  test "downloads verifies extracts and installs assigned archive", %{tmp_dir: tmp_dir} do
+  test "fetches bundle chunks, verifies, extracts and installs assigned archive", %{
+    tmp_dir: tmp_dir
+  } do
     archive = skill_archive(tmp_dir, "repo-review", "# Repo Review")
     checksum = "sha256:" <> sha256_file(archive)
     target = Path.join(tmp_dir, "target")
@@ -28,19 +30,14 @@ defmodule Backplane.HostAgent.InstallerTest do
       "slug" => "repo-review",
       "checksum" => checksum,
       "targets" => ["agents"],
-      "download_url" => "/api/host-agent/skills/repo-review/download"
+      "bundle" => %{"transport" => "websocket", "event" => "get_skill_bundle"}
     }
 
     config = %{
-      hub_url: "http://backplane.test",
-      token: "host-token",
       work_dir: work_dir,
       targets: [%{name: "agents", path: target, enabled: true}],
-      download_fun: fn url, headers, destination ->
-        assert url == "http://backplane.test/api/host-agent/skills/repo-review/download"
-        assert headers == [{"X-Backplane-Host-Token", "host-token"}]
-        File.cp(archive, destination)
-      end
+      bundle_fun: bundle_fun_for(archive),
+      bundle_chunk_size: 8
     }
 
     assert {:ok, ["agents"]} = Installer.install(skill, config)
@@ -58,14 +55,10 @@ defmodule Backplane.HostAgent.InstallerTest do
       "slug" => "repo-review",
       "checksum" => "sha256:" <> String.duplicate("0", 64),
       "targets" => ["agents"],
-      "download_url" => "http://backplane.test/archive.tar.gz"
+      "bundle" => %{"transport" => "websocket", "event" => "get_skill_bundle"}
     }
 
-    config = %{
-      work_dir: Path.join(tmp_dir, "work"),
-      targets: [%{name: "agents", path: target, enabled: true}],
-      download_fun: fn _url, _headers, destination -> File.cp(archive, destination) end
-    }
+    config = archive_config(tmp_dir, target, archive)
 
     assert {:error, :checksum_mismatch} = Installer.install(skill, config)
     refute File.exists?(Path.join([target, "repo-review"]))
@@ -275,7 +268,7 @@ defmodule Backplane.HostAgent.InstallerTest do
       "slug" => "repo-review",
       "checksum" => "sha256:" <> sha256_file(archive),
       "targets" => ["agents"],
-      "download_url" => "http://backplane.test/archive.tar.gz"
+      "bundle" => %{"transport" => "websocket", "event" => "get_skill_bundle"}
     }
   end
 
@@ -283,8 +276,46 @@ defmodule Backplane.HostAgent.InstallerTest do
     %{
       work_dir: Path.join(tmp_dir, "work"),
       targets: [%{name: "agents", path: target, enabled: true}],
-      download_fun: fn _url, _headers, destination -> File.cp(archive, destination) end
+      bundle_fun: bundle_fun_for(archive)
     }
+  end
+
+  defp bundle_fun_for(archive) do
+    fn skill, bundle, chunk_index, chunk_size ->
+      assert skill["slug"] == "repo-review"
+      assert bundle["event"] == "get_skill_bundle"
+      bundle_chunk(archive, chunk_index, chunk_size)
+    end
+  end
+
+  defp bundle_chunk(archive, chunk_index, chunk_size) do
+    archive_bytes = File.read!(archive)
+    chunks = archive_bytes |> chunk_binary(chunk_size)
+
+    case Enum.at(chunks, chunk_index) do
+      nil ->
+        {:error, :chunk_not_found}
+
+      chunk ->
+        {:ok,
+         %{
+           "chunk_index" => chunk_index,
+           "chunk_count" => length(chunks),
+           "encoding" => "base64",
+           "data" => Base.encode64(chunk)
+         }}
+    end
+  end
+
+  defp chunk_binary(binary, chunk_size), do: chunk_binary(binary, chunk_size, [])
+
+  defp chunk_binary(<<>>, _chunk_size, []), do: [<<>>]
+  defp chunk_binary(<<>>, _chunk_size, chunks), do: Enum.reverse(chunks)
+
+  defp chunk_binary(binary, chunk_size, chunks) do
+    size = min(byte_size(binary), chunk_size)
+    <<chunk::binary-size(size), rest::binary>> = binary
+    chunk_binary(rest, chunk_size, [chunk | chunks])
   end
 
   defp sha256_file(path) do

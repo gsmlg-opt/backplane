@@ -22,7 +22,15 @@ defmodule Mix.Tasks.Agent.Run do
 
   use Mix.Task
 
-  alias Backplane.HostAgent.{Config, Connector, HttpServer, MemoryProxy, RunLock, Worker}
+  alias Backplane.HostAgent.{
+    Config,
+    Connector,
+    HttpServer,
+    McpManager,
+    MemoryProxy,
+    RunLock,
+    Worker
+  }
 
   @retry_interval_ms 4_000
 
@@ -91,6 +99,7 @@ defmodule Mix.Tasks.Agent.Run do
   defp connect_and_run(config) do
     MemoryProxy.set_config(config)
     maybe_start_http_server(config)
+    ensure_mcp_manager_started()
 
     %{channel: channel} = link = connect_with_retry(config)
     MemoryProxy.set_connection(link, config)
@@ -104,6 +113,19 @@ defmodule Mix.Tasks.Agent.Run do
 
     Mix.shell().info("Host agent worker started (pid=#{inspect(worker)}). Idling…")
     Process.sleep(:infinity)
+  end
+
+  defp ensure_mcp_manager_started do
+    case McpManager.start_link(name: McpManager) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("failed to start host agent MCP manager: #{inspect(reason)}")
+    end
   end
 
   defp connect_with_retry(config) do
