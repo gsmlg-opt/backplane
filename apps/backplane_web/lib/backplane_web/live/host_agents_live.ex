@@ -299,9 +299,16 @@ defmodule BackplaneWeb.HostAgentsLive do
               <td class="px-3 py-2 align-top">{relative_time(entry.connected_at)}</td>
               <td class="px-3 py-2 align-top">{relative_time(entry.last_sync)}</td>
               <td class="px-3 py-2 align-top">
-                <.link navigate={~p"/admin/system/host-agents/#{entry.host.id}"} class="text-primary underline">
-                  View
-                </.link>
+                <.dm_tooltip content="View" position="bottom">
+                  <.link
+                    navigate={~p"/admin/system/host-agents/#{entry.host.id}"}
+                    aria-label="View"
+                  >
+                    <.dm_btn type="button" size="xs" shape="circle" variant="outline" aria-label="View">
+                      <.dm_mdi name="eye" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.link>
+                </.dm_tooltip>
               </td>
             </tr>
           </tbody>
@@ -451,27 +458,35 @@ defmodule BackplaneWeb.HostAgentsLive do
               <tr :for={token <- @entry.tokens}>
                 <td class="px-3 py-2 align-top">{token.name}</td>
                 <td class="px-3 py-2 align-top">
-                  <div class="flex flex-wrap gap-2">
-                    <.dm_btn
-                      id={"reveal-token-#{token.id}"}
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      phx-click="reveal_token"
-                      phx-value-id={token.id}
-                    >
-                      Reveal
-                    </.dm_btn>
-                    <.dm_btn
-                      id={"revoke-token-#{token.id}"}
-                      type="button"
-                      variant="error"
-                      size="xs"
-                      phx-click="revoke_token"
-                      phx-value-id={token.id}
-                    >
-                      Revoke
-                    </.dm_btn>
+                  <div class="flex flex-wrap gap-1">
+                    <.dm_tooltip content="Reveal" position="bottom">
+                      <.dm_btn
+                        id={"reveal-token-#{token.id}"}
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        shape="circle"
+                        aria-label="Reveal"
+                        phx-click="reveal_token"
+                        phx-value-id={token.id}
+                      >
+                        <.dm_mdi name="eye" class="w-4 h-4" />
+                      </.dm_btn>
+                    </.dm_tooltip>
+                    <.dm_tooltip content="Revoke" position="bottom">
+                      <.dm_btn
+                        id={"revoke-token-#{token.id}"}
+                        type="button"
+                        variant="error"
+                        size="xs"
+                        shape="circle"
+                        aria-label="Revoke"
+                        phx-click="revoke_token"
+                        phx-value-id={token.id}
+                      >
+                        <.dm_mdi name="key-remove" class="w-4 h-4" />
+                      </.dm_btn>
+                    </.dm_tooltip>
                   </div>
                 </td>
               </tr>
