@@ -93,6 +93,38 @@ defmodule Backplane.HostAgent.ConfigTest do
   end
 
   @tag :tmp_dir
+  test "expands tilde paths from config instead of treating them as relative", %{
+    tmp_dir: tmp_dir
+  } do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+
+    File.write!(config_path, """
+    agent:
+      machine_name: t430
+      hub_url: http://localhost:4220
+      host_id: host-123
+      token: secret-token
+      manifest_path: ~/.local/share/backplane/host_agent/manifest.json
+      work_dir: ~/.local/share/backplane/host_agent
+
+    targets:
+      - name: agents
+        runtime: agent-skills
+        path: ~/.local/share/backplane/host_agent/skills
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.manifest_path ==
+             Path.expand("~/.local/share/backplane/host_agent/manifest.json")
+
+    assert config.work_dir == Path.expand("~/.local/share/backplane/host_agent")
+
+    assert [%{path: path}] = config.targets
+    assert path == Path.expand("~/.local/share/backplane/host_agent/skills")
+  end
+
+  @tag :tmp_dir
   test "computes secure websocket URL for https hubs", %{tmp_dir: tmp_dir} do
     config_path = Path.join(tmp_dir, "agent.yaml")
 

@@ -136,8 +136,8 @@ defmodule Backplane.HostAgent.Config do
       socket_url: socket_url(hub_url, host_id),
       token: agent["token"],
       interval_ms: agent["interval_ms"] || 60_000,
-      manifest_path: agent["manifest_path"],
-      work_dir: agent["work_dir"],
+      manifest_path: expand_path(agent["manifest_path"]),
+      work_dir: expand_path(agent["work_dir"]),
       http_bind: agent["http_bind"] || "127.0.0.1",
       http_port: parse_port(agent["http_port"]),
       targets: parse_targets(raw["targets"] || [])
@@ -153,13 +153,16 @@ defmodule Backplane.HostAgent.Config do
       %{
         name: target["name"],
         runtime: target["runtime"],
-        path: target["path"],
+        path: expand_path(target["path"]),
         enabled: target["enabled"] != false
       }
     end)
   end
 
   defp parse_targets(_targets), do: []
+
+  defp expand_path(path) when is_binary(path), do: Path.expand(path)
+  defp expand_path(path), do: path
 
   defp trim_trailing_slash(nil), do: nil
   defp trim_trailing_slash(url), do: String.trim_trailing(url, "/")
