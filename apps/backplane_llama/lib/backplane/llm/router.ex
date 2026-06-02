@@ -7,6 +7,7 @@ defmodule Backplane.LLM.Router do
   - GET  /v1/models                    — aggregated model listing
   - GET  /anthropic/v1/models          — Anthropic model listing
   - POST /anthropic/v1/messages        — Anthropic Messages API
+  - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
   - POST _                             — catch-all forwarded as :openai
@@ -30,6 +31,7 @@ defmodule Backplane.LLM.Router do
     UsageAccumulator
   }
 
+  alias Backplane.Embedding
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
@@ -63,6 +65,10 @@ defmodule Backplane.LLM.Router do
     conn
     |> strip_request_prefix("anthropic")
     |> proxy_request(:anthropic)
+  end
+
+  post "/v1/embeddings" do
+    proxy_embedding_request(conn)
   end
 
   post "/v1/chat/completions" do
@@ -132,6 +138,32 @@ defmodule Backplane.LLM.Router do
     end
   end
 
+  defp proxy_embedding_request(conn) do
+    raw_body = conn.assigns[:raw_body] || ""
+
+    case ModelExtractor.extract(raw_body) do
+      {:error, reason} ->
+        send_model_error(conn, :openai, reason)
+
+      {:ok, model_string} ->
+        with {:ok, provider, raw_model} <- Embedding.resolve_model(model_string),
+             {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
+             {:ok, auth_headers} <- Embedding.build_auth_headers(provider) do
+          upstream = build_embedding_upstream(provider, auth_headers)
+          do_embedding_proxy(conn, upstream, rewritten_body)
+        else
+          {:error, :no_provider} ->
+            send_not_found(conn, :openai, model_string)
+
+          {:error, :invalid_json} ->
+            send_model_error(conn, :openai, :invalid_json)
+
+          {:error, _} ->
+            send_error(conn, :openai, 503, "Provider credential not configured")
+        end
+    end
+  end
+
   defp fetch_provider_api(%Provider{} = provider, api_type) do
     case Enum.find(
            ProviderApi.list_for_provider(provider.id),
@@ -166,6 +198,33 @@ defmodule Backplane.LLM.Router do
       inject_request_headers: auth_headers,
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: provider_api.id, api_surface: provider_api.api_surface}
+    }
+  end
+
+  defp build_embedding_upstream(%Embedding.Provider{} = provider, auth_headers) do
+    uri = URI.parse(provider.base_url)
+
+    path_prefix =
+      case uri.path do
+        nil -> nil
+        "/" -> nil
+        "" -> nil
+        path -> String.trim_trailing(path, "/")
+      end
+
+    %Upstream{
+      scheme: String.to_existing_atom(uri.scheme || "https"),
+      host: uri.host,
+      port: uri.port || if(uri.scheme == "https", do: 443, else: 80),
+      path_prefix_rewrite: path_prefix,
+      request_timeout: 300_000,
+      first_byte_timeout: 120_000,
+      connect_timeout: 10_000,
+      max_request_body_size: 50_000_000,
+      max_response_body_size: 50_000_000,
+      inject_request_headers: auth_headers,
+      host_forward_mode: :rewrite_to_upstream,
+      metadata: %{embedding_provider_id: provider.id}
     }
   end
 
@@ -209,6 +268,15 @@ defmodule Backplane.LLM.Router do
     })
 
     result_conn
+  end
+
+  defp do_embedding_proxy(conn, upstream, rewritten_body) do
+    conn =
+      conn
+      |> delete_req_header("authorization")
+      |> delete_req_header("x-api-key")
+
+    HttpPlug.call(conn, upstream, body: rewritten_body)
   end
 
   defp extract_tokens_from_resp(conn, :anthropic) do

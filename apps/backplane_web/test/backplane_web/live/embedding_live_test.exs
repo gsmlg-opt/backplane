@@ -3,8 +3,8 @@ defmodule BackplaneWeb.EmbeddingLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias Backplane.Embedding
   alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
-  alias Backplane.Repo
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -17,37 +17,81 @@ defmodule BackplaneWeb.EmbeddingLiveTest do
   end
 
   test "renders the llama embedding menu page", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/llama/embedding")
+    {:ok, view, html} = live(conn, "/admin/llama/embedding")
 
-    assert html =~ "Embedding"
-    assert html =~ ~s(href="/admin/llama/providers")
-    assert html =~ ~s(href="/admin/llama/model-aliases")
+    assert html =~ "Embedding Providers"
+    assert has_element?(view, "#open-embedding-provider-modal", "Add Provider")
+    refute has_element?(view, "#embedding-provider-modal")
+    assert html =~ "Embedding Models"
     assert html =~ ~s(href="/admin/llama/embedding")
     assert html =~ ~s(aria-current="page")
+    refute html =~ "Active Embedding Model"
+    refute html =~ "embedding-model-form"
+    refute html =~ "Select the LLM provider model"
+    refute html =~ "Provider Models"
   end
 
-  test "lists openai provider models and saves the selected embedding model", %{
+  test "adds an embedding provider and renders its model in the table", %{
     conn: conn,
     credential: credential
   } do
-    {provider, _api, model} = create_embedding_model(credential)
-    model_id = "#{provider.name}/#{model.model}"
-
-    {:ok, view, html} = live(conn, "/admin/llama/embedding")
-
-    assert html =~ model_id
-    assert html =~ ~s(href="/admin/llama/providers/#{provider.id}")
+    {:ok, view, _html} = live(conn, "/admin/llama/embedding")
 
     html =
       view
-      |> form("#embedding-model-form", %{"embedding" => %{"model" => model_id}})
+      |> element("#open-embedding-provider-modal")
+      |> render_click()
+
+    assert html =~ "embedding-provider-modal"
+    assert html =~ "Add Embedding Provider"
+
+    html =
+      view
+      |> form("#embedding-provider-form", %{
+        "provider" => %{
+          "name" => "embedding-openai",
+          "credential" => credential,
+          "enabled" => "true",
+          "base_url" => "https://api.example.com/v1",
+          "default_headers" => "{}",
+          "model" => "text-embedding-3-small",
+          "display_name" => "Text Embedding 3 Small",
+          "model_enabled" => "true",
+          "metadata" => "{}"
+        }
+      })
       |> render_submit()
 
-    assert html =~ "Embedding model saved"
-    assert Settings.get("memory.embed_model") == model_id
+    assert html =~ "Embedding provider added"
+    assert html =~ "embedding-models-table"
+    assert html =~ "embedding-openai/text-embedding-3-small"
+    assert html =~ "Text Embedding 3 Small"
+    assert html =~ "https://api.example.com/v1"
+    refute has_element?(view, "#embedding-provider-modal")
+    refute html =~ ~s(phx-click="use_model")
+    refute html =~ "Active"
+    refute html =~ ~s(href="/admin/llama/providers/)
   end
 
-  test "keeps unavailable provider models out of the picker", %{
+  test "does not expose an active embedding model control", %{
+    conn: conn,
+    credential: credential
+  } do
+    model_id = create_embedding_model(credential)
+    :ok = Settings.set("memory.embed_model", model_id)
+
+    {:ok, _view, html} = live(conn, "/admin/llama/embedding")
+
+    assert html =~ model_id
+    assert html =~ "embedding-models-table"
+    refute html =~ "Active Embedding Model"
+    refute html =~ "embedding-model-form"
+    refute html =~ "Current:"
+    refute html =~ "Active"
+    refute html =~ ~s(phx-click="use_model")
+  end
+
+  test "does not list LLM provider models on the embedding page", %{
     conn: conn,
     credential: credential
   } do
@@ -84,33 +128,19 @@ defmodule BackplaneWeb.EmbeddingLiveTest do
   end
 
   defp create_embedding_model(credential) do
-    {:ok, provider} =
-      Provider.create(%{
-        name: "embedding-openai",
-        credential: credential
+    {:ok, _result} =
+      Embedding.create_provider_with_model(%{
+        "name" => "embedding-openai",
+        "credential" => credential,
+        "enabled" => "true",
+        "base_url" => "https://api.example.com/v1",
+        "default_headers" => "{}",
+        "model" => "text-embedding-3-small",
+        "display_name" => "Text Embedding 3 Small",
+        "model_enabled" => "true",
+        "metadata" => "{}"
       })
 
-    {:ok, api} =
-      ProviderApi.create(%{
-        provider_id: provider.id,
-        api_surface: :openai,
-        base_url: "https://api.example.com/v1"
-      })
-
-    {:ok, model} =
-      ProviderModel.create(%{
-        provider_id: provider.id,
-        model: "text-embedding-3-small",
-        display_name: "Text Embedding 3 Small"
-      })
-
-    {:ok, _surface} =
-      ProviderModelSurface.create(%{
-        provider_model_id: model.id,
-        provider_api_id: api.id,
-        enabled: true
-      })
-
-    {Repo.get!(Provider, provider.id), api, model}
+    "embedding-openai/text-embedding-3-small"
   end
 end

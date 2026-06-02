@@ -4,6 +4,8 @@ defmodule Backplane.LLM.RouterTest do
   import Plug.Conn
   import Plug.Test
 
+  alias Backplane.Embedding
+
   alias Backplane.LLM.{
     ModelAlias,
     ModelResolver,
@@ -22,6 +24,7 @@ defmodule Backplane.LLM.RouterTest do
     Credentials.store("router-openai-cred", "sk-openai-test-key", "llm")
     Credentials.store("router-anthropic-rl-cred", "sk-ant-test-rl-abcd", "llm")
     Credentials.store("router-openai-rl-cred", "sk-openai-test-rl-abcd", "llm")
+    Credentials.store("router-embedding-cred", "sk-embedding-test-key", "llm")
     ModelResolver.clear_cache()
     RateLimiter.reset()
     :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
@@ -106,7 +109,7 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   describe "POST /api/v1/embeddings" do
-    test "routes API-prefixed OpenAI-compatible requests to the LLM proxy" do
+    test "routes API-prefixed embedding requests through the embedding provider resolver" do
       conn =
         public_llm_request(:post, "/api/v1/embeddings", %{
           "model" => "unknown-provider/text-embedding-3-small",
@@ -119,6 +122,36 @@ defmodule Backplane.LLM.RouterTest do
       assert is_map(body["error"])
       assert body["error"]["type"] == "invalid_request_error"
       assert body["error"]["code"] == "model_not_found"
+    end
+
+    test "does not resolve regular LLM provider models as embedding models" do
+      create_provider_model(
+        "llm-openai-embeddings",
+        :openai,
+        "text-embedding-3-small",
+        "router-openai-cred"
+      )
+
+      conn =
+        public_llm_request(:post, "/api/v1/embeddings", %{
+          "model" => "llm-openai-embeddings/text-embedding-3-small",
+          "input" => ["hello"]
+        })
+
+      assert conn.halted
+      assert conn.status == 404
+      body = json_body(conn)
+      assert body["error"]["code"] == "model_not_found"
+    end
+
+    test "keeps embedding provider models out of the LLM model list" do
+      create_embedding_model("router-embedding-cred")
+
+      conn = llm_request(:get, "/v1/models")
+      body = json_body(conn)
+      ids = Enum.map(body["data"], & &1["id"])
+
+      refute "router-embedding/text-embedding-3-small" in ids
     end
   end
 
@@ -382,5 +415,20 @@ defmodule Backplane.LLM.RouterTest do
       })
 
     provider
+  end
+
+  defp create_embedding_model(credential) do
+    {:ok, _result} =
+      Embedding.create_provider_with_model(%{
+        "name" => "router-embedding",
+        "credential" => credential,
+        "enabled" => "true",
+        "base_url" => "https://api.example.com/v1",
+        "default_headers" => "{}",
+        "model" => "text-embedding-3-small",
+        "display_name" => "Text Embedding 3 Small",
+        "model_enabled" => "true",
+        "metadata" => "{}"
+      })
   end
 end
