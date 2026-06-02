@@ -306,6 +306,13 @@ defmodule Backplane.HostAgent.MemoryProxy do
       if function_exported?(socket_client_module, :disconnect, 1) do
         socket_client_module.disconnect(socket)
       end
+
+      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#97
+      # disconnect/1 marks the client disconnected but can leave the websocket
+      # transport process/socket open. Stop the old socket supervisor when a
+      # replacement socket has been installed so the linked transport releases
+      # its file descriptor.
+      stop_socket_supervisor(socket)
     end
 
     :ok
@@ -314,6 +321,16 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp close_replaced_socket(_socket, _new_socket), do: :ok
+
+  defp stop_socket_supervisor(socket) when is_pid(socket) do
+    if Process.alive?(socket) do
+      Supervisor.stop(socket, :normal, 1_000)
+    end
+
+    :ok
+  catch
+    :exit, _reason -> :ok
+  end
 
   defp unlink_process(pid) when is_pid(pid) do
     Process.unlink(pid)

@@ -237,14 +237,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     refute_receive {:connect, ^config}, 100
   end
 
-  test "disconnects stale socket when replacing the connection" do
+  test "disconnects and stops stale socket when replacing the connection" do
     config = %{hub_url: "http://localhost:4220", token: "host-token", machine_name: "t430"}
-    old_socket = spawn(fn -> Process.sleep(:infinity) end)
-    new_socket = spawn(fn -> Process.sleep(:infinity) end)
+    {:ok, old_socket} = Supervisor.start_link([], strategy: :one_for_one)
+    {:ok, new_socket} = Supervisor.start_link([], strategy: :one_for_one)
+    old_ref = Process.monitor(old_socket)
 
     on_exit(fn ->
-      Process.exit(old_socket, :kill)
-      Process.exit(new_socket, :kill)
+      if Process.alive?(new_socket), do: Supervisor.stop(new_socket)
     end)
 
     MemoryProxy.set_connection(
@@ -258,7 +258,9 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     )
 
     assert_receive {:disconnect, ^old_socket}
+    assert_receive {:DOWN, ^old_ref, :process, ^old_socket, :normal}
     refute_received {:disconnect, ^new_socket}
+    assert Process.alive?(new_socket)
   end
 
   test "emits telemetry for memory calls" do
