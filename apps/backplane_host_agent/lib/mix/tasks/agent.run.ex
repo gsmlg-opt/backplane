@@ -98,11 +98,11 @@ defmodule Mix.Tasks.Agent.Run do
 
   defp connect_and_run(config) do
     MemoryProxy.set_config(config)
-    maybe_start_http_server(config)
     ensure_mcp_manager_started()
 
     %{channel: channel} = link = connect_with_retry(config)
     MemoryProxy.set_connection(link, config)
+    maybe_start_http_server(config)
 
     {:ok, worker} =
       Worker.start_link(
