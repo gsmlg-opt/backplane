@@ -194,6 +194,8 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert html =~ "Edit Provider"
       assert html =~ "Add Model"
       assert html =~ "Load Models from API"
+      refute html =~ "provider-models-table"
+      refute html =~ "delete-model-modal"
 
       view
       |> form("form[phx-submit=save_provider]", %{
@@ -239,6 +241,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       model = Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-model-a")
       assert model.display_name == "Provider Model A"
       assert model.enabled
+      assert render(view) =~ "provider-models-table"
 
       assert %ProviderModelSurface{enabled: true} =
                ProviderModelSurface.get_by_model_and_api(model.id, openai_api.id)
@@ -274,8 +277,18 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
       refute Repo.get!(ProviderModel, model.id).enabled
 
+      html =
+        view
+        |> element("#open-delete-model-modal-#{model.id}")
+        |> render_click()
+
+      assert html =~ "delete-model-modal"
+      assert html =~ "Delete Model"
+      assert html =~ "provider-model-b"
+      assert Repo.get(ProviderModel, model.id)
+
       view
-      |> element("[phx-click='delete_model'][phx-value-id='#{model.id}']")
+      |> element("#delete-model-confirm")
       |> render_click()
 
       refute Repo.get(ProviderModel, model.id)

@@ -109,77 +109,102 @@ defmodule BackplaneWeb.ProvidersLive do
         No LLM providers configured.
       </div>
 
-      <div class="space-y-4">
-        <.dm_card :for={provider <- @providers} variant="bordered">
-          <:title>
-            <div class="flex w-full items-center justify-between gap-4">
-              <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                  <span class="truncate">{provider.name}</span>
-                  <.dm_badge variant={provider_enabled_badge(provider.enabled)} size="sm">
-                    {provider_enabled_text(provider.enabled)}
-                  </.dm_badge>
-                </div>
-                <div class="text-xs text-on-surface-variant">
-                  <span :if={provider.preset_key}>Preset: {provider.preset_key}</span>
-                  <span :if={provider.credential}> · credential: <code>{provider.credential}</code></span>
-                </div>
-              </div>
-              <div class="flex items-center gap-2 shrink-0">
-                <.link navigate={~p"/admin/llama/providers/#{provider.id}"} class="no-underline">
-                  <.dm_btn size="xs">View</.dm_btn>
-                </.link>
-                <.dm_btn
-                  variant={if provider.enabled, do: "warning", else: "success"}
-                  size="xs"
-                  phx-click="toggle_enabled"
-                  phx-value-id={provider.id}
-                >
-                  {if provider.enabled, do: "Disable", else: "Enable"}
-                </.dm_btn>
-                <.dm_btn
-                  variant="error"
-                  size="xs"
-                  data-confirm={"Delete provider #{provider.name}?"}
-                  phx-click="delete"
-                  phx-value-id={provider.id}
-                >
-                  Delete
-                </.dm_btn>
-              </div>
+      <.dm_table :if={@providers != []} id="llm-providers-table" data={@providers} hover zebra>
+        <:col :let={provider} label="Provider">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <.link
+                navigate={~p"/admin/llama/providers/#{provider.id}"}
+                class="truncate font-medium text-primary hover:underline"
+              >
+                {provider.name}
+              </.link>
+              <.dm_badge variant={provider_enabled_badge(provider.enabled)} size="sm">
+                {provider_enabled_text(provider.enabled)}
+              </.dm_badge>
             </div>
-          </:title>
-
-          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div class="mt-1 text-xs text-on-surface-variant">
+              <span :if={provider.preset_key}>Preset: {provider.preset_key}</span>
+              <span :if={provider.credential}> · credential: <code>{provider.credential}</code></span>
+            </div>
+          </div>
+        </:col>
+        <:col :let={provider} label="API surfaces">
+          <div class="flex flex-col gap-2">
             <div
               :for={api <- provider.apis}
-              class="rounded-md border border-outline-variant p-3"
+              class="min-w-0 rounded-md border border-outline-variant p-2"
             >
-              <div class="mb-2 flex items-center justify-between gap-2">
-                <div class="flex items-center gap-2">
-                  <.dm_badge variant={api_badge_variant(api.api_surface)} size="sm">
-                    {api_label(api.api_surface)}
-                  </.dm_badge>
-                  <.dm_badge variant={provider_enabled_badge(api.enabled)} size="sm">
-                    {provider_enabled_text(api.enabled)}
-                  </.dm_badge>
-                </div>
-
+              <div class="flex items-center gap-2">
+                <.dm_badge variant={api_badge_variant(api.api_surface)} size="sm">
+                  {api_label(api.api_surface)}
+                </.dm_badge>
+                <.dm_badge variant={provider_enabled_badge(api.enabled)} size="sm">
+                  {provider_enabled_text(api.enabled)}
+                </.dm_badge>
               </div>
-              <div class="truncate font-mono text-xs text-on-surface">{api.base_url}</div>
+              <div class="mt-1 truncate font-mono text-xs text-on-surface">{api.base_url}</div>
               <div class="mt-1 text-xs text-on-surface-variant">
                 Discovery:
                 <code>{api.model_discovery_path || "-"}</code>
                 · headers: {headers_count(api.default_headers)}
               </div>
             </div>
+            <span :if={provider.apis == []} class="text-sm text-on-surface-variant">
+              No API surfaces configured.
+            </span>
           </div>
-
-          <div :if={provider.apis == []} class="text-sm text-on-surface-variant">
-            No API surfaces configured.
+        </:col>
+        <:col :let={provider} label="Actions">
+          <div class="flex items-center gap-1">
+            <.dm_tooltip content="View" position="bottom">
+              <.link navigate={~p"/admin/llama/providers/#{provider.id}"} class="no-underline">
+                <.dm_btn
+                  type="button"
+                  size="xs"
+                  shape="circle"
+                  variant="outline"
+                  aria-label={"View #{provider.name}"}
+                >
+                  <.dm_mdi name="eye" class="h-4 w-4" />
+                  <span class="sr-only">View</span>
+                </.dm_btn>
+              </.link>
+            </.dm_tooltip>
+            <.dm_tooltip content={if provider.enabled, do: "Disable", else: "Enable"} position="bottom">
+              <.dm_btn
+                type="button"
+                variant={if provider.enabled, do: "warning", else: "success"}
+                size="xs"
+                shape="circle"
+                aria-label={
+                  if provider.enabled, do: "Disable #{provider.name}", else: "Enable #{provider.name}"
+                }
+                phx-click="toggle_enabled"
+                phx-value-id={provider.id}
+              >
+                <.dm_mdi name={if provider.enabled, do: "pause", else: "play"} class="h-4 w-4" />
+                <span class="sr-only">{if provider.enabled, do: "Disable", else: "Enable"}</span>
+              </.dm_btn>
+            </.dm_tooltip>
+            <.dm_tooltip content="Delete" position="bottom">
+              <.dm_btn
+                type="button"
+                variant="error"
+                size="xs"
+                shape="circle"
+                aria-label={"Delete #{provider.name}"}
+                data-confirm={"Delete provider #{provider.name}?"}
+                phx-click="delete"
+                phx-value-id={provider.id}
+              >
+                <.dm_mdi name="delete" class="h-4 w-4" />
+                <span class="sr-only">Delete</span>
+              </.dm_btn>
+            </.dm_tooltip>
           </div>
-        </.dm_card>
-      </div>
+        </:col>
+      </.dm_table>
     </div>
     """
   end

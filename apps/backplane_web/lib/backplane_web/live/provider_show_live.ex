@@ -25,7 +25,8 @@ defmodule BackplaneWeb.ProviderShowLive do
        model_errors: %{},
        editing_model: nil,
        edit_model_form: nil,
-       edit_model_errors: %{}
+       edit_model_errors: %{},
+       deleting_model: nil
      )}
   end
 
@@ -166,6 +167,20 @@ defmodule BackplaneWeb.ProviderShowLive do
     {:noreply, assign(socket, editing_model: nil, edit_model_form: nil, edit_model_errors: %{})}
   end
 
+  def handle_event("confirm_delete_model", %{"id" => id}, socket) do
+    case model_for_provider(socket.assigns.provider, id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Model not found")}
+
+      model ->
+        {:noreply, assign(socket, deleting_model: model)}
+    end
+  end
+
+  def handle_event("cancel_delete_model", _params, socket) do
+    {:noreply, assign(socket, deleting_model: nil)}
+  end
+
   def handle_event("validate_edit_model", %{"model" => params}, socket) do
     {:noreply,
      assign(socket,
@@ -234,7 +249,8 @@ defmodule BackplaneWeb.ProviderShowLive do
             {:noreply,
              socket
              |> put_flash(:info, "Model removed")
-             |> assign_provider(Provider.get(provider.id))}
+             |> assign_provider(Provider.get(provider.id))
+             |> assign(deleting_model: nil)}
 
           {:error, _changeset} ->
             {:noreply, put_flash(socket, :error, "Failed to remove model")}
@@ -737,65 +753,144 @@ defmodule BackplaneWeb.ProviderShowLive do
 
       <.dm_card variant="bordered">
         <:title>Models</:title>
+        <.delete_model_modal :if={@deleting_model} model={@deleting_model} />
 
         <div :if={@provider.models == []} class="text-sm text-on-surface-variant">
           No models configured.
         </div>
 
-        <div class="space-y-3">
-          <div
-            :for={model <- @provider.models}
-            class="rounded-md border border-outline-variant p-3"
-          >
-            <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class="font-mono text-sm">{model.model}</span>
-                  <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
-                    {enabled_text(model.enabled)}
-                  </.dm_badge>
-                  <.dm_badge variant="neutral" size="sm">{model.source}</.dm_badge>
-                </div>
-                <div :if={model.display_name} class="mt-1 text-sm text-on-surface-variant">
-                  {model.display_name}
-                </div>
-                <div class="mt-2 flex flex-wrap gap-2">
-                  <.dm_badge
-                    :for={api <- @provider.apis}
-                    variant={if surface_enabled?(model, api), do: badge_variant(api.api_surface), else: "neutral"}
-                    size="sm"
-                  >
-                    {api_label(api.api_surface)} {if surface_enabled?(model, api), do: "on", else: "off"}
-                  </.dm_badge>
-                </div>
-              </div>
-
-              <div class="flex flex-wrap gap-2">
-                <.dm_btn size="xs" phx-click="edit_model" phx-value-id={model.id}>
-                  Edit
-                </.dm_btn>
+        <.dm_table
+          :if={@provider.models != []}
+          id="provider-models-table"
+          data={@provider.models}
+          hover
+          zebra
+        >
+          <:col :let={model} label="Model">
+            <div class="min-w-0">
+              <code class="block truncate text-sm">{model.model}</code>
+              <span :if={model.display_name} class="mt-1 block text-sm text-on-surface-variant">
+                {model.display_name}
+              </span>
+            </div>
+          </:col>
+          <:col :let={model} label="Status">
+            <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
+              {enabled_text(model.enabled)}
+            </.dm_badge>
+          </:col>
+          <:col :let={model} label="Source">
+            <.dm_badge variant="neutral" size="sm">{model.source}</.dm_badge>
+          </:col>
+          <:col :let={model} label="API surfaces">
+            <div class="flex flex-wrap gap-2">
+              <.dm_badge
+                :for={api <- @provider.apis}
+                variant={
+                  if surface_enabled?(model, api),
+                    do: badge_variant(api.api_surface),
+                    else: "neutral"
+                }
+                size="sm"
+              >
+                {api_label(api.api_surface)} {if surface_enabled?(model, api), do: "on", else: "off"}
+              </.dm_badge>
+            </div>
+          </:col>
+          <:col :let={model} label="Actions">
+            <div class="flex items-center gap-1">
+              <.dm_tooltip content="Edit" position="bottom">
                 <.dm_btn
+                  id={"edit-model-#{model.id}"}
+                  type="button"
                   size="xs"
+                  shape="circle"
+                  variant="outline"
+                  aria-label={"Edit model #{model.model}"}
+                  phx-click="edit_model"
+                  phx-value-id={model.id}
+                >
+                  <.dm_mdi name="pencil" class="h-4 w-4" />
+                  <span class="sr-only">Edit</span>
+                </.dm_btn>
+              </.dm_tooltip>
+              <.dm_tooltip content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
+                <.dm_btn
+                  id={"toggle-model-#{model.id}"}
+                  type="button"
+                  size="xs"
+                  shape="circle"
                   variant={if model.enabled, do: "warning", else: "success"}
+                  aria-label={
+                    if model.enabled,
+                      do: "Disable model #{model.model}",
+                      else: "Enable model #{model.model}"
+                  }
                   phx-click="toggle_model"
                   phx-value-id={model.id}
                 >
-                  {if model.enabled, do: "Disable", else: "Enable"}
+                  <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
+                  <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
                 </.dm_btn>
+              </.dm_tooltip>
+              <.dm_tooltip content="Remove" position="bottom">
                 <.dm_btn
+                  id={"open-delete-model-modal-#{model.id}"}
+                  type="button"
                   size="xs"
+                  shape="circle"
                   variant="error"
-                  phx-click="delete_model"
+                  aria-label={"Remove model #{model.model}"}
+                  phx-click="confirm_delete_model"
                   phx-value-id={model.id}
-                  data-confirm={"Remove model #{model.model}?"}
                 >
-                  Remove
+                  <.dm_mdi name="delete" class="h-4 w-4" />
+                  <span class="sr-only">Remove</span>
                 </.dm_btn>
-              </div>
+              </.dm_tooltip>
             </div>
-          </div>
-        </div>
+          </:col>
+        </.dm_table>
       </.dm_card>
+    </div>
+    """
+  end
+
+  defp delete_model_modal(assigns) do
+    ~H"""
+    <div
+      id="delete-model-modal"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-model-modal-title"
+      phx-window-keydown="cancel_delete_model"
+      phx-key="Escape"
+    >
+      <div class="w-full max-w-md rounded-lg border border-outline-variant bg-surface-container p-6 shadow-xl">
+        <h2 id="delete-model-modal-title" class="mb-2 text-lg font-semibold text-on-surface">
+          Delete Model
+        </h2>
+        <p class="mb-6 text-sm text-on-surface-variant">
+          Remove model <code class="font-mono text-error">{@model.model}</code>?
+          This cannot be undone.
+        </p>
+        <div class="flex justify-end gap-2">
+          <.dm_btn type="button" variant="outline" size="sm" phx-click="cancel_delete_model">
+            Cancel
+          </.dm_btn>
+          <.dm_btn
+            id="delete-model-confirm"
+            type="button"
+            variant="error"
+            size="sm"
+            phx-click="delete_model"
+            phx-value-id={@model.id}
+          >
+            Delete
+          </.dm_btn>
+        </div>
+      </div>
     </div>
     """
   end
