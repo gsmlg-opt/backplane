@@ -4,11 +4,14 @@ import Config
 # Keep this in runtime config so local installations can be detected at boot
 # without baking machine-specific paths into compile-time config.
 if bun_path = System.get_env("MIX_BUN_PATH") || System.find_executable("bun") do
-  config :bun, path: bun_path
+  bun_version = System.cmd(bun_path, ["--version"]) |> elem(0) |> String.trim
+  config :bun, path: bun_path, version: bun_version
 end
 
 if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable("tailwindcss") do
-  config :tailwind, path: tailwind_path
+  tailwind_str = System.cmd(tailwind_path, ["--help"]) |> elem(0)
+  tailwind_version = Regex.run(~r/tailwindcss v([0-9.]+)/, tailwind_str) |> Enum.at(1)
+  config :tailwind, path: tailwind_path, version: tailwind_version
 end
 
 if config_env() == :prod do
