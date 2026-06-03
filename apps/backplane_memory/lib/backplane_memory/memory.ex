@@ -178,7 +178,11 @@ defmodule BackplaneMemory.Memory do
   """
   @spec list(keyword()) :: [MemorySchema.t()]
   def list(opts \\ []) do
-    metadata = %{action: "list", limit: Keyword.get(opts, :limit, 50), offset: Keyword.get(opts, :offset, 0)}
+    metadata = %{
+      action: "list",
+      limit: Keyword.get(opts, :limit, 50),
+      offset: Keyword.get(opts, :offset, 0)
+    }
 
     :telemetry.span([:backplane, :memory, :access], metadata, fn ->
       limit = Keyword.get(opts, :limit, 50)
@@ -362,6 +366,6 @@ defmodule BackplaneMemory.Memory do
   defp handle_insert(error, _content, _scope), do: error
 
   defp embeddings_enabled? do
-    Application.get_env(:backplane_memory, :embed_enabled, true) and EmbeddingClient.configured?()
+    EmbeddingClient.configured?()
   end
 end

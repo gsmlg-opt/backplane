@@ -210,24 +210,7 @@ defmodule BackplaneMemory.Memories.Search do
 
   defp vector_search_configured?(opts) do
     Keyword.has_key?(opts, :embed_fn) or
-      (embeddings_enabled?() and Client.configured?())
-  end
-
-  defp embeddings_enabled? do
-    case settings_value("memory.embed_enabled") do
-      false -> false
-      "false" -> false
-      "0" -> false
-      _ -> Application.get_env(:backplane_memory, :embed_enabled, true)
-    end
-  end
-
-  defp settings_value(key) do
-    if Code.ensure_loaded?(Backplane.Settings), do: Backplane.Settings.get(key)
-  rescue
-    _ -> nil
-  catch
-    _, _ -> nil
+      Client.configured?()
   end
 
   defp text_recall(query, queries, opts) do

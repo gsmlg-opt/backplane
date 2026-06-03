@@ -3,8 +3,10 @@ defmodule BackplaneWeb.MemoryConfigLive do
 
   use BackplaneWeb, :live_view
 
+  alias Backplane.Embedding
+  alias Backplane.LLM.ProviderModelSurface
+
   @settings_keys ~w(
-    memory.embed_enabled
     memory.embed_model
     memory.graph_enabled
     memory.graph_min_observations
@@ -22,14 +24,13 @@ defmodule BackplaneWeb.MemoryConfigLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    values = load_settings()
-
     {:ok,
-     assign(socket,
+     socket
+     |> assign(
        current_path: "/admin/memory/config",
-       values: values,
        flash_msg: nil
-     )}
+     )
+     |> assign_config()}
   end
 
   @impl true
@@ -47,10 +48,20 @@ defmodule BackplaneWeb.MemoryConfigLive do
       {:noreply,
        socket
        |> put_flash(:info, "Settings saved.")
-       |> assign(values: load_settings())}
+       |> assign_config()}
     else
       {:noreply, put_flash(socket, :error, "Some settings could not be saved.")}
     end
+  end
+
+  defp assign_config(socket) do
+    values = load_settings()
+
+    assign(socket,
+      values: values,
+      embedding_model_options: embedding_model_options(values["memory.embed_model"]),
+      llm_model_options: llm_model_options(values["memory.llm_model"])
+    )
   end
 
   defp load_settings do
@@ -74,8 +85,105 @@ defmodule BackplaneWeb.MemoryConfigLive do
     |> Enum.join(" ")
   end
 
+  defp setting_control(assigns) do
+    ~H"""
+    <select
+      :if={@key == "memory.embed_model"}
+      name={"config[#{@key}]"}
+      class="select select-bordered flex-1"
+    >
+      <option value="" selected={blank?(@value)}>(not set)</option>
+      <option
+        :for={{value, label} <- @embedding_model_options}
+        value={value}
+        selected={selected?(@value, value)}
+      >
+        {label}
+      </option>
+    </select>
+
+    <select
+      :if={@key == "memory.llm_model"}
+      name={"config[#{@key}]"}
+      class="select select-bordered flex-1"
+    >
+      <option value="" selected={blank?(@value)}>(not set)</option>
+      <option
+        :for={{value, label} <- @llm_model_options}
+        value={value}
+        selected={selected?(@value, value)}
+      >
+        {label}
+      </option>
+    </select>
+
+    <input
+      :if={text_setting?(@key)}
+      type="text"
+      name={"config[#{@key}]"}
+      value={@value}
+      placeholder="(not set)"
+      class="dm-input flex-1"
+    />
+    """
+  end
+
+  defp embedding_model_options(current_value) do
+    safe_call(
+      fn ->
+        Embedding.list_enabled_models()
+        |> Enum.map(fn model ->
+          id = Embedding.model_id(model)
+          {id, model_label(model.display_name, id)}
+        end)
+        |> include_current_option(current_value)
+      end,
+      include_current_option([], current_value)
+    )
+  end
+
+  defp llm_model_options(current_value) do
+    safe_call(
+      fn ->
+        :openai
+        |> ProviderModelSurface.list_enabled()
+        |> Enum.map(fn surface ->
+          model = surface.provider_model
+          id = "#{model.provider.name}/#{model.model}"
+          {id, model_label(model.display_name, id)}
+        end)
+        |> Enum.uniq_by(fn {id, _label} -> id end)
+        |> Enum.sort_by(fn {id, _label} -> id end)
+        |> include_current_option(current_value)
+      end,
+      include_current_option([], current_value)
+    )
+  end
+
+  defp include_current_option(options, current_value) do
+    current_value = current_value |> to_string() |> String.trim()
+
+    cond do
+      current_value == "" ->
+        options
+
+      Enum.any?(options, fn {value, _label} -> value == current_value end) ->
+        options
+
+      true ->
+        [{current_value, "#{current_value} (unavailable)"} | options]
+    end
+  end
+
+  defp model_label(display_name, id) when display_name in [nil, ""], do: id
+  defp model_label(display_name, id), do: "#{display_name} (#{id})"
+
+  defp selected?(current_value, option_value), do: to_string(current_value) == option_value
+  defp blank?(value), do: value in [nil, ""]
+  defp text_setting?(key), do: key not in ~w(memory.embed_model memory.llm_model)
+
   defp section_keys(:embedding),
-    do: ~w(memory.embed_enabled memory.embed_model)
+    do: ~w(memory.embed_model)
 
   defp section_keys(:graph),
     do: ~w(memory.graph_enabled memory.graph_min_observations)
@@ -124,12 +232,11 @@ defmodule BackplaneWeb.MemoryConfigLive do
           <div class="space-y-3">
             <div :for={key <- section_keys(section_id)} class="flex items-center gap-3">
               <label class="w-56 text-sm font-medium shrink-0">{setting_label(key)}</label>
-              <input
-                type="text"
-                name={"config[#{key}]"}
+              <.setting_control
+                key={key}
                 value={@values[key]}
-                placeholder="(not set)"
-                class="dm-input flex-1"
+                embedding_model_options={@embedding_model_options}
+                llm_model_options={@llm_model_options}
               />
             </div>
           </div>
