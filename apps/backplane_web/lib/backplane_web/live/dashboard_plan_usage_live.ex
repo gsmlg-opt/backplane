@@ -172,20 +172,29 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
       <div class="space-y-3">
         <.dm_table id={"minimax-models-#{@plan.id}"} data={@data.models} hover zebra>
           <:col :let={m} label="Category">{m.name}</:col>
-          <:col :let={m} label="Current Window">
-            <div class="flex items-center gap-2">
-              <.usage_bar_inline used={m.used} total={m.total} />
-              <span class="text-xs whitespace-nowrap">{m.used}/{m.total}</span>
+          <:col :let={m} label="Current (5h)">
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <.usage_bar_inline used={100 - (m.current_interval_remaining_percent || 0)} total={100} />
+                <span class="text-xs font-medium">{m.current_interval_remaining_percent}% remaining</span>
+              </div>
+              <div class="text-[10px] text-on-surface-variant flex flex-col gap-0.5">
+                <span :if={m.start_time && m.end_time}>{format_time_range(m.start_time, m.end_time)}</span>
+                <span :if={m.remains_time} class="text-info font-medium">{format_duration(m.remains_time)} left</span>
+              </div>
             </div>
           </:col>
-          <:col :let={m} label="Remaining">{m.remaining}</:col>
           <:col :let={m} label="Weekly">
-            <span class="text-xs">{m.weekly_used}/{m.weekly_total}</span>
-          </:col>
-          <:col :let={m} label="Reset">
-            <span :if={m.next_reset} class="text-xs">
-              {Calendar.strftime(m.next_reset, "%m/%d %H:%M")}
-            </span>
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <.usage_bar_inline used={100 - (m.current_weekly_remaining_percent || 0)} total={100} />
+                <span class="text-xs font-medium">{m.current_weekly_remaining_percent}% remaining</span>
+              </div>
+              <div class="text-[10px] text-on-surface-variant flex flex-col gap-0.5">
+                <span :if={m.weekly_start_time && m.weekly_end_time}>{format_time_range(m.weekly_start_time, m.weekly_end_time)}</span>
+                <span :if={m.weekly_remains_time} class="text-info font-medium">{format_duration(m.weekly_remains_time)} left</span>
+              </div>
+            </div>
           </:col>
         </.dm_table>
       </div>
@@ -294,4 +303,41 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_error({:api_error, status, _}), do: "API returned #{status}"
   defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
   defp format_error(other), do: inspect(other)
+
+  defp format_time_range(nil, nil), do: ""
+  defp format_time_range(start_time, end_time) do
+    case {start_time, end_time} do
+      {%DateTime{} = s, %DateTime{} = e} ->
+        if s.day == e.day do
+          "#{Calendar.strftime(s, "%m/%d %H:%M")} - #{Calendar.strftime(e, "%H:%M")}"
+        else
+          "#{Calendar.strftime(s, "%m/%d %H:%M")} - #{Calendar.strftime(e, "%m/%d %H:%M")}"
+        end
+      _ ->
+        ""
+    end
+  end
+
+  defp format_duration(nil), do: ""
+  defp format_duration(ms) when is_integer(ms) do
+    total_seconds = div(ms, 1000)
+    cond do
+      total_seconds <= 0 ->
+        "0s"
+      total_seconds < 60 ->
+        "#{total_seconds}s"
+      total_seconds < 3600 ->
+        minutes = div(total_seconds, 60)
+        seconds = rem(total_seconds, 60)
+        "#{minutes}m #{seconds}s"
+      total_seconds < 86400 ->
+        hours = div(total_seconds, 3600)
+        minutes = div(rem(total_seconds, 3600), 60)
+        "#{hours}h #{minutes}m"
+      true ->
+        days = div(total_seconds, 86400)
+        hours = div(rem(total_seconds, 86400), 3600)
+        "#{days}d #{hours}h"
+    end
+  end
 end
