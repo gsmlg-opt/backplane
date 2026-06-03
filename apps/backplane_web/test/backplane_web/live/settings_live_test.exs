@@ -329,6 +329,40 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "Authorization is not configured"
       assert html =~ "missing_google_oauth_client_id"
     end
+
+    test "can add a script credential with textarea content and ignoring auth type", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+
+      view
+      |> element("a[href=\"/admin/system/credentials/new\"]")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "<option value=\"script\">"
+
+      html =
+        view
+        |> element("#cred-kind")
+        |> render_change(%{"kind" => "script"})
+
+      assert html =~ "<textarea"
+      refute html =~ "Auth Type"
+
+      html =
+        view
+        |> form("form[phx-submit=save_credential]", %{
+          "name" => "my-script-key",
+          "kind" => "script",
+          "secret" => "echo 'hello world'"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-script-key"
+
+      assert {:ok, "echo 'hello world'"} = Credentials.fetch("my-script-key")
+      assert {:ok, _, %{auth_type: "api_key"}} = Credentials.fetch_with_meta("my-script-key")
+    end
   end
 end
 

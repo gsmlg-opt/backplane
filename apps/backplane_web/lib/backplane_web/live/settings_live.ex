@@ -368,6 +368,10 @@ defmodule BackplaneWeb.SettingsLive do
     {:noreply, assign(socket, cred_auth_type: auth_type)}
   end
 
+  def handle_event("change_kind", %{"kind" => kind}, socket) do
+    {:noreply, assign(socket, cred_kind: kind)}
+  end
+
   def handle_event("save_credential", params, socket) do
     case socket.assigns.cred_form_mode do
       :add -> handle_add_credential(params, socket)
@@ -561,29 +565,34 @@ defmodule BackplaneWeb.SettingsLive do
 
   # --- Helpers ---
 
-  defp cred_secret_label(:rotate, _auth_type), do: "New Secret"
-  defp cred_secret_label(_mode, "oauth2_client_credentials"), do: "Client Secret"
-  defp cred_secret_label(_mode, _auth_type), do: "Secret"
+  defp cred_secret_label(_mode, _auth_type, "script"), do: "Script Content"
+  defp cred_secret_label(:rotate, _auth_type, _kind), do: "New Secret"
+  defp cred_secret_label(_mode, "oauth2_client_credentials", _kind), do: "Client Secret"
+  defp cred_secret_label(_mode, _auth_type, _kind), do: "Secret"
 
-  defp cred_secret_placeholder(:edit, "oauth2_client_credentials"),
-    do: "Leave empty to keep current client secret"
-
-  defp cred_secret_placeholder(:edit, _auth_type), do: "Leave empty to keep current"
-  defp cred_secret_placeholder(_mode, "oauth2_client_credentials"), do: "OAuth2 client secret"
-  defp cred_secret_placeholder(_mode, _auth_type), do: "API key or token"
+  defp cred_secret_placeholder(:edit, _auth_type, "script"), do: "Leave empty to keep current script content"
+  defp cred_secret_placeholder(_mode, _auth_type, "script"), do: "Enter script contents here..."
+  defp cred_secret_placeholder(:edit, "oauth2_client_credentials", _kind), do: "Leave empty to keep current client secret"
+  defp cred_secret_placeholder(:edit, _auth_type, _kind), do: "Leave empty to keep current"
+  defp cred_secret_placeholder(_mode, "oauth2_client_credentials", _kind), do: "OAuth2 client secret"
+  defp cred_secret_placeholder(_mode, _auth_type, _kind), do: "API key or token"
 
   defp build_metadata(params) do
-    auth_type = params["auth_type"] || "api_key"
-
-    if auth_type == "oauth2_client_credentials" do
-      %{
-        "auth_type" => "oauth2_client_credentials",
-        "client_id" => params["client_id"] || "",
-        "token_url" => params["token_url"] || "",
-        "scope" => params["scope"] || ""
-      }
+    if params["kind"] == "script" do
+      %{}
     else
-      %{"auth_type" => "api_key"}
+      auth_type = params["auth_type"] || "api_key"
+
+      if auth_type == "oauth2_client_credentials" do
+        %{
+          "auth_type" => "oauth2_client_credentials",
+          "client_id" => params["client_id"] || "",
+          "token_url" => params["token_url"] || "",
+          "scope" => params["scope"] || ""
+        }
+      else
+        %{"auth_type" => "api_key"}
+      end
     end
   end
 
@@ -652,6 +661,7 @@ defmodule BackplaneWeb.SettingsLive do
     {"upstream", "Upstream MCP"},
     {"service", "Service"},
     {"admin", "Admin"},
+    {"script", "Script"},
     {"custom", "Custom"}
   ]
 
@@ -1033,53 +1043,69 @@ defmodule BackplaneWeb.SettingsLive do
             label="Kind"
             options={@kind_options}
             value={@cred_kind}
+            phx-change="change_kind"
           />
 
-          <.dm_select
-            id="cred-auth-type"
-            name="auth_type"
-            label="Auth Type"
-            options={[{"api_key", "API Key"}, {"oauth2_client_credentials", "OAuth2 Client Credentials"}]}
-            value={@cred_auth_type}
-            phx-change="change_auth_type"
-          />
+          <%= if @cred_kind != "script" do %>
+            <.dm_select
+              id="cred-auth-type"
+              name="auth_type"
+              label="Auth Type"
+              options={[{"api_key", "API Key"}, {"oauth2_client_credentials", "OAuth2 Client Credentials"}]}
+              value={@cred_auth_type}
+              phx-change="change_auth_type"
+            />
 
-          <%= if @cred_auth_type == "oauth2_client_credentials" do %>
-            <.dm_input
-              id="cred-client-id"
-              name="client_id"
-              label="Client ID"
-              value={@cred_client_id}
-              placeholder="OAuth2 client identifier"
-              required
-            />
-            <.dm_input
-              id="cred-token-url"
-              name="token_url"
-              label="Token URL"
-              value={@cred_token_url}
-              placeholder="https://auth.example.com/oauth/token"
-              required
-            />
-            <.dm_input
-              id="cred-scope"
-              name="scope"
-              label="Scope (optional)"
-              value={@cred_scope}
-              placeholder="e.g. read write"
-            />
+            <%= if @cred_auth_type == "oauth2_client_credentials" do %>
+              <.dm_input
+                id="cred-client-id"
+                name="client_id"
+                label="Client ID"
+                value={@cred_client_id}
+                placeholder="OAuth2 client identifier"
+                required
+              />
+              <.dm_input
+                id="cred-token-url"
+                name="token_url"
+                label="Token URL"
+                value={@cred_token_url}
+                placeholder="https://auth.example.com/oauth/token"
+                required
+              />
+              <.dm_input
+                id="cred-scope"
+                name="scope"
+                label="Scope (optional)"
+                value={@cred_scope}
+                placeholder="e.g. read write"
+              />
+            <% end %>
           <% end %>
         <% end %>
 
-        <.dm_input
-          id="cred-secret"
-          name="secret"
-          type="password"
-          value={@cred_secret}
-          label={cred_secret_label(@cred_form_mode, @cred_auth_type)}
-          placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type)}
-          {if @cred_form_mode == :add, do: [required: true], else: []}
-        />
+        <%= if @cred_kind == "script" do %>
+          <.dm_textarea
+            id="cred-secret"
+            name="secret"
+            value={@cred_secret}
+            label={cred_secret_label(@cred_form_mode, @cred_auth_type, @cred_kind)}
+            placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type, @cred_kind)}
+            rows={8}
+            class="font-mono"
+            {if @cred_form_mode == :add, do: [required: true], else: []}
+          />
+        <% else %>
+          <.dm_input
+            id="cred-secret"
+            name="secret"
+            type="password"
+            value={@cred_secret}
+            label={cred_secret_label(@cred_form_mode, @cred_auth_type, @cred_kind)}
+            placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type, @cred_kind)}
+            {if @cred_form_mode == :add, do: [required: true], else: []}
+          />
+        <% end %>
         <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant -mt-2">
           Leave empty to keep the current secret. Enter a new value to rotate it.
         </p>
