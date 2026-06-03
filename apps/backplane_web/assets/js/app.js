@@ -79,6 +79,20 @@ let liveSocket = new LiveSocket("/live", Socket, {
   hooks: DuskmoonHooks
 })
 
+// Close dialogs when buttons inside dialog forms are clicked
+document.addEventListener("click", (event) => {
+  const btn = event.target.closest("el-dm-button")
+  if (btn) {
+    const dialogForm = btn.closest("form[method='dialog']")
+    if (dialogForm) {
+      const dialog = dialogForm.closest("el-dm-dialog")
+      if (dialog && typeof dialog.close === "function") {
+        dialog.close()
+      }
+    }
+  }
+})
+
 liveSocket.connect()
 
 window.liveSocket = liveSocket

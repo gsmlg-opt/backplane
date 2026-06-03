@@ -328,3 +328,18 @@
     padding-top: 0.625rem;
   }
 }
+
+/* Fix confirm dialog footer layout in el-dm-dialog */
+el-dm-dialog div[slot="footer"] {
+  display: flex !important;
+  flex-direction: row-reverse !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  gap: 0.75rem !important;
+  margin-top: 1.5rem !important;
+}
+
+el-dm-dialog div[slot="footer"] form {
+  display: inline-block !important;
+  margin: 0 !important;
+}

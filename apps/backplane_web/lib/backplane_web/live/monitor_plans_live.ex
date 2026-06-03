@@ -18,46 +18,52 @@ defmodule BackplaneWeb.MonitorPlansLive do
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, load_plans(socket)}
+  def handle_params(params, _uri, socket) do
+    {:noreply, apply_action(socket, socket.assigns.live_action, params)}
+  end
+
+  defp apply_action(socket, :index, _params) do
+    socket
+    |> assign(editing: nil, form: nil)
+    |> load_plans()
+  end
+
+  defp apply_action(socket, :new, _params) do
+    changeset = Plan.changeset(%Plan{}, %{})
+
+    socket
+    |> assign(
+      editing: :new,
+      form: to_form(changeset),
+      credentials: load_credentials()
+    )
+    |> load_plans()
+  end
+
+  defp apply_action(socket, :edit, %{"id" => id}) do
+    case Monitor.get_plan(id) do
+      nil ->
+        socket
+        |> put_flash(:error, "Plan not found")
+        |> push_patch(to: ~p"/admin/system/monitor/plans")
+
+      plan ->
+        changeset = Plan.changeset(plan, %{})
+
+        socket
+        |> assign(
+          editing: plan,
+          form: to_form(changeset),
+          credentials: load_credentials()
+        )
+        |> load_plans()
+    end
   end
 
   @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("new", _, socket) do
-    changeset = Plan.changeset(%Plan{}, %{})
-
-    {:noreply,
-     assign(socket,
-       editing: :new,
-       form: to_form(changeset),
-       credentials: load_credentials()
-     )}
-  end
-
-  def handle_event("edit", %{"id" => id}, socket) do
-    case Monitor.get_plan(id) do
-      nil ->
-        {:noreply, put_flash(socket, :error, "Plan not found")}
-
-      plan ->
-        changeset = Plan.changeset(plan, %{})
-
-        {:noreply,
-         assign(socket,
-           editing: plan,
-           form: to_form(changeset),
-           credentials: load_credentials()
-         )}
-    end
-  end
-
-  def handle_event("cancel", _, socket) do
-    {:noreply, assign(socket, editing: nil, form: nil)}
-  end
-
   def handle_event("toggle_active", %{"id" => id}, socket) do
     case Monitor.get_plan(id) do
       nil ->
@@ -102,8 +108,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
             {:noreply,
              socket
              |> put_flash(:info, "Plan #{plan.name} deleted")
-             |> assign(editing: nil, form: nil)
-             |> load_plans()}
+             |> push_patch(to: ~p"/admin/system/monitor/plans")}
 
           {:error, _} ->
             {:noreply, put_flash(socket, :error, "Failed to delete plan")}
@@ -117,8 +122,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} created")
-         |> assign(editing: nil, form: nil)
-         |> load_plans()}
+         |> push_patch(to: ~p"/admin/system/monitor/plans")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
@@ -131,8 +135,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} updated")
-         |> assign(editing: nil, form: nil)
-         |> load_plans()}
+         |> push_patch(to: ~p"/admin/system/monitor/plans")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
@@ -166,7 +169,9 @@ defmodule BackplaneWeb.MonitorPlansLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">Plan Usage</h1>
-        <.dm_btn variant="primary" size="sm" phx-click="new">New Plan</.dm_btn>
+        <.link patch={~p"/admin/system/monitor/plans/new"}>
+          <.dm_btn variant="primary" size="sm">New Plan</.dm_btn>
+        </.link>
       </div>
 
       <.dm_card :if={@editing} variant="bordered" class="mb-6">
@@ -227,68 +232,100 @@ defmodule BackplaneWeb.MonitorPlansLive do
 
           <div class="flex gap-2">
             <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-            <.dm_btn type="button" phx-click="cancel">Cancel</.dm_btn>
+            <.link patch={~p"/admin/system/monitor/plans"} class="no-underline">
+              <.dm_btn type="button">Cancel</.dm_btn>
+            </.link>
           </div>
         </.form>
       </.dm_card>
 
-      <div :if={@plans == []} class="text-on-surface-variant">
+      <div :if={!@editing && @plans == []} class="text-on-surface-variant">
         No plans configured. Add a subscription plan to monitor its usage.
       </div>
 
-      <div class="space-y-4">
-        <.dm_card :for={plan <- @plans} variant="bordered">
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="flex items-center gap-2">
-                <h3 class="text-sm font-medium">{plan.name}</h3>
-                <.dm_badge variant="info" size="sm">
-                  {Plan.provider_label(plan.provider)}
-                </.dm_badge>
-                <.dm_badge
-                  :if={!Plan.provider_supported?(plan.provider)}
-                  variant="warning"
-                  size="sm"
-                >
-                  Coming Soon
-                </.dm_badge>
-                <.dm_badge
-                  variant={if plan.active, do: "success", else: "error"}
-                  size="sm"
-                >
-                  {if plan.active, do: "Active", else: "Inactive"}
-                </.dm_badge>
-              </div>
-              <p class="text-xs text-on-surface-variant mt-1">
-                Credential: <span class="text-on-surface font-mono">{plan.credential_name}</span>
-              </p>
-              <p class="text-xs text-on-surface-variant mt-1">
-                Updated {Calendar.strftime(plan.updated_at, "%Y-%m-%d %H:%M")}
-              </p>
-            </div>
-            <div class="flex items-center gap-2">
+      <.dm_table :if={!@editing && @plans != []} id="monitor-plans-table" data={@plans} hover zebra>
+        <:col :let={plan} label="Name">
+          <div class="font-medium text-on-surface">{plan.name}</div>
+        </:col>
+        <:col :let={plan} label="Provider">
+          <div class="flex items-center gap-2">
+            <.dm_badge variant="info" size="sm">
+              {Plan.provider_label(plan.provider)}
+            </.dm_badge>
+            <.dm_badge
+              :if={!Plan.provider_supported?(plan.provider)}
+              variant="warning"
+              size="sm"
+            >
+              Coming Soon
+            </.dm_badge>
+          </div>
+        </:col>
+        <:col :let={plan} label="Credential">
+          <code class="text-xs font-mono">{plan.credential_name}</code>
+        </:col>
+        <:col :let={plan} label="Status">
+          <.dm_badge
+            variant={if plan.active, do: "success", else: "error"}
+            size="sm"
+          >
+            {if plan.active, do: "Active", else: "Inactive"}
+          </.dm_badge>
+        </:col>
+        <:col :let={plan} label="Last Updated">
+          <span class="text-xs text-on-surface-variant">
+            {Calendar.strftime(plan.updated_at, "%Y-%m-%d %H:%M")}
+          </span>
+        </:col>
+        <:col :let={plan} label="Actions">
+          <div class="flex items-center gap-1">
+            <.dm_tooltip content={if plan.active, do: "Deactivate", else: "Activate"} position="bottom">
               <.dm_btn
+                type="button"
                 variant={if plan.active, do: "warning", else: "success"}
                 size="xs"
+                shape="circle"
+                aria-label={if plan.active, do: "Deactivate #{plan.name}", else: "Activate #{plan.name}"}
                 phx-click="toggle_active"
                 phx-value-id={plan.id}
               >
-                {if plan.active, do: "Deactivate", else: "Activate"}
+                <.dm_mdi name={if plan.active, do: "pause", else: "play"} class="h-4 w-4" />
+                <span class="sr-only">{if plan.active, do: "Deactivate", else: "Activate"}</span>
               </.dm_btn>
-              <.dm_btn size="xs" phx-click="edit" phx-value-id={plan.id}>Edit</.dm_btn>
+            </.dm_tooltip>
+
+            <.dm_tooltip content="Edit" position="bottom">
+              <.link patch={~p"/admin/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
+                <.dm_btn
+                  type="button"
+                  size="xs"
+                  shape="circle"
+                  aria-label={"Edit #{plan.name}"}
+                >
+                  <.dm_mdi name="pencil" class="h-4 w-4" />
+                  <span class="sr-only">Edit</span>
+                </.dm_btn>
+              </.link>
+            </.dm_tooltip>
+
+            <.dm_tooltip content="Delete" position="bottom">
               <.dm_btn
+                type="button"
                 variant="error"
                 size="xs"
+                shape="circle"
+                aria-label={"Delete #{plan.name}"}
                 confirm={"Delete plan #{plan.name}? This cannot be undone."}
                 phx-click="delete"
                 phx-value-id={plan.id}
               >
-                Delete
+                <.dm_mdi name="trash-can" class="h-4 w-4" />
+                <span class="sr-only">Delete</span>
               </.dm_btn>
-            </div>
+            </.dm_tooltip>
           </div>
-        </.dm_card>
-      </div>
+        </:col>
+      </.dm_table>
     </div>
     """
   end

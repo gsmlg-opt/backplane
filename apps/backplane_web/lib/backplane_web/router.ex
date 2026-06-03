@@ -113,6 +113,8 @@ defmodule BackplaneWeb.Router do
     live("/system/clients", ClientsLive, :index)
     live("/system/logs", LogsLive, :index)
     live("/system/monitor/plans", MonitorPlansLive, :index)
+    live("/system/monitor/plans/new", MonitorPlansLive, :new)
+    live("/system/monitor/plans/:id/edit", MonitorPlansLive, :edit)
     live("/system/credentials", SettingsLive, :credentials)
     live("/system/credentials/new", SettingsLive, :credentials_new)
     live("/system/credentials/new/:vendor", SettingsLive, :credentials_new_oauth)
