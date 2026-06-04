@@ -53,5 +53,6 @@ defmodule Backplane.Monitor.Plan do
   @spec provider_supported?(String.t()) :: boolean()
   def provider_supported?("zai"), do: true
   def provider_supported?("minimax"), do: true
+  def provider_supported?("claude_code"), do: true
   def provider_supported?(_), do: false
 end

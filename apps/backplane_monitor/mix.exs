@@ -30,6 +30,7 @@ defmodule BackplaneMonitor.MixProject do
     [
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
+      {:denox, "~> 0.6.0"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"}
     ]
