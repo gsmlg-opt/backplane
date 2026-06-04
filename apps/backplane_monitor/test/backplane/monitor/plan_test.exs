@@ -8,4 +8,10 @@ defmodule Backplane.Monitor.PlanTest do
     assert Plan.provider_label("claude_code") == "Claude Code"
     assert Plan.provider_supported?("claude_code")
   end
+
+  test "OpenAI Codex is a supported monitor provider" do
+    assert "openai_codex" in Plan.providers()
+    assert Plan.provider_label("openai_codex") == "OpenAI Codex"
+    assert Plan.provider_supported?("openai_codex")
+  end
 end

@@ -4,11 +4,17 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
   alias Backplane.Monitor.Plan
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
-  alias Backplane.Monitor.Providers.MiniMax
+  alias Backplane.Monitor.Providers.{MiniMax, OpenAICodex}
 
   setup do
-    previous = Application.get_env(:backplane, :minimax_monitor_req_options)
+    previous_minimax = Application.get_env(:backplane, :minimax_monitor_req_options)
+    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+
     Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
+
+    Application.put_env(:backplane, :openai_codex_monitor_req_options,
+      plug: {Req.Test, OpenAICodex}
+    )
 
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
 
@@ -24,10 +30,16 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
       })
 
     on_exit(fn ->
-      if previous do
-        Application.put_env(:backplane, :minimax_monitor_req_options, previous)
+      if previous_minimax do
+        Application.put_env(:backplane, :minimax_monitor_req_options, previous_minimax)
       else
         Application.delete_env(:backplane, :minimax_monitor_req_options)
+      end
+
+      if previous_openai do
+        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
+      else
+        Application.delete_env(:backplane, :openai_codex_monitor_req_options)
       end
     end)
 
@@ -146,6 +158,87 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "Disabled"
   end
 
+  test "renders OpenAI Codex usage buckets and credits", %{conn: conn} do
+    Req.Test.stub(MiniMax, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    end)
+
+    Req.Test.stub(OpenAICodex, fn conn ->
+      assert {"authorization", "Bearer codex-access"} in conn.req_headers
+      assert {"chatgpt-account-id", "acc-123"} in conn.req_headers
+
+      body = %{
+        "plan_type" => "plus",
+        "rate_limit" => %{
+          "primary_window" => %{
+            "used_percent" => 25,
+            "limit_window_seconds" => 18_000,
+            "reset_at" => 1_760_000_000
+          },
+          "secondary_window" => %{
+            "used_percent" => 10,
+            "limit_window_seconds" => 604_800,
+            "reset_at" => 1_760_500_000
+          }
+        },
+        "credits" => %{
+          "has_credits" => true,
+          "unlimited" => false,
+          "balance" => "9.99"
+        },
+        "additional_rate_limits" => [
+          %{
+            "metered_feature" => "codex_other",
+            "limit_name" => "codex_other",
+            "rate_limit" => %{
+              "primary_window" => %{
+                "used_percent" => 42,
+                "limit_window_seconds" => 3600,
+                "reset_at" => 1_760_001_000
+              }
+            }
+          }
+        ],
+        "rate_limit_reached_type" => %{"type" => "rate_limit_reached"}
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    {:ok, credential} =
+      Credentials.store_device_token(
+        "openai-codex-test-cred",
+        "openai_oauth",
+        openai_token_set("codex-access", "codex-refresh", "acc-123"),
+        %{"account_id" => "acc-123"}
+      )
+
+    Backplane.Settings.Credentials.Vault.put(credential)
+
+    {:ok, _plan} =
+      Repo.insert(%Plan{
+        name: "My Codex Plan",
+        provider: "openai_codex",
+        credential_name: "openai-codex-test-cred",
+        active: true
+      })
+
+    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    assert html =~ "My Codex Plan"
+    assert html =~ "OpenAI Codex"
+    assert html =~ "Plus"
+    assert html =~ "Codex"
+    assert html =~ "codex_other"
+    assert html =~ "25% used"
+    assert html =~ "42% used"
+    assert html =~ "9.99"
+    assert html =~ "rate_limit_reached"
+  end
+
   defp usage_script(usage) do
     """
     const response = await fetch("#{data_url(usage)}");
@@ -156,5 +249,16 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
 
   defp data_url(payload) do
     "data:application/json;base64,#{payload |> Jason.encode!() |> Base.encode64()}"
+  end
+
+  defp openai_token_set(access_token, refresh_token, account_id) do
+    %{
+      "type" => "codex_device_oauth",
+      "access_token" => access_token,
+      "refresh_token" => refresh_token,
+      "expires_at" => System.system_time(:millisecond) + 60 * 60 * 1000,
+      "last_refresh" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "account_id" => account_id
+    }
   end
 end

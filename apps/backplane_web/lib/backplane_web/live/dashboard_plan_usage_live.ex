@@ -107,6 +107,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
               <.zai_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:ok, %{provider: "minimax"} = data} -> %>
               <.minimax_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
+            <% {:ok, %{provider: "openai_codex"} = data} -> %>
+              <.openai_codex_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:ok, %{provider: "claude_code"} = data} -> %>
               <.claude_code_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:unsupported, _provider} -> %>
@@ -214,6 +216,121 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
         </.dm_table>
       </div>
     </.dm_card>
+    """
+  end
+
+  # --- OpenAI Codex Card ---
+
+  defp openai_codex_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:limits, openai_codex_limits(assigns.data.limits))
+      |> assign(:plan_type, format_plan_type(assigns.data.plan_type))
+
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">{@plan.name}</span>
+            <.dm_badge variant="info" size="sm">OpenAI Codex</.dm_badge>
+          </div>
+          <span class="text-xs text-on-surface-variant">
+            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+          </span>
+        </div>
+      </:title>
+      <div class="space-y-4">
+        <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+          <div>
+            <dt class="text-xs text-on-surface-variant">Plan</dt>
+            <dd class="font-medium">{@plan_type}</dd>
+          </div>
+          <div>
+            <dt class="text-xs text-on-surface-variant">Status</dt>
+            <dd class="font-medium">{@data.status || "ok"}</dd>
+          </div>
+          <div>
+            <dt class="text-xs text-on-surface-variant">Buckets</dt>
+            <dd class="font-medium">{length(@limits)}</dd>
+          </div>
+        </dl>
+
+        <div :if={@limits != []} class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <div
+            :for={limit <- @limits}
+            class="rounded border border-outline-variant bg-surface-container-low p-4"
+          >
+            <div class="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm font-semibold">{openai_codex_limit_title(limit)}</div>
+                <div class="text-xs text-on-surface-variant">{limit.limit_id}</div>
+              </div>
+              <.dm_badge
+                :if={limit.rate_limit_reached_type}
+                variant="error"
+                size="sm"
+              >
+                Limited
+              </.dm_badge>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <.openai_codex_window title="Primary" window={limit.primary} />
+              <.openai_codex_window title="Secondary" window={limit.secondary} />
+            </div>
+
+            <dl
+              :if={limit.credits || limit.rate_limit_reached_type}
+              class="mt-3 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2"
+            >
+              <div :if={limit.credits}>
+                <dt class="text-on-surface-variant">Credits</dt>
+                <dd class="font-medium">{format_openai_codex_credits(limit.credits)}</dd>
+              </div>
+              <div :if={limit.rate_limit_reached_type}>
+                <dt class="text-on-surface-variant">Limit reached</dt>
+                <dd class="font-medium">{limit.rate_limit_reached_type}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+
+        <div :if={@limits == []} class="text-sm text-on-surface-variant">
+          No OpenAI Codex usage buckets reported.
+        </div>
+      </div>
+    </.dm_card>
+    """
+  end
+
+  defp openai_codex_window(assigns) do
+    assigns =
+      assigns
+      |> assign(:used_percent, openai_codex_used_percent(assigns.window))
+      |> assign(:percentage, normalize_percentage(openai_codex_used_percent(assigns.window)) || 0)
+
+    ~H"""
+    <div class="rounded border border-outline-variant bg-surface p-3">
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <span class="text-xs font-medium">{@title}</span>
+        <.dm_badge :if={@window} variant={percentage_variant(@percentage)} size="sm">
+          {format_used_percent(@used_percent)} used
+        </.dm_badge>
+      </div>
+
+      <div :if={@window} class="space-y-2">
+        <.usage_bar percentage={@percentage} />
+        <div class="flex items-center justify-between gap-3 text-xs text-on-surface-variant">
+          <span>{format_window_minutes(@window.window_duration_mins)}</span>
+          <span>{format_unix_reset_at(@window.resets_at)}</span>
+        </div>
+      </div>
+
+      <div :if={!@window} class="text-xs text-on-surface-variant">
+        Not reported
+      </div>
+    </div>
     """
   end
 
@@ -439,6 +556,47 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp claude_code_extra_usage(_), do: nil
 
+  defp openai_codex_limits(limits) when is_map(limits) do
+    limits
+    |> Map.values()
+    |> Enum.filter(&is_map/1)
+    |> Enum.sort_by(fn limit ->
+      case map_value(limit, "limit_id") do
+        "codex" -> "0"
+        id when is_binary(id) -> "1:#{id}"
+        _ -> "2"
+      end
+    end)
+  end
+
+  defp openai_codex_limits(_), do: []
+
+  defp openai_codex_limit_title(limit) do
+    name = map_value(limit, "limit_name")
+    id = map_value(limit, "limit_id")
+
+    cond do
+      is_binary(name) and name != "" -> name
+      id == "codex" -> "Codex"
+      is_binary(id) -> id
+      true -> "Usage"
+    end
+  end
+
+  defp openai_codex_used_percent(%{} = window), do: map_value(window, "used_percent")
+  defp openai_codex_used_percent(_), do: nil
+
+  defp format_plan_type(nil), do: "Unknown"
+
+  defp format_plan_type(plan_type) when is_binary(plan_type) do
+    plan_type
+    |> String.replace("_", " ")
+    |> String.split(" ", trim: true)
+    |> Enum.map_join(" ", &String.capitalize/1)
+  end
+
+  defp format_plan_type(plan_type), do: to_string(plan_type)
+
   defp map_value(map, key) when is_map(map) and is_binary(key) do
     if Map.has_key?(map, key) do
       Map.get(map, key)
@@ -475,6 +633,80 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
     end
   end
 
+  defp format_used_percent(nil), do: "unknown"
+  defp format_used_percent(value) when is_integer(value), do: "#{value}%"
+
+  defp format_used_percent(value) when is_float(value) do
+    rounded = Float.round(value, 1)
+
+    if rounded == trunc(rounded) do
+      "#{trunc(rounded)}%"
+    else
+      "#{rounded}%"
+    end
+  end
+
+  defp format_used_percent(value), do: "#{value}%"
+
+  defp format_window_minutes(nil), do: "Window not reported"
+
+  defp format_window_minutes(minutes) when is_number(minutes) do
+    minutes = round(minutes)
+
+    cond do
+      minutes < 60 ->
+        "#{minutes}m"
+
+      minutes < 1440 and rem(minutes, 60) == 0 ->
+        "#{div(minutes, 60)}h"
+
+      minutes < 1440 ->
+        "#{div(minutes, 60)}h #{rem(minutes, 60)}m"
+
+      rem(minutes, 1440) == 0 ->
+        "#{div(minutes, 1440)}d"
+
+      true ->
+        days = div(minutes, 1440)
+        hours = div(rem(minutes, 1440), 60)
+        "#{days}d #{hours}h"
+    end
+  end
+
+  defp format_unix_reset_at(nil), do: "No reset"
+
+  defp format_unix_reset_at(value) when is_integer(value) do
+    value
+    |> DateTime.from_unix!()
+    |> Calendar.strftime("%m/%d %H:%M UTC")
+  end
+
+  defp format_unix_reset_at(value) when is_float(value) do
+    value
+    |> trunc()
+    |> format_unix_reset_at()
+  end
+
+  defp format_unix_reset_at(_), do: "No reset"
+
+  defp format_openai_codex_credits(%{} = credits) do
+    cond do
+      map_value(credits, "unlimited") == true ->
+        "Unlimited"
+
+      balance = map_value(credits, "balance") ->
+        to_string(balance)
+
+      map_value(credits, "has_credits") == false ->
+        "None"
+
+      true ->
+        "Not reported"
+    end
+  end
+
+  defp format_openai_codex_credits(_), do: "Not reported"
+
   defp format_credit(nil, _currency), do: "Not set"
   defp format_credit(value, nil), do: to_string(value)
   defp format_credit(value, currency), do: "#{value} #{currency}"
@@ -482,15 +714,38 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_error(:not_found), do: "Credential not found"
   defp format_error(:decryption_failed), do: "Failed to decrypt credential"
   defp format_error(:provider_not_supported), do: "Provider not yet supported"
+  defp format_error(:missing_access_token), do: "OpenAI Codex access token is missing"
+  defp format_error(:missing_chatgpt_account_id), do: "OpenAI Codex account ID is missing"
+  defp format_error(:invalid_usage_response), do: "Usage response was not recognized"
+  defp format_error(:unauthorized), do: "OpenAI Codex token was rejected; reconnect is required"
 
   defp format_error({:invalid_credential_kind, kind, expected}),
     do: "Credential kind #{kind} is not #{expected}"
+
+  defp format_error({:invalid_credential_auth_type, auth_type, expected}),
+    do: "Credential auth type #{auth_type} is not #{expected}"
 
   defp format_error({:script_runtime_failed, reason}),
     do: "Script runtime failed: #{inspect(reason)}"
 
   defp format_error({:script_failed, reason}), do: "Script failed: #{inspect(reason)}"
   defp format_error({:api_error, status, _}), do: "API returned #{status}"
+  defp format_error({:refresh_failed, status}), do: "OAuth refresh returned #{status}"
+
+  defp format_error({:refresh_error, %Req.TransportError{reason: :nxdomain}}),
+    do: "OAuth refresh host could not be resolved; check DNS or proxy settings"
+
+  defp format_error({:refresh_error, %Req.TransportError{reason: reason}}),
+    do: "OAuth refresh request failed: #{inspect(reason)}"
+
+  defp format_error({:refresh_error, reason}),
+    do: "OAuth refresh request failed: #{inspect(reason)}"
+
+  defp format_error({:rate_limited, nil}), do: "Usage endpoint is rate limited"
+
+  defp format_error({:rate_limited, seconds}),
+    do: "Usage endpoint is rate limited for #{seconds}s"
+
   defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
   defp format_error(other), do: inspect(other)
 
