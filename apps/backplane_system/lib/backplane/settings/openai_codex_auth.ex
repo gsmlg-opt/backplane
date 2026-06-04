@@ -367,8 +367,19 @@ defmodule Backplane.Settings.OpenAICodexAuth do
   defp merge_claims(id_claims, access_claims), do: Map.merge(access_claims, id_claims)
 
   defp first_claim(claims, keys) do
-    Enum.find_value(keys, &claims[&1])
+    Enum.find_value(keys, &claims[&1]) ||
+      claims
+      |> Map.values()
+      |> Enum.find_value(&first_deep_claim(&1, keys))
   end
+
+  defp first_deep_claim(map, keys) when is_map(map), do: first_claim(map, keys)
+
+  defp first_deep_claim(list, keys) when is_list(list) do
+    Enum.find_value(list, &first_deep_claim(&1, keys))
+  end
+
+  defp first_deep_claim(_, _keys), do: nil
 
   defp credential_name(map) do
     case get_any(map, :credential_name) do

@@ -9,6 +9,11 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     prior = Application.get_env(:backplane, OAuthRefresher, [])
 
+    prior_env =
+      snapshot_env(
+        ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy]
+      )
+
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
       openai_token_url: "http://localhost:#{port}/openai/token",
@@ -17,6 +22,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     on_exit(fn ->
       Application.put_env(:backplane, OAuthRefresher, prior)
+      restore_env(prior_env)
 
       try do
         ThousandIsland.stop(pid)
@@ -142,6 +148,28 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
     end
 
+    test "uses HTTP_PROXY for refresh requests when target is not in NO_PROXY", %{port: port} do
+      Application.put_env(:backplane, OAuthRefresher,
+        openai_token_url: "http://auth.openai.invalid/openai/token"
+      )
+
+      System.put_env("HTTP_PROXY", "http://localhost:#{port}")
+      System.delete_env("http_proxy")
+      System.delete_env("HTTPS_PROXY")
+      System.delete_env("https_proxy")
+      System.delete_env("ALL_PROXY")
+      System.delete_env("all_proxy")
+      System.put_env("NO_PROXY", "localhost,127.0.0.1")
+      System.put_env("no_proxy", "localhost,127.0.0.1")
+
+      assert {:ok,
+              %{
+                access_token: "oai-new-access",
+                refresh_token: "oai-new-refresh",
+                id_token: "oai-new-id"
+              }} = OAuthRefresher.refresh(:openai_oauth, "good-openai")
+    end
+
     test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do
       assert {:error, {:refresh_failed, 401}} =
                OAuthRefresher.refresh(:openai_oauth, "wrong")
@@ -169,5 +197,16 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       now_ms = System.system_time(:millisecond)
       assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
     end
+  end
+
+  defp snapshot_env(names) do
+    Map.new(names, fn name -> {name, System.get_env(name)} end)
+  end
+
+  defp restore_env(snapshot) do
+    Enum.each(snapshot, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
   end
 end
