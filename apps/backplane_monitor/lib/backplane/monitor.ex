@@ -9,6 +9,7 @@ defmodule Backplane.Monitor do
   import Ecto.Query
 
   alias Backplane.Monitor.Plan
+  alias Backplane.Monitor.PlanSupervisor
   alias Backplane.Repo
 
   @doc "List all plans, ordered by name."
@@ -37,6 +38,7 @@ defmodule Backplane.Monitor do
     %Plan{}
     |> Plan.changeset(attrs)
     |> Repo.insert()
+    |> after_plan_saved()
   end
 
   @doc "Update an existing plan."
@@ -45,11 +47,38 @@ defmodule Backplane.Monitor do
     plan
     |> Plan.changeset(attrs)
     |> Repo.update()
+    |> after_plan_saved()
   end
 
   @doc "Delete a plan."
   @spec delete_plan(Plan.t()) :: {:ok, Plan.t()} | {:error, Ecto.Changeset.t()}
   def delete_plan(%Plan{} = plan) do
-    Repo.delete(plan)
+    case Repo.delete(plan) do
+      {:ok, deleted_plan} = result ->
+        PlanSupervisor.stop_plan(deleted_plan)
+        result
+
+      {:error, _changeset} = result ->
+        result
+    end
   end
+
+  @doc "List latest usage snapshots from active plan processes."
+  @spec list_plan_usage_states(keyword()) :: [Backplane.Monitor.PlanServer.snapshot()]
+  def list_plan_usage_states(opts \\ []) do
+    PlanSupervisor.list_states(opts)
+  end
+
+  @doc "Ask plan processes to refresh usage and return their latest snapshots."
+  @spec refresh_plan_usages(keyword()) :: [Backplane.Monitor.PlanServer.snapshot()]
+  def refresh_plan_usages(opts \\ []) do
+    PlanSupervisor.refresh_all(opts)
+  end
+
+  defp after_plan_saved({:ok, %Plan{} = plan} = result) do
+    PlanSupervisor.update_plan(plan)
+    result
+  end
+
+  defp after_plan_saved(result), do: result
 end

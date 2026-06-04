@@ -3,9 +3,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   alias Backplane.Monitor
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.UsageFetcher
 
-  @refresh_interval 60_000
+  @state_refresh_interval 60_000
   @claude_code_windows [
     {"five_hour", "5-hour"},
     {"seven_day", "7-day"},
@@ -23,7 +22,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
-      Process.send_after(self(), :refresh, @refresh_interval)
+      Process.send_after(self(), :refresh, @state_refresh_interval)
     end
 
     {:ok,
@@ -41,7 +40,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   @impl true
   def handle_info(:refresh, socket) do
-    Process.send_after(self(), :refresh, @refresh_interval)
+    Process.send_after(self(), :refresh, @state_refresh_interval)
     {:noreply, load_usage_data(socket)}
   end
 
@@ -49,31 +48,20 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   @impl true
   def handle_event("refresh", _, socket) do
-    {:noreply, load_usage_data(socket)}
+    {:noreply, load_usage_data(socket, refresh?: true)}
   end
 
-  defp load_usage_data(socket) do
-    plans =
+  defp load_usage_data(socket, opts \\ []) do
+    plan_data =
       try do
-        Monitor.list_active_plans()
+        if Keyword.get(opts, :refresh?, false) do
+          Monitor.refresh_plan_usages()
+        else
+          Monitor.list_plan_usage_states()
+        end
       rescue
         _ -> []
       end
-
-    plan_data =
-      Enum.map(plans, fn plan ->
-        usage =
-          if Plan.provider_supported?(plan.provider) do
-            case UsageFetcher.fetch_usage(plan) do
-              {:ok, data} -> {:ok, data}
-              {:error, reason} -> {:error, reason}
-            end
-          else
-            {:unsupported, plan.provider}
-          end
-
-        %{plan: plan, usage: usage, fetched_at: DateTime.utc_now()}
-      end)
 
     assign(socket, loading: false, plan_data: plan_data)
   end
@@ -115,6 +103,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
               <.unsupported_card plan={item.plan} />
             <% {:error, reason} -> %>
               <.error_card plan={item.plan} reason={reason} />
+            <% nil -> %>
+              <.loading_card plan={item.plan} />
           <% end %>
         </div>
       </div>
@@ -459,6 +449,22 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
       <p class="text-sm text-error">
         Failed to fetch usage: {format_error(@reason)}
       </p>
+    </.dm_card>
+    """
+  end
+
+  defp loading_card(assigns) do
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>
+        <div class="flex items-center gap-2">
+          <span class="font-semibold">{@plan.name}</span>
+          <.dm_badge variant="info" size="sm">
+            {Plan.provider_label(@plan.provider)}
+          </.dm_badge>
+        </div>
+      </:title>
+      <p class="text-sm text-on-surface-variant">Usage is loading.</p>
     </.dm_card>
     """
   end

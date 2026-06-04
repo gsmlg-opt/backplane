@@ -9,12 +9,15 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
   setup do
     previous_minimax = Application.get_env(:backplane, :minimax_monitor_req_options)
     previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+    previous_req_test_owner = Application.get_env(:backplane_monitor, :req_test_owner)
 
     Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
 
     Application.put_env(:backplane, :openai_codex_monitor_req_options,
       plug: {Req.Test, OpenAICodex}
     )
+
+    Application.put_env(:backplane_monitor, :req_test_owner, self())
 
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
 
@@ -40,6 +43,12 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
         Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
       else
         Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+      end
+
+      if previous_req_test_owner do
+        Application.put_env(:backplane_monitor, :req_test_owner, previous_req_test_owner)
+      else
+        Application.delete_env(:backplane_monitor, :req_test_owner)
       end
     end)
 
