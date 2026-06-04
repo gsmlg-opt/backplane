@@ -83,7 +83,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "4d 14h left"
   end
 
-  test "renders Claude Code script usage payload", %{conn: conn} do
+  test "renders Claude Code script usage windows", %{conn: conn} do
     Req.Test.stub(MiniMax, fn conn ->
       body = %{"model_remains" => []}
 
@@ -92,7 +92,33 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
       |> Plug.Conn.send_resp(200, Jason.encode!(body))
     end)
 
-    usage = %{"subscription" => "max", "tokens" => %{"used" => 12, "limit" => 100}}
+    usage = %{
+      "cinder_cove" => nil,
+      "extra_usage" => %{
+        "currency" => nil,
+        "disabled_reason" => nil,
+        "is_enabled" => false,
+        "monthly_limit" => nil,
+        "used_credits" => nil,
+        "utilization" => nil
+      },
+      "five_hour" => %{
+        "resets_at" => "2026-06-04T04:10:00.305182+00:00",
+        "utilization" => 85
+      },
+      "iguana_necktie" => nil,
+      "omelette_promotional" => nil,
+      "seven_day" => %{
+        "resets_at" => "2026-06-07T02:00:00.305205+00:00",
+        "utilization" => 73
+      },
+      "seven_day_cowork" => nil,
+      "seven_day_oauth_apps" => nil,
+      "seven_day_omelette" => nil,
+      "seven_day_opus" => nil,
+      "seven_day_sonnet" => nil,
+      "tangelo" => nil
+    }
 
     {:ok, credential} =
       Credentials.store("claude-code-script-cred", usage_script(usage), "script")
@@ -110,10 +136,14 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
     assert html =~ "My Claude Code Plan"
     assert html =~ "Claude Code"
-    assert html =~ "subscription"
-    assert html =~ "max"
-    assert html =~ "tokens"
-    assert html =~ "12"
+    assert html =~ "5-hour"
+    assert html =~ "85% used"
+    assert html =~ "06/04 04:10 UTC"
+    assert html =~ "7-day"
+    assert html =~ "73% used"
+    assert html =~ "06/07 02:00 UTC"
+    assert html =~ "Extra Usage"
+    assert html =~ "Disabled"
   end
 
   defp usage_script(usage) do

@@ -6,6 +6,19 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   alias Backplane.Monitor.UsageFetcher
 
   @refresh_interval 60_000
+  @claude_code_windows [
+    {"five_hour", "5-hour"},
+    {"seven_day", "7-day"},
+    {"seven_day_opus", "7-day Opus"},
+    {"seven_day_sonnet", "7-day Sonnet"},
+    {"seven_day_omelette", "7-day Omelette"},
+    {"seven_day_cowork", "7-day Cowork"},
+    {"seven_day_oauth_apps", "7-day OAuth Apps"},
+    {"cinder_cove", "Cinder Cove"},
+    {"iguana_necktie", "Iguana Necktie"},
+    {"omelette_promotional", "Omelette Promotional"},
+    {"tangelo", "Tangelo"}
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -207,6 +220,11 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   # --- Claude Code Card ---
 
   defp claude_code_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:usage_windows, claude_code_usage_windows(assigns.data.usage))
+      |> assign(:extra_usage, claude_code_extra_usage(assigns.data.usage))
+
     ~H"""
     <.dm_card variant="bordered">
       <:title>
@@ -220,7 +238,68 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
           </span>
         </div>
       </:title>
-      <pre class="max-h-96 overflow-auto rounded bg-surface-container p-3 text-xs text-on-surface">{format_usage_payload(@data.usage)}</pre>
+      <div class="space-y-4">
+        <div
+          :if={@usage_windows != []}
+          class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+        >
+          <div
+            :for={window <- @usage_windows}
+            class="rounded border border-outline-variant bg-surface-container-low p-4"
+          >
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <span class="text-sm font-medium">{window.label}</span>
+              <.dm_badge variant={percentage_variant(window.utilization)} size="sm">
+                {window.utilization}% used
+              </.dm_badge>
+            </div>
+            <.usage_bar percentage={window.utilization} />
+            <div class="mt-2 text-xs text-on-surface-variant">
+              <span :if={window.resets_at}>Resets {format_reset_at(window.resets_at)}</span>
+              <span :if={!window.resets_at}>No reset reported</span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          :if={@extra_usage}
+          class="rounded border border-outline-variant bg-surface-container-low p-4"
+        >
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <span class="text-sm font-medium">Extra Usage</span>
+            <.dm_badge variant={if @extra_usage.enabled, do: "success", else: "warning"} size="sm">
+              {if @extra_usage.enabled, do: "Enabled", else: "Disabled"}
+            </.dm_badge>
+          </div>
+
+          <div
+            :if={@extra_usage.utilization}
+            class="mb-3 flex items-center justify-between gap-3"
+          >
+            <.usage_bar_inline used={@extra_usage.utilization} total={100} />
+            <span class="text-xs font-medium">{@extra_usage.utilization}% used</span>
+          </div>
+
+          <dl class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+            <div>
+              <dt class="text-on-surface-variant">Used Credits</dt>
+              <dd class="font-medium">{format_credit(@extra_usage.used_credits, @extra_usage.currency)}</dd>
+            </div>
+            <div>
+              <dt class="text-on-surface-variant">Monthly Limit</dt>
+              <dd class="font-medium">{format_credit(@extra_usage.monthly_limit, @extra_usage.currency)}</dd>
+            </div>
+            <div>
+              <dt class="text-on-surface-variant">Reason</dt>
+              <dd class="font-medium">{@extra_usage.disabled_reason || "None"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div :if={@usage_windows == [] && !@extra_usage} class="text-sm text-on-surface-variant">
+          No Claude Code usage windows reported.
+        </div>
+      </div>
     </.dm_card>
     """
   end
@@ -320,6 +399,86 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp bar_color(p) when p >= 70, do: "bg-warning"
   defp bar_color(_), do: "bg-success"
 
+  defp claude_code_usage_windows(payload) when is_map(payload) do
+    @claude_code_windows
+    |> Enum.flat_map(fn {key, label} ->
+      case map_value(payload, key) do
+        %{} = window ->
+          utilization = normalize_percentage(map_value(window, "utilization"))
+
+          if is_integer(utilization) do
+            [%{label: label, utilization: utilization, resets_at: map_value(window, "resets_at")}]
+          else
+            []
+          end
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp claude_code_usage_windows(_), do: []
+
+  defp claude_code_extra_usage(payload) when is_map(payload) do
+    case map_value(payload, "extra_usage") do
+      %{} = extra_usage ->
+        %{
+          enabled: map_value(extra_usage, "is_enabled") == true,
+          currency: map_value(extra_usage, "currency"),
+          disabled_reason: map_value(extra_usage, "disabled_reason"),
+          monthly_limit: map_value(extra_usage, "monthly_limit"),
+          used_credits: map_value(extra_usage, "used_credits"),
+          utilization: normalize_percentage(map_value(extra_usage, "utilization"))
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp claude_code_extra_usage(_), do: nil
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    if Map.has_key?(map, key) do
+      Map.get(map, key)
+    else
+      atom_key = String.to_existing_atom(key)
+      if Map.has_key?(map, atom_key), do: Map.get(map, atom_key)
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp normalize_percentage(value) when is_integer(value), do: value |> max(0) |> min(100)
+
+  defp normalize_percentage(value) when is_float(value),
+    do: value |> round() |> max(0) |> min(100)
+
+  defp normalize_percentage(value) when is_binary(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> normalize_percentage(parsed)
+      _ -> nil
+    end
+  end
+
+  defp normalize_percentage(_), do: nil
+
+  defp format_reset_at(%DateTime{} = datetime) do
+    Calendar.strftime(datetime, "%m/%d %H:%M UTC")
+  end
+
+  defp format_reset_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> format_reset_at(datetime)
+      {:error, _reason} -> value
+    end
+  end
+
+  defp format_credit(nil, _currency), do: "Not set"
+  defp format_credit(value, nil), do: to_string(value)
+  defp format_credit(value, currency), do: "#{value} #{currency}"
+
   defp format_error(:not_found), do: "Credential not found"
   defp format_error(:decryption_failed), do: "Failed to decrypt credential"
   defp format_error(:provider_not_supported), do: "Provider not yet supported"
@@ -334,13 +493,6 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_error({:api_error, status, _}), do: "API returned #{status}"
   defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
   defp format_error(other), do: inspect(other)
-
-  defp format_usage_payload(payload) do
-    case Jason.encode(payload, pretty: true) do
-      {:ok, json} -> json
-      {:error, _} -> inspect(payload, pretty: true)
-    end
-  end
 
   defp format_time_range(nil, nil), do: ""
 
