@@ -203,7 +203,7 @@ Use Conventional Commits with a scope prefix: `feat(mcp):`, `fix(hub):`, `test(d
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **backplane** (3044 symbols, 5578 relationships, 217 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **backplane** (3075 symbols, 5623 relationships, 219 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
