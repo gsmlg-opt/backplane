@@ -225,7 +225,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
               </option>
             </select>
             <p class="text-xs text-on-surface-variant mt-1">
-              The API key credential used to query usage. Must be created in System → Credentials first.
+              The credential used to query usage. Claude Code plans require a Script credential.
             </p>
           </div>
           <.form_error field={@form[:credential_name]} />

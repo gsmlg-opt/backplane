@@ -82,4 +82,49 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "1m 0s left"
     assert html =~ "4d 14h left"
   end
+
+  test "renders Claude Code script usage payload", %{conn: conn} do
+    Req.Test.stub(MiniMax, fn conn ->
+      body = %{"model_remains" => []}
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    usage = %{"subscription" => "max", "tokens" => %{"used" => 12, "limit" => 100}}
+
+    {:ok, credential} =
+      Credentials.store("claude-code-script-cred", usage_script(usage), "script")
+
+    Backplane.Settings.Credentials.Vault.put(credential)
+
+    {:ok, _plan} =
+      Repo.insert(%Plan{
+        name: "My Claude Code Plan",
+        provider: "claude_code",
+        credential_name: "claude-code-script-cred",
+        active: true
+      })
+
+    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    assert html =~ "My Claude Code Plan"
+    assert html =~ "Claude Code"
+    assert html =~ "subscription"
+    assert html =~ "max"
+    assert html =~ "tokens"
+    assert html =~ "12"
+  end
+
+  defp usage_script(usage) do
+    """
+    const response = await fetch("#{data_url(usage)}");
+    const data = await response.json();
+    return data;
+    """
+  end
+
+  defp data_url(payload) do
+    "data:application/json;base64,#{payload |> Jason.encode!() |> Base.encode64()}"
+  end
 end

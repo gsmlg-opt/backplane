@@ -94,6 +94,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
               <.zai_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:ok, %{provider: "minimax"} = data} -> %>
               <.minimax_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
+            <% {:ok, %{provider: "claude_code"} = data} -> %>
+              <.claude_code_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:unsupported, _provider} -> %>
               <.unsupported_card plan={item.plan} />
             <% {:error, reason} -> %>
@@ -202,6 +204,27 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
     """
   end
 
+  # --- Claude Code Card ---
+
+  defp claude_code_card(assigns) do
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">{@plan.name}</span>
+            <.dm_badge variant="info" size="sm">Claude Code</.dm_badge>
+          </div>
+          <span class="text-xs text-on-surface-variant">
+            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+          </span>
+        </div>
+      </:title>
+      <pre class="max-h-96 overflow-auto rounded bg-surface-container p-3 text-xs text-on-surface">{format_usage_payload(@data.usage)}</pre>
+    </.dm_card>
+    """
+  end
+
   # --- Unsupported Card ---
 
   defp unsupported_card(assigns) do
@@ -300,11 +323,27 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_error(:not_found), do: "Credential not found"
   defp format_error(:decryption_failed), do: "Failed to decrypt credential"
   defp format_error(:provider_not_supported), do: "Provider not yet supported"
+
+  defp format_error({:invalid_credential_kind, kind, expected}),
+    do: "Credential kind #{kind} is not #{expected}"
+
+  defp format_error({:script_runtime_failed, reason}),
+    do: "Script runtime failed: #{inspect(reason)}"
+
+  defp format_error({:script_failed, reason}), do: "Script failed: #{inspect(reason)}"
   defp format_error({:api_error, status, _}), do: "API returned #{status}"
   defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
   defp format_error(other), do: inspect(other)
 
+  defp format_usage_payload(payload) do
+    case Jason.encode(payload, pretty: true) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(payload, pretty: true)
+    end
+  end
+
   defp format_time_range(nil, nil), do: ""
+
   defp format_time_range(start_time, end_time) do
     case {start_time, end_time} do
       {%DateTime{} = s, %DateTime{} = e} ->
@@ -313,27 +352,34 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
         else
           "#{Calendar.strftime(s, "%m/%d %H:%M")} - #{Calendar.strftime(e, "%m/%d %H:%M")}"
         end
+
       _ ->
         ""
     end
   end
 
   defp format_duration(nil), do: ""
+
   defp format_duration(ms) when is_integer(ms) do
     total_seconds = div(ms, 1000)
+
     cond do
       total_seconds <= 0 ->
         "0s"
+
       total_seconds < 60 ->
         "#{total_seconds}s"
+
       total_seconds < 3600 ->
         minutes = div(total_seconds, 60)
         seconds = rem(total_seconds, 60)
         "#{minutes}m #{seconds}s"
+
       total_seconds < 86400 ->
         hours = div(total_seconds, 3600)
         minutes = div(rem(total_seconds, 3600), 60)
         "#{hours}h #{minutes}m"
+
       true ->
         days = div(total_seconds, 86400)
         hours = div(rem(total_seconds, 86400), 3600)
