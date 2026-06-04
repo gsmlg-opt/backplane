@@ -220,15 +220,17 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
 
       {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
 
-      prior = Application.get_env(:backplane, Backplane.Settings.OAuthDeviceFlow, [])
+      prior = Application.get_env(:backplane, Backplane.Settings.OpenAICodexAuth, [])
 
-      Application.put_env(:backplane, Backplane.Settings.OAuthDeviceFlow,
-        openai_device_url: "http://localhost:#{port}/device/code",
-        openai_token_url: "http://localhost:#{port}/token"
+      Application.put_env(:backplane, Backplane.Settings.OpenAICodexAuth,
+        device_user_code_url: "http://localhost:#{port}/api/accounts/deviceauth/usercode",
+        device_token_url: "http://localhost:#{port}/api/accounts/deviceauth/token",
+        token_url: "http://localhost:#{port}/oauth/token",
+        revoke_url: "http://localhost:#{port}/oauth/revoke"
       )
 
       on_exit(fn ->
-        Application.put_env(:backplane, Backplane.Settings.OAuthDeviceFlow, prior)
+        Application.put_env(:backplane, Backplane.Settings.OpenAICodexAuth, prior)
 
         try do
           ThousandIsland.stop(pid)
@@ -308,7 +310,14 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "https://auth.openai.com/codex/device"
       assert html =~ "LNKB-13LTY"
 
-      send(view.pid, {:poll_device_auth, :openai_oauth, "mock-device-code", "my-openai-codex"})
+      login = %{
+        device_auth_id: "mock-device-auth-id",
+        user_code: "LNKB-13LTY",
+        interval_seconds: 1,
+        expires_at: System.system_time(:millisecond) + 60_000
+      }
+
+      send(view.pid, {:poll_openai_codex_auth, login, "my-openai-codex"})
 
       render(view)
 
@@ -372,13 +381,11 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
   plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
   plug(:dispatch)
 
-  post "/device/code" do
+  post "/api/accounts/deviceauth/usercode" do
     resp = %{
-      "device_code" => "mock-device-code",
+      "device_auth_id" => "mock-device-auth-id",
       "user_code" => "LNKB-13LTY",
-      "verification_uri" => "https://auth.openai.com/codex/device",
-      "expires_in" => 900,
-      "interval" => 1
+      "interval" => "1"
     }
 
     conn
@@ -386,17 +393,42 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     |> send_resp(200, Jason.encode!(resp))
   end
 
-  post "/token" do
+  post "/api/accounts/deviceauth/token" do
     resp = %{
-      "access_token" => "mock-access-token",
-      "refresh_token" => "mock-refresh-token",
-      "expires_in" => 3600,
-      "token_type" => "Bearer",
-      "account_id" => "mock-account-id"
+      "authorization_code" => "mock-authorization-code",
+      "code_challenge" => "mock-code-challenge",
+      "code_verifier" => "mock-code-verifier"
     }
 
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, Jason.encode!(resp))
+  end
+
+  post "/oauth/token" do
+    resp = %{
+      "id_token" =>
+        jwt(%{
+          "chatgpt_account_id" => "mock-account-id",
+          "chatgpt_plan_type" => "plus",
+          "exp" => 1_900_000_000
+        }),
+      "access_token" => "mock-access-token",
+      "refresh_token" => "mock-refresh-token",
+      "token_type" => "Bearer"
+    }
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(resp))
+  end
+
+  post "/oauth/revoke" do
+    send_resp(conn, 200, "{}")
+  end
+
+  defp jwt(payload) do
+    encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+    "header.#{encoded_payload}.sig"
   end
 end

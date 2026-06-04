@@ -6,6 +6,7 @@ defmodule BackplaneWeb.SettingsLive do
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
+  alias Backplane.Settings.OpenAICodexAuth
   alias Backplane.Settings.OAuthStateStore
 
   @impl true
@@ -17,7 +18,8 @@ defmodule BackplaneWeb.SettingsLive do
   def handle_params(params, _uri, socket) do
     {page_mode, current_path, data_key} =
       case socket.assigns.live_action do
-        action when action in [:credentials, :credentials_new, :credentials_new_oauth, :credentials_edit] ->
+        action
+        when action in [:credentials, :credentials_new, :credentials_new_oauth, :credentials_edit] ->
           {:credentials, "/admin/system/credentials", "credentials"}
 
         _ ->
@@ -68,6 +70,7 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
       device_flow_error: nil,
+      device_flow_login: nil,
       device_flow_code_verifier: nil,
       device_flow_redirect_uri: nil
     )
@@ -130,6 +133,7 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
       device_flow_error: nil,
+      device_flow_login: nil,
       device_flow_code_verifier: nil,
       device_flow_redirect_uri: nil
     )
@@ -254,19 +258,17 @@ defmodule BackplaneWeb.SettingsLive do
         {:noreply, put_flash(socket, :error, "Credential name is required")}
 
       vendor == "openai_oauth" ->
-        case Backplane.Settings.OAuthDeviceFlow.request_device_code(:openai_oauth, []) do
-          {:ok, res} ->
-            Process.send_after(
-              self(),
-              {:poll_device_auth, :openai_oauth, res.device_code, name},
-              res.interval * 1000
-            )
+        case OpenAICodexAuth.start_device_login() do
+          {:ok, login} ->
+            schedule_openai_codex_poll(login, name)
 
             {:noreply,
              assign(socket,
                device_flow_state: :waiting_code,
-               device_flow_user_code: res.user_code,
-               device_flow_verification_uri: res.verification_uri,
+               device_flow_cred_name: name,
+               device_flow_user_code: login.user_code,
+               device_flow_verification_uri: login.verification_url,
+               device_flow_login: login,
                device_flow_error: nil
              )}
 
@@ -274,7 +276,8 @@ defmodule BackplaneWeb.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Failed to request device code: #{inspect(reason)}"
+               device_flow_error:
+                 "Failed to request device code: #{format_openai_codex_error(reason)}"
              )}
         end
 
@@ -401,15 +404,15 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   @impl true
-  def handle_info({:poll_device_auth, :openai_oauth, device_code, cred_name}, socket) do
+  def handle_info({:poll_openai_codex_auth, login, cred_name}, socket) do
     if socket.assigns.device_flow_state == :waiting_code and
          socket.assigns.device_flow_vendor == "openai_oauth" do
-      case Backplane.Settings.OAuthDeviceFlow.poll(:openai_oauth, device_code, []) do
-        {:ok, tokens} ->
-          hints = %{"account_id" => tokens["account_id"]}
+      case OpenAICodexAuth.poll_device_login(login) do
+        {:ok, code_result} ->
+          code_result = Map.put(code_result, :credential_name, cred_name)
 
-          case Credentials.store_device_token(cred_name, "openai_oauth", tokens, hints) do
-            {:ok, _} ->
+          case OpenAICodexAuth.exchange_authorization_code(code_result) do
+            {:ok, _state} ->
               {:noreply,
                socket
                |> put_flash(:info, "Connected OpenAI Codex as '#{cred_name}'")
@@ -424,21 +427,8 @@ defmodule BackplaneWeb.SettingsLive do
                )}
           end
 
-        {:pending} ->
-          Process.send_after(
-            self(),
-            {:poll_device_auth, :openai_oauth, device_code, cred_name},
-            5000
-          )
-
-          {:noreply, socket}
-
-        {:slow_down} ->
-          Process.send_after(
-            self(),
-            {:poll_device_auth, :openai_oauth, device_code, cred_name},
-            10000
-          )
+        {:pending, pending_login} ->
+          schedule_openai_codex_poll(pending_login, cred_name)
 
           {:noreply, socket}
 
@@ -453,7 +443,7 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Authorization failed: #{inspect(reason)}"
+             device_flow_error: "Authorization failed: #{format_openai_codex_error(reason)}"
            )}
       end
     else
@@ -490,6 +480,11 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   # --- Credential Form Handlers ---
+
+  defp schedule_openai_codex_poll(login, cred_name) do
+    delay_ms = max(login.interval_seconds, 1) * 1000
+    Process.send_after(self(), {:poll_openai_codex_auth, login, cred_name}, delay_ms)
+  end
 
   defp handle_add_credential(params, socket) do
     name = params["name"] || ""
@@ -570,11 +565,19 @@ defmodule BackplaneWeb.SettingsLive do
   defp cred_secret_label(_mode, "oauth2_client_credentials", _kind), do: "Client Secret"
   defp cred_secret_label(_mode, _auth_type, _kind), do: "Secret"
 
-  defp cred_secret_placeholder(:edit, _auth_type, "script"), do: "Leave empty to keep current script content"
+  defp cred_secret_placeholder(:edit, _auth_type, "script"),
+    do: "Leave empty to keep current script content"
+
   defp cred_secret_placeholder(_mode, _auth_type, "script"), do: "Enter script contents here..."
-  defp cred_secret_placeholder(:edit, "oauth2_client_credentials", _kind), do: "Leave empty to keep current client secret"
+
+  defp cred_secret_placeholder(:edit, "oauth2_client_credentials", _kind),
+    do: "Leave empty to keep current client secret"
+
   defp cred_secret_placeholder(:edit, _auth_type, _kind), do: "Leave empty to keep current"
-  defp cred_secret_placeholder(_mode, "oauth2_client_credentials", _kind), do: "OAuth2 client secret"
+
+  defp cred_secret_placeholder(_mode, "oauth2_client_credentials", _kind),
+    do: "OAuth2 client secret"
+
   defp cred_secret_placeholder(_mode, _auth_type, _kind), do: "API key or token"
 
   defp build_metadata(params) do
@@ -1350,4 +1353,23 @@ defmodule BackplaneWeb.SettingsLive do
   defp format_exchange_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
   defp format_exchange_error({:http, status, _}), do: "HTTP #{status}"
   defp format_exchange_error(other), do: inspect(other)
+
+  defp format_openai_codex_error(:device_code_login_disabled),
+    do: "Device-code login is not enabled for this account or server."
+
+  defp format_openai_codex_error(:refresh_token_reused),
+    do: "The refresh token was already consumed. Reconnect OpenAI Codex."
+
+  defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: :nxdomain}}),
+    do: "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings."
+
+  defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: reason}}),
+    do: "Network request failed: #{inspect(reason)}"
+
+  defp format_openai_codex_error({:missing_field, field}), do: "Missing #{field}"
+
+  defp format_openai_codex_error({reason, status}) when is_atom(reason),
+    do: "#{reason} (#{status})"
+
+  defp format_openai_codex_error(reason), do: inspect(reason)
 end

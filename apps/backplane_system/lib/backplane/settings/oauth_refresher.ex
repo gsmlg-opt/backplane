@@ -4,7 +4,7 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   Supported vendors:
   - `:anthropic_oauth` — Claude Plan (platform.claude.com)
-  - `:openai_oauth`   — OpenAI Codex (auth0.openai.com)
+  - `:openai_oauth`   — OpenAI Codex (auth.openai.com)
   - `:google_oauth`   — Google AI (oauth2.googleapis.com)
 
   Pure function. Does not touch the DB or cache. The caller (`Credentials`)
@@ -82,8 +82,8 @@ defmodule Backplane.Settings.OAuthRefresher do
 
         {:ok, result}
 
-      {:ok, %{status: status, body: resp_body}} ->
-        Logger.warning("OAuth refresh failed: status=#{status} body=#{inspect(resp_body)}")
+      {:ok, %{status: status}} ->
+        Logger.warning("OAuth refresh failed: status=#{status}")
         {:error, {:refresh_failed, status}}
 
       {:error, reason} ->
@@ -129,6 +129,6 @@ defmodule Backplane.Settings.OAuthRefresher do
   defp normalize_optional_string(_), do: nil
 
   defp default_url(:anthropic_token_url), do: "https://platform.claude.com/v1/oauth/token"
-  defp default_url(:openai_token_url), do: "https://auth0.openai.com/oauth/token"
+  defp default_url(:openai_token_url), do: "https://auth.openai.com/oauth/token"
   defp default_url(:google_token_url), do: "https://oauth2.googleapis.com/token"
 end

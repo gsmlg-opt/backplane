@@ -18,7 +18,9 @@ config :backplane, Oban,
        # Procedural extraction: nightly at 02:00
        {"0 2 * * *", BackplaneMemory.Workers.ProceduralWorker},
        # Fallback sweep: every 4 hours
-       {"0 */4 * * *", BackplaneMemory.Workers.FallbackSweepWorker}
+       {"0 */4 * * *", BackplaneMemory.Workers.FallbackSweepWorker},
+       # OAuth credential refresh: every 10 minutes
+       {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker}
      ]}
   ]
 

@@ -1,7 +1,13 @@
 defmodule Backplane.Settings.CredentialsCliOAuthTest do
   use BackplaneSystem.DataCase, async: false
 
-  alias Backplane.Settings.{Credentials, Encryption, TokenCache, OAuthRefresher}
+  alias Backplane.Settings.{
+    Credentials,
+    Encryption,
+    OAuthRefresher,
+    OAuthTokenRefreshWorker,
+    TokenCache
+  }
 
   @anthropic_json ~s({"claudeAiOauth":{"accessToken":"sk-ant-oat01-aaaa","refreshToken":"sk-ant-ort01-bbbb","expiresAt":1776417713649,"scopes":["user:inference"],"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"},"organizationUuid":"org-uuid-1234"})
 
@@ -202,6 +208,161 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       parsed = Jason.decode!(blob)
       assert parsed["tokens"]["refresh_token"] == "oai-NEWREFRESH"
     end
+
+    test "refreshes flat Codex device token blobs and persists the rotated id_token" do
+      past_ms = System.system_time(:millisecond) - 60_000
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-flat-expired",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "auth_mode" => "chatgpt",
+            "id_token" => "oai-OLDID",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "rt",
+            "expires_at" => past_ms
+          },
+          %{"auth_mode" => "chatgpt"}
+        )
+
+      assert {:ok, "oai-REFRESHED"} = Credentials.fetch("oai-flat-expired")
+
+      cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "oai-flat-expired")
+      {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
+      parsed = Jason.decode!(blob)
+      assert parsed["access_token"] == "oai-REFRESHED"
+      assert parsed["refresh_token"] == "oai-NEWREFRESH"
+      assert parsed["id_token"] == "oai-NEWID"
+      assert is_binary(parsed["last_refresh"])
+    end
+  end
+
+  describe "automatic OAuth refresh" do
+    test "lists flat Codex credentials due after the refresh interval" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-auto-due",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-DUE",
+            "refresh_token" => "rt-due",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(8)
+          }
+        )
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-auto-fresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-FRESH",
+            "refresh_token" => "rt-fresh",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(6)
+          }
+        )
+
+      {:ok, _} = Credentials.store("plain-auto", "sk-plain", "llm")
+
+      assert ["oai-auto-due"] =
+               Credentials.oauth_credentials_due_for_refresh(
+                 auth_types: ["openai_oauth"],
+                 now_ms: now_ms,
+                 refresh_interval_ms: 7 * 24 * 60 * 60 * 1000
+               )
+               |> Enum.sort()
+    end
+
+    test "refresh_oauth_token/2 refreshes a Codex token after the refresh interval" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-auto-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "id_token" => "oai-OLDID",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "rt",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(8)
+          }
+        )
+
+      assert {:ok, :refreshed} =
+               Credentials.refresh_oauth_token("oai-auto-refresh",
+                 now_ms: now_ms,
+                 refresh_interval_ms: 7 * 24 * 60 * 60 * 1000
+               )
+
+      stored = decrypt_credential_json("oai-auto-refresh")
+      assert stored["access_token"] == "oai-REFRESHED"
+      assert stored["refresh_token"] == "oai-NEWREFRESH"
+      assert stored["id_token"] == "oai-NEWID"
+      assert is_binary(stored["last_refresh"])
+    end
+
+    test "refresh_oauth_token/2 skips a Codex token before the refresh interval" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-auto-skip",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-FRESH",
+            "refresh_token" => "rt",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(6)
+          }
+        )
+
+      assert {:ok, :fresh} =
+               Credentials.refresh_oauth_token("oai-auto-skip",
+                 now_ms: now_ms,
+                 refresh_interval_ms: 7 * 24 * 60 * 60 * 1000
+               )
+
+      stored = decrypt_credential_json("oai-auto-skip")
+      assert stored["access_token"] == "oai-FRESH"
+    end
+
+    test "OAuthTokenRefreshWorker refreshes a named Codex credential" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-worker-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "rt",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(8)
+          }
+        )
+
+      assert :ok =
+               OAuthTokenRefreshWorker.perform(%Oban.Job{
+                 args: %{
+                   "credential_name" => "oai-worker-refresh",
+                   "refresh_interval_ms" => 7 * 24 * 60 * 60 * 1000
+                 }
+               })
+
+      stored = decrypt_credential_json("oai-worker-refresh")
+      assert stored["access_token"] == "oai-REFRESHED"
+    end
   end
 
   describe "fetch_with_meta/1" do
@@ -296,5 +457,17 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       # fetch_hint triggers a refresh; last 4 of "oai-REFRESHED" is "SHED"
       assert "...SHED" = Credentials.fetch_hint("oai-hint")
     end
+  end
+
+  defp decrypt_credential_json(name) do
+    cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: name)
+    {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
+    Jason.decode!(blob)
+  end
+
+  defp iso_days_ago(days) do
+    DateTime.utc_now()
+    |> DateTime.add(-days * 86_400, :second)
+    |> DateTime.to_iso8601()
   end
 end

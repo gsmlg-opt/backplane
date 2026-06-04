@@ -20,6 +20,14 @@ defmodule Backplane.Settings.Credentials do
 
   import Ecto.Query
 
+  @device_oauth_vendors %{
+    "anthropic_oauth" => :anthropic_oauth,
+    "openai_oauth" => :openai_oauth,
+    "google_oauth" => :google_oauth
+  }
+  @default_oauth_refresh_window_ms 10 * 60 * 1000
+  @default_oauth_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
+
   @doc "Store (upsert) a credential. Encrypts the plaintext value."
   @spec store(String.t(), String.t(), String.t(), map()) ::
           {:ok, Credential.t()} | {:error, term()}
@@ -195,6 +203,66 @@ defmodule Backplane.Settings.Credentials do
   @spec invalidate_token(String.t()) :: :ok
   def invalidate_token(name), do: Backplane.Settings.TokenCache.invalidate(name)
 
+  @doc """
+  Return device OAuth credential names whose tokens should be refreshed soon.
+
+  OpenAI/Codex credentials refresh after seven days since `last_refresh`, with
+  a 10-minute pre-expiry fallback. Existing OpenAI credentials without
+  `last_refresh` are considered due once so the field can be recorded.
+  """
+  @spec oauth_credentials_due_for_refresh(keyword()) :: [String.t()]
+  def oauth_credentials_due_for_refresh(opts \\ []) do
+    now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
+    refresh_window_ms = refresh_window_ms(opts)
+    refresh_interval_ms = refresh_interval_ms(opts)
+
+    auth_types =
+      normalize_auth_types(Keyword.get(opts, :auth_types, Map.keys(@device_oauth_vendors)))
+
+    Credential
+    |> Repo.all()
+    |> Enum.filter(&(((&1.metadata || %{})["auth_type"] || "") in auth_types))
+    |> Enum.filter(fn cred ->
+      with {:ok, vendor} <- oauth_vendor_for(cred),
+           {:ok, parsed} <- decode_credential_blob(cred) do
+        oauth_refresh_due?(vendor, parsed, now_ms, refresh_window_ms, refresh_interval_ms)
+      else
+        _ -> false
+      end
+    end)
+    |> Enum.map(& &1.name)
+  end
+
+  @doc """
+  Refresh a single device OAuth credential if it is inside the refresh window.
+
+  Returns `{:ok, :fresh}` when no refresh is needed, `{:ok, :refreshed}` when
+  tokens were rotated, or `{:error, reason}` when the credential cannot refresh.
+  """
+  @spec refresh_oauth_token(String.t(), keyword()) ::
+          {:ok, :fresh | :refreshed} | {:error, term()}
+  def refresh_oauth_token(name, opts \\ []) when is_binary(name) do
+    now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
+    refresh_window_ms = refresh_window_ms(opts)
+    refresh_interval_ms = refresh_interval_ms(opts)
+
+    with %Credential{} = cred <- Repo.get_by(Credential, name: name),
+         {:ok, vendor} <- oauth_vendor_for(cred),
+         {:ok, parsed} <- decode_credential_blob(cred) do
+      if oauth_refresh_due?(vendor, parsed, now_ms, refresh_window_ms, refresh_interval_ms) do
+        case do_refresh_and_persist(cred, vendor, parsed, refresh_window_ms, refresh_interval_ms) do
+          {:ok, _access_token} -> {:ok, :refreshed}
+          {:error, reason} -> {:error, reason}
+        end
+      else
+        {:ok, :fresh}
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc "Update a credential's kind and/or metadata (not the secret)."
   @spec update(String.t(), map()) :: {:ok, Credential.t()} | {:error, :not_found | term()}
   def update(name, attrs) do
@@ -263,6 +331,149 @@ defmodule Backplane.Settings.Credentials do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp refresh_window_ms(opts) do
+    opts
+    |> Keyword.get(:refresh_window_ms, @default_oauth_refresh_window_ms)
+    |> parse_non_negative_integer(@default_oauth_refresh_window_ms)
+  end
+
+  defp refresh_interval_ms(opts) do
+    opts
+    |> Keyword.get(:refresh_interval_ms, @default_oauth_refresh_interval_ms)
+    |> parse_non_negative_integer(@default_oauth_refresh_interval_ms)
+  end
+
+  defp parse_non_negative_integer(value, _default) when is_integer(value) and value >= 0,
+    do: value
+
+  defp parse_non_negative_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> integer
+      _ -> default
+    end
+  end
+
+  defp parse_non_negative_integer(_value, default), do: default
+
+  defp normalize_auth_types(auth_types) do
+    auth_types
+    |> List.wrap()
+    |> Enum.map(fn
+      auth_type when is_atom(auth_type) -> Atom.to_string(auth_type)
+      auth_type when is_binary(auth_type) -> auth_type
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp oauth_vendor_for(%Credential{metadata: metadata}) do
+    auth_type = (metadata || %{})["auth_type"]
+
+    case Map.fetch(@device_oauth_vendors, auth_type) do
+      {:ok, vendor} -> {:ok, vendor}
+      :error -> {:error, {:unsupported_oauth_auth_type, auth_type}}
+    end
+  end
+
+  defp decode_credential_blob(%Credential{encrypted_value: encrypted}) do
+    with {:ok, blob} <- Encryption.decrypt(encrypted),
+         {:ok, parsed} when is_map(parsed) <- Jason.decode(blob) do
+      {:ok, parsed}
+    else
+      {:ok, _} -> {:error, :unrecognized_format}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp oauth_refresh_due?(
+         :openai_oauth,
+         parsed,
+         now_ms,
+         refresh_window_ms,
+         refresh_interval_ms
+       ) do
+    openai_refresh_interval_due?(parsed, now_ms, refresh_interval_ms) or
+      expires_soon?(parsed, now_ms, refresh_window_ms)
+  end
+
+  defp oauth_refresh_due?(
+         :anthropic_oauth,
+         %{"claudeAiOauth" => %{"expiresAt" => expires_at_ms}},
+         now_ms,
+         refresh_window_ms,
+         _refresh_interval_ms
+       )
+       when is_integer(expires_at_ms) do
+    expires_at_ms <= now_ms + refresh_window_ms
+  end
+
+  defp oauth_refresh_due?(
+         _vendor,
+         %{"expires_at" => expires_at_ms},
+         now_ms,
+         refresh_window_ms,
+         _refresh_interval_ms
+       )
+       when is_integer(expires_at_ms) do
+    expires_at_ms <= now_ms + refresh_window_ms
+  end
+
+  defp oauth_refresh_due?(
+         _vendor,
+         %{"refresh_token" => refresh_token},
+         _now_ms,
+         _window_ms,
+         _refresh_interval_ms
+       )
+       when is_binary(refresh_token) and refresh_token != "" do
+    true
+  end
+
+  defp oauth_refresh_due?(_vendor, _parsed, _now_ms, _refresh_window_ms, _refresh_interval_ms),
+    do: false
+
+  defp openai_refresh_interval_due?(parsed, now_ms, refresh_interval_ms) do
+    cond do
+      not has_refresh_token?(parsed) ->
+        false
+
+      is_nil(parsed["last_refresh"]) ->
+        true
+
+      true ->
+        case parse_iso8601_ms(parsed["last_refresh"]) do
+          {:ok, last_refresh_ms} -> last_refresh_ms <= now_ms - refresh_interval_ms
+          :error -> true
+        end
+    end
+  end
+
+  defp expires_soon?(%{"expires_at" => expires_at_ms}, now_ms, refresh_window_ms)
+       when is_integer(expires_at_ms) do
+    expires_at_ms <= now_ms + refresh_window_ms
+  end
+
+  defp expires_soon?(_parsed, _now_ms, _refresh_window_ms), do: false
+
+  defp has_refresh_token?(%{"tokens" => %{"refresh_token" => refresh_token}})
+       when is_binary(refresh_token) and refresh_token != "",
+       do: true
+
+  defp has_refresh_token?(%{"refresh_token" => refresh_token})
+       when is_binary(refresh_token) and refresh_token != "",
+       do: true
+
+  defp has_refresh_token?(_parsed), do: false
+
+  defp parse_iso8601_ms(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, DateTime.to_unix(datetime, :millisecond)}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp parse_iso8601_ms(_value), do: :error
 
   defp validate_oauth_metadata(%{"auth_type" => "anthropic_oauth"}), do: :ok
   defp validate_oauth_metadata(%{"auth_type" => "openai_oauth"}), do: :ok
@@ -358,7 +569,13 @@ defmodule Backplane.Settings.Credentials do
 
   # Wrapped in a transaction with FOR UPDATE so concurrent fetches on an expired
   # credential don't both hit the refresh endpoint and race on the rotated token.
-  defp do_refresh_and_persist(cred, vendor, _parsed) do
+  defp do_refresh_and_persist(
+         cred,
+         vendor,
+         _parsed,
+         refresh_window_ms \\ 60_000,
+         refresh_interval_ms \\ @default_oauth_refresh_interval_ms
+       ) do
     result =
       Repo.transaction(fn ->
         locked =
@@ -366,7 +583,7 @@ defmodule Backplane.Settings.Credentials do
           |> from(where: [name: ^cred.name], lock: "FOR UPDATE")
           |> Repo.one!()
 
-        case do_refresh_inner(locked, vendor) do
+        case do_refresh_inner(locked, vendor, refresh_window_ms, refresh_interval_ms) do
           {:ok, access} -> access
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -378,47 +595,73 @@ defmodule Backplane.Settings.Credentials do
     end
   end
 
-  defp do_refresh_inner(locked, vendor) do
+  defp do_refresh_inner(locked, vendor, refresh_window_ms, refresh_interval_ms) do
     with {:ok, blob} <- Encryption.decrypt(locked.encrypted_value),
          {:ok, locked_parsed} <- Jason.decode(blob) do
-      case maybe_short_circuit(vendor, locked_parsed) do
-        {:ok, fresh_access, fresh_expires_ms} ->
-          cache_and_return(locked.name, fresh_access, fresh_expires_ms)
+      now_ms = System.system_time(:millisecond)
 
-        :stale ->
-          refresh_token = extract_refresh_token(vendor, locked_parsed)
+      if oauth_refresh_due?(
+           vendor,
+           locked_parsed,
+           now_ms,
+           refresh_window_ms,
+           refresh_interval_ms
+         ) do
+        with refresh_token when is_binary(refresh_token) <-
+               extract_refresh_token(vendor, locked_parsed) do
           refresh_and_persist_locked(locked, vendor, locked_parsed, refresh_token)
+        else
+          _ -> {:error, :missing_refresh_token}
+        end
+      else
+        return_existing_token(locked.name, vendor, locked_parsed, refresh_interval_ms)
       end
     end
   end
 
-  # Re-check freshness inside the lock; if another waiter already refreshed, short-circuit.
-  defp maybe_short_circuit(
+  defp return_existing_token(
+         name,
          :anthropic_oauth,
-         %{"claudeAiOauth" => %{"accessToken" => access, "expiresAt" => expires_at_ms}}
+         %{"claudeAiOauth" => %{"accessToken" => access, "expiresAt" => expires_at_ms}},
+         _refresh_interval_ms
        )
        when is_binary(access) and is_integer(expires_at_ms) do
-    if expires_at_ms > System.system_time(:millisecond) + 60_000 do
-      {:ok, access, expires_at_ms}
-    else
-      :stale
-    end
+    cache_and_return(name, access, expires_at_ms)
   end
 
-  # Flat device-code format — check expires_at for any vendor.
-  defp maybe_short_circuit(
+  defp return_existing_token(
+         name,
+         :openai_oauth,
+         %{"tokens" => %{"access_token" => access} = tokens} = parsed,
+         refresh_interval_ms
+       )
+       when is_binary(access) do
+    expires_at_ms =
+      tokens["expires_at"] || inferred_refresh_expires_at(parsed, refresh_interval_ms)
+
+    cache_and_return(name, access, expires_at_ms)
+  end
+
+  defp return_existing_token(
+         name,
          _vendor,
-         %{"access_token" => access, "expires_at" => expires_at_ms}
+         %{"access_token" => access, "expires_at" => expires_at_ms},
+         _refresh_interval_ms
        )
        when is_binary(access) and is_integer(expires_at_ms) do
-    if expires_at_ms > System.system_time(:millisecond) + 60_000 do
-      {:ok, access, expires_at_ms}
-    else
-      :stale
-    end
+    cache_and_return(name, access, expires_at_ms)
   end
 
-  defp maybe_short_circuit(_vendor, _parsed), do: :stale
+  defp return_existing_token(_name, _vendor, _parsed, _refresh_interval_ms) do
+    {:error, :missing_access_token}
+  end
+
+  defp inferred_refresh_expires_at(parsed, refresh_interval_ms) do
+    case parse_iso8601_ms(parsed["last_refresh"]) do
+      {:ok, last_refresh_ms} -> last_refresh_ms + refresh_interval_ms
+      :error -> System.system_time(:millisecond) + 60_000
+    end
+  end
 
   defp refresh_and_persist_locked(locked, vendor, parsed, refresh_token) do
     alias Backplane.Settings.OAuthRefresher
@@ -446,6 +689,8 @@ defmodule Backplane.Settings.Credentials do
   # Flat device-code format (anthropic, openai, or google stored via store_device_token)
   defp extract_refresh_token(_vendor, %{"refresh_token" => rt}), do: rt
 
+  defp extract_refresh_token(_vendor, _parsed), do: nil
+
   # Anthropic CLI import format
   defp update_blob(:anthropic_oauth, %{"claudeAiOauth" => _} = parsed, refreshed) do
     update_in(parsed, ["claudeAiOauth"], fn oauth ->
@@ -462,6 +707,7 @@ defmodule Backplane.Settings.Credentials do
       parsed["tokens"]
       |> Map.put("access_token", refreshed.access_token)
       |> Map.put("refresh_token", refreshed.refresh_token)
+      |> Map.put("expires_at", refreshed.expires_at)
       |> then(fn t ->
         case Map.get(refreshed, :id_token) do
           nil -> t
@@ -476,10 +722,17 @@ defmodule Backplane.Settings.Credentials do
 
   # Flat device-code format (google_oauth and any vendor stored via store_device_token)
   defp update_blob(_vendor, parsed, refreshed) do
-    parsed
-    |> Map.put("access_token", refreshed.access_token)
-    |> Map.put("refresh_token", refreshed.refresh_token)
-    |> Map.put("expires_at", refreshed.expires_at)
+    updated =
+      parsed
+      |> Map.put("access_token", refreshed.access_token)
+      |> Map.put("refresh_token", refreshed.refresh_token)
+      |> Map.put("expires_at", refreshed.expires_at)
+      |> Map.put("last_refresh", DateTime.utc_now() |> DateTime.to_iso8601())
+
+    case Map.get(refreshed, :id_token) do
+      nil -> updated
+      id_token -> Map.put(updated, "id_token", id_token)
+    end
   end
 
   defp cache_and_return(name, access_token, expires_at_ms) do
