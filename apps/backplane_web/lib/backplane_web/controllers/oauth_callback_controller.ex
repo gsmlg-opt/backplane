@@ -12,7 +12,7 @@ defmodule BackplaneWeb.OAuthCallbackController do
 
   alias Backplane.Settings.{Credentials, OAuthStateStore}
 
-  @anthropic_token_url "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
+  @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
   @openai_token_url "https://auth0.openai.com/oauth/token"
 
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -28,6 +28,8 @@ defmodule BackplaneWeb.OAuthCallbackController do
          "code_verifier" => code_verifier,
          "redirect_uri" => redirect_uri
        } = attrs} ->
+        attrs = Map.put(attrs, "oauth_state", state)
+
         case exchange_code(vendor, code, code_verifier, redirect_uri, attrs) do
           {:ok, tokens, hints} ->
             case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
@@ -79,10 +81,11 @@ defmodule BackplaneWeb.OAuthCallbackController do
 
   # ── Private helpers ─────────────────────────────────────────────────────────
 
-  defp exchange_code("anthropic_oauth", code, code_verifier, redirect_uri, _attrs) do
+  defp exchange_code("anthropic_oauth", code, code_verifier, redirect_uri, attrs) do
     body = %{
       "grant_type" => "authorization_code",
       "code" => code,
+      "state" => attrs["oauth_state"],
       "redirect_uri" => redirect_uri,
       "client_id" => @anthropic_client_id,
       "code_verifier" => code_verifier
@@ -241,6 +244,13 @@ defmodule BackplaneWeb.OAuthCallbackController do
   defp vendor_label(v), do: v
 
   defp format_error({:http, status, %{"error_description" => desc}}), do: "#{desc} (#{status})"
+
+  defp format_error({:http, status, %{"error" => %{"message" => message, "type" => type}}}),
+    do: "#{message} (#{type}, #{status})"
+
+  defp format_error({:http, status, %{"error" => %{"message" => message}}}),
+    do: "#{message} (#{status})"
+
   defp format_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
   defp format_error({:http, status, _}), do: "HTTP #{status}"
   defp format_error(other), do: inspect(other)

@@ -14,6 +14,11 @@ defmodule Backplane.Settings.OAuthRefresher do
   require Logger
 
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+  @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
+  @legacy_anthropic_token_urls [
+    "https://console.anthropic.com/v1/oauth/token",
+    "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
+  ]
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
 
   @type vendor :: :anthropic_oauth | :openai_oauth | :google_oauth
@@ -92,9 +97,20 @@ defmodule Backplane.Settings.OAuthRefresher do
     end
   end
 
+  defp url(:anthropic_token_url) do
+    :anthropic_token_url
+    |> cfg()
+    |> normalize_anthropic_token_url()
+  end
+
   defp url(key) do
     cfg(key) || default_url(key)
   end
+
+  defp normalize_anthropic_token_url(url) when url in @legacy_anthropic_token_urls,
+    do: @anthropic_token_url
+
+  defp normalize_anthropic_token_url(url), do: url || @anthropic_token_url
 
   defp google_client_credentials(opts) do
     client_id = option_or_config(opts, :google_client_id, "GOOGLE_OAUTH_CLIENT_ID")
@@ -228,7 +244,7 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp normalize_optional_string(_), do: nil
 
-  defp default_url(:anthropic_token_url), do: "https://platform.claude.com/v1/oauth/token"
+  defp default_url(:anthropic_token_url), do: @anthropic_token_url
   defp default_url(:openai_token_url), do: "https://auth.openai.com/oauth/token"
   defp default_url(:google_token_url), do: "https://oauth2.googleapis.com/token"
 end

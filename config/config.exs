@@ -87,7 +87,7 @@ config :phoenix, :json_library, Jason
 config :relayixir, start_server: false
 
 config :backplane, Backplane.Settings.OAuthRefresher,
-  anthropic_token_url: "https://console.anthropic.com/v1/oauth/token",
+  anthropic_token_url: "https://platform.claude.com/v1/oauth/token",
   openai_token_url: "https://auth.openai.com/oauth/token",
   google_token_url: "https://oauth2.googleapis.com/token"
 

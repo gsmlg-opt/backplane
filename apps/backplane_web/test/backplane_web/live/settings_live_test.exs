@@ -221,6 +221,7 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
 
       prior = Application.get_env(:backplane, Backplane.Settings.OpenAICodexAuth, [])
+      prior_refresher = Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
 
       Application.put_env(:backplane, Backplane.Settings.OpenAICodexAuth,
         device_user_code_url: "http://localhost:#{port}/api/accounts/deviceauth/usercode",
@@ -229,8 +230,17 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
         revoke_url: "http://localhost:#{port}/oauth/revoke"
       )
 
+      Application.put_env(
+        :backplane,
+        Backplane.Settings.OAuthRefresher,
+        Keyword.merge(prior_refresher,
+          anthropic_token_url: "http://localhost:#{port}/anthropic/token"
+        )
+      )
+
       on_exit(fn ->
         Application.put_env(:backplane, Backplane.Settings.OpenAICodexAuth, prior)
+        Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, prior_refresher)
 
         try do
           ThousandIsland.stop(pid)
@@ -294,6 +304,123 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
 
       assert_patched(view, "/admin/system/credentials/new/anthropic_oauth")
       assert html =~ "Connect Claude Plan"
+    end
+
+    test "submitting Claude auth code splits code and state before token exchange", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{
+          "cred_name" => "my-claude-plan"
+        })
+        |> render_submit()
+
+      assert html =~ "Authorization Code"
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+
+      uri = URI.parse(auth_url)
+      assert uri.scheme == "https"
+      assert uri.host == "claude.ai"
+      assert uri.path == "/oauth/authorize"
+
+      query = uri.query |> URI.decode_query()
+      assert query["redirect_uri"] == "https://platform.claude.com/oauth/code/callback"
+      assert query["code"] == "true"
+      assert query["code_challenge_method"] == "S256"
+      assert is_binary(query["state"])
+
+      expected_auth_url =
+        "https://claude.ai/oauth/authorize?" <>
+          URI.encode_query([
+            {"code", "true"},
+            {"client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e"},
+            {"response_type", "code"},
+            {"redirect_uri", "https://platform.claude.com/oauth/code/callback"},
+            {"scope",
+             "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
+            {"code_challenge", query["code_challenge"]},
+            {"code_challenge_method", "S256"},
+            {"state", query["state"]}
+          ])
+
+      assert auth_url == expected_auth_url
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-auth-code##{query["state"]}"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-claude-plan"
+
+      assert {:ok, "sk-ant-oat01-live"} = Credentials.fetch("my-claude-plan")
+
+      assert {:ok, "sk-ant-oat01-live",
+              %{
+                auth_type: "anthropic_oauth",
+                extra_headers: [{"anthropic-beta", "oauth-2025-04-20"}]
+              }} =
+               Credentials.fetch_with_meta("my-claude-plan")
+    end
+
+    test "Claude auth accepts callback URL and does not request setup-token expiry", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{
+        "cred_name" => "my-claude-plan-normal"
+      })
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" =>
+            "https://platform.claude.com/oauth/code/callback?code=mock-auth-code-normal&state=#{query["state"]}"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-claude-plan-normal"
+      assert {:ok, "sk-ant-oat01-normal"} = Credentials.fetch("my-claude-plan-normal")
+    end
+
+    test "Claude auth renders nested provider errors instead of crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{
+        "cred_name" => "my-claude-plan-denied"
+      })
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-auth-code-denied##{query["state"]}"
+        })
+        |> render_submit()
+
+      assert html =~ "Code exchange failed: Request not allowed (forbidden, 403)"
+      assert html =~ "request:"
+      assert html =~ "response:"
+      assert html =~ "has_expires_in: false"
+      assert html =~ "code_length:"
+      assert html =~ "verifier_length:"
+      refute html =~ "mock-auth-code-denied"
+      refute html =~ query["state"]
+      refute html =~ "my-claude-plan-denied"
     end
 
     test "submitting device auth form for OpenAI requests device code and polls", %{conn: conn} do
@@ -425,6 +552,67 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
 
   post "/oauth/revoke" do
     send_resp(conn, 200, "{}")
+  end
+
+  post "/anthropic/token" do
+    body = conn.body_params
+
+    cond do
+      Map.has_key?(body, "expires_in") ->
+        forbidden(conn)
+
+      valid_anthropic_body?(body, "mock-auth-code-normal") ->
+        anthropic_success(conn, "sk-ant-oat01-normal")
+
+      body["code"] == "mock-auth-code-denied" ->
+        forbidden(conn)
+
+      valid_anthropic_body?(body, "mock-auth-code") ->
+        anthropic_success(conn, "sk-ant-oat01-live")
+
+      true ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+    end
+  end
+
+  defp valid_anthropic_body?(body, code) do
+    match?(
+      %{
+        "grant_type" => "authorization_code",
+        "code" => ^code,
+        "client_id" => "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        "redirect_uri" => "https://platform.claude.com/oauth/code/callback",
+        "code_verifier" => verifier,
+        "state" => state
+      }
+      when is_binary(verifier) and byte_size(verifier) > 0 and is_binary(state) and
+             byte_size(state) > 0,
+      body
+    )
+  end
+
+  defp anthropic_success(conn, access_token) do
+    resp = %{
+      "access_token" => access_token,
+      "refresh_token" => "sk-ant-ort01-refresh",
+      "expires_in" => 31_536_000,
+      "token_type" => "bearer"
+    }
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(resp))
+  end
+
+  defp forbidden(conn) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(
+      403,
+      Jason.encode!(%{"error" => %{"type" => "forbidden", "message" => "Request not allowed"}})
+    )
   end
 
   defp jwt(payload) do

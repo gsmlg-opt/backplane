@@ -3,6 +3,8 @@ defmodule BackplaneWeb.SettingsLive do
 
   use BackplaneWeb, :live_view
 
+  require Logger
+
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
@@ -70,8 +72,10 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
       device_flow_error: nil,
+      device_flow_error_detail: nil,
       device_flow_login: nil,
       device_flow_code_verifier: nil,
+      device_flow_oauth_state: nil,
       device_flow_redirect_uri: nil
     )
   end
@@ -133,8 +137,10 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_user_code: nil,
       device_flow_verification_uri: nil,
       device_flow_error: nil,
+      device_flow_error_detail: nil,
       device_flow_login: nil,
       device_flow_code_verifier: nil,
+      device_flow_oauth_state: nil,
       device_flow_redirect_uri: nil
     )
   end
@@ -246,7 +252,12 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   def handle_event("retry_device_auth", _, socket) do
-    {:noreply, assign(socket, device_flow_state: :idle, device_flow_error: nil)}
+    {:noreply,
+     assign(socket,
+       device_flow_state: :idle,
+       device_flow_error: nil,
+       device_flow_error_detail: nil
+     )}
   end
 
   def handle_event("start_device_auth", params, socket) do
@@ -269,7 +280,8 @@ defmodule BackplaneWeb.SettingsLive do
                device_flow_user_code: login.user_code,
                device_flow_verification_uri: login.verification_url,
                device_flow_login: login,
-               device_flow_error: nil
+               device_flow_error: nil,
+               device_flow_error_detail: nil
              )}
 
           {:error, reason} ->
@@ -277,7 +289,8 @@ defmodule BackplaneWeb.SettingsLive do
              assign(socket,
                device_flow_state: :error,
                device_flow_error:
-                 "Failed to request device code: #{format_openai_codex_error(reason)}"
+                 "Failed to request device code: #{format_openai_codex_error(reason)}",
+               device_flow_error_detail: nil
              )}
         end
 
@@ -293,8 +306,10 @@ defmodule BackplaneWeb.SettingsLive do
            device_flow_state: :waiting_code_input,
            device_flow_cred_name: name,
            device_flow_code_verifier: verifier,
+           device_flow_oauth_state: state,
            device_flow_redirect_uri: redirect_uri,
-           device_flow_error: nil
+           device_flow_error: nil,
+           device_flow_error_detail: nil
          )
          |> push_event("open_external_oauth", %{url: auth_url})}
 
@@ -315,7 +330,8 @@ defmodule BackplaneWeb.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Authorization is not configured: #{inspect(reason)}"
+               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error_detail: nil
              )}
 
           auth_url ->
@@ -334,12 +350,13 @@ defmodule BackplaneWeb.SettingsLive do
     vendor = socket.assigns.device_flow_vendor
     cred_name = socket.assigns.device_flow_cred_name
     verifier = socket.assigns.device_flow_code_verifier
+    expected_state = socket.assigns.device_flow_oauth_state
     redirect_uri = socket.assigns.device_flow_redirect_uri
 
     if code == "" do
       {:noreply, put_flash(socket, :error, "Authorization code is required")}
     else
-      case exchange_auth_code(vendor, code, verifier, redirect_uri) do
+      case exchange_auth_code(vendor, code, verifier, redirect_uri, expected_state) do
         {:ok, tokens, hints} ->
           case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
             {:ok, _} ->
@@ -353,7 +370,8 @@ defmodule BackplaneWeb.SettingsLive do
                assign(socket,
                  device_flow_state: :error,
                  device_flow_error:
-                   "Auth succeeded but failed to save credential: #{inspect(reason)}"
+                   "Auth succeeded but failed to save credential: #{inspect(reason)}",
+                 device_flow_error_detail: nil
                )}
           end
 
@@ -361,7 +379,8 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}"
+             device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}",
+             device_flow_error_detail: format_exchange_error_detail(reason)
            )}
       end
     end
@@ -423,7 +442,8 @@ defmodule BackplaneWeb.SettingsLive do
                assign(socket,
                  device_flow_state: :error,
                  device_flow_error:
-                   "Auth succeeded but failed to save credential: #{inspect(reason)}"
+                   "Auth succeeded but failed to save credential: #{inspect(reason)}",
+                 device_flow_error_detail: nil
                )}
           end
 
@@ -436,14 +456,16 @@ defmodule BackplaneWeb.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Device authorization code expired. Please try again."
+             device_flow_error: "Device authorization code expired. Please try again.",
+             device_flow_error_detail: nil
            )}
 
         {:error, reason} ->
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Authorization failed: #{format_openai_codex_error(reason)}"
+             device_flow_error: "Authorization failed: #{format_openai_codex_error(reason)}",
+             device_flow_error_detail: nil
            )}
       end
     else
@@ -1164,7 +1186,7 @@ defmodule BackplaneWeb.SettingsLive do
               name="code"
               label="Authorization Code"
               value=""
-              placeholder="Paste the code from the browser"
+              placeholder="Paste code#state or the callback URL"
               required
             />
             <div class="flex gap-2 pt-2">
@@ -1211,6 +1233,10 @@ defmodule BackplaneWeb.SettingsLive do
       <%= if @device_flow_state == :error do %>
         <div class="space-y-4">
           <.dm_badge variant="error">{@device_flow_error}</.dm_badge>
+          <pre
+            :if={@device_flow_error_detail}
+            class="whitespace-pre-wrap break-words rounded-md border border-outline-variant bg-surface-container-low p-3 text-xs text-on-surface"
+          ><%= @device_flow_error_detail %></pre>
           <div class="flex gap-2">
             <.dm_btn
               variant="primary"
@@ -1238,23 +1264,27 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-  @anthropic_token_url "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
+  @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
+  @legacy_anthropic_token_urls [
+    "https://console.anthropic.com/v1/oauth/token",
+    "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
+  ]
+  @anthropic_scope "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
 
   defp build_auth_url("anthropic_oauth", state, challenge, redirect_uri) do
-    params = %{
-      "code" => "true",
-      "response_type" => "code",
-      "client_id" => @anthropic_client_id,
-      "redirect_uri" => redirect_uri,
-      "scope" =>
-        "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
-      "state" => state,
-      "code_challenge" => challenge,
-      "code_challenge_method" => "S256"
-    }
+    params = [
+      {"code", "true"},
+      {"client_id", @anthropic_client_id},
+      {"response_type", "code"},
+      {"redirect_uri", redirect_uri},
+      {"scope", @anthropic_scope},
+      {"code_challenge", challenge},
+      {"code_challenge_method", "S256"},
+      {"state", state}
+    ]
 
-    "https://claude.com/cai/oauth/authorize?" <> URI.encode_query(params)
+    "https://claude.ai/oauth/authorize?" <> URI.encode_query(params)
   end
 
   defp build_auth_url("openai_oauth", state, challenge, redirect_uri) do
@@ -1310,49 +1340,240 @@ defmodule BackplaneWeb.SettingsLive do
 
   # --- Auth Code Exchange (Claude Code CLI flow) ---
 
-  defp exchange_auth_code("anthropic_oauth", code, code_verifier, redirect_uri) do
-    body = %{
-      "grant_type" => "authorization_code",
-      "code" => code,
-      "redirect_uri" => redirect_uri,
-      "client_id" => @anthropic_client_id,
-      "code_verifier" => code_verifier
-    }
+  defp exchange_auth_code(
+         "anthropic_oauth",
+         pasted_code,
+         code_verifier,
+         redirect_uri,
+         expected_state
+       ) do
+    with {:ok, code, returned_state} <- split_anthropic_auth_code(pasted_code),
+         :ok <- verify_anthropic_state(expected_state, returned_state) do
+      exchange_state = token_exchange_state(expected_state, returned_state)
 
-    case Req.post(@anthropic_token_url, json: body, receive_timeout: 15_000) do
-      {:ok, %{status: 200, body: resp}} ->
-        access = resp["access_token"] || resp["api_key"]
-        refresh = resp["refresh_token"] || ""
-        expires_in = resp["expires_in"] || 3600
-        expires_at = System.system_time(:millisecond) + expires_in * 1_000
+      body = %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "state" => exchange_state,
+        "redirect_uri" => redirect_uri,
+        "client_id" => @anthropic_client_id,
+        "code_verifier" => code_verifier
+      }
 
-        tokens = %{access_token: access, refresh_token: refresh, expires_at: expires_at}
+      case exchange_anthropic_token(body) do
+        {:ok, %{status: 200, body: resp}} ->
+          access = resp["access_token"] || resp["api_key"]
+          refresh = resp["refresh_token"] || ""
+          expires_in = resp["expires_in"] || 3600
+          expires_at = System.system_time(:millisecond) + expires_in * 1_000
 
-        hints =
-          %{}
-          |> maybe_put_hint("subscription_type", resp["subscription_type"] || resp["plan"])
-          |> maybe_put_hint("organization_uuid", resp["organization_uuid"] || resp["org_id"])
+          tokens = %{access_token: access, refresh_token: refresh, expires_at: expires_at}
 
-        {:ok, tokens, hints}
+          hints =
+            %{}
+            |> maybe_put_hint("subscription_type", resp["subscription_type"] || resp["plan"])
+            |> maybe_put_hint("organization_uuid", resp["organization_uuid"] || resp["org_id"])
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:http, status, body}}
+          {:ok, tokens, hints}
 
-      {:error, reason} ->
-        {:error, {:transport, reason}}
+        {:error, {:http, status, body}} ->
+          {:error, {:http, status, body}}
+
+        {:error, {:http, status, body, request_detail}} ->
+          {:error, {:http, status, body, request_detail}}
+
+        {:error, reason} ->
+          {:error, {:transport, reason}}
+      end
     end
   end
+
+  defp exchange_anthropic_token(body) do
+    token_url = anthropic_token_url()
+    request_detail = anthropic_token_request_detail(token_url, body)
+    log_anthropic_token_request(request_detail)
+
+    case Req.post(token_url, json: body, receive_timeout: 30_000) do
+      {:ok, %{status: 403, body: response_body}} ->
+        log_anthropic_token_failure(403, response_body)
+        {:error, {:http, 403, response_body, request_detail}}
+
+      {:ok, %{status: status, body: response_body}} when status != 200 ->
+        log_anthropic_token_failure(status, response_body)
+        {:error, {:http, status, response_body, request_detail}}
+
+      other ->
+        other
+    end
+  end
+
+  defp split_anthropic_auth_code(pasted_code) do
+    pasted_code =
+      pasted_code
+      |> String.trim()
+      |> String.replace(~r/\s+/, "")
+
+    cond do
+      String.starts_with?(pasted_code, "https://") ->
+        split_anthropic_callback_url(pasted_code)
+
+      true ->
+        split_anthropic_code_fragment(pasted_code)
+    end
+  end
+
+  defp split_anthropic_callback_url(callback_url) do
+    uri = URI.parse(callback_url)
+
+    with "platform.claude.com" <- uri.host,
+         "/oauth/code/callback" <- uri.path,
+         query when is_binary(query) <- uri.query do
+      params = URI.decode_query(query)
+      code = params["code"] || ""
+      state = params["state"] || ""
+
+      if code != "" and state != "" do
+        {:ok, code, state}
+      else
+        {:error, :invalid_anthropic_code}
+      end
+    else
+      _ -> {:error, :invalid_anthropic_code}
+    end
+  end
+
+  defp split_anthropic_code_fragment(pasted_code) do
+    case String.split(pasted_code, "#", parts: 2) do
+      [code, state] when code != "" and state != "" -> {:ok, code, state}
+      _ -> {:error, :invalid_anthropic_code}
+    end
+  end
+
+  defp verify_anthropic_state(expected_state, returned_state)
+       when is_binary(expected_state) and expected_state != "" do
+    if byte_size(expected_state) == byte_size(returned_state) and
+         Plug.Crypto.secure_compare(expected_state, returned_state) do
+      :ok
+    else
+      {:error, :oauth_state_mismatch}
+    end
+  end
+
+  defp verify_anthropic_state(_expected_state, _returned_state), do: :ok
+
+  defp token_exchange_state(expected_state, _returned_state)
+       when is_binary(expected_state) and expected_state != "",
+       do: expected_state
+
+  defp token_exchange_state(_expected_state, returned_state), do: returned_state
+
+  defp anthropic_token_url do
+    :backplane
+    |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
+    |> Keyword.get(:anthropic_token_url, @anthropic_token_url)
+    |> normalize_anthropic_token_url()
+  end
+
+  defp normalize_anthropic_token_url(url) when url in @legacy_anthropic_token_urls,
+    do: @anthropic_token_url
+
+  defp normalize_anthropic_token_url(url), do: url || @anthropic_token_url
+
+  defp anthropic_token_request_detail(token_url, body) do
+    %{
+      url: token_url,
+      body_keys: body |> Map.keys() |> Enum.sort(),
+      redirect_uri: body["redirect_uri"],
+      has_expires_in: Map.has_key?(body, "expires_in"),
+      code_length: binary_length(body["code"]),
+      state_length: binary_length(body["state"]),
+      verifier_length: binary_length(body["code_verifier"])
+    }
+  end
+
+  defp log_anthropic_token_request(request_detail) do
+    Logger.debug(fn ->
+      "Anthropic OAuth token exchange request: #{inspect(request_detail)}"
+    end)
+  end
+
+  defp log_anthropic_token_failure(status, body) do
+    Logger.debug(fn ->
+      fields =
+        body
+        |> anthropic_error_fields()
+        |> Map.put(:status, status)
+
+      "Anthropic OAuth token exchange failed: #{inspect(fields)}"
+    end)
+  end
+
+  defp anthropic_error_fields(%{"error" => %{} = error}) do
+    %{
+      error_type: error["type"],
+      error_message: error["message"]
+    }
+  end
+
+  defp anthropic_error_fields(%{} = body) do
+    %{
+      error_type: body["type"],
+      error_message: body["message"]
+    }
+  end
+
+  defp anthropic_error_fields(_body), do: %{error_type: nil, error_message: nil}
+
+  defp binary_length(value) when is_binary(value), do: byte_size(value)
+  defp binary_length(_value), do: 0
 
   defp maybe_put_hint(map, _key, nil), do: map
   defp maybe_put_hint(map, _key, ""), do: map
   defp maybe_put_hint(map, key, value), do: Map.put(map, key, value)
 
+  defp format_exchange_error(:invalid_anthropic_code),
+    do: "Paste the full code in the form code#state"
+
+  defp format_exchange_error(:oauth_state_mismatch),
+    do: "OAuth state did not match. Please restart authorization."
+
   defp format_exchange_error({:http, status, %{"error_description" => desc}}),
     do: "#{desc} (#{status})"
+
+  defp format_exchange_error({:http, status, body, _request_detail}),
+    do: format_exchange_error({:http, status, body})
+
+  defp format_exchange_error({:http, status, %{"message" => message, "type" => type}}),
+    do: "#{message} (#{type}, #{status})"
+
+  defp format_exchange_error(
+         {:http, status, %{"error" => %{"message" => message, "type" => type}}}
+       ),
+       do: "#{message} (#{type}, #{status})"
+
+  defp format_exchange_error({:http, status, %{"error" => %{"message" => message}}}),
+    do: "#{message} (#{status})"
 
   defp format_exchange_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
   defp format_exchange_error({:http, status, _}), do: "HTTP #{status}"
   defp format_exchange_error(other), do: inspect(other)
+
+  defp format_exchange_error_detail({:http, status, body, request_detail}) do
+    detail = %{
+      status: status,
+      request: request_detail,
+      response: body
+    }
+
+    inspect(detail, pretty: true, limit: :infinity, printable_limit: :infinity)
+  end
+
+  defp format_exchange_error_detail({:http, status, body}) do
+    detail = %{status: status, response: body}
+    inspect(detail, pretty: true, limit: :infinity, printable_limit: :infinity)
+  end
+
+  defp format_exchange_error_detail(reason), do: inspect(reason, pretty: true)
 
   defp format_openai_codex_error(:device_code_login_disabled),
     do: "Device-code login is not enabled for this account or server."
