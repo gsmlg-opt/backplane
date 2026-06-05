@@ -415,6 +415,8 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "Code exchange failed: Request not allowed (forbidden, 403)"
       assert html =~ "request:"
       assert html =~ "response:"
+      assert html =~ "claude-cli/2.1.165 (external, cli)"
+      assert html =~ "anthropic-client-platform"
       assert html =~ "has_expires_in: false"
       assert html =~ "code_length:"
       assert html =~ "verifier_length:"
@@ -558,6 +560,9 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     body = conn.body_params
 
     cond do
+      not valid_anthropic_headers?(conn) ->
+        forbidden(conn)
+
       Map.has_key?(body, "expires_in") ->
         forbidden(conn)
 
@@ -591,6 +596,14 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
              byte_size(state) > 0,
       body
     )
+  end
+
+  defp valid_anthropic_headers?(conn) do
+    headers = Map.new(conn.req_headers)
+
+    headers["user-agent"] == "claude-cli/2.1.165 (external, cli)" and
+      headers["x-app"] == "cli" and
+      headers["anthropic-client-platform"] == "claude_code_cli"
   end
 
   defp anthropic_success(conn, access_token) do

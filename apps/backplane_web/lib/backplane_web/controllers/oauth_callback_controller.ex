@@ -10,7 +10,7 @@ defmodule BackplaneWeb.OAuthCallbackController do
 
   require Logger
 
-  alias Backplane.Settings.{Credentials, OAuthStateStore}
+  alias Backplane.Settings.{Credentials, OAuthRefresher, OAuthStateStore}
 
   @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
   @openai_token_url "https://auth0.openai.com/oauth/token"
@@ -91,7 +91,11 @@ defmodule BackplaneWeb.OAuthCallbackController do
       "code_verifier" => code_verifier
     }
 
-    case Req.post(@anthropic_token_url, json: body, receive_timeout: 15_000) do
+    case Req.post(@anthropic_token_url,
+           json: body,
+           headers: OAuthRefresher.anthropic_oauth_token_headers(),
+           receive_timeout: 15_000
+         ) do
       {:ok, %{status: 200, body: resp}} ->
         access = resp["access_token"] || resp["api_key"]
         refresh = resp["refresh_token"] || ""

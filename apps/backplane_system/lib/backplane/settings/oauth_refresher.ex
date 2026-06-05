@@ -15,6 +15,7 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
   @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
+  @anthropic_oauth_user_agent "claude-cli/2.1.165 (external, cli)"
   @legacy_anthropic_token_urls [
     "https://console.anthropic.com/v1/oauth/token",
     "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
@@ -29,6 +30,15 @@ defmodule Backplane.Settings.OAuthRefresher do
           optional(:id_token) => String.t()
         }
 
+  @spec anthropic_oauth_token_headers() :: [{String.t(), String.t()}]
+  def anthropic_oauth_token_headers do
+    [
+      {"User-Agent", cfg(:anthropic_user_agent) || @anthropic_oauth_user_agent},
+      {"x-app", "cli"},
+      {"anthropic-client-platform", "claude_code_cli"}
+    ]
+  end
+
   @spec refresh(vendor(), String.t(), keyword()) :: {:ok, refreshed()} | {:error, term()}
   def refresh(vendor, refresh_token, opts \\ [])
 
@@ -40,7 +50,8 @@ defmodule Backplane.Settings.OAuthRefresher do
         "grant_type" => "refresh_token",
         "refresh_token" => refresh_token,
         "client_id" => @anthropic_client_id
-      }
+      },
+      anthropic_oauth_token_headers()
     )
   end
 
@@ -71,8 +82,10 @@ defmodule Backplane.Settings.OAuthRefresher do
     end
   end
 
-  defp do_refresh(url, encoding, body) do
-    req_opts = Keyword.merge(req_options(url), [{encoding, body}, {:receive_timeout, 10_000}])
+  defp do_refresh(url, encoding, body, headers \\ []) do
+    req_opts =
+      req_options(url)
+      |> Keyword.merge(req_body_options(encoding, body, headers))
 
     case Req.post(url, req_opts) do
       {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
@@ -95,6 +108,12 @@ defmodule Backplane.Settings.OAuthRefresher do
         Logger.warning("OAuth refresh transport error: #{inspect(reason)}")
         {:error, {:refresh_error, reason}}
     end
+  end
+
+  defp req_body_options(encoding, body, []), do: [{encoding, body}, {:receive_timeout, 10_000}]
+
+  defp req_body_options(encoding, body, headers) do
+    [{encoding, body}, {:headers, headers}, {:receive_timeout, 10_000}]
   end
 
   defp url(:anthropic_token_url) do

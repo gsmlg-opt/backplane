@@ -42,6 +42,11 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     post "/anthropic/token" do
       cond do
+        not valid_anthropic_headers?(conn) ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(403, Jason.encode!(%{"error" => "missing_claude_code_headers"}))
+
         conn.body_params["refresh_token"] == "good-anthropic" ->
           resp = %{
             "access_token" => "ant-new-access",
@@ -60,6 +65,14 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           |> put_resp_content_type("application/json")
           |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
       end
+    end
+
+    defp valid_anthropic_headers?(conn) do
+      headers = Map.new(conn.req_headers)
+
+      headers["user-agent"] == "claude-cli/2.1.165 (external, cli)" and
+        headers["x-app"] == "cli" and
+        headers["anthropic-client-platform"] == "claude_code_cli"
     end
 
     post "/openai/token" do

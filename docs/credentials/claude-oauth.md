@@ -17,10 +17,15 @@ and against `GET /api/oauth/usage`.
 | `client_id`    | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (public, no secret) |
 | Authorize URL  | `https://claude.ai/oauth/authorize`                        |
 | Token URL      | `https://platform.claude.com/v1/oauth/token`               |
+| API Key URL    | `https://api.anthropic.com/api/oauth/claude_cli/create_api_key` |
 | Redirect URI   | `https://platform.claude.com/oauth/code/callback`          |
 
 > Legacy token alias `https://console.anthropic.com/v1/oauth/token` still works,
 > but match the `platform.claude.com` domain to the redirect URI above.
+
+> Claude Code 2.1.165 still contains `https://claude.com/cai/oauth/authorize`
+> as `CLAUDE_AI_AUTHORIZE_URL`, but the consent page observed during Backplane
+> testing opened through `https://claude.ai/oauth/authorize`.
 
 **Scopes** (space-separated, URL-encoded in the query):
 
@@ -86,6 +91,19 @@ distinct values — do not send the whole string as the code.
 `POST` to the **Token URL** with a **JSON** body
 (`Content-Type: application/json`):
 
+Backplane currently sends Claude Code-like client headers on token exchange and
+refresh:
+
+```
+User-Agent: claude-cli/2.1.165 (external, cli)
+x-app: cli
+anthropic-client-platform: claude_code_cli
+```
+
+These headers alone did **not** resolve the manual Backplane exchange failure:
+the token endpoint still returned `403` with
+`{"error":{"type":"forbidden","message":"Request not allowed"}}`.
+
 ```json
 {
   "grant_type": "authorization_code",
@@ -116,6 +134,101 @@ To request a long-lived (~1 year) token, also include
 
 Store `access_token`, `refresh_token`, and an absolute `expires_at`
 (= now + `expires_in`).
+
+---
+
+## Current Backplane Status
+
+Backplane's `/admin/system/credentials/new/anthropic_oauth` flow currently:
+
+- Generates fresh PKCE `code_verifier`, `code_challenge`, and `state`.
+- Opens `https://claude.ai/oauth/authorize` with `code=true`.
+- Accepts either `code#state` or the full callback URL:
+  `https://platform.claude.com/oauth/code/callback?code=...&state=...`.
+- Strips whitespace from pasted callback values.
+- Verifies the returned state against the generated state.
+- Posts JSON to `https://platform.claude.com/v1/oauth/token`.
+- Does **not** send `expires_in` for the normal Claude Plan login path.
+- Shows redacted request/response details in the UI on exchange failure.
+
+Observed failure after those changes:
+
+```elixir
+%{
+  status: 403,
+  request: %{
+    url: "https://platform.claude.com/v1/oauth/token",
+    body_keys: ["client_id", "code", "code_verifier", "grant_type", "redirect_uri", "state"],
+    has_expires_in: false,
+    redirect_uri: "https://platform.claude.com/oauth/code/callback",
+    code_length: 48,
+    state_length: 43,
+    verifier_length: 43
+  },
+  response: %{
+    "error" => %{"message" => "Request not allowed", "type" => "forbidden"}
+  }
+}
+```
+
+Do not keep guessing at this browser exchange without comparing against a known
+successful Claude Code login.
+
+---
+
+## Known-Success Claude Code Paths
+
+Claude Code 2.1.165 has two relevant success paths.
+
+### Import Existing Claude Code OAuth
+
+Claude Code stores successful OAuth tokens in:
+
+```
+~/.claude/.credentials.json
+```
+
+Backplane already supports this format through
+`Backplane.Settings.Credentials.import_cli_auth/2`. Importing the file stores the
+raw JSON encrypted with metadata `auth_type=anthropic_oauth`.
+
+Local import command:
+
+```sh
+mix run -e 'Backplane.Settings.Credentials.import_cli_auth("claude-plan", File.read!(Path.expand("~/.claude/.credentials.json")))'
+```
+
+`Credentials.fetch/1` then returns the cached `claudeAiOauth.accessToken` while
+it is valid, and refreshes from `claudeAiOauth.refreshToken` when expired.
+`Credentials.fetch_with_meta/1` also adds:
+
+```
+anthropic-beta: oauth-2025-04-20
+```
+
+Use this import path first when Claude Code is already logged in locally.
+
+### Create API Key From OAuth Access Token
+
+Claude Code also has a helper equivalent to:
+
+```http
+POST https://api.anthropic.com/api/oauth/claude_cli/create_api_key
+Authorization: Bearer <access_token>
+```
+
+The successful response includes:
+
+```json
+{
+  "raw_key": "sk-ant-..."
+}
+```
+
+That API key creation is separate from the OAuth token exchange. Use it only
+after a known-good OAuth access token exists. Do not print `raw_key`; store it
+directly in the encrypted credential vault if Backplane needs an API-key-shaped
+credential instead of an OAuth bearer token.
 
 ---
 

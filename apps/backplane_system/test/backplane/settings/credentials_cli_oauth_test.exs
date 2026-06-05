@@ -46,16 +46,30 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
     plug(:dispatch)
 
     post "/anthropic/token" do
-      resp = %{
-        "access_token" => "sk-ant-oat01-REFRESHED",
-        "refresh_token" => "sk-ant-ort01-NEWREFRESH",
-        "expires_in" => 28_800,
-        "token_type" => "Bearer"
-      }
+      unless valid_anthropic_headers?(conn) do
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(403, Jason.encode!(%{"error" => "missing_claude_code_headers"}))
+      else
+        resp = %{
+          "access_token" => "sk-ant-oat01-REFRESHED",
+          "refresh_token" => "sk-ant-ort01-NEWREFRESH",
+          "expires_in" => 28_800,
+          "token_type" => "Bearer"
+        }
 
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(200, Jason.encode!(resp))
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(resp))
+      end
+    end
+
+    defp valid_anthropic_headers?(conn) do
+      headers = Map.new(conn.req_headers)
+
+      headers["user-agent"] == "claude-cli/2.1.165 (external, cli)" and
+        headers["x-app"] == "cli" and
+        headers["anthropic-client-platform"] == "claude_code_cli"
     end
 
     post "/openai/token" do

@@ -1393,7 +1393,11 @@ defmodule BackplaneWeb.SettingsLive do
     request_detail = anthropic_token_request_detail(token_url, body)
     log_anthropic_token_request(request_detail)
 
-    case Req.post(token_url, json: body, receive_timeout: 30_000) do
+    case Req.post(token_url,
+           json: body,
+           headers: Backplane.Settings.OAuthRefresher.anthropic_oauth_token_headers(),
+           receive_timeout: 30_000
+         ) do
       {:ok, %{status: 403, body: response_body}} ->
         log_anthropic_token_failure(403, response_body)
         {:error, {:http, 403, response_body, request_detail}}
@@ -1482,6 +1486,7 @@ defmodule BackplaneWeb.SettingsLive do
   defp anthropic_token_request_detail(token_url, body) do
     %{
       url: token_url,
+      headers: anthropic_oauth_token_header_detail(),
       body_keys: body |> Map.keys() |> Enum.sort(),
       redirect_uri: body["redirect_uri"],
       has_expires_in: Map.has_key?(body, "expires_in"),
@@ -1489,6 +1494,11 @@ defmodule BackplaneWeb.SettingsLive do
       state_length: binary_length(body["state"]),
       verifier_length: binary_length(body["code_verifier"])
     }
+  end
+
+  defp anthropic_oauth_token_header_detail do
+    Backplane.Settings.OAuthRefresher.anthropic_oauth_token_headers()
+    |> Map.new(fn {key, value} -> {String.downcase(key), value} end)
   end
 
   defp log_anthropic_token_request(request_detail) do
