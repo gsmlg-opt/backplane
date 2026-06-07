@@ -25,6 +25,7 @@ defmodule Backplane.LLM.Router do
     ModelAlias,
     ModelExtractor,
     ModelResolver,
+    OpenAICodexCompat,
     Provider,
     ProviderApi,
     RateLimiter,
@@ -95,13 +96,27 @@ defmodule Backplane.LLM.Router do
   defp strip_request_prefix(conn, prefix) do
     case conn.path_info do
       [^prefix | rest] ->
-        conn
-        |> Map.put(:path_info, rest)
-        |> Map.put(:request_path, "/" <> Enum.join(rest, "/"))
+        put_request_path(conn, rest)
 
       _ ->
         conn
     end
+  end
+
+  defp strip_repeated_request_prefix(%Plug.Conn{} = conn, prefix) do
+    stripped = Enum.drop_while(conn.path_info, &(&1 == prefix))
+
+    if stripped == conn.path_info do
+      conn
+    else
+      put_request_path(conn, stripped)
+    end
+  end
+
+  defp put_request_path(conn, path_info) do
+    conn
+    |> Map.put(:path_info, path_info)
+    |> Map.put(:request_path, "/" <> Enum.join(path_info, "/"))
   end
 
   defp proxy_request(conn, api_type) do
@@ -117,8 +132,24 @@ defmodule Backplane.LLM.Router do
              :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
              {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
-          upstream = build_upstream(provider_api, auth_headers)
-          do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type)
+          codex_backend? = OpenAICodexCompat.enabled?(provider, provider_api)
+          provider_api = OpenAICodexCompat.effective_api(provider_api, codex_backend?)
+
+          if codex_backend? and OpenAICodexCompat.chat_completions_request?(conn) do
+            proxy_codex_chat_completion(
+              conn,
+              provider_api,
+              auth_headers,
+              provider,
+              raw_model,
+              rewritten_body,
+              api_type
+            )
+          else
+            conn = upstream_request_conn(conn, api_type, provider_api, codex_backend?)
+            upstream = build_upstream(provider_api, auth_headers)
+            do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type)
+          end
         else
           {:error, :no_provider} ->
             send_not_found(conn, api_type, model_string)
@@ -171,6 +202,29 @@ defmodule Backplane.LLM.Router do
          ) do
       %ProviderApi{} = provider_api -> {:ok, provider_api}
       nil -> {:error, :no_provider}
+    end
+  end
+
+  defp upstream_request_conn(conn, _api_type, _provider_api, true) do
+    OpenAICodexCompat.rewrite_conn_path(conn, true)
+  end
+
+  defp upstream_request_conn(conn, :openai, %ProviderApi{} = provider_api, false) do
+    if base_url_has_path?(provider_api.base_url) do
+      strip_repeated_request_prefix(conn, "v1")
+    else
+      conn
+    end
+  end
+
+  defp upstream_request_conn(conn, _api_type, _provider_api, _codex_backend?), do: conn
+
+  defp base_url_has_path?(base_url) do
+    case URI.parse(base_url).path do
+      nil -> false
+      "" -> false
+      "/" -> false
+      _path -> true
     end
   end
 
@@ -228,7 +282,44 @@ defmodule Backplane.LLM.Router do
     }
   end
 
-  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type) do
+  defp proxy_codex_chat_completion(
+         conn,
+         provider_api,
+         auth_headers,
+         provider,
+         raw_model,
+         rewritten_body,
+         api_type
+       ) do
+    with {:ok, responses_body} <-
+           OpenAICodexCompat.chat_completions_to_responses_body(rewritten_body) do
+      conn = OpenAICodexCompat.responses_conn(conn)
+      upstream = build_upstream(provider_api, auth_headers)
+      stream? = is_stream_request?(responses_body)
+      {chunk_mapper, cleanup_mapper} = OpenAICodexCompat.chat_completion_stream_mapper(raw_model)
+
+      extra_opts =
+        if stream? do
+          [map_response_chunk: chunk_mapper]
+        else
+          [
+            map_response_body: fn body ->
+              OpenAICodexCompat.response_body_to_chat_completion(body, raw_model)
+            end
+          ]
+        end
+
+      try do
+        do_proxy(conn, upstream, provider, raw_model, responses_body, api_type, extra_opts)
+      after
+        cleanup_mapper.()
+      end
+    else
+      {:error, reason} -> send_model_error(conn, api_type, reason)
+    end
+  end
+
+  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, extra_opts \\ []) do
     stream? = is_stream_request?(rewritten_body)
     usage_acc = if stream?, do: UsageAccumulator.new(), else: nil
     start_ms = System.monotonic_time(:millisecond)
@@ -241,6 +332,7 @@ defmodule Backplane.LLM.Router do
     opts =
       [body: rewritten_body]
       |> then(fn o -> if on_chunk, do: Keyword.put(o, :on_response_chunk, on_chunk), else: o end)
+      |> Keyword.merge(extra_opts)
 
     conn =
       conn

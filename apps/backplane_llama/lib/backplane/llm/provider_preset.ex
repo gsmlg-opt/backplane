@@ -16,7 +16,9 @@ defmodule Backplane.LLM.ProviderPreset do
           key: String.t(),
           name: String.t(),
           default_name: String.t(),
+          default_credential: String.t() | nil,
           credential_kind: String.t(),
+          credential_auth_type: String.t() | nil,
           default_base_url: String.t(),
           openai: api_defaults(),
           anthropic: api_defaults(),
@@ -28,7 +30,9 @@ defmodule Backplane.LLM.ProviderPreset do
     :key,
     :name,
     :default_name,
+    :default_credential,
     :credential_kind,
+    :credential_auth_type,
     :default_base_url,
     :openai,
     :anthropic,
@@ -211,11 +215,13 @@ defmodule Backplane.LLM.ProviderPreset do
       key: "openai-codex",
       name: "OpenAI Codex",
       default_name: "openai-codex",
+      default_credential: "openai-codex",
       credential_kind: "llm",
-      default_base_url: "https://api.openai.com/v1",
+      credential_auth_type: "openai_oauth",
+      default_base_url: "https://chatgpt.com/backend-api/codex",
       openai: %{
         enabled: true,
-        base_url: "https://api.openai.com/v1",
+        base_url: "https://chatgpt.com/backend-api/codex",
         discovery_path: "/models"
       },
       anthropic: %{
@@ -224,9 +230,8 @@ defmodule Backplane.LLM.ProviderPreset do
         discovery_path: nil
       },
       notes:
-        "Codex-oriented OpenAI preset. It uses the official OpenAI API endpoint and a Codex-friendly provider name.",
+        "Codex-oriented OpenAI preset. It uses the ChatGPT Codex backend with an OpenAI OAuth credential.",
       docs_urls: [
-        "https://platform.openai.com/docs/api-reference/models/list",
         "https://developers.openai.com/codex/config-reference"
       ]
     },

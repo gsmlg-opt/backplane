@@ -126,7 +126,12 @@ defmodule Backplane.Settings.Credentials do
   strategy.
   """
   @spec fetch_with_meta(String.t()) ::
-          {:ok, String.t(), %{auth_type: String.t(), extra_headers: [{String.t(), String.t()}]}}
+          {:ok, String.t(),
+           %{
+             auth_type: String.t(),
+             extra_headers: [{String.t(), String.t()}],
+             metadata: map()
+           }}
           | {:error, term()}
   def fetch_with_meta(name) do
     case Vault.get(name) do
@@ -134,10 +139,16 @@ defmodule Backplane.Settings.Credentials do
         {:error, :not_found}
 
       %Credential{metadata: meta} ->
-        auth_type = (meta || %{}) |> Map.get("auth_type", "api_key")
+        meta = meta || %{}
+        auth_type = Map.get(meta, "auth_type", "api_key")
 
         with {:ok, token} <- fetch(name) do
-          {:ok, token, %{auth_type: auth_type, extra_headers: extra_headers_for(auth_type)}}
+          {:ok, token,
+           %{
+             auth_type: auth_type,
+             extra_headers: extra_headers_for(auth_type, meta),
+             metadata: meta
+           }}
         end
     end
   end
@@ -302,8 +313,18 @@ defmodule Backplane.Settings.Credentials do
 
   # --- Private helpers ---
 
-  defp extra_headers_for("anthropic_oauth"), do: [{"anthropic-beta", "oauth-2025-04-20"}]
-  defp extra_headers_for(_), do: []
+  defp extra_headers_for("anthropic_oauth", _meta), do: [{"anthropic-beta", "oauth-2025-04-20"}]
+
+  defp extra_headers_for("openai_oauth", meta) do
+    []
+    |> maybe_header("chatgpt-account-id", meta["account_id"])
+    |> maybe_header("originator", "codex_cli_rs")
+  end
+
+  defp extra_headers_for(_, _meta), do: []
+
+  defp maybe_header(headers, _name, value) when value in [nil, ""], do: headers
+  defp maybe_header(headers, name, value), do: [{name, to_string(value)} | headers]
 
   defp decode_json(raw) do
     case Jason.decode(raw) do

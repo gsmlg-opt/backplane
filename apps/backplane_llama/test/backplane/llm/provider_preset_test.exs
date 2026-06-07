@@ -101,6 +101,16 @@ defmodule Backplane.LLM.ProviderPresetTest do
     refute x_ai.anthropic.enabled
   end
 
+  test "openai codex uses the default openai oauth credential" do
+    preset = ProviderPreset.fetch!("openai-codex")
+
+    assert preset.default_credential == "openai-codex"
+    assert preset.credential_kind == "llm"
+    assert preset.credential_auth_type == "openai_oauth"
+    assert preset.default_base_url == "https://chatgpt.com/backend-api/codex"
+    assert preset.openai.base_url == "https://chatgpt.com/backend-api/codex"
+  end
+
   test "google ai studio and moonshot.cn use openai-compatible defaults" do
     google = ProviderPreset.fetch!("google-ai-studio")
     moonshot = ProviderPreset.fetch!("moonshot-cn")

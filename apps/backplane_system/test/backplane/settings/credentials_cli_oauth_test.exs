@@ -411,7 +411,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
                Credentials.fetch_with_meta("ant-meta")
     end
 
-    test "returns openai_oauth auth_type with no extra headers" do
+    test "returns openai_oauth auth_type with Codex backend headers" do
       json =
         Jason.encode!(%{
           "OPENAI_API_KEY" => nil,
@@ -425,8 +425,17 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       {:ok, _} = Credentials.import_cli_auth("oai-meta", json)
 
-      assert {:ok, "oai-REFRESHED", %{auth_type: "openai_oauth", extra_headers: []}} =
+      assert {:ok, "oai-REFRESHED",
+              %{
+                auth_type: "openai_oauth",
+                extra_headers: extra_headers,
+                metadata: %{"account_id" => "a"}
+              }} =
                Credentials.fetch_with_meta("oai-meta")
+
+      refute {"authorization", "Bearer oai-REFRESHED"} in extra_headers
+      assert {"chatgpt-account-id", "a"} in extra_headers
+      assert {"originator", "codex_cli_rs"} in extra_headers
     end
 
     test "returns {:error, :not_found} for unknown name" do

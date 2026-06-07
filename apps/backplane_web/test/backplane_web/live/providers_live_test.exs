@@ -9,6 +9,7 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
   setup do
     Credentials.store("test-cred", "sk-test", "llm")
+    Credentials.store("openai-codex", "{}", "llm", %{"auth_type" => "openai_oauth"})
     :ok
   end
 
@@ -73,6 +74,23 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert html =~ "provider-openai-base-url"
       assert html =~ "provider-anthropic-base-url"
       refute html =~ "provider-api-key"
+    end
+
+    test "openai codex preset defaults to openai oauth credential options", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='openai-codex']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#provider-credential option[value='openai-codex']",
+               "openai-codex (openai_oauth)"
+             )
+
+      assert has_element?(view, "#provider-credential option[value='openai-codex'][selected]")
+      refute has_element?(view, "#provider-credential option[value='test-cred']")
     end
 
     test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
@@ -171,6 +189,77 @@ defmodule BackplaneWeb.ProvidersLiveTest do
       assert provider.preset_key == "moonshot-cn"
 
       assert [%{api_surface: :openai, base_url: "https://api.moonshot.cn/v1"}] =
+               ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "openai codex preset rejects non openai oauth credentials", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='openai-codex']")
+      |> render_click()
+
+      html =
+        render_submit(view, "save", %{
+          "provider" => %{
+            "name" => "openai-codex-test",
+            "credential" => "test-cred",
+            "base_url" => "https://api.openai.com/v1",
+            "rpm_limit" => "",
+            "default_headers" => "{}",
+            "openai_enabled" => "true",
+            "openai_base_url" => "https://api.openai.com/v1",
+            "openai_model_discovery_enabled" => "true",
+            "openai_model_discovery_path" => "/models",
+            "openai_default_headers" => "{}",
+            "anthropic_enabled" => "false",
+            "anthropic_base_url" => "",
+            "anthropic_model_discovery_enabled" => "false",
+            "anthropic_model_discovery_path" => "",
+            "anthropic_default_headers" => "{}"
+          }
+        })
+
+      assert html =~ "Credential must use openai_oauth auth type"
+      refute Repo.get_by(Provider, name: "openai-codex-test")
+    end
+
+    test "creates openai codex provider with openai oauth credential", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='openai-codex']")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "openai-codex-test",
+          "credential" => "openai-codex",
+          "base_url" => "https://chatgpt.com/backend-api/codex",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "openai_enabled" => "true",
+          "openai_base_url" => "https://chatgpt.com/backend-api/codex",
+          "openai_model_discovery_enabled" => "true",
+          "openai_model_discovery_path" => "/models",
+          "openai_default_headers" => "{}",
+          "anthropic_enabled" => "false",
+          "anthropic_base_url" => "",
+          "anthropic_model_discovery_enabled" => "false",
+          "anthropic_model_discovery_path" => "",
+          "anthropic_default_headers" => "{}"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/admin/llama/providers")
+
+      provider = Repo.get_by!(Provider, name: "openai-codex-test")
+      assert provider.preset_key == "openai-codex"
+      assert provider.credential == "openai-codex"
+
+      assert [%{api_surface: :openai, base_url: "https://chatgpt.com/backend-api/codex"}] =
                ProviderApi.list_for_provider(provider.id)
     end
 
@@ -349,6 +438,60 @@ defmodule BackplaneWeb.ProvidersLiveTest do
 
       assert html =~ "provider-api-model"
       assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-api-model")
+    end
+
+    test "provider detail loads openai codex oauth models from local catalog", %{conn: conn} do
+      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+      previous_catalog = Application.get_env(:backplane, :openai_codex_model_catalog)
+
+      Application.put_env(:backplane, :llm_model_discovery_req_options,
+        plug: {Req.Test, __MODULE__}
+      )
+
+      Application.put_env(:backplane, :openai_codex_model_catalog, ["gpt-codex-live-test"])
+
+      on_exit(fn ->
+        if previous do
+          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
+        else
+          Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        end
+
+        if previous_catalog do
+          Application.put_env(:backplane, :openai_codex_model_catalog, previous_catalog)
+        else
+          Application.delete_env(:backplane, :openai_codex_model_catalog)
+        end
+      end)
+
+      Req.Test.stub(__MODULE__, fn _conn ->
+        flunk("OpenAI Codex OAuth discovery should not call the provider /models endpoint")
+      end)
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "openai-codex-live",
+          preset_key: "openai-codex",
+          credential: "openai-codex"
+        })
+
+      {:ok, _api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://api.openai.com/v1",
+          model_discovery_path: "/models"
+        })
+
+      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
+
+      html =
+        view
+        |> element("[phx-click='reload_models']", "Load Models from API")
+        |> render_click()
+
+      assert html =~ "gpt-codex-live-test"
+      assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "gpt-codex-live-test")
     end
 
     test "does not show soft-deleted providers", %{conn: conn} do

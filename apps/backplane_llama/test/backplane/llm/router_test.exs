@@ -19,6 +19,55 @@ defmodule Backplane.LLM.RouterTest do
 
   alias Backplane.Settings.Credentials
 
+  defmodule CodexUpstream do
+    use Plug.Router
+
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(:match)
+    plug(:dispatch)
+
+    post "/backend-api/codex/responses" do
+      if store = Application.get_env(:backplane, :router_test_codex_store) do
+        Agent.update(store, fn _ ->
+          %{
+            path: conn.request_path,
+            headers: conn.req_headers,
+            body: conn.body_params
+          }
+        end)
+      end
+
+      events = [
+        %{"type" => "response.output_text.delta", "delta" => "Hello"},
+        %{"type" => "response.output_text.delta", "delta" => " from Codex"},
+        %{
+          "type" => "response.completed",
+          "response" => %{
+            "usage" => %{"input_tokens" => 3, "output_tokens" => 4, "total_tokens" => 7}
+          }
+        }
+      ]
+
+      send_sse(conn, events)
+    end
+
+    match _ do
+      send_resp(conn, 404, "Not Found")
+    end
+
+    defp send_sse(conn, events) do
+      conn =
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_chunked(200)
+
+      Enum.reduce(events, conn, fn event, conn ->
+        {:ok, conn} = Plug.Conn.chunk(conn, "data: #{Jason.encode!(event)}\n\n")
+        conn
+      end)
+    end
+  end
+
   setup do
     Credentials.store("router-anthropic-cred", "sk-ant-test-key-abcd", "llm")
     Credentials.store("router-openai-cred", "sk-openai-test-key", "llm")
@@ -52,6 +101,9 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
+
+  defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
+  defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 
   describe "GET /api/anthropic/v1/models" do
     test "returns only models available on the Anthropic surface" do
@@ -233,6 +285,108 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       assert is_map(body["error"])
       assert body["error"]["code"] == "model_not_found"
+    end
+
+    test "adapts OpenAI Codex OAuth chat completions to the Codex Responses backend" do
+      {:ok, store} = Agent.start_link(fn -> nil end)
+      {:ok, server_pid} = Bandit.start_link(plug: CodexUpstream, port: 0)
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+
+      previous_backend = Application.get_env(:backplane, :openai_codex_backend_base_url)
+      previous_store = Application.get_env(:backplane, :router_test_codex_store)
+
+      Application.put_env(
+        :backplane,
+        :openai_codex_backend_base_url,
+        "http://localhost:#{port}/backend-api/codex"
+      )
+
+      Application.put_env(:backplane, :router_test_codex_store, store)
+
+      on_exit(fn ->
+        restore_env(:openai_codex_backend_base_url, previous_backend)
+        restore_env(:router_test_codex_store, previous_store)
+
+        try do
+          ThousandIsland.stop(server_pid)
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          Agent.stop(store)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      credential = "router-codex-cred-#{System.unique_integer([:positive])}"
+      expires_at = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          credential,
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "auth_mode" => "chatgpt",
+            "id_token" => "codex-id-token",
+            "access_token" => "chatgpt-access-token",
+            "refresh_token" => "refresh-token",
+            "expires_at" => expires_at
+          },
+          %{"account_id" => "acc-123"}
+        )
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "openai-codex-router",
+          credential: credential,
+          preset_key: "openai-codex"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://api.openai.com/v1"
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "gpt-5.5",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      conn =
+        llm_request(:post, "/v1/chat/completions", %{
+          "model" => "openai-codex-router/gpt-5.5",
+          "stream" => true,
+          "messages" => [%{"role" => "user", "content" => "hi"}]
+        })
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "chat.completion.chunk"
+      assert conn.resp_body =~ "Hello"
+      assert conn.resp_body =~ " from Codex"
+      assert conn.resp_body =~ "data: [DONE]"
+
+      request = Agent.get(store, & &1)
+      assert request.path == "/backend-api/codex/responses"
+      assert {"authorization", "Bearer chatgpt-access-token"} in request.headers
+      assert {"chatgpt-account-id", "acc-123"} in request.headers
+      assert {"originator", "codex_cli_rs"} in request.headers
+      assert request.body["model"] == "gpt-5.5"
+      assert request.body["stream"] == true
+      assert [%{"role" => "user", "content" => "hi"}] = request.body["input"]
     end
   end
 

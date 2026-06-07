@@ -113,6 +113,56 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       # Model should be "claude-test" (stripped prefix), echoed back by test server
       assert body["model"] == "claude-test"
     end
+
+    test "proxies openai request without duplicating provider base URL version path", %{
+      port: port,
+      provider: provider
+    } do
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "http://localhost:#{port}/v1"
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "gpt-test",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      ModelResolver.clear_cache()
+
+      conn =
+        llm_request(:post, "/v1/chat/completions", %{
+          "model" => "test-integration/gpt-test",
+          "messages" => [%{"role" => "user", "content" => "hi"}]
+        })
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+
+      assert get_in(body, ["choices", Access.at(0), "message", "content"]) ==
+               "Hello from test upstream"
+
+      assert body["model"] == "gpt-test"
+
+      repeated_v1_conn =
+        llm_request(:post, "/v1/v1/chat/completions", %{
+          "model" => "test-integration/gpt-test",
+          "messages" => [%{"role" => "user", "content" => "hi"}]
+        })
+
+      assert repeated_v1_conn.status == 200
+    end
   end
 
   describe "streaming proxy" do

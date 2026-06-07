@@ -4,6 +4,9 @@ defmodule Backplane.LLM.ModelDiscovery do
   """
 
   alias Backplane.LLM.{CredentialPlug, Provider, ProviderApi, ProviderModel, ProviderModelSurface}
+  alias Backplane.Settings.Credentials
+
+  @default_openai_codex_models ~w(gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex)
 
   @type discovery_result :: %{
           discovered: non_neg_integer(),
@@ -25,9 +28,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   @doc "Reload models for one provider API surface."
   @spec reload_api(Provider.t(), ProviderApi.t()) :: discovery_result()
   def reload_api(%Provider{} = provider, %ProviderApi{} = api) do
-    with {:ok, headers} <- discovery_headers(provider, api),
-         {:ok, response} <- get_models(api, headers),
-         {:ok, model_ids} <- parse_model_ids(response.body) do
+    with {:ok, model_ids} <- discover_model_ids(provider, api) do
       persist_models(provider, api, model_ids)
     else
       {:error, reason} ->
@@ -42,6 +43,44 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   defp discoverable_apis(_provider), do: []
+
+  defp discover_model_ids(provider, api) do
+    if openai_codex_oauth_api?(provider, api) do
+      {:ok, openai_codex_models()}
+    else
+      with {:ok, headers} <- discovery_headers(provider, api),
+           {:ok, response} <- get_models(api, headers) do
+        parse_model_ids(response.body)
+      end
+    end
+  end
+
+  defp openai_codex_oauth_api?(%Provider{} = provider, %ProviderApi{} = api) do
+    provider.preset_key == "openai-codex" and
+      api.api_surface == :openai and
+      credential_auth_type(provider.credential) == "openai_oauth"
+  end
+
+  defp credential_auth_type(nil), do: nil
+
+  defp credential_auth_type(name) do
+    Credentials.list()
+    |> Enum.find(&(&1.name == name))
+    |> case do
+      nil -> nil
+      cred -> credential_metadata_auth_type(cred.metadata)
+    end
+  end
+
+  defp openai_codex_models do
+    Application.get_env(:backplane, :openai_codex_model_catalog) || @default_openai_codex_models
+  end
+
+  defp credential_metadata_auth_type(metadata) when is_map(metadata) do
+    Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type) || "api_key"
+  end
+
+  defp credential_metadata_auth_type(_metadata), do: "api_key"
 
   defp discovery_headers(provider, api) do
     with {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api.api_surface) do

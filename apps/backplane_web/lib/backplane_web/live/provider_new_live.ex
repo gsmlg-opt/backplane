@@ -26,26 +26,14 @@ defmodule BackplaneWeb.ProviderNewLive do
       ProviderPreset.get(params["preset"] || @default_preset) ||
         ProviderPreset.fetch!(@default_preset)
 
-    {:noreply,
-     socket
-     |> assign(
-       selected_preset: preset,
-       form: form_for_preset(preset, socket.assigns[:form_params] || %{}),
-       errors: %{}
-     )
-     |> load_credentials()}
+    {:noreply, assign_preset_form(socket, preset, socket.assigns[:form_params] || %{})}
   end
 
   @impl true
   def handle_event("select_preset", %{"preset" => key}, socket) do
     preset = ProviderPreset.get(key) || socket.assigns.selected_preset
 
-    {:noreply,
-     assign(socket,
-       selected_preset: preset,
-       form: form_for_preset(preset, %{}),
-       errors: %{}
-     )}
+    {:noreply, assign_preset_form(socket, preset, %{})}
   end
 
   def handle_event("validate", %{"provider" => params}, socket) do
@@ -53,12 +41,12 @@ defmodule BackplaneWeb.ProviderNewLive do
      assign(socket,
        form: to_form(params, as: :provider),
        form_params: params,
-       errors: validate_params(params)
+       errors: validate_params(socket.assigns.selected_preset, params)
      )}
   end
 
   def handle_event("save", %{"provider" => params}, socket) do
-    errors = validate_params(params)
+    errors = validate_params(socket.assigns.selected_preset, params)
 
     if map_size(errors) > 0 do
       {:noreply,
@@ -158,26 +146,42 @@ defmodule BackplaneWeb.ProviderNewLive do
     to_form(params, as: :provider)
   end
 
-  defp validate_params(params) do
+  defp validate_params(preset, params) do
     %{}
     |> require_field(params, "name", "Name is required")
     |> require_field(params, "credential", "Credential is required")
+    |> require_allowed_credential(preset, params)
     |> require_surface(params, "openai")
     |> require_surface(params, "anthropic")
   end
 
-  defp load_credentials(socket) do
+  defp assign_preset_form(socket, preset, params) do
+    credential_options = credential_options(preset)
+
+    params =
+      Map.put_new(
+        params,
+        "credential",
+        default_credential(preset, credential_options)
+      )
+
+    assign(socket,
+      selected_preset: preset,
+      form: form_for_preset(preset, params),
+      credential_options: credential_options,
+      errors: %{}
+    )
+  end
+
+  defp credential_options(preset) do
     creds = safe_call(fn -> Credentials.list() end, [])
 
-    options =
-      [
-        {"", "Select a credential..."}
-        | creds
-          |> Enum.filter(&(&1.kind == "llm"))
-          |> Enum.map(fn cred -> {cred.name, "#{cred.name} (#{cred.kind})"} end)
-      ]
-
-    assign(socket, credential_options: options)
+    [
+      {"", "Select a credential..."}
+      | creds
+        |> Enum.filter(&credential_allowed?(preset, &1))
+        |> Enum.map(fn cred -> {cred.name, credential_label(cred)} end)
+    ]
   end
 
   defp safe_call(fun, default) do
@@ -185,6 +189,64 @@ defmodule BackplaneWeb.ProviderNewLive do
   rescue
     _ -> default
   end
+
+  defp credential_allowed?(preset, cred) do
+    cred.kind == preset.credential_kind and credential_auth_type_allowed?(preset, cred)
+  end
+
+  defp credential_auth_type_allowed?(%{credential_auth_type: nil}, _cred), do: true
+
+  defp credential_auth_type_allowed?(preset, cred) do
+    credential_auth_type(cred) == preset.credential_auth_type
+  end
+
+  defp credential_auth_type(%{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type) || "api_key"
+  end
+
+  defp credential_auth_type(_cred), do: "api_key"
+
+  defp credential_label(cred) do
+    auth_type = credential_auth_type(cred)
+    suffix = if auth_type == "api_key", do: cred.kind, else: auth_type
+
+    "#{cred.name} (#{suffix})"
+  end
+
+  defp default_credential(%{default_credential: name}, options) when is_binary(name) do
+    if Enum.any?(options, fn {value, _label} -> value == name end), do: name, else: ""
+  end
+
+  defp default_credential(_preset, _options), do: ""
+
+  defp require_allowed_credential(errors, preset, params) do
+    credential = params["credential"]
+
+    if blank?(credential) do
+      errors
+    else
+      allowed =
+        safe_call(
+          fn ->
+            Credentials.list()
+            |> Enum.any?(&(&1.name == credential and credential_allowed?(preset, &1)))
+          end,
+          false
+        )
+
+      if allowed do
+        errors
+      else
+        Map.put(errors, "credential", credential_error(preset))
+      end
+    end
+  end
+
+  defp credential_error(%{credential_auth_type: auth_type}) when is_binary(auth_type) do
+    "Credential must use #{auth_type} auth type"
+  end
+
+  defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
 
   defp require_surface(errors, params, surface) do
     if truthy?(params["#{surface}_enabled"]) do
