@@ -21,6 +21,12 @@ defmodule Relayixir.Proxy.HttpPlug do
       response chunk in the streaming path (no content-length), before `Plug.Conn.chunk/2`
       forwards it to the client. Does not affect non-streaming (content-length) responses.
 
+    * `:map_response_chunk` — when present, maps each upstream streaming chunk to
+      zero or more downstream chunks before forwarding.
+
+    * `:map_response_body` — when present, maps a collected non-streaming response
+      body before it is sent downstream.
+
   """
   @spec call(Plug.Conn.t(), Upstream.t(), keyword()) :: Plug.Conn.t()
   def call(%Plug.Conn{} = conn, %Upstream{} = upstream, opts \\ []) do
@@ -294,7 +300,7 @@ defmodule Relayixir.Proxy.HttpPlug do
          completeness,
          opts
        ) do
-    if has_content_length?(response_headers) do
+    if has_content_length?(response_headers) or map_response_body?(opts) do
       # Collect body — bounded by the declared content-length.
       case collect_body(
              mint_conn,
@@ -305,11 +311,15 @@ defmodule Relayixir.Proxy.HttpPlug do
            ) do
         {:ok, mint_conn, body_chunks} ->
           release_conn(upstream, mint_conn)
-          body = IO.iodata_to_binary(body_chunks)
+
+          body =
+            body_chunks
+            |> IO.iodata_to_binary()
+            |> maybe_map_response_body(opts)
 
           conn =
             conn
-            |> put_response_headers(response_headers)
+            |> put_response_headers(body_response_headers(response_headers, opts))
             |> Plug.Conn.send_resp(status, body)
 
           {:ok, conn}
@@ -359,10 +369,7 @@ defmodule Relayixir.Proxy.HttpPlug do
   end
 
   defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest], opts) do
-    response_callback = opts[:on_response_chunk]
-    if response_callback, do: response_callback.(chunk)
-
-    case Plug.Conn.chunk(conn, chunk) do
+    case send_mapped_chunk(conn, chunk, opts) do
       {:ok, conn} ->
         send_pending_chunks(conn, mint_conn, upstream, rest, opts)
 
@@ -379,46 +386,104 @@ defmodule Relayixir.Proxy.HttpPlug do
   # Streams chunks from Mint to the downstream client immediately as they arrive.
   # pending_chunks holds any data already received during the headers phase.
   defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks, opts) do
-    response_callback = opts[:on_response_chunk]
+    conn_key = {__MODULE__, :stream_conn, make_ref()}
+    Process.put(conn_key, conn)
 
-    on_chunk = fn chunk ->
-      if response_callback, do: response_callback.(chunk)
+    try do
+      on_chunk = fn chunk ->
+        current_conn = Process.get(conn_key, conn)
 
-      case Plug.Conn.chunk(conn, chunk) do
-        {:ok, _conn} ->
-          :ok
+        case send_mapped_chunk(current_conn, chunk, opts) do
+          {:ok, next_conn} ->
+            Process.put(conn_key, next_conn)
+            :ok
 
-        {:error, :closed} ->
-          :telemetry.execute(
-            [:relayixir, :http, :downstream, :disconnect],
-            %{system_time: System.system_time()},
-            %{}
-          )
+          {:error, :closed} ->
+            :telemetry.execute(
+              [:relayixir, :http, :downstream, :disconnect],
+              %{system_time: System.system_time()},
+              %{}
+            )
 
-          Logger.info("Downstream client disconnected during chunked response")
-          :stop
+            Logger.info("Downstream client disconnected during chunked response")
+            :stop
+        end
       end
-    end
 
-    case HttpClient.recv_body_streaming(
-           mint_conn,
-           upstream.request_timeout,
-           pending_chunks,
-           on_chunk
-         ) do
-      {:ok, mint_conn} ->
-        release_conn(upstream, mint_conn)
-        {:ok, conn}
+      case HttpClient.recv_body_streaming(
+             mint_conn,
+             upstream.request_timeout,
+             pending_chunks,
+             on_chunk
+           ) do
+        {:ok, mint_conn} ->
+          release_conn(upstream, mint_conn)
+          {:ok, Process.get(conn_key, conn)}
 
-      {:stop, mint_conn} ->
-        # Downstream disconnected — don't return to pool (request may be incomplete)
-        HttpClient.close(mint_conn)
-        {:ok, conn}
+        {:stop, mint_conn} ->
+          # Downstream disconnected — don't return to pool (request may be incomplete)
+          HttpClient.close(mint_conn)
+          {:ok, Process.get(conn_key, conn)}
 
-      {:error, reason} ->
-        {:error, map_error(reason, "stream_body", upstream, conn.request_path), conn}
+        {:error, reason} ->
+          final_conn = Process.get(conn_key, conn)
+
+          {:error, map_error(reason, "stream_body", upstream, final_conn.request_path),
+           final_conn}
+      end
+    after
+      Process.delete(conn_key)
     end
   end
+
+  defp maybe_map_response_body(body, opts) do
+    case opts[:map_response_body] do
+      mapper when is_function(mapper, 1) -> mapper.(body)
+      _ -> body
+    end
+  end
+
+  defp map_response_body?(opts), do: is_function(opts[:map_response_body], 1)
+
+  defp body_response_headers(headers, opts) do
+    if map_response_body?(opts) do
+      Enum.reject(headers, fn {name, _value} -> String.downcase(name) == "content-length" end)
+    else
+      headers
+    end
+  end
+
+  defp send_mapped_chunk(conn, chunk, opts) do
+    response_callback = opts[:on_response_chunk]
+
+    chunk
+    |> mapped_response_chunks(opts)
+    |> Enum.reduce_while({:ok, conn}, fn mapped_chunk, {:ok, acc} ->
+      if response_callback, do: response_callback.(mapped_chunk)
+
+      case Plug.Conn.chunk(acc, mapped_chunk) do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        {:error, :closed} -> {:halt, {:error, :closed}}
+      end
+    end)
+  end
+
+  defp mapped_response_chunks(chunk, opts) do
+    case opts[:map_response_chunk] do
+      mapper when is_function(mapper, 1) ->
+        chunk
+        |> mapper.()
+        |> normalize_mapped_chunks()
+
+      _ ->
+        [chunk]
+    end
+  end
+
+  defp normalize_mapped_chunks(nil), do: []
+  defp normalize_mapped_chunks(chunk) when is_binary(chunk), do: [chunk]
+  defp normalize_mapped_chunks(chunks) when is_list(chunks), do: chunks
+  defp normalize_mapped_chunks(_chunk), do: []
 
   defp put_response_headers(conn, headers) do
     Enum.reduce(headers, conn, fn {name, value}, conn ->

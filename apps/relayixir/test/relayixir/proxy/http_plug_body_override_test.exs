@@ -100,6 +100,32 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
     end
   end
 
+  describe "map_response_body: opt" do
+    test "maps content-length response bodies without forwarding stale content-length", %{
+      port: port
+    } do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/with-content-length")
+
+      result = HttpPlug.call(conn, upstream, map_response_body: fn _body -> "mapped" end)
+
+      assert result.status == 200
+      assert result.resp_body == "mapped"
+      assert Plug.Conn.get_resp_header(result, "content-length") == []
+    end
+
+    test "collects and maps chunked response bodies", %{port: port} do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/chunked")
+
+      result =
+        HttpPlug.call(conn, upstream, map_response_body: fn body -> "mapped: #{body}" end)
+
+      assert result.status == 200
+      assert result.resp_body == "mapped: chunk1chunk2"
+    end
+  end
+
   describe "combined opts" do
     test "body: + on_response_chunk: work together", %{port: port} do
       upstream = build_upstream(port)
