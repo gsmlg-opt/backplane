@@ -350,6 +350,58 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       assert stored["access_token"] == "oai-FRESH"
     end
 
+    test "refresh_oauth_token/2 force refreshes a fresh Claude Plan token" do
+      now_ms = System.system_time(:millisecond)
+
+      json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-FRESH",
+            "refreshToken" => "sk-ant-ort01-force",
+            "expiresAt" => now_ms + 60 * 60 * 1000,
+            "scopes" => ["user:inference"],
+            "subscriptionType" => "max"
+          }
+        })
+
+      {:ok, _} = Credentials.import_cli_auth("ant-force-refresh", json)
+
+      assert {:ok, :refreshed} =
+               Credentials.refresh_oauth_token("ant-force-refresh", force: true, now_ms: now_ms)
+
+      stored = decrypt_credential_json("ant-force-refresh")
+      assert stored["claudeAiOauth"]["accessToken"] == "sk-ant-oat01-REFRESHED"
+      assert stored["claudeAiOauth"]["refreshToken"] == "sk-ant-ort01-NEWREFRESH"
+      assert is_binary(stored["last_refresh"])
+    end
+
+    test "oauth_status/2 summarizes token state without exposing token values" do
+      now_ms = System.system_time(:millisecond)
+      expires_at = now_ms + 60 * 60 * 1000
+
+      json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-STATUS",
+            "refreshToken" => "sk-ant-ort01-status",
+            "expiresAt" => expires_at,
+            "scopes" => ["user:inference"],
+            "subscriptionType" => "max"
+          }
+        })
+
+      {:ok, _} = Credentials.import_cli_auth("ant-status", json)
+
+      assert {:ok, status} = Credentials.oauth_status("ant-status", now_ms: now_ms)
+      assert status.auth_type == "anthropic_oauth"
+      assert status.status == :active
+      assert status.expires_at_ms == expires_at
+      assert %DateTime{} = status.expires_at
+      assert %DateTime{} = status.token_created_at
+      refute Map.has_key?(status, :access_token)
+      refute Map.has_key?(status, :refresh_token)
+    end
+
     test "OAuthTokenRefreshWorker refreshes a named Codex credential" do
       now_ms = System.system_time(:millisecond)
 
@@ -376,6 +428,46 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       stored = decrypt_credential_json("oai-worker-refresh")
       assert stored["access_token"] == "oai-REFRESHED"
+    end
+
+    test "OAuthTokenRefreshWorker auto refreshes Claude Plan credentials inside two hours" do
+      now_ms = System.system_time(:millisecond)
+
+      claude_due_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-DUE",
+            "refreshToken" => "sk-ant-ort01-due",
+            "expiresAt" => now_ms + 119 * 60 * 1000,
+            "scopes" => ["user:inference"],
+            "subscriptionType" => "max"
+          },
+          "organizationUuid" => "org-due"
+        })
+
+      claude_fresh_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-FRESH",
+            "refreshToken" => "sk-ant-ort01-fresh",
+            "expiresAt" => now_ms + 121 * 60 * 1000,
+            "scopes" => ["user:inference"],
+            "subscriptionType" => "max"
+          },
+          "organizationUuid" => "org-fresh"
+        })
+
+      {:ok, _} = Credentials.import_cli_auth("ant-worker-due", claude_due_json)
+      {:ok, _} = Credentials.import_cli_auth("ant-worker-fresh", claude_fresh_json)
+
+      assert :ok = OAuthTokenRefreshWorker.perform(%Oban.Job{args: %{}})
+
+      due = decrypt_credential_json("ant-worker-due")
+      fresh = decrypt_credential_json("ant-worker-fresh")
+
+      assert due["claudeAiOauth"]["accessToken"] == "sk-ant-oat01-REFRESHED"
+      assert due["claudeAiOauth"]["refreshToken"] == "sk-ant-ort01-NEWREFRESH"
+      assert fresh["claudeAiOauth"]["accessToken"] == "sk-ant-oat01-FRESH"
     end
   end
 

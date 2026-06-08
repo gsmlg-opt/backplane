@@ -83,6 +83,7 @@ defmodule BackplaneWeb.SettingsLive do
   defp apply_action(socket, :credentials_edit, %{"name" => name}) do
     cred = Enum.find(socket.assigns.credentials, &(&1.name == name))
     metadata = (cred && cred.metadata) || %{}
+    auth_type = metadata["auth_type"] || "api_key"
 
     assign(socket,
       cred_form_mode: :edit,
@@ -90,10 +91,13 @@ defmodule BackplaneWeb.SettingsLive do
       cred_name: name,
       cred_kind: (cred && cred.kind) || "llm",
       cred_secret: "",
-      cred_auth_type: metadata["auth_type"] || "api_key",
+      cred_auth_type: auth_type,
       cred_client_id: metadata["client_id"] || "",
       cred_token_url: metadata["token_url"] || "",
-      cred_scope: metadata["scope"] || ""
+      cred_scope: metadata["scope"] || "",
+      oauth_status: maybe_oauth_status(name, auth_type),
+      device_flow_vendor: auth_type,
+      device_flow_cred_name: name
     )
   end
 
@@ -141,7 +145,9 @@ defmodule BackplaneWeb.SettingsLive do
       device_flow_login: nil,
       device_flow_code_verifier: nil,
       device_flow_oauth_state: nil,
-      device_flow_redirect_uri: nil
+      device_flow_redirect_uri: nil,
+      auth_json_modal_open: false,
+      oauth_status: nil
     )
   end
 
@@ -264,85 +270,37 @@ defmodule BackplaneWeb.SettingsLive do
     vendor = socket.assigns.device_flow_vendor
     name = String.trim(params["cred_name"] || "")
 
-    cond do
-      name == "" ->
-        {:noreply, put_flash(socket, :error, "Credential name is required")}
+    start_device_auth(socket, vendor, name)
+  end
 
-      vendor == "openai_oauth" ->
-        case OpenAICodexAuth.start_device_login() do
-          {:ok, login} ->
-            schedule_openai_codex_poll(login, name)
+  def handle_event("reconnect_oauth", _, socket) do
+    start_device_auth(socket, socket.assigns.cred_auth_type, socket.assigns.cred_editing_name)
+  end
 
-            {:noreply,
-             assign(socket,
-               device_flow_state: :waiting_code,
-               device_flow_cred_name: name,
-               device_flow_user_code: login.user_code,
-               device_flow_verification_uri: login.verification_url,
-               device_flow_login: login,
-               device_flow_error: nil,
-               device_flow_error_detail: nil
-             )}
+  def handle_event("renew_oauth_token", _, socket) do
+    name = socket.assigns.cred_editing_name
 
-          {:error, reason} ->
-            {:noreply,
-             assign(socket,
-               device_flow_state: :error,
-               device_flow_error:
-                 "Failed to request device code: #{format_openai_codex_error(reason)}",
-               device_flow_error_detail: nil
-             )}
-        end
-
-      vendor == "anthropic_oauth" ->
-        redirect_uri = "https://platform.claude.com/oauth/code/callback"
-        {verifier, challenge} = pkce_pair()
-        state = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
-        auth_url = build_auth_url("anthropic_oauth", state, challenge, redirect_uri)
-
+    case Credentials.refresh_oauth_token(name, force: true) do
+      {:ok, _} ->
         {:noreply,
          socket
-         |> assign(
-           device_flow_state: :waiting_code_input,
-           device_flow_cred_name: name,
-           device_flow_code_verifier: verifier,
-           device_flow_oauth_state: state,
-           device_flow_redirect_uri: redirect_uri,
-           device_flow_error: nil,
-           device_flow_error_detail: nil
-         )
-         |> push_event("open_external_oauth", %{url: auth_url})}
+         |> put_flash(:info, "OAuth token renewed for '#{name}'")
+         |> refresh_credential_edit(name)}
 
-      true ->
-        redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
-        {verifier, challenge} = pkce_pair()
-
-        state =
-          OAuthStateStore.put(%{
-            "vendor" => vendor,
-            "cred_name" => name,
-            "code_verifier" => verifier,
-            "redirect_uri" => redirect_uri
-          })
-
-        case build_auth_url(vendor, state, challenge, redirect_uri) do
-          {:error, reason} ->
-            {:noreply,
-             assign(socket,
-               device_flow_state: :error,
-               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
-               device_flow_error_detail: nil
-             )}
-
-          auth_url ->
-            socket =
-              socket
-              |> push_event("open_external_oauth", %{url: auth_url})
-              |> push_patch(to: ~p"/admin/system/credentials")
-
-            {:noreply, socket}
-        end
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to renew OAuth token: #{format_oauth_error(reason)}")
+         |> refresh_credential_edit(name)}
     end
+  end
+
+  def handle_event("open_auth_json_modal", _, socket) do
+    {:noreply, assign(socket, auth_json_modal_open: true)}
+  end
+
+  def handle_event("close_auth_json_modal", _, socket) do
+    {:noreply, assign(socket, auth_json_modal_open: false)}
   end
 
   def handle_event("submit_auth_code", %{"code" => code}, socket) do
@@ -383,6 +341,75 @@ defmodule BackplaneWeb.SettingsLive do
              device_flow_error_detail: format_exchange_error_detail(reason)
            )}
       end
+    end
+  end
+
+  def handle_event("import_cli_auth", params, socket) do
+    vendor = socket.assigns.device_flow_vendor
+    name = String.trim(params["cred_name"] || "")
+    auth_json = String.trim(params["auth_json"] || "")
+
+    cond do
+      vendor != "anthropic_oauth" ->
+        {:noreply,
+         put_flash(socket, :error, "CLI auth import is not available for this provider")}
+
+      name == "" ->
+        {:noreply, put_flash(socket, :error, "Credential name is required")}
+
+      auth_json == "" ->
+        {:noreply, put_flash(socket, :error, "Claude Code auth JSON is required")}
+
+      true ->
+        case import_claude_code_auth(name, auth_json) do
+          {:ok, _} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Imported Claude Code auth as '#{name}'")
+             |> push_patch(to: ~p"/admin/system/credentials")}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               "Failed to import Claude Code auth JSON: #{format_cli_auth_error(reason)}"
+             )}
+        end
+    end
+  end
+
+  def handle_event("update_cli_auth", params, socket) do
+    name = socket.assigns.cred_editing_name
+    auth_json = String.trim(params["auth_json"] || "")
+
+    cond do
+      socket.assigns.cred_auth_type != "anthropic_oauth" ->
+        {:noreply,
+         put_flash(socket, :error, "Claude Code auth JSON is only available for Claude Plan")}
+
+      auth_json == "" ->
+        {:noreply, put_flash(socket, :error, "Claude Code auth JSON is required")}
+
+      true ->
+        case import_claude_code_auth(name, auth_json) do
+          {:ok, _} ->
+            Credentials.invalidate_token(name)
+
+            {:noreply,
+             socket
+             |> put_flash(:info, "Updated Claude Code auth JSON for '#{name}'")
+             |> assign(auth_json_modal_open: false)
+             |> refresh_credential_edit(name)}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               "Failed to update Claude Code auth JSON: #{format_cli_auth_error(reason)}"
+             )}
+        end
     end
   end
 
@@ -475,6 +502,95 @@ defmodule BackplaneWeb.SettingsLive do
 
   @impl true
   def handle_info(_, socket), do: {:noreply, socket}
+
+  defp start_device_auth(socket, vendor, name) do
+    socket =
+      assign(socket,
+        cred_form_mode: :device_auth,
+        device_flow_vendor: vendor,
+        device_flow_cred_name: name
+      )
+
+    cond do
+      name == "" ->
+        {:noreply, put_flash(socket, :error, "Credential name is required")}
+
+      vendor == "openai_oauth" ->
+        case OpenAICodexAuth.start_device_login() do
+          {:ok, login} ->
+            schedule_openai_codex_poll(login, name)
+
+            {:noreply,
+             assign(socket,
+               device_flow_state: :waiting_code,
+               device_flow_cred_name: name,
+               device_flow_user_code: login.user_code,
+               device_flow_verification_uri: login.verification_url,
+               device_flow_login: login,
+               device_flow_error: nil,
+               device_flow_error_detail: nil
+             )}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error:
+                 "Failed to request device code: #{format_openai_codex_error(reason)}",
+               device_flow_error_detail: nil
+             )}
+        end
+
+      vendor == "anthropic_oauth" ->
+        redirect_uri = "https://platform.claude.com/oauth/code/callback"
+        {verifier, challenge} = pkce_pair()
+        state = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+        auth_url = build_auth_url("anthropic_oauth", state, challenge, redirect_uri)
+
+        {:noreply,
+         socket
+         |> assign(
+           device_flow_state: :waiting_code_input,
+           device_flow_cred_name: name,
+           device_flow_code_verifier: verifier,
+           device_flow_oauth_state: state,
+           device_flow_redirect_uri: redirect_uri,
+           device_flow_error: nil,
+           device_flow_error_detail: nil
+         )
+         |> push_event("open_external_oauth", %{url: auth_url})}
+
+      true ->
+        redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
+        {verifier, challenge} = pkce_pair()
+
+        state =
+          OAuthStateStore.put(%{
+            "vendor" => vendor,
+            "cred_name" => name,
+            "code_verifier" => verifier,
+            "redirect_uri" => redirect_uri
+          })
+
+        case build_auth_url(vendor, state, challenge, redirect_uri) do
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error_detail: nil
+             )}
+
+          auth_url ->
+            socket =
+              socket
+              |> push_event("open_external_oauth", %{url: auth_url})
+              |> push_patch(to: ~p"/admin/system/credentials")
+
+            {:noreply, socket}
+        end
+    end
+  end
 
   defp configure_auto_model_targets(socket, name, model_ids) do
     case AutoModel.configure_targets(name, model_ids) do
@@ -680,6 +796,67 @@ defmodule BackplaneWeb.SettingsLive do
     |> List.first()
     |> Kernel.||("invalid alias")
   end
+
+  defp device_oauth_auth_type?(auth_type),
+    do: auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"]
+
+  defp maybe_oauth_status(name, auth_type) do
+    if device_oauth_auth_type?(auth_type) do
+      case Credentials.oauth_status(name) do
+        {:ok, status} ->
+          status
+
+        {:error, reason} ->
+          %{
+            auth_type: auth_type,
+            status: :invalid,
+            expires_at: nil,
+            token_created_at: nil,
+            credential_updated_at: nil,
+            error: reason
+          }
+      end
+    end
+  end
+
+  defp refresh_credential_edit(socket, name) do
+    socket
+    |> load_data("credentials")
+    |> apply_action(:credentials_edit, %{"name" => name})
+  end
+
+  defp oauth_status_label(%{status: :active}), do: "Active"
+  defp oauth_status_label(%{status: :expiring_soon}), do: "Expiring Soon"
+  defp oauth_status_label(%{status: :expired}), do: "Expired"
+  defp oauth_status_label(%{status: :missing_refresh_token}), do: "Missing Refresh Token"
+  defp oauth_status_label(%{status: :unknown}), do: "Unknown"
+  defp oauth_status_label(%{status: :invalid}), do: "Invalid"
+  defp oauth_status_label(_), do: "Unknown"
+
+  defp oauth_status_variant(%{status: :active}), do: "success"
+  defp oauth_status_variant(%{status: :expiring_soon}), do: "warning"
+  defp oauth_status_variant(%{status: :expired}), do: "error"
+  defp oauth_status_variant(%{status: :missing_refresh_token}), do: "error"
+  defp oauth_status_variant(%{status: :invalid}), do: "error"
+  defp oauth_status_variant(_), do: "neutral"
+
+  defp format_oauth_datetime(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
+  end
+
+  defp format_oauth_datetime(%NaiveDateTime{} = datetime) do
+    datetime
+    |> NaiveDateTime.truncate(:second)
+    |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
+  end
+
+  defp format_oauth_datetime(_), do: "Unknown"
+
+  defp format_oauth_error({:refresh_failed, status}), do: "refresh returned HTTP #{status}"
+  defp format_oauth_error({:refresh_error, reason}), do: inspect(reason)
+  defp format_oauth_error(reason), do: inspect(reason)
 
   @kind_options [
     {"llm", "LLM Provider"},
@@ -958,34 +1135,36 @@ defmodule BackplaneWeb.SettingsLive do
                   {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
                 </:col>
                 <:col :let={cred} label="Actions">
-                  <% auth_type = (cred.metadata || %{})["auth_type"] %>
-                  <% is_device_oauth = auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"] %>
                   <div class="flex items-center gap-1">
-                    <.link :if={!is_device_oauth} patch={~p"/admin/system/credentials/#{cred.name}/edit"}>
-                      <.dm_btn size="sm">
-                        Edit
-                      </.dm_btn>
-                    </.link>
-                    <.link
-                      :if={is_device_oauth}
-                      patch={~p"/admin/system/credentials/new/#{auth_type}"}
-                    >
-                      <.dm_btn
-                        size="sm"
-                        title="Re-connect via device code"
-                      >
-                        Reconnect
-                      </.dm_btn>
-                    </.link>
+                    <.dm_tooltip content="Edit" position="bottom">
+                      <.link patch={~p"/admin/system/credentials/#{cred.name}/edit"} class="no-underline">
+                        <.dm_btn
+                          type="button"
+                          size="xs"
+                          shape="circle"
+                          variant="outline"
+                          aria-label={"Edit #{cred.name}"}
+                        >
+                          <.dm_mdi name="pencil" class="h-4 w-4" />
+                          <span class="sr-only">Edit</span>
+                        </.dm_btn>
+                      </.link>
+                    </.dm_tooltip>
 
-                    <.dm_btn
-                      variant="error"
-                      size="sm"
-                      phx-click="show_delete_confirm"
-                      phx-value-name={cred.name}
-                    >
-                      Delete
-                    </.dm_btn>
+                    <.dm_tooltip content="Delete" position="bottom">
+                      <.dm_btn
+                        type="button"
+                        variant="error"
+                        size="xs"
+                        shape="circle"
+                        aria-label={"Delete #{cred.name}"}
+                        phx-click="show_delete_confirm"
+                        phx-value-name={cred.name}
+                      >
+                        <.dm_mdi name="delete" class="h-4 w-4" />
+                        <span class="sr-only">Delete</span>
+                      </.dm_btn>
+                    </.dm_tooltip>
                   </div>
                 </:col>
               </.dm_table>
@@ -1014,7 +1193,14 @@ defmodule BackplaneWeb.SettingsLive do
               &larr; Credentials
             </.link>
           </div>
-          <.render_cred_form kind_options={@kind_options} {assigns} />
+          <%= cond do %>
+            <% @cred_form_mode == :device_auth -> %>
+              <.render_device_auth_form {assigns} />
+            <% device_oauth_auth_type?(@cred_auth_type) -> %>
+              <.render_oauth_cred_edit {assigns} />
+            <% true -> %>
+              <.render_cred_form kind_options={@kind_options} {assigns} />
+          <% end %>
       <% end %>
 
       <div
@@ -1149,6 +1335,114 @@ defmodule BackplaneWeb.SettingsLive do
     """
   end
 
+  defp render_oauth_cred_edit(assigns) do
+    ~H"""
+    <.dm_card variant="bordered" class="mb-6">
+      <:title>OAuth Credential: {@cred_editing_name}</:title>
+
+      <div class="space-y-5">
+        <div class="flex flex-wrap items-center gap-2">
+          <.dm_badge variant="info">{device_flow_label(@cred_auth_type)}</.dm_badge>
+          <.dm_badge id="oauth-status-badge" variant={oauth_status_variant(@oauth_status)}>
+            {oauth_status_label(@oauth_status)}
+          </.dm_badge>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div class="rounded-md border border-outline-variant p-3">
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Expires</div>
+            <div id="oauth-token-expires" class="text-sm text-on-surface">
+              {format_oauth_datetime(@oauth_status && @oauth_status.expires_at)}
+            </div>
+          </div>
+          <div class="rounded-md border border-outline-variant p-3">
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Created</div>
+            <div id="oauth-token-created" class="text-sm text-on-surface">
+              {format_oauth_datetime(@oauth_status && @oauth_status.token_created_at)}
+            </div>
+          </div>
+          <div class="rounded-md border border-outline-variant p-3">
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Last Updated</div>
+            <div id="oauth-credential-updated" class="text-sm text-on-surface">
+              {format_oauth_datetime(@oauth_status && @oauth_status.credential_updated_at)}
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2 pt-1">
+          <.dm_btn type="button" variant="primary" phx-click="reconnect_oauth">
+            Reconnect
+          </.dm_btn>
+          <.dm_btn type="button" variant="secondary" phx-click="renew_oauth_token">
+            Renew Token
+          </.dm_btn>
+          <.dm_btn
+            :if={@cred_auth_type == "anthropic_oauth"}
+            id="open-claude-auth-json-modal"
+            type="button"
+            variant="outline"
+            phx-click="open_auth_json_modal"
+          >
+            Set Auth JSON
+          </.dm_btn>
+          <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
+        </div>
+
+        <.claude_auth_json_modal :if={@auth_json_modal_open} />
+      </div>
+    </.dm_card>
+    """
+  end
+
+  defp claude_auth_json_modal(assigns) do
+    ~H"""
+    <div
+      id="claude-auth-json-modal"
+      class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="claude-auth-json-modal-title"
+      phx-window-keydown="close_auth_json_modal"
+      phx-key="Escape"
+    >
+      <div class="w-full max-w-3xl rounded-lg border border-outline-variant bg-surface-container p-6 shadow-xl">
+        <div class="mb-5 flex items-center justify-between gap-4">
+          <h2 id="claude-auth-json-modal-title" class="text-lg font-semibold text-on-surface">
+            Set Claude Plan Auth JSON
+          </h2>
+          <button
+            type="button"
+            class="rounded px-2 py-1 text-sm text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+            phx-click="close_auth_json_modal"
+            aria-label="Close"
+          >
+            x
+          </button>
+        </div>
+
+        <form id="claude-auth-json-form" phx-submit="update_cli_auth" class="space-y-4">
+          <.dm_textarea
+            id="edit-claude-code-auth-json"
+            name="auth_json"
+            label="Auth JSON"
+            value=""
+            placeholder={~s({"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":1780094101489}})}
+            rows={10}
+            class="font-mono"
+            required
+          />
+          <div class="flex flex-wrap justify-end gap-2 pt-2">
+            <.dm_btn type="button" variant="outline" size="sm" phx-click="close_auth_json_modal">
+              Cancel
+            </.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">Update Auth JSON</.dm_btn>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+  end
+
   defp render_device_auth_form(assigns) do
     ~H"""
     <.dm_card variant="bordered" class="mb-6">
@@ -1172,6 +1466,34 @@ defmodule BackplaneWeb.SettingsLive do
             <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
           </div>
         </form>
+
+        <div :if={@device_flow_vendor == "anthropic_oauth"} class="mt-6 border-t border-outline-variant pt-5">
+          <h3 class="mb-3 text-sm font-semibold text-on-surface">Claude Code Auth JSON</h3>
+          <form phx-submit="import_cli_auth" class="space-y-4">
+            <.dm_input
+              id="cli-auth-cred-name"
+              name="cred_name"
+              label="Credential Name"
+              value={@device_flow_cred_name}
+              placeholder="claude-plan"
+              required
+            />
+            <.dm_textarea
+              id="claude-code-auth-json"
+              name="auth_json"
+              label="Auth JSON"
+              value=""
+              placeholder={~s({"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":1780094101489}})}
+              rows={8}
+              class="font-mono"
+              required
+            />
+            <div class="flex gap-2 pt-2">
+              <.dm_btn type="submit" variant="primary">Import JSON</.dm_btn>
+              <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+            </div>
+          </form>
+        </div>
       <% end %>
 
       <%= if @device_flow_state == :waiting_code_input do %>
@@ -1337,6 +1659,31 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp normalize_optional_string(_), do: nil
+
+  defp import_claude_code_auth(name, auth_json) do
+    with :ok <- validate_claude_code_auth_json(auth_json),
+         {:ok, cred} <- Credentials.import_cli_auth(name, auth_json) do
+      {:ok, cred}
+    end
+  end
+
+  defp validate_claude_code_auth_json(auth_json) do
+    case Jason.decode(auth_json) do
+      {:ok, %{"claudeAiOauth" => %{"refreshToken" => refresh_token}}}
+      when is_binary(refresh_token) and refresh_token != "" ->
+        :ok
+
+      {:ok, _} ->
+        {:error, :unrecognized_format}
+
+      {:error, _} ->
+        {:error, :invalid_json}
+    end
+  end
+
+  defp format_cli_auth_error(:invalid_json), do: "invalid JSON"
+  defp format_cli_auth_error(:unrecognized_format), do: "expected Claude Code auth JSON"
+  defp format_cli_auth_error(reason), do: inspect(reason)
 
   # --- Auth Code Exchange (Claude Code CLI flow) ---
 

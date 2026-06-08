@@ -258,6 +258,196 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "Add Credential"
     end
 
+    test "renders credential action icon buttons with tooltip labels", %{conn: conn} do
+      {:ok, _} = Credentials.store("plain-action-key", "sk-plain", "llm")
+
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      oauth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-action",
+            "refreshToken" => "sk-ant-ort01-action",
+            "expiresAt" => future_ms
+          }
+        })
+
+      {:ok, _} =
+        Credentials.store("oauth-action-key", oauth_json, "llm", %{
+          "auth_type" => "anthropic_oauth"
+        })
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+
+      assert has_element?(
+               view,
+               ~s(a[href="/admin/system/credentials/plain-action-key/edit"] el-dm-button[aria-label="Edit plain-action-key"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(a[href="/admin/system/credentials/oauth-action-key/edit"] el-dm-button[aria-label="Edit oauth-action-key"])
+             )
+
+      refute has_element?(
+               view,
+               ~s(a[href="/admin/system/credentials/new/anthropic_oauth"] el-dm-button[aria-label="Reconnect oauth-action-key"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(el-dm-button[aria-label="Delete oauth-action-key"][phx-click="show_delete_confirm"])
+             )
+
+      assert has_element?(view, ".tooltip-content", "Edit")
+      assert has_element?(view, ".tooltip-content", "Delete")
+    end
+
+    test "renders OAuth credential edit status and actions", %{conn: conn} do
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      oauth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-edit",
+            "refreshToken" => "sk-ant-ort01-edit",
+            "expiresAt" => future_ms
+          }
+        })
+
+      {:ok, _} =
+        Credentials.store("oauth-edit-key", oauth_json, "llm", %{
+          "auth_type" => "anthropic_oauth"
+        })
+
+      {:ok, view, html} = live(conn, "/admin/system/credentials/oauth-edit-key/edit")
+
+      assert html =~ "OAuth Credential: oauth-edit-key"
+      assert has_element?(view, "#oauth-status-badge", "Active")
+      assert has_element?(view, "#oauth-token-expires")
+      assert has_element?(view, "#oauth-token-created")
+      assert has_element?(view, ~s(el-dm-button[phx-click="reconnect_oauth"]), "Reconnect")
+      assert has_element?(view, ~s(el-dm-button[phx-click="renew_oauth_token"]), "Renew Token")
+      refute has_element?(view, "#cred-secret")
+    end
+
+    test "updates Claude Plan auth JSON from a modal on the OAuth credential edit page", %{
+      conn: conn
+    } do
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      old_auth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-old-json",
+            "refreshToken" => "sk-ant-ort01-old-json",
+            "expiresAt" => future_ms
+          },
+          "organizationUuid" => "org-old-json"
+        })
+
+      new_auth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-updated-json",
+            "refreshToken" => "sk-ant-ort01-updated-json",
+            "expiresAt" => future_ms + 60 * 60 * 1000,
+            "scopes" => ["user:inference", "user:sessions:claude_code"],
+            "subscriptionType" => "max"
+          },
+          "organizationUuid" => "org-updated-json"
+        })
+
+      {:ok, _} = Credentials.import_cli_auth("oauth-json-edit-key", old_auth_json)
+      assert {:ok, "sk-ant-oat01-old-json"} = Credentials.fetch("oauth-json-edit-key")
+
+      {:ok, view, html} = live(conn, "/admin/system/credentials/oauth-json-edit-key/edit")
+
+      assert html =~ "Set Auth JSON"
+      refute has_element?(view, "#claude-auth-json-modal")
+
+      html =
+        view
+        |> element(~s(el-dm-button[phx-click="open_auth_json_modal"]), "Set Auth JSON")
+        |> render_click()
+
+      assert html =~ "claude-auth-json-modal"
+      assert has_element?(view, "#claude-auth-json-modal-title", "Set Claude Plan Auth JSON")
+
+      _html =
+        view
+        |> form("form[phx-submit=update_cli_auth]", %{"auth_json" => new_auth_json})
+        |> render_submit()
+
+      assert {:ok, "sk-ant-oat01-updated-json"} = Credentials.fetch("oauth-json-edit-key")
+
+      assert {:ok, "sk-ant-oat01-updated-json",
+              %{
+                auth_type: "anthropic_oauth",
+                extra_headers: [{"anthropic-beta", "oauth-2025-04-20"}]
+              }} =
+               Credentials.fetch_with_meta("oauth-json-edit-key")
+
+      assert has_element?(view, "#oauth-status-badge", "Active")
+    end
+
+    test "reconnect on OAuth credential edit starts the full OAuth workflow", %{conn: conn} do
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      oauth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-reconnect",
+            "refreshToken" => "sk-ant-ort01-reconnect",
+            "expiresAt" => future_ms
+          }
+        })
+
+      {:ok, _} =
+        Credentials.store("oauth-reconnect-key", oauth_json, "llm", %{
+          "auth_type" => "anthropic_oauth"
+        })
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/oauth-reconnect-key/edit")
+
+      html =
+        view
+        |> element(~s(el-dm-button[phx-click="reconnect_oauth"]))
+        |> render_click()
+
+      assert html =~ "Authorization Code"
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      assert URI.parse(auth_url).host == "claude.ai"
+    end
+
+    test "renew on OAuth credential edit refreshes the token", %{conn: conn} do
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      oauth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-renew-old",
+            "refreshToken" => "sk-ant-ort01-renew",
+            "expiresAt" => future_ms
+          }
+        })
+
+      {:ok, _} =
+        Credentials.store("oauth-renew-key", oauth_json, "llm", %{
+          "auth_type" => "anthropic_oauth"
+        })
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/oauth-renew-key/edit")
+
+      _html =
+        view
+        |> element(~s(el-dm-button[phx-click="renew_oauth_token"]))
+        |> render_click()
+
+      assert {:ok, "sk-ant-oat01-renewed"} = Credentials.fetch("oauth-renew-key")
+      assert has_element?(view, "#oauth-status-badge", "Active")
+    end
+
     test "clicking Add Credential patches the URL to the new form", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
@@ -304,6 +494,46 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
 
       assert_patched(view, "/admin/system/credentials/new/anthropic_oauth")
       assert html =~ "Connect Claude Plan"
+    end
+
+    test "imports Claude Code auth JSON from the Claude Plan page", %{conn: conn} do
+      future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      auth_json =
+        Jason.encode!(%{
+          "claudeAiOauth" => %{
+            "accessToken" => "sk-ant-oat01-imported",
+            "refreshToken" => "sk-ant-ort01-imported",
+            "expiresAt" => future_ms,
+            "scopes" => ["user:inference", "user:sessions:claude_code"],
+            "subscriptionType" => "max",
+            "rateLimitTier" => "default_claude_max_20x"
+          },
+          "organizationUuid" => "org-imported"
+        })
+
+      {:ok, view, html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+      assert html =~ "Claude Code Auth JSON"
+
+      html =
+        view
+        |> form("form[phx-submit=import_cli_auth]", %{
+          "cred_name" => "my-claude-code-json",
+          "auth_json" => auth_json
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-claude-code-json"
+
+      assert {:ok, "sk-ant-oat01-imported"} = Credentials.fetch("my-claude-code-json")
+
+      assert {:ok, "sk-ant-oat01-imported",
+              %{
+                auth_type: "anthropic_oauth",
+                extra_headers: [{"anthropic-beta", "oauth-2025-04-20"}]
+              }} =
+               Credentials.fetch_with_meta("my-claude-code-json")
     end
 
     test "submitting Claude auth code splits code and state before token exchange", %{conn: conn} do
@@ -566,6 +796,9 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       Map.has_key?(body, "expires_in") ->
         forbidden(conn)
 
+      valid_anthropic_refresh_body?(body) ->
+        anthropic_success(conn, "sk-ant-oat01-renewed")
+
       valid_anthropic_body?(body, "mock-auth-code-normal") ->
         anthropic_success(conn, "sk-ant-oat01-normal")
 
@@ -594,6 +827,18 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       }
       when is_binary(verifier) and byte_size(verifier) > 0 and is_binary(state) and
              byte_size(state) > 0,
+      body
+    )
+  end
+
+  defp valid_anthropic_refresh_body?(body) do
+    match?(
+      %{
+        "grant_type" => "refresh_token",
+        "refresh_token" => refresh_token,
+        "client_id" => "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+      }
+      when is_binary(refresh_token) and byte_size(refresh_token) > 0,
       body
     )
   end
