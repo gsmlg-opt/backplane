@@ -3,11 +3,11 @@
     "devenv": {
       "locked": {
         "dir": "src/modules",
-        "lastModified": 1774880920,
-        "narHash": "sha256-VPLBe2ES5agAANNZKDNaBQE/socnjBeEr2zloVcJHKk=",
+        "lastModified": 1780935506,
+        "narHash": "sha256-pVCEeeppdluV6ys7jAlG0mH5x5HiXBdxVM7jcLhY81c=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "f333c713e692b687a9ed7cc38ea5738cac67d38a",
+        "rev": "e94869e8a32e95f498b520ac24e8f24938ab1915",
         "type": "github"
       },
       "original": {
@@ -55,16 +55,16 @@
     },
     "nixpkgs-stable": {
       "locked": {
-        "lastModified": 1774929057,
-        "narHash": "sha256-wIii+3ddmGrebCJsG+qiukfAwQS8NpreakxnEtvRwlA=",
+        "lastModified": 1780911925,
+        "narHash": "sha256-1mgzIjvwWMmHc+05wh8S0cZMDkXN6y5/q0J/a8kik24=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "2047ee37d394a915c36d97eaa48a7687cf53a3fa",
+        "rev": "ebbfe83d879b88f139948816267fe3a9ff7b5a8b",
         "type": "github"
       },
       "original": {
         "owner": "nixos",
-        "ref": "release-25.11",
+        "ref": "release-26.05",
         "repo": "nixpkgs",
         "type": "github"
       }
