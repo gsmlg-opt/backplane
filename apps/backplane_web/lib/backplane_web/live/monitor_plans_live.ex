@@ -34,7 +34,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
     socket
     |> assign(
       editing: :new,
-      form: to_form(changeset),
+      form: plan_form(changeset),
       credentials: load_credentials()
     )
     |> load_plans()
@@ -53,7 +53,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
         socket
         |> assign(
           editing: plan,
-          form: to_form(changeset),
+          form: plan_form(changeset),
           credentials: load_credentials()
         )
         |> load_plans()
@@ -94,7 +94,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
         %Plan{} = plan -> Plan.changeset(plan, params)
       end
 
-    {:noreply, assign(socket, form: to_form(Map.put(changeset, :action, :validate)))}
+    {:noreply, assign(socket, form: plan_form(Map.put(changeset, :action, :validate)))}
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
@@ -125,7 +125,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
          |> push_patch(to: ~p"/admin/system/monitor/plans")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: plan_form(changeset))}
     end
   end
 
@@ -138,7 +138,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
          |> push_patch(to: ~p"/admin/system/monitor/plans")}
 
       {:error, changeset} ->
-        {:noreply, assign(socket, form: to_form(changeset))}
+        {:noreply, assign(socket, form: plan_form(changeset))}
     end
   end
 
@@ -162,6 +162,34 @@ defmodule BackplaneWeb.MonitorPlansLive do
       _ -> []
     end
   end
+
+  defp plan_form(%Ecto.Changeset{} = changeset) do
+    changeset
+    |> changeset_params()
+    |> to_form(
+      as: :plan,
+      errors: changeset_errors(changeset),
+      action: changeset.action
+    )
+  end
+
+  defp changeset_params(%Ecto.Changeset{data: data, changes: changes, params: params}) do
+    data
+    |> schema_fields()
+    |> stringify_keys()
+    |> Map.merge(stringify_keys(params || %{}))
+    |> Map.merge(stringify_keys(changes))
+  end
+
+  defp schema_fields(%struct{} = data),
+    do: Map.new(struct.__schema__(:fields), fn field -> {field, Map.get(data, field)} end)
+
+  defp stringify_keys(params) do
+    Map.new(params, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp changeset_errors(%Ecto.Changeset{action: nil}), do: []
+  defp changeset_errors(%Ecto.Changeset{errors: errors}), do: errors
 
   @impl true
   def render(assigns) do
@@ -225,7 +253,8 @@ defmodule BackplaneWeb.MonitorPlansLive do
               </option>
             </select>
             <p class="text-xs text-on-surface-variant mt-1">
-              The credential used to query usage. Claude Code plans require a Script credential.
+              The credential used to query usage. Claude Code plans can use a Claude OAuth
+              credential or a Script credential.
             </p>
           </div>
           <.form_error field={@form[:credential_name]} />

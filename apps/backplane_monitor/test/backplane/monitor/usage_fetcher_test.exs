@@ -2,7 +2,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.Providers.OpenAICodex
+  alias Backplane.Monitor.Providers.{ClaudeCode, OpenAICodex}
   alias Backplane.Monitor.UsageFetcher
   alias Backplane.Settings.Credential
   alias Backplane.Settings.Credentials
@@ -43,17 +43,28 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
 
-    previous = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+    previous_claude = Application.get_env(:backplane, :claude_code_monitor_req_options)
 
     Application.put_env(:backplane, :openai_codex_monitor_req_options,
       plug: {Req.Test, OpenAICodex}
     )
 
+    Application.put_env(:backplane, :claude_code_monitor_req_options,
+      plug: {Req.Test, ClaudeCode}
+    )
+
     on_exit(fn ->
-      if previous do
-        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous)
+      if previous_openai do
+        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
       else
         Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+      end
+
+      if previous_claude do
+        Application.put_env(:backplane, :claude_code_monitor_req_options, previous_claude)
+      else
+        Application.delete_env(:backplane, :claude_code_monitor_req_options)
       end
     end)
 
@@ -78,14 +89,66 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     assert result.usage == usage
   end
 
-  test "fetch_usage/1 rejects non-script credentials for Claude Code" do
+  test "fetch_usage/1 fetches Claude Code usage with Anthropic OAuth credentials" do
+    credential_name = unique_name("claude-oauth")
+
+    raw_json =
+      Jason.encode!(%{
+        "claudeAiOauth" => %{
+          "accessToken" => "sk-ant-oat01-usage",
+          "refreshToken" => "sk-ant-ort01-refresh",
+          "expiresAt" => System.system_time(:millisecond) + 60 * 60 * 1000,
+          "scopes" => ["user:inference"],
+          "subscriptionType" => "max"
+        },
+        "organizationUuid" => "org-usage"
+      })
+
+    {:ok, _credential} = Credentials.import_cli_auth(credential_name, raw_json)
+
+    Req.Test.stub(ClaudeCode, fn conn ->
+      assert {"authorization", "Bearer sk-ant-oat01-usage"} in conn.req_headers
+      assert {"anthropic-beta", "oauth-2025-04-20"} in conn.req_headers
+
+      body = %{
+        "five_hour" => %{
+          "utilization" => 2.0,
+          "resets_at" => "2026-06-08T19:50:00.292521+00:00"
+        },
+        "seven_day" => %{
+          "utilization" => 1.0,
+          "resets_at" => "2026-06-14T02:00:00.292549+00:00"
+        },
+        "extra_usage" => %{"is_enabled" => false}
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    plan = %Plan{
+      provider: "claude_code",
+      credential_name: credential_name,
+      config: %{},
+      active: true
+    }
+
+    assert {:ok, result} = UsageFetcher.fetch_usage(plan)
+    assert result.provider == "claude_code"
+    assert result.usage["five_hour"]["utilization"] == 2.0
+    assert result.usage["seven_day"]["utilization"] == 1.0
+  end
+
+  test "fetch_usage/1 rejects plain LLM credentials for Claude Code" do
     credential_name = unique_name("claude-key")
     Vault.put(%Credential{name: credential_name, kind: "llm", encrypted_value: <<>>})
     on_exit(fn -> Vault.remove(credential_name) end)
 
     plan = %Plan{provider: "claude_code", credential_name: credential_name, config: %{}}
 
-    assert {:error, {:invalid_credential_kind, "llm", "script"}} = UsageFetcher.fetch_usage(plan)
+    assert {:error, {:invalid_credential_auth_type, "api_key", "anthropic_oauth"}} =
+             UsageFetcher.fetch_usage(plan)
   end
 
   test "fetch_usage/1 fetches OpenAI Codex usage with OAuth metadata account ID" do

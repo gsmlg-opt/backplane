@@ -26,6 +26,14 @@ defmodule Backplane.Monitor.UsageFetcher do
     end
   end
 
+  def fetch_usage(%Plan{provider: "claude_code"} = plan) do
+    if Plan.provider_supported?("claude_code") do
+      fetch_claude_code_usage(plan)
+    else
+      {:error, :provider_not_supported}
+    end
+  end
+
   def fetch_usage(%Plan{provider: provider} = plan) do
     if Plan.provider_supported?(provider) do
       with {:ok, credential} <- fetch_credential(provider, plan.credential_name) do
@@ -36,20 +44,35 @@ defmodule Backplane.Monitor.UsageFetcher do
     end
   end
 
-  defp fetch_credential("claude_code", credential_name) do
-    with :ok <- validate_script_credential(credential_name),
-         {:ok, script} <- Credentials.fetch(credential_name) do
-      {:ok, script}
+  defp fetch_credential(_provider, credential_name), do: Credentials.fetch(credential_name)
+
+  defp fetch_claude_code_usage(%Plan{credential_name: credential_name, config: config}) do
+    with {:ok, credential_type} <- claude_code_credential_type(credential_name),
+         {:ok, credential} <- Credentials.fetch(credential_name) do
+      case credential_type do
+        :anthropic_oauth -> ClaudeCode.fetch_oauth(credential, config || %{})
+        :script -> ClaudeCode.fetch(credential, config || %{})
+      end
     end
   end
 
-  defp fetch_credential(_provider, credential_name), do: Credentials.fetch(credential_name)
-
-  defp validate_script_credential(credential_name) do
+  defp claude_code_credential_type(credential_name) do
     case Vault.get(credential_name) do
-      nil -> {:error, :not_found}
-      %{kind: "script"} -> :ok
-      %{kind: kind} -> {:error, {:invalid_credential_kind, kind, "script"}}
+      nil ->
+        {:error, :not_found}
+
+      %{metadata: %{"auth_type" => "anthropic_oauth"}} ->
+        {:ok, :anthropic_oauth}
+
+      %{kind: "script"} ->
+        {:ok, :script}
+
+      %{kind: "llm", metadata: metadata} ->
+        auth_type = (metadata || %{})["auth_type"] || "api_key"
+        {:error, {:invalid_credential_auth_type, auth_type, "anthropic_oauth"}}
+
+      %{kind: kind} ->
+        {:error, {:invalid_credential_kind, kind, "script or anthropic_oauth"}}
     end
   end
 
@@ -201,6 +224,5 @@ defmodule Backplane.Monitor.UsageFetcher do
 
   defp fetch_provider("zai", api_key, config), do: ZAI.fetch(api_key, config)
   defp fetch_provider("minimax", api_key, config), do: MiniMax.fetch(api_key, config)
-  defp fetch_provider("claude_code", script, config), do: ClaudeCode.fetch(script, config)
   defp fetch_provider(_, _, _), do: {:error, :provider_not_supported}
 end

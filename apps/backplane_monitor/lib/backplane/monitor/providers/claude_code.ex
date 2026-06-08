@@ -1,12 +1,17 @@
 defmodule Backplane.Monitor.Providers.ClaudeCode do
   @moduledoc """
-  Fetches Claude Code usage by running a stored JavaScript fetch script.
+  Fetches Claude Code usage from Anthropic OAuth or a stored JavaScript fetch script.
 
-  Script credentials are expected to contain JavaScript that awaits a fetch
-  response, awaits `response.json()`, and returns the decoded usage payload.
+  OAuth credentials call Anthropic's Claude Code usage endpoint directly.
+  Script credentials are kept as a fallback and are expected to contain
+  JavaScript that awaits a fetch response, awaits `response.json()`, and
+  returns the decoded usage payload.
   """
 
   @provider "claude_code"
+  @default_usage_url "https://api.anthropic.com/api/oauth/usage"
+  @anthropic_beta "oauth-2025-04-20"
+  @default_receive_timeout 15_000
   @default_timeout 30_000
   @proxy_env_vars ~w(
     HTTP_PROXY
@@ -28,6 +33,57 @@ defmodule Backplane.Monitor.Providers.ClaudeCode do
          {:ok, usage} <- run_script(runtime, script, config, timeout) do
       {:ok, %{provider: @provider, usage: usage}}
     end
+  end
+
+  @doc "Fetch Claude Code usage with an Anthropic OAuth access token."
+  @spec fetch_oauth(String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def fetch_oauth(access_token, config \\ %{}) when is_binary(access_token) and is_map(config) do
+    access_token = String.trim(access_token)
+
+    if access_token == "" do
+      {:error, :missing_access_token}
+    else
+      request_oauth_usage(access_token, config)
+    end
+  end
+
+  defp request_oauth_usage(access_token, config) do
+    url = config_value(config, "api_url") || @default_usage_url
+
+    case Req.get(
+           url,
+           [
+             headers: oauth_headers(access_token),
+             receive_timeout: @default_receive_timeout,
+             retry: false
+           ] ++ req_options(url)
+         ) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
+        {:ok, %{provider: @provider, usage: body}}
+
+      {:ok, %Req.Response{status: 200}} ->
+        {:error, :invalid_usage_response}
+
+      {:ok, %Req.Response{status: 401}} ->
+        {:error, :unauthorized}
+
+      {:ok, %Req.Response{status: 429}} ->
+        {:error, :rate_limited}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, {:api_error, status, body}}
+
+      {:error, reason} ->
+        {:error, {:request_failed, reason}}
+    end
+  end
+
+  defp oauth_headers(access_token) do
+    [
+      {"authorization", "Bearer #{access_token}"},
+      {"anthropic-beta", @anthropic_beta},
+      {"accept", "application/json"}
+    ]
   end
 
   defp runtime do
@@ -115,4 +171,117 @@ defmodule Backplane.Monitor.Providers.ClaudeCode do
   end
 
   defp timeout_ms(_config), do: @default_timeout
+
+  defp config_value(map, key) when is_map(map) and is_binary(key) do
+    map
+    |> Map.get(key, Map.get(map, String.to_atom(key)))
+    |> normalize_optional_string()
+  end
+
+  defp req_options(url) do
+    case Application.fetch_env(:backplane, :claude_code_monitor_req_options) do
+      {:ok, opts} -> opts
+      :error -> default_req_options(url)
+    end
+  end
+
+  defp default_req_options(url) do
+    case proxy_connect_options(url) do
+      [] -> []
+      connect_options -> [connect_options: connect_options]
+    end
+  end
+
+  defp proxy_connect_options(url) do
+    uri = URI.parse(url)
+
+    if proxy_bypassed?(uri.host) do
+      []
+    else
+      uri.scheme
+      |> proxy_url_from_env()
+      |> proxy_connect_options_from_url()
+    end
+  end
+
+  defp proxy_url_from_env("https") do
+    env("HTTPS_PROXY") || env("https_proxy") ||
+      env("HTTP_PROXY") || env("http_proxy") ||
+      env("ALL_PROXY") || env("all_proxy")
+  end
+
+  defp proxy_url_from_env("http") do
+    env("HTTP_PROXY") || env("http_proxy") ||
+      env("ALL_PROXY") || env("all_proxy")
+  end
+
+  defp proxy_url_from_env(_scheme), do: nil
+
+  defp proxy_connect_options_from_url(nil), do: []
+
+  defp proxy_connect_options_from_url(proxy_url) do
+    uri = URI.parse(proxy_url)
+    scheme = proxy_scheme(uri.scheme)
+
+    cond do
+      is_nil(scheme) or is_nil(uri.host) ->
+        []
+
+      is_binary(uri.userinfo) and uri.userinfo != "" ->
+        [
+          proxy: {scheme, uri.host, uri.port || default_proxy_port(scheme), []},
+          proxy_headers: [{"proxy-authorization", "Basic " <> Base.encode64(uri.userinfo)}]
+        ]
+
+      true ->
+        [proxy: {scheme, uri.host, uri.port || default_proxy_port(scheme), []}]
+    end
+  end
+
+  defp proxy_scheme("http"), do: :http
+  defp proxy_scheme("https"), do: :https
+  defp proxy_scheme(_), do: nil
+
+  defp default_proxy_port(:http), do: 80
+  defp default_proxy_port(:https), do: 443
+
+  defp proxy_bypassed?(nil), do: false
+
+  defp proxy_bypassed?(host) do
+    no_proxy = env("NO_PROXY") || env("no_proxy")
+    no_proxy && no_proxy_match?(String.downcase(host), no_proxy)
+  end
+
+  defp no_proxy_match?(host, no_proxy) do
+    no_proxy
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.any?(&no_proxy_entry_match?(host, String.downcase(&1)))
+  end
+
+  defp no_proxy_entry_match?(_host, "*"), do: true
+  defp no_proxy_entry_match?(_host, ""), do: false
+
+  defp no_proxy_entry_match?(host, "*." <> domain) do
+    host == domain or String.ends_with?(host, "." <> domain)
+  end
+
+  defp no_proxy_entry_match?(host, "." <> domain) do
+    host == domain or String.ends_with?(host, "." <> domain)
+  end
+
+  defp no_proxy_entry_match?(host, entry), do: host == entry
+
+  defp env(name) do
+    name
+    |> System.get_env()
+    |> normalize_optional_string()
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp normalize_optional_string(value), do: value
 end
