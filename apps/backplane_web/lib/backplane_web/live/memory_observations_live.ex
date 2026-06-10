@@ -54,12 +54,12 @@ defmodule BackplaneWeb.MemoryObservationsLive do
   end
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt),
-    do: dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-
-  defp format_dt(%NaiveDateTime{} = dt),
-    do: dt |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
+  end
 
   @impl true
   def render(assigns) do

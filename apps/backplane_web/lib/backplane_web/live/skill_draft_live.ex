@@ -196,12 +196,12 @@ defmodule BackplaneWeb.SkillDraftLive do
   defp tags_to_string(_), do: ""
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
   end
-
-  defp format_dt(_), do: ""
 
   # ── Template ───────────────────────────────────────────────────────────────
 

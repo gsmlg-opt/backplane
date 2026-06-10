@@ -18,6 +18,69 @@ registerBadge()
 registerDialog()
 registerAlert()
 
+class LocalTime extends HTMLElement {
+  static get observedAttributes() {
+    return ["datetime", "format"]
+  }
+
+  connectedCallback() {
+    this.render()
+  }
+
+  attributeChangedCallback() {
+    this.render()
+  }
+
+  render() {
+    const datetime = this.getAttribute("datetime")
+    if (!datetime) {
+      this.textContent = ""
+      return
+    }
+
+    try {
+      const date = new Date(datetime)
+      if (isNaN(date.getTime())) {
+        this.textContent = datetime
+        return
+      }
+
+      const format = this.getAttribute("format")
+      if (format === "time") {
+        this.textContent = date.toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false
+        })
+      } else if (format === "short") {
+        this.textContent = date.toLocaleString(undefined, {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        })
+      } else {
+        const pad = (n) => String(n).padStart(2, '0')
+        const year = date.getFullYear()
+        const month = pad(date.getMonth() + 1)
+        const day = pad(date.getDate())
+        const hours = pad(date.getHours())
+        const minutes = pad(date.getMinutes())
+        const seconds = pad(date.getSeconds())
+        this.textContent = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+      }
+    } catch (e) {
+      this.textContent = datetime
+    }
+  }
+}
+
+if (!customElements.get("local-time")) {
+  customElements.define("local-time", LocalTime)
+}
+
 const themeColors = {
   moonlight: "#d6d6d6",
   sunshine: "#d1a644"

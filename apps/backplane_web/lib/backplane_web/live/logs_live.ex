@@ -173,15 +173,10 @@ defmodule BackplaneWeb.LogsLive do
   defp event_color(:failed), do: "text-error"
   defp event_color(_), do: "text-on-surface-variant"
 
-  defp format_time(nil), do: "-"
-
-  defp format_time(%DateTime{} = dt) do
-    Calendar.strftime(dt, "%H:%M:%S")
+  defp format_time(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} format="time" />
+    """
   end
-
-  defp format_time(%NaiveDateTime{} = dt) do
-    Calendar.strftime(dt, "%H:%M:%S")
-  end
-
-  defp format_time(_), do: "-"
 end

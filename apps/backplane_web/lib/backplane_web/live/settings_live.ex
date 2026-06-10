@@ -840,19 +840,13 @@ defmodule BackplaneWeb.SettingsLive do
   defp oauth_status_variant(%{status: :invalid}), do: "error"
   defp oauth_status_variant(_), do: "neutral"
 
-  defp format_oauth_datetime(%DateTime{} = datetime) do
-    datetime
-    |> DateTime.truncate(:second)
-    |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
+  defp format_oauth_datetime(nil), do: "Unknown"
+  defp format_oauth_datetime(datetime) do
+    assigns = %{datetime: datetime}
+    ~H"""
+    <.local_time datetime={@datetime} />
+    """
   end
-
-  defp format_oauth_datetime(%NaiveDateTime{} = datetime) do
-    datetime
-    |> NaiveDateTime.truncate(:second)
-    |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
-  end
-
-  defp format_oauth_datetime(_), do: "Unknown"
 
   defp format_oauth_error({:refresh_failed, status}), do: "refresh returned HTTP #{status}"
   defp format_oauth_error({:refresh_error, reason}), do: inspect(reason)
@@ -1132,7 +1126,7 @@ defmodule BackplaneWeb.SettingsLive do
                   <code class="text-on-surface-variant">{cred.hint}</code>
                 </:col>
                 <:col :let={cred} label="Updated">
-                  {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
+                  <.local_time datetime={cred.updated_at} />
                 </:col>
                 <:col :let={cred} label="Actions">
                   <div class="flex items-center gap-1">

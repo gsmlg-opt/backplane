@@ -72,6 +72,8 @@ defmodule BackplaneWeb do
       use PhoenixDuskmoon.Component
       use PhoenixDuskmoon.ArtComponent
 
+      import BackplaneWeb.Components.LocalTime
+
       alias Phoenix.LiveView.JS
 
       unquote(verified_routes())

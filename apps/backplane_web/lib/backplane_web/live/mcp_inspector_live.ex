@@ -949,7 +949,10 @@ defmodule BackplaneWeb.McpInspectorLive do
   end
 
   defp format_time(datetime) do
-    Calendar.strftime(datetime, "%H:%M:%S")
+    assigns = %{datetime: datetime}
+    ~H"""
+    <.local_time datetime={@datetime} format="time" />
+    """
   end
 
   defp tool_expanded?(expanded_tools, name) do

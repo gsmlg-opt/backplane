@@ -151,9 +151,11 @@ defmodule BackplaneWeb.MemoryLive do
   defp type_badge_variant(_), do: "ghost"
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
   end
 
   defp present?(value), do: value not in [nil, ""]

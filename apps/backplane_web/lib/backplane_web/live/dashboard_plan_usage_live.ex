@@ -124,7 +124,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">z.ai</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+            Updated <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -145,7 +145,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
           <div class="flex items-center justify-between text-xs text-on-surface-variant">
             <span>Window: {limit.number} {unit_label(limit.unit)}</span>
             <span :if={limit.next_reset}>
-              Resets: {Calendar.strftime(limit.next_reset, "%m/%d %H:%M")} UTC
+              Resets: <.local_time datetime={limit.next_reset} format="short" />
             </span>
           </div>
           <div :if={limit.details != []} class="mt-2">
@@ -172,7 +172,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">MiniMax</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+            Updated <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -226,7 +226,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">OpenAI Codex</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+            Updated <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -341,7 +341,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">Claude Code</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated {Calendar.strftime(@fetched_at, "%H:%M:%S")}
+            Updated <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -628,15 +628,20 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp normalize_percentage(_), do: nil
 
-  defp format_reset_at(%DateTime{} = datetime) do
-    Calendar.strftime(datetime, "%m/%d %H:%M UTC")
-  end
+  defp format_reset_at(nil), do: ""
 
   defp format_reset_at(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, datetime, _offset} -> format_reset_at(datetime)
       {:error, _reason} -> value
     end
+  end
+
+  defp format_reset_at(datetime) do
+    assigns = %{datetime: datetime}
+    ~H"""
+    <.local_time datetime={@datetime} format="short" />
+    """
   end
 
   defp format_used_percent(nil), do: "unknown"
@@ -682,9 +687,11 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_unix_reset_at(nil), do: "No reset"
 
   defp format_unix_reset_at(value) when is_integer(value) do
-    value
-    |> DateTime.from_unix!()
-    |> Calendar.strftime("%m/%d %H:%M UTC")
+    dt = DateTime.from_unix!(value)
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} format="short" />
+    """
   end
 
   defp format_unix_reset_at(value) when is_float(value) do
@@ -759,12 +766,11 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp format_time_range(start_time, end_time) do
     case {start_time, end_time} do
-      {%DateTime{} = s, %DateTime{} = e} ->
-        if s.day == e.day do
-          "#{Calendar.strftime(s, "%m/%d %H:%M")} - #{Calendar.strftime(e, "%H:%M")}"
-        else
-          "#{Calendar.strftime(s, "%m/%d %H:%M")} - #{Calendar.strftime(e, "%m/%d %H:%M")}"
-        end
+      {s, e} when not is_nil(s) and not is_nil(e) ->
+        assigns = %{s: s, e: e}
+        ~H"""
+        <.local_time datetime={@s} format="short" /> - <.local_time datetime={@e} format="short" />
+        """
 
       _ ->
         ""

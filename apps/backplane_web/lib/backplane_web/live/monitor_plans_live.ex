@@ -303,7 +303,7 @@ defmodule BackplaneWeb.MonitorPlansLive do
         </:col>
         <:col :let={plan} label="Last Updated">
           <span class="text-xs text-on-surface-variant">
-            {Calendar.strftime(plan.updated_at, "%Y-%m-%d %H:%M")}
+            <.local_time datetime={plan.updated_at} />
           </span>
         </:col>
         <:col :let={plan} label="Actions">

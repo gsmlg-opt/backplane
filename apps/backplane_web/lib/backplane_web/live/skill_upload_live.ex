@@ -375,12 +375,12 @@ defmodule BackplaneWeb.SkillUploadLive do
   defp format_error(reason), do: inspect(reason)
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
   end
-
-  defp format_dt(_), do: ""
 
   defp format_size(nil), do: "-"
   defp format_size(bytes) when is_integer(bytes) and bytes < 1024, do: "#{bytes} B"

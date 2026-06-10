@@ -174,7 +174,7 @@ defmodule BackplaneWeb.DashboardLive do
                 <% _ -> %>
               <% end %>
               <p class="text-xs text-on-surface-variant mt-2">
-                Updated {Calendar.strftime(cred.updated_at, "%Y-%m-%d %H:%M")}
+                Updated <.local_time datetime={cred.updated_at} />
               </p>
             </div>
           </.dm_card>

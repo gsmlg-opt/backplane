@@ -393,12 +393,12 @@ defmodule BackplaneWeb.SkillUpstreamLive do
   end
 
   defp format_dt(nil), do: "Never"
-
-  defp format_dt(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
   end
-
-  defp format_dt(_), do: "-"
 
   defp status_variant("success"), do: "success"
   defp status_variant("partial"), do: "warning"

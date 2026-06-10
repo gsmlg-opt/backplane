@@ -63,12 +63,12 @@ defmodule BackplaneWeb.SkillOverviewLive do
   defp source_kind_variant(_), do: "ghost"
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt) do
-    dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
   end
-
-  defp format_dt(_), do: ""
 
   @impl true
   def render(assigns) do

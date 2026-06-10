@@ -52,12 +52,12 @@ defmodule BackplaneWeb.MemoryActionsLive do
   end
 
   defp format_dt(nil), do: ""
-
-  defp format_dt(%DateTime{} = dt),
-    do: dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
-
-  defp format_dt(%NaiveDateTime{} = dt),
-    do: dt |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
+  defp format_dt(dt) do
+    assigns = %{dt: dt}
+    ~H"""
+    <.local_time datetime={@dt} />
+    """
+  end
 
   defp action_description(%{metadata: %{"description" => d}}) when is_binary(d), do: d
   defp action_description(_), do: "—"
