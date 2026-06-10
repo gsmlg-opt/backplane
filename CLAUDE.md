@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Backplane is a private, self-hosted gateway with exactly two features:
 
-1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
+1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /api/mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
 2. **LLM Proxy** — A credential-injecting, model-routing reverse proxy for LLM APIs (Anthropic/OpenAI format) with usage tracking.
 
 Everything else — git access, documentation search, skill libraries — is delivered as either an upstream MCP server or a managed MCP service. Backplane proxies tool calls to services that implement those concerns.
@@ -19,12 +19,16 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/mcp` | MCP JSON-RPC endpoint |
-| `GET` | `/mcp` | MCP SSE notification stream |
-| `DELETE` | `/mcp` | MCP session cleanup |
+| `POST` | `/api/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/api/mcp` | MCP SSE notification stream |
+| `DELETE` | `/api/mcp` | MCP session cleanup |
 | `GET` | `/health` | Health check JSON |
 | `GET` | `/metrics` | Runtime metrics |
-| `*` | `/api/llm/*` | LLM proxy API routes |
+| `*` | `/api/v1/*` | LLM proxy (OpenAI-compatible) |
+| `*` | `/api/anthropic/*` | LLM proxy (Anthropic Messages) |
+| `*` | `/api/llm/*` | LLM admin API (providers, aliases) |
+| `*` | `/api/skills/*` | Skills REST API |
+| `*` | `/api/host-agent/*` | Host agent API |
 | `*` | `/admin` | Admin UI (LiveView) |
 
 ### MCP Auth Modes
@@ -35,14 +39,26 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 ## Umbrella Structure
 
-This is an umbrella project with four apps:
+This is an umbrella project. Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses `config :backplane_web, ...`.
 
-- **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
-- **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets. Depends on `:backplane`.
-- **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM APIs.
-- **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
+**Core apps:**
 
-Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses `config :backplane_web, ...`.
+- **`apps/backplane_system`** (`:backplane_system`) — Low-level shared infrastructure: Repo, PubSub, Settings, ToolRegistry, Metrics, Credentials vault, OAuth state. Started first; all other apps depend on it.
+- **`apps/backplane_mcp`** (`:backplane_mcp`) — MCP transport, math engine, upstream proxy pool, response cache, session/task management.
+- **`apps/backplane_llama`** (`:backplane_llama`) — LLM reverse proxy: provider routing, credential injection, model resolution, rate limiting, usage tracking. Uses `relayixir` for HTTP forwarding.
+- **`apps/backplane_memory`** (`:backplane_memory`) — Self-hosted agent memory: observations, sessions, knowledge graph, facets, profiles, coordination, `memory::*` managed service.
+- **`apps/backplane_skills`** (`:backplane_skills`) — Skill storage, search, sync, host management, `skills::*` managed service.
+- **`apps/backplane_monitor`** (`:backplane_monitor`) — Subscription plan monitoring (z.ai, MiniMax, etc.), per-plan GenServer polling.
+- **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Unified telemetry logger for LLM requests and MCP tool calls.
+- **`apps/backplane`** (`:backplane`) — Top-level application: orchestrates Oban jobs, registers native/managed tools at boot, starts configured upstreams, seeds client cache.
+- **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets.
+- **`apps/backplane_host_agent`** (`:backplane_host_agent`) — Standalone host agent runner that connects back to Backplane over Phoenix channels to sync skills and execute tasks.
+
+**Library apps:**
+
+- **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library (embedded; standalone server disabled).
+- **`apps/day_ex`** (`:day_ex`) — Date/time utility library (`day::*` managed service tools).
+- **`apps/backplane_data_case`** (`:backplane_data_case`) — Shared `DataCase` base for DB-backed tests.
 
 ## Development Environment
 
@@ -72,71 +88,151 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 
 ### Key Internal Modules
 
-- `Backplane.Transport.Router` — Plug router dispatching `POST /mcp`, `GET /mcp` (SSE), `DELETE /mcp`, health, and metrics
-- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
+**Transport (backplane_mcp)**
+- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /api/mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Transport.AuthPlug` — Client bearer token validation with scope filtering
+- `Backplane.Transport.Session` / `TaskManager` — SSE session and async task lifecycle
+
+**Tool Registry (backplane_system)**
 - `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub + native)
+
+**Upstream Proxy (backplane_mcp)**
 - `Backplane.Proxy.Pool` — DynamicSupervisor managing upstream MCP connections
 - `Backplane.Proxy.Upstream` — GenServer per upstream (stdio Port or HTTP; lifecycle, reconnect, tool discovery)
-- `Backplane.Proxy.Upstreams` — Ecto context for `mcp_upstreams` table (DB-managed upstream definitions)
-- `Backplane.Services.Day` — Managed service wrapping `day_ex` datetime tools (`day::*`)
-- `Backplane.Services.WebFetch` — Managed service for web fetching (`webfetch::*`)
-- `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
-- `Backplane.Services.Skills.*` — Managed service for skill upload, browse, serve (`skills::*`)
-- `Backplane.Tools.*` — Native tool modules (Hub, Skill, Admin) registered at boot
-- `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector
-- `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
-- `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
+- `Backplane.Proxy.Upstreams` — Ecto context for `mcp_upstreams` table
+
+**Managed Services**
+- `Backplane.Services.Day` — `day::*` tools via `day_ex`
+- `Backplane.Services.WebFetch` — `web::fetch`
+- `Backplane.Services.WebSearch` — `web_search::search` (Ollama/MiniMax/Z.ai/BigModel backends)
+- `Backplane.Services.Math` — `math::evaluate` via native math engine
+- `Backplane.Skills.*` — `skills::*` tools (in `backplane_skills`)
+- `BackplaneMemory.Service` — `memory::*` tools (in `backplane_memory`)
+
+**LLM Proxy (backplane_llama)**
+- `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector, ApiRouter
+- `Backplane.Embedding` — Embedding provider/model context
+
+**System Infrastructure (backplane_system)**
+- `Backplane.Settings` — Runtime key-value store (ETS-cached, `system_settings` table)
+- `Backplane.Settings.Credentials` — AES-256-GCM encrypted secret store (`credentials` table)
+- `Backplane.Settings.OAuthStateStore` — OAuth PKCE state tracking
 - `Backplane.Clients` — Client access control (bearer tokens, scopes, ETS-cached)
 - `Backplane.Config` — TOML config loader (`backplane.toml`), read at boot via `runtime.exs`
+- `Backplane.Metrics` — ETS-based metrics collector
+
+**Memory (backplane_memory)**
+- `BackplaneMemory.Observations` / `Graph` / `Memories` / `Facets` / `Profiles` — storage contexts
+- `BackplaneMemory.Coordination` — leases, signals, actions for multi-agent coordination
+
+**Monitor (backplane_monitor)**
+- `Backplane.Monitor` / `PlanServer` — subscription plan polling and snapshot storage
+
+**Host Agent (backplane_host_agent)**
+- `Backplane.HostAgent` — channel-based connection to Backplane, skill bundle install, task execution
 
 ### Supervision Tree
 
+Each app has its own supervisor; start order follows OTP dependency declarations.
+
 ```
-Backplane.Application (apps/backplane)
+BackplaneSystem.Supervisor (apps/backplane_system) — starts first
 ├── Backplane.Repo (Ecto/PostgreSQL)
-├── Oban (background jobs: UsageWriter, UsageRetention)
 ├── Phoenix.PubSub
 ├── Backplane.Settings.TokenCache (ETS)
+├── Backplane.Settings.Credentials.Vault
+├── Backplane.Settings.OAuthStateStore
 ├── Backplane.Settings (ETS-cached system settings)
 ├── Backplane.Registry.ToolRegistry (ETS)
+└── Backplane.Metrics
+
+BackplaneMcp.Supervisor (apps/backplane_mcp)
+├── Backplane.Transport.Session
+├── Backplane.Transport.TaskManager
 ├── Backplane.Math.Supervisor (native math engine)
-├── Backplane.Skills.Registry (ETS)
 ├── Backplane.Proxy.Pool (DynamicSupervisor for upstream MCP connections)
-├── Backplane.Cache (ETS response cache)
-├── Backplane.Metrics
+└── Backplane.Cache (ETS response cache)
+
+BackplaneLlama.Supervisor (apps/backplane_llama)
 ├── Relayixir (HTTP proxy for LLM forwarding)
 ├── Backplane.LLM.ModelResolver (ETS)
 ├── Backplane.LLM.RouteLoader
 └── Backplane.LLM.RateLimiter (ETS sliding window)
 
+BackplaneSkills.Supervisor (apps/backplane_skills)
+├── Backplane.Skills.Registry (ETS)
+├── Registry (keys: :unique, name: Backplane.Skills.AgentManage.Registry)
+├── DynamicSupervisor (Backplane.Skills.AgentManage.DynamicSupervisor)
+└── Backplane.Skills.AgentManage.Bootstrap
+
+BackplaneMemory.Supervisor (apps/backplane_memory) — registers memory::* tools
+BackplaneTelemetry.Supervisor (apps/backplane_telemetry)
+└── BackplaneTelemetry.TelemetryLogger
+
+BackplaneMonitor.Supervisor (apps/backplane_monitor)
+├── Registry (Backplane.Monitor.PlanRegistry)
+├── Task.Supervisor (Backplane.Monitor.TaskSupervisor)
+└── Backplane.Monitor.PlanSupervisor
+
+Backplane.Supervisor (apps/backplane) — top-level orchestrator
+└── Oban (background jobs: UsageWriter, UsageRetention)
+
 BackplaneWeb.Application (apps/backplane_web)
 └── BackplaneWeb.Endpoint (Bandit HTTP server)
 ```
 
-After supervisor start, the application initializes: native tool registration (skills, hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry, and client cache seeding.
+After `Backplane.Supervisor` starts: native tool registration (hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry attachment, and client cache seeding.
 
 ### Data Storage
 
-PostgreSQL. Core tables:
+PostgreSQL. Key table groups:
 
-- `system_settings` — Runtime key-value configuration (ETS-cached)
-- `credentials` — AES-256-GCM encrypted secret store (referenced by upstreams and LLM providers)
-- `mcp_upstreams` — DB-managed upstream MCP server definitions
-- `skills` — Skill records (id, name, description, content, tags; tsvector + GIN indexes)
+**System**
+- `system_settings` — Runtime key-value config (ETS-cached)
+- `credentials` — AES-256-GCM encrypted secret store
 - `clients` — MCP client access tokens and scopes
-- `llm_providers` — LLM provider definitions (references credential by name)
-- `llm_model_aliases` — Global model alias → provider/model mapping
-- `llm_usage_logs` — Insert-only LLM request usage records
+- `mcp_upstreams` — DB-managed upstream MCP server definitions
+- `agent_mcp_servers` — Agent-specific MCP server configs
+- `mcp_native_math_config` — Singleton math engine limits/timeouts
+- `tool_call_log` — MCP tool call audit log
 
-Removed tables (no longer present): `projects`, `doc_chunks`, `reindex_state`.
+**LLM Proxy**
+- `llm_providers` / `llm_provider_apis` / `llm_provider_models` / `llm_provider_model_surfaces` — Provider definitions and model surfaces
+- `llm_auto_models` / `llm_auto_model_routes` / `llm_auto_model_targets` — Auto-routing rules
+- `embedding_providers` / `embedding_models` — Embedding provider/model definitions
+- `llm_logs` — Insert-only LLM request usage records
+
+**Skills**
+- `skills` — Skill records (tsvector + GIN full-text indexes)
+- `skill_sources` — Upstream skill source definitions
+- `skill_hosts` / `skill_host_statuses` / `skill_host_assignments` / `skill_host_auth_tokens` / `skill_host_agent_tokens` — Host agent tracking
+- `skill_load_log` — Skill install/sync audit
+
+**Memory** (backplane_memory)
+- `bpm_memories` / `bpm_observations` — Core memory and observation records
+- `memory_sessions` / `memory_profiles` / `memory_facets` / `memory_facet_dimensions` — Session and facet tagging
+- `memory_graph_nodes` / `memory_graph_edges` — Knowledge graph
+- `memory_leases` / `memory_signals` / `memory_actions` / `memory_action_edges` / `memory_slots` — Multi-agent coordination
+- `memory_summaries` / `memory_audit_log` — Summaries and audit trail
+
+**Monitor**
+- `monitor_plans` — Subscription plan monitoring definitions (z.ai, MiniMax, etc.)
 
 ### Configuration
 
 TOML (`backplane.toml`) is boot-only. It covers: server bind address/port, database URL, and `secret_key_base`. See `config/backplane.toml.example` for reference.
 
 All operational configuration — upstream MCP servers, LLM providers, credentials, managed service toggles, client tokens — is stored in PostgreSQL and managed through the admin UI at `/admin`. No TOML entries are needed for operational concerns.
+
+### Releases
+
+Two Mix releases are defined:
+
+- **`backplane`** — Main server (includes `backplane`, `backplane_web`, `backplane_memory`, and all supporting apps).
+- **`host_agent`** — Standalone host agent runner (`backplane_host_agent`). Uses `config/host_agent_runtime.exs`. Run with `mix agent.run`.
+
+Build both with `mix release`; build one with `mix release backplane` or `mix release host_agent`.
 
 ### Production Environment Variables
 
@@ -149,17 +245,14 @@ All operational configuration — upstream MCP servers, LLM providers, credentia
 
 ### Admin UI Navigation
 
-```
-Dashboard  |  MCP Hub  |  LLM Providers  |  Clients  |  Logs  |  Settings
-```
+The admin UI is organized into five sections under `/admin`:
 
-Six top-level modules:
-- **Dashboard** (`/admin`) — Health overview of upstreams, providers, and aggregate stats
-- **MCP Hub** (`/admin/hub`) — Manage upstream servers, managed services (skills/day/docs), tool browser
-- **LLM Providers** (`/admin/providers`) — Provider CRUD, model aliases, usage panel, health status
-- **Clients** (`/admin/clients`) — MCP client token and scope management
-- **Logs** (`/admin/logs`) — Tool call log, LLM request log, Oban job history
-- **Settings** (`/admin/settings`) — System settings editor, credentials vault, managed service toggles
+- **Dashboard** (`/admin/dashboard/*`) — Overview, LLM usage, MCP usage, plan usage stats
+- **Llama** (`/admin/llama/*`) — LLM providers, embedding providers, model aliases, auto-routing
+- **MCP** (`/admin/mcp/*`) — Upstream servers, managed services, managed service settings, tool detail, MCP inspector, agent MCP servers
+- **Memory** (`/admin/memory/*`) — Overview, observations, sessions, knowledge graph, actions, audit, config, browse, stats
+- **Skills** (`/admin/skills/*`) — Browse, metadata, upstream sources, drafts, uploads
+- **System** (`/admin/system/*`) — Clients, logs, monitor plans, credentials vault, host agents, OAuth callbacks
 
 ### Key Dependencies
 
@@ -190,11 +283,12 @@ If you encounter missing features, bugs, or need functionality not yet available
 
 ## Testing Conventions
 
-- `Backplane.DataCase` — base case template for DB-backed tests (Ecto sandbox). `setup_sandbox/1` uses `shared: not tags[:async]`, so async tests get isolated sandboxes.
-- `Backplane.ConnCase` — base case template for HTTP/MCP transport tests. Provides `mcp_request/3`, `mcp_request_conn/3`, and `raw_mcp_request/2` helpers for JSON-RPC testing.
-- `BackplaneWeb.LiveCase` — base case template for LiveView tests (in `apps/backplane_web`).
+- `Backplane.DataCase` — base case for DB-backed tests (Ecto sandbox); lives in `apps/backplane_data_case`. `setup_sandbox/1` uses `shared: not tags[:async]`, so async tests get isolated sandboxes.
+- `Backplane.ConnCase` — base case for HTTP/MCP transport tests. Provides `mcp_request/3`, `mcp_request_conn/3`, and `raw_mcp_request/2` helpers for JSON-RPC testing.
+- `BackplaneWeb.LiveCase` — base case for LiveView tests (in `apps/backplane_web`).
 - Upstream MCP connections use custom mock modules (`MockMcpPlug`, `MockSSEMcpServer`, `MockSSEHttpPlug`) for test isolation.
 - Only mark tests `async: true` when they avoid shared state, processes, ports, and database sandbox behavior.
+- Run scoped tests with `mix test apps/<app>/test/` to limit to one app.
 
 ## Commit Conventions
 
