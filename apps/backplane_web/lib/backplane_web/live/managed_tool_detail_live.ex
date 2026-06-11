@@ -19,7 +19,7 @@ defmodule BackplaneWeb.ManagedToolDetailLive do
       module: Backplane.Services.Web,
       name: "Web",
       prefix: "web",
-      description: "Fetch HTTP(S) pages and search the web"
+      description: "Fetch HTTP(S) pages, search the web, and search X"
     },
     %{
       module: Backplane.Services.Math,
@@ -162,6 +162,9 @@ defmodule BackplaneWeb.ManagedToolDetailLive do
 
   defp sample_arguments("web::search"),
     do: format_value(%{"query" => "elixir programming language", "max_results" => 5})
+
+  defp sample_arguments("web::x_search"),
+    do: format_value(%{"query" => "What are people saying about xAI on X?"})
 
   defp sample_arguments("math::evaluate"), do: format_value(%{"expr" => "2 * (3 + 4)"})
   defp sample_arguments(_tool_name), do: "{}"

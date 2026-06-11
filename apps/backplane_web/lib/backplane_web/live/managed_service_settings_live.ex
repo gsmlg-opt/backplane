@@ -15,7 +15,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
       module: Backplane.Services.Web,
       name: "Web",
       prefix: "web",
-      description: "Fetch HTTP(S) pages and search the web"
+      description: "Fetch HTTP(S) pages, search the web, and search X"
     },
     %{
       module: Backplane.Services.Math,
@@ -163,13 +163,22 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
     credentials = Credentials.list()
     credential_names = credentials |> Enum.map(& &1.name) |> MapSet.new()
+    x_search_credential = configured_x_search_credential() || ""
+
+    x_search_configured? =
+      x_search_credential != "" and MapSet.member?(credential_names, x_search_credential)
 
     assign(socket,
       default_backend: default_backend,
       backend_options: search_backend_options(),
       debug_backend: socket.assigns[:debug_backend] || default_backend,
       backends:
-        Enum.map(@search_backends, &load_search_backend(&1, credentials, credential_names))
+        Enum.map(@search_backends, &load_search_backend(&1, credentials, credential_names)),
+      x_search_credential: x_search_credential,
+      x_search_configured?: x_search_configured?,
+      x_search_credential_options:
+        credential_options(credentials, x_search_credential, x_search_configured?),
+      x_search_model: configured_x_search_model()
     )
   end
 
@@ -188,7 +197,8 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp save_web_search_settings(params) do
     with {:ok, default_backend} <- parse_search_backend(params["default_backend"]),
          :ok <- Settings.set("services.web_search.default_backend", default_backend),
-         :ok <- save_web_search_credentials(params["credentials"] || %{}) do
+         :ok <- save_web_search_credentials(params["credentials"] || %{}),
+         :ok <- save_x_search_settings(params["x_search"] || %{}) do
       :ok
     end
   end
@@ -235,6 +245,44 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp save_web_search_credentials(_credentials),
     do: {:error, "Credential settings were not submitted correctly"}
 
+  defp save_x_search_settings(params) when is_map(params) do
+    with :ok <- save_x_search_credential(normalize_credential(params["credential"])),
+         :ok <- save_x_search_model(params["model"]) do
+      :ok
+    end
+  end
+
+  defp save_x_search_settings(_params),
+    do: {:error, "X Search settings were not submitted correctly"}
+
+  defp save_x_search_credential("") do
+    case Settings.set("services.web_x_search.credential", nil) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, "Could not clear xAI X Search credential setting"}
+    end
+  end
+
+  defp save_x_search_credential(credential) do
+    if Credentials.exists?(credential) do
+      case Settings.set("services.web_x_search.credential", credential) do
+        :ok -> :ok
+        {:error, _reason} -> {:error, "Could not save xAI X Search credential setting"}
+      end
+    else
+      {:error, "xAI X Search credential is not in the credential store"}
+    end
+  end
+
+  defp save_x_search_model(value) do
+    model = normalize_credential(value)
+    value = if model == "", do: nil, else: model
+
+    case Settings.set("services.web_x_search.model", value) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, "Could not save xAI X Search model setting"}
+    end
+  end
+
   defp credential_options(credentials, selected, selected_exists?) do
     options =
       [{"", "Select a credential..."}] ++
@@ -257,6 +305,26 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
       _ ->
         nil
+    end
+  end
+
+  defp configured_x_search_credential do
+    case Settings.get("services.web_x_search.credential") do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp configured_x_search_model do
+    case Settings.get("services.web_x_search.model") do
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> "grok-4.3"
     end
   end
 
@@ -337,6 +405,9 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
   defp sample_arguments("web::search"),
     do: format_value(%{"query" => "elixir programming language", "max_results" => 5})
+
+  defp sample_arguments("web::x_search"),
+    do: format_value(%{"query" => "What are people saying about xAI on X?"})
 
   defp sample_arguments("math::evaluate"), do: format_value(%{"expr" => "2 * (3 + 4)"})
   defp sample_arguments(_tool_name), do: "{}"
@@ -463,6 +534,42 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
               value={backend.configured_credential}
             />
           </div>
+        </div>
+      </.dm_card>
+
+      <.dm_card variant="bordered">
+        <:title>X Search</:title>
+        <p class="mb-4 text-sm text-on-surface-variant">
+          Uses xAI Grok's built-in X Search tool. Select a plain xAI API key credential or a Grok OAuth credential from
+          <.link navigate={~p"/admin/system/credentials"} class="text-primary underline">
+            System &gt; Credentials
+          </.link>.
+        </p>
+
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <div class="mb-2 flex items-center gap-2">
+              <h3 class="font-medium">xAI Credential</h3>
+              <.dm_badge variant={if @x_search_configured?, do: "success", else: "ghost"}>
+                {if @x_search_configured?, do: "Configured", else: "No credential"}
+              </.dm_badge>
+            </div>
+            <.dm_select
+              id="web-x-search-credential"
+              name="settings[x_search][credential]"
+              label="xAI Credential"
+              options={@x_search_credential_options}
+              value={@x_search_credential}
+            />
+          </div>
+
+          <.dm_input
+            id="web-x-search-model"
+            name="settings[x_search][model]"
+            label="Model"
+            value={@x_search_model}
+            placeholder="grok-4.3"
+          />
         </div>
       </.dm_card>
 

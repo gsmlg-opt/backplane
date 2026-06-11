@@ -1,14 +1,15 @@
 defmodule Backplane.Services.Web do
   @moduledoc """
-  Unified managed MCP service providing `web::fetch` and `web::search`.
+  Unified managed MCP service providing `web::fetch`, `web::search`, and
+  `web::x_search`.
 
-  Combines web fetching (HTML→Markdown conversion) and web searching
-  (multi-backend search) under a single `web` prefix.
+  Combines web fetching (HTML→Markdown conversion), multi-backend web search,
+  and xAI X Search under a single `web` prefix.
   """
 
   @behaviour Backplane.Services.ManagedService
 
-  alias Backplane.Services.{WebFetch, WebSearch}
+  alias Backplane.Services.{WebFetch, WebSearch, WebXSearch}
 
   @prefix "web"
 
@@ -22,7 +23,7 @@ defmodule Backplane.Services.Web do
 
   @impl true
   def tools do
-    fetch_tools() ++ search_tools()
+    fetch_tools() ++ search_tools() ++ x_search_tools()
   end
 
   defp fetch_tools do
@@ -91,6 +92,29 @@ defmodule Backplane.Services.Web do
           "additionalProperties" => false
         },
         handler: &WebSearch.handle_search/1
+      }
+    ]
+  end
+
+  defp x_search_tools do
+    [
+      %{
+        name: "web::x_search",
+        description:
+          "Search X through xAI Grok's built-in X Search tool. Uses either an xAI API key credential or an xAI Grok OAuth credential.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "description" => "Search text"
+            }
+          },
+          "required" => ["query"],
+          "additionalProperties" => false
+        },
+        handler: &WebXSearch.handle_x_search/1
       }
     ]
   end

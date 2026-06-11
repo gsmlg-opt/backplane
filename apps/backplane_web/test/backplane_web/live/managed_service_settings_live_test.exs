@@ -9,11 +9,18 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
   setup do
     previous_search = Application.get_env(:backplane, :web_search_req_options)
     previous_fetch = Application.get_env(:backplane, :web_fetch_req_options)
+    previous_x_search = Application.get_env(:backplane, :web_x_search_req_options)
 
     Application.put_env(:backplane, :web_search_req_options, plug: {Req.Test, WebSearch})
     Application.put_env(:backplane, :web_fetch_req_options, plug: {Req.Test, WebFetch})
 
+    Application.put_env(:backplane, :web_x_search_req_options,
+      plug: {Req.Test, Backplane.Services.WebXSearch}
+    )
+
     Settings.set("services.web_search.default_backend", "ollama")
+    Settings.set("services.web_x_search.credential", nil)
+    Settings.set("services.web_x_search.model", nil)
 
     for backend <- ~w(ollama minimax z_ai bigmodel) do
       Settings.set("services.web_search.#{backend}.credential", nil)
@@ -31,6 +38,12 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
       else
         Application.delete_env(:backplane, :web_fetch_req_options)
       end
+
+      if previous_x_search do
+        Application.put_env(:backplane, :web_x_search_req_options, previous_x_search)
+      else
+        Application.delete_env(:backplane, :web_x_search_req_options)
+      end
     end)
 
     :ok
@@ -38,17 +51,21 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
 
   test "renders web search settings", %{conn: conn} do
     {:ok, _credential} = Credentials.store("shared-search-key", "secret", "service")
+    {:ok, _xai_credential} = Credentials.store("xai-search-key", "xai-secret", "service")
 
     {:ok, _view, html} = live(conn, "/admin/mcp/managed/web")
 
     assert html =~ "Web Settings"
     assert html =~ "Default Backend"
     assert html =~ "Backend Credentials"
+    assert html =~ "X Search"
+    assert html =~ "xAI Credential"
     assert html =~ "Ollama"
     assert html =~ "MiniMax"
     assert html =~ "Z.ai"
     assert html =~ "BigModel"
     assert html =~ "shared-search-key"
+    assert html =~ "xai-search-key"
     assert html =~ ~s(href="/admin/system/credentials")
     refute html =~ "Backend API Keys"
     refute html =~ "API Key"
@@ -68,6 +85,10 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
             "minimax" => "mini-search-key",
             "z_ai" => "",
             "bigmodel" => ""
+          },
+          "x_search" => %{
+            "credential" => "",
+            "model" => ""
           }
         }
       })
@@ -78,6 +99,34 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
     assert Settings.get("services.web_search.minimax.credential") == "mini-search-key"
     assert {:ok, "mini-secret"} = Credentials.fetch("mini-search-key")
     refute Credentials.exists?("web-search-minimax")
+  end
+
+  test "saves xAI X Search credential and model", %{conn: conn} do
+    {:ok, _credential} = Credentials.store("xai-search-key", "xai-secret", "service")
+    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
+
+    html =
+      view
+      |> form("#web-search-settings-form", %{
+        "settings" => %{
+          "default_backend" => "ollama",
+          "credentials" => %{
+            "ollama" => "",
+            "minimax" => "",
+            "z_ai" => "",
+            "bigmodel" => ""
+          },
+          "x_search" => %{
+            "credential" => "xai-search-key",
+            "model" => "grok-4.3"
+          }
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Web search settings saved"
+    assert Settings.get("services.web_x_search.credential") == "xai-search-key"
+    assert Settings.get("services.web_x_search.model") == "grok-4.3"
   end
 
   test "debug tab calls web::search through the generic tool debugger", %{conn: conn} do
@@ -129,6 +178,52 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
     assert html =~ "Phoenix LiveView"
     assert html =~ "https://hexdocs.pm/phoenix_live_view"
     assert html =~ "Rich realtime user experiences"
+  end
+
+  test "debug tab calls web::x_search through the generic tool debugger", %{conn: conn} do
+    {:ok, _credential} = Credentials.store("xai-debug-key", "xai-secret", "service")
+    Settings.set("services.web_x_search.credential", "xai-debug-key")
+
+    Req.Test.stub(Backplane.Services.WebXSearch, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+      assert conn.request_path == "/v1/responses"
+      assert {"authorization", "Bearer xai-secret"} in conn.req_headers
+      assert Jason.decode!(body)["tools"] == [%{"type" => "x_search"}]
+
+      Req.Test.json(conn, %{
+        "id" => "resp_debug",
+        "model" => "grok-4.3",
+        "output" => [
+          %{
+            "type" => "message",
+            "content" => [%{"type" => "output_text", "text" => "X Search debug result"}]
+          }
+        ],
+        "usage" => %{}
+      })
+    end)
+
+    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
+
+    assert html =~ "Web Debug"
+    assert html =~ "web::x_search"
+
+    html =
+      view
+      |> form("#managed-tool-debug-form", %{
+        "debug" => %{
+          "tool_name" => "web::x_search",
+          "arguments" =>
+            Jason.encode!(%{
+              "query" => "latest from xai"
+            })
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Tool Result"
+    assert html =~ "X Search debug result"
   end
 
   test "day debug tab calls selected managed tool", %{conn: conn} do

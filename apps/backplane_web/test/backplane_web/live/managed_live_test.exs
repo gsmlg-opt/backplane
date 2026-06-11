@@ -26,6 +26,7 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ "web::"
     assert html =~ "web::fetch"
     assert html =~ "web::search"
+    assert html =~ "web::x_search"
     assert html =~ ~s(href="/admin/mcp/managed/web")
   end
 

@@ -15,7 +15,7 @@ defmodule BackplaneWeb.ManagedLive do
     %{
       module: Backplane.Services.Web,
       name: "Web",
-      description: "Fetch HTTP(S) pages and search the web"
+      description: "Fetch HTTP(S) pages, search the web, and search X"
     },
     %{
       module: Backplane.Services.Math,
