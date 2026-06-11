@@ -9,6 +9,7 @@ defmodule BackplaneWeb.SettingsLive do
   alias Backplane.LLM.ModelAlias
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.OpenAICodexAuth
+  alias Backplane.Settings.OAuthRefresher
   alias Backplane.Settings.OAuthStateStore
 
   @google_antigravity_redirect_uri "https://antigravity.google/oauth-callback"
@@ -20,6 +21,18 @@ defmodule BackplaneWeb.SettingsLive do
     "https://www.googleapis.com/auth/cclog",
     "https://www.googleapis.com/auth/experimentsandconfigs",
     "openid"
+  ]
+  @xai_grok_redirect_uri "http://127.0.0.1:56121/callback"
+  @xai_authorize_url "https://auth.x.ai/oauth2/authorize"
+  @xai_token_url "https://auth.x.ai/oauth2/token"
+  @xai_client_id "b1a00492-073a-47ea-816f-4c329264a828"
+  @xai_grok_scopes [
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "grok-cli:access",
+    "api:access"
   ]
 
   @impl true
@@ -72,6 +85,7 @@ defmodule BackplaneWeb.SettingsLive do
         "anthropic_oauth" -> "claude-plan"
         "openai_oauth" -> "openai-codex"
         "google_oauth" -> "google-antigravity"
+        "xai_oauth" -> "xai-grok"
         _ -> "oauth-cred"
       end
 
@@ -600,6 +614,35 @@ defmodule BackplaneWeb.SettingsLive do
              |> push_event("open_external_oauth", %{url: auth_url})}
         end
 
+      vendor == "xai_oauth" ->
+        redirect_uri = xai_redirect_uri()
+        {verifier, challenge} = pkce_pair()
+        state = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+        case build_auth_url("xai_oauth", state, challenge, redirect_uri) do
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error_detail: nil
+             )}
+
+          auth_url ->
+            {:noreply,
+             socket
+             |> assign(
+               device_flow_state: :waiting_code_input,
+               device_flow_cred_name: name,
+               device_flow_code_verifier: verifier,
+               device_flow_oauth_state: state,
+               device_flow_redirect_uri: redirect_uri,
+               device_flow_error: nil,
+               device_flow_error_detail: nil
+             )
+             |> push_event("open_external_oauth", %{url: auth_url})}
+        end
+
       true ->
         redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
         {verifier, challenge} = pkce_pair()
@@ -838,7 +881,7 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp device_oauth_auth_type?(auth_type),
-    do: auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth"]
+    do: auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth", "xai_oauth"]
 
   defp maybe_oauth_status(name, auth_type) do
     if device_oauth_auth_type?(auth_type) do
@@ -1130,6 +1173,12 @@ defmodule BackplaneWeb.SettingsLive do
                   >
                     Connect Google Antigravity
                   </.link>
+                  <.link
+                    patch={~p"/admin/system/credentials/new/xai_oauth"}
+                    class="popover-menu-item"
+                  >
+                    Connect xAI Grok
+                  </.link>
                 </:content>
               </.dm_dropdown>
             </div>
@@ -1155,6 +1204,7 @@ defmodule BackplaneWeb.SettingsLive do
                           "anthropic_oauth",
                           "openai_oauth",
                           "google_oauth",
+                          "xai_oauth",
                           "oauth2_client_credentials"
                         ]
                       }
@@ -1503,7 +1553,7 @@ defmodule BackplaneWeb.SettingsLive do
             name="cred_name"
             label="Credential Name"
             value={@device_flow_cred_name}
-            placeholder="claude-plan"
+            placeholder={@device_flow_cred_name || "oauth-cred"}
             required
           />
           <div class="flex gap-2 pt-2">
@@ -1520,7 +1570,7 @@ defmodule BackplaneWeb.SettingsLive do
               name="cred_name"
               label="Credential Name"
               value={@device_flow_cred_name}
-              placeholder="claude-plan"
+              placeholder={@device_flow_cred_name || "claude-plan"}
               required
             />
             <.dm_textarea
@@ -1622,6 +1672,7 @@ defmodule BackplaneWeb.SettingsLive do
   defp device_flow_label("anthropic_oauth"), do: "Claude Plan"
   defp device_flow_label("openai_oauth"), do: "OpenAI Codex"
   defp device_flow_label("google_oauth"), do: "Google Antigravity"
+  defp device_flow_label("xai_oauth"), do: "xAI Grok"
   defp device_flow_label(other), do: other || "OAuth"
 
   defp pkce_pair do
@@ -1686,6 +1737,25 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
+  defp build_auth_url("xai_oauth", state, challenge, redirect_uri) do
+    nonce = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+
+    params = %{
+      "response_type" => "code",
+      "client_id" => xai_client_id(),
+      "redirect_uri" => redirect_uri,
+      "scope" => Enum.join(@xai_grok_scopes, " "),
+      "code_challenge" => challenge,
+      "code_challenge_method" => "S256",
+      "state" => state,
+      "nonce" => nonce,
+      "plan" => "generic",
+      "referrer" => "backplane"
+    }
+
+    xai_authorize_url() <> "?" <> URI.encode_query(params)
+  end
+
   defp google_client_id do
     value = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID", nil)
 
@@ -1707,7 +1777,31 @@ defmodule BackplaneWeb.SettingsLive do
     google_oauth_value(:google_token_url, nil, @google_token_url)
   end
 
+  defp xai_client_id do
+    xai_oauth_value(:xai_client_id, "XAI_OAUTH_CLIENT_ID", @xai_client_id)
+  end
+
+  defp xai_authorize_url do
+    xai_oauth_value(:xai_authorize_url, nil, @xai_authorize_url)
+  end
+
+  defp xai_token_url do
+    xai_oauth_value(:xai_token_url, nil, @xai_token_url)
+  end
+
+  defp xai_redirect_uri do
+    xai_oauth_value(:xai_redirect_uri, "XAI_OAUTH_REDIRECT_URI", @xai_grok_redirect_uri)
+  end
+
   defp google_oauth_value(key, env_key, default) do
+    oauth_config_value(key, env_key, default)
+  end
+
+  defp xai_oauth_value(key, env_key, default) do
+    oauth_config_value(key, env_key, default)
+  end
+
+  defp oauth_config_value(key, env_key, default) do
     [
       :backplane
       |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
@@ -1819,11 +1913,14 @@ defmodule BackplaneWeb.SettingsLive do
         "code_verifier" => code_verifier
       }
 
-      case Req.post(google_token_url(),
-             form: body,
-             headers: google_token_headers(),
-             receive_timeout: 30_000
-           ) do
+      token_url = google_token_url()
+
+      req_opts =
+        token_url
+        |> OAuthRefresher.request_options()
+        |> Keyword.merge(form: body, headers: google_token_headers(), receive_timeout: 30_000)
+
+      case Req.post(token_url, req_opts) do
         {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
           refresh = resp["refresh_token"] || ""
 
@@ -1843,6 +1940,62 @@ defmodule BackplaneWeb.SettingsLive do
               |> maybe_put_token(:id_token, resp["id_token"])
 
             {:ok, tokens, %{"auth_mode" => "antigravity"}}
+          end
+
+        {:ok, %{status: status, body: body}} ->
+          {:error, {:http, status, body}}
+
+        {:error, reason} ->
+          {:error, {:transport, reason}}
+      end
+    end
+  end
+
+  defp exchange_auth_code(
+         "xai_oauth",
+         pasted_code,
+         code_verifier,
+         redirect_uri,
+         expected_state
+       ) do
+    with {:ok, code, returned_state} <- split_xai_auth_code(pasted_code),
+         :ok <- verify_xai_state(expected_state, returned_state) do
+      body = %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => redirect_uri,
+        "client_id" => xai_client_id(),
+        "code_verifier" => code_verifier
+      }
+
+      token_url = xai_token_url()
+
+      req_opts =
+        token_url
+        |> OAuthRefresher.request_options()
+        |> Keyword.merge(form: body, receive_timeout: 30_000)
+
+      case Req.post(token_url, req_opts) do
+        {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
+          refresh = resp["refresh_token"] || ""
+
+          if refresh == "" do
+            {:error, :missing_refresh_token}
+          else
+            expires_in = resp["expires_in"] || 3600
+            expires_at = System.system_time(:millisecond) + expires_in * 1_000
+
+            tokens =
+              %{
+                type: "xai_grok_oauth",
+                auth_mode: "grok",
+                access_token: access,
+                refresh_token: refresh,
+                expires_at: expires_at
+              }
+              |> maybe_put_token(:id_token, resp["id_token"])
+
+            {:ok, tokens, %{"auth_mode" => "grok", "client_id" => xai_client_id()}}
           end
 
         {:ok, %{status: status, body: body}} ->
@@ -1914,6 +2067,24 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
+  defp split_xai_auth_code(pasted_code) do
+    pasted_code =
+      pasted_code
+      |> String.trim()
+      |> String.replace(~r/\s+/, "")
+
+    cond do
+      String.starts_with?(pasted_code, "http://") or String.starts_with?(pasted_code, "https://") ->
+        split_xai_callback_url(pasted_code)
+
+      String.starts_with?(pasted_code, "?") ->
+        split_xai_query_fragment(pasted_code)
+
+      true ->
+        split_xai_code_fragment(pasted_code)
+    end
+  end
+
   defp split_google_callback_url(callback_url) do
     uri = URI.parse(callback_url)
 
@@ -1934,11 +2105,51 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
+  defp split_xai_callback_url(callback_url) do
+    uri = URI.parse(callback_url)
+
+    with true <- uri.host in ["127.0.0.1", "localhost"],
+         "/callback" <- uri.path,
+         query when is_binary(query) <- uri.query do
+      split_xai_query_params(URI.decode_query(query))
+    else
+      _ -> {:error, :invalid_xai_code}
+    end
+  end
+
+  defp split_xai_query_fragment(query_fragment) do
+    query_fragment
+    |> String.trim_leading("?")
+    |> URI.decode_query()
+    |> split_xai_query_params()
+  rescue
+    _ -> {:error, :invalid_xai_code}
+  end
+
+  defp split_xai_query_params(params) do
+    code = params["code"] || ""
+    state = params["state"]
+
+    if code != "" do
+      {:ok, code, state}
+    else
+      {:error, :invalid_xai_code}
+    end
+  end
+
   defp split_google_code_fragment(pasted_code) do
     case String.split(pasted_code, "#", parts: 2) do
       [code, state] when code != "" and state != "" -> {:ok, code, state}
       [code] when code != "" -> {:ok, code, nil}
       _ -> {:error, :invalid_google_code}
+    end
+  end
+
+  defp split_xai_code_fragment(pasted_code) do
+    case String.split(pasted_code, "#", parts: 2) do
+      [code, state] when code != "" and state != "" -> {:ok, code, state}
+      [code] when code != "" -> {:ok, code, nil}
+      _ -> {:error, :invalid_xai_code}
     end
   end
 
@@ -1993,6 +2204,19 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp verify_google_state(_expected_state, _returned_state), do: :ok
+
+  defp verify_xai_state(expected_state, returned_state)
+       when is_binary(expected_state) and expected_state != "" and is_binary(returned_state) and
+              returned_state != "" do
+    if byte_size(expected_state) == byte_size(returned_state) and
+         Plug.Crypto.secure_compare(expected_state, returned_state) do
+      :ok
+    else
+      {:error, :oauth_state_mismatch}
+    end
+  end
+
+  defp verify_xai_state(_expected_state, _returned_state), do: :ok
 
   defp token_exchange_state(expected_state, _returned_state)
        when is_binary(expected_state) and expected_state != "",
@@ -2078,6 +2302,9 @@ defmodule BackplaneWeb.SettingsLive do
 
   defp format_exchange_error(:invalid_google_code),
     do: "Paste the authorization code shown by Google Antigravity"
+
+  defp format_exchange_error(:invalid_xai_code),
+    do: "Paste the xAI callback URL or authorization code"
 
   defp format_exchange_error(:oauth_state_mismatch),
     do: "OAuth state did not match. Please restart authorization."

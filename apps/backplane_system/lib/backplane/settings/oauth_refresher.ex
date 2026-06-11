@@ -6,6 +6,7 @@ defmodule Backplane.Settings.OAuthRefresher do
   - `:anthropic_oauth` — Claude Plan (platform.claude.com)
   - `:openai_oauth`   — OpenAI Codex (auth.openai.com)
   - `:google_oauth`   — Google AI (oauth2.googleapis.com)
+  - `:xai_oauth`      — xAI Grok (auth.x.ai)
 
   Pure function. Does not touch the DB or cache. The caller (`Credentials`)
   persists rotated tokens.
@@ -21,8 +22,10 @@ defmodule Backplane.Settings.OAuthRefresher do
     "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
   ]
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
+  @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+  @xai_client_id "b1a00492-073a-47ea-816f-4c329264a828"
 
-  @type vendor :: :anthropic_oauth | :openai_oauth | :google_oauth
+  @type vendor :: :anthropic_oauth | :openai_oauth | :google_oauth | :xai_oauth
   @type refreshed :: %{
           required(:access_token) => String.t(),
           required(:refresh_token) => String.t(),
@@ -37,6 +40,14 @@ defmodule Backplane.Settings.OAuthRefresher do
       {"x-app", "cli"},
       {"anthropic-client-platform", "claude_code_cli"}
     ]
+  end
+
+  @spec request_options(String.t()) :: keyword()
+  def request_options(url) do
+    case Keyword.fetch(Application.get_env(:backplane, __MODULE__, []), :req_options) do
+      {:ok, opts} -> opts
+      :error -> default_req_options(url)
+    end
   end
 
   @spec refresh(vendor(), String.t(), keyword()) :: {:ok, refreshed()} | {:error, term()}
@@ -68,23 +79,30 @@ defmodule Backplane.Settings.OAuthRefresher do
   end
 
   def refresh(:google_oauth, refresh_token, opts) when is_binary(refresh_token) do
-    with {:ok, client_id, client_secret} <- google_client_credentials(opts) do
+    with {:ok, body} <- google_refresh_body(refresh_token, opts) do
       do_refresh(
         url(:google_token_url),
         :form,
-        %{
-          "grant_type" => "refresh_token",
-          "refresh_token" => refresh_token,
-          "client_id" => client_id,
-          "client_secret" => client_secret
-        }
+        body
       )
     end
   end
 
+  def refresh(:xai_oauth, refresh_token, opts) when is_binary(refresh_token) do
+    do_refresh(
+      url(:xai_token_url),
+      :form,
+      %{
+        "grant_type" => "refresh_token",
+        "refresh_token" => refresh_token,
+        "client_id" => xai_client_id(opts)
+      }
+    )
+  end
+
   defp do_refresh(url, encoding, body, headers \\ []) do
     req_opts =
-      req_options(url)
+      request_options(url)
       |> Keyword.merge(req_body_options(encoding, body, headers))
 
     case Req.post(url, req_opts) do
@@ -131,16 +149,37 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp normalize_anthropic_token_url(url), do: url || @anthropic_token_url
 
-  defp google_client_credentials(opts) do
-    client_id = option_or_config(opts, :google_client_id, "GOOGLE_OAUTH_CLIENT_ID")
+  defp google_refresh_body(refresh_token, opts) do
+    client_id = google_client_id(opts)
     client_secret = option_or_config(opts, :google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET")
 
-    cond do
-      is_nil(client_id) -> {:error, :missing_google_oauth_client_id}
-      is_nil(client_secret) -> {:error, :missing_google_oauth_client_secret}
-      true -> {:ok, client_id, client_secret}
+    if is_nil(client_id) do
+      {:error, :missing_google_oauth_client_id}
+    else
+      body =
+        %{
+          "grant_type" => "refresh_token",
+          "refresh_token" => refresh_token,
+          "client_id" => client_id
+        }
+        |> maybe_put_body("client_secret", client_secret)
+
+      {:ok, body}
     end
   end
+
+  defp google_client_id(opts) do
+    option_or_config(opts, :google_client_id, "GOOGLE_OAUTH_CLIENT_ID") ||
+      @google_antigravity_client_id
+  end
+
+  defp xai_client_id(opts) do
+    option_or_config(opts, :xai_client_id, "XAI_OAUTH_CLIENT_ID") || @xai_client_id
+  end
+
+  defp maybe_put_body(body, _key, nil), do: body
+  defp maybe_put_body(body, _key, ""), do: body
+  defp maybe_put_body(body, key, value), do: Map.put(body, key, value)
 
   defp option_or_config(opts, key, env_key) do
     [
@@ -155,13 +194,6 @@ defmodule Backplane.Settings.OAuthRefresher do
     :backplane
     |> Application.get_env(__MODULE__, [])
     |> Keyword.get(key)
-  end
-
-  defp req_options(url) do
-    case Keyword.fetch(Application.get_env(:backplane, __MODULE__, []), :req_options) do
-      {:ok, opts} -> opts
-      :error -> default_req_options(url)
-    end
   end
 
   defp default_req_options(url) do
@@ -267,4 +299,5 @@ defmodule Backplane.Settings.OAuthRefresher do
   defp default_url(:anthropic_token_url), do: @anthropic_token_url
   defp default_url(:openai_token_url), do: "https://auth.openai.com/oauth/token"
   defp default_url(:google_token_url), do: "https://oauth2.googleapis.com/token"
+  defp default_url(:xai_token_url), do: "https://auth.x.ai/oauth2/token"
 end

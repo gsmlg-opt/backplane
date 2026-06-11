@@ -89,7 +89,8 @@ config :relayixir, start_server: false
 config :backplane, Backplane.Settings.OAuthRefresher,
   anthropic_token_url: "https://platform.claude.com/v1/oauth/token",
   openai_token_url: "https://auth.openai.com/oauth/token",
-  google_token_url: "https://oauth2.googleapis.com/token"
+  google_token_url: "https://oauth2.googleapis.com/token",
+  xai_token_url: "https://auth.x.ai/oauth2/token"
 
 config :backplane_host_agent, start_on_application: true
 

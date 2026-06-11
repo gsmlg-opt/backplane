@@ -97,7 +97,12 @@ defmodule BackplaneWeb.DashboardLive do
   defp load_plan_credentials do
     Credentials.list()
     |> Enum.filter(fn cred ->
-      (cred.metadata || %{})["auth_type"] in ["anthropic_oauth", "openai_oauth", "google_oauth"]
+      (cred.metadata || %{})["auth_type"] in [
+        "anthropic_oauth",
+        "openai_oauth",
+        "google_oauth",
+        "xai_oauth"
+      ]
     end)
   end
 
@@ -211,6 +216,7 @@ defmodule BackplaneWeb.DashboardLive do
   defp plan_label("anthropic_oauth"), do: "Claude Plan"
   defp plan_label("openai_oauth"), do: "OpenAI Codex"
   defp plan_label("google_oauth"), do: "Google Antigravity"
+  defp plan_label("xai_oauth"), do: "xAI Grok"
   defp plan_label(other), do: other
 
   defp upstream_status(%{status: :connected}), do: :connected

@@ -12,7 +12,6 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
   @anthropic_json ~s({"claudeAiOauth":{"accessToken":"sk-ant-oat01-aaaa","refreshToken":"sk-ant-ort01-bbbb","expiresAt":1776417713649,"scopes":["user:inference"],"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"},"organizationUuid":"org-uuid-1234"})
 
   @openai_json ~s({"OPENAI_API_KEY":null,"tokens":{"id_token":"id-aaa","access_token":"oai-bbb","refresh_token":"oai-ccc","account_id":"acc-1"},"last_refresh":"2026-04-15T12:34:56Z"})
-
   setup do
     TokenCache.clear()
 
@@ -23,7 +22,9 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
-      openai_token_url: "http://localhost:#{port}/openai/token"
+      openai_token_url: "http://localhost:#{port}/openai/token",
+      google_token_url: "http://localhost:#{port}/google/token",
+      xai_token_url: "http://localhost:#{port}/xai/token"
     )
 
     on_exit(fn ->
@@ -41,8 +42,11 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
   defmodule RefreshEndpoint do
     use Plug.Router
+
+    @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
     plug(:match)
-    plug(Plug.Parsers, parsers: [:json], pass: ["*/*"], json_decoder: Jason)
+    plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
     plug(:dispatch)
 
     post "/anthropic/token" do
@@ -77,6 +81,40 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
         "access_token" => "oai-REFRESHED",
         "refresh_token" => "oai-NEWREFRESH",
         "id_token" => "oai-NEWID",
+        "expires_in" => 3600,
+        "token_type" => "Bearer"
+      }
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(resp))
+    end
+
+    post "/google/token" do
+      if conn.body_params["client_id"] == @google_antigravity_client_id and
+           not Map.has_key?(conn.body_params, "client_secret") do
+        resp = %{
+          "access_token" => "goog-REFRESHED",
+          "refresh_token" => "goog-NEWREFRESH",
+          "expires_in" => 3600,
+          "token_type" => "Bearer"
+        }
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(resp))
+      else
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "unexpected_google_body"}))
+      end
+    end
+
+    post "/xai/token" do
+      resp = %{
+        "access_token" => "xai-REFRESHED",
+        "refresh_token" => "xai-NEWREFRESH",
+        "id_token" => "xai-NEWID",
         "expires_in" => 3600,
         "token_type" => "Bearer"
       }
@@ -251,6 +289,35 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       assert parsed["id_token"] == "oai-NEWID"
       assert is_binary(parsed["last_refresh"])
     end
+
+    test "refreshes flat xAI Grok token blobs and persists the rotated id_token" do
+      past_ms = System.system_time(:millisecond) - 60_000
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "xai-flat-expired",
+          "xai_oauth",
+          %{
+            "type" => "xai_grok_oauth",
+            "auth_mode" => "grok",
+            "id_token" => "xai-OLDID",
+            "access_token" => "xai-OLD",
+            "refresh_token" => "xai-rt",
+            "expires_at" => past_ms
+          },
+          %{"auth_mode" => "grok"}
+        )
+
+      assert {:ok, "xai-REFRESHED"} = Credentials.fetch("xai-flat-expired")
+
+      cred = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "xai-flat-expired")
+      {:ok, blob} = Backplane.Settings.Encryption.decrypt(cred.encrypted_value)
+      parsed = Jason.decode!(blob)
+      assert parsed["access_token"] == "xai-REFRESHED"
+      assert parsed["refresh_token"] == "xai-NEWREFRESH"
+      assert parsed["id_token"] == "xai-NEWID"
+      assert is_binary(parsed["last_refresh"])
+    end
   end
 
   describe "automatic OAuth refresh" do
@@ -321,6 +388,36 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       assert stored["access_token"] == "oai-REFRESHED"
       assert stored["refresh_token"] == "oai-NEWREFRESH"
       assert stored["id_token"] == "oai-NEWID"
+      assert is_binary(stored["last_refresh"])
+    end
+
+    test "refresh_oauth_token/2 refreshes a Google Antigravity token with default client id" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "google-auto-refresh",
+          "google_oauth",
+          %{
+            "type" => "google_antigravity_oauth",
+            "auth_mode" => "antigravity",
+            "access_token" => "goog-OLD",
+            "refresh_token" => "goog-rt",
+            "expires_at" => now_ms + 30_000,
+            "last_refresh" => iso_days_ago(8)
+          },
+          %{"auth_mode" => "antigravity"}
+        )
+
+      assert {:ok, :refreshed} =
+               Credentials.refresh_oauth_token("google-auto-refresh",
+                 now_ms: now_ms,
+                 refresh_interval_ms: 7 * 24 * 60 * 60 * 1000
+               )
+
+      stored = decrypt_credential_json("google-auto-refresh")
+      assert stored["access_token"] == "goog-REFRESHED"
+      assert stored["refresh_token"] == "goog-NEWREFRESH"
       assert is_binary(stored["last_refresh"])
     end
 

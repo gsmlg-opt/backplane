@@ -17,7 +17,8 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
       openai_token_url: "http://localhost:#{port}/openai/token",
-      google_token_url: "http://localhost:#{port}/google/token"
+      google_token_url: "http://localhost:#{port}/google/token",
+      xai_token_url: "http://localhost:#{port}/xai/token"
     )
 
     on_exit(fn ->
@@ -36,6 +37,9 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
   defmodule MockEndpoint do
     use Plug.Router
+
+    @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
     plug(:match)
     plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
     plug(:dispatch)
@@ -119,13 +123,41 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       end
     end
 
+    post "/xai/token" do
+      cond do
+        conn.body_params["refresh_token"] == "good-xai" and valid_xai_body?(conn.body_params) ->
+          resp = %{
+            "access_token" => "xai-new-access",
+            "refresh_token" => "xai-new-refresh",
+            "id_token" => "xai-new-id",
+            "expires_in" => 3600,
+            "token_type" => "Bearer"
+          }
+
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, Jason.encode!(resp))
+
+        true ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+      end
+    end
+
     match _ do
       send_resp(conn, 404, "not found")
     end
 
     defp valid_google_client_credentials?(body) do
-      body["client_id"] == "test-google-client" and
-        body["client_secret"] == "test-google-secret"
+      (body["client_id"] == "test-google-client" and
+         body["client_secret"] == "test-google-secret") or
+        (body["client_id"] == @google_antigravity_client_id and
+           not Map.has_key?(body, "client_secret"))
+    end
+
+    defp valid_xai_body?(body) do
+      body["client_id"] == "b1a00492-073a-47ea-816f-4c329264a828"
     end
   end
 
@@ -194,9 +226,17 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   end
 
   describe "refresh/3 :google_oauth" do
-    test "requires configured Google OAuth client credentials" do
-      assert {:error, :missing_google_oauth_client_id} =
+    test "uses Antigravity OAuth client id by default" do
+      assert {:ok,
+              %{
+                access_token: "goog-new-access",
+                refresh_token: "goog-new-refresh",
+                expires_at: expires_at
+              }} =
                OAuthRefresher.refresh(:google_oauth, "good-google")
+
+      now_ms = System.system_time(:millisecond)
+      assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
     end
 
     test "returns rotated tokens with configured Google OAuth client credentials" do
@@ -213,6 +253,27 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
       now_ms = System.system_time(:millisecond)
       assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
+    end
+  end
+
+  describe "refresh/2 :xai_oauth" do
+    test "returns rotated tokens with id_token on success" do
+      assert {:ok,
+              %{
+                access_token: "xai-new-access",
+                refresh_token: "xai-new-refresh",
+                id_token: "xai-new-id",
+                expires_at: expires_at
+              }} =
+               OAuthRefresher.refresh(:xai_oauth, "good-xai")
+
+      now_ms = System.system_time(:millisecond)
+      assert_in_delta expires_at, now_ms + 3600 * 1000, 5_000
+    end
+
+    test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do
+      assert {:error, {:refresh_failed, 401}} =
+               OAuthRefresher.refresh(:xai_oauth, "wrong")
     end
   end
 

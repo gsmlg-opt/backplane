@@ -23,7 +23,8 @@ defmodule Backplane.Settings.Credentials do
   @device_oauth_vendors %{
     "anthropic_oauth" => :anthropic_oauth,
     "openai_oauth" => :openai_oauth,
-    "google_oauth" => :google_oauth
+    "google_oauth" => :google_oauth,
+    "xai_oauth" => :xai_oauth
   }
   @default_oauth_refresh_window_ms 10 * 60 * 1000
   @default_oauth_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
@@ -112,6 +113,9 @@ defmodule Backplane.Settings.Credentials do
 
       %Credential{metadata: %{"auth_type" => "google_oauth"}} = cred ->
         fetch_device_oauth(cred, :google_oauth)
+
+      %Credential{metadata: %{"auth_type" => "xai_oauth"}} = cred ->
+        fetch_device_oauth(cred, :xai_oauth)
 
       %Credential{encrypted_value: encrypted} ->
         Encryption.decrypt(encrypted)
@@ -620,6 +624,7 @@ defmodule Backplane.Settings.Credentials do
   defp validate_oauth_metadata(%{"auth_type" => "anthropic_oauth"}), do: :ok
   defp validate_oauth_metadata(%{"auth_type" => "openai_oauth"}), do: :ok
   defp validate_oauth_metadata(%{"auth_type" => "google_oauth"}), do: :ok
+  defp validate_oauth_metadata(%{"auth_type" => "xai_oauth"}), do: :ok
 
   defp validate_oauth_metadata(%{"auth_type" => "oauth2_client_credentials"} = meta) do
     cond do

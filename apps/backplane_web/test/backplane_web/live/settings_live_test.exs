@@ -210,6 +210,17 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
     end
   end
 
+  defp snapshot_env(names) do
+    Map.new(names, fn name -> {name, System.get_env(name)} end)
+  end
+
+  defp restore_env(snapshot) do
+    Enum.each(snapshot, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
+  end
+
   describe "credentials tab" do
     setup do
       {:ok, pid} =
@@ -237,7 +248,9 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
           anthropic_token_url: "http://localhost:#{port}/anthropic/token",
           google_token_url: "http://localhost:#{port}/google/token",
           google_client_id: "test-google-client",
-          google_client_secret: "test-google-secret"
+          google_client_secret: "test-google-secret",
+          xai_token_url: "http://localhost:#{port}/xai/token",
+          xai_client_id: "test-xai-client"
         )
       )
 
@@ -252,7 +265,7 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
         end
       end)
 
-      :ok
+      %{device_auth_port: port}
     end
 
     test "renders credentials tab", %{conn: conn} do
@@ -499,6 +512,18 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert html =~ "Connect Claude Plan"
     end
 
+    test "renders xAI Grok OAuth connect option", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/admin/system/credentials")
+
+      assert html =~ "Connect xAI Grok"
+
+      assert has_element?(
+               view,
+               ~s(a[href="/admin/system/credentials/new/xai_oauth"]),
+               "Connect xAI Grok"
+             )
+    end
+
     test "imports Claude Code auth JSON from the Claude Plan page", %{conn: conn} do
       future_ms = System.system_time(:millisecond) + 60 * 60 * 1000
 
@@ -741,6 +766,178 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
               }} = Credentials.fetch_with_meta("my-google-antigravity")
     end
 
+    test "submitting Google Antigravity auth code uses proxy settings for token exchange", %{
+      conn: conn,
+      device_auth_port: port
+    } do
+      prior_refresher = Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
+
+      prior_env =
+        snapshot_env(
+          ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy]
+        )
+
+      Application.put_env(
+        :backplane,
+        Backplane.Settings.OAuthRefresher,
+        Keyword.merge(prior_refresher,
+          google_token_url: "http://oauth2.googleapis.com.invalid/google/token",
+          google_client_id: "test-google-client",
+          google_client_secret: "test-google-secret"
+        )
+      )
+
+      System.delete_env("HTTP_PROXY")
+      System.put_env("http_proxy", "http://localhost:#{port}")
+      System.delete_env("HTTPS_PROXY")
+      System.delete_env("https_proxy")
+      System.delete_env("ALL_PROXY")
+      System.delete_env("all_proxy")
+      System.put_env("NO_PROXY", "localhost,127.0.0.1")
+      System.put_env("no_proxy", "localhost,127.0.0.1")
+
+      on_exit(fn ->
+        Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, prior_refresher)
+        restore_env(prior_env)
+      end)
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{
+        "cred_name" => "my-google-antigravity-proxy"
+      })
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: _auth_url})
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-google-code"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-google-antigravity-proxy"
+      assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity-proxy")
+    end
+
+    test "submitting xAI Grok auth form exchanges a pasted callback URL", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/xai_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{
+          "cred_name" => "my-xai-grok"
+        })
+        |> render_submit()
+
+      assert html =~ "Authorization Code"
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+
+      uri = URI.parse(auth_url)
+      assert uri.scheme == "https"
+      assert uri.host == "auth.x.ai"
+      assert uri.path == "/oauth2/authorize"
+
+      query = uri.query |> URI.decode_query()
+
+      assert query["client_id"] == "test-xai-client"
+      assert query["redirect_uri"] == "http://127.0.0.1:56121/callback"
+      assert query["response_type"] == "code"
+      assert query["code_challenge_method"] == "S256"
+      assert query["plan"] == "generic"
+      assert query["referrer"] == "backplane"
+      assert is_binary(query["state"])
+      assert is_binary(query["nonce"])
+
+      scopes = String.split(query["scope"], " ")
+      assert "openid" in scopes
+      assert "profile" in scopes
+      assert "email" in scopes
+      assert "offline_access" in scopes
+      assert "grok-cli:access" in scopes
+      assert "api:access" in scopes
+
+      callback_url =
+        "http://127.0.0.1:56121/callback?code=mock-xai-code&state=#{query["state"]}"
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => callback_url
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-xai-grok"
+      assert {:ok, "xai-grok-access"} = Credentials.fetch("my-xai-grok")
+
+      assert {:ok, "xai-grok-access",
+              %{
+                auth_type: "xai_oauth",
+                metadata: %{"auth_mode" => "grok"}
+              }} = Credentials.fetch_with_meta("my-xai-grok")
+    end
+
+    test "submitting xAI Grok auth code uses proxy settings for token exchange", %{
+      conn: conn,
+      device_auth_port: port
+    } do
+      prior_refresher = Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
+
+      prior_env =
+        snapshot_env(
+          ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy]
+        )
+
+      Application.put_env(
+        :backplane,
+        Backplane.Settings.OAuthRefresher,
+        Keyword.merge(prior_refresher,
+          xai_token_url: "http://auth.x.ai.invalid/xai/token",
+          xai_client_id: "test-xai-client"
+        )
+      )
+
+      System.delete_env("HTTP_PROXY")
+      System.put_env("http_proxy", "http://localhost:#{port}")
+      System.delete_env("HTTPS_PROXY")
+      System.delete_env("https_proxy")
+      System.delete_env("ALL_PROXY")
+      System.delete_env("all_proxy")
+      System.put_env("NO_PROXY", "localhost,127.0.0.1")
+      System.put_env("no_proxy", "localhost,127.0.0.1")
+
+      on_exit(fn ->
+        Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, prior_refresher)
+        restore_env(prior_env)
+      end)
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/xai_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{
+        "cred_name" => "my-xai-grok-proxy"
+      })
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-xai-code##{query["state"]}"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-xai-grok-proxy"
+      assert {:ok, "xai-grok-access"} = Credentials.fetch("my-xai-grok-proxy")
+    end
+
     test "can add a script credential with textarea content and ignoring auth type", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/system/credentials")
 
@@ -879,6 +1076,28 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     end
   end
 
+  post "/xai/token" do
+    body = conn.body_params
+
+    if valid_xai_grok_body?(body) do
+      resp = %{
+        "access_token" => "xai-grok-access",
+        "refresh_token" => "xai-grok-refresh",
+        "expires_in" => 3600,
+        "token_type" => "Bearer",
+        "id_token" => jwt(%{"sub" => "xai-user-1", "email" => "grok@example.com"})
+      }
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(resp))
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+    end
+  end
+
   defp valid_google_antigravity_body?(body) do
     match?(
       %{
@@ -887,6 +1106,20 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
         "client_id" => "test-google-client",
         "client_secret" => "test-google-secret",
         "redirect_uri" => "https://antigravity.google/oauth-callback",
+        "code_verifier" => verifier
+      }
+      when is_binary(verifier) and byte_size(verifier) > 0,
+      body
+    )
+  end
+
+  defp valid_xai_grok_body?(body) do
+    match?(
+      %{
+        "grant_type" => "authorization_code",
+        "code" => "mock-xai-code",
+        "client_id" => "test-xai-client",
+        "redirect_uri" => "http://127.0.0.1:56121/callback",
         "code_verifier" => verifier
       }
       when is_binary(verifier) and byte_size(verifier) > 0,
