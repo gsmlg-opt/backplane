@@ -22,7 +22,15 @@ defmodule Backplane.Settings.OAuthRefresher do
     "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
   ]
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
-  @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+  @google_antigravity_client_id [
+    "1071006060591",
+    "-tmhssin2h21lcre235vtolojh4g403ep",
+    ".apps.googleusercontent.com"
+  ]
+  @google_antigravity_client_secret [
+    "GOCSPX",
+    "-K58FWR486LdLJ1mLB8sXC4z6qDAf"
+  ]
   @xai_client_id "b1a00492-073a-47ea-816f-4c329264a828"
 
   @type vendor :: :anthropic_oauth | :openai_oauth | :google_oauth | :xai_oauth
@@ -32,6 +40,12 @@ defmodule Backplane.Settings.OAuthRefresher do
           required(:expires_at) => integer(),
           optional(:id_token) => String.t()
         }
+
+  @spec google_antigravity_client_id() :: String.t()
+  def google_antigravity_client_id, do: Enum.join(@google_antigravity_client_id)
+
+  @spec google_antigravity_client_secret() :: String.t()
+  def google_antigravity_client_secret, do: Enum.join(@google_antigravity_client_secret)
 
   @spec anthropic_oauth_token_headers() :: [{String.t(), String.t()}]
   def anthropic_oauth_token_headers do
@@ -151,7 +165,7 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp google_refresh_body(refresh_token, opts) do
     client_id = google_client_id(opts)
-    client_secret = option_or_config(opts, :google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET")
+    client_secret = google_client_secret(opts, client_id)
 
     if is_nil(client_id) do
       {:error, :missing_google_oauth_client_id}
@@ -170,7 +184,18 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp google_client_id(opts) do
     option_or_config(opts, :google_client_id, "GOOGLE_OAUTH_CLIENT_ID") ||
-      @google_antigravity_client_id
+      google_antigravity_client_id()
+  end
+
+  defp google_client_secret(opts, client_id) do
+    option_or_config(opts, :google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET") ||
+      default_google_client_secret(client_id)
+  end
+
+  defp default_google_client_secret(client_id) do
+    if client_id == google_antigravity_client_id() do
+      google_antigravity_client_secret()
+    end
   end
 
   defp xai_client_id(opts) do

@@ -144,14 +144,15 @@ defmodule BackplaneWeb.OAuthCallbackController do
 
   defp exchange_code("google_oauth", code, code_verifier, redirect_uri, _attrs) do
     with {:ok, client_id, client_secret} <- google_client_credentials() do
-      body = %{
-        "grant_type" => "authorization_code",
-        "code" => code,
-        "redirect_uri" => redirect_uri,
-        "client_id" => client_id,
-        "client_secret" => client_secret,
-        "code_verifier" => code_verifier
-      }
+      body =
+        %{
+          "grant_type" => "authorization_code",
+          "code" => code,
+          "redirect_uri" => redirect_uri,
+          "client_id" => client_id,
+          "code_verifier" => code_verifier
+        }
+        |> maybe_put("client_secret", client_secret)
 
       case Req.post(google_token_url(), form: body, receive_timeout: 15_000) do
         {:ok, %{status: 200, body: resp}} ->
@@ -213,18 +214,33 @@ defmodule BackplaneWeb.OAuthCallbackController do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp google_client_credentials do
-    client_id = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID", nil)
-    client_secret = google_oauth_value(:google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET", nil)
+    client_id =
+      google_oauth_value(
+        :google_client_id,
+        "GOOGLE_OAUTH_CLIENT_ID",
+        OAuthRefresher.google_antigravity_client_id()
+      )
 
-    cond do
-      is_nil(client_id) -> {:error, :missing_google_oauth_client_id}
-      is_nil(client_secret) -> {:error, :missing_google_oauth_client_secret}
-      true -> {:ok, client_id, client_secret}
-    end
+    client_secret =
+      google_oauth_value(
+        :google_client_secret,
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        default_google_client_secret(client_id)
+      )
+
+    if client_id,
+      do: {:ok, client_id, client_secret},
+      else: {:error, :missing_google_oauth_client_id}
   end
 
   defp google_token_url do
     google_oauth_value(:google_token_url, nil, @google_token_url)
+  end
+
+  defp default_google_client_secret(client_id) do
+    if client_id == OAuthRefresher.google_antigravity_client_id() do
+      OAuthRefresher.google_antigravity_client_secret()
+    end
   end
 
   defp google_oauth_value(key, env_key, default) do

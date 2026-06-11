@@ -43,8 +43,6 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
   defmodule RefreshEndpoint do
     use Plug.Router
 
-    @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-
     plug(:match)
     plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
     plug(:dispatch)
@@ -91,8 +89,10 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
     end
 
     post "/google/token" do
-      if conn.body_params["client_id"] == @google_antigravity_client_id and
-           not Map.has_key?(conn.body_params, "client_secret") do
+      if conn.body_params["client_id"] ==
+           Backplane.Settings.OAuthRefresher.google_antigravity_client_id() and
+           conn.body_params["client_secret"] ==
+             Backplane.Settings.OAuthRefresher.google_antigravity_client_secret() do
         resp = %{
           "access_token" => "goog-REFRESHED",
           "refresh_token" => "goog-NEWREFRESH",

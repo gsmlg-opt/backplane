@@ -38,8 +38,6 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   defmodule MockEndpoint do
     use Plug.Router
 
-    @google_antigravity_client_id "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-
     plug(:match)
     plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
     plug(:dispatch)
@@ -152,8 +150,9 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     defp valid_google_client_credentials?(body) do
       (body["client_id"] == "test-google-client" and
          body["client_secret"] == "test-google-secret") or
-        (body["client_id"] == @google_antigravity_client_id and
-           not Map.has_key?(body, "client_secret"))
+        (body["client_id"] == Backplane.Settings.OAuthRefresher.google_antigravity_client_id() and
+           body["client_secret"] ==
+             Backplane.Settings.OAuthRefresher.google_antigravity_client_secret())
     end
 
     defp valid_xai_body?(body) do
@@ -226,7 +225,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   end
 
   describe "refresh/3 :google_oauth" do
-    test "uses Antigravity OAuth client id by default" do
+    test "uses Antigravity OAuth client credentials by default" do
       assert {:ok,
               %{
                 access_token: "goog-new-access",

@@ -766,6 +766,54 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
               }} = Credentials.fetch_with_meta("my-google-antigravity")
     end
 
+    test "Google Antigravity auth uses the built-in CLI client credentials when not configured",
+         %{
+           conn: conn
+         } do
+      configured_refresher =
+        Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
+
+      Application.put_env(
+        :backplane,
+        Backplane.Settings.OAuthRefresher,
+        configured_refresher
+        |> Keyword.delete(:google_client_id)
+        |> Keyword.delete(:google_client_secret)
+      )
+
+      on_exit(fn ->
+        Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, configured_refresher)
+      end)
+
+      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{
+          "cred_name" => "my-google-antigravity-default"
+        })
+        |> render_submit()
+
+      assert html =~ "Authorization Code"
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      assert query["client_id"] ==
+               Backplane.Settings.OAuthRefresher.google_antigravity_client_id()
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-google-default-code"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-google-antigravity-default"
+      assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity-default")
+    end
+
     test "submitting Google Antigravity auth code uses proxy settings for token exchange", %{
       conn: conn,
       device_auth_port: port
@@ -976,6 +1024,7 @@ end
 
 defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
   use Plug.Router
+
   plug(:match)
   plug(Plug.Parsers, parsers: [:urlencoded, :json], pass: ["*/*"], json_decoder: Jason)
   plug(:dispatch)
@@ -1099,18 +1148,28 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
   end
 
   defp valid_google_antigravity_body?(body) do
-    match?(
-      %{
-        "grant_type" => "authorization_code",
-        "code" => "mock-google-code",
-        "client_id" => "test-google-client",
-        "client_secret" => "test-google-secret",
-        "redirect_uri" => "https://antigravity.google/oauth-callback",
-        "code_verifier" => verifier
-      }
-      when is_binary(verifier) and byte_size(verifier) > 0,
-      body
-    )
+    valid_google_antigravity_body?(
+      body,
+      "mock-google-code",
+      "test-google-client",
+      "test-google-secret"
+    ) or
+      valid_google_antigravity_body?(
+        body,
+        "mock-google-default-code",
+        Backplane.Settings.OAuthRefresher.google_antigravity_client_id(),
+        Backplane.Settings.OAuthRefresher.google_antigravity_client_secret()
+      )
+  end
+
+  defp valid_google_antigravity_body?(body, code, client_id, client_secret) do
+    body["grant_type"] == "authorization_code" and
+      body["code"] == code and
+      body["client_id"] == client_id and
+      Map.get(body, "client_secret") == client_secret and
+      body["redirect_uri"] == "https://antigravity.google/oauth-callback" and
+      is_binary(body["code_verifier"]) and
+      byte_size(body["code_verifier"]) > 0
   end
 
   defp valid_xai_grok_body?(body) do
