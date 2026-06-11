@@ -97,6 +97,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
               <.minimax_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:ok, %{provider: "openai_codex"} = data} -> %>
               <.openai_codex_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
+            <% {:ok, %{provider: "google_ai"} = data} -> %>
+              <.google_antigravity_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:ok, %{provider: "claude_code"} = data} -> %>
               <.claude_code_card plan={item.plan} data={data} fetched_at={item.fetched_at} />
             <% {:unsupported, _provider} -> %>
@@ -321,6 +323,98 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
         Not reported
       </div>
     </div>
+    """
+  end
+
+  # --- Google Antigravity Card ---
+
+  defp google_antigravity_card(assigns) do
+    data = assigns.data || %{}
+
+    assigns =
+      assigns
+      |> assign(:credits, google_antigravity_credits(map_value(data, "credits")))
+      |> assign(:links, google_antigravity_links(map_value(data, "links")))
+      |> assign(:plan_type, format_plan_type(map_value(data, "plan_type")))
+      |> assign(:status, map_value(data, "status") || "ok")
+
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">{@plan.name}</span>
+            <.dm_badge variant="info" size="sm">Google Antigravity</.dm_badge>
+          </div>
+          <span class="text-xs text-on-surface-variant">
+            Updated <.local_time datetime={@fetched_at} format="time" />
+          </span>
+        </div>
+      </:title>
+      <div class="space-y-4">
+        <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+          <div>
+            <dt class="text-xs text-on-surface-variant">Plan</dt>
+            <dd class="font-medium">{@plan_type}</dd>
+          </div>
+          <div>
+            <dt class="text-xs text-on-surface-variant">Status</dt>
+            <dd class="font-medium">{@status}</dd>
+          </div>
+          <div>
+            <dt class="text-xs text-on-surface-variant">Usage Groups</dt>
+            <dd class="font-medium">{length(@credits)}</dd>
+          </div>
+        </dl>
+
+        <div :if={@credits != []} class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div
+            :for={credit <- @credits}
+            class="rounded border border-outline-variant bg-surface-container-low p-4"
+          >
+            <div class="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm font-semibold">{credit.label}</div>
+                <div :if={credit.description} class="text-xs text-on-surface-variant">
+                  {credit.description}
+                </div>
+              </div>
+              <.dm_badge
+                :if={not is_nil(credit.used_percent)}
+                variant={percentage_variant(credit.used_percent)}
+                size="sm"
+              >
+                {credit.used_percent}% used
+              </.dm_badge>
+            </div>
+
+            <div :if={not is_nil(credit.used_percent)} class="mb-3">
+              <.usage_bar percentage={credit.used_percent} />
+            </div>
+
+            <div :if={is_nil(credit.used_percent)} class="text-xs text-on-surface-variant">
+              Usage not reported
+            </div>
+          </div>
+        </div>
+
+        <div :if={@credits == []} class="text-sm text-on-surface-variant">
+          No Google Antigravity credit buckets reported.
+        </div>
+
+        <div :if={@links != []} class="flex flex-wrap gap-3 text-sm">
+          <.link
+            :for={{label, url} <- @links}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary underline"
+          >
+            {label}
+          </.link>
+        </div>
+      </div>
+    </.dm_card>
     """
   end
 
@@ -577,6 +671,96 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp openai_codex_limits(_), do: []
 
+  defp google_antigravity_credits(credits) when is_list(credits) do
+    credits = Enum.filter(credits, &is_map/1)
+    model_credits = Enum.filter(credits, &google_antigravity_model_credit?/1)
+
+    if model_credits == [] do
+      Enum.sort_by(credits, &google_antigravity_credit_sort_key/1)
+    else
+      grouped = Enum.group_by(model_credits, &google_antigravity_model_group/1)
+
+      [:claude_gpt_oss, :other]
+      |> Enum.map(fn group ->
+        google_antigravity_group_credit(group, Map.get(grouped, group, []))
+      end)
+      |> Enum.sort_by(&google_antigravity_credit_sort_key/1)
+    end
+  end
+
+  defp google_antigravity_credits(_), do: []
+
+  defp google_antigravity_credit_sort_key(credit) do
+    case map_value(credit, "id") do
+      "claude-gpt-oss-models" -> "0"
+      "other-models" -> "1"
+      "prompt" -> "0"
+      "flow" -> "1"
+      "flex" -> "2"
+      id when is_binary(id) -> "3:#{id}"
+      _ -> "4"
+    end
+  end
+
+  defp google_antigravity_model_credit?(credit) do
+    id = map_value(credit, "id")
+
+    id not in ["prompt", "flow", "flex"] and
+      (not is_nil(map_value(credit, "remaining_fraction")) or
+         not is_nil(map_value(credit, "reset_time")) or
+         map_value(credit, "label") in ["Requests", "Wtus"])
+  end
+
+  defp google_antigravity_model_group(credit) do
+    id =
+      credit
+      |> map_value("id")
+      |> to_string()
+      |> String.downcase()
+
+    if String.contains?(id, "claude") or String.contains?(id, "gpt-oss") or
+         String.contains?(id, "gpt_oss") or String.contains?(id, "gptoss") do
+      :claude_gpt_oss
+    else
+      :other
+    end
+  end
+
+  defp google_antigravity_group_credit(:claude_gpt_oss, credits) do
+    %{
+      id: "claude-gpt-oss-models",
+      label: "Claude / GPT-OSS Models",
+      description: "Claude and GPT-OSS quota usage",
+      used_percent: google_antigravity_max_used_percent(credits)
+    }
+  end
+
+  defp google_antigravity_group_credit(:other, credits) do
+    %{
+      id: "other-models",
+      label: "Other Models",
+      description: "All remaining model quota usage",
+      used_percent: google_antigravity_max_used_percent(credits)
+    }
+  end
+
+  defp google_antigravity_max_used_percent(credits) do
+    credits
+    |> Enum.map(&map_value(&1, "used_percent"))
+    |> Enum.filter(&is_number/1)
+    |> Enum.max(fn -> nil end)
+  end
+
+  defp google_antigravity_links(links) when is_map(links) do
+    [
+      {"Credits", map_value(links, "credits")},
+      {"Activity", map_value(links, "activity")}
+    ]
+    |> Enum.filter(fn {_label, url} -> is_binary(url) and url != "" end)
+  end
+
+  defp google_antigravity_links(_), do: []
+
   defp openai_codex_limit_title(limit) do
     name = map_value(limit, "limit_name")
     id = map_value(limit, "limit_id")
@@ -639,6 +823,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp format_reset_at(datetime) do
     assigns = %{datetime: datetime}
+
     ~H"""
     <.local_time datetime={@datetime} format="short" />
     """
@@ -689,6 +874,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_unix_reset_at(value) when is_integer(value) do
     dt = DateTime.from_unix!(value)
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} format="short" />
     """
@@ -727,10 +913,10 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
   defp format_error(:not_found), do: "Credential not found"
   defp format_error(:decryption_failed), do: "Failed to decrypt credential"
   defp format_error(:provider_not_supported), do: "Provider not yet supported"
-  defp format_error(:missing_access_token), do: "OpenAI Codex access token is missing"
+  defp format_error(:missing_access_token), do: "OAuth access token is missing"
   defp format_error(:missing_chatgpt_account_id), do: "OpenAI Codex account ID is missing"
   defp format_error(:invalid_usage_response), do: "Usage response was not recognized"
-  defp format_error(:unauthorized), do: "OpenAI Codex token was rejected; reconnect is required"
+  defp format_error(:unauthorized), do: "OAuth token was rejected; reconnect is required"
 
   defp format_error({:invalid_credential_kind, kind, expected}),
     do: "Credential kind #{kind} is not #{expected}"
@@ -768,6 +954,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
     case {start_time, end_time} do
       {s, e} when not is_nil(s) and not is_nil(e) ->
         assigns = %{s: s, e: e}
+
         ~H"""
         <.local_time datetime={@s} format="short" /> - <.local_time datetime={@e} format="short" />
         """

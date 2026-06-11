@@ -12,14 +12,14 @@ defmodule Backplane.MonitorTest do
   test "plan CRUD keeps the plan process lifecycle in sync" do
     {:ok, plan} =
       Monitor.create_plan(%{
-        name: unique_name("google-ai-plan"),
-        provider: "google_ai",
+        name: unique_name("minimax-plan"),
+        provider: "minimax",
         credential_name: "unused",
         active: true
       })
 
     assert pid = PlanServer.whereis(plan.id)
-    assert %{usage: {:unsupported, "google_ai"}} = PlanServer.state(pid)
+    assert %{usage: {:error, :not_found}} = PlanServer.state(pid)
 
     {:ok, paused_plan} = Monitor.update_plan(plan, %{active: false})
     assert %{plan: %{active: false}} = PlanServer.state(paused_plan.id)

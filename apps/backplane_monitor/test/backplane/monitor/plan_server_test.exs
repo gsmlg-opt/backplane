@@ -16,7 +16,7 @@ defmodule Backplane.Monitor.PlanServerTest do
 
     first = PlanServer.state(pid)
     assert first.plan == plan
-    assert first.usage == {:unsupported, "google_ai"}
+    assert first.usage == {:unsupported, "future_provider"}
     assert %DateTime{} = first.fetched_at
 
     Process.sleep(60)
@@ -49,7 +49,7 @@ defmodule Backplane.Monitor.PlanServerTest do
         %{
           id: Ecto.UUID.generate(),
           name: "Plan #{System.unique_integer([:positive])}",
-          provider: "google_ai",
+          provider: "future_provider",
           credential_name: "unused",
           config: %{},
           active: true

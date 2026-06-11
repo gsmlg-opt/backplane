@@ -1,6 +1,6 @@
 defmodule BackplaneWeb.OAuthCallbackController do
   @moduledoc """
-  Handles the OAuth 2.0 authorization-code callback for Anthropic and OpenAI.
+  Handles the OAuth 2.0 authorization-code callback for Anthropic, OpenAI, and Google.
 
   After the user authenticates in their browser the provider redirects to
   GET /admin/oauth/callback?code=…&state=… which this controller handles.
@@ -189,7 +189,7 @@ defmodule BackplaneWeb.OAuthCallbackController do
   end
 
   defp build_google_hints(resp) do
-    %{}
+    %{"auth_mode" => "antigravity"}
     |> maybe_put(
       "email",
       get_in(resp, ["id_token"]) && decode_email_from_id_token(resp["id_token"])
@@ -213,8 +213,8 @@ defmodule BackplaneWeb.OAuthCallbackController do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp google_client_credentials do
-    client_id = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID")
-    client_secret = google_oauth_value(:google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET")
+    client_id = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID", nil)
+    client_secret = google_oauth_value(:google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET", nil)
 
     cond do
       is_nil(client_id) -> {:error, :missing_google_oauth_client_id}
@@ -224,15 +224,18 @@ defmodule BackplaneWeb.OAuthCallbackController do
   end
 
   defp google_token_url do
-    google_oauth_value(:google_token_url, nil) || @google_token_url
+    google_oauth_value(:google_token_url, nil, @google_token_url)
   end
 
-  defp google_oauth_value(key, env_key) do
-    :backplane
-    |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
-    |> Keyword.get(key)
-    |> Kernel.||(env_key && System.get_env(env_key))
-    |> normalize_optional_string()
+  defp google_oauth_value(key, env_key, default) do
+    [
+      :backplane
+      |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
+      |> Keyword.get(key),
+      env_key && System.get_env(env_key),
+      default
+    ]
+    |> Enum.find_value(&normalize_optional_string/1)
   end
 
   defp normalize_optional_string(value) when is_binary(value) do
@@ -244,7 +247,7 @@ defmodule BackplaneWeb.OAuthCallbackController do
 
   defp vendor_label("anthropic_oauth"), do: "Claude Plan"
   defp vendor_label("openai_oauth"), do: "OpenAI Codex"
-  defp vendor_label("google_oauth"), do: "Google AI"
+  defp vendor_label("google_oauth"), do: "Google Antigravity"
   defp vendor_label(v), do: v
 
   defp format_error({:http, status, %{"error_description" => desc}}), do: "#{desc} (#{status})"

@@ -46,7 +46,7 @@ defmodule Backplane.Monitor.Plan do
   def provider_label("minimax"), do: "MiniMax"
   def provider_label("openai_codex"), do: "OpenAI Codex"
   def provider_label("claude_code"), do: "Claude Code"
-  def provider_label("google_ai"), do: "Google AI"
+  def provider_label("google_ai"), do: "Google Antigravity"
   def provider_label(other), do: other
 
   @doc "Returns true if the provider's usage fetcher is implemented."
@@ -55,5 +55,6 @@ defmodule Backplane.Monitor.Plan do
   def provider_supported?("minimax"), do: true
   def provider_supported?("openai_codex"), do: true
   def provider_supported?("claude_code"), do: true
+  def provider_supported?("google_ai"), do: true
   def provider_supported?(_), do: false
 end

@@ -100,8 +100,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     post "/google/token" do
       cond do
         conn.body_params["refresh_token"] == "good-google" and
-          conn.body_params["client_id"] == "test-google-client" and
-            conn.body_params["client_secret"] == "test-google-secret" ->
+            valid_google_client_credentials?(conn.body_params) ->
           resp = %{
             "access_token" => "goog-new-access",
             "refresh_token" => "goog-new-refresh",
@@ -122,6 +121,11 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     match _ do
       send_resp(conn, 404, "not found")
+    end
+
+    defp valid_google_client_credentials?(body) do
+      body["client_id"] == "test-google-client" and
+        body["client_secret"] == "test-google-secret"
     end
   end
 

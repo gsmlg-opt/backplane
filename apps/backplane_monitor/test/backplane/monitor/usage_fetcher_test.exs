@@ -2,7 +2,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.Providers.{ClaudeCode, OpenAICodex}
+  alias Backplane.Monitor.Providers.{ClaudeCode, GoogleAntigravity, OpenAICodex}
   alias Backplane.Monitor.UsageFetcher
   alias Backplane.Settings.Credential
   alias Backplane.Settings.Credentials
@@ -45,6 +45,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
 
     previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
     previous_claude = Application.get_env(:backplane, :claude_code_monitor_req_options)
+    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
 
     Application.put_env(:backplane, :openai_codex_monitor_req_options,
       plug: {Req.Test, OpenAICodex}
@@ -52,6 +53,10 @@ defmodule Backplane.Monitor.UsageFetcherTest do
 
     Application.put_env(:backplane, :claude_code_monitor_req_options,
       plug: {Req.Test, ClaudeCode}
+    )
+
+    Application.put_env(:backplane, :google_antigravity_monitor_req_options,
+      plug: {Req.Test, GoogleAntigravity}
     )
 
     on_exit(fn ->
@@ -65,6 +70,12 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         Application.put_env(:backplane, :claude_code_monitor_req_options, previous_claude)
       else
         Application.delete_env(:backplane, :claude_code_monitor_req_options)
+      end
+
+      if previous_google do
+        Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous_google)
+      else
+        Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
       end
     end)
 
@@ -394,6 +405,64 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     assert Agent.get(call_count, & &1) == 2
   end
 
+  test "fetch_usage/1 fetches Google Antigravity usage with Google OAuth credentials" do
+    credential_name = unique_name("google-antigravity")
+
+    {:ok, _credential} =
+      Credentials.store_device_token(
+        credential_name,
+        "google_oauth",
+        google_token_set("google-access", "google-refresh"),
+        %{"auth_mode" => "antigravity"}
+      )
+
+    Req.Test.stub(GoogleAntigravity, fn conn ->
+      assert {"authorization", "Bearer google-access"} in conn.req_headers
+
+      assert conn.request_path ==
+               "/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(google_antigravity_usage_body()))
+    end)
+
+    plan = %Plan{
+      provider: "google_ai",
+      credential_name: credential_name,
+      config: %{"project" => "projects/test-project"},
+      active: true
+    }
+
+    assert {:ok, result} = UsageFetcher.fetch_usage(plan)
+    assert result.provider == "google_ai"
+    assert result.plan_type == "google one ai pro"
+    assert [%{id: "prompt", used_percent: 20} | _] = result.credits
+  end
+
+  test "fetch_usage/1 rejects non-Google OAuth credentials for Google Antigravity" do
+    credential_name = unique_name("google-antigravity-key")
+
+    Vault.put(%Credential{
+      name: credential_name,
+      kind: "llm",
+      encrypted_value: <<>>,
+      metadata: %{"auth_type" => "api_key"}
+    })
+
+    on_exit(fn -> Vault.remove(credential_name) end)
+
+    plan = %Plan{
+      provider: "google_ai",
+      credential_name: credential_name,
+      config: %{},
+      active: true
+    }
+
+    assert {:error, {:invalid_credential_auth_type, "api_key", "google_oauth"}} =
+             UsageFetcher.fetch_usage(plan)
+  end
+
   defp usage_script(usage) do
     """
     const response = await fetch("#{data_url(usage)}");
@@ -430,6 +499,32 @@ defmodule Backplane.Monitor.UsageFetcherTest do
           "limit_window_seconds" => 18_000,
           "reset_at" => 1_760_000_000
         }
+      }
+    }
+  end
+
+  defp google_token_set(access_token, refresh_token) do
+    %{
+      "type" => "google_antigravity_oauth",
+      "access_token" => access_token,
+      "refresh_token" => refresh_token,
+      "expires_at" => System.system_time(:millisecond) + 60 * 60 * 1000,
+      "last_refresh" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  defp google_antigravity_usage_body do
+    %{
+      "plan_status" => %{
+        "plan_info" => %{
+          "plan_name" => "google one ai pro",
+          "monthly_prompt_credits" => 1000,
+          "monthly_flow_credits" => 500
+        },
+        "available_prompt_credits" => 800,
+        "used_prompt_credits" => 200,
+        "available_flow_credits" => 400,
+        "used_flow_credits" => 100
       }
     }
   end

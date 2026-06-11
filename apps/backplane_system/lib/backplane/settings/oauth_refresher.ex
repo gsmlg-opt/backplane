@@ -143,11 +143,12 @@ defmodule Backplane.Settings.OAuthRefresher do
   end
 
   defp option_or_config(opts, key, env_key) do
-    opts
-    |> Keyword.get(key)
-    |> Kernel.||(cfg(key))
-    |> Kernel.||(System.get_env(env_key))
-    |> normalize_optional_string()
+    [
+      Keyword.get(opts, key),
+      cfg(key),
+      System.get_env(env_key)
+    ]
+    |> Enum.find_value(&normalize_optional_string/1)
   end
 
   defp cfg(key) do

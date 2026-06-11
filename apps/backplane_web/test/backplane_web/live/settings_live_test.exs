@@ -234,7 +234,10 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
         :backplane,
         Backplane.Settings.OAuthRefresher,
         Keyword.merge(prior_refresher,
-          anthropic_token_url: "http://localhost:#{port}/anthropic/token"
+          anthropic_token_url: "http://localhost:#{port}/anthropic/token",
+          google_token_url: "http://localhost:#{port}/google/token",
+          google_client_id: "test-google-client",
+          google_client_secret: "test-google-secret"
         )
       )
 
@@ -684,18 +687,58 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest do
       assert render(view) =~ "my-openai-codex"
     end
 
-    test "submitting Google auth form without client config shows an error", %{conn: conn} do
+    test "submitting Google Antigravity auth form exchanges a pasted CLI auth code", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
 
       html =
         view
         |> form("form[phx-submit=start_device_auth]", %{
-          "cred_name" => "my-google-ai"
+          "cred_name" => "my-google-antigravity"
         })
         |> render_submit()
 
-      assert html =~ "Authorization is not configured"
-      assert html =~ "missing_google_oauth_client_id"
+      assert html =~ "Authorization Code"
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+
+      uri = URI.parse(auth_url)
+      assert uri.scheme == "https"
+      assert uri.host == "accounts.google.com"
+      assert uri.path == "/o/oauth2/auth"
+
+      query = uri.query |> URI.decode_query()
+
+      assert query["client_id"] == "test-google-client"
+      assert query["redirect_uri"] == "https://antigravity.google/oauth-callback"
+      assert query["response_type"] == "code"
+      assert query["access_type"] == "offline"
+      assert query["prompt"] == "consent"
+      assert query["code_challenge_method"] == "S256"
+      assert is_binary(query["state"])
+
+      scopes = String.split(query["scope"], " ")
+      assert "https://www.googleapis.com/auth/cloud-platform" in scopes
+      assert "https://www.googleapis.com/auth/userinfo.email" in scopes
+      assert "https://www.googleapis.com/auth/userinfo.profile" in scopes
+      assert "https://www.googleapis.com/auth/cclog" in scopes
+      assert "https://www.googleapis.com/auth/experimentsandconfigs" in scopes
+      assert "openid" in scopes
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{
+          "code" => "mock-google-code"
+        })
+        |> render_submit()
+
+      assert_patched(view, "/admin/system/credentials")
+      assert html =~ "my-google-antigravity"
+      assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity")
+
+      assert {:ok, "goog-antigravity-access",
+              %{
+                auth_type: "google_oauth",
+                metadata: %{"auth_mode" => "antigravity"}
+              }} = Credentials.fetch_with_meta("my-google-antigravity")
     end
 
     test "can add a script credential with textarea content and ignoring auth type", %{conn: conn} do
@@ -813,6 +856,42 @@ defmodule BackplaneWeb.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
         |> put_resp_content_type("application/json")
         |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
     end
+  end
+
+  post "/google/token" do
+    body = conn.body_params
+
+    if valid_google_antigravity_body?(body) do
+      resp = %{
+        "access_token" => "goog-antigravity-access",
+        "refresh_token" => "goog-antigravity-refresh",
+        "expires_in" => 3600,
+        "token_type" => "Bearer"
+      }
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(resp))
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+    end
+  end
+
+  defp valid_google_antigravity_body?(body) do
+    match?(
+      %{
+        "grant_type" => "authorization_code",
+        "code" => "mock-google-code",
+        "client_id" => "test-google-client",
+        "client_secret" => "test-google-secret",
+        "redirect_uri" => "https://antigravity.google/oauth-callback",
+        "code_verifier" => verifier
+      }
+      when is_binary(verifier) and byte_size(verifier) > 0,
+      body
+    )
   end
 
   defp valid_anthropic_body?(body, code) do

@@ -9,7 +9,7 @@ defmodule Backplane.Monitor.PlanServer do
   use GenServer
 
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.Providers.{MiniMax, OpenAICodex, ZAI}
+  alias Backplane.Monitor.Providers.{GoogleAntigravity, MiniMax, OpenAICodex, ZAI}
   alias Backplane.Monitor.UsageFetcher
 
   @registry Backplane.Monitor.PlanRegistry
@@ -170,6 +170,7 @@ defmodule Backplane.Monitor.PlanServer do
   defp req_test_stub_name("zai"), do: ZAI
   defp req_test_stub_name("minimax"), do: MiniMax
   defp req_test_stub_name("openai_codex"), do: OpenAICodex
+  defp req_test_stub_name("google_ai"), do: GoogleAntigravity
   defp req_test_stub_name(_provider), do: nil
 
   defp schedule_refresh(%{refresh_interval: interval} = state)

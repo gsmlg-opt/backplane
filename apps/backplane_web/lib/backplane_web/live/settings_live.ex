@@ -11,6 +11,17 @@ defmodule BackplaneWeb.SettingsLive do
   alias Backplane.Settings.OpenAICodexAuth
   alias Backplane.Settings.OAuthStateStore
 
+  @google_antigravity_redirect_uri "https://antigravity.google/oauth-callback"
+  @google_token_url "https://oauth2.googleapis.com/token"
+  @google_antigravity_scopes [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/cclog",
+    "https://www.googleapis.com/auth/experimentsandconfigs",
+    "openid"
+  ]
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok, assign(socket, page_mode: nil, delete_confirm_name: nil)}
@@ -60,7 +71,7 @@ defmodule BackplaneWeb.SettingsLive do
       case vendor do
         "anthropic_oauth" -> "claude-plan"
         "openai_oauth" -> "openai-codex"
-        "google_oauth" -> "google-ai"
+        "google_oauth" -> "google-antigravity"
         _ -> "oauth-cred"
       end
 
@@ -560,6 +571,35 @@ defmodule BackplaneWeb.SettingsLive do
          )
          |> push_event("open_external_oauth", %{url: auth_url})}
 
+      vendor == "google_oauth" ->
+        redirect_uri = @google_antigravity_redirect_uri
+        {verifier, challenge} = pkce_pair()
+        state = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+        case build_auth_url("google_oauth", state, challenge, redirect_uri) do
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error_detail: nil
+             )}
+
+          auth_url ->
+            {:noreply,
+             socket
+             |> assign(
+               device_flow_state: :waiting_code_input,
+               device_flow_cred_name: name,
+               device_flow_code_verifier: verifier,
+               device_flow_oauth_state: state,
+               device_flow_redirect_uri: redirect_uri,
+               device_flow_error: nil,
+               device_flow_error_detail: nil
+             )
+             |> push_event("open_external_oauth", %{url: auth_url})}
+        end
+
       true ->
         redirect_uri = BackplaneWeb.Endpoint.url() <> "/admin/oauth/callback"
         {verifier, challenge} = pkce_pair()
@@ -840,11 +880,13 @@ defmodule BackplaneWeb.SettingsLive do
   defp oauth_status_variant(%{status: :invalid}), do: "error"
   defp oauth_status_variant(_), do: "neutral"
 
-  defp format_oauth_datetime(nil), do: "Unknown"
-  defp format_oauth_datetime(datetime) do
-    assigns = %{datetime: datetime}
+  defp format_oauth_datetime(nil, _id), do: "Unknown"
+
+  defp format_oauth_datetime(datetime, id) do
+    assigns = %{datetime: datetime, id: id}
+
     ~H"""
-    <.local_time datetime={@datetime} />
+    <.local_time id={@id} datetime={@datetime} />
     """
   end
 
@@ -1086,7 +1128,7 @@ defmodule BackplaneWeb.SettingsLive do
                     patch={~p"/admin/system/credentials/new/google_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect Google AI
+                    Connect Google Antigravity
                   </.link>
                 </:content>
               </.dm_dropdown>
@@ -1346,19 +1388,28 @@ defmodule BackplaneWeb.SettingsLive do
           <div class="rounded-md border border-outline-variant p-3">
             <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Expires</div>
             <div id="oauth-token-expires" class="text-sm text-on-surface">
-              {format_oauth_datetime(@oauth_status && @oauth_status.expires_at)}
+              {format_oauth_datetime(
+                @oauth_status && @oauth_status.expires_at,
+                "oauth-token-expires-at"
+              )}
             </div>
           </div>
           <div class="rounded-md border border-outline-variant p-3">
             <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Created</div>
             <div id="oauth-token-created" class="text-sm text-on-surface">
-              {format_oauth_datetime(@oauth_status && @oauth_status.token_created_at)}
+              {format_oauth_datetime(
+                @oauth_status && @oauth_status.token_created_at,
+                "oauth-token-created-at"
+              )}
             </div>
           </div>
           <div class="rounded-md border border-outline-variant p-3">
             <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Last Updated</div>
             <div id="oauth-credential-updated" class="text-sm text-on-surface">
-              {format_oauth_datetime(@oauth_status && @oauth_status.credential_updated_at)}
+              {format_oauth_datetime(
+                @oauth_status && @oauth_status.credential_updated_at,
+                "oauth-credential-updated-at"
+              )}
             </div>
           </div>
         </div>
@@ -1570,7 +1621,7 @@ defmodule BackplaneWeb.SettingsLive do
 
   defp device_flow_label("anthropic_oauth"), do: "Claude Plan"
   defp device_flow_label("openai_oauth"), do: "OpenAI Codex"
-  defp device_flow_label("google_oauth"), do: "Google AI"
+  defp device_flow_label("google_oauth"), do: "Google Antigravity"
   defp device_flow_label(other), do: other || "OAuth"
 
   defp pkce_pair do
@@ -1623,8 +1674,7 @@ defmodule BackplaneWeb.SettingsLive do
         "response_type" => "code",
         "client_id" => client_id,
         "redirect_uri" => redirect_uri,
-        "scope" =>
-          "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+        "scope" => Enum.join(@google_antigravity_scopes, " "),
         "access_type" => "offline",
         "prompt" => "consent",
         "state" => state,
@@ -1632,19 +1682,40 @@ defmodule BackplaneWeb.SettingsLive do
         "code_challenge_method" => "S256"
       }
 
-      "https://accounts.google.com/o/oauth2/v2/auth?" <> URI.encode_query(params)
+      "https://accounts.google.com/o/oauth2/auth?" <> URI.encode_query(params)
     end
   end
 
   defp google_client_id do
-    value =
-      :backplane
-      |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
-      |> Keyword.get(:google_client_id)
-      |> Kernel.||(System.get_env("GOOGLE_OAUTH_CLIENT_ID"))
-      |> normalize_optional_string()
+    value = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID", nil)
 
     if value, do: {:ok, value}, else: {:error, :missing_google_oauth_client_id}
+  end
+
+  defp google_client_credentials do
+    client_id = google_oauth_value(:google_client_id, "GOOGLE_OAUTH_CLIENT_ID", nil)
+    client_secret = google_oauth_value(:google_client_secret, "GOOGLE_OAUTH_CLIENT_SECRET", nil)
+
+    cond do
+      is_nil(client_id) -> {:error, :missing_google_oauth_client_id}
+      is_nil(client_secret) -> {:error, :missing_google_oauth_client_secret}
+      true -> {:ok, client_id, client_secret}
+    end
+  end
+
+  defp google_token_url do
+    google_oauth_value(:google_token_url, nil, @google_token_url)
+  end
+
+  defp google_oauth_value(key, env_key, default) do
+    [
+      :backplane
+      |> Application.get_env(Backplane.Settings.OAuthRefresher, [])
+      |> Keyword.get(key),
+      env_key && System.get_env(env_key),
+      default
+    ]
+    |> Enum.find_value(&normalize_optional_string/1)
   end
 
   defp normalize_optional_string(value) when is_binary(value) do
@@ -1729,6 +1800,67 @@ defmodule BackplaneWeb.SettingsLive do
     end
   end
 
+  defp exchange_auth_code(
+         "google_oauth",
+         pasted_code,
+         code_verifier,
+         redirect_uri,
+         expected_state
+       ) do
+    with {:ok, code, returned_state} <- split_google_auth_code(pasted_code),
+         :ok <- verify_google_state(expected_state, returned_state),
+         {:ok, client_id, client_secret} <- google_client_credentials() do
+      body = %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => redirect_uri,
+        "client_id" => client_id,
+        "client_secret" => client_secret,
+        "code_verifier" => code_verifier
+      }
+
+      case Req.post(google_token_url(),
+             form: body,
+             headers: google_token_headers(),
+             receive_timeout: 30_000
+           ) do
+        {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
+          refresh = resp["refresh_token"] || ""
+
+          if refresh == "" do
+            {:error, :missing_refresh_token}
+          else
+            expires_in = resp["expires_in"] || 3600
+            expires_at = System.system_time(:millisecond) + expires_in * 1_000
+
+            tokens =
+              %{
+                type: "antigravity_oauth",
+                access_token: access,
+                refresh_token: refresh,
+                expires_at: expires_at
+              }
+              |> maybe_put_token(:id_token, resp["id_token"])
+
+            {:ok, tokens, %{"auth_mode" => "antigravity"}}
+          end
+
+        {:ok, %{status: status, body: body}} ->
+          {:error, {:http, status, body}}
+
+        {:error, reason} ->
+          {:error, {:transport, reason}}
+      end
+    end
+  end
+
+  defp google_token_headers do
+    [
+      {"Accept", "*/*"},
+      {"User-Agent", "google-api-nodejs-client/9.15.1"}
+    ]
+  end
+
   defp exchange_anthropic_token(body) do
     token_url = anthropic_token_url()
     request_detail = anthropic_token_request_detail(token_url, body)
@@ -1764,6 +1896,49 @@ defmodule BackplaneWeb.SettingsLive do
 
       true ->
         split_anthropic_code_fragment(pasted_code)
+    end
+  end
+
+  defp split_google_auth_code(pasted_code) do
+    pasted_code =
+      pasted_code
+      |> String.trim()
+      |> String.replace(~r/\s+/, "")
+
+    cond do
+      String.starts_with?(pasted_code, "http://") or String.starts_with?(pasted_code, "https://") ->
+        split_google_callback_url(pasted_code)
+
+      true ->
+        split_google_code_fragment(pasted_code)
+    end
+  end
+
+  defp split_google_callback_url(callback_url) do
+    uri = URI.parse(callback_url)
+
+    with "antigravity.google" <- uri.host,
+         "/oauth-callback" <- uri.path,
+         query when is_binary(query) <- uri.query do
+      params = URI.decode_query(query)
+      code = params["code"] || ""
+      state = params["state"]
+
+      if code != "" do
+        {:ok, code, state}
+      else
+        {:error, :invalid_google_code}
+      end
+    else
+      _ -> {:error, :invalid_google_code}
+    end
+  end
+
+  defp split_google_code_fragment(pasted_code) do
+    case String.split(pasted_code, "#", parts: 2) do
+      [code, state] when code != "" and state != "" -> {:ok, code, state}
+      [code] when code != "" -> {:ok, code, nil}
+      _ -> {:error, :invalid_google_code}
     end
   end
 
@@ -1805,6 +1980,19 @@ defmodule BackplaneWeb.SettingsLive do
   end
 
   defp verify_anthropic_state(_expected_state, _returned_state), do: :ok
+
+  defp verify_google_state(expected_state, returned_state)
+       when is_binary(expected_state) and expected_state != "" and is_binary(returned_state) and
+              returned_state != "" do
+    if byte_size(expected_state) == byte_size(returned_state) and
+         Plug.Crypto.secure_compare(expected_state, returned_state) do
+      :ok
+    else
+      {:error, :oauth_state_mismatch}
+    end
+  end
+
+  defp verify_google_state(_expected_state, _returned_state), do: :ok
 
   defp token_exchange_state(expected_state, _returned_state)
        when is_binary(expected_state) and expected_state != "",
@@ -1881,9 +2069,15 @@ defmodule BackplaneWeb.SettingsLive do
   defp maybe_put_hint(map, _key, nil), do: map
   defp maybe_put_hint(map, _key, ""), do: map
   defp maybe_put_hint(map, key, value), do: Map.put(map, key, value)
+  defp maybe_put_token(map, _key, nil), do: map
+  defp maybe_put_token(map, _key, ""), do: map
+  defp maybe_put_token(map, key, value), do: Map.put(map, key, value)
 
   defp format_exchange_error(:invalid_anthropic_code),
     do: "Paste the full code in the form code#state"
+
+  defp format_exchange_error(:invalid_google_code),
+    do: "Paste the authorization code shown by Google Antigravity"
 
   defp format_exchange_error(:oauth_state_mismatch),
     do: "OAuth state did not match. Please restart authorization."

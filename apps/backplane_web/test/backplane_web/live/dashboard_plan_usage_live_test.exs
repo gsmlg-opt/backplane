@@ -4,17 +4,22 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
   alias Backplane.Monitor.Plan
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
-  alias Backplane.Monitor.Providers.{MiniMax, OpenAICodex}
+  alias Backplane.Monitor.Providers.{GoogleAntigravity, MiniMax, OpenAICodex}
 
   setup do
     previous_minimax = Application.get_env(:backplane, :minimax_monitor_req_options)
     previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
     previous_req_test_owner = Application.get_env(:backplane_monitor, :req_test_owner)
 
     Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
 
     Application.put_env(:backplane, :openai_codex_monitor_req_options,
       plug: {Req.Test, OpenAICodex}
+    )
+
+    Application.put_env(:backplane, :google_antigravity_monitor_req_options,
+      plug: {Req.Test, GoogleAntigravity}
     )
 
     Application.put_env(:backplane_monitor, :req_test_owner, self())
@@ -43,6 +48,12 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
         Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
       else
         Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+      end
+
+      if previous_google do
+        Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous_google)
+      else
+        Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
       end
 
       if previous_req_test_owner do
@@ -248,6 +259,84 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "rate_limit_reached"
   end
 
+  test "renders Google Antigravity model quota buckets as two usage groups", %{conn: conn} do
+    Req.Test.stub(MiniMax, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    end)
+
+    Req.Test.stub(GoogleAntigravity, fn conn ->
+      assert {"authorization", "Bearer google-access"} in conn.req_headers
+
+      assert conn.request_path ==
+               "/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
+
+      body = %{
+        "buckets" => [
+          %{
+            "model" => %{"model_id" => "claude-opus-4-6-thinking"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 0.4
+          },
+          %{
+            "model" => %{"model_id" => "gpt-oss-120b"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 0.7
+          },
+          %{
+            "model" => %{"model_id" => "gemini-2.5-flash"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 1.0
+          },
+          %{
+            "model" => %{"model_id" => "chat_20706"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 1.0
+          }
+        ]
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    {:ok, credential} =
+      Credentials.store_device_token(
+        "google-antigravity-test-cred",
+        "google_oauth",
+        google_token_set("google-access", "google-refresh"),
+        %{"auth_mode" => "antigravity"}
+      )
+
+    Backplane.Settings.Credentials.Vault.put(credential)
+
+    {:ok, _plan} =
+      Repo.insert(%Plan{
+        name: "My Google Antigravity Plan",
+        provider: "google_ai",
+        credential_name: "google-antigravity-test-cred",
+        config: %{"project" => "projects/test-project"},
+        active: true
+      })
+
+    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    assert html =~ "My Google Antigravity Plan"
+    assert html =~ "Google Antigravity"
+    assert html =~ "Usage Groups"
+    assert html =~ "Claude / GPT-OSS Models"
+    assert html =~ "Other Models"
+    assert html =~ "60% used"
+    assert html =~ "0% used"
+    refute html =~ "claude-opus-4-6-thinking"
+    refute html =~ "gpt-oss-120b"
+    refute html =~ "gemini-2.5-flash"
+    refute html =~ "chat_20706"
+    assert html =~ "Credits"
+    assert html =~ "Activity"
+  end
+
   defp usage_script(usage) do
     """
     const response = await fetch("#{data_url(usage)}");
@@ -268,6 +357,16 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
       "expires_at" => System.system_time(:millisecond) + 60 * 60 * 1000,
       "last_refresh" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "account_id" => account_id
+    }
+  end
+
+  defp google_token_set(access_token, refresh_token) do
+    %{
+      "type" => "google_antigravity_oauth",
+      "access_token" => access_token,
+      "refresh_token" => refresh_token,
+      "expires_at" => System.system_time(:millisecond) + 60 * 60 * 1000,
+      "last_refresh" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
   end
 end

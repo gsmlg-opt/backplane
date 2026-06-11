@@ -7,7 +7,7 @@ defmodule Backplane.Monitor.UsageFetcher do
   """
 
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.Providers.{ClaudeCode, MiniMax, OpenAICodex, ZAI}
+  alias Backplane.Monitor.Providers.{ClaudeCode, GoogleAntigravity, MiniMax, OpenAICodex, ZAI}
   alias Backplane.Settings.Encryption
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.Credentials.Vault
@@ -29,6 +29,14 @@ defmodule Backplane.Monitor.UsageFetcher do
   def fetch_usage(%Plan{provider: "claude_code"} = plan) do
     if Plan.provider_supported?("claude_code") do
       fetch_claude_code_usage(plan)
+    else
+      {:error, :provider_not_supported}
+    end
+  end
+
+  def fetch_usage(%Plan{provider: "google_ai"} = plan) do
+    if Plan.provider_supported?("google_ai") do
+      fetch_google_antigravity_usage(plan)
     else
       {:error, :provider_not_supported}
     end
@@ -118,6 +126,50 @@ defmodule Backplane.Monitor.UsageFetcher do
            Credentials.refresh_oauth_token(credential_name, refresh_interval_ms: 0),
          {:ok, access_token} <- Credentials.fetch(credential_name) do
       OpenAICodex.fetch(access_token, config)
+    end
+  end
+
+  defp fetch_google_antigravity_usage(%Plan{credential_name: credential_name, config: config}) do
+    with {:ok, _credential} <- google_antigravity_credential(credential_name),
+         :ok <- refresh_google_antigravity_if_due(credential_name),
+         {:ok, access_token} <- Credentials.fetch(credential_name) do
+      config = config || %{}
+
+      case GoogleAntigravity.fetch(access_token, config) do
+        {:error, :unauthorized} -> retry_google_antigravity_usage(credential_name, config)
+        result -> result
+      end
+    end
+  end
+
+  defp google_antigravity_credential(credential_name) do
+    case Vault.get(credential_name) do
+      nil ->
+        {:error, :not_found}
+
+      %{metadata: %{"auth_type" => "google_oauth"}} = credential ->
+        {:ok, credential}
+
+      %{metadata: metadata} ->
+        auth_type = (metadata || %{})["auth_type"] || "api_key"
+        {:error, {:invalid_credential_auth_type, auth_type, "google_oauth"}}
+    end
+  end
+
+  defp refresh_google_antigravity_if_due(credential_name) do
+    case Credentials.refresh_oauth_token(credential_name) do
+      {:ok, _status} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retry_google_antigravity_usage(credential_name, config) do
+    Credentials.invalidate_token(credential_name)
+
+    with {:ok, _status} <-
+           Credentials.refresh_oauth_token(credential_name, refresh_interval_ms: 0, force: true),
+         {:ok, access_token} <- Credentials.fetch(credential_name) do
+      GoogleAntigravity.fetch(access_token, config)
     end
   end
 

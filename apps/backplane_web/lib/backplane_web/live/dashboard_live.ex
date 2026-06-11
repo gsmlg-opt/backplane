@@ -210,7 +210,7 @@ defmodule BackplaneWeb.DashboardLive do
 
   defp plan_label("anthropic_oauth"), do: "Claude Plan"
   defp plan_label("openai_oauth"), do: "OpenAI Codex"
-  defp plan_label("google_oauth"), do: "Google AI"
+  defp plan_label("google_oauth"), do: "Google Antigravity"
   defp plan_label(other), do: other
 
   defp upstream_status(%{status: :connected}), do: :connected

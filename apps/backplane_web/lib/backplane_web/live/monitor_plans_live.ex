@@ -191,6 +191,20 @@ defmodule BackplaneWeb.MonitorPlansLive do
   defp changeset_errors(%Ecto.Changeset{action: nil}), do: []
   defp changeset_errors(%Ecto.Changeset{errors: errors}), do: errors
 
+  defp config_value(%Phoenix.HTML.Form{} = form, key) do
+    case form[:config].value do
+      %{} = config -> Map.get(config, key) || atom_config_value(config, key) || ""
+      _ -> ""
+    end
+  end
+
+  defp atom_config_value(config, key) do
+    atom_key = String.to_existing_atom(key)
+    Map.get(config, atom_key)
+  rescue
+    ArgumentError -> nil
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -258,6 +272,14 @@ defmodule BackplaneWeb.MonitorPlansLive do
             </p>
           </div>
           <.form_error field={@form[:credential_name]} />
+
+          <.dm_input
+            id="plan-project"
+            name="plan[config][project]"
+            label="Project"
+            value={config_value(@form, "project")}
+            placeholder="projects/my-cloud-code-project"
+          />
 
           <div class="flex gap-2">
             <.dm_btn type="submit" variant="primary">Save</.dm_btn>
