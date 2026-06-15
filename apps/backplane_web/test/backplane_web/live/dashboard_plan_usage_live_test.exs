@@ -259,7 +259,7 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "rate_limit_reached"
   end
 
-  test "renders Google Antigravity model quota buckets as two usage groups", %{conn: conn} do
+  test "renders Google Antigravity model quota buckets as supported usage groups", %{conn: conn} do
     Req.Test.stub(MiniMax, fn conn ->
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
@@ -285,14 +285,24 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
             "remaining_fraction" => 0.7
           },
           %{
-            "model" => %{"model_id" => "gemini-2.5-flash"},
+            "model" => %{"model_id" => "gemini-3.1-pro-high"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 0.8
+          },
+          %{
+            "model" => %{"model_id" => "gemini-3.5-flash-low"},
             "token_type" => "wtus",
             "remaining_fraction" => 1.0
           },
           %{
+            "model" => %{"model_id" => "gemini-2.5-flash"},
+            "token_type" => "wtus",
+            "remaining_fraction" => 0.1
+          },
+          %{
             "model" => %{"model_id" => "chat_20706"},
             "token_type" => "wtus",
-            "remaining_fraction" => 1.0
+            "remaining_fraction" => 0.1
           }
         ]
       }
@@ -325,12 +335,16 @@ defmodule BackplaneWeb.DashboardPlanUsageLiveTest do
     assert html =~ "My Google Antigravity Plan"
     assert html =~ "Google Antigravity"
     assert html =~ "Usage Groups"
+    assert html =~ "Gemini Models"
     assert html =~ "Claude / GPT-OSS Models"
-    assert html =~ "Other Models"
     assert html =~ "60% used"
+    assert html =~ "20% used"
     assert html =~ "0% used"
+    refute html =~ "Other Models"
     refute html =~ "claude-opus-4-6-thinking"
     refute html =~ "gpt-oss-120b"
+    refute html =~ "gemini-3.1-pro-high"
+    refute html =~ "gemini-3.5-flash-low"
     refute html =~ "gemini-2.5-flash"
     refute html =~ "chat_20706"
     assert html =~ "Credits"

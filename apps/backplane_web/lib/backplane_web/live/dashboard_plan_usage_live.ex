@@ -678,9 +678,12 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
     if model_credits == [] do
       Enum.sort_by(credits, &google_antigravity_credit_sort_key/1)
     else
-      grouped = Enum.group_by(model_credits, &google_antigravity_model_group/1)
+      grouped =
+        model_credits
+        |> Enum.filter(&(google_antigravity_model_group(&1) != :unsupported))
+        |> Enum.group_by(&google_antigravity_model_group/1)
 
-      [:claude_gpt_oss, :other]
+      [:gemini, :claude_gpt_oss]
       |> Enum.map(fn group ->
         google_antigravity_group_credit(group, Map.get(grouped, group, []))
       end)
@@ -692,8 +695,8 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
 
   defp google_antigravity_credit_sort_key(credit) do
     case map_value(credit, "id") do
-      "claude-gpt-oss-models" -> "0"
-      "other-models" -> "1"
+      "gemini-models" -> "0"
+      "claude-gpt-oss-models" -> "1"
       "prompt" -> "0"
       "flow" -> "1"
       "flex" -> "2"
@@ -718,28 +721,40 @@ defmodule BackplaneWeb.DashboardPlanUsageLive do
       |> to_string()
       |> String.downcase()
 
-    if String.contains?(id, "claude") or String.contains?(id, "gpt-oss") or
-         String.contains?(id, "gpt_oss") or String.contains?(id, "gptoss") do
-      :claude_gpt_oss
-    else
-      :other
+    id = String.replace(id, "_", "-")
+
+    cond do
+      google_antigravity_gemini_model?(id) -> :gemini
+      google_antigravity_claude_gpt_oss_model?(id) -> :claude_gpt_oss
+      true -> :unsupported
     end
+  end
+
+  defp google_antigravity_gemini_model?(id) do
+    String.starts_with?(id, "gemini-3.5-flash") or
+      String.starts_with?(id, "gemini-3.1-pro")
+  end
+
+  defp google_antigravity_claude_gpt_oss_model?(id) do
+    String.contains?(id, "claude-opus-4-6") or
+      String.contains?(id, "claude-sonnet-4-6") or
+      String.contains?(id, "gpt-oss-120b")
+  end
+
+  defp google_antigravity_group_credit(:gemini, credits) do
+    %{
+      id: "gemini-models",
+      label: "Gemini Models",
+      description: "Gemini 3.5 Flash and Gemini 3.1 Pro quota usage",
+      used_percent: google_antigravity_max_used_percent(credits)
+    }
   end
 
   defp google_antigravity_group_credit(:claude_gpt_oss, credits) do
     %{
       id: "claude-gpt-oss-models",
       label: "Claude / GPT-OSS Models",
-      description: "Claude and GPT-OSS quota usage",
-      used_percent: google_antigravity_max_used_percent(credits)
-    }
-  end
-
-  defp google_antigravity_group_credit(:other, credits) do
-    %{
-      id: "other-models",
-      label: "Other Models",
-      description: "All remaining model quota usage",
+      description: "Claude Sonnet/Opus 4.6 and GPT-OSS 120B quota usage",
       used_percent: google_antigravity_max_used_percent(credits)
     }
   end
