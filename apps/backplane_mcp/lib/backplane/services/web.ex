@@ -1,15 +1,15 @@
 defmodule Backplane.Services.Web do
   @moduledoc """
-  Unified managed MCP service providing `web::fetch`, `web::search`, and
-  `web::x_search`.
+  Unified managed MCP service providing `web::fetch`, `web::search`,
+  `web::live_search`, and `web::x_search`.
 
   Combines web fetching (HTML→Markdown conversion), multi-backend web search,
-  and xAI X Search under a single `web` prefix.
+  LLM-provider live search, and xAI X Search under a single `web` prefix.
   """
 
   @behaviour Backplane.Services.ManagedService
 
-  alias Backplane.Services.{WebFetch, WebSearch, WebXSearch}
+  alias Backplane.Services.{WebFetch, WebLiveSearch, WebSearch, WebXSearch}
 
   @prefix "web"
 
@@ -23,7 +23,7 @@ defmodule Backplane.Services.Web do
 
   @impl true
   def tools do
-    fetch_tools() ++ search_tools() ++ x_search_tools()
+    fetch_tools() ++ search_tools() ++ live_search_tools() ++ x_search_tools()
   end
 
   defp fetch_tools do
@@ -92,6 +92,29 @@ defmodule Backplane.Services.Web do
           "additionalProperties" => false
         },
         handler: &WebSearch.handle_search/1
+      }
+    ]
+  end
+
+  defp live_search_tools do
+    [
+      %{
+        name: "web::live_search",
+        description:
+          "Search with the configured LLM provider's hosted web_search tool and return normalized live results.",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "description" => "Search text"
+            }
+          },
+          "required" => ["query"],
+          "additionalProperties" => false
+        },
+        handler: &WebLiveSearch.handle_live_search/1
       }
     ]
   end

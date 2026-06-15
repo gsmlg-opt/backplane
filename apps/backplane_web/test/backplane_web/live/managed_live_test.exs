@@ -26,8 +26,24 @@ defmodule BackplaneWeb.ManagedLiveTest do
     assert html =~ "web::"
     assert html =~ "web::fetch"
     assert html =~ "web::search"
+    assert html =~ "web::live_search"
     assert html =~ "web::x_search"
     assert html =~ ~s(href="/admin/mcp/managed/web")
+  end
+
+  test "refreshes enabled web service tools from the current module definitions", %{conn: conn} do
+    Backplane.Settings.set("services.web.enabled", true)
+
+    stale_tools =
+      Backplane.Services.Web.tools()
+      |> Enum.reject(&(&1.name == "web::live_search"))
+
+    Backplane.Registry.ToolRegistry.deregister_managed("web")
+    Backplane.Registry.ToolRegistry.register_managed("web", stale_tools)
+
+    {:ok, _view, html} = live(conn, "/admin/mcp/managed")
+
+    assert html =~ "web::live_search"
   end
 
   test "links managed services to settings pages", %{conn: conn} do

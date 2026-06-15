@@ -1,6 +1,8 @@
 defmodule BackplaneWeb.ManagedServiceSettingsLive do
   use BackplaneWeb, :live_view
 
+  alias Backplane.LLM.{ProviderApi, ProviderModelSurface}
+  alias Backplane.Services.WebLiveSearch
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -15,7 +17,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
       module: Backplane.Services.Web,
       name: "Web",
       prefix: "web",
-      description: "Fetch HTTP(S) pages, search the web, and search X"
+      description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
     },
     %{
       module: Backplane.Services.Math,
@@ -31,6 +33,8 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     %{id: "z_ai", label: "Z.ai"},
     %{id: "bigmodel", label: "BigModel"}
   ]
+  @live_search_models_setting "services.web_live_search.models"
+  @legacy_live_search_model_setting "services.web_live_search.model"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -164,6 +168,8 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     credentials = Credentials.list()
     credential_names = credentials |> Enum.map(& &1.name) |> MapSet.new()
     x_search_credential = configured_x_search_credential() || ""
+    live_search_model_options = live_search_model_options()
+    live_search_models = configured_live_search_models(live_search_model_options)
 
     x_search_configured? =
       x_search_credential != "" and MapSet.member?(credential_names, x_search_credential)
@@ -178,7 +184,10 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
       x_search_configured?: x_search_configured?,
       x_search_credential_options:
         credential_options(credentials, x_search_credential, x_search_configured?),
-      x_search_model: configured_x_search_model()
+      x_search_model: configured_x_search_model(),
+      live_search_model_options: live_search_model_options,
+      live_search_models: live_search_models,
+      live_search_configured?: live_search_models != []
     )
   end
 
@@ -198,6 +207,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     with {:ok, default_backend} <- parse_search_backend(params["default_backend"]),
          :ok <- Settings.set("services.web_search.default_backend", default_backend),
          :ok <- save_web_search_credentials(params["credentials"] || %{}),
+         :ok <- save_live_search_settings(params["live_search"] || %{}),
          :ok <- save_x_search_settings(params["x_search"] || %{}) do
       :ok
     end
@@ -244,6 +254,29 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
   defp save_web_search_credentials(_credentials),
     do: {:error, "Credential settings were not submitted correctly"}
+
+  defp save_live_search_settings(params) when is_map(params) do
+    selected_models = normalize_live_search_model_list(params["models"])
+
+    supported_models =
+      live_search_model_options()
+      |> Enum.map(& &1.value)
+      |> MapSet.new()
+
+    unsupported_models = Enum.reject(selected_models, &MapSet.member?(supported_models, &1))
+
+    if unsupported_models == [] do
+      case Settings.set(@live_search_models_setting, selected_models) do
+        :ok -> :ok
+        {:error, _reason} -> {:error, "Could not save live search model settings"}
+      end
+    else
+      {:error, "Choose supported live search models"}
+    end
+  end
+
+  defp save_live_search_settings(_params),
+    do: {:error, "Live Search settings were not submitted correctly"}
 
   defp save_x_search_settings(params) when is_map(params) do
     with :ok <- save_x_search_credential(normalize_credential(params["credential"])),
@@ -328,6 +361,69 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     end
   end
 
+  defp configured_live_search_models(options) do
+    supported_models = options |> Enum.map(& &1.value) |> MapSet.new()
+
+    @live_search_models_setting
+    |> Settings.get()
+    |> normalize_live_search_model_list()
+    |> append_legacy_live_search_model()
+    |> Enum.filter(&MapSet.member?(supported_models, &1))
+    |> Enum.uniq()
+  end
+
+  defp append_legacy_live_search_model(models) do
+    case Settings.get(@legacy_live_search_model_setting) |> normalize_live_search_model_value() do
+      nil -> models
+      model -> models ++ [model]
+    end
+  end
+
+  defp live_search_model_options do
+    (discovered_live_search_model_options() ++ default_live_search_model_options())
+    |> Enum.uniq_by(& &1.value)
+    |> Enum.sort_by(& &1.value)
+  end
+
+  defp discovered_live_search_model_options do
+    :openai
+    |> ProviderModelSurface.list_enabled()
+    |> Enum.filter(fn surface ->
+      provider = surface.provider_model.provider
+      api = surface.provider_api
+      model = surface.provider_model.model
+
+      WebLiveSearch.supports_hosted_web_search_model?(provider, api, model)
+    end)
+    |> Enum.map(&live_search_model_option/1)
+  end
+
+  defp default_live_search_model_options do
+    ProviderApi.list_enabled()
+    |> Enum.filter(&(&1.api_surface == :openai))
+    |> Enum.flat_map(fn api ->
+      provider = api.provider
+
+      provider
+      |> WebLiveSearch.default_supported_models(api)
+      |> Enum.map(&live_search_model_option(provider, api, &1))
+    end)
+  end
+
+  defp live_search_model_option(surface) do
+    provider = surface.provider_model.provider
+    model = surface.provider_model
+
+    live_search_model_option(provider, surface.provider_api, model.model)
+  end
+
+  defp live_search_model_option(provider, api, model) do
+    %{
+      value: "#{provider.name}/#{model}",
+      base_url: api.base_url
+    }
+  end
+
   defp find_tool(tools, tool_name) do
     case Enum.find(tools, &(&1.name == tool_name)) do
       nil -> {:error, "Choose a managed tool"}
@@ -406,6 +502,9 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp sample_arguments("web::search"),
     do: format_value(%{"query" => "elixir programming language", "max_results" => 5})
 
+  defp sample_arguments("web::live_search"),
+    do: format_value(%{"query" => "latest Elixir release"})
+
   defp sample_arguments("web::x_search"),
     do: format_value(%{"query" => "What are people saying about xAI on X?"})
 
@@ -434,6 +533,30 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp normalize_credential(value) when is_binary(value), do: String.trim(value)
   defp normalize_credential(_value), do: ""
 
+  defp normalize_live_search_model_list(values) when is_list(values) do
+    values
+    |> Enum.map(&normalize_live_search_model_value/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_live_search_model_list(value) when is_binary(value) do
+    value
+    |> String.split(",", trim: true)
+    |> normalize_live_search_model_list()
+  end
+
+  defp normalize_live_search_model_list(_value), do: []
+
+  defp normalize_live_search_model_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      model -> model
+    end
+  end
+
+  defp normalize_live_search_model_value(_value), do: nil
+
   defp active_tab("settings", %{prefix: "web"}), do: "settings"
   defp active_tab("debug", _service), do: "debug"
   defp active_tab(_tab, %{prefix: "web"}), do: "settings"
@@ -442,6 +565,16 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
   defp find_service(prefix), do: Enum.find(@services, &(&1.prefix == prefix))
   defp search_backend_ids, do: Enum.map(@search_backends, & &1.id)
   defp search_backend_options, do: Enum.map(@search_backends, &{&1.id, &1.label})
+
+  defp live_search_model_input_id(value) do
+    normalized =
+      value
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9_-]+/, "-")
+      |> String.trim("-")
+
+    "web-live-search-model-#{normalized}"
+  end
 
   @impl true
   def render(assigns) do
@@ -534,6 +667,47 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
               value={backend.configured_credential}
             />
           </div>
+        </div>
+      </.dm_card>
+
+      <.dm_card variant="bordered">
+        <:title>Live Search</:title>
+        <div class="mb-4 flex items-center gap-2">
+          <h3 class="font-medium">Models</h3>
+          <.dm_badge variant={if @live_search_configured?, do: "success", else: "ghost"}>
+            {if @live_search_configured?, do: "Configured", else: "No models"}
+          </.dm_badge>
+        </div>
+
+        <p class="mb-4 text-sm text-on-surface-variant">
+          Uses enabled OpenAI-compatible models from Llama providers.
+        </p>
+
+        <div
+          :if={@live_search_model_options == []}
+          class="rounded-md border border-outline-variant bg-surface-container-high p-4 text-sm text-on-surface-variant"
+        >
+          No supported OpenAI-compatible models are enabled.
+        </div>
+
+        <div :if={@live_search_model_options != []} class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <label
+            :for={model <- @live_search_model_options}
+            class="flex min-w-0 items-start gap-3 rounded-md border border-outline-variant p-3"
+          >
+            <input
+              id={live_search_model_input_id(model.value)}
+              type="checkbox"
+              name="settings[live_search][models][]"
+              value={model.value}
+              checked={model.value in @live_search_models}
+              class="checkbox checkbox-sm checkbox-primary mt-1 shrink-0"
+            />
+            <span class="min-w-0">
+              <span class="block truncate text-sm font-medium">{model.value}</span>
+              <span class="block truncate text-xs text-on-surface-variant">{model.base_url}</span>
+            </span>
+          </label>
         </div>
       </.dm_card>
 

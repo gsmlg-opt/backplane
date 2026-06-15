@@ -15,7 +15,7 @@ defmodule BackplaneWeb.ManagedLive do
     %{
       module: Backplane.Services.Web,
       name: "Web",
-      description: "Fetch HTTP(S) pages, search the web, and search X"
+      description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
     },
     %{
       module: Backplane.Services.Math,
@@ -48,6 +48,7 @@ defmodule BackplaneWeb.ManagedLive do
   end
 
   defp load_services(socket) do
+    safe_call(fn -> refresh_managed_registry() end, :ok)
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
 
     services =
@@ -87,7 +88,15 @@ defmodule BackplaneWeb.ManagedLive do
 
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
 
+  defp refresh_managed_registry do
+    Enum.each(@managed_services, fn svc ->
+      mod = svc.module
+      sync_registry(mod, mod.enabled?())
+    end)
+  end
+
   defp sync_registry(mod, true) do
+    ToolRegistry.deregister_managed(mod.prefix())
     ToolRegistry.register_managed(mod.prefix(), mod.tools())
   end
 
