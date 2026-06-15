@@ -7,6 +7,7 @@ defmodule BackplaneWeb.McpInspectorLive do
   use BackplaneWeb, :live_view
 
   alias Backplane.Settings.Credentials
+  alias Backplane.Registry.Namespace
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Transport.McpHandler
 
@@ -327,7 +328,11 @@ defmodule BackplaneWeb.McpInspectorLive do
     {:noreply, assign(socket, internal_expanded_tools: MapSet.new())}
   end
 
-  def handle_event("update_internal_tool_args", %{"tool_name" => name, "tool_args" => args}, socket) do
+  def handle_event(
+        "update_internal_tool_args",
+        %{"tool_name" => name, "tool_args" => args},
+        socket
+      ) do
     tool_calls =
       Map.update(
         socket.assigns.internal_tool_calls,
@@ -340,11 +345,14 @@ defmodule BackplaneWeb.McpInspectorLive do
   end
 
   def handle_event("call_internal_tool", %{"tool_name" => name}, socket) do
-    tc = Map.get(socket.assigns.internal_tool_calls, name, %{args: "{}", result: nil, loading: false})
+    tc =
+      Map.get(socket.assigns.internal_tool_calls, name, %{args: "{}", result: nil, loading: false})
 
     case Jason.decode(tc.args) do
       {:ok, args} when is_map(args) ->
-        tool_calls = Map.put(socket.assigns.internal_tool_calls, name, %{tc | loading: true, result: nil})
+        tool_calls =
+          Map.put(socket.assigns.internal_tool_calls, name, %{tc | loading: true, result: nil})
+
         socket = assign(socket, internal_tool_calls: tool_calls, internal_error: nil)
 
         case McpHandler.dispatch_tool_call(name, args) do
@@ -950,6 +958,7 @@ defmodule BackplaneWeb.McpInspectorLive do
 
   defp format_time(datetime) do
     assigns = %{datetime: datetime}
+
     ~H"""
     <.local_time datetime={@datetime} format="time" />
     """
@@ -978,13 +987,7 @@ defmodule BackplaneWeb.McpInspectorLive do
 
     sources =
       all_tools
-      |> Enum.group_by(fn tool ->
-        case tool.origin do
-          {:managed, prefix} -> {:managed, prefix}
-          {:upstream, prefix} -> {:upstream, prefix}
-          :native -> {:native, "native"}
-        end
-      end)
+      |> Enum.group_by(&source_tuple_for_tool/1)
       |> Enum.map(fn {{type, prefix}, tools} ->
         %{type: type, prefix: prefix, tool_count: length(tools), key: "#{type}:#{prefix}"}
       end)
@@ -997,12 +1000,17 @@ defmodule BackplaneWeb.McpInspectorLive do
   defp source_type_order(:upstream), do: 1
   defp source_type_order(:native), do: 2
 
-  defp source_key_for_tool(tool) do
+  defp source_tuple_for_tool(tool) do
     case tool.origin do
-      {:managed, prefix} -> "managed:#{prefix}"
-      {:upstream, prefix} -> "upstream:#{prefix}"
-      :native -> "native:native"
+      {:managed, prefix} -> {:managed, prefix}
+      {:upstream, prefix} -> {:upstream, Namespace.normalize_prefix(prefix)}
+      :native -> {:native, "native"}
     end
+  end
+
+  defp source_key_for_tool(tool) do
+    {type, prefix} = source_tuple_for_tool(tool)
+    "#{type}:#{prefix}"
   end
 
   defp source_label(%{type: :managed, prefix: prefix}), do: "#{prefix}:: (managed)"
@@ -1013,7 +1021,9 @@ defmodule BackplaneWeb.McpInspectorLive do
   defp source_type_badge(:upstream), do: "success"
   defp source_type_badge(:native), do: "warning"
 
-  defp tool_args_template_from_struct(%{input_schema: %{"properties" => props, "required" => required}})
+  defp tool_args_template_from_struct(%{
+         input_schema: %{"properties" => props, "required" => required}
+       })
        when is_map(props) and is_list(required) do
     template =
       props

@@ -20,6 +20,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     # Ensure native tools are registered for the test
     alias Backplane.Registry.{Tool, ToolRegistry}
+
     for module <- [Backplane.Tools.Skill, Backplane.Tools.Hub, Backplane.Tools.Admin],
         tool_def <- module.tools() do
       tool = %Tool{
@@ -30,6 +31,7 @@ defmodule Backplane.Transport.McpHandlerTest do
         module: tool_def.module,
         handler: tool_def.handler
       }
+
       ToolRegistry.register_native(tool)
     end
 
@@ -101,6 +103,45 @@ defmodule Backplane.Transport.McpHandlerTest do
       refute "skill::create" in names
       refute "skill::update" in names
       refute "skill::versions" in names
+    end
+
+    test "normalizes stale path-like upstream prefixes in API response" do
+      alias Backplane.Registry.Tool
+
+      stale_tool = %Tool{
+        name: "/github::search",
+        description: "Search repositories",
+        input_schema: %{},
+        origin: {:upstream, "/github"},
+        upstream_pid: self(),
+        original_name: "search"
+      }
+
+      normalized_tool = %Tool{
+        name: "github::search",
+        description: "Search repositories",
+        input_schema: %{},
+        origin: {:upstream, "github"},
+        upstream_pid: self(),
+        original_name: "search"
+      }
+
+      :ets.insert(:backplane_tools, [
+        {stale_tool.name, stale_tool},
+        {normalized_tool.name, normalized_tool}
+      ])
+
+      on_exit(fn ->
+        :ets.delete(:backplane_tools, stale_tool.name)
+        :ets.delete(:backplane_tools, normalized_tool.name)
+      end)
+
+      resp = mcp_request("tools/list")
+      names = Enum.map(resp["result"]["tools"], & &1["name"])
+
+      refute "/github::search" in names
+      assert "github::search" in names
+      assert Enum.count(names, &(&1 == "github::search")) == 1
     end
   end
 

@@ -4,6 +4,8 @@ defmodule Backplane.Proxy.McpUpstream do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Backplane.Registry.Namespace
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts [type: :utc_datetime_usec]
 
@@ -33,7 +35,11 @@ defmodule Backplane.Proxy.McpUpstream do
   def changeset(upstream, attrs) do
     upstream
     |> cast(attrs, @required ++ @optional)
+    |> normalize_prefix()
     |> validate_required(@required)
+    |> validate_format(:prefix, ~r/^[A-Za-z0-9_-]+$/,
+      message: "can contain only letters, numbers, underscores, and hyphens"
+    )
     |> validate_inclusion(:transport, ~w(http stdio))
     |> validate_inclusion(:auth_scheme, ~w(none bearer x_api_key custom_header))
     |> validate_transport_fields()
@@ -42,6 +48,10 @@ defmodule Backplane.Proxy.McpUpstream do
     |> validate_auth_scheme()
     |> unique_constraint(:name)
     |> unique_constraint(:prefix)
+  end
+
+  defp normalize_prefix(changeset) do
+    update_change(changeset, :prefix, &Namespace.normalize_prefix/1)
   end
 
   defp validate_transport_fields(changeset) do

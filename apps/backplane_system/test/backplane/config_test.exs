@@ -133,6 +133,27 @@ defmodule Backplane.ConfigTest do
 
 
 
+    test "normalizes upstream prefixes", %{dir: dir} do
+      path = Path.join(dir, "normalized_prefix.toml")
+
+      File.write!(path, """
+      [backplane]
+      port = 5000
+
+      [[upstream]]
+      name = "github"
+      prefix = " /github/ "
+      transport = "http"
+      url = "http://localhost:9999/mcp"
+      """)
+
+      config = Backplane.Config.load!(path)
+      upstream = hd(config[:upstream])
+      assert upstream.prefix == "github"
+    end
+
+
+
     test "upstream stdio with env map parses env", %{dir: dir} do
       path = Path.join(dir, "stdio_env.toml")
 

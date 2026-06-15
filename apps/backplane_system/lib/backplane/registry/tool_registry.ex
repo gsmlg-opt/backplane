@@ -7,10 +7,9 @@ defmodule Backplane.Registry.ToolRegistry do
 
   use GenServer
 
-  alias Backplane.Registry.Tool
+  alias Backplane.Registry.{Namespace, Tool}
 
   @table :backplane_tools
-  @separator "::"
 
   # Client API
 
@@ -37,9 +36,16 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Register tools from an upstream MCP server with a namespace prefix."
   @spec register_upstream(String.t(), pid(), [map()]) :: :ok
   def register_upstream(prefix, upstream_pid, tools) when is_list(tools) do
+    original_prefix = prefix
+    prefix = Namespace.normalize_prefix(prefix)
+
+    original_prefix
+    |> upstream_prefixes_to_delete()
+    |> Enum.each(&delete_upstream_prefix/1)
+
     rows =
       Enum.map(tools, fn tool ->
-        namespaced = prefix <> @separator <> tool.name
+        namespaced = Namespace.prefix(prefix, tool.name)
 
         entry = %Tool{
           name: namespaced,
@@ -96,14 +102,10 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Deregister all tools from a given upstream prefix."
   @spec deregister_upstream(String.t()) :: :ok
   def deregister_upstream(prefix) do
-    pattern = prefix <> @separator
+    prefix
+    |> upstream_prefixes_to_delete()
+    |> Enum.each(&delete_upstream_prefix/1)
 
-    # Atomic select_delete — avoids race with concurrent register_upstream
-    match_spec = [
-      {{:"$1", :_}, [{:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}], [true]}
-    ]
-
-    :ets.select_delete(@table, match_spec)
     Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
     :ok
   end
@@ -113,8 +115,10 @@ defmodule Backplane.Registry.ToolRegistry do
   def list_all do
     @table
     |> :ets.tab2list()
-    |> Enum.map(fn {_key, tool} -> tool end)
-    |> Enum.sort_by(& &1.name)
+    |> Enum.map(&canonical_tool_row/1)
+    |> Enum.sort_by(fn {name, rank, _tool} -> {name, rank} end)
+    |> Enum.uniq_by(fn {name, _rank, _tool} -> name end)
+    |> Enum.map(fn {_name, _rank, tool} -> tool end)
   end
 
   @doc "Resolve a tool name to its handler."
@@ -124,17 +128,17 @@ defmodule Backplane.Registry.ToolRegistry do
           | {:managed, (map() -> {:ok, term()} | {:error, term()})}
           | :not_found
   def resolve(name) do
-    case :ets.lookup(@table, name) do
-      [{^name, %{origin: :native, module: module, handler: handler}}] ->
+    case lookup_tool_row(name) do
+      {_key, %{origin: :native, module: module, handler: handler}} ->
         {:native, module, handler}
 
-      [{^name, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original} = tool}] ->
+      {_key, %{origin: {:upstream, _}, upstream_pid: pid, original_name: original} = tool} ->
         {:upstream, pid, original, tool.timeout}
 
-      [{^name, %{origin: {:managed, _}, handler: handler}}] ->
+      {_key, %{origin: {:managed, _}, handler: handler}} ->
         {:managed, handler}
 
-      [] ->
+      nil ->
         :not_found
     end
   end
@@ -142,9 +146,9 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Look up a tool by name, returning the full tool struct or nil."
   @spec lookup(String.t()) :: Tool.t() | nil
   def lookup(name) do
-    case :ets.lookup(@table, name) do
-      [{^name, tool}] -> tool
-      [] -> nil
+    case lookup_tool_row(name) do
+      {_key, tool} -> canonical_tool(tool)
+      nil -> nil
     end
   end
 
@@ -154,9 +158,8 @@ defmodule Backplane.Registry.ToolRegistry do
     limit = Keyword.get(opts, :limit, 50)
     query_down = String.downcase(query)
 
-    @table
-    |> :ets.tab2list()
-    |> Enum.reduce([], fn {_key, tool}, acc ->
+    list_all()
+    |> Enum.reduce([], fn tool, acc ->
       name_down = String.downcase(tool.name)
       desc_down = String.downcase(tool.description)
       name_match = String.contains?(name_down, query_down)
@@ -177,6 +180,63 @@ defmodule Backplane.Registry.ToolRegistry do
   @spec count() :: non_neg_integer()
   def count do
     :ets.info(@table, :size)
+  end
+
+  defp lookup_tool_row(name) do
+    case :ets.lookup(@table, name) do
+      [{^name, tool}] -> {name, tool}
+      [] -> find_canonical_tool_row(name)
+    end
+  end
+
+  defp find_canonical_tool_row(name) do
+    @table
+    |> :ets.tab2list()
+    |> Enum.find(fn {_key, tool} -> canonical_tool(tool).name == name end)
+  end
+
+  defp canonical_tool_row({key, tool}) do
+    canonical_tool = canonical_tool(tool)
+    rank = if key == canonical_tool.name and tool.name == canonical_tool.name, do: 0, else: 1
+
+    {canonical_tool.name, rank, canonical_tool}
+  end
+
+  defp canonical_tool(%Tool{origin: {:upstream, prefix}} = tool) do
+    prefix = Namespace.normalize_prefix(prefix)
+    original_name = tool.original_name || local_tool_name(tool.name)
+
+    %{tool | name: Namespace.prefix(prefix, original_name), origin: {:upstream, prefix}}
+  end
+
+  defp canonical_tool(tool), do: tool
+
+  defp local_tool_name(name) when is_binary(name) do
+    case String.split(name, Namespace.separator(), parts: 2) do
+      [_prefix, tool_name] -> tool_name
+      [tool_name] -> tool_name
+    end
+  end
+
+  defp upstream_prefixes_to_delete(prefix) do
+    normalized = Namespace.normalize_prefix(prefix)
+    path_like = if is_binary(normalized), do: "/" <> normalized
+
+    [prefix, normalized, path_like]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp delete_upstream_prefix(prefix) do
+    pattern = prefix <> Namespace.separator()
+
+    # Atomic select_delete — avoids race with concurrent register_upstream
+    match_spec = [
+      {{:"$1", :_}, [{:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}], [true]}
+    ]
+
+    :ets.select_delete(@table, match_spec)
   end
 
   # Server callbacks

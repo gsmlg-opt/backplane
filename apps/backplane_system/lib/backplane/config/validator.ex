@@ -6,6 +6,8 @@ defmodule Backplane.Config.Validator do
 
   require Logger
 
+  alias Backplane.Registry.Namespace
+
   @doc """
   Validates config and returns a list of warning strings.
   """
@@ -30,18 +32,39 @@ defmodule Backplane.Config.Validator do
 
   defp validate_upstreams(warnings, upstreams) do
     warnings
-    |> check_duplicates(upstreams, :prefix, "upstream prefix")
+    |> check_duplicates(upstreams, :prefix, "upstream prefix", &Namespace.normalize_prefix/1)
     |> check_duplicates(upstreams, :name, "upstream name")
     |> then(fn w ->
       Enum.reduce(upstreams, w, fn upstream, acc ->
         acc
         |> check_required(upstream, :name, "upstream")
         |> check_required(upstream, :prefix, "upstream #{upstream[:name]}")
+        |> check_prefix_format(upstream)
         |> check_required(upstream, :transport, "upstream #{upstream[:name]}")
         |> check_upstream_transport(upstream)
       end)
     end)
   end
+
+  defp check_prefix_format(warnings, %{prefix: prefix, name: name}) when is_binary(prefix) do
+    prefix = Namespace.normalize_prefix(prefix)
+
+    cond do
+      prefix == "" ->
+        warnings
+
+      Namespace.valid_prefix?(prefix) ->
+        warnings
+
+      true ->
+        [
+          "upstream #{name}: 'prefix' can contain only letters, numbers, underscores, and hyphens"
+          | warnings
+        ]
+    end
+  end
+
+  defp check_prefix_format(warnings, _upstream), do: warnings
 
   defp check_upstream_transport(warnings, %{transport: "http"} = upstream) do
     warnings
@@ -91,9 +114,10 @@ defmodule Backplane.Config.Validator do
     end
   end
 
-  defp check_duplicates(warnings, items, key, label) do
+  defp check_duplicates(warnings, items, key, label, normalize \\ fn value -> value end) do
     items
     |> Enum.map(&Map.get(&1, key))
+    |> Enum.map(normalize)
     |> Enum.reject(&is_nil/1)
     |> Enum.frequencies()
     |> Enum.filter(fn {_val, count} -> count > 1 end)

@@ -11,6 +11,15 @@ defmodule Backplane.Proxy.McpUpstreamTest do
     %{name: "test-http", prefix: "http", transport: "http", url: "http://localhost:8080/mcp"}
   end
 
+  describe "prefix validation" do
+    test "normalizes leading and trailing path separators" do
+      cs = changeset(%{valid_http_attrs() | prefix: " /github/ "})
+
+      assert cs.valid?
+      assert Ecto.Changeset.get_field(cs, :prefix) == "github"
+    end
+  end
+
   describe "transport validation" do
     test "accepts valid http config with url" do
       cs = changeset(valid_http_attrs())

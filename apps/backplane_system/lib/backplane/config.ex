@@ -6,6 +6,8 @@ defmodule Backplane.Config do
   @default_port 4100
   @default_host "0.0.0.0"
 
+  alias Backplane.Registry.Namespace
+
   @doc """
   Loads configuration from a TOML file path.
 
@@ -66,7 +68,7 @@ defmodule Backplane.Config do
       base = %{
         name: up["name"],
         transport: up["transport"],
-        prefix: up["prefix"],
+        prefix: Namespace.normalize_prefix(up["prefix"]),
         timeout: up["timeout"],
         refresh_interval: up["refresh_interval"],
         cache_ttl: up["cache_ttl"],

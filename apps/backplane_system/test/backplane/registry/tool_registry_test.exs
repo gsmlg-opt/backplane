@@ -51,12 +51,52 @@ defmodule Backplane.Registry.ToolRegistryTest do
       assert Enum.at(tools, 0).name == "a::tool"
       assert Enum.at(tools, 1).name == "b::tool"
     end
+
+    test "coalesces stale path-like upstream prefixes" do
+      stale_tool =
+        sample_tool("/github::search",
+          origin: {:upstream, "/github"},
+          description: "Search repositories"
+        )
+
+      normalized_tool =
+        sample_tool("github::search",
+          origin: {:upstream, "github"},
+          description: "Search repositories"
+        )
+
+      :ets.insert(:backplane_tools, [
+        {stale_tool.name, stale_tool},
+        {normalized_tool.name, normalized_tool}
+      ])
+
+      assert [%Tool{name: "github::search", origin: {:upstream, "github"}}] =
+               ToolRegistry.list_all()
+    end
   end
 
   describe "resolve/1" do
     test "returns {:native, module, handler} for native tool" do
       ToolRegistry.register_native(sample_tool())
       assert {:native, TestModule, _handler} = ToolRegistry.resolve("test::example")
+    end
+
+    test "resolves normalized name for stale path-like upstream row" do
+      pid = self()
+
+      stale_tool =
+        %Tool{
+          name: "/github::search",
+          description: "Search repositories",
+          input_schema: %{},
+          origin: {:upstream, "/github"},
+          upstream_pid: pid,
+          original_name: "search"
+        }
+
+      :ets.insert(:backplane_tools, {stale_tool.name, stale_tool})
+
+      assert {:upstream, ^pid, "search", _timeout} = ToolRegistry.resolve("github::search")
     end
 
     test "returns :not_found for unregistered name" do
@@ -93,6 +133,26 @@ defmodule Backplane.Registry.ToolRegistryTest do
       tools = ToolRegistry.list_all()
       assert length(tools) == 1
       assert hd(tools).name == "fs::read_file"
+    end
+
+    test "normalizes path-like upstream prefixes" do
+      upstream_tools = [
+        %Tool{
+          name: "search",
+          description: "Search repositories",
+          input_schema: %{},
+          origin: :native
+        }
+      ]
+
+      pid = self()
+      assert :ok = ToolRegistry.register_upstream("/github", pid, upstream_tools)
+
+      assert [%Tool{name: "github::search", origin: {:upstream, "github"}}] =
+               ToolRegistry.list_all()
+
+      assert {:upstream, ^pid, "search", _timeout} = ToolRegistry.resolve("github::search")
+      assert :not_found = ToolRegistry.resolve("/github::search")
     end
 
     test "stores upstream_pid for forwarding" do
@@ -150,6 +210,38 @@ defmodule Backplane.Registry.ToolRegistryTest do
 
       ToolRegistry.deregister_upstream("test")
       assert ToolRegistry.count() == 0
+    end
+
+    test "removes legacy path-like upstream tools" do
+      tool = %Tool{
+        name: "/github::search",
+        description: "Search repositories",
+        input_schema: %{},
+        origin: {:upstream, "/github"},
+        upstream_pid: self(),
+        original_name: "search"
+      }
+
+      :ets.insert(:backplane_tools, {tool.name, tool})
+
+      ToolRegistry.deregister_upstream("/github")
+      assert ToolRegistry.list_all() == []
+    end
+
+    test "removes legacy path-like upstream tools by normalized prefix" do
+      tool = %Tool{
+        name: "/github::search",
+        description: "Search repositories",
+        input_schema: %{},
+        origin: {:upstream, "/github"},
+        upstream_pid: self(),
+        original_name: "search"
+      }
+
+      :ets.insert(:backplane_tools, {tool.name, tool})
+
+      ToolRegistry.deregister_upstream("github")
+      assert ToolRegistry.list_all() == []
     end
 
     test "leaves other prefixes intact" do

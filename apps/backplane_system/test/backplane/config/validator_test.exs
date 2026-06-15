@@ -194,6 +194,20 @@ defmodule Backplane.Config.ValidatorTest do
       assert Enum.any?(warnings, &(&1 =~ "duplicate upstream prefix 'dup'"))
     end
 
+    test "warns about duplicate upstream prefixes after namespace normalization" do
+      config = [
+        backplane: %{port: 4100},
+        upstream: [
+          %{name: "first", prefix: "/github", transport: "http", url: "http://a/mcp"},
+          %{name: "second", prefix: "github", transport: "http", url: "http://b/mcp"}
+        ],
+        projects: []
+      ]
+
+      warnings = Validator.validate(config)
+      assert Enum.any?(warnings, &(&1 =~ "duplicate upstream prefix 'github'"))
+    end
+
     test "warns about duplicate upstream names" do
       config = [
         backplane: %{port: 4100},
