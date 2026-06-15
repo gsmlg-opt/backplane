@@ -542,10 +542,17 @@ defmodule Backplane.Transport.McpHandler do
 
   defp execute_tool({:managed, handler}, name, args) when is_function(handler, 1) do
     case handler.(args) do
-      {:ok, result} -> {:ok, result}
-      {:error, %{message: message}} -> {:error, "Managed tool #{name} failed: #{message}"}
-      {:error, reason} when is_binary(reason) -> {:error, "Managed tool #{name} failed: #{reason}"}
-      {:error, reason} -> {:error, "Managed tool #{name} failed: #{inspect(reason)}"}
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, %{message: message}} ->
+        {:error, "Managed tool #{name} failed: #{message}"}
+
+      {:error, reason} when is_binary(reason) ->
+        {:error, "Managed tool #{name} failed: #{reason}"}
+
+      {:error, reason} ->
+        {:error, "Managed tool #{name} failed: #{inspect(reason)}"}
     end
   rescue
     e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
@@ -748,8 +755,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp management_tool?(name) when is_binary(name) do
-    String.starts_with?(name, "admin::") or String.starts_with?(name, "hub::") or
-      String.starts_with?(name, "skill::")
+    String.starts_with?(name, "admin::") or String.starts_with?(name, "hub::")
   end
 
   defp generate_session_id do
@@ -792,7 +798,12 @@ defmodule Backplane.Transport.McpHandler do
       # Upstream result already has content array (passthrough)
       is_map(result) && is_list(result["content"]) ->
         base = %{content: result["content"]}
-        base = if result["structuredContent"], do: Map.put(base, :structuredContent, result["structuredContent"]), else: base
+
+        base =
+          if result["structuredContent"],
+            do: Map.put(base, :structuredContent, result["structuredContent"]),
+            else: base
+
         base = if result["isError"], do: Map.put(base, :isError, true), else: base
         base
 
@@ -877,4 +888,3 @@ defmodule Backplane.Transport.McpHandler do
     |> send_resp(200, body)
   end
 end
-

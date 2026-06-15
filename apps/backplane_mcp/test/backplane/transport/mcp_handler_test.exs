@@ -21,6 +21,8 @@ defmodule Backplane.Transport.McpHandlerTest do
     # Ensure native tools are registered for the test
     alias Backplane.Registry.{Tool, ToolRegistry}
 
+    :ets.delete_all_objects(:backplane_tools)
+
     for module <- [Backplane.Tools.Skill, Backplane.Tools.Hub, Backplane.Tools.Admin],
         tool_def <- module.tools() do
       tool = %Tool{
@@ -34,6 +36,15 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       ToolRegistry.register_native(tool)
     end
+
+    ToolRegistry.register_native(%Tool{
+      name: "public::echo",
+      description: "Visible test tool",
+      input_schema: %{"type" => "object", "properties" => %{}},
+      origin: :native,
+      module: __MODULE__.PublicTool,
+      handler: nil
+    })
 
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
@@ -83,14 +94,16 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "tools/list" do
-    test "returns tools array including native skill tools" do
+    test "returns public and skill tools while hiding hub and admin tools" do
       resp = mcp_request("tools/list")
 
       tools = resp["result"]["tools"]
       assert is_list(tools)
       names = Enum.map(tools, & &1["name"])
+      assert "public::echo" in names
       assert "skill::search" in names
-      assert "skill::list" in names
+      refute "hub::status" in names
+      refute "admin::clients" in names
     end
 
     test "exposes v1 archive skill tools and hides legacy mutation tools" do
@@ -1454,13 +1467,13 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns single tool for exact scope" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "single-tool", scopes: ["skill::search"])
+        Backplane.Fixtures.insert_client(name: "single-tool", scopes: ["public::echo"])
 
       resp = mcp_request("tools/list", nil, auth_token: token)
 
       tools = resp["result"]["tools"]
       assert length(tools) == 1
-      assert hd(tools)["name"] == "skill::search"
+      assert hd(tools)["name"] == "public::echo"
     end
 
     test "returns empty list for scope with no matches" do
