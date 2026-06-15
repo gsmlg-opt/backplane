@@ -57,8 +57,7 @@ defmodule Backplane.Services.Web do
     [
       %{
         name: "web::search",
-        description:
-          "Search the web through Ollama, MiniMax, Z.ai, or BigModel and return normalized results.",
+        description: "Search the web through Ollama or MiniMax and return normalized results.",
         input_schema: %{
           "type" => "object",
           "properties" => %{
@@ -69,7 +68,7 @@ defmodule Backplane.Services.Web do
             },
             "backend" => %{
               "type" => "string",
-              "enum" => ~w(ollama minimax z_ai bigmodel),
+              "enum" => ~w(ollama minimax),
               "description" => "Search backend. Defaults to the configured service backend."
             },
             "credential" => %{
@@ -81,11 +80,6 @@ defmodule Backplane.Services.Web do
               "minimum" => 1,
               "maximum" => 10,
               "description" => "Maximum result count, up to 10"
-            },
-            "search_engine" => %{
-              "type" => "string",
-              "description" =>
-                "Optional search engine for Z.ai/BigModel, for example search_std or search_pro"
             }
           },
           "required" => ["query"],

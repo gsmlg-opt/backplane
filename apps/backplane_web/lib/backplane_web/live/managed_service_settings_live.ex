@@ -29,9 +29,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
 
   @search_backends [
     %{id: "ollama", label: "Ollama"},
-    %{id: "minimax", label: "MiniMax"},
-    %{id: "z_ai", label: "Z.ai"},
-    %{id: "bigmodel", label: "BigModel"}
+    %{id: "minimax", label: "MiniMax"}
   ]
   @live_search_models_setting "services.web_live_search.models"
   @legacy_live_search_model_setting "services.web_live_search.model"
@@ -521,11 +519,6 @@ defmodule BackplaneWeb.ManagedServiceSettingsLive do
     value
     |> String.downcase()
     |> String.replace("-", "_")
-    |> case do
-      "zai" -> "z_ai"
-      "bigmodel_cn" -> "bigmodel"
-      other -> other
-    end
   end
 
   defp normalize_search_backend(_value), do: nil

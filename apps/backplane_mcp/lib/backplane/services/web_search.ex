@@ -9,7 +9,7 @@ defmodule Backplane.Services.WebSearch do
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
-  @backends ~w(ollama minimax z_ai bigmodel)
+  @backends ~w(ollama minimax)
   @default_max_results 5
   @max_results 10
 
@@ -32,7 +32,9 @@ defmodule Backplane.Services.WebSearch do
   def handle_search(_args), do: error("missing query")
 
   defp ensure_enabled do
-    if Settings.get("services.web.enabled") == true, do: :ok, else: {:error, "web::search is disabled"}
+    if Settings.get("services.web.enabled") == true,
+      do: :ok,
+      else: {:error, "web::search is disabled"}
   end
 
   defp validate_query(query) do
@@ -55,12 +57,6 @@ defmodule Backplane.Services.WebSearch do
     backend
     |> String.downcase()
     |> String.replace("-", "_")
-    |> case do
-      "zai" -> "z_ai"
-      "z_ai" -> "z_ai"
-      "bigmodel_cn" -> "bigmodel"
-      other -> other
-    end
   end
 
   defp normalize_backend(other), do: other
@@ -96,10 +92,7 @@ defmodule Backplane.Services.WebSearch do
     options =
       [
         url: base_url <> path,
-        headers: [
-          {"authorization", "Bearer " <> api_key},
-          {"accept", "application/json"}
-        ],
+        headers: request_headers(backend, api_key),
         json: request_body(backend, query, params),
         receive_timeout: 30_000
       ]
@@ -107,7 +100,12 @@ defmodule Backplane.Services.WebSearch do
 
     case Req.post(options) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        {:ok, body}
+        body = decode_response_body(body)
+
+        case provider_error(backend, body) do
+          nil -> {:ok, body}
+          message -> {:error, message}
+        end
 
       {:ok, %Req.Response{status: status, body: body}} ->
         {:error, "HTTP #{status}: #{response_message(body)}"}
@@ -126,22 +124,8 @@ defmodule Backplane.Services.WebSearch do
 
   defp backend_config("minimax") do
     %{
-      base_url: setting("services.web_search.minimax.base_url", "https://api.minimax.io"),
+      base_url: setting("services.web_search.minimax.base_url", "https://api.minimaxi.com"),
       path: "/v1/coding_plan/search"
-    }
-  end
-
-  defp backend_config("z_ai") do
-    %{
-      base_url: setting("services.web_search.z_ai.base_url", "https://api.z.ai"),
-      path: "/api/paas/v4/web_search"
-    }
-  end
-
-  defp backend_config("bigmodel") do
-    %{
-      base_url: setting("services.web_search.bigmodel.base_url", "https://open.bigmodel.cn"),
-      path: "/api/paas/v4/web_search"
     }
   end
 
@@ -151,16 +135,34 @@ defmodule Backplane.Services.WebSearch do
 
   defp request_body("minimax", query, _params), do: %{"q" => query}
 
-  defp request_body(backend, query, params) when backend in ["z_ai", "bigmodel"] do
-    %{
-      "search_engine" => params["search_engine"] || default_search_engine(backend),
-      "search_query" => query,
-      "count" => max_results(params)
-    }
+  defp request_headers("minimax", api_key) do
+    request_headers(nil, api_key) ++ [{"MM-API-Source", "Minimax-MCP"}]
   end
 
-  defp default_search_engine("z_ai"), do: "search_std"
-  defp default_search_engine("bigmodel"), do: "search_std"
+  defp request_headers(_backend, api_key) do
+    [
+      {"authorization", "Bearer " <> api_key},
+      {"accept", "application/json"}
+    ]
+  end
+
+  defp decode_response_body(body) when is_binary(body) do
+    case JSON.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _reason} -> body
+    end
+  end
+
+  defp decode_response_body(body), do: body
+
+  defp provider_error("minimax", %{
+         "base_resp" => %{"status_code" => status_code, "status_msg" => status_msg}
+       })
+       when status_code not in [0, "0", nil] do
+    "MiniMax API error #{status_code}: #{status_msg}"
+  end
+
+  defp provider_error(_backend, _body), do: nil
 
   defp normalize_response(backend, query, body, limit) do
     %{
@@ -179,6 +181,9 @@ defmodule Backplane.Services.WebSearch do
       is_list(body["organic_results"]) ->
         body["organic_results"]
 
+      is_list(body["organic"]) ->
+        body["organic"]
+
       is_list(body["search_result"]) ->
         body["search_result"]
 
@@ -187,6 +192,9 @@ defmodule Backplane.Services.WebSearch do
 
       is_list(get_in(body, ["data", "organic_results"])) ->
         get_in(body, ["data", "organic_results"])
+
+      is_list(get_in(body, ["data", "organic"])) ->
+        get_in(body, ["data", "organic"])
 
       is_list(get_in(body, ["data", "search_result"])) ->
         get_in(body, ["data", "search_result"])

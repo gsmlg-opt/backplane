@@ -66,8 +66,8 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
     assert html =~ "xAI Credential"
     assert html =~ "Ollama"
     assert html =~ "MiniMax"
-    assert html =~ "Z.ai"
-    assert html =~ "BigModel"
+    refute html =~ "Z.ai"
+    refute html =~ "BigModel"
     assert html =~ "shared-search-key"
     assert html =~ "xai-search-key"
     assert html =~ ~s(href="/admin/system/credentials")
@@ -139,9 +139,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
           "default_backend" => "minimax",
           "credentials" => %{
             "ollama" => "",
-            "minimax" => "mini-search-key",
-            "z_ai" => "",
-            "bigmodel" => ""
+            "minimax" => "mini-search-key"
           },
           "x_search" => %{
             "credential" => "",
@@ -169,9 +167,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
           "default_backend" => "ollama",
           "credentials" => %{
             "ollama" => "",
-            "minimax" => "",
-            "z_ai" => "",
-            "bigmodel" => ""
+            "minimax" => ""
           },
           "x_search" => %{
             "credential" => "xai-search-key",
@@ -206,9 +202,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
           "default_backend" => "ollama",
           "credentials" => %{
             "ollama" => "",
-            "minimax" => "",
-            "z_ai" => "",
-            "bigmodel" => ""
+            "minimax" => ""
           },
           "live_search" => %{
             "models" => ["openai-live/gpt-5.5", "xai-live/grok-4.3"]
@@ -243,9 +237,7 @@ defmodule BackplaneWeb.ManagedServiceSettingsLiveTest do
           "default_backend" => "ollama",
           "credentials" => %{
             "ollama" => "",
-            "minimax" => "",
-            "z_ai" => "",
-            "bigmodel" => ""
+            "minimax" => ""
           },
           "live_search" => %{
             "models" => ["unsupported/model"]

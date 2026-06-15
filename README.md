@@ -154,7 +154,7 @@ Examples:
 - `day::now`
 - `math::evaluate`
 - `web::fetch`
-- `web_search::search`
+- `web::search`
 - `skills::list`
 - `hub::discover`
 - `prefix::upstream_tool`
@@ -167,7 +167,7 @@ Managed services are built into Backplane and can be viewed from `/admin/hub` or
 
 - `day::*`: date/time tools backed by `apps/day_ex`
 - `web::fetch`: fetch an HTTP(S) URL and convert readable content to Markdown
-- `web_search::search`: search through configured Ollama, MiniMax, Z.ai, or BigModel backends
+- `web::search`: search through configured Ollama or MiniMax backends
 - `math::evaluate`: parse and evaluate math expressions through the native math engine
 
 The math service accepts either an infix expression such as `2 * (3 + 4)` or a canonical JSON AST. Input is parsed into `Backplane.Math.Expression.Ast` before execution, then dispatched through `Backplane.Math.Router` into the native engine under `Backplane.Math.Sandbox` timeouts and complexity limits.
