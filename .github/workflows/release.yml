@@ -171,3 +171,17 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           overwrite_files: true
+
+  docker-image:
+    name: Publish Docker Image
+    needs: publish
+    uses: ./.github/workflows/docker-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      git_ref: ${{ inputs.git_ref }}
+      image_tag: ghcr.io/gsmlg-dev/backplane:latest
+      version: ${{ inputs.version }}
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

@@ -76,6 +76,7 @@ if config_env() == :prod do
       """
 
   host = System.get_env("PHX_HOST", "localhost")
+  server? = System.get_env("PHX_SERVER") in ["1", "true", "TRUE", "yes", "YES"]
 
   port =
     case System.get_env("BACKPLANE_PORT") || System.get_env("PORT") do
@@ -86,5 +87,6 @@ if config_env() == :prod do
   config :backplane_web, BackplaneWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [ip: {0, 0, 0, 0}, port: port],
-    secret_key_base: secret_key_base
+    secret_key_base: secret_key_base,
+    server: server?
 end

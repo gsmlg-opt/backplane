@@ -1,0 +1,17 @@
+.git
+.github
+.trees
+_build
+deps
+node_modules
+priv/plts
+.elixir_ls
+.direnv
+.devenv
+.env
+*.log
+tmp
+coverage
+cover
+doc
+dist
