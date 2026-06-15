@@ -20,8 +20,6 @@ defmodule Backplane.ConfigTest do
       assert config[:backplane].auth_token == "test-secret-token"
     end
 
-
-
     test "parses upstream servers with stdio transport" do
       config = Backplane.Config.load!("#{@fixtures_path}/full.toml")
       stdio = Enum.find(config[:upstream], &(&1.transport == "stdio"))
@@ -40,8 +38,6 @@ defmodule Backplane.ConfigTest do
       assert http.url == "http://localhost:4200/mcp"
       assert http.prefix == "pg"
     end
-
-
 
     test "reads auth_token from hub section" do
       config = Backplane.Config.load!("#{@fixtures_path}/full.toml")
@@ -93,8 +89,6 @@ defmodule Backplane.ConfigTest do
       %{dir: dir}
     end
 
-
-
     test "config with non-list upstream section returns empty list", %{dir: dir} do
       path = Path.join(dir, "bad_upstream.toml")
 
@@ -109,8 +103,6 @@ defmodule Backplane.ConfigTest do
       config = Backplane.Config.load!(path)
       assert config[:upstream] == []
     end
-
-
 
     test "upstream with unknown transport type uses base config", %{dir: dir} do
       path = Path.join(dir, "unknown_transport.toml")
@@ -131,8 +123,6 @@ defmodule Backplane.ConfigTest do
       assert upstream.transport == "grpc"
     end
 
-
-
     test "normalizes upstream prefixes", %{dir: dir} do
       path = Path.join(dir, "normalized_prefix.toml")
 
@@ -151,8 +141,6 @@ defmodule Backplane.ConfigTest do
       upstream = hd(config[:upstream])
       assert upstream.prefix == "github"
     end
-
-
 
     test "upstream stdio with env map parses env", %{dir: dir} do
       path = Path.join(dir, "stdio_env.toml")
@@ -196,8 +184,6 @@ defmodule Backplane.ConfigTest do
       upstream = hd(config[:upstream])
       assert upstream.env == %{}
     end
-
-
 
     test "upstream stdio with non-map env defaults to empty map", %{dir: dir} do
       path = Path.join(dir, "stdio_bad_env.toml")

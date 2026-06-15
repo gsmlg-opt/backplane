@@ -61,8 +61,6 @@ defmodule Backplane.Config.ValidatorTest do
     assert Enum.any?(warnings, &(&1 =~ "unknown transport 'grpc'"))
   end
 
-
-
   test "validate warns about invalid port" do
     config = [
       backplane: %{port: 99_999},
@@ -222,8 +220,6 @@ defmodule Backplane.Config.ValidatorTest do
       assert Enum.any?(warnings, &(&1 =~ "duplicate upstream name 'same'"))
     end
 
-
-
     test "no warnings when all upstream prefixes are unique" do
       config = [
         backplane: %{port: 4100},
@@ -237,6 +233,4 @@ defmodule Backplane.Config.ValidatorTest do
       refute Enum.any?(warnings, &(&1 =~ "duplicate"))
     end
   end
-
-
 end
