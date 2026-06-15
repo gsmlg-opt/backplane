@@ -6,6 +6,11 @@ defmodule Backplane.Registry.ToolRegistryTest do
   setup do
     # Clear the ETS table between tests
     :ets.delete_all_objects(:backplane_tools)
+
+    on_exit(fn ->
+      :ets.delete_all_objects(:backplane_tools)
+    end)
+
     :ok
   end
 
