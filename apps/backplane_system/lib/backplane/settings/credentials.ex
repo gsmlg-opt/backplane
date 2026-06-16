@@ -236,13 +236,18 @@ defmodule Backplane.Settings.Credentials do
 
     Credential
     |> Repo.all()
-    |> Enum.filter(&(((&1.metadata || %{})["auth_type"] || "") in auth_types))
     |> Enum.filter(fn cred ->
-      with {:ok, vendor} <- oauth_vendor_for(cred),
-           {:ok, parsed} <- decode_credential_blob(cred) do
-        oauth_refresh_due?(vendor, parsed, now_ms, refresh_window_ms, refresh_interval_ms)
+      auth_type = (cred.metadata || %{})["auth_type"] || ""
+
+      if auth_type in auth_types do
+        with {:ok, vendor} <- oauth_vendor_for(cred),
+             {:ok, parsed} <- decode_credential_blob(cred) do
+          oauth_refresh_due?(vendor, parsed, now_ms, refresh_window_ms, refresh_interval_ms)
+        else
+          _ -> false
+        end
       else
-        _ -> false
+        false
       end
     end)
     |> Enum.map(& &1.name)

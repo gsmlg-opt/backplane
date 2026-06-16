@@ -4,7 +4,7 @@ import Config
 # Keep this in runtime config so local installations can be detected at boot
 # without baking machine-specific paths into compile-time config.
 if bun_path = System.get_env("MIX_BUN_PATH") || System.find_executable("bun") do
-  bun_version = System.cmd(bun_path, ["--version"]) |> elem(0) |> String.trim
+  bun_version = System.cmd(bun_path, ["--version"]) |> elem(0) |> String.trim()
   config :bun, path: bun_path, version: bun_version
 end
 

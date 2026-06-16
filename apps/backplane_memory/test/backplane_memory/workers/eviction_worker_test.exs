@@ -35,7 +35,7 @@ defmodule BackplaneMemory.Workers.EvictionWorkerTest do
     repo().update_all(from(m in MemorySchema, where: m.id == ^id), set: [confidence: confidence])
   end
 
-  defp is_deleted?(id) do
+  defp deleted?(id) do
     from(m in MemorySchema, where: m.id == ^id, select: m.deleted_at)
     |> repo().one()
     |> then(&(!is_nil(&1)))
@@ -57,7 +57,7 @@ defmodule BackplaneMemory.Workers.EvictionWorkerTest do
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
 
-      assert is_deleted?(mem.id)
+      assert deleted?(mem.id)
     end
 
     test "leaves strong recent memories untouched" do
@@ -68,7 +68,7 @@ defmodule BackplaneMemory.Workers.EvictionWorkerTest do
       job = %Oban.Job{args: %{}}
       assert {:ok, _} = EvictionWorker.perform(job)
 
-      refute is_deleted?(mem.id)
+      refute deleted?(mem.id)
     end
 
     test "respects memory.eviction_threshold setting via ETS" do
@@ -90,7 +90,7 @@ defmodule BackplaneMemory.Workers.EvictionWorkerTest do
       job = %Oban.Job{args: %{}}
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
-      assert is_deleted?(mem.id)
+      assert deleted?(mem.id)
     end
   end
 end

@@ -1,7 +1,7 @@
 defmodule Backplane.Services.WebFetchTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.Services.WebFetch
+  alias Backplane.Services.{Web, WebFetch}
 
   setup do
     previous = Application.get_env(:backplane, :web_fetch_req_options)
@@ -18,8 +18,9 @@ defmodule Backplane.Services.WebFetchTest do
     :ok
   end
 
-  test "tools/0 emits web::fetch with ManagedService-shaped fields" do
-    [tool] = WebFetch.tools()
+  test "web service exposes web::fetch with ManagedService-shaped fields" do
+    tool = Enum.find(Web.tools(), &(&1.name == "web::fetch"))
+
     assert tool.name == "web::fetch"
     assert is_binary(tool.description)
     assert is_map(tool.input_schema)

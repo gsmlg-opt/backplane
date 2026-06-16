@@ -103,7 +103,7 @@ defmodule Backplane.LLM.CredentialPlug do
   end
 
   defp apply_auth_headers(conn, provider, :anthropic, _auth_type, token) do
-    if is_anthropic_api?(provider) do
+    if anthropic_api?(provider) do
       conn
       |> delete_req_header("authorization")
       |> put_req_header("x-api-key", token)
@@ -139,7 +139,7 @@ defmodule Backplane.LLM.CredentialPlug do
     do: [{"authorization", "Bearer #{token}"}]
 
   defp base_headers(provider, :anthropic, _auth_type, token) do
-    if is_anthropic_api?(provider) do
+    if anthropic_api?(provider) do
       [{"x-api-key", token}]
     else
       [{"authorization", "Bearer #{token}"}]
@@ -149,7 +149,7 @@ defmodule Backplane.LLM.CredentialPlug do
   defp base_headers(_provider, :openai, _auth_type, token),
     do: [{"authorization", "Bearer #{token}"}]
 
-  defp is_anthropic_api?(%Provider{} = provider) do
+  defp anthropic_api?(%Provider{} = provider) do
     preset_key = provider.preset_key
     name = provider.name || ""
 
