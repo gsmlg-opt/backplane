@@ -3,6 +3,21 @@ defmodule Backplane.McpProtocol.Sse do
   Pure helpers for Server-Sent Events frames.
   """
 
+  defmodule Event do
+    @moduledoc """
+    Parsed Server-Sent Events frame.
+    """
+
+    @type t :: %__MODULE__{
+            event: String.t(),
+            data: String.t(),
+            id: String.t() | nil,
+            retry: non_neg_integer() | nil
+          }
+
+    defstruct event: "message", data: "", id: nil, retry: nil
+  end
+
   @spec encode(String.t(), term()) :: String.t()
   def encode(event, data) when is_binary(event) do
     encoded_data = if is_binary(data), do: data, else: Jason.encode!(data)
@@ -11,9 +26,14 @@ defmodule Backplane.McpProtocol.Sse do
       "data: #{encoded_data}\n\n"
   end
 
-  @spec parse(String.t()) :: {[%{event: String.t(), data: String.t()}], String.t()}
-  def parse(buffer) when is_binary(buffer) do
-    {frames, rest} = split_complete_frames(buffer)
+  @spec parse(String.t(), String.t()) :: {[Event.t()], String.t()}
+  def parse(chunk, buffer \\ "") when is_binary(chunk) and is_binary(buffer) do
+    input =
+      (buffer <> chunk)
+      |> String.replace("\r\n", "\n")
+      |> String.replace("\r", "\n")
+
+    {frames, rest} = split_complete_frames(input)
 
     events =
       frames
@@ -33,21 +53,48 @@ defmodule Backplane.McpProtocol.Sse do
   end
 
   defp parse_frame(frame) do
-    lines = String.split(frame, "\n", trim: true)
-    event = field_value(lines, "event")
-    data = field_value(lines, "data")
+    parsed =
+      frame
+      |> String.split("\n")
+      |> Enum.reduce(%{event: "message", data: [], id: nil, retry: nil}, &parse_line/2)
 
-    if event && data do
-      %{event: event, data: data}
+    case parsed.data do
+      [] ->
+        nil
+
+      data ->
+        %Event{
+          event: parsed.event,
+          data: data |> Enum.reverse() |> Enum.join("\n"),
+          id: parsed.id,
+          retry: parsed.retry
+        }
     end
   end
 
-  defp field_value(lines, field) do
-    prefix = field <> ": "
+  defp parse_line(":" <> _comment, event), do: event
+  defp parse_line("", event), do: event
 
-    lines
-    |> Enum.find_value(fn line ->
-      if String.starts_with?(line, prefix), do: String.replace_prefix(line, prefix, "")
-    end)
+  defp parse_line(line, event) do
+    case String.split(line, ":", parts: 2) do
+      [field, value] -> apply_field(field, strip_leading_space(value), event)
+      [_field_without_value] -> event
+    end
   end
+
+  defp strip_leading_space(" " <> value), do: value
+  defp strip_leading_space(value), do: value
+
+  defp apply_field("event", value, event), do: %{event | event: value}
+  defp apply_field("data", value, event), do: %{event | data: [value | event.data]}
+  defp apply_field("id", value, event), do: %{event | id: value}
+
+  defp apply_field("retry", value, event) do
+    case Integer.parse(value) do
+      {retry, ""} -> %{event | retry: retry}
+      _other -> event
+    end
+  end
+
+  defp apply_field(_field, _value, event), do: event
 end

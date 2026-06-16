@@ -8,6 +8,12 @@ defmodule Backplane.McpProtocol.JsonRpcTest do
              JsonRpc.request("ping", %{}, id: 1)
   end
 
+  test "generates request IDs when no ID is supplied" do
+    assert %{"id" => id} = JsonRpc.request("ping")
+    assert is_integer(id)
+    assert id > 0
+  end
+
   test "builds notification objects without id" do
     assert %{"jsonrpc" => "2.0", "method" => "notifications/initialized"} =
              JsonRpc.notification("notifications/initialized")
@@ -16,6 +22,11 @@ defmodule Backplane.McpProtocol.JsonRpcTest do
   test "builds result responses" do
     assert %{"jsonrpc" => "2.0", "id" => "abc", "result" => %{}} =
              JsonRpc.result("abc", %{})
+  end
+
+  test "builds result responses for any JSON result value" do
+    assert %{"jsonrpc" => "2.0", "id" => "abc", "result" => "pong"} =
+             JsonRpc.result("abc", "pong")
   end
 
   test "builds error responses" do

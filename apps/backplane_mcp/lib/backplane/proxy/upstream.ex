@@ -14,6 +14,7 @@ defmodule Backplane.Proxy.Upstream do
   require Logger
 
   alias Backplane.PubSubBroadcaster
+  alias Backplane.McpProtocol.JsonRpc
   alias Backplane.Registry.{Tool, ToolRegistry}
 
   @default_timeout 30_000
@@ -164,12 +165,8 @@ defmodule Backplane.Proxy.Upstream do
   def handle_call({:tools_call, tool_name, arguments}, from, %{transport: "stdio"} = state) do
     {id, state} = next_request_id(state)
 
-    request = %{
-      "jsonrpc" => "2.0",
-      "method" => "tools/call",
-      "id" => id,
-      "params" => %{"name" => tool_name, "arguments" => arguments}
-    }
+    request =
+      JsonRpc.request("tools/call", %{"name" => tool_name, "arguments" => arguments}, id: id)
 
     case send_stdio(state.port, request) do
       :ok ->
@@ -732,12 +729,7 @@ defmodule Backplane.Proxy.Upstream do
   # Helpers
 
   defp jsonrpc_request(method, params) do
-    %{
-      "jsonrpc" => "2.0",
-      "method" => method,
-      "id" => System.unique_integer([:positive]),
-      "params" => params
-    }
+    JsonRpc.request(method, params)
   end
 
   defp next_request_id(state) do
@@ -777,12 +769,7 @@ defmodule Backplane.Proxy.Upstream do
 
   defp send_ping(%{transport: "stdio"} = state) do
     # Use the pending_ping_id so the async response can be matched
-    request = %{
-      "jsonrpc" => "2.0",
-      "method" => "ping",
-      "id" => state.pending_ping_id,
-      "params" => %{}
-    }
+    request = JsonRpc.request("ping", %{}, id: state.pending_ping_id)
 
     case send_stdio(state.port, request) do
       :ok -> :ok

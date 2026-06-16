@@ -8,6 +8,7 @@ defmodule Backplane.Transport.McpPlug do
 
   require Logger
 
+  alias Backplane.McpProtocol.Sse
   alias Backplane.Transport.{McpHandler, CacheBodyReader}
 
   plug Backplane.Transport.VersionHeader
@@ -66,8 +67,7 @@ defmodule Backplane.Transport.McpPlug do
   defp sse_loop(conn) do
     receive do
       {:mcp_notification, notification} ->
-        data = Jason.encode!(notification)
-        chunk_data = "event: message\ndata: #{data}\n\n"
+        chunk_data = Sse.encode("message", notification)
 
         case Plug.Conn.chunk(conn, chunk_data) do
           {:ok, conn} -> sse_loop(conn)

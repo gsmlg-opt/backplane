@@ -10,8 +10,7 @@ defmodule Backplane.MCP.Info do
   - `2025-11-25` — OIDC, icon metadata, experimental tasks, extensions framework
   """
 
-  @latest_version "2025-11-25"
-  @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+  alias Backplane.McpProtocol
 
   # Ordered list for comparison — index 0 is oldest
   @version_order %{
@@ -32,11 +31,11 @@ defmodule Backplane.MCP.Info do
 
   @doc "Latest MCP protocol version supported by this server."
   @spec protocol_version() :: String.t()
-  def protocol_version, do: @latest_version
+  def protocol_version, do: McpProtocol.protocol_version()
 
   @doc "All MCP protocol versions supported by this server."
   @spec supported_versions() :: [String.t()]
-  def supported_versions, do: @supported_versions
+  def supported_versions, do: McpProtocol.supported_protocol_versions()
 
   @doc """
   Negotiate protocol version with client.
@@ -46,9 +45,7 @@ defmodule Backplane.MCP.Info do
   latest supported version is returned.
   """
   @spec negotiate_version(String.t() | nil) :: String.t()
-  def negotiate_version(nil), do: @latest_version
-  def negotiate_version(v) when v in @supported_versions, do: v
-  def negotiate_version(_), do: @latest_version
+  def negotiate_version(version), do: McpProtocol.negotiate_version(version)
 
   @doc """
   Return an integer ordinal for a version string, for comparison.
@@ -118,5 +115,5 @@ defmodule Backplane.MCP.Info do
   end
 
   # Fallback for unknown versions — use latest capabilities
-  def capabilities_for_version(_), do: capabilities_for_version(@latest_version)
+  def capabilities_for_version(_), do: capabilities_for_version(protocol_version())
 end

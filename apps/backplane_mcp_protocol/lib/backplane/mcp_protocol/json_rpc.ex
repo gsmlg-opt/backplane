@@ -8,7 +8,7 @@ defmodule Backplane.McpProtocol.JsonRpc do
 
   @spec request(String.t(), map() | nil, keyword()) :: map()
   def request(method, params \\ nil, opts \\ []) when is_binary(method) do
-    %{"jsonrpc" => @jsonrpc, "id" => Keyword.get(opts, :id), "method" => method}
+    %{"jsonrpc" => @jsonrpc, "id" => request_id(opts), "method" => method}
     |> maybe_put_params(params)
   end
 
@@ -18,8 +18,8 @@ defmodule Backplane.McpProtocol.JsonRpc do
     |> maybe_put_params(params)
   end
 
-  @spec result(term(), map()) :: map()
-  def result(id, result) when is_map(result) do
+  @spec result(term(), term()) :: map()
+  def result(id, result) do
     %{"jsonrpc" => @jsonrpc, "id" => id, "result" => result}
   end
 
@@ -38,6 +38,8 @@ defmodule Backplane.McpProtocol.JsonRpc do
   end
 
   def validate_request(_request), do: {:error, @invalid_request, "Invalid Request"}
+
+  defp request_id(opts), do: Keyword.get(opts, :id, System.unique_integer([:positive]))
 
   defp maybe_put_params(envelope, nil), do: envelope
   defp maybe_put_params(envelope, params), do: Map.put(envelope, "params", params)

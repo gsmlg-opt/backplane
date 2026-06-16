@@ -19,6 +19,7 @@ defmodule Backplane.Transport.McpHandler do
 
   alias Backplane.Clients
   alias Backplane.MCP.Info
+  alias Backplane.McpProtocol.{JsonRpc, Message}
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
@@ -70,22 +71,33 @@ defmodule Backplane.Transport.McpHandler do
       %{"_json" => batch} when is_list(batch) ->
         handle_batch(conn, batch)
 
-      %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
-        Telemetry.emit_mcp_request(method)
-        dispatch(conn, method, id, params["params"])
-
-      %{"jsonrpc" => "2.0", "method" => method} = params when is_map(params) ->
-        # Notification (no id) — acknowledge but don't respond with result
-        dispatch_notification(conn, method, params["params"])
-
-      %{"method" => _method} ->
-        # Missing jsonrpc field
-        json_rpc_error(conn, nil, -32_600, "Invalid Request: missing jsonrpc field")
+      params when is_map(params) ->
+        handle_message(conn, params)
 
       _ ->
         json_rpc_error(conn, nil, -32_600, "Invalid Request")
     end
   end
+
+  defp handle_message(conn, %{"method" => method} = params) do
+    cond do
+      Message.request?(params) ->
+        Telemetry.emit_mcp_request(method)
+        dispatch(conn, method, params["id"], params["params"])
+
+      Message.notification?(params) ->
+        # Notification (no id) — acknowledge but don't respond with result
+        dispatch_notification(conn, method, params["params"])
+
+      not Map.has_key?(params, "jsonrpc") ->
+        json_rpc_error(conn, nil, -32_600, "Invalid Request: missing jsonrpc field")
+
+      true ->
+        json_rpc_error(conn, nil, -32_600, "Invalid Request")
+    end
+  end
+
+  defp handle_message(conn, _params), do: json_rpc_error(conn, nil, -32_600, "Invalid Request")
 
   defp handle_batch(conn, []) do
     json_rpc_error(conn, nil, -32_600, "Invalid Request: empty batch")
@@ -98,19 +110,16 @@ defmodule Backplane.Transport.McpHandler do
     # Partition into requests needing responses vs notifications
     {to_dispatch, notifications_count} =
       Enum.reduce(requests, {[], 0}, fn request, {items, notif_count} ->
-        case request do
-          %{"jsonrpc" => "2.0", "method" => method, "id" => id} = params ->
-            {[{:request, method, id, params["params"]} | items], notif_count}
+        cond do
+          Message.request?(request) ->
+            {[{:request, request["method"], request["id"], request["params"]} | items],
+             notif_count}
 
-          %{"jsonrpc" => "2.0", "method" => _method} ->
+          Message.notification?(request) ->
             {items, notif_count + 1}
 
-          _ ->
-            invalid = %{
-              jsonrpc: "2.0",
-              id: nil,
-              error: %{code: -32_600, message: "Invalid Request"}
-            }
+          true ->
+            invalid = JsonRpc.error(nil, -32_600, "Invalid Request")
 
             {[{:invalid, invalid} | items], notif_count}
         end
@@ -141,11 +150,11 @@ defmodule Backplane.Transport.McpHandler do
 
         {{:exit, reason}, {:request, _method, id, _params}} ->
           Logger.warning("MCP dispatch task crashed: #{inspect(reason)}")
-          %{jsonrpc: "2.0", id: id, error: %{code: -32_603, message: "Internal error"}}
+          JsonRpc.error(id, -32_603, "Internal error")
 
         {{:exit, reason}, _} ->
           Logger.warning("MCP dispatch task crashed: #{inspect(reason)}")
-          %{jsonrpc: "2.0", id: nil, error: %{code: -32_603, message: "Internal error"}}
+          JsonRpc.error(nil, -32_603, "Internal error")
       end)
 
     case responses do
@@ -165,7 +174,7 @@ defmodule Backplane.Transport.McpHandler do
     case compute_result("tools/list", id, params) do
       {:result, %{tools: tools} = result} ->
         filtered = Clients.filter_tools(tools, scopes)
-        %{jsonrpc: "2.0", id: id, result: %{result | tools: filtered}}
+        JsonRpc.result(id, %{result | tools: filtered})
     end
   end
 
@@ -174,24 +183,20 @@ defmodule Backplane.Transport.McpHandler do
     if Clients.scope_matches?(scopes, name) do
       case compute_tool_call_result(params, client) do
         {:result, result} ->
-          %{jsonrpc: "2.0", id: id, result: result}
+          JsonRpc.result(id, result)
 
         {:error, code, message} ->
-          %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
+          JsonRpc.error(id, code, message)
       end
     else
-      %{
-        jsonrpc: "2.0",
-        id: id,
-        error: %{code: -32_001, message: "Tool '#{name}' is not in scope for this client"}
-      }
+      JsonRpc.error(id, -32_001, "Tool '#{name}' is not in scope for this client")
     end
   end
 
   defp dispatch_single(method, id, params, _scopes, _client) do
     case compute_result(method, id, params) do
-      {:result, result} -> %{jsonrpc: "2.0", id: id, result: result}
-      {:error, code, message} -> %{jsonrpc: "2.0", id: id, error: %{code: code, message: message}}
+      {:result, result} -> JsonRpc.result(id, result)
+      {:error, code, message} -> JsonRpc.error(id, code, message)
     end
   end
 
@@ -863,12 +868,7 @@ defmodule Backplane.Transport.McpHandler do
   defp format_error(message), do: inspect(message)
 
   defp json_rpc_result(conn, id, result) do
-    body =
-      Jason.encode!(%{
-        jsonrpc: "2.0",
-        id: id,
-        result: result
-      })
+    body = Jason.encode!(JsonRpc.result(id, result))
 
     conn
     |> put_resp_content_type("application/json")
@@ -876,12 +876,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp json_rpc_error(conn, id, code, message) do
-    body =
-      Jason.encode!(%{
-        jsonrpc: "2.0",
-        id: id,
-        error: %{code: code, message: message}
-      })
+    body = Jason.encode!(JsonRpc.error(id, code, message))
 
     conn
     |> put_resp_content_type("application/json")
