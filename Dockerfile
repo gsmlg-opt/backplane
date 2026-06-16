@@ -28,6 +28,7 @@ COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
 COPY apps/backplane_host_agent/mix.exs ./apps/backplane_host_agent/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
+COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
