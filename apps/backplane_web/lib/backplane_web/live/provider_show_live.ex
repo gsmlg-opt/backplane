@@ -6,7 +6,8 @@ defmodule BackplaneWeb.ProviderShowLive do
     Provider,
     ProviderApi,
     ProviderModel,
-    ProviderModelSurface
+    ProviderModelSurface,
+    ProviderPreset
   }
 
   alias Backplane.Repo
@@ -52,12 +53,12 @@ defmodule BackplaneWeb.ProviderShowLive do
     {:noreply,
      assign(socket,
        provider_form: to_form(params, as: :provider),
-       provider_errors: validate_provider_params(params)
+       provider_errors: validate_provider_params(socket.assigns.provider, params)
      )}
   end
 
   def handle_event("save_provider", %{"provider" => params}, socket) do
-    errors = validate_provider_params(params)
+    errors = validate_provider_params(socket.assigns.provider, params)
 
     if map_size(errors) > 0 do
       {:noreply,
@@ -281,6 +282,7 @@ defmodule BackplaneWeb.ProviderShowLive do
 
   defp load_credentials(socket) do
     provider = socket.assigns.provider
+    preset = provider_preset(provider)
     creds = safe_call(fn -> Credentials.list() end, [])
     known_names = MapSet.new(creds, & &1.name)
 
@@ -288,8 +290,8 @@ defmodule BackplaneWeb.ProviderShowLive do
       [
         {"", "Select a credential..."}
         | creds
-          |> Enum.filter(&(&1.kind == "llm"))
-          |> Enum.map(fn cred -> {cred.name, "#{cred.name} (#{cred.kind})"} end)
+          |> Enum.filter(&credential_allowed?(preset, &1))
+          |> Enum.map(fn cred -> {cred.name, credential_label(cred)} end)
       ]
 
     options =
@@ -300,6 +302,37 @@ defmodule BackplaneWeb.ProviderShowLive do
       end
 
     assign(socket, credential_options: options)
+  end
+
+  defp provider_preset(%Provider{preset_key: preset_key}) when is_binary(preset_key) do
+    ProviderPreset.get(preset_key)
+  end
+
+  defp provider_preset(_provider), do: nil
+
+  defp credential_allowed?(nil, cred), do: cred.kind == "llm"
+
+  defp credential_allowed?(preset, cred) do
+    cred.kind == preset.credential_kind and credential_auth_type_allowed?(preset, cred)
+  end
+
+  defp credential_auth_type_allowed?(%{credential_auth_type: nil}, _cred), do: true
+
+  defp credential_auth_type_allowed?(preset, cred) do
+    credential_auth_type(cred) == preset.credential_auth_type
+  end
+
+  defp credential_auth_type(%{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type) || "api_key"
+  end
+
+  defp credential_auth_type(_cred), do: "api_key"
+
+  defp credential_label(cred) do
+    auth_type = credential_auth_type(cred)
+    suffix = if auth_type == "api_key", do: cred.kind, else: auth_type
+
+    "#{cred.name} (#{suffix})"
   end
 
   defp update_provider(provider, params) do
@@ -420,13 +453,45 @@ defmodule BackplaneWeb.ProviderShowLive do
     end)
   end
 
-  defp validate_provider_params(params) do
+  defp validate_provider_params(provider, params) do
     %{}
     |> require_field(params, "name", "Name is required")
     |> require_field(params, "credential", "Credential is required")
+    |> require_allowed_credential(provider_preset(provider), params)
     |> require_api_surface(params, "openai")
     |> require_api_surface(params, "anthropic")
   end
+
+  defp require_allowed_credential(errors, nil, _params), do: errors
+
+  defp require_allowed_credential(errors, preset, params) do
+    credential = params["credential"]
+
+    if blank?(credential) do
+      errors
+    else
+      allowed =
+        safe_call(
+          fn ->
+            Credentials.list()
+            |> Enum.any?(&(&1.name == credential and credential_allowed?(preset, &1)))
+          end,
+          false
+        )
+
+      if allowed do
+        errors
+      else
+        Map.put(errors, "credential", credential_error(preset))
+      end
+    end
+  end
+
+  defp credential_error(%{credential_auth_type: auth_type}) when is_binary(auth_type) do
+    "Credential must use #{auth_type} auth type"
+  end
+
+  defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
 
   defp require_api_surface(errors, params, surface) do
     if truthy?(params["#{surface}_enabled"]) do

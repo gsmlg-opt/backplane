@@ -2,8 +2,8 @@ defmodule Backplane.LLM.ProviderPreset do
   @moduledoc """
   Static catalog for known LLM provider creation presets.
 
-  Presets are UI defaults only. Runtime routing uses persisted provider API and
-  provider model rows.
+  Presets provide creation defaults and optional credential auth constraints.
+  Runtime routing uses persisted provider API and provider model rows.
   """
 
   @type api_defaults :: %{
@@ -277,7 +277,9 @@ defmodule Backplane.LLM.ProviderPreset do
       key: "google-ai-studio",
       name: "Google AI Studio",
       default_name: "google-ai-studio",
+      default_credential: "google-antigravity",
       credential_kind: "llm",
+      credential_auth_type: "google_oauth",
       default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
       openai: %{
         enabled: true,
@@ -289,7 +291,7 @@ defmodule Backplane.LLM.ProviderPreset do
         base_url: "",
         discovery_path: nil
       },
-      notes: "Google AI Studio provides Gemini access through an OpenAI-compatible API.",
+      notes: "Google AI Studio subscription access uses the Antigravity Google OAuth credential.",
       docs_urls: ["https://ai.google.dev/gemini-api/docs/openai"]
     },
     %{

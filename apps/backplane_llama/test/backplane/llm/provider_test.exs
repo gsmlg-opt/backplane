@@ -106,6 +106,33 @@ defmodule Backplane.LLM.ProviderTest do
       assert message =~ "not found"
     end
 
+    test "rejects google ai studio provider with non-google oauth credential" do
+      credential = credential_name()
+      Credentials.store(credential, "sk-test-value", "llm")
+
+      assert {:error, changeset} =
+               credential
+               |> valid_provider_attrs()
+               |> Map.put(:preset_key, "google-ai-studio")
+               |> Provider.create()
+
+      assert %{credential: [message]} = errors_on(changeset)
+      assert message =~ "google_oauth"
+    end
+
+    test "accepts google ai studio provider with google oauth credential" do
+      credential = credential_name()
+      Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
+
+      assert {:ok, provider} =
+               credential
+               |> valid_provider_attrs()
+               |> Map.put(:preset_key, "google-ai-studio")
+               |> Provider.create()
+
+      assert provider.credential == credential
+    end
+
     test "rejects non-positive rpm_limit" do
       credential = credential_name()
       Credentials.store(credential, "sk-test-value", "llm")
@@ -328,6 +355,42 @@ defmodule Backplane.LLM.ProviderTest do
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end
 
+    test "reloads x.ai models with JSON content type and bearer authorization" do
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.request_path == "/v1/models"
+        assert ["Bearer sk-test-value"] = Plug.Conn.get_req_header(conn, "authorization")
+        assert ["application/json"] = Plug.Conn.get_req_header(conn, "content-type")
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(
+          200,
+          Jason.encode!(%{
+            "data" => [
+              %{"id" => "grok-4.3"}
+            ]
+          })
+        )
+      end)
+
+      provider = create_provider(%{preset_key: "x-ai"})
+
+      {:ok, _api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://api.x.ai/v1",
+          model_discovery_path: "/models"
+        })
+
+      provider = Provider.get(provider.id)
+
+      assert %{discovered: 1, created: 1, updated: 0, errors: []} =
+               ModelDiscovery.reload_provider(provider)
+
+      assert [%{model: "grok-4.3"}] = ProviderModel.list_for_provider(provider.id)
+    end
+
     test "loads OpenAI Codex OAuth models from local catalog instead of provider API" do
       Req.Test.stub(__MODULE__, fn _conn ->
         flunk("OpenAI Codex OAuth discovery should not call the provider /models endpoint")
@@ -360,6 +423,52 @@ defmodule Backplane.LLM.ProviderTest do
       assert created == discovered
       assert ProviderModel.get_by_provider_and_model(provider.id, "gpt-5.3-codex")
 
+      assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "loads Google Antigravity OAuth models from local catalog instead of provider API" do
+      previous_catalog = Application.get_env(:backplane, :google_antigravity_model_catalog)
+
+      Application.put_env(:backplane, :google_antigravity_model_catalog, [
+        "gemini-antigravity-test"
+      ])
+
+      on_exit(fn ->
+        if previous_catalog do
+          Application.put_env(:backplane, :google_antigravity_model_catalog, previous_catalog)
+        else
+          Application.delete_env(:backplane, :google_antigravity_model_catalog)
+        end
+      end)
+
+      Req.Test.stub(__MODULE__, fn _conn ->
+        flunk("Google Antigravity OAuth discovery should not call the provider /models endpoint")
+      end)
+
+      credential = credential_name()
+      Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "google-antigravity-test-#{System.unique_integer([:positive])}",
+          credential: credential,
+          preset_key: "google-ai-studio"
+        })
+
+      {:ok, _api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+          model_discovery_path: "/models"
+        })
+
+      provider = Provider.get(provider.id)
+
+      assert %{discovered: 1, created: 1, updated: 0, errors: []} =
+               ModelDiscovery.reload_provider(provider)
+
+      assert ProviderModel.get_by_provider_and_model(provider.id, "gemini-antigravity-test")
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end
   end

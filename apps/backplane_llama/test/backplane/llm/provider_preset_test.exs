@@ -115,6 +115,9 @@ defmodule Backplane.LLM.ProviderPresetTest do
     google = ProviderPreset.fetch!("google-ai-studio")
     moonshot = ProviderPreset.fetch!("moonshot-cn")
 
+    assert google.default_credential == "google-antigravity"
+    assert google.credential_kind == "llm"
+    assert google.credential_auth_type == "google_oauth"
     assert google.openai.enabled
     assert google.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert google.openai.discovery_path == "/models"

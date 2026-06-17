@@ -13,7 +13,9 @@ defmodule Backplane.LLM.Provider do
 
   alias Backplane.LLM.ProviderApi
   alias Backplane.LLM.ProviderModel
+  alias Backplane.LLM.ProviderPreset
   alias Backplane.Repo
+  alias Backplane.Settings.Credentials
 
   @type t :: %__MODULE__{}
 
@@ -56,6 +58,7 @@ defmodule Backplane.LLM.Provider do
     |> validate_number(:rpm_limit, greater_than: 0)
     |> validate_default_headers()
     |> validate_credential_exists()
+    |> validate_preset_credential_auth_type()
     |> unique_constraint(:name, name: :llm_providers_name_index)
   end
 
@@ -70,6 +73,7 @@ defmodule Backplane.LLM.Provider do
     |> validate_number(:rpm_limit, greater_than: 0)
     |> validate_default_headers()
     |> validate_credential_exists()
+    |> validate_preset_credential_auth_type()
     |> unique_constraint(:name, name: :llm_providers_name_index)
   end
 
@@ -94,6 +98,52 @@ defmodule Backplane.LLM.Provider do
           else: add_error(changeset, :credential, "credential '#{name}' not found")
     end
   end
+
+  defp validate_preset_credential_auth_type(changeset) do
+    preset = preset_for_auth_type(get_field(changeset, :preset_key))
+    credential = get_field(changeset, :credential)
+
+    cond do
+      is_nil(preset) ->
+        changeset
+
+      credential in [nil, ""] ->
+        changeset
+
+      Keyword.has_key?(changeset.errors, :credential) ->
+        changeset
+
+      credential_auth_type(credential) == preset.credential_auth_type ->
+        changeset
+
+      true ->
+        add_error(changeset, :credential, "must use #{preset.credential_auth_type} auth type")
+    end
+  end
+
+  defp preset_for_auth_type(preset_key) when is_binary(preset_key) do
+    case ProviderPreset.get(preset_key) do
+      %{credential_auth_type: auth_type} = preset when is_binary(auth_type) -> preset
+      _ -> nil
+    end
+  end
+
+  defp preset_for_auth_type(_preset_key), do: nil
+
+  defp credential_auth_type(name) do
+    Credentials.list()
+    |> Enum.find(&(&1.name == name))
+    |> case do
+      nil -> nil
+      credential -> credential_metadata_auth_type(credential.metadata)
+    end
+  end
+
+  defp credential_metadata_auth_type(metadata) when is_map(metadata) do
+    Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type) || "api_key"
+  end
+
+  defp credential_metadata_auth_type(_metadata), do: "api_key"
 
   # ── Context ──────────────────────────────────────────────────────────────────
 
