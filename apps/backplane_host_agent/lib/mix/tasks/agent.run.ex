@@ -32,6 +32,8 @@ defmodule Mix.Tasks.Agent.Run do
     Worker
   }
 
+  alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
+
   @retry_interval_ms 4_000
 
   @impl true
@@ -99,6 +101,7 @@ defmodule Mix.Tasks.Agent.Run do
   defp connect_and_run(config) do
     MemoryProxy.set_config(config)
     ensure_mcp_manager_started()
+    maybe_start_memory(config)
 
     %{channel: channel} = link = connect_with_retry(config)
     MemoryProxy.set_connection(link, config)
@@ -127,6 +130,25 @@ defmodule Mix.Tasks.Agent.Run do
         Mix.raise("failed to start host agent MCP manager: #{inspect(reason)}")
     end
   end
+
+  defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do
+    case MemorySupervisor.start_link(memory_config) do
+      {:ok, _pid} ->
+        Mix.shell().info("Memory store ready at #{memory_config.db_path}.")
+        :ok
+
+      :ignore ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("failed to start memory store: #{inspect(reason)}")
+    end
+  end
+
+  defp maybe_start_memory(_config), do: :ok
 
   defp connect_with_retry(config) do
     Mix.shell().info("Connecting host agent #{config.machine_name} to #{config.hub_url}…")

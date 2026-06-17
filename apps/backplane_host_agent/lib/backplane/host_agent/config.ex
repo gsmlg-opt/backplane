@@ -17,6 +17,7 @@ defmodule Backplane.HostAgent.Config do
     :token,
     :manifest_path,
     :work_dir,
+    :memory,
     interval_ms: 60_000,
     targets: [],
     http_bind: "127.0.0.1",
@@ -55,6 +56,16 @@ defmodule Backplane.HostAgent.Config do
       # on this host. Set http_port to 0 to disable.
       http_bind: 127.0.0.1
       http_port: #{@default_http_port}
+
+    memory:
+      enabled: true
+      db_path: #{Path.join(work_dir, "memory/host_agent_memory.db")}
+      bound_scope: proj_local
+      local_ttl_days: 90
+      sync_interval_ms: 5000
+      sync_batch_size: 50
+      max_attempts: 5
+      tombstone_relearn: block
 
     targets:
       - name: agents
@@ -128,6 +139,8 @@ defmodule Backplane.HostAgent.Config do
     agent = raw["agent"] || %{}
     hub_url = trim_trailing_slash(agent["hub_url"])
     host_id = agent["host_id"]
+    work_dir = expand_path(agent["work_dir"])
+    http_port = parse_port(agent["http_port"])
 
     %__MODULE__{
       host_id: host_id,
@@ -137,9 +150,10 @@ defmodule Backplane.HostAgent.Config do
       token: agent["token"],
       interval_ms: agent["interval_ms"] || 60_000,
       manifest_path: expand_path(agent["manifest_path"]),
-      work_dir: expand_path(agent["work_dir"]),
+      work_dir: work_dir,
       http_bind: agent["http_bind"] || "127.0.0.1",
-      http_port: parse_port(agent["http_port"]),
+      http_port: http_port,
+      memory: parse_memory(raw["memory"], work_dir, http_port),
       targets: parse_targets(raw["targets"] || [])
     }
   end
@@ -160,6 +174,50 @@ defmodule Backplane.HostAgent.Config do
   end
 
   defp parse_targets(_targets), do: []
+
+  defp parse_memory(raw, work_dir, http_port) do
+    raw = if is_map(raw), do: raw, else: %{}
+
+    %{
+      enabled: parse_bool(raw["enabled"], memory_enabled_by_default?(http_port)),
+      db_path: expand_path(raw["db_path"] || default_memory_db_path(work_dir)),
+      bound_scope: parse_non_empty_string(raw["bound_scope"], "proj_local"),
+      local_ttl_days: parse_positive_int(raw["local_ttl_days"], 90),
+      sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000),
+      sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50),
+      max_attempts: parse_positive_int(raw["max_attempts"], 5),
+      tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"])
+    }
+  end
+
+  defp memory_enabled_by_default?(port) when is_integer(port) and port > 0, do: true
+  defp memory_enabled_by_default?(_port), do: false
+
+  defp default_memory_db_path(work_dir) do
+    base_dir = work_dir || default_work_dir()
+    Path.join(base_dir, "memory/host_agent_memory.db")
+  end
+
+  defp parse_bool(nil, default), do: default
+  defp parse_bool(value, _default) when is_boolean(value), do: value
+  defp parse_bool("true", _default), do: true
+  defp parse_bool("false", _default), do: false
+  defp parse_bool(_value, default), do: default
+
+  defp parse_positive_int(value, _default) when is_integer(value) and value > 0, do: value
+  defp parse_positive_int(_value, default), do: default
+
+  defp parse_non_empty_string(value, default) when is_binary(value) do
+    case String.trim(value) do
+      "" -> default
+      trimmed -> trimmed
+    end
+  end
+
+  defp parse_non_empty_string(_value, default), do: default
+
+  defp parse_tombstone_relearn("allow_with_log"), do: "allow_with_log"
+  defp parse_tombstone_relearn(_value), do: "block"
 
   defp expand_path(path) when is_binary(path), do: Path.expand(path)
   defp expand_path(path), do: path

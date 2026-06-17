@@ -18,6 +18,8 @@ defmodule Backplane.HostAgent.Worker do
     Reporter
   }
 
+  alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
+
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
@@ -129,12 +131,14 @@ defmodule Backplane.HostAgent.Worker do
          :ok <- validate_required_config(config),
          {:ok, %{channel: channel} = connection} <- connector_module.connect(config),
          :ok <- set_memory_connection(memory_proxy_module, connection, config),
+         {:ok, memory_supervisor} <- maybe_start_memory(config),
          {:ok, http_supervisor} <- maybe_start_http_server(http_server_module, config) do
       opts =
         opts
         |> Keyword.put(:channel, channel)
         |> Keyword.put(:config, config)
         |> Keyword.put(:http_supervisor, http_supervisor)
+        |> Keyword.put(:memory_supervisor, memory_supervisor)
 
       {:ok, state_from_opts(opts)}
     else
@@ -154,6 +158,7 @@ defmodule Backplane.HostAgent.Worker do
       config: Keyword.get(opts, :config),
       desired: Keyword.get(opts, :desired),
       http_supervisor: Keyword.get(opts, :http_supervisor),
+      memory_supervisor: Keyword.get(opts, :memory_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
       mcp_manager_module: Keyword.get(opts, :mcp_manager_module, McpManager),
       last_sync: nil,
@@ -194,6 +199,17 @@ defmodule Backplane.HostAgent.Worker do
       memory_proxy_module.set_channel(connection.channel)
     end
   end
+
+  defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do
+    case MemorySupervisor.start_link(memory_config) do
+      {:ok, pid} -> {:ok, pid}
+      :ignore -> {:ok, nil}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, reason} -> {:error, {:memory_start_failed, reason}}
+    end
+  end
+
+  defp maybe_start_memory(_config), do: {:ok, nil}
 
   defp validate_required_config(config) do
     missing =
