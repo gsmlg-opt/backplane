@@ -89,7 +89,79 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert sample =~ "http_bind: 127.0.0.1"
     assert sample =~ "host_id: REPLACE_WITH_AGENT_ID"
     assert sample =~ "\n  http_port: 4221\n"
+    assert sample =~ "\nmemory:\n"
+    assert sample =~ "db_path:"
+    assert sample =~ "local_ttl_days: 90"
     refute sample =~ "# http_port"
+  end
+
+  @tag :tmp_dir
+  test "defaults memory config from work_dir when HTTP memory API is enabled", %{tmp_dir: tmp_dir} do
+    work_dir = Path.join(tmp_dir, "work")
+    config_path = Path.join(tmp_dir, "agent.yaml")
+
+    File.write!(config_path, """
+    agent:
+      machine_name: t430
+      hub_url: http://localhost:4220
+      host_id: host-123
+      token: secret-token
+      manifest_path: #{Path.join(tmp_dir, "manifest.json")}
+      work_dir: #{work_dir}
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.memory == %{
+             enabled: true,
+             db_path: Path.join(work_dir, "memory/host_agent_memory.db"),
+             bound_scope: "proj_local",
+             local_ttl_days: 90,
+             sync_interval_ms: 5_000,
+             sync_batch_size: 50,
+             max_attempts: 5,
+             tombstone_relearn: "block"
+           }
+  end
+
+  @tag :tmp_dir
+  test "parses explicit memory config and expands db_path", %{tmp_dir: tmp_dir} do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+    db_path = Path.join(tmp_dir, "memory.db")
+
+    File.write!(config_path, """
+    agent:
+      machine_name: t430
+      hub_url: http://localhost:4220
+      host_id: host-123
+      token: secret-token
+      manifest_path: #{Path.join(tmp_dir, "manifest.json")}
+      work_dir: #{Path.join(tmp_dir, "work")}
+      http_port: 0
+
+    memory:
+      enabled: true
+      db_path: #{db_path}
+      bound_scope: proj_custom
+      local_ttl_days: 30
+      sync_interval_ms: 250
+      sync_batch_size: 10
+      max_attempts: 2
+      tombstone_relearn: allow_with_log
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.memory == %{
+             enabled: true,
+             db_path: db_path,
+             bound_scope: "proj_custom",
+             local_ttl_days: 30,
+             sync_interval_ms: 250,
+             sync_batch_size: 10,
+             max_attempts: 2,
+             tombstone_relearn: "allow_with_log"
+           }
   end
 
   @tag :tmp_dir
