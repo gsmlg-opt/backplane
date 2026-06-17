@@ -19,6 +19,10 @@ in {
       lolcat
       watchman
       tailwindcss_4
+      pkg-config
+      openssl
+      cargo
+      rustc
       beam28Packages.elixir-ls
     ]
     ++ lib.optionals stdenv.isLinux [

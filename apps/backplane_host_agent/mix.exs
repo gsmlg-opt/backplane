@@ -34,7 +34,9 @@ defmodule Backplane.HostAgent.MixProject do
       {:yaml_elixir, "~> 2.9"},
       {:plug, "~> 1.16"},
       {:bandit, "~> 1.5"},
-      {:telemetry, "~> 1.2"}
+      {:telemetry, "~> 1.2"},
+      # WORKAROUND(upstream): gsmlg-dev/ex_turso#1
+      {:ex_turso, "~> 0.1.1"}
     ]
   end
 end
