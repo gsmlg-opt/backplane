@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
 
   use Supervisor
 
-  alias Backplane.HostAgent.Memory.{Migrator, Store}
+  alias Backplane.HostAgent.Memory.{Migrator, Pruner, Store, Syncer}
 
   @default_pool_size 1
   @default_busy_timeout_ms 5_000
@@ -29,7 +29,15 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        name: store_name,
        pool_size: Map.get(opts, :pool_size, @default_pool_size),
        busy_timeout_ms: Map.get(opts, :busy_timeout_ms, @default_busy_timeout_ms)},
-      {Migrator, store: store_name}
+      {Migrator, store: store_name},
+      {Syncer,
+       store: store_name,
+       config: opts,
+       name: Map.fetch!(opts, :syncer_name),
+       interval_ms: Map.get(opts, :sync_interval_ms),
+       batch_size: Map.get(opts, :sync_batch_size),
+       max_attempts: Map.get(opts, :max_attempts)},
+      {Pruner, store: store_name, config: opts, name: Map.fetch!(opts, :pruner_name)}
     ]
 
     Elixir.Supervisor.init(children, strategy: :one_for_one)
@@ -38,6 +46,12 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
   defp normalize(memory_config) do
     memory_config
     |> Map.put_new(:store_name, Store)
+    |> Map.put_new_lazy(:syncer_name, fn ->
+      :"#{Map.get(memory_config, :store_name, Store)}_syncer"
+    end)
+    |> Map.put_new_lazy(:pruner_name, fn ->
+      :"#{Map.get(memory_config, :store_name, Store)}_pruner"
+    end)
     |> Map.put_new(:pool_size, @default_pool_size)
     |> Map.put_new(:busy_timeout_ms, @default_busy_timeout_ms)
   end

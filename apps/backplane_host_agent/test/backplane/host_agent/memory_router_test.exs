@@ -1,79 +1,35 @@
 defmodule Backplane.HostAgent.MemoryRouterTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.{MemoryProxy, MemoryRouter}
+  alias Backplane.HostAgent.Memory.{Migrator, Store}
+  alias Backplane.HostAgent.MemoryRouter
+  alias ExTurso.Result
 
-  import Plug.Test
   import Plug.Conn
+  import Plug.Test
 
-  defmodule FakeChannel do
-    @moduledoc false
+  @moduletag :tmp_dir
 
-    def push(_channel_pid, event, payload, _timeout \\ 5_000) do
-      send(__owner__(), {:proxy_push, event, payload})
+  setup %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
 
-      case payload do
-        %{"method" => "remember", "arguments" => %{"content" => content}}
-        when is_binary(content) and content != "" ->
-          {:ok, %{"ok" => true, "result" => %{"id" => "mem_123", "scope" => "global"}}}
+    Application.put_env(:backplane_host_agent, :memory_store, store)
 
-        %{"method" => "remember"} ->
-          {:ok, %{"ok" => false, "error" => "content is required"}}
-
-        %{"method" => "recall"} ->
-          {:ok,
-           %{
-             "ok" => true,
-             "result" => %{
-               "results" => [
-                 %{"id" => "m1", "content" => "hello world", "scope" => "/tmp/proj"}
-               ]
-             }
-           }}
-
-        %{"method" => "list"} ->
-          {:ok,
-           %{
-             "ok" => true,
-             "result" => %{
-               "results" => [
-                 %{"id" => "m1", "content" => "older", "scope" => "/tmp/proj"}
-               ]
-             }
-           }}
-
-        %{"method" => "forget"} ->
-          {:ok, %{"ok" => true, "result" => %{"id" => "m1", "status" => "deleted"}}}
-
-        %{"method" => "stats"} ->
-          {:ok, %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}}}
-
-        _ ->
-          {:ok, %{"ok" => true, "result" => %{}}}
-      end
-    end
-
-    defp __owner__ do
-      :persistent_term.get({__MODULE__, :owner})
-    end
-  end
-
-  setup do
-    :persistent_term.put({FakeChannel, :owner}, self())
-    MemoryProxy.set_channel(self())
-    Application.put_env(:backplane_host_agent, :channel_module, FakeChannel)
+    Application.put_env(:backplane_host_agent, :memory_config, %{
+      bound_scope: "proj_local",
+      tombstone_relearn: "block"
+    })
 
     on_exit(fn ->
-      MemoryProxy.set_channel(nil)
-      Application.delete_env(:backplane_host_agent, :channel_module)
-      _ = :persistent_term.erase({FakeChannel, :owner})
+      Application.delete_env(:backplane_host_agent, :memory_store)
+      Application.delete_env(:backplane_host_agent, :memory_config)
     end)
 
-    :ok
+    {:ok, store: store}
   end
 
   describe "POST /memory/:agent_id/call/:method" do
-    test "forwards a remember call and injects agent_id" do
+    test "handles remember locally and stores the route agent_id", %{store: store} do
       conn =
         :post
         |> conn("/memory/agt_42/call/remember", Jason.encode!(%{"content" => "hello"}))
@@ -81,12 +37,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 200
-      assert %{"ok" => true, "result" => %{"id" => "mem_123"}} = Jason.decode!(conn.resp_body)
 
-      assert_received {:proxy_push, "memory_call", %{"method" => "remember", "arguments" => args}}
+      assert %{"ok" => true, "result" => %{"id" => id, "scope" => "proj_local"}} =
+               Jason.decode!(conn.resp_body)
 
-      assert args["agent_id"] == "agt_42"
-      assert args["content"] == "hello"
+      assert {:ok, %Result{rows: [%{"agent_id" => "agt_42"}]}} =
+               Store.query(store, "SELECT agent_id FROM memories WHERE id = ?", [id])
     end
 
     test "returns 404 for unknown memory methods" do
@@ -102,52 +58,28 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                Jason.decode!(conn.resp_body)
     end
 
-    test "returns 503 when no channel is set" do
-      MemoryProxy.set_channel(nil)
+    test "works without a channel process", %{store: store} do
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 """
+                 INSERT INTO memories(id, content, content_hash, scope, agent_id, inserted_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 """,
+                 [
+                   "mem_1",
+                   "offline local recall",
+                   hash("offline local recall"),
+                   "proj_local",
+                   "agt_42",
+                   "2026-06-17T00:00:00Z",
+                   "2026-06-17T00:00:00Z"
+                 ]
+               )
 
       conn =
         :post
-        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "x"}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 503
-      assert %{"error" => "host agent is not connected"} = Jason.decode!(conn.resp_body)
-    end
-
-    # Mirrors Hermes prefetch / OpenClaw before_agent_start.
-    test "recall forwards query+scope+limit and returns memory rows" do
-      conn =
-        :post
-        |> conn(
-          "/memory/agt_42/call/recall",
-          Jason.encode!(%{"query" => "hello", "limit" => 5, "scope" => "/tmp/proj"})
-        )
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{"results" => [%{"id" => "m1", "content" => "hello world"}]}
-             } = Jason.decode!(conn.resp_body)
-
-      assert_received {:proxy_push, "memory_call", %{"method" => "recall", "arguments" => args}}
-      assert args["agent_id"] == "agt_42"
-      assert args["query"] == "hello"
-      assert args["limit"] == 5
-      assert args["scope"] == "/tmp/proj"
-    end
-
-    # Mirrors Hermes system_prompt_block / memory_list tool.
-    test "list forwards scope+limit and returns memory rows" do
-      conn =
-        :post
-        |> conn(
-          "/memory/agt_42/call/list",
-          Jason.encode!(%{"scope" => "/tmp/proj", "limit" => 10})
-        )
+        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "offline"}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
@@ -155,34 +87,64 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert %{
                "ok" => true,
-               "result" => %{"results" => [%{"id" => "m1", "content" => "older"}]}
+               "result" => %{
+                 "hits" => [
+                   %{"id" => "mem_1", "content" => "offline local recall", "source" => "local"}
+                 ]
+               }
              } = Jason.decode!(conn.resp_body)
-
-      assert_received {:proxy_push, "memory_call", %{"method" => "list", "arguments" => args}}
-      assert args["agent_id"] == "agt_42"
-      assert args["scope"] == "/tmp/proj"
-      assert args["limit"] == 10
     end
 
-    # Mirrors Hermes memory_forget tool.
-    test "forget forwards the id and returns deletion status" do
+    test "recall accepts query and limit and returns local rows" do
+      remember!("hello world")
+
       conn =
         :post
-        |> conn("/memory/agt_42/call/forget", Jason.encode!(%{"id" => "m1"}))
+        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "hello", "limit" => 5}))
         |> put_req_header("content-type", "application/json")
         |> call_router()
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"id" => "m1", "status" => "deleted"}} =
+      assert %{
+               "ok" => true,
+               "result" => %{"hits" => [%{"content" => "hello world", "quality" => "degraded"}]}
+             } = Jason.decode!(conn.resp_body)
+    end
+
+    test "list returns local memory rows" do
+      remember!("older", tags: ["ops"])
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/call/list", Jason.encode!(%{"tag" => "ops", "limit" => 10}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"items" => [%{"content" => "older"}]}} =
                Jason.decode!(conn.resp_body)
-
-      assert_received {:proxy_push, "memory_call", %{"method" => "forget", "arguments" => args}}
-      assert args["id"] == "m1"
-      assert args["agent_id"] == "agt_42"
     end
 
-    test "stats returns aggregated counts" do
+    test "forget soft-deletes locally" do
+      id = remember!("delete me")
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/call/forget", Jason.encode!(%{"id" => id}))
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"id" => ^id, "sync_state" => "pending"}} =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "stats returns local counts" do
+      remember!("stats memory")
+
       conn =
         :post
         |> conn("/memory/agt_42/call/stats", Jason.encode!(%{}))
@@ -191,14 +153,17 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}} =
-               Jason.decode!(conn.resp_body)
-
-      assert_received {:proxy_push, "memory_call", %{"method" => "stats"}}
+      assert %{
+               "ok" => true,
+               "result" => %{
+                 "memories" => %{"pending" => 1},
+                 "outbox" => %{"pending" => 1},
+                 "known_scopes" => ["proj_local"]
+               }
+             } = Jason.decode!(conn.resp_body)
     end
 
-    test "propagates service errors back to the caller as 400" do
-      # FakeChannel returns ok=false for remember without content.
+    test "returns validation errors as 400" do
       conn =
         :post
         |> conn("/memory/agt_42/call/remember", Jason.encode!(%{}))
@@ -217,8 +182,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 200
-      assert_received {:proxy_push, "memory_call", %{"method" => "stats", "arguments" => args}}
-      assert args["agent_id"] == "agt_42"
+      assert %{"ok" => true, "result" => %{"facts" => 0}} = Jason.decode!(conn.resp_body)
     end
 
     test "keeps the root call path as a compatibility alias" do
@@ -229,12 +193,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 200
-
-      assert %{"ok" => true, "result" => %{"stats" => %{"semantic" => 3}}} =
-               Jason.decode!(conn.resp_body)
+      assert %{"ok" => true, "result" => %{"facts" => 0}} = Jason.decode!(conn.resp_body)
     end
 
     test "unwraps JSON-RPC params when posted to the direct call endpoint" do
+      remember!("json rpc direct")
+
       conn =
         :post
         |> conn(
@@ -243,7 +207,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
             "jsonrpc" => "2.0",
             "id" => 1,
             "method" => "list",
-            "params" => %{"scope" => "/tmp/proj", "limit" => 5}
+            "params" => %{"q" => "json", "limit" => 5}
           })
         )
         |> put_req_header("content-type", "application/json")
@@ -251,16 +215,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert_received {:proxy_push, "memory_call", %{"method" => "list", "arguments" => args}}
-      assert args["agent_id"] == "agt_42"
-      assert args["scope"] == "/tmp/proj"
-      assert args["limit"] == 5
-      refute Map.has_key?(args, "jsonrpc")
+      assert %{"ok" => true, "result" => %{"items" => [%{"content" => "json rpc direct"}]}} =
+               Jason.decode!(conn.resp_body)
     end
   end
 
   describe "POST /memory/:agent_id/mcp" do
-    test "lists memory tools via tools/list" do
+    test "lists local memory tools via tools/list" do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
 
       conn =
@@ -274,10 +235,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert decoded["jsonrpc"] == "2.0"
       assert decoded["id"] == 1
 
-      assert Enum.any?(decoded["result"]["tools"], &(&1["name"] == "memory::remember"))
+      tool_names = Enum.map(decoded["result"]["tools"], & &1["name"])
+      assert "memory::remember" in tool_names
+      assert "memory::slot_write" in tool_names
+      assert "memory::facet_query" in tool_names
     end
 
-    test "routes tools/call through MemoryProxy" do
+    test "routes tools/call through local memory" do
       body =
         Jason.encode!(%{
           "jsonrpc" => "2.0",
@@ -300,11 +264,35 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert decoded["id"] == "abc"
       assert decoded["result"]["isError"] == false
 
-      assert_received {:proxy_push, "memory_call",
-                       %{"method" => "remember", "arguments" => %{"agent_id" => "agt_42"}}}
+      assert %{"id" => _id, "scope" => "proj_local"} =
+               decoded["result"]["content"]
+               |> hd()
+               |> Map.fetch!("text")
+               |> Jason.decode!()
     end
 
-    test "returns JSON-RPC error for unknown method" do
+    test "returns JSON-RPC error for unknown memory tools" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 7,
+          "method" => "tools/call",
+          "params" => %{"name" => "memory::semantic_search", "arguments" => %{}}
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+      decoded = Jason.decode!(conn.resp_body)
+      assert decoded["error"]["code"] == -32_601
+      assert decoded["error"]["message"] == "Unknown memory method: semantic_search"
+    end
+
+    test "returns JSON-RPC error for unknown JSON-RPC method" do
       body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 7, "method" => "unsupported"})
 
       conn =
@@ -319,7 +307,39 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
-  defp call_router(conn) do
-    MemoryRouter.call(conn, MemoryRouter.init([]))
+  defp remember!(content, opts \\ []) do
+    tags = Keyword.get(opts, :tags, [])
+
+    conn =
+      :post
+      |> conn(
+        "/memory/agt_42/call/remember",
+        Jason.encode!(%{"content" => content, "tags" => tags})
+      )
+      |> put_req_header("content-type", "application/json")
+      |> call_router()
+
+    assert conn.status == 200
+    %{"ok" => true, "result" => %{"id" => id}} = Jason.decode!(conn.resp_body)
+    id
+  end
+
+  defp call_router(conn), do: MemoryRouter.call(conn, MemoryRouter.init([]))
+
+  defp start_memory!(tmp_dir) do
+    name = :"host_agent_memory_router_#{System.unique_integer([:positive])}"
+    db_path = Path.join(tmp_dir, "#{name}.db")
+
+    start_supervised!(
+      {Store, database: db_path, name: name, pool_size: 1, busy_timeout_ms: 5_000}
+    )
+
+    assert :ok = Migrator.migrate(name)
+    name
+  end
+
+  defp hash(content) do
+    :crypto.hash(:sha256, content)
+    |> Base.encode16(case: :lower)
   end
 end

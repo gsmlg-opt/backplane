@@ -3,6 +3,8 @@ defmodule Backplane.HostAgent.Channel do
   Thin wrapper around phoenix_socket_client for host-agent channel operations.
   """
 
+  alias Backplane.HostAgent.Memory.Syncer
+
   @doc "Starts the Phoenix socket connection for a host-agent config."
   def start_socket(config) do
     headers = [{"X-Backplane-Host-Token", Map.fetch!(config, :token)}]
@@ -46,7 +48,14 @@ defmodule Backplane.HostAgent.Channel do
 
   @doc "Joins the host-agent channel for the authenticated host."
   def join(socket, host_id) do
-    Phoenix.SocketClient.Channel.join(socket, "host_agent:#{host_id}", %{})
+    channel_module =
+      Application.get_env(
+        :backplane_host_agent,
+        :socket_channel_module,
+        Phoenix.SocketClient.Channel
+      )
+
+    channel_module.join(socket, "host_agent:#{host_id}", Syncer.join_payload())
   end
 
   @doc "Pushes an event through the joined host-agent channel."

@@ -202,14 +202,33 @@ defmodule Backplane.HostAgent.Worker do
 
   defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do
     case MemorySupervisor.start_link(memory_config) do
-      {:ok, pid} -> {:ok, pid}
-      :ignore -> {:ok, nil}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, {:memory_start_failed, reason}}
+      {:ok, pid} ->
+        configure_memory_router(memory_config)
+        {:ok, pid}
+
+      :ignore ->
+        {:ok, nil}
+
+      {:error, {:already_started, pid}} ->
+        configure_memory_router(memory_config)
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, {:memory_start_failed, reason}}
     end
   end
 
   defp maybe_start_memory(_config), do: {:ok, nil}
+
+  defp configure_memory_router(memory_config) do
+    Application.put_env(:backplane_host_agent, :memory_config, memory_config)
+
+    Application.put_env(
+      :backplane_host_agent,
+      :memory_store,
+      Map.get(memory_config, :store_name, Backplane.HostAgent.Memory.Store)
+    )
+  end
 
   defp validate_required_config(config) do
     missing =

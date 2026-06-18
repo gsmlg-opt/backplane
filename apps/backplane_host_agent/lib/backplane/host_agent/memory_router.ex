@@ -12,14 +12,14 @@ defmodule Backplane.HostAgent.MemoryRouter do
     `tools/list` (lists memory tools) and `tools/call` (routes to the same
     handler as `/call/:method`).
 
-  All operations are forwarded to the Backplane hub through the
-  host-agent WebSocket channel; the hub authenticates via the host's
-  bearer token (established when the channel was joined).
+  Memory operations are local-only and use the host-agent memory store. Hub-only
+  memory operations return stable local errors.
   """
 
   use Plug.Router
 
-  alias Backplane.HostAgent.{McpManager, MemoryProxy}
+  alias Backplane.HostAgent.{McpManager, Memory}
+  alias Backplane.HostAgent.Memory.Store
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -62,15 +62,15 @@ defmodule Backplane.HostAgent.MemoryRouter do
         _ -> %{}
       end
 
-    case MemoryProxy.call(method, args, agent_id: agent_id) do
+    case call_memory(method, args, agent_id) do
       {:ok, result} ->
         send_json(conn, 200, %{"ok" => true, "result" => result})
 
       {:error, {:unknown_method, name}} ->
         send_json(conn, 404, %{"ok" => false, "error" => "unknown method: #{name}"})
 
-      {:error, :not_connected} ->
-        send_json(conn, 503, %{"ok" => false, "error" => "host agent is not connected"})
+      {:error, {:memory_unavailable, _reason}} ->
+        send_json(conn, 503, %{"ok" => false, "error" => "local memory is not configured"})
 
       {:error, reason} ->
         send_json(conn, 400, %{"ok" => false, "error" => format_error(reason)})
@@ -130,7 +130,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
        when is_binary(name) and is_map(args) do
     method = strip_prefix(name)
 
-    # Try memory proxy first for memory:: tools, otherwise route to McpManager
     if String.starts_with?(name, "memory::") do
       call_memory_tool(conn, id, agent_id, method, args)
     else
@@ -161,7 +160,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_descriptors do
     memory_tools =
-      Enum.map(MemoryProxy.methods(), fn method ->
+      Enum.map(Memory.methods(), fn method ->
         %{"name" => "memory::#{method}", "description" => "Memory operation: #{method}"}
       end)
 
@@ -176,7 +175,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp call_memory_tool(conn, id, agent_id, method, args) do
-    case MemoryProxy.call(method, args, agent_id: agent_id) do
+    case call_memory(method, args, agent_id) do
       {:ok, result} ->
         send_json(
           conn,
@@ -194,8 +193,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
           jsonrpc_error(id, -32_601, "Unknown memory method: #{method}")
         )
 
-      {:error, :not_connected} ->
-        send_json(conn, 200, jsonrpc_error(id, -32_002, "host agent is not connected"))
+      {:error, {:memory_unavailable, _reason}} ->
+        send_json(conn, 200, jsonrpc_error(id, -32_002, "local memory is not configured"))
 
       {:error, reason} ->
         send_json(conn, 200, jsonrpc_error(id, -32_000, format_error(reason)))
@@ -238,8 +237,42 @@ defmodule Backplane.HostAgent.MemoryRouter do
     |> send_resp(status, Jason.encode!(body))
   end
 
+  defp call_memory(method, args, agent_id) do
+    if Memory.valid_method?(method) do
+      do_call_memory(method, args, memory_opts(agent_id))
+    else
+      {:error, {:unknown_method, method}}
+    end
+  rescue
+    error -> {:error, {:memory_unavailable, Exception.message(error)}}
+  catch
+    :exit, reason -> {:error, {:memory_unavailable, reason}}
+  end
+
+  defp do_call_memory("remember", args, opts), do: Memory.remember(args, opts)
+  defp do_call_memory("recall", args, opts), do: Memory.recall(args, opts)
+  defp do_call_memory("list", args, opts), do: Memory.list(args, opts)
+  defp do_call_memory("forget", args, opts), do: Memory.forget(args, opts)
+  defp do_call_memory("stats", args, opts), do: Memory.stats(args, opts)
+  defp do_call_memory("slot_read", args, opts), do: Memory.slot_read(args, opts)
+  defp do_call_memory("slot_write", args, opts), do: Memory.slot_write(args, opts)
+  defp do_call_memory("slot_list", args, opts), do: Memory.slot_list(args, opts)
+  defp do_call_memory("facet_tag", args, opts), do: Memory.facet_tag(args, opts)
+  defp do_call_memory("facet_query", args, opts), do: Memory.facet_query(args, opts)
+
+  defp memory_opts(agent_id) do
+    [
+      store: Application.get_env(:backplane_host_agent, :memory_store, Store),
+      config: Application.get_env(:backplane_host_agent, :memory_config, %{}),
+      agent_id: agent_id
+    ]
+  end
+
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_error({:invalid_args, message}) when is_binary(message), do: message
+  defp format_error({:memory_unavailable, _reason}), do: "local memory is not configured"
+  defp format_error({:storage_error, _reason}), do: "local memory storage error"
   defp format_error(%{"reason" => reason}) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 

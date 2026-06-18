@@ -301,6 +301,165 @@ defmodule BackplaneWeb.HostAgentChannelTest do
     end
   end
 
+  defmodule StubHostMemorySync do
+    def entitled_scopes(host) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:host_memory_sync, {:entitled_scopes, host.id}})
+      MapSet.new(["proj_local"])
+    end
+
+    def facts_for_scope(scope, fact_set_hash) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:host_memory_sync, {:facts_for_scope, scope, fact_set_hash}})
+
+      {:full,
+       [
+         %{
+           "id" => "fact_1",
+           "content" => "hub fact",
+           "content_hash" => "hash_fact",
+           "tags" => [],
+           "metadata" => %{},
+           "updated_at" => "2026-06-17T00:00:00Z"
+         }
+       ]}
+    end
+
+    def active_wipes(scope) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:host_memory_sync, {:active_wipes, scope}})
+
+      [
+        %{
+          "directive_id" => "wipe_1",
+          "content_hash" => "hash_wipe",
+          "scope" => scope
+        }
+      ]
+    end
+
+    def apply_sync_item(host, item) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:host_memory_sync, {:apply_sync_item, host.id, item}})
+
+      case item["id"] do
+        "dup" -> {:ok, %{status: :duplicate, canonical_id: "hub_dup"}}
+        "bad" -> {:error, :validation, "invalid scope"}
+        "transient" -> {:error, :transient, "temporarily unavailable"}
+        id -> {:ok, %{status: :ok, canonical_id: "hub_#{id}"}}
+      end
+    end
+  end
+
+  describe "host memory sync" do
+    setup %{host: host, socket: socket} do
+      :persistent_term.put({StubHostMemorySync, :owner}, self())
+      Application.put_env(:backplane_web, :host_memory_sync_adapter, StubHostMemorySync)
+
+      on_exit(fn ->
+        Application.delete_env(:backplane_web, :host_memory_sync_adapter)
+        _ = :persistent_term.erase({StubHostMemorySync, :owner})
+      end)
+
+      %{host: host, socket: socket}
+    end
+
+    test "join reconciles only entitled announced memory scopes", %{host: host, socket: socket} do
+      payload = %{
+        "memory" => %{
+          "protocol" => "host_memory.v1",
+          "scopes" => [
+            %{"scope" => "proj_local", "fact_set_hash" => "old_hash"},
+            %{"scope" => "secret", "fact_set_hash" => "secret_hash"}
+          ]
+        }
+      }
+
+      assert {:ok, _reply, _socket} = subscribe_and_join(socket, "host_agent:#{host.id}", payload)
+
+      assert_push("memory_facts", %{
+        "scope" => "proj_local",
+        "full" => true,
+        "facts" => [%{"id" => "fact_1"}]
+      })
+
+      assert_push("memory_wipe", %{
+        "directive_id" => "wipe_1",
+        "items" => [%{"content_hash" => "hash_wipe", "scope" => "proj_local"}]
+      })
+
+      assert_received {:host_memory_sync, {:entitled_scopes, _host_id}}
+      assert_received {:host_memory_sync, {:facts_for_scope, "proj_local", "old_hash"}}
+      assert_received {:host_memory_sync, {:active_wipes, "proj_local"}}
+      refute_received {:host_memory_sync, {:facts_for_scope, "secret", "secret_hash"}}
+      refute_received {:host_memory_sync, {:active_wipes, "secret"}}
+    end
+
+    test "memory_sync applies items and returns per-item acks", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "memory_sync", %{
+          "protocol" => "host_memory.v1",
+          "items" => [
+            %{"id" => "local_1", "op" => "remember", "content" => "one"},
+            %{"id" => "dup", "op" => "remember", "content" => "duplicate"},
+            %{"id" => "bad", "op" => "remember", "content" => "bad"}
+          ]
+        })
+
+      assert_reply(ref, :ok, %{
+        "items" => [
+          %{"id" => "local_1", "status" => "ok", "canonical_id" => "hub_local_1"},
+          %{"id" => "dup", "status" => "duplicate", "canonical_id" => "hub_dup"},
+          %{"id" => "bad", "status" => "error", "error" => "invalid scope"}
+        ]
+      })
+    end
+
+    test "memory_sync returns channel error for transient adapter failures", %{
+      host: host,
+      socket: socket
+    } do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "memory_sync", %{
+          "protocol" => "host_memory.v1",
+          "items" => [%{"id" => "transient", "op" => "remember", "content" => "later"}]
+        })
+
+      assert_reply(ref, :error, %{"reason" => "temporarily unavailable"})
+    end
+
+    test "facts and wipe acks are accepted", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      facts_ref =
+        push(socket, "memory_facts_ack", %{
+          "scope" => "proj_local",
+          "status" => "ok",
+          "count" => 1
+        })
+
+      wipe_ref =
+        push(socket, "memory_wipe_ack", %{
+          "directive_id" => "wipe_1",
+          "items" => [%{"content_hash" => "hash_wipe", "status" => "ok"}]
+        })
+
+      assert_reply(facts_ref, :ok, %{"ok" => true})
+      assert_reply(wipe_ref, :ok, %{"ok" => true})
+    end
+
+    test "memory_sync rejects malformed payloads", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref = push(socket, "memory_sync", %{"items" => "bad"})
+      assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+  end
+
   defp create_agent_with_token!(name) do
     assert {:ok, host, auth_token, token} = Hosts.create_agent_with_token(%{"name" => name})
     {host, auth_token, token}
