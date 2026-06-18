@@ -1,8 +1,6 @@
 name: Docker Image
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       git_ref:
@@ -44,7 +42,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.image_tag || 'ghcr.io/gsmlg-dev/backplane:latest' }}
+  group: ${{ github.workflow }}-${{ inputs.git_ref }}-${{ inputs.image_tag }}
   cancel-in-progress: true
 
 jobs:
@@ -53,35 +51,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Resolve workflow inputs
-        id: workflow
-        shell: bash
-        env:
-          DEFAULT_IMAGE_TAG: ghcr.io/gsmlg-dev/backplane:latest
-          INPUT_GIT_REF: ${{ inputs.git_ref || github.ref_name }}
-          INPUT_IMAGE_TAG: ${{ inputs.image_tag || '' }}
-          INPUT_VERSION: ${{ inputs.version || '' }}
-        run: |
-          image_tag="$INPUT_IMAGE_TAG"
-
-          if [[ -z "$image_tag" ]]; then
-            image_tag="$DEFAULT_IMAGE_TAG"
-          fi
-
-          echo "git_ref=$INPUT_GIT_REF" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
-          echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.workflow.outputs.git_ref }}
+          ref: ${{ inputs.git_ref }}
 
       - name: Resolve image metadata
         id: metadata
         shell: bash
         run: |
-          version="${{ steps.workflow.outputs.version }}"
+          version="${{ inputs.version }}"
           version="${version#v}"
 
           if [[ -z "$version" ]]; then
@@ -97,7 +76,7 @@ jobs:
           revision="$(git rev-parse HEAD)"
 
           echo "build_date=$build_date" >> "$GITHUB_OUTPUT"
-          echo "git_ref=${{ steps.workflow.outputs.git_ref }}" >> "$GITHUB_OUTPUT"
+          echo "git_ref=${{ inputs.git_ref }}" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -109,7 +88,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || github.token }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Build and publish image
         uses: docker/build-push-action@v6
@@ -117,7 +96,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.workflow.outputs.image_tag }}
+          tags: ${{ inputs.image_tag }}
           build-args: |
             BUILD_DATE=${{ steps.metadata.outputs.build_date }}
             GIT_REF=${{ steps.metadata.outputs.git_ref }}
