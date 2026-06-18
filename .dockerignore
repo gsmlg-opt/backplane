@@ -4,6 +4,7 @@
 _build
 deps
 node_modules
+apps/backplane_host_agent
 priv/plts
 .elixir_ls
 .direnv

@@ -25,7 +25,6 @@ COPY mix.exs mix.lock package.json bun.lock ./
 COPY config ./config
 COPY apps/backplane/mix.exs ./apps/backplane/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
-COPY apps/backplane_host_agent/mix.exs ./apps/backplane_host_agent/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
 COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
