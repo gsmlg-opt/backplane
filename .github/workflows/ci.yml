@@ -19,6 +19,14 @@ jobs:
           elixir-version: "1.18"
           otp-version: "28"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
       - name: Restore dependencies cache
         uses: actions/cache@v4
         with:
@@ -105,6 +113,14 @@ jobs:
         with:
           elixir-version: "1.18"
           otp-version: "28"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
