@@ -13,6 +13,7 @@ defmodule Backplane.Transport.McpPlug do
 
   plug Backplane.Transport.VersionHeader
   plug Backplane.Transport.CORS
+  plug :short_circuit_head_root
   plug :match
   plug Backplane.Transport.Compression
   plug Backplane.Transport.RequestLogger
@@ -56,6 +57,14 @@ defmodule Backplane.Transport.McpPlug do
   end
 
   @sse_keepalive_ms 30_000
+
+  defp short_circuit_head_root(%{method: "HEAD", path_info: []} = conn, _opts) do
+    conn
+    |> Plug.Conn.send_resp(204, "")
+    |> Plug.Conn.halt()
+  end
+
+  defp short_circuit_head_root(conn, _opts), do: conn
 
   defp sse_notification_loop(conn) do
     Phoenix.PubSub.subscribe(Backplane.PubSub, "mcp:notifications")

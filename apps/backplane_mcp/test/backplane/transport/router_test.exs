@@ -21,6 +21,42 @@ defmodule Backplane.Transport.McpPlugTest do
     assert conn.status == 200
   end
 
+  test "HEAD / returns immediately without opening SSE stream" do
+    task =
+      Task.async(fn ->
+        conn(:head, "/")
+        |> put_req_header("accept", "text/event-stream")
+        |> McpPlug.call(McpPlug.init([]))
+      end)
+
+    conn =
+      case Task.yield(task, 200) || Task.shutdown(task, :brutal_kill) do
+        {:ok, conn} -> conn
+        nil -> flunk("HEAD / should return immediately instead of opening an SSE stream")
+      end
+
+    assert conn.status == 204
+    assert conn.state == :sent
+
+    refute Enum.any?(
+             get_resp_header(conn, "content-type"),
+             &String.contains?(&1, "text/event-stream")
+           )
+  end
+
+  test "HEAD / returns no content before auth is enforced" do
+    original_auth_token = Application.get_env(:backplane, :auth_token)
+    Application.put_env(:backplane, :auth_token, "required-token")
+
+    on_exit(fn -> restore_env(:auth_token, original_auth_token) end)
+
+    conn =
+      conn(:head, "/")
+      |> McpPlug.call(McpPlug.init([]))
+
+    assert conn.status == 204
+  end
+
   @tag timeout: 5_000
   test "GET / returns 200 with SSE content type" do
     task =
@@ -70,4 +106,7 @@ defmodule Backplane.Transport.McpPlugTest do
 
     assert conn.status == 200
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
+  defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 end
