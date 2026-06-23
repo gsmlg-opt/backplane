@@ -23,7 +23,6 @@ defmodule Backplane.LLM.Provider do
   @timestamps_opts [type: :utc_datetime_usec]
 
   @name_pattern ~r/^[a-z0-9][a-z0-9-]*$/
-  @localhost_pattern ~r/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/
 
   schema "llm_providers" do
     field(:preset_key, :string)
@@ -225,21 +224,11 @@ defmodule Backplane.LLM.Provider do
 
       url ->
         cond do
-          Regex.match?(@localhost_pattern, url) ->
+          String.starts_with?(url, "http://") or String.starts_with?(url, "https://") ->
             changeset
-
-          String.starts_with?(url, "https://") ->
-            changeset
-
-          String.starts_with?(url, "http://") ->
-            add_error(
-              changeset,
-              field,
-              "must use https:// (http:// is only allowed for localhost/127.0.0.1)"
-            )
 
           true ->
-            add_error(changeset, field, "must start with https://")
+            add_error(changeset, field, "must start with http:// or https://")
         end
     end
   end

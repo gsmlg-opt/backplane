@@ -199,17 +199,17 @@ defmodule Backplane.LLM.ProviderTest do
       assert anthropic.base_url == "https://api.deepseek.com/anthropic"
     end
 
-    test "rejects http for non-localhost base URL" do
+    test "allows http for non-localhost base URL" do
       provider = create_provider()
 
-      assert {:error, changeset} =
+      assert {:ok, api} =
                ProviderApi.create(%{
                  provider_id: provider.id,
                  api_surface: :openai,
-                 base_url: "http://api.example.com"
+                 base_url: "http://10.100.10.34:8000/v1/"
                })
 
-      assert %{base_url: [_ | _]} = errors_on(changeset)
+      assert api.base_url == "http://10.100.10.34:8000/v1"
     end
 
     test "allows http for localhost base URL" do
