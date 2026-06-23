@@ -21,7 +21,8 @@ config :backplane,
   admin_url: "http://localhost:4221"
 
 config :backplane_web, BackplaneWeb.Endpoint,
-  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
+  # Transitional endpoint until Backplane.Admin owns :4221.
+  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4222],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

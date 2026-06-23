@@ -1,19 +1,6 @@
 defmodule Backplane.Api.PageControllerTest do
   use Backplane.Api.ConnCase, async: false
 
-  setup do
-    original_username = Application.get_env(:backplane, :admin_username)
-    original_password = Application.get_env(:backplane, :admin_password)
-
-    Application.put_env(:backplane, :admin_username, "admin")
-    Application.put_env(:backplane, :admin_password, "secret")
-
-    on_exit(fn ->
-      restore_env(:admin_username, original_username)
-      restore_env(:admin_password, original_password)
-    end)
-  end
-
   test "GET / renders public project setup documentation without admin auth", %{conn: conn} do
     conn = get(conn, "/")
 
@@ -45,7 +32,4 @@ defmodule Backplane.Api.PageControllerTest do
     assert html_response(conn, 200) =~ ~s(id="home-body")
     assert html_response(conn, 200) =~ "max-w-7xl"
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
-  defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 end

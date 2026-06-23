@@ -4,7 +4,7 @@ defmodule Backplane.Api.Endpoint do
   @session_options [
     store: :cookie,
     key: "_backplane_api_key",
-    signing_salt: "bkpln_salt",
+    signing_salt: "bkpln_api_salt",
     same_site: "Lax"
   ]
 
