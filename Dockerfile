@@ -33,18 +33,21 @@ COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
 COPY apps/backplane_system/mix.exs ./apps/backplane_system/mix.exs
 COPY apps/backplane_telemetry/mix.exs ./apps/backplane_telemetry/mix.exs
-COPY apps/backplane_web/mix.exs apps/backplane_web/package.json ./apps/backplane_web/
+COPY apps/backplane_api/mix.exs apps/backplane_api/package.json ./apps/backplane_api/
+COPY apps/backplane_admin/mix.exs apps/backplane_admin/package.json ./apps/backplane_admin/
 COPY apps/day_ex/mix.exs ./apps/day_ex/mix.exs
 COPY apps/relayixir/mix.exs ./apps/relayixir/mix.exs
 
 RUN mix deps.get --only prod
-RUN mix "do" --app backplane_web assets.setup \
+RUN mix "do" --app backplane_api assets.setup \
+  && mix "do" --app backplane_admin assets.setup \
   && ./_build/bun install --frozen-lockfile
 
 COPY . .
 
 RUN mix deps.compile
-RUN mix "do" --app backplane_web assets.deploy
+RUN mix "do" --app backplane_api assets.deploy \
+  && mix "do" --app backplane_admin assets.deploy
 RUN mix release backplane --overwrite --version "${VERSION}"
 
 FROM ${DEBIAN_IMAGE} AS runtime
@@ -81,6 +84,8 @@ WORKDIR /app
 COPY --from=builder --chown=backplane:backplane /app/_build/prod/rel/backplane ./
 
 ENV BACKPLANE_BUILD_DATE="${BUILD_DATE}" \
+  BACKPLANE_API_PORT=4100 \
+  BACKPLANE_ADMIN_PORT=4101 \
   BACKPLANE_GIT_REF="${GIT_REF}" \
   BACKPLANE_PORT=4100 \
   BACKPLANE_VERSION="${VERSION}" \
@@ -91,7 +96,7 @@ ENV BACKPLANE_BUILD_DATE="${BUILD_DATE}" \
 
 USER backplane
 
-EXPOSE 4100
+EXPOSE 4100 4101
 
 ENTRYPOINT ["/app/bin/backplane"]
 CMD ["start"]

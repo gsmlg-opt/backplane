@@ -13,21 +13,21 @@ Everything else — git access, documentation search, skill libraries — is del
 
 Module namespace: `Backplane`. Target: Elixir >= 1.18 / OTP 28+.
 
-Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
+The public/API dev endpoint listens on `http://localhost:4220`; the admin dev endpoint listens on `http://localhost:4221`. Production defaults to API port 4100 and admin port 4101.
 
 ### Key Routes
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/api/mcp` | MCP JSON-RPC endpoint |
-| `GET` | `/api/mcp` | MCP SSE notification stream |
-| `DELETE` | `/api/mcp` | MCP session cleanup |
-| `GET` | `/health` | Health check JSON |
-| `GET` | `/metrics` | Runtime metrics |
-| `*` | `/api/v1/*` | LLM proxy (OpenAI-compatible) |
-| `*` | `/api/anthropic/*` | LLM proxy (Anthropic Messages) |
-| `*` | `/api/llm/*` | LLM admin API (providers, aliases) |
-| `*` | `/admin` | Admin UI (LiveView) |
+| Method | Path | Endpoint | Purpose |
+|--------|------|----------|---------|
+| `POST` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP JSON-RPC endpoint |
+| `GET` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP SSE notification stream |
+| `DELETE` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP session cleanup |
+| `GET` | `/health` | API (`:backplane_api`, dev 4220) | Health check JSON |
+| `GET` | `/metrics` | API (`:backplane_api`, dev 4220) | Runtime metrics |
+| `*` | `/api/v1/*` | API (`:backplane_api`, dev 4220) | LLM proxy (OpenAI-compatible) |
+| `*` | `/api/anthropic/*` | API (`:backplane_api`, dev 4220) | LLM proxy (Anthropic Messages) |
+| `*` | `/api/llm/*` | API (`:backplane_api`, dev 4220) | LLM admin API (providers, aliases) |
+| `*` | `/admin` | Admin (`:backplane_admin`, dev 4221) | Admin UI (LiveView) |
 
 ### MCP Auth Modes
 
@@ -37,14 +37,15 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 ## Umbrella Structure
 
-This is an umbrella project with four apps:
+This is an umbrella project. Key apps include:
 
 - **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
-- **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets. Depends on `:backplane`.
+- **`apps/backplane_api`** (`:backplane_api`) — Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets; dev port 4220.
+- **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint for `/admin/*`; dev port 4221.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM APIs.
 - **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
 
-Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses `config :backplane_web, ...`.
+Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`; Phoenix endpoint concerns use `config :backplane_api, ...` and `config :backplane_admin, ...`.
 
 ## Development Environment
 
@@ -113,8 +114,11 @@ Backplane.Application (apps/backplane)
 ├── Backplane.LLM.RouteLoader
 └── Backplane.LLM.RateLimiter (ETS sliding window)
 
-BackplaneWeb.Application (apps/backplane_web)
-└── BackplaneWeb.Endpoint (Bandit HTTP server)
+Backplane.Api.Application (apps/backplane_api)
+└── Backplane.Api.Endpoint (Bandit HTTP server)
+
+Backplane.Admin.Application (apps/backplane_admin)
+└── Backplane.Admin.Endpoint (Bandit HTTP server)
 ```
 
 After supervisor start, the application initializes: native tool registration (skills, hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry, and client cache seeding.
@@ -147,7 +151,10 @@ All operational configuration — upstream MCP servers, LLM providers, credentia
 | `BACKPLANE_CONFIG` | Path to TOML config file (default: `backplane.toml`) |
 | `SECRET_KEY_BASE` | Phoenix secret for cookies/sessions |
 | `PHX_HOST` | Public hostname for the server |
-| `BACKPLANE_PORT` | HTTP listen port (falls back to `PORT`, then 4100) |
+| `BACKPLANE_API_PORT` | Public/API HTTP listen port (falls back to `BACKPLANE_PORT`, then `PORT`, then 4100) |
+| `BACKPLANE_ADMIN_PORT` | Admin HTTP listen port (defaults to 4101) |
+| `BACKPLANE_PORT` | Legacy public/API HTTP listen port fallback |
+| `PORT` | Public/API HTTP listen port fallback |
 
 ### Admin UI Navigation
 
@@ -193,8 +200,9 @@ If you encounter missing features, bugs, or need functionality not yet available
 ## Testing Conventions
 
 - `Backplane.DataCase` — base case template for DB-backed tests (Ecto sandbox). `setup_sandbox/1` uses `shared: not tags[:async]`, so async tests get isolated sandboxes.
-- `Backplane.ConnCase` — base case template for HTTP/MCP transport tests. Provides `mcp_request/3`, `mcp_request_conn/3`, and `raw_mcp_request/2` helpers for JSON-RPC testing.
-- `BackplaneWeb.LiveCase` — base case template for LiveView tests (in `apps/backplane_web`).
+- `Backplane.Api.ConnCase` — base case template for API HTTP/MCP transport tests. Provides `mcp_request/3`, `mcp_request_conn/3`, and `raw_mcp_request/2` helpers for JSON-RPC testing.
+- `Backplane.Api.ChannelCase` — base case template for API channel/socket tests.
+- `Backplane.Admin.LiveCase` — base case template for admin LiveView tests.
 - Upstream MCP connections use custom mock modules (`MockMcpPlug`, `MockSSEMcpServer`, `MockSSEHttpPlug`) for test isolation.
 - Only mark tests `async: true` when they avoid shared state, processes, ports, and database sandbox behavior.
 
@@ -205,7 +213,7 @@ Use Conventional Commits with a scope prefix: `feat(mcp):`, `fix(hub):`, `test(d
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **backplane** (1951 symbols, 2058 relationships, 14 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **backplane** (2186 symbols, 2316 relationships, 16 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

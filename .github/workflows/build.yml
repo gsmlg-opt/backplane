@@ -114,11 +114,11 @@ jobs:
 
       - name: Install asset tools
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_web assets.setup
+        run: mix "do" --app backplane_api assets.setup && mix "do" --app backplane_admin assets.setup
 
       - name: Build web assets
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_web assets.deploy
+        run: mix "do" --app backplane_api assets.deploy && mix "do" --app backplane_admin assets.deploy
 
       - name: Build OTP release
         run: mix release "${{ matrix.release }}" --overwrite

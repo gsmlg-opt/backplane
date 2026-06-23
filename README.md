@@ -4,7 +4,7 @@ Backplane is a private, self-hosted gateway for agent infrastructure.
 
 It provides two main surfaces:
 
-- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /mcp` that aggregates upstream MCP servers and built-in managed services.
+- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /api/mcp` that aggregates upstream MCP servers and built-in managed services.
 - **LLM Proxy**: a credential-injecting, model-routing reverse proxy for LLM APIs, with provider health checks and usage tracking.
 
 Operational configuration is managed through the Phoenix admin UI and persisted in PostgreSQL.
@@ -14,7 +14,8 @@ Operational configuration is managed through the Phoenix admin UI and persisted 
 This repository is an Elixir umbrella project:
 
 - `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, native math engine, LLM proxy, clients, settings, credentials, Oban jobs.
-- `apps/backplane_web`: Phoenix admin UI, LiveView routes, endpoint, assets.
+- `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets.
+- `apps/backplane_admin`: Phoenix admin UI endpoint for `/admin/*`.
 - `apps/relayixir`: HTTP/WebSocket reverse proxy library used internally by the LLM proxy.
 - `apps/day_ex`: date/time utility library exposed through the `day::` managed MCP tools.
 
@@ -50,17 +51,23 @@ Start the Phoenix server:
 mix phx.server
 ```
 
-In development the web server listens on:
+In development the API endpoint listens on:
 
 ```text
 http://localhost:4220
 ```
 
+The admin endpoint listens on:
+
+```text
+http://localhost:4221
+```
+
 Useful routes:
 
-- `POST /mcp`: MCP JSON-RPC endpoint
-- `GET /mcp`: MCP SSE notification stream
-- `DELETE /mcp`: MCP session cleanup
+- `POST /api/mcp`: MCP JSON-RPC endpoint
+- `GET /api/mcp`: MCP SSE notification stream
+- `DELETE /api/mcp`: MCP session cleanup
 - `GET /health`: health check JSON
 - `GET /metrics`: runtime metrics
 - `/admin`: admin UI
@@ -82,7 +89,7 @@ mix dialyzer
 mix phx.server
 ```
 
-Asset build aliases are provided by `apps/backplane_web`:
+Asset build aliases build the split API and admin Phoenix assets:
 
 ```bash
 mix assets.deploy
@@ -116,10 +123,12 @@ For production, also set:
 ```bash
 SECRET_KEY_BASE="$(mix phx.gen.secret)"
 PHX_HOST="your-host.example.com"
-BACKPLANE_PORT=4100
+BACKPLANE_API_PORT=4100
+BACKPLANE_ADMIN_PORT=4101
 ```
 
-Production HTTP binding is controlled by `BACKPLANE_PORT` or `PORT`; if neither is set, it defaults to `4100`.
+Production public/API HTTP binding is controlled by `BACKPLANE_API_PORT`, `BACKPLANE_PORT`, or `PORT`; if none is set, it defaults to `4100`.
+Production admin HTTP binding is controlled by `BACKPLANE_ADMIN_PORT`; if it is not set, it defaults to `4101`.
 
 Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through `/admin`, including:
 

@@ -62,12 +62,6 @@ config :backplane_admin, Backplane.Admin.Endpoint,
 # Bun bundler
 config :bun,
   version: "1.3.3",
-  backplane: [
-    args:
-      ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
-    cd: Path.expand("../apps/backplane_web", __DIR__),
-    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
-  ],
   backplane_api: [
     args:
       ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
@@ -84,10 +78,6 @@ config :bun,
 # Tailwind v4
 config :tailwind,
   version: "4.1.18",
-  backplane: [
-    args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
-    cd: Path.expand("../apps/backplane_web", __DIR__)
-  ],
   backplane_api: [
     args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
     cd: Path.expand("../apps/backplane_api", __DIR__)
@@ -123,7 +113,7 @@ config :logger, :console,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
-# Relayixir — used as a library, BackplaneWeb handles HTTP serving
+# Relayixir is used as a library; Phoenix endpoints handle HTTP serving
 config :relayixir, start_server: false
 
 config :backplane, Backplane.Settings.OAuthRefresher,

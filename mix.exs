@@ -32,7 +32,10 @@ defmodule Backplane.Umbrella.MixProject do
       "agent.run": [
         "do --app backplane_host_agent cmd mix agent.run"
       ],
-      "assets.deploy": ["do --app backplane_web assets.deploy"],
+      "assets.deploy": [
+        "do --app backplane_api assets.deploy",
+        "do --app backplane_admin assets.deploy"
+      ],
       test: ["test"]
     ]
   end
@@ -43,7 +46,8 @@ defmodule Backplane.Umbrella.MixProject do
         include_executables_for: [:unix],
         applications: [
           backplane: :permanent,
-          backplane_web: :permanent,
+          backplane_api: :permanent,
+          backplane_admin: :permanent,
           backplane_memory: :permanent,
           runtime_tools: :permanent
         ]

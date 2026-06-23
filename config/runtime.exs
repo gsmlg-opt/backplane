@@ -96,15 +96,15 @@ if config_env() == :prod do
     api_url: System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}"),
     admin_url: System.get_env("BACKPLANE_ADMIN_URL", "http://#{host}:#{admin_port}")
 
-  port =
-    case System.get_env("BACKPLANE_PORT") || System.get_env("PORT") do
-      nil -> 4100
-      port_str -> String.to_integer(port_str)
-    end
-
-  config :backplane_web, BackplaneWeb.Endpoint,
+  config :backplane_api, Backplane.Api.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
-    http: [ip: {0, 0, 0, 0}, port: port],
+    http: [ip: {0, 0, 0, 0}, port: api_port],
+    secret_key_base: secret_key_base,
+    server: server?
+
+  config :backplane_admin, Backplane.Admin.Endpoint,
+    url: [host: host, port: 443, scheme: "https"],
+    http: [ip: {0, 0, 0, 0}, port: admin_port],
     secret_key_base: secret_key_base,
     server: server?
 end
