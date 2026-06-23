@@ -34,8 +34,7 @@ defmodule Backplane.Settings.Encryption do
   end
 
   defp fetch_secret_key_base do
-    Application.get_env(:backplane_web, BackplaneWeb.Endpoint)[:secret_key_base] ||
-      Application.get_env(:backplane, :secret_key_base) ||
+    Application.get_env(:backplane, :secret_key_base) ||
       raise "secret_key_base not configured"
   end
 end

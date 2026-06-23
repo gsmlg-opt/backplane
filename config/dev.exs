@@ -11,13 +11,20 @@ config :backplane_system, Backplane.Repo,
 
 config :backplane_web, dev_routes: true
 
+secret_key_base =
+  "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only_do_not_use"
+
+config :backplane,
+  secret_key_base: secret_key_base,
+  api_url: "http://localhost:4220",
+  admin_url: "http://localhost:4221"
+
 config :backplane_web, BackplaneWeb.Endpoint,
   http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base:
-    "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only_do_not_use",
+  secret_key_base: secret_key_base,
   watchers: [
     tailwind: {Tailwind, :install_and_run, [:backplane, ~w(--watch)]},
     bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}

@@ -78,6 +78,24 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST", "localhost")
   server? = System.get_env("PHX_SERVER") in ["1", "true", "TRUE", "yes", "YES"]
 
+  api_port =
+    case System.get_env("BACKPLANE_API_PORT") || System.get_env("BACKPLANE_PORT") ||
+           System.get_env("PORT") do
+      nil -> 4100
+      port_str -> String.to_integer(port_str)
+    end
+
+  admin_port =
+    case System.get_env("BACKPLANE_ADMIN_PORT") do
+      nil -> 4101
+      port_str -> String.to_integer(port_str)
+    end
+
+  config :backplane,
+    secret_key_base: secret_key_base,
+    api_url: System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}"),
+    admin_url: System.get_env("BACKPLANE_ADMIN_URL", "http://#{host}:#{admin_port}")
+
   port =
     case System.get_env("BACKPLANE_PORT") || System.get_env("PORT") do
       nil -> 4100
