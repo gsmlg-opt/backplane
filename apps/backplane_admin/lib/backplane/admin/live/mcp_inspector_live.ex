@@ -19,7 +19,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/mcp/inspector",
+       current_path: "/mcp/inspector",
        # Transport: "http" | "stdio"
        transport: "http",
        # HTTP fields
@@ -1067,7 +1067,7 @@ defmodule Backplane.Admin.McpInspectorLive do
       <%!-- Tab bar --%>
       <div class="flex gap-1 mb-6 border-b border-outline-variant">
         <.link
-          navigate={~p"/admin/mcp/inspector"}
+          navigate={~p"/mcp/inspector"}
           class={[
             "px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
             @live_action == :index && "border-primary text-primary",
@@ -1078,7 +1078,7 @@ defmodule Backplane.Admin.McpInspectorLive do
           External
         </.link>
         <.link
-          navigate={~p"/admin/mcp/inspector/internal"}
+          navigate={~p"/mcp/inspector/internal"}
           class={[
             "px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
             @live_action == :internal && "border-primary text-primary",

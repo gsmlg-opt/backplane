@@ -12,7 +12,7 @@ defmodule Backplane.Admin.SkillMetadataLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/skills/metadata",
+       current_path: "/skills/metadata",
        loading: true,
        tags: [],
        categories: [],

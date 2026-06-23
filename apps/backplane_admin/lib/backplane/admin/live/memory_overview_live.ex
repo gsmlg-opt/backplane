@@ -7,7 +7,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/memory",
+       current_path: "/memory",
        memory_stats: [],
        graph_stats: %{nodes: 0, edges: 0},
        total_active: 0,
@@ -101,25 +101,25 @@ defmodule Backplane.Admin.MemoryOverviewLive do
       </.dm_card>
 
       <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <.link navigate={~p"/admin/memory/browse"}>
+        <.link navigate={~p"/memory/browse"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Browse</div>
             <div class="text-xs text-on-surface-variant mt-1">Filter and manage memories</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/memory/observations"}>
+        <.link navigate={~p"/memory/observations"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Observations</div>
             <div class="text-xs text-on-surface-variant mt-1">Recent tool call observations</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/memory/sessions"}>
+        <.link navigate={~p"/memory/sessions"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Sessions</div>
             <div class="text-xs text-on-surface-variant mt-1">Agent session history</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/memory/graph"}>
+        <.link navigate={~p"/memory/graph"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Graph</div>
             <div class="text-xs text-on-surface-variant mt-1">Entity relationship graph</div>

@@ -38,7 +38,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/mcp/managed",
+       current_path: "/mcp/managed",
        loading: true,
        active_tab: "debug",
        service: nil,
@@ -61,12 +61,12 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
         {:noreply,
          socket
          |> put_flash(:error, "Unknown managed service: #{prefix}")
-         |> push_navigate(to: ~p"/admin/mcp/managed")}
+         |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
         {:noreply,
          socket
-         |> assign(service: service, current_path: "/admin/mcp/managed/#{prefix}")
+         |> assign(service: service, current_path: "/mcp/managed/#{prefix}")
          |> assign(active_tab: active_tab(params["tab"], service))
          |> load_settings()}
     end
@@ -574,7 +574,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     ~H"""
     <div>
       <div class="mb-6 flex items-center gap-3">
-        <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/admin/mcp/managed")}>
+        <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/mcp/managed")}>
           &larr; Managed Services
         </.dm_btn>
         <div>
@@ -586,7 +586,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       <div class="tabs tabs-lifted mb-4" role="tablist">
         <.link
           :if={@service.prefix == "web"}
-          patch={~p"/admin/mcp/managed/#{@service.prefix}?tab=settings"}
+          patch={~p"/mcp/managed/#{@service.prefix}?tab=settings"}
           class={["tab tab-lg", @active_tab == "settings" && "tab-active"]}
           role="tab"
           aria-selected={@active_tab == "settings"}
@@ -594,7 +594,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
           Settings
         </.link>
         <.link
-          patch={~p"/admin/mcp/managed/#{@service.prefix}?tab=debug"}
+          patch={~p"/mcp/managed/#{@service.prefix}?tab=debug"}
           class={["tab tab-lg", @active_tab == "debug" && "tab-active"]}
           role="tab"
           aria-selected={@active_tab == "debug"}
@@ -629,7 +629,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
         <:title>Backend Credentials</:title>
         <p class="mb-4 text-sm text-on-surface-variant">
           Add or rotate API keys in <.link
-            navigate={~p"/admin/system/credentials"}
+            navigate={~p"/system/credentials"}
             class="text-primary underline"
           >System &gt; Credentials</.link>.
         </p>
@@ -708,7 +708,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
         <:title>X Search</:title>
         <p class="mb-4 text-sm text-on-surface-variant">
           Uses xAI Grok's built-in X Search tool. Select a plain xAI API key credential or a Grok OAuth credential from
-          <.link navigate={~p"/admin/system/credentials"} class="text-primary underline">
+          <.link navigate={~p"/system/credentials"} class="text-primary underline">
             System &gt; Credentials
           </.link>.
         </p>
@@ -742,7 +742,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
       <div class="flex gap-2 pt-2">
         <.dm_btn type="submit" variant="primary">Save Settings</.dm_btn>
-        <.link navigate={~p"/admin/mcp/managed"}>
+        <.link navigate={~p"/mcp/managed"}>
           <.dm_btn type="button">Cancel</.dm_btn>
         </.link>
       </div>

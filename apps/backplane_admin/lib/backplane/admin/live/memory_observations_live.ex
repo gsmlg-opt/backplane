@@ -16,7 +16,7 @@ defmodule Backplane.Admin.MemoryObservationsLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/memory/observations",
+       current_path: "/memory/observations",
        observations: observations
      )}
   end

@@ -14,17 +14,22 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end)
   end
 
-  test "redirects /admin to the dashboard", %{conn: conn} do
-    conn = get(conn, "/admin")
+  test "redirects root to the dashboard", %{conn: conn} do
+    conn = get(conn, "/")
 
-    assert redirected_to(conn) == "/admin/dashboard/overview"
+    assert redirected_to(conn) == "/dashboard/overview"
+  end
+
+  test "does not serve old admin-prefixed routes", %{conn: conn} do
+    assert get(conn, "/admin") |> response(404) == "not found"
+    assert get(conn, "/admin/dashboard/overview") |> response(404) == "not found"
   end
 
   test "requires admin basic auth when credentials are configured", %{conn: conn} do
     Application.put_env(:backplane, :admin_username, "admin")
     Application.put_env(:backplane, :admin_password, "secret")
 
-    conn = get(conn, "/admin/dashboard/overview")
+    conn = get(conn, "/dashboard/overview")
 
     assert response(conn, 401) == "Unauthorized"
 
@@ -40,7 +45,7 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     conn =
       conn
       |> Plug.Conn.put_req_header("authorization", basic_auth_header("admin", "secret"))
-      |> get("/admin/dashboard/overview")
+      |> get("/dashboard/overview")
 
     assert html_response(conn, 200) =~ "Dashboard"
   end

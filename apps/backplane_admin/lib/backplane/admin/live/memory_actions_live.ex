@@ -7,7 +7,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, current_path: "/admin/memory/actions", actions: [], leases: [])}
+    {:ok, assign(socket, current_path: "/memory/actions", actions: [], leases: [])}
   end
 
   @impl true

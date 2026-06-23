@@ -11,7 +11,7 @@ defmodule Backplane.Admin.Router do
     plug(Backplane.Web.AdminAuthPlug)
   end
 
-  scope "/admin", Backplane.Admin do
+  scope "/", Backplane.Admin do
     pipe_through(:browser)
 
     get("/", PageController, :admin)

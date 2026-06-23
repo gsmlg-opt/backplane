@@ -28,17 +28,6 @@ config :backplane_memory, repo: Backplane.Repo
 
 config :backplane_monitor, repo: Backplane.Repo
 
-# Phoenix Endpoint
-config :backplane_web, BackplaneWeb.Endpoint,
-  url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
-  render_errors: [
-    formats: [html: BackplaneWeb.ErrorHTML, json: BackplaneWeb.ErrorJSON],
-    layout: false
-  ],
-  pubsub_server: Backplane.PubSub,
-  live_view: [signing_salt: "bkpln_lv_salt"]
-
 config :backplane_api, Backplane.Api.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,

@@ -8,9 +8,8 @@ defmodule Backplane.Api.RouteBoundaryTest do
   end
 
   test "does not serve admin routes", %{conn: conn} do
-    conn = get(conn, "/admin/dashboard/overview")
-
-    assert response(conn, 404)
+    assert get(conn, "/dashboard/overview") |> response(404)
+    assert get(conn, "/admin/dashboard/overview") |> response(404)
   end
 
   test "routes health through API endpoint", %{conn: conn} do

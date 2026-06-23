@@ -43,15 +43,15 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
   describe "index" do
     test "renders provider list page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/llama/providers")
+      {:ok, _view, html} = live(conn, "/llama/providers")
 
       assert html =~ "LLM Providers"
-      assert html =~ ~s(href="/admin/llama/providers/new")
+      assert html =~ ~s(href="/llama/providers/new")
       refute html =~ "New Provider"
     end
 
     test "renders the dedicated new provider page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/llama/providers/new")
+      {:ok, _view, html} = live(conn, "/llama/providers/new")
 
       assert html =~ "Add LLM Provider"
       assert html =~ "DeepSeek"
@@ -78,7 +78,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "openai codex preset defaults to openai oauth credential options", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='openai-codex']")
@@ -95,7 +95,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "google ai studio preset defaults to antigravity oauth credential options", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='google-ai-studio']")
@@ -117,7 +117,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       ollama_html =
         view
@@ -138,7 +138,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> form("form[phx-submit=save]", %{
@@ -162,7 +162,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/llama/providers")
+      assert_redirect(view, "/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "deepseek-test")
       assert provider.preset_key == "deepseek"
@@ -178,7 +178,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "creates a provider from a selected preset", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='moonshot-cn']")
@@ -206,7 +206,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/llama/providers")
+      assert_redirect(view, "/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "moonshot-test")
       assert provider.preset_key == "moonshot-cn"
@@ -216,7 +216,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "openai codex preset rejects non openai oauth credentials", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='openai-codex']")
@@ -248,7 +248,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "google ai studio preset rejects non antigravity oauth credentials", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='google-ai-studio']")
@@ -280,7 +280,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "creates openai codex provider with openai oauth credential", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='openai-codex']")
@@ -308,7 +308,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/llama/providers")
+      assert_redirect(view, "/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "openai-codex-test")
       assert provider.preset_key == "openai-codex"
@@ -319,7 +319,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "creates google ai studio provider with antigravity oauth credential", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/new")
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
 
       view
       |> element("button[phx-value-preset='google-ai-studio']")
@@ -347,7 +347,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       })
       |> render_submit()
 
-      assert_redirect(view, "/admin/llama/providers")
+      assert_redirect(view, "/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "google-ai-studio-test")
       assert provider.preset_key == "google-ai-studio"
@@ -365,19 +365,19 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     test "shows a created provider", %{conn: conn} do
       {provider, _openai_api, _anthropic_api} = create_provider_with_apis()
 
-      {:ok, _view, html} = live(conn, "/admin/llama/providers")
+      {:ok, _view, html} = live(conn, "/llama/providers")
 
       assert html =~ "LLM Providers"
       assert html =~ "anthropic-prod"
       assert html =~ "Anthropic"
       assert html =~ "https://api.example.com/anthropic"
-      assert html =~ ~s(href="/admin/llama/providers/#{provider.id}")
+      assert html =~ ~s(href="/llama/providers/#{provider.id}")
     end
 
     test "provider detail edits provider and manages models", %{conn: conn} do
       {provider, openai_api, anthropic_api} = create_provider_with_apis()
 
-      {:ok, view, html} = live(conn, "/admin/llama/providers/#{provider.id}")
+      {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
 
       assert html =~ "Edit Provider"
       assert html =~ "Add Model"
@@ -528,7 +528,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
 
       html =
         view
@@ -582,7 +582,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
 
       html =
         view
@@ -638,7 +638,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
 
       html =
         view
@@ -672,7 +672,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           model_discovery_path: "/models"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/llama/providers/#{provider.id}")
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
 
       assert has_element?(
                view,
@@ -718,7 +718,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       Provider.soft_delete(provider)
 
-      {:ok, _view, html} = live(conn, "/admin/llama/providers")
+      {:ok, _view, html} = live(conn, "/llama/providers")
 
       refute html =~ "anthropic-prod"
     end

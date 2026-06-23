@@ -15,7 +15,7 @@ This repository is an Elixir umbrella project:
 
 - `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, native math engine, LLM proxy, clients, settings, credentials, Oban jobs.
 - `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets.
-- `apps/backplane_admin`: Phoenix admin UI endpoint for `/admin/*`.
+- `apps/backplane_admin`: Phoenix admin UI endpoint on its own port, with routes rooted at `/`.
 - `apps/relayixir`: HTTP/WebSocket reverse proxy library used internally by the LLM proxy.
 - `apps/day_ex`: date/time utility library exposed through the `day::` managed MCP tools.
 
@@ -70,9 +70,10 @@ Useful routes:
 - `DELETE /api/mcp`: MCP session cleanup
 - `GET /health`: health check JSON
 - `GET /metrics`: runtime metrics
-- `/admin`: admin UI
-- `/admin/hub`: MCP hub overview
-- `/admin/hub/managed`: managed service toggles and tool lists
+- Admin endpoint `/`: admin UI redirect
+- Admin endpoint `/dashboard/overview`: dashboard
+- Admin endpoint `/mcp/managed`: managed service toggles and tool lists
+- Admin endpoint `/system/credentials`: credentials vault
 - `/api/llm/*`: LLM proxy API routes
 
 ## Common Commands
@@ -130,7 +131,7 @@ BACKPLANE_ADMIN_PORT=4101
 Production public/API HTTP binding is controlled by `BACKPLANE_API_PORT`, `BACKPLANE_PORT`, or `PORT`; if none is set, it defaults to `4100`.
 Production admin HTTP binding is controlled by `BACKPLANE_ADMIN_PORT`; if it is not set, it defaults to `4101`.
 
-Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through `/admin`, including:
+Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through the admin endpoint, including:
 
 - upstream MCP servers
 - client tokens and scopes
@@ -172,7 +173,7 @@ Upstream tools use their configured prefix. Managed services and hub tools use f
 
 ## Managed Services
 
-Managed services are built into Backplane and can be viewed from `/admin/hub` or toggled from `/admin/hub/managed`.
+Managed services are built into Backplane and can be viewed from the admin endpoint at `/mcp/managed`.
 
 - `day::*`: date/time tools backed by `apps/day_ex`
 - `web::fetch`: fetch an HTTP(S) URL and convert readable content to Markdown
@@ -183,7 +184,7 @@ The math service accepts either an infix expression such as `2 * (3 + 4)` or a c
 
 ## Admin UI
 
-The admin UI is available at `/admin` and includes:
+The admin UI is available on the admin endpoint at `/` and includes:
 
 - Dashboard
 - MCP Hub

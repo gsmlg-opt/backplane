@@ -27,7 +27,7 @@ The public/API dev endpoint listens on `http://localhost:4220`; the admin dev en
 | `*` | `/api/v1/*` | API (`:backplane_api`, dev 4220) | LLM proxy (OpenAI-compatible) |
 | `*` | `/api/anthropic/*` | API (`:backplane_api`, dev 4220) | LLM proxy (Anthropic Messages) |
 | `*` | `/api/llm/*` | API (`:backplane_api`, dev 4220) | LLM admin API (providers, aliases) |
-| `*` | `/admin` | Admin (`:backplane_admin`, dev 4221) | Admin UI (LiveView) |
+| `*` | `/` | Admin (`:backplane_admin`, dev 4221) | Admin UI (LiveView) |
 
 ### MCP Auth Modes
 
@@ -41,7 +41,7 @@ This is an umbrella project. Key apps include:
 
 - **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
 - **`apps/backplane_api`** (`:backplane_api`) — Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets; dev port 4220.
-- **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint for `/admin/*`; dev port 4221.
+- **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint on its own port with routes rooted at `/`; dev port 4221.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM APIs.
 - **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
 
@@ -142,7 +142,7 @@ Removed tables (no longer present): `projects`, `doc_chunks`, `reindex_state`.
 
 TOML (`backplane.toml`) is boot-only. It covers: server bind address/port, database URL, and `secret_key_base`. See `config/backplane.toml.example` for reference.
 
-All operational configuration — upstream MCP servers, LLM providers, credentials, managed service toggles, client tokens — is stored in PostgreSQL and managed through the admin UI at `/admin`. No TOML entries are needed for operational concerns.
+All operational configuration — upstream MCP servers, LLM providers, credentials, managed service toggles, client tokens — is stored in PostgreSQL and managed through the admin endpoint. No TOML entries are needed for operational concerns.
 
 ### Production Environment Variables
 
@@ -163,12 +163,12 @@ Dashboard  |  MCP Hub  |  LLM Providers  |  Clients  |  Logs  |  Settings
 ```
 
 Six top-level modules:
-- **Dashboard** (`/admin`) — Health overview of upstreams, providers, and aggregate stats
-- **MCP Hub** (`/admin/hub`) — Manage upstream servers, managed services (skills/day/docs), tool browser
-- **LLM Providers** (`/admin/providers`) — Provider CRUD, model aliases, usage panel, health status
-- **Clients** (`/admin/clients`) — MCP client token and scope management
-- **Logs** (`/admin/logs`) — Tool call log, LLM request log, Oban job history
-- **Settings** (`/admin/settings`) — System settings editor, credentials vault, managed service toggles
+- **Dashboard** (`/dashboard/overview`) — Health overview of upstreams, providers, and aggregate stats
+- **MCP Hub** (`/mcp/managed`) — Manage upstream servers, managed services (skills/day/docs), tool browser
+- **LLM Providers** (`/llama/providers`) — Provider CRUD, model aliases, usage panel, health status
+- **Clients** (`/system/clients`) — MCP client token and scope management
+- **Logs** (`/system/logs`) — Tool call log, LLM request log, Oban job history
+- **Settings** (`/system/credentials`) — System settings editor, credentials vault, managed service toggles
 
 ### Key Dependencies
 

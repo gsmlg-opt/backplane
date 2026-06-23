@@ -105,7 +105,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     cred = Repo.get_by!(Backplane.Settings.Credential, name: "minimax-test-cred")
     Backplane.Settings.Credentials.Vault.put(cred)
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/plans")
     assert html =~ "My MiniMax Plan"
     assert html =~ "general"
     assert html =~ "94% remaining"
@@ -164,7 +164,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         active: true
       })
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/plans")
     assert html =~ "My Claude Code Plan"
     assert html =~ "Claude Code"
     assert html =~ "5-hour"
@@ -246,7 +246,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         active: true
       })
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/plans")
     assert html =~ "My Codex Plan"
     assert html =~ "OpenAI Codex"
     assert html =~ "Plus"
@@ -330,7 +330,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         active: true
       })
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/plans")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/plans")
     assert html =~ "My Google Antigravity Plan"
     assert html =~ "Google Antigravity"
     assert html =~ "Usage Groups"

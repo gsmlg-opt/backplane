@@ -21,12 +21,6 @@ config :backplane,
   api_url: "http://localhost:4002",
   admin_url: "http://localhost:4003"
 
-# We don't run a server during test
-config :backplane_web, BackplaneWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4002],
-  secret_key_base: secret_key_base,
-  server: false
-
 config :backplane_api, Backplane.Api.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: secret_key_base,

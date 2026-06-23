@@ -8,7 +8,7 @@ defmodule Backplane.Admin.EmbeddingLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/llama/embedding",
+       current_path: "/llama/embedding",
        provider_modal_open: false,
        provider_modal_mode: :new,
        editing_model: nil,

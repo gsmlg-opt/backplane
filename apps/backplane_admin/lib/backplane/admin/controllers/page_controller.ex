@@ -2,7 +2,7 @@ defmodule Backplane.Admin.PageController do
   use Backplane.Admin, :controller
 
   def admin(conn, _params) do
-    redirect(conn, to: ~p"/admin/dashboard/overview")
+    redirect(conn, to: ~p"/dashboard/overview")
   end
 
   def not_found(conn, _params) do

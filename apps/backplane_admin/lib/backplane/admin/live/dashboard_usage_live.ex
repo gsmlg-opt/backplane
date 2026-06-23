@@ -37,7 +37,7 @@ defmodule Backplane.Admin.DashboardUsageLive do
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
         <h1 class="text-2xl font-bold">MCP Usage</h1>
-        <.link navigate={~p"/admin/dashboard/usage/llm"} class="text-sm text-primary underline">
+        <.link navigate={~p"/dashboard/usage/llm"} class="text-sm text-primary underline">
           LLM Usage
         </.link>
       </div>
@@ -70,7 +70,7 @@ defmodule Backplane.Admin.DashboardUsageLive do
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
         <h1 class="text-2xl font-bold">LLM Usage</h1>
-        <.link navigate={~p"/admin/dashboard/usage/mcp"} class="text-sm text-primary underline">
+        <.link navigate={~p"/dashboard/usage/mcp"} class="text-sm text-primary underline">
           MCP Usage
         </.link>
       </div>
@@ -112,8 +112,8 @@ defmodule Backplane.Admin.DashboardUsageLive do
     """
   end
 
-  defp current_path(:mcp), do: "/admin/dashboard/usage/mcp"
-  defp current_path(_), do: "/admin/dashboard/usage/llm"
+  defp current_path(:mcp), do: "/dashboard/usage/mcp"
+  defp current_path(_), do: "/dashboard/usage/llm"
 
   defp empty_usage do
     %{

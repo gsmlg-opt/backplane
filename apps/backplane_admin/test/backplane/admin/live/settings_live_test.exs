@@ -23,7 +23,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders model alias settings instead of internal service toggles", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
       assert html =~ "Model Aliases"
       assert html =~ "smart"
@@ -41,7 +41,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders model aliases in fast, smart, expert order", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
       fast_index = index_of!(html, "auto-model-fast-add-form")
       smart_index = index_of!(html, "auto-model-smart-add-form")
@@ -54,7 +54,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "renders target model picker options from enabled provider models", %{conn: conn} do
       create_provider_models(["fast-model-a"])
 
-      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
       assert html =~ ~s(id="auto-model-fast-model")
       assert html =~ ~s(<option value="fast-model-a">)
@@ -64,7 +64,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "adds selected model target to alias list", %{conn: conn} do
       {openai_api, [model_id]} = create_provider_models(["fast-model-a"])
 
-      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
       html =
         view
@@ -96,7 +96,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "removes a model target from the alias list", %{conn: conn} do
       {_openai_api, [model_id]} = create_provider_models(["fast-model-a"])
 
-      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
       view
       |> form("#auto-model-fast-add-form", %{
@@ -117,7 +117,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders custom alias form with built-in alias targets", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
       assert html =~ ~s(id="custom-model-alias-form")
       assert html =~ ~s(id="custom-model-alias-target")
@@ -127,7 +127,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "adds custom alias pointing to a built-in alias", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
       html =
         view
@@ -145,7 +145,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "removes a custom alias", %{conn: conn} do
       {:ok, _alias} = Backplane.LLM.ModelAlias.put("coding", "smart")
 
-      {:ok, view, _html} = live(conn, "/admin/llama/model-aliases")
+      {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
       html =
         view
@@ -269,7 +269,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders credentials tab", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/system/credentials")
+      {:ok, _view, html} = live(conn, "/system/credentials")
       assert html =~ "Credential Store"
       assert html =~ "Add Credential"
     end
@@ -293,21 +293,21 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           "auth_type" => "anthropic_oauth"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+      {:ok, view, _html} = live(conn, "/system/credentials")
 
       assert has_element?(
                view,
-               ~s(a[href="/admin/system/credentials/plain-action-key/edit"] el-dm-button[aria-label="Edit plain-action-key"])
+               ~s(a[href="/system/credentials/plain-action-key/edit"] el-dm-button[aria-label="Edit plain-action-key"])
              )
 
       assert has_element?(
                view,
-               ~s(a[href="/admin/system/credentials/oauth-action-key/edit"] el-dm-button[aria-label="Edit oauth-action-key"])
+               ~s(a[href="/system/credentials/oauth-action-key/edit"] el-dm-button[aria-label="Edit oauth-action-key"])
              )
 
       refute has_element?(
                view,
-               ~s(a[href="/admin/system/credentials/new/anthropic_oauth"] el-dm-button[aria-label="Reconnect oauth-action-key"])
+               ~s(a[href="/system/credentials/new/anthropic_oauth"] el-dm-button[aria-label="Reconnect oauth-action-key"])
              )
 
       assert has_element?(
@@ -336,7 +336,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           "auth_type" => "anthropic_oauth"
         })
 
-      {:ok, view, html} = live(conn, "/admin/system/credentials/oauth-edit-key/edit")
+      {:ok, view, html} = live(conn, "/system/credentials/oauth-edit-key/edit")
 
       assert html =~ "OAuth Credential: oauth-edit-key"
       assert has_element?(view, "#oauth-status-badge", "Active")
@@ -377,7 +377,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       {:ok, _} = Credentials.import_cli_auth("oauth-json-edit-key", old_auth_json)
       assert {:ok, "sk-ant-oat01-old-json"} = Credentials.fetch("oauth-json-edit-key")
 
-      {:ok, view, html} = live(conn, "/admin/system/credentials/oauth-json-edit-key/edit")
+      {:ok, view, html} = live(conn, "/system/credentials/oauth-json-edit-key/edit")
 
       assert html =~ "Set Auth JSON"
       refute has_element?(view, "#claude-auth-json-modal")
@@ -424,7 +424,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           "auth_type" => "anthropic_oauth"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/oauth-reconnect-key/edit")
+      {:ok, view, _html} = live(conn, "/system/credentials/oauth-reconnect-key/edit")
 
       html =
         view
@@ -453,7 +453,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           "auth_type" => "anthropic_oauth"
         })
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/oauth-renew-key/edit")
+      {:ok, view, _html} = live(conn, "/system/credentials/oauth-renew-key/edit")
 
       _html =
         view
@@ -465,24 +465,24 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "clicking Add Credential patches the URL to the new form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+      {:ok, view, _html} = live(conn, "/system/credentials")
 
       html =
         view
-        |> element("a[href=\"/admin/system/credentials/new\"]")
+        |> element("a[href=\"/system/credentials/new\"]")
         |> render_click()
 
-      assert_patched(view, "/admin/system/credentials/new")
+      assert_patched(view, "/system/credentials/new")
       assert html =~ "New Credential"
       assert html =~ "save_credential"
     end
 
     test "can add a credential", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+      {:ok, view, _html} = live(conn, "/system/credentials")
 
       # Open the form via patching
       view
-      |> element("a[href=\"/admin/system/credentials/new\"]")
+      |> element("a[href=\"/system/credentials/new\"]")
       |> render_click()
 
       # Submit the form
@@ -495,31 +495,31 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "test-key"
       refute html =~ "New Credential"
     end
 
     test "clicking Connect Claude Plan patches the URL to the oauth form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+      {:ok, view, _html} = live(conn, "/system/credentials")
 
       html =
         view
-        |> element("a[href=\"/admin/system/credentials/new/anthropic_oauth\"]")
+        |> element("a[href=\"/system/credentials/new/anthropic_oauth\"]")
         |> render_click()
 
-      assert_patched(view, "/admin/system/credentials/new/anthropic_oauth")
+      assert_patched(view, "/system/credentials/new/anthropic_oauth")
       assert html =~ "Connect Claude Plan"
     end
 
     test "renders xAI Grok OAuth connect option", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/admin/system/credentials")
+      {:ok, view, html} = live(conn, "/system/credentials")
 
       assert html =~ "Connect xAI Grok"
 
       assert has_element?(
                view,
-               ~s(a[href="/admin/system/credentials/new/xai_oauth"]),
+               ~s(a[href="/system/credentials/new/xai_oauth"]),
                "Connect xAI Grok"
              )
     end
@@ -540,7 +540,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           "organizationUuid" => "org-imported"
         })
 
-      {:ok, view, html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+      {:ok, view, html} = live(conn, "/system/credentials/new/anthropic_oauth")
       assert html =~ "Claude Code Auth JSON"
 
       html =
@@ -551,7 +551,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-claude-code-json"
 
       assert {:ok, "sk-ant-oat01-imported"} = Credentials.fetch("my-claude-code-json")
@@ -565,7 +565,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "submitting Claude auth code splits code and state before token exchange", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/anthropic_oauth")
 
       html =
         view
@@ -611,7 +611,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-claude-plan"
 
       assert {:ok, "sk-ant-oat01-live"} = Credentials.fetch("my-claude-plan")
@@ -627,7 +627,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     test "Claude auth accepts callback URL and does not request setup-token expiry", %{
       conn: conn
     } do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/anthropic_oauth")
 
       view
       |> form("form[phx-submit=start_device_auth]", %{
@@ -646,13 +646,13 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-claude-plan-normal"
       assert {:ok, "sk-ant-oat01-normal"} = Credentials.fetch("my-claude-plan-normal")
     end
 
     test "Claude auth renders nested provider errors instead of crashing", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/anthropic_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/anthropic_oauth")
 
       view
       |> form("form[phx-submit=start_device_auth]", %{
@@ -684,7 +684,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "submitting device auth form for OpenAI requests device code and polls", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/openai_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/openai_oauth")
 
       html =
         view
@@ -708,12 +708,12 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       render(view)
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert render(view) =~ "my-openai-codex"
     end
 
     test "submitting Google Antigravity auth form exchanges a pasted CLI auth code", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/google_oauth")
 
       html =
         view
@@ -755,7 +755,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-google-antigravity"
       assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity")
 
@@ -785,7 +785,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, configured_refresher)
       end)
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/google_oauth")
 
       html =
         view
@@ -809,7 +809,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-google-antigravity-default"
       assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity-default")
     end
@@ -849,7 +849,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         restore_env(prior_env)
       end)
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/google_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/google_oauth")
 
       view
       |> form("form[phx-submit=start_device_auth]", %{
@@ -866,13 +866,13 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-google-antigravity-proxy"
       assert {:ok, "goog-antigravity-access"} = Credentials.fetch("my-google-antigravity-proxy")
     end
 
     test "submitting xAI Grok auth form exchanges a pasted callback URL", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/xai_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/xai_oauth")
 
       html =
         view
@@ -918,7 +918,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-xai-grok"
       assert {:ok, "xai-grok-access"} = Credentials.fetch("my-xai-grok")
 
@@ -963,7 +963,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         restore_env(prior_env)
       end)
 
-      {:ok, view, _html} = live(conn, "/admin/system/credentials/new/xai_oauth")
+      {:ok, view, _html} = live(conn, "/system/credentials/new/xai_oauth")
 
       view
       |> form("form[phx-submit=start_device_auth]", %{
@@ -981,16 +981,16 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-xai-grok-proxy"
       assert {:ok, "xai-grok-access"} = Credentials.fetch("my-xai-grok-proxy")
     end
 
     test "can add a script credential with textarea content and ignoring auth type", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/admin/system/credentials")
+      {:ok, view, _html} = live(conn, "/system/credentials")
 
       view
-      |> element("a[href=\"/admin/system/credentials/new\"]")
+      |> element("a[href=\"/system/credentials/new\"]")
       |> render_click()
 
       html = render(view)
@@ -1013,7 +1013,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         })
         |> render_submit()
 
-      assert_patched(view, "/admin/system/credentials")
+      assert_patched(view, "/system/credentials")
       assert html =~ "my-script-key"
 
       assert {:ok, "echo 'hello world'"} = Credentials.fetch("my-script-key")

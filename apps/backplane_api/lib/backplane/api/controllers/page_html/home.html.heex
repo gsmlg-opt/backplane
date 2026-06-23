@@ -8,7 +8,7 @@
     <:menu to="/#overview">Overview</:menu>
     <:menu to="/#setup">Setup</:menu>
     <:menu to="/#agents">Agent setup</:menu>
-    <:menu to={@admin_base_url <> "/admin/dashboard/overview"}>Admin</:menu>
+    <:menu to={@admin_base_url <> "/dashboard/overview"}>Admin</:menu>
     <:user_profile>
       <div class="hidden items-center gap-2 sm:flex">
         <.dm_badge variant="info" size="sm" soft>Documentation</.dm_badge>
@@ -31,7 +31,7 @@
               Private gateway for MCP tools and LLM APIs
             </h1>
           </div>
-          <a href={@admin_base_url <> "/admin/dashboard/overview"} class="no-underline">
+          <a href={@admin_base_url <> "/dashboard/overview"} class="no-underline">
             <.dm_btn variant="primary" size="sm">Open admin</.dm_btn>
           </a>
         </div>
@@ -73,14 +73,14 @@
         <:title>
           <div class="flex items-center justify-between gap-3">
             <span>Admin UI</span>
-            <.dm_badge variant="tertiary" size="sm">/admin</.dm_badge>
+            <.dm_badge variant="tertiary" size="sm">/</.dm_badge>
           </div>
         </:title>
         <p class="mt-2 text-sm leading-6 text-on-surface-variant">
           Operational settings live in PostgreSQL and are managed from <a
-            href={@admin_base_url <> "/admin/dashboard/overview"}
+            href={@admin_base_url <> "/dashboard/overview"}
             class="font-medium text-primary"
-          >/admin/dashboard/overview</a>.
+          >/dashboard/overview</a>.
         </p>
       </.dm_card>
     </section>
@@ -96,12 +96,12 @@
         <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
           <li>
             <span class="font-semibold text-on-surface">1. Store the API key.</span>
-            Open <a href={@admin_base_url <> "/admin/system/credentials"} class="font-medium text-primary">/admin/system/credentials</a>
+            Open <a href={@admin_base_url <> "/system/credentials"} class="font-medium text-primary">/system/credentials</a>
             and add the provider secret in the credentials vault.
           </li>
           <li>
             <span class="font-semibold text-on-surface">2. Create a provider.</span>
-            Open <a href={@admin_base_url <> "/admin/llama/providers"} class="font-medium text-primary">/admin/llama/providers</a>,
+            Open <a href={@admin_base_url <> "/llama/providers"} class="font-medium text-primary">/llama/providers</a>,
             choose the upstream API format, base URL, and credential name.
           </li>
           <li>
@@ -119,7 +119,7 @@
           </li>
         </ol>
         <:action>
-          <a href={@admin_base_url <> "/admin/llama/providers"} class="no-underline">
+          <a href={@admin_base_url <> "/llama/providers"} class="no-underline">
             <.dm_btn variant="outline" size="sm">Configure providers</.dm_btn>
           </a>
         </:action>
@@ -135,8 +135,8 @@
         <ol class="mt-4 space-y-4 text-sm leading-6 text-on-surface-variant">
           <li>
             <span class="font-semibold text-on-surface">1. Add an upstream.</span>
-            Open <a href={@admin_base_url <> "/admin/mcp/upstreams"} class="font-medium text-primary">
-              /admin/mcp/upstreams
+            Open <a href={@admin_base_url <> "/mcp/upstreams"} class="font-medium text-primary">
+              /mcp/upstreams
             </a>
             and create a stdio, HTTP, or SSE MCP server entry.
           </li>
@@ -147,7 +147,7 @@
           </li>
           <li>
             <span class="font-semibold text-on-surface">3. Configure client access.</span>
-            Open <a href={@admin_base_url <> "/admin/system/clients"} class="font-medium text-primary">/admin/system/clients</a>
+            Open <a href={@admin_base_url <> "/system/clients"} class="font-medium text-primary">/system/clients</a>
             to create bearer tokens and restrict which tool prefixes each client can call.
           </li>
           <li>
@@ -158,7 +158,7 @@
           </li>
         </ol>
         <:action>
-          <a href={@admin_base_url <> "/admin/mcp/upstreams"} class="no-underline">
+          <a href={@admin_base_url <> "/mcp/upstreams"} class="no-underline">
             <.dm_btn variant="outline" size="sm">Configure upstreams</.dm_btn>
           </a>
         </:action>
@@ -238,7 +238,7 @@ bearer_token_env_var = "BACKPLANE_MCP_TOKEN"</code></pre>
             <p>
               Then export the tokens before launching Codex. Backplane injects upstream provider secrets,
               so this client token can be scoped to the proxy or MCP client you created in
-              <a href={@admin_base_url <> "/admin/system/clients"} class="font-medium text-primary">/admin/system/clients</a>.
+              <a href={@admin_base_url <> "/system/clients"} class="font-medium text-primary">/system/clients</a>.
             </p>
             <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs leading-5 text-on-surface"><code>export OPENAI_API_KEY="bk-client-or-placeholder-token"
 export BACKPLANE_MCP_TOKEN="YOUR_MCP_TOKEN"
@@ -271,16 +271,16 @@ codex</code></pre>
       </p>
     </:section>
     <:section title="Configure" body_class="gap-2 text-sm">
-      <a href={@admin_base_url <> "/admin/system/credentials"} class="font-medium text-secondary-content underline">
+      <a href={@admin_base_url <> "/system/credentials"} class="font-medium text-secondary-content underline">
         Credentials vault
       </a>
-      <a href={@admin_base_url <> "/admin/llama/providers"} class="font-medium text-secondary-content underline">
+      <a href={@admin_base_url <> "/llama/providers"} class="font-medium text-secondary-content underline">
         LLM providers
       </a>
-      <a href={@admin_base_url <> "/admin/mcp/upstreams"} class="font-medium text-secondary-content underline">
+      <a href={@admin_base_url <> "/mcp/upstreams"} class="font-medium text-secondary-content underline">
         MCP upstreams
       </a>
-      <a href={@admin_base_url <> "/admin/system/clients"} class="font-medium text-secondary-content underline">
+      <a href={@admin_base_url <> "/system/clients"} class="font-medium text-secondary-content underline">
         Client tokens
       </a>
     </:section>

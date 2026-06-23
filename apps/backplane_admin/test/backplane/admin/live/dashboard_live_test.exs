@@ -2,27 +2,27 @@ defmodule Backplane.Admin.DashboardLiveTest do
   use Backplane.Admin.LiveCase
 
   test "renders dashboard page", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/admin/dashboard/overview")
+    {:ok, view, html} = live(conn, "/dashboard/overview")
 
     assert html =~ "Dashboard"
     assert html =~ "Total Tools"
     assert html =~ "Skills"
     assert html =~ "Upstreams"
-    assert html =~ ~s(href="/admin/dashboard/overview")
-    assert html =~ ~s(href="/admin/dashboard/usage/llm")
-    assert html =~ ~s(href="/admin/dashboard/usage/mcp")
-    assert html =~ ~s(href="/admin/llama/providers")
-    assert html =~ ~s(href="/admin/mcp/managed")
-    assert html =~ ~s(href="/admin/memory")
-    assert html =~ ~s(href="/admin/skills")
-    assert html =~ ~s(href="/admin/system/clients")
+    assert html =~ ~s(href="/dashboard/overview")
+    assert html =~ ~s(href="/dashboard/usage/llm")
+    assert html =~ ~s(href="/dashboard/usage/mcp")
+    assert html =~ ~s(href="/llama/providers")
+    assert html =~ ~s(href="/mcp/managed")
+    assert html =~ ~s(href="/memory")
+    assert html =~ ~s(href="/skills")
+    assert html =~ ~s(href="/system/clients")
     assert html =~ "theme-controller-dropdown"
     assert html =~ ~s(phx-hook="ThemeSwitcher")
     assert has_element?(view, "h1", "Dashboard")
   end
 
   test "displays stat cards", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/admin/dashboard/overview")
+    {:ok, view, _html} = live(conn, "/dashboard/overview")
 
     assert has_element?(view, "dt", "Total Tools")
     assert has_element?(view, "dt", "Native Tools")
@@ -31,14 +31,14 @@ defmodule Backplane.Admin.DashboardLiveTest do
   end
 
   test "shows quick action buttons", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/dashboard/overview")
+    {:ok, _view, html} = live(conn, "/dashboard/overview")
 
     assert html =~ "Reconnect Degraded"
   end
 
   test "admin entry redirects to dashboard overview", %{conn: conn} do
-    conn = get(conn, "/admin")
+    conn = get(conn, "/")
 
-    assert redirected_to(conn) == "/admin/dashboard/overview"
+    assert redirected_to(conn) == "/dashboard/overview"
   end
 end

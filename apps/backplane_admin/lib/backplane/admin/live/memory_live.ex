@@ -15,7 +15,7 @@ defmodule Backplane.Admin.MemoryLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/memory/browse",
+       current_path: "/memory/browse",
        memories: [],
        total: 0,
        loading: true,
@@ -42,7 +42,7 @@ defmodule Backplane.Admin.MemoryLive do
   end
 
   def handle_event("clear-filters", _params, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/memory/browse")}
+    {:noreply, push_patch(socket, to: ~p"/memory/browse")}
   end
 
   def handle_event("expand", %{"id" => id}, socket) do
@@ -121,7 +121,7 @@ defmodule Backplane.Admin.MemoryLive do
       |> Enum.into(%{})
       |> Map.put("page", page)
 
-    ~p"/admin/memory/browse?#{qp}"
+    ~p"/memory/browse?#{qp}"
   end
 
   defp safe_call(fun, default) do

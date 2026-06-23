@@ -8,7 +8,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     on_exit(fn -> AgentManage.clear() end)
   end
 
-  test "/admin/system/host-agents lists durable agents with manager runtime state", %{conn: conn} do
+  test "/system/host-agents lists durable agents with manager runtime state", %{conn: conn} do
     assert {:ok, offline_host} = Hosts.create_agent(%{"name" => "offline-host"})
     assert {:ok, host, auth_token, _token} = Hosts.create_agent_with_token(%{"name" => "t430"})
 
@@ -25,7 +25,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
                "targets" => [%{"name" => "agents"}, %{"name" => "commands"}]
              })
 
-    {:ok, view, html} = live(conn, "/admin/system/host-agents")
+    {:ok, view, html} = live(conn, "/system/host-agents")
 
     assert html =~ "Host Agent Management"
     assert has_element?(view, "#host-agents-table", "t430")
@@ -33,17 +33,17 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert html =~ "203.0.113.7"
     assert html =~ "0.1.0"
     assert html =~ "agents, commands"
-    assert html =~ ~s(href="/admin/system/host-agents/#{host.id}")
-    assert html =~ ~s(href="/admin/system/host-agents/#{offline_host.id}")
+    assert html =~ ~s(href="/system/host-agents/#{host.id}")
+    assert html =~ ~s(href="/system/host-agents/#{offline_host.id}")
     refute html =~ "Agent Auth"
     refute html =~ "Agent Live"
-    refute html =~ ~s(href="/admin/system/host-agents/manage")
-    refute html =~ ~s(href="/admin/system/host-agents/auth")
+    refute html =~ ~s(href="/system/host-agents/manage")
+    refute html =~ ~s(href="/system/host-agents/auth")
     refute html =~ "Disconnect"
   end
 
   test "creating an agent stays on the list and reveals its initial token", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/admin/system/host-agents")
+    {:ok, view, _html} = live(conn, "/system/host-agents")
 
     view
     |> element("#open-agent-modal")
@@ -76,7 +76,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
                "targets" => [%{"name" => "agents", "path" => "/tmp/skills"}]
              })
 
-    {:ok, view, html} = live(conn, "/admin/system/host-agents/#{host.id}")
+    {:ok, view, html} = live(conn, "/system/host-agents/#{host.id}")
 
     assert html =~ "t430"
     assert html =~ "198.51.100.4"
@@ -150,7 +150,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert {:ok, host, auth_token, token} =
              Hosts.create_agent_with_token(%{"name" => "delete-me"})
 
-    {:ok, view, _html} = live(conn, "/admin/system/host-agents/#{host.id}")
+    {:ok, view, _html} = live(conn, "/system/host-agents/#{host.id}")
 
     view
     |> element("#agent-tab-danger")
@@ -176,7 +176,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
 
     assert {:ok, _verified_host, _verified_token} = Hosts.verify_token(token)
 
-    assert {:error, {:live_redirect, %{to: "/admin/system/host-agents"}}} =
+    assert {:error, {:live_redirect, %{to: "/system/host-agents"}}} =
              view
              |> form("#delete-agent-form", %{"delete" => %{"confirmation" => "delete-me"}})
              |> render_submit()

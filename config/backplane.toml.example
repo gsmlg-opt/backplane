@@ -1,6 +1,6 @@
 # Backplane Configuration (boot-only)
 # Operational config (upstreams, providers, credentials, skills) is managed
-# through the admin UI at /admin and stored in PostgreSQL.
+# through the admin UI endpoint and stored in PostgreSQL.
 
 [backplane]
 host = "0.0.0.0"
@@ -10,4 +10,3 @@ port = 4100
 
 [database]
 url = "postgres://localhost/backplane_dev"
-

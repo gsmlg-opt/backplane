@@ -9,7 +9,7 @@ defmodule Backplane.Skills.ApiRouterTest do
   alias Backplane.Skills
   alias Backplane.Skills.Blob
   alias Backplane.Skills.Skill
-  alias BackplaneWeb.Endpoint
+  alias Backplane.Api.Endpoint
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"

@@ -6,20 +6,20 @@ defmodule Backplane.Admin.ManagedLiveTest do
   test "renders math in managed services", %{conn: conn} do
     {:ok, _record} = Config.save(%{enabled: true})
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed")
+    {:ok, _view, html} = live(conn, "/mcp/managed")
 
     assert html =~ "Managed Services"
     assert html =~ "Math"
     assert html =~ "math::"
     assert html =~ "math::evaluate"
-    assert html =~ ~s(href="/admin/mcp/managed/math")
+    assert html =~ ~s(href="/mcp/managed/math")
   end
 
   test "renders web service in managed services", %{conn: conn} do
     Backplane.Settings.set("services.web.enabled", true)
     Backplane.Registry.ToolRegistry.register_managed("web", Backplane.Services.Web.tools())
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed")
+    {:ok, _view, html} = live(conn, "/mcp/managed")
 
     assert html =~ "Managed Services"
     assert html =~ "Web"
@@ -28,7 +28,7 @@ defmodule Backplane.Admin.ManagedLiveTest do
     assert html =~ "web::search"
     assert html =~ "web::live_search"
     assert html =~ "web::x_search"
-    assert html =~ ~s(href="/admin/mcp/managed/web")
+    assert html =~ ~s(href="/mcp/managed/web")
   end
 
   test "refreshes enabled web service tools from the current module definitions", %{conn: conn} do
@@ -41,22 +41,22 @@ defmodule Backplane.Admin.ManagedLiveTest do
     Backplane.Registry.ToolRegistry.deregister_managed("web")
     Backplane.Registry.ToolRegistry.register_managed("web", stale_tools)
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed")
+    {:ok, _view, html} = live(conn, "/mcp/managed")
 
     assert html =~ "web::live_search"
   end
 
   test "links managed services to settings pages", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed")
+    {:ok, _view, html} = live(conn, "/mcp/managed")
 
-    assert html =~ ~s(href="/admin/mcp/managed/day")
-    assert html =~ ~s(href="/admin/mcp/managed/web")
-    assert html =~ ~s(href="/admin/mcp/managed/math")
+    assert html =~ ~s(href="/mcp/managed/day")
+    assert html =~ ~s(href="/mcp/managed/web")
+    assert html =~ ~s(href="/mcp/managed/math")
   end
 
   test "toggles web service through settings", %{conn: conn} do
     Backplane.Settings.set("services.web.enabled", true)
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed")
+    {:ok, view, _html} = live(conn, "/mcp/managed")
 
     view
     |> element("[phx-value-prefix='web']")
@@ -73,7 +73,7 @@ defmodule Backplane.Admin.ManagedLiveTest do
 
   test "toggles math service through math config", %{conn: conn} do
     {:ok, _record} = Config.save(%{enabled: true})
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed")
+    {:ok, view, _html} = live(conn, "/mcp/managed")
 
     view
     |> element("[phx-value-prefix='math']")

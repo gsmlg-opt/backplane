@@ -32,7 +32,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
       original_name: "create_issue"
     })
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/inspector/internal")
+    {:ok, _view, html} = live(conn, "/mcp/inspector/internal")
 
     refute html =~ "/github:: (upstream)"
     assert html =~ "github:: (upstream)"

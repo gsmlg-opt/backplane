@@ -16,7 +16,7 @@ defmodule Backplane.Admin.SkillUploadLive do
     {:ok,
      socket
      |> assign(
-       current_path: "/admin/skills/upload",
+       current_path: "/skills/upload",
        loading: true,
        skills: [],
        uploading: false,
@@ -54,7 +54,7 @@ defmodule Backplane.Admin.SkillUploadLive do
             {:noreply,
              socket
              |> put_flash(:error, "Skill not found")
-             |> push_patch(to: ~p"/admin/skills/upload")}
+             |> push_patch(to: ~p"/skills/upload")}
         end
     end
   end
@@ -145,7 +145,7 @@ defmodule Backplane.Admin.SkillUploadLive do
   end
 
   def handle_event("close-detail", _params, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/skills/upload")}
+    {:noreply, push_patch(socket, to: ~p"/skills/upload")}
   end
 
   # ── Private ──────────────────────────────────────────────────────────────
@@ -540,7 +540,7 @@ defmodule Backplane.Admin.SkillUploadLive do
 
       <.dm_table :if={@skills != []} id="upload-skills-table" data={@skills} hover zebra>
         <:col :let={skill} label="Name">
-          <.link patch={~p"/admin/skills/upload/#{skill.id}"} class="font-medium text-primary hover:underline">
+          <.link patch={~p"/skills/upload/#{skill.id}"} class="font-medium text-primary hover:underline">
             {skill.name}
           </.link>
         </:col>
@@ -575,7 +575,7 @@ defmodule Backplane.Admin.SkillUploadLive do
         </:col>
         <:col :let={skill} label="Actions">
           <div class="flex gap-1">
-            <.link patch={~p"/admin/skills/upload/#{skill.id}"} class="no-underline">
+            <.link patch={~p"/skills/upload/#{skill.id}"} class="no-underline">
               <.dm_btn type="button" size="xs" shape="circle" class="group relative">
                 <.dm_mdi name="eye" class="w-4 h-4" />
                 <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">

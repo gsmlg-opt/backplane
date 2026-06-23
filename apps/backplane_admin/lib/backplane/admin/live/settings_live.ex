@@ -46,10 +46,10 @@ defmodule Backplane.Admin.SettingsLive do
       case socket.assigns.live_action do
         action
         when action in [:credentials, :credentials_new, :credentials_new_oauth, :credentials_edit] ->
-          {:credentials, "/admin/system/credentials", "credentials"}
+          {:credentials, "/system/credentials", "credentials"}
 
         _ ->
-          {:model_aliases, "/admin/llama/model-aliases", "settings"}
+          {:model_aliases, "/llama/model-aliases", "settings"}
       end
 
     socket =
@@ -184,8 +184,8 @@ defmodule Backplane.Admin.SettingsLive do
   def handle_event("switch_tab", %{"tab" => tab}, socket) do
     path =
       case tab do
-        "credentials" -> ~p"/admin/system/credentials"
-        _ -> ~p"/admin/llama/model-aliases"
+        "credentials" -> ~p"/system/credentials"
+        _ -> ~p"/llama/model-aliases"
       end
 
     {:noreply, push_patch(socket, to: path)}
@@ -275,11 +275,11 @@ defmodule Backplane.Admin.SettingsLive do
   end
 
   def handle_event("cancel_device_auth", _, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/system/credentials")}
+    {:noreply, push_patch(socket, to: ~p"/system/credentials")}
   end
 
   def handle_event("cancel_cred_form", _, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/system/credentials")}
+    {:noreply, push_patch(socket, to: ~p"/system/credentials")}
   end
 
   def handle_event("retry_device_auth", _, socket) do
@@ -346,7 +346,7 @@ defmodule Backplane.Admin.SettingsLive do
               {:noreply,
                socket
                |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
-               |> push_patch(to: ~p"/admin/system/credentials")}
+               |> push_patch(to: ~p"/system/credentials")}
 
             {:error, reason} ->
               {:noreply,
@@ -391,7 +391,7 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Imported Claude Code auth as '#{name}'")
-             |> push_patch(to: ~p"/admin/system/credentials")}
+             |> push_patch(to: ~p"/system/credentials")}
 
           {:error, reason} ->
             {:noreply,
@@ -487,7 +487,7 @@ defmodule Backplane.Admin.SettingsLive do
               {:noreply,
                socket
                |> put_flash(:info, "Connected OpenAI Codex as '#{cred_name}'")
-               |> push_patch(to: ~p"/admin/system/credentials")}
+               |> push_patch(to: ~p"/system/credentials")}
 
             {:error, reason} ->
               {:noreply,
@@ -644,7 +644,7 @@ defmodule Backplane.Admin.SettingsLive do
         end
 
       true ->
-        redirect_uri = Backplane.WebOrigins.admin_url("/admin/oauth/callback")
+        redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
         {verifier, challenge} = pkce_pair()
 
         state =
@@ -668,7 +668,7 @@ defmodule Backplane.Admin.SettingsLive do
             socket =
               socket
               |> push_event("open_external_oauth", %{url: auth_url})
-              |> push_patch(to: ~p"/admin/system/credentials")
+              |> push_patch(to: ~p"/system/credentials")
 
             {:noreply, socket}
         end
@@ -721,7 +721,7 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' created")
-           |> push_patch(to: ~p"/admin/system/credentials")}
+           |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to store credential")}
@@ -746,7 +746,7 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' updated")
-           |> push_patch(to: ~p"/admin/system/credentials")}
+           |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to update credential")}
@@ -755,7 +755,7 @@ defmodule Backplane.Admin.SettingsLive do
       {:noreply,
        socket
        |> put_flash(:info, "Credential '#{name}' updated")
-       |> push_patch(to: ~p"/admin/system/credentials")}
+       |> push_patch(to: ~p"/system/credentials")}
     end
   end
 
@@ -771,7 +771,7 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' rotated")
-           |> push_patch(to: ~p"/admin/system/credentials")}
+           |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to rotate credential")}
@@ -1134,7 +1134,7 @@ defmodule Backplane.Admin.SettingsLive do
             <h1 class="text-2xl font-bold">Credential Store</h1>
             <div :if={@cred_form_mode == nil} class="flex items-center">
               <.link
-                patch={~p"/admin/system/credentials/new"}
+                patch={~p"/system/credentials/new"}
                 class="btn btn-primary split-btn-left"
               >
                 Add Credential
@@ -1156,25 +1156,25 @@ defmodule Backplane.Admin.SettingsLive do
                 </:trigger>
                 <:content>
                   <.link
-                    patch={~p"/admin/system/credentials/new/anthropic_oauth"}
+                    patch={~p"/system/credentials/new/anthropic_oauth"}
                     class="popover-menu-item"
                   >
                     Connect Claude Plan
                   </.link>
                   <.link
-                    patch={~p"/admin/system/credentials/new/openai_oauth"}
+                    patch={~p"/system/credentials/new/openai_oauth"}
                     class="popover-menu-item"
                   >
                     Connect OpenAI Codex
                   </.link>
                   <.link
-                    patch={~p"/admin/system/credentials/new/google_oauth"}
+                    patch={~p"/system/credentials/new/google_oauth"}
                     class="popover-menu-item"
                   >
                     Connect Google Antigravity
                   </.link>
                   <.link
-                    patch={~p"/admin/system/credentials/new/xai_oauth"}
+                    patch={~p"/system/credentials/new/xai_oauth"}
                     class="popover-menu-item"
                   >
                     Connect xAI Grok
@@ -1223,7 +1223,7 @@ defmodule Backplane.Admin.SettingsLive do
                 <:col :let={cred} label="Actions">
                   <div class="flex items-center gap-1">
                     <.dm_tooltip content="Edit" position="bottom">
-                      <.link patch={~p"/admin/system/credentials/#{cred.name}/edit"} class="no-underline">
+                      <.link patch={~p"/system/credentials/#{cred.name}/edit"} class="no-underline">
                         <.dm_btn
                           type="button"
                           size="xs"
@@ -1259,7 +1259,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         <% :credentials_new -> %>
           <div class="flex items-center gap-3 mb-6">
-            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+            <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
               &larr; Credentials
             </.link>
           </div>
@@ -1267,7 +1267,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         <% :credentials_new_oauth -> %>
           <div class="flex items-center gap-3 mb-6">
-            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+            <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
               &larr; Credentials
             </.link>
           </div>
@@ -1275,7 +1275,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         <% :credentials_edit -> %>
           <div class="flex items-center gap-3 mb-6">
-            <.link patch={~p"/admin/system/credentials"} class="text-sm text-primary hover:underline">
+            <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
               &larr; Credentials
             </.link>
           </div>

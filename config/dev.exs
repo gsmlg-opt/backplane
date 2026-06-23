@@ -9,7 +9,6 @@ config :backplane_system, Backplane.Repo,
   pool_size: 10,
   types: Backplane.PostgrexTypes
 
-config :backplane_web, dev_routes: true
 config :backplane_api, dev_routes: true
 config :backplane_admin, dev_routes: true
 
@@ -20,18 +19,6 @@ config :backplane,
   secret_key_base: secret_key_base,
   api_url: "http://localhost:4220",
   admin_url: "http://localhost:4221"
-
-config :backplane_web, BackplaneWeb.Endpoint,
-  # Transitional endpoint until Backplane.Admin owns :4221.
-  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4222],
-  check_origin: false,
-  code_reloader: true,
-  debug_errors: true,
-  secret_key_base: secret_key_base,
-  watchers: [
-    tailwind: {Tailwind, :install_and_run, [:backplane, ~w(--watch)]},
-    bun: {Bun, :install_and_run, [:backplane, ~w(--sourcemap=inline --watch)]}
-  ]
 
 config :backplane_api, Backplane.Api.Endpoint,
   http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
@@ -53,14 +40,6 @@ config :backplane_admin, Backplane.Admin.Endpoint,
   watchers: [
     tailwind_admin: {Tailwind, :install_and_run, [:backplane_admin, ~w(--watch)]},
     bun_admin: {Bun, :install_and_run, [:backplane_admin, ~w(--sourcemap=inline --watch)]}
-  ]
-
-config :backplane_web, BackplaneWeb.Endpoint,
-  live_reload: [
-    patterns: [
-      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
-      ~r"apps/backplane_web/lib/backplane_web/(controllers|live|components)/.*(ex|heex)$"
-    ]
   ]
 
 config :backplane_api, Backplane.Api.Endpoint,

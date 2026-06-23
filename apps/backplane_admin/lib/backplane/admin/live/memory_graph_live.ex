@@ -9,7 +9,7 @@ defmodule Backplane.Admin.MemoryGraphLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/memory/graph",
+       current_path: "/memory/graph",
        graph_stats: graph_stats,
        search_query: "",
        results: [],

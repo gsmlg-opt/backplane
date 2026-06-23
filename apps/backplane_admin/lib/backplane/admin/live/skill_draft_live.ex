@@ -15,7 +15,7 @@ defmodule Backplane.Admin.SkillDraftLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/skills/draft",
+       current_path: "/skills/draft",
        loading: true,
        skills: [],
        form: nil,
@@ -60,14 +60,14 @@ defmodule Backplane.Admin.SkillDraftLive do
             {:noreply,
              socket
              |> put_flash(:error, "Skill not found")
-             |> push_patch(to: ~p"/admin/skills/draft")}
+             |> push_patch(to: ~p"/skills/draft")}
         end
     end
   end
 
   @impl true
   def handle_event("new", _params, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/skills/draft/new")}
+    {:noreply, push_patch(socket, to: ~p"/skills/draft/new")}
   end
 
   def handle_event("edit", %{"id" => id}, socket) do
@@ -82,7 +82,7 @@ defmodule Backplane.Admin.SkillDraftLive do
   end
 
   def handle_event("cancel", _params, socket) do
-    {:noreply, push_patch(socket, to: ~p"/admin/skills/draft")}
+    {:noreply, push_patch(socket, to: ~p"/skills/draft")}
   end
 
   def handle_event("validate", %{"skill" => params}, socket) do
@@ -135,7 +135,7 @@ defmodule Backplane.Admin.SkillDraftLive do
         {:noreply,
          socket
          |> put_flash(:info, "Created skill '#{skill.name}'")
-         |> push_patch(to: ~p"/admin/skills/draft")}
+         |> push_patch(to: ~p"/skills/draft")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill))}
@@ -154,7 +154,7 @@ defmodule Backplane.Admin.SkillDraftLive do
         {:noreply,
          socket
          |> put_flash(:info, "Updated skill '#{updated.name}'")
-         |> push_patch(to: ~p"/admin/skills/draft")}
+         |> push_patch(to: ~p"/skills/draft")}
 
       {:error, changeset} when is_struct(changeset, Ecto.Changeset) ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill))}
@@ -216,7 +216,7 @@ defmodule Backplane.Admin.SkillDraftLive do
             Create and edit self-managed skills. Upstream and archive skills are managed elsewhere.
           </p>
         </div>
-        <.link :if={!@show_form} patch={~p"/admin/skills/draft/new"} class="no-underline">
+        <.link :if={!@show_form} patch={~p"/skills/draft/new"} class="no-underline">
           <.dm_btn variant="primary" size="sm" shape="circle" class="group relative">
             <.dm_mdi name="plus" class="w-5 h-5" />
             <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
@@ -292,7 +292,7 @@ defmodule Backplane.Admin.SkillDraftLive do
             <.dm_btn type="submit" variant="primary" size="sm">
               {if @editing_skill, do: "Update", else: "Create"}
             </.dm_btn>
-            <.link patch={~p"/admin/skills/draft"} class="no-underline">
+            <.link patch={~p"/skills/draft"} class="no-underline">
               <.dm_btn type="button" size="sm">Cancel</.dm_btn>
             </.link>
           </div>

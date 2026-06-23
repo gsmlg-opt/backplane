@@ -27,7 +27,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
     {:ok,
      socket
      |> assign(
-       current_path: "/admin/memory/config",
+       current_path: "/memory/config",
        flash_msg: nil
      )
      |> assign_config()}

@@ -19,7 +19,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/system/host-agents",
+       current_path: "/system/host-agents",
        tabs: @tabs,
        agents: [],
        entry: nil,
@@ -171,7 +171,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     if String.trim(confirmation || "") == entry.host.name do
       case Hosts.delete_agent(entry.host) do
         {:ok, _host} ->
-          {:noreply, push_navigate(socket, to: ~p"/admin/system/host-agents")}
+          {:noreply, push_navigate(socket, to: ~p"/system/host-agents")}
 
         {:error, _changeset} ->
           {:noreply,
@@ -188,7 +188,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     ~H"""
     <div>
       <div class="mb-6">
-        <.link navigate={~p"/admin/system/host-agents"} class="text-sm text-primary underline">
+        <.link navigate={~p"/system/host-agents"} class="text-sm text-primary underline">
           Host Agents
         </.link>
         <div class="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -301,7 +301,7 @@ defmodule Backplane.Admin.HostAgentsLive do
               <td class="px-3 py-2 align-top">
                 <.dm_tooltip content="View" position="bottom">
                   <.link
-                    navigate={~p"/admin/system/host-agents/#{entry.host.id}"}
+                    navigate={~p"/system/host-agents/#{entry.host.id}"}
                     aria-label="View"
                   >
                     <.dm_btn type="button" size="xs" shape="circle" variant="outline" aria-label="View">
@@ -322,7 +322,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp load_index(socket) do
     assign(socket,
-      current_path: "/admin/system/host-agents",
+      current_path: "/system/host-agents",
       agents: AgentManage.list_agents(),
       entry: nil,
       active_tab: "overview",
@@ -340,7 +340,7 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp load_show(socket, nil) do
     socket
     |> put_flash(:error, "Host agent not found")
-    |> push_navigate(to: ~p"/admin/system/host-agents")
+    |> push_navigate(to: ~p"/system/host-agents")
   end
 
   defp load_show(socket, id) do
@@ -352,7 +352,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     |> case do
       {:ok, entry} ->
         assign(socket,
-          current_path: "/admin/system/host-agents/#{entry.host.id}",
+          current_path: "/system/host-agents/#{entry.host.id}",
           agents: [],
           entry: entry,
           active_tab: socket.assigns.active_tab || "overview",

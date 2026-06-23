@@ -16,7 +16,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     {:ok,
      socket
      |> assign(
-       current_path: "/admin/skills/upstream",
+       current_path: "/skills/upstream",
        loading: true,
        sources: [],
        form: nil,
@@ -48,7 +48,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
            remote_skills: [],
            remote_loading: false,
            remote_error: nil,
-           current_path: "/admin/skills/upstream"
+           current_path: "/skills/upstream"
          )
          |> load_sources()}
 
@@ -60,7 +60,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
            form: to_form(changeset, as: :skill_source),
            editing_source: nil,
            tag_input: "",
-           current_path: "/admin/skills/upstream"
+           current_path: "/skills/upstream"
          )}
 
       :show ->
@@ -71,7 +71,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
              |> assign(
                editing_source: source,
                form: nil,
-               current_path: "/admin/skills/upstream"
+               current_path: "/skills/upstream"
              )
              |> load_sources()}
 
@@ -79,7 +79,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
             {:noreply,
              socket
              |> put_flash(:error, "Source not found")
-             |> push_patch(to: ~p"/admin/skills/upstream")}
+             |> push_patch(to: ~p"/skills/upstream")}
         end
 
       :edit ->
@@ -98,7 +98,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
                remote_skills: [],
                remote_loading: true,
                remote_error: nil,
-               current_path: "/admin/skills/upstream"
+               current_path: "/skills/upstream"
              )
              |> tap(fn _ -> send(self(), {:fetch_remote_for_edit, source}) end)}
 
@@ -106,7 +106,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
             {:noreply,
              socket
              |> put_flash(:error, "Source not found")
-             |> push_patch(to: ~p"/admin/skills/upstream")}
+             |> push_patch(to: ~p"/skills/upstream")}
         end
     end
   end
@@ -123,7 +123,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         {:noreply,
          socket
          |> put_flash(:info, "Source added")
-         |> push_navigate(to: ~p"/admin/skills/upstream")}
+         |> push_navigate(to: ~p"/skills/upstream")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill_source))}
@@ -147,7 +147,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         {:noreply,
          socket
          |> put_flash(:info, "Source '#{updated.name}' updated")
-         |> push_navigate(to: ~p"/admin/skills/upstream")}
+         |> push_navigate(to: ~p"/skills/upstream")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill_source))}
@@ -173,7 +173,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
             {:noreply,
              socket
              |> put_flash(:info, "Source deleted")
-             |> push_navigate(to: ~p"/admin/skills/upstream")}
+             |> push_navigate(to: ~p"/skills/upstream")}
 
           {:error, _} ->
             {:noreply, put_flash(socket, :error, "Failed to delete source")}
@@ -468,7 +468,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         >
           <.dm_mdi name="sync" class={["w-5 h-5", @syncing_id == :all && "animate-spin"]} />
         </.dm_btn>
-        <.link navigate={~p"/admin/skills/upstream/new"}>
+        <.link navigate={~p"/skills/upstream/new"}>
           <.dm_btn variant="primary" size="sm" title="Add Source">
             <.dm_mdi name="plus" class="w-5 h-5" />
           </.dm_btn>
@@ -534,7 +534,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               >
                 <.dm_mdi name="sync" class={["w-4 h-4", @syncing_id == source.id && "animate-spin"]} />
               </.dm_btn>
-              <.link navigate={~p"/admin/skills/upstream/#{source.id}/edit"} class="no-underline">
+              <.link navigate={~p"/skills/upstream/#{source.id}/edit"} class="no-underline">
                 <.dm_btn size="xs" title="Edit">
                   <.dm_mdi name="pencil" class="w-4 h-4" />
                 </.dm_btn>
@@ -579,7 +579,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
   defp render_new(assigns) do
     ~H"""
     <div class="mb-6">
-      <.link navigate={~p"/admin/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
+      <.link navigate={~p"/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
         ← Back to Upstream Sources
       </.link>
     </div>
@@ -643,7 +643,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         <div class="flex gap-2 pt-2">
           <.dm_btn type="submit" variant="primary" size="sm">Create</.dm_btn>
-          <.link navigate={~p"/admin/skills/upstream"} class="no-underline">
+          <.link navigate={~p"/skills/upstream"} class="no-underline">
             <.dm_btn type="button" size="sm">Cancel</.dm_btn>
           </.link>
         </div>
@@ -655,7 +655,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
   defp render_edit(assigns) do
     ~H"""
     <div class="mb-6">
-      <.link navigate={~p"/admin/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
+      <.link navigate={~p"/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
         ← Back to Upstream Sources
       </.link>
     </div>
@@ -720,7 +720,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         <div class="flex gap-2 pt-2">
           <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
-          <.link navigate={~p"/admin/skills/upstream"} class="no-underline">
+          <.link navigate={~p"/skills/upstream"} class="no-underline">
             <.dm_btn type="button" size="sm">Cancel</.dm_btn>
           </.link>
         </div>

@@ -33,7 +33,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/mcp/managed",
+       current_path: "/mcp/managed",
        loading: true,
        service: nil,
        tool: nil,
@@ -54,7 +54,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
         {:noreply,
          socket
          |> put_flash(:error, "Unknown managed service: #{prefix}")
-         |> push_navigate(to: ~p"/admin/mcp/managed")}
+         |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
         case find_tool(service.module.tools(), full_name) do
@@ -62,7 +62,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
             {:noreply,
              socket
              |> put_flash(:error, "Unknown tool: #{full_name}")
-             |> push_navigate(to: ~p"/admin/mcp/managed")}
+             |> push_navigate(to: ~p"/mcp/managed")}
 
           tool ->
             schema_text = format_value(Map.get(tool, :input_schema, %{}))
@@ -74,7 +74,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
                tool: tool,
                schema_text: schema_text,
                test_arguments: sample_arguments(full_name),
-               current_path: "/admin/mcp/managed/#{prefix}/tool/#{short_name}"
+               current_path: "/mcp/managed/#{prefix}/tool/#{short_name}"
              )}
         end
     end
@@ -211,7 +211,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
     ~H"""
     <div>
       <div class="mb-6 flex items-center gap-3">
-        <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/admin/mcp/managed")}>
+        <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/mcp/managed")}>
           &larr; Managed Services
         </.dm_btn>
         <div>

@@ -26,7 +26,7 @@ defmodule Backplane.Admin.ManagedLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, current_path: "/admin/mcp/managed", loading: true)}
+    {:ok, assign(socket, current_path: "/mcp/managed", loading: true)}
   end
 
   @impl true
@@ -63,7 +63,7 @@ defmodule Backplane.Admin.ManagedLive do
           enabled: enabled,
           tool_count: tool_count,
           tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end),
-          settings_path: "/admin/mcp/managed/#{prefix}"
+          settings_path: "/mcp/managed/#{prefix}"
         })
       end)
 
@@ -150,7 +150,7 @@ defmodule Backplane.Admin.ManagedLive do
                 <div :if={service.enabled and service.tools != []} class="flex flex-wrap gap-1">
                   <.link
                     :for={tool <- service.tools}
-                    navigate={"/admin/mcp/managed/#{service.prefix}/tool/#{tool_short_name(tool.name)}"}
+                    navigate={"/mcp/managed/#{service.prefix}/tool/#{tool_short_name(tool.name)}"}
                   >
                     <.dm_badge variant="ghost" class="cursor-pointer hover:bg-surface-container-high transition-colors">
                       {tool.name}

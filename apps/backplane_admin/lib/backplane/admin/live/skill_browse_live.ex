@@ -14,7 +14,7 @@ defmodule Backplane.Admin.SkillBrowseLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/skills/browse",
+       current_path: "/skills/browse",
        loading: true,
        skills: [],
        total: 0,
@@ -56,7 +56,7 @@ defmodule Backplane.Admin.SkillBrowseLive do
             {:noreply,
              assign(socket,
                selected_skill: skill,
-               current_path: "/admin/skills/browse/#{skill_id}"
+               current_path: "/skills/browse/#{skill_id}"
              )}
 
           {:error, :not_found} ->
@@ -230,7 +230,7 @@ defmodule Backplane.Admin.SkillBrowseLive do
       |> maybe_put("tag", assigns[:tag] || assigns["tag"])
       |> maybe_put_int("page", assigns[:page] || assigns["page"])
 
-    ~p"/admin/skills/browse?#{params}"
+    ~p"/skills/browse?#{params}"
   end
 
   defp maybe_put(params, _key, nil), do: params
@@ -450,7 +450,7 @@ defmodule Backplane.Admin.SkillBrowseLive do
             </td>
             <td role="cell">
               <.link
-                patch={~p"/admin/skills/browse/#{skill.id}"}
+                patch={~p"/skills/browse/#{skill.id}"}
                 class="font-medium text-primary hover:underline no-underline whitespace-nowrap"
               >
                 {skill.name}

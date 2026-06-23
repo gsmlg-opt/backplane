@@ -3,7 +3,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
   Handles the OAuth 2.0 authorization-code callback for Anthropic, OpenAI, and Google.
 
   After the user authenticates in their browser the provider redirects to
-  GET /admin/oauth/callback?code=…&state=… which this controller handles.
+  GET /oauth/callback?code=…&state=… which this controller handles.
   """
 
   use Backplane.Admin, :controller
@@ -36,14 +36,14 @@ defmodule Backplane.Admin.OAuthCallbackController do
               {:ok, _} ->
                 conn
                 |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
-                |> redirect(to: ~p"/admin/system/credentials")
+                |> redirect(to: ~p"/system/credentials")
 
               {:error, reason} ->
                 Logger.warning("OAuth credential store failed: #{inspect(reason)}")
 
                 conn
                 |> put_flash(:error, "Auth succeeded but failed to save credential")
-                |> redirect(to: ~p"/admin/system/credentials")
+                |> redirect(to: ~p"/system/credentials")
             end
 
           {:error, reason} ->
@@ -51,32 +51,32 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
             conn
             |> put_flash(:error, "Authorization failed: #{format_error(reason)}")
-            |> redirect(to: ~p"/admin/system/credentials")
+            |> redirect(to: ~p"/system/credentials")
         end
 
       :error ->
         conn
         |> put_flash(:error, "OAuth state expired or invalid. Please try again.")
-        |> redirect(to: ~p"/admin/system/credentials")
+        |> redirect(to: ~p"/system/credentials")
     end
   end
 
   def callback(conn, %{"error" => error, "error_description" => desc}) do
     conn
     |> put_flash(:error, "Authorization denied: #{desc} (#{error})")
-    |> redirect(to: ~p"/admin/system/credentials")
+    |> redirect(to: ~p"/system/credentials")
   end
 
   def callback(conn, %{"error" => error}) do
     conn
     |> put_flash(:error, "Authorization denied: #{error}")
-    |> redirect(to: ~p"/admin/system/credentials")
+    |> redirect(to: ~p"/system/credentials")
   end
 
   def callback(conn, _params) do
     conn
     |> put_flash(:error, "Invalid OAuth callback — missing code or state")
-    |> redirect(to: ~p"/admin/system/credentials")
+    |> redirect(to: ~p"/system/credentials")
   end
 
   # ── Private helpers ─────────────────────────────────────────────────────────

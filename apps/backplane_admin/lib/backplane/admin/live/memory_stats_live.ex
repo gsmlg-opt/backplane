@@ -11,7 +11,7 @@ defmodule Backplane.Admin.MemoryStatsLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/memory/stats",
+       current_path: "/memory/stats",
        loading: true,
        type_counts: [],
        scope_counts: [],

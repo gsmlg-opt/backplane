@@ -56,7 +56,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     {:ok, _credential} = Credentials.store("shared-search-key", "secret", "service")
     {:ok, _xai_credential} = Credentials.store("xai-search-key", "xai-secret", "service")
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, _view, html} = live(conn, "/mcp/managed/web")
 
     assert html =~ "Web Settings"
     assert html =~ "Default Backend"
@@ -70,7 +70,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     refute html =~ "BigModel"
     assert html =~ "shared-search-key"
     assert html =~ "xai-search-key"
-    assert html =~ ~s(href="/admin/system/credentials")
+    assert html =~ ~s(href="/system/credentials")
     refute html =~ "Backend API Keys"
     refute html =~ "API Key"
   end
@@ -96,7 +96,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
     Settings.set("services.web_live_search.models", ["openai-live/gpt-5.5"])
 
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, view, html} = live(conn, "/mcp/managed/web")
 
     assert html =~ "Live Search"
     assert html =~ "openai-live/gpt-5.5"
@@ -121,7 +121,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     create_provider_api("openai-codex", "openai-codex", "https://chatgpt.com/backend-api/codex")
     create_provider_api("x-ai", "x-ai", "https://api.x.ai/v1")
 
-    {:ok, _view, html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, _view, html} = live(conn, "/mcp/managed/web")
 
     assert html =~ "openai-codex/gpt-5.5"
     assert html =~ "x-ai/grok-4.3"
@@ -130,7 +130,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
   test "saves default backend and selected backend credential", %{conn: conn} do
     {:ok, _credential} = Credentials.store("mini-search-key", "mini-secret", "service")
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       view
@@ -158,7 +158,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
   test "saves xAI X Search credential and model", %{conn: conn} do
     {:ok, _credential} = Credentials.store("xai-search-key", "xai-secret", "service")
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       view
@@ -193,7 +193,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       base_url: "https://api.x.ai/v1"
     )
 
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       view
@@ -229,7 +229,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       base_url: "https://api.openai.com/v1"
     )
 
-    {:ok, view, _html} = live(conn, "/admin/mcp/managed/web")
+    {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       render_submit(view, "save", %{
@@ -275,7 +275,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       })
     end)
 
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
+    {:ok, view, html} = live(conn, "/mcp/managed/web?tab=debug")
 
     assert html =~ "Web Debug"
     assert html =~ "web::fetch"
@@ -328,7 +328,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       })
     end)
 
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
+    {:ok, view, html} = live(conn, "/mcp/managed/web?tab=debug")
 
     assert html =~ "Web Debug"
     assert html =~ "web::x_search"
@@ -351,7 +351,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
   end
 
   test "day debug tab calls selected managed tool", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/day?tab=debug")
+    {:ok, view, html} = live(conn, "/mcp/managed/day?tab=debug")
 
     assert html =~ "Day Debug"
     assert html =~ "day::diff"
@@ -396,7 +396,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
   test "math debug tab calls selected managed tool", %{conn: conn} do
     {:ok, _record} = Backplane.Math.Config.save(%{enabled: true})
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/math?tab=debug")
+    {:ok, view, html} = live(conn, "/mcp/managed/math?tab=debug")
 
     assert html =~ "Math Debug"
     assert html =~ "math::evaluate"
@@ -429,7 +429,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       """)
     end)
 
-    {:ok, view, html} = live(conn, "/admin/mcp/managed/web?tab=debug")
+    {:ok, view, html} = live(conn, "/mcp/managed/web?tab=debug")
 
     assert html =~ "Web Debug"
     assert html =~ "web::fetch"

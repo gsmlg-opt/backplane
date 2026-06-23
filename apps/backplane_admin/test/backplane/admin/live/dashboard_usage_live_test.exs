@@ -26,7 +26,7 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
       output_tokens: 50
     })
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/llm")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/llm")
 
     assert html =~ "LLM Usage"
     assert html =~ "Total Requests"
@@ -35,18 +35,18 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     assert html =~ "Average Latency"
     assert html =~ "llama-test-model"
     assert html =~ "200"
-    assert html =~ ~s(href="/admin/dashboard/usage/mcp")
+    assert html =~ ~s(href="/dashboard/usage/mcp")
   end
 
   test "renders MCP usage page from runtime metrics", %{conn: conn} do
     :telemetry.execute([:backplane, :mcp_request, :start], %{}, %{method: "tools/list"})
 
-    {:ok, _view, html} = live(conn, "/admin/dashboard/usage/mcp")
+    {:ok, _view, html} = live(conn, "/dashboard/usage/mcp")
 
     assert html =~ "MCP Usage"
     assert html =~ "Total MCP Requests"
     assert html =~ "tools/list"
-    assert html =~ ~s(href="/admin/dashboard/usage/llm")
+    assert html =~ ~s(href="/dashboard/usage/llm")
   end
 
   defp insert_usage(provider_id, attrs) do

@@ -17,7 +17,7 @@ defmodule Backplane.Admin.LogsLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/system/logs",
+       current_path: "/system/logs",
        loading: true,
        tab: "jobs",
        jobs: [],

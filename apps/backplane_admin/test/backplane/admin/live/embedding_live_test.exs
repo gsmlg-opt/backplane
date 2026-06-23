@@ -17,13 +17,13 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
   end
 
   test "renders the llama embedding menu page", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/admin/llama/embedding")
+    {:ok, view, html} = live(conn, "/llama/embedding")
 
     assert html =~ "Embedding Providers"
     assert has_element?(view, "#open-embedding-provider-modal", "Add Provider")
     refute has_element?(view, "#embedding-provider-modal")
     assert html =~ "Embedding Models"
-    assert html =~ ~s(href="/admin/llama/embedding")
+    assert html =~ ~s(href="/llama/embedding")
     assert html =~ ~s(aria-current="page")
     refute html =~ "Active Embedding Model"
     refute html =~ "embedding-model-form"
@@ -35,7 +35,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
     conn: conn,
     credential: credential
   } do
-    {:ok, view, _html} = live(conn, "/admin/llama/embedding")
+    {:ok, view, _html} = live(conn, "/llama/embedding")
 
     html =
       view
@@ -70,7 +70,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
     refute has_element?(view, "#embedding-provider-modal")
     refute html =~ ~s(phx-click="use_model")
     refute html =~ "Active"
-    refute html =~ ~s(href="/admin/llama/providers/)
+    refute html =~ ~s(href="/llama/providers/)
   end
 
   test "does not expose an active embedding model control", %{
@@ -80,7 +80,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
     model_id = create_embedding_model(credential)
     :ok = Settings.set("memory.embed_model", model_id)
 
-    {:ok, _view, html} = live(conn, "/admin/llama/embedding")
+    {:ok, _view, html} = live(conn, "/llama/embedding")
 
     assert html =~ model_id
     assert html =~ "embedding-models-table"
@@ -108,7 +108,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
         "metadata" => "{}"
       })
 
-    {:ok, view, html} = live(conn, "/admin/llama/embedding")
+    {:ok, view, html} = live(conn, "/llama/embedding")
 
     assert html =~ "embedding-edit/text-embedding-3-small"
     assert has_element?(view, "#edit-embedding-model-#{model.id}")
@@ -188,7 +188,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
         enabled: true
       })
 
-    {:ok, _view, html} = live(conn, "/admin/llama/embedding")
+    {:ok, _view, html} = live(conn, "/llama/embedding")
 
     refute html =~ "embedding-disabled/text-embedding-disabled"
   end

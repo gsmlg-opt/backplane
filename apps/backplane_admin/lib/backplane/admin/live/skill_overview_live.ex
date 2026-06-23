@@ -10,7 +10,7 @@ defmodule Backplane.Admin.SkillOverviewLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/skills",
+       current_path: "/skills",
        loading: true,
        total_skills: 0,
        source_counts: %{},
@@ -166,25 +166,25 @@ defmodule Backplane.Admin.SkillOverviewLive do
       </.dm_card>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <.link navigate={~p"/admin/skills/browse"}>
+        <.link navigate={~p"/skills/browse"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Browse</div>
             <div class="text-xs text-on-surface-variant mt-1">Search and filter all skills</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/skills/metadata"}>
+        <.link navigate={~p"/skills/metadata"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Metadata</div>
             <div class="text-xs text-on-surface-variant mt-1">Manage tags & categories</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/skills/upstream"}>
+        <.link navigate={~p"/skills/upstream"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Upstream</div>
             <div class="text-xs text-on-surface-variant mt-1">Sync skills from GitHub</div>
           </.dm_card>
         </.link>
-        <.link navigate={~p"/admin/skills/draft"}>
+        <.link navigate={~p"/skills/draft"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
             <div class="font-medium">Draft</div>
             <div class="text-xs text-on-surface-variant mt-1">Create & edit skills</div>

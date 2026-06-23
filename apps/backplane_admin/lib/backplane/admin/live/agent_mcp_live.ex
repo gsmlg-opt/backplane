@@ -19,7 +19,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/mcp/agent",
+       current_path: "/mcp/agent",
        mcp_servers: [],
        connections: [],
        hosts: [],
@@ -53,7 +53,7 @@ defmodule Backplane.Admin.AgentMcpLive do
       nil ->
         socket
         |> put_flash(:error, "MCP server not found")
-        |> push_patch(to: ~p"/admin/mcp/agent")
+        |> push_patch(to: ~p"/mcp/agent")
 
       server ->
         changeset = AgentMcpServers.change(server, %{})
@@ -100,7 +100,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             {:noreply,
              socket
              |> put_flash(:info, "MCP server created")
-             |> push_patch(to: ~p"/admin/mcp/agent")}
+             |> push_patch(to: ~p"/mcp/agent")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: server_form(changeset))}
@@ -112,7 +112,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             {:noreply,
              socket
              |> put_flash(:info, "MCP server updated")
-             |> push_patch(to: ~p"/admin/mcp/agent")}
+             |> push_patch(to: ~p"/mcp/agent")}
 
           {:error, changeset} ->
             {:noreply, assign(socket, form: server_form(changeset))}
@@ -387,7 +387,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             MCP server configs pushed to host agents. These servers run locally on the agent, not on Backplane.
           </p>
         </div>
-        <.link patch={~p"/admin/mcp/agent/new"}>
+        <.link patch={~p"/mcp/agent/new"}>
           <.dm_btn variant="primary" size="sm">Add MCP Server</.dm_btn>
         </.link>
       </div>
@@ -465,7 +465,7 @@ defmodule Backplane.Admin.AgentMcpLive do
                       </.dm_btn>
                     </.dm_tooltip>
                     <.dm_tooltip content="Edit">
-                      <.link patch={~p"/admin/mcp/agent/#{server.id}/edit"}>
+                      <.link patch={~p"/mcp/agent/#{server.id}/edit"}>
                         <.dm_btn size="xs" shape="circle" variant="outline">
                           <.dm_mdi name="pencil" class="w-4 h-4" />
                         </.dm_btn>
@@ -497,7 +497,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
         <div :if={@connections == []} class="text-sm text-on-surface-variant">
           No host agents currently connected.
-          <.link navigate={~p"/admin/system/host-agents"} class="text-primary underline">
+          <.link navigate={~p"/system/host-agents"} class="text-primary underline">
             Manage host agents →
           </.link>
         </div>
@@ -542,7 +542,7 @@ defmodule Backplane.Admin.AgentMcpLive do
                     </span>
                   </td>
                   <td class="px-3 py-1.5 align-middle text-right">
-                    <.link navigate={~p"/admin/system/host-agents/#{conn.host.id}"}>
+                    <.link navigate={~p"/system/host-agents/#{conn.host.id}"}>
                       <.dm_btn size="xs" variant="outline">Config</.dm_btn>
                     </.link>
                   </td>
@@ -636,8 +636,8 @@ defmodule Backplane.Admin.AgentMcpLive do
                       :for={tool <- mcp.tools}
                       navigate={
                         case mcp.kind do
-                          :managed -> "/admin/mcp/managed/#{mcp.prefix}/tool/#{tool_short_name(tool.name)}"
-                          _ -> "/admin/mcp/tools"
+                          :managed -> "/mcp/managed/#{mcp.prefix}/tool/#{tool_short_name(tool.name)}"
+                          _ -> "/mcp/tools"
                         end
                       }
                     >
@@ -660,7 +660,7 @@ defmodule Backplane.Admin.AgentMcpLive do
     ~H"""
     <div>
       <div class="flex items-center gap-3 mb-6">
-        <.link patch={~p"/admin/mcp/agent"} class="text-sm text-primary hover:underline">
+        <.link patch={~p"/mcp/agent"} class="text-sm text-primary hover:underline">
           &larr; Agent MCP
         </.link>
         <h1 class="text-2xl font-bold">
@@ -763,7 +763,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
           <div class="flex gap-2 pt-2">
             <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-            <.link patch={~p"/admin/mcp/agent"}>
+            <.link patch={~p"/mcp/agent"}>
               <.dm_btn type="button">Cancel</.dm_btn>
             </.link>
           </div>

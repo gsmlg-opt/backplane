@@ -4,7 +4,7 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
   import Plug.Test
 
   alias Backplane.Skills.HostAgentApiRouter
-  alias BackplaneWeb.Endpoint
+  alias Backplane.Api.Endpoint
 
   test "retired whoami route returns not found" do
     conn = conn(:get, "/whoami")

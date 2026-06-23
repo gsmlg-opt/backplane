@@ -6,7 +6,7 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
   alias Backplane.Settings.Credentials
 
   test "renders the new plan form", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/admin/system/monitor/plans/new")
+    {:ok, view, html} = live(conn, "/system/monitor/plans/new")
 
     assert html =~ "New Plan"
     assert html =~ "plan[name]"
@@ -27,7 +27,7 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
 
     {:ok, _credential} = Credentials.store(credential_name, "unused", "service")
 
-    {:ok, view, _html} = live(conn, "/admin/system/monitor/plans/new")
+    {:ok, view, _html} = live(conn, "/system/monitor/plans/new")
 
     view
     |> form("form", %{
@@ -40,7 +40,7 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
     })
     |> render_submit()
 
-    assert_patch(view, "/admin/system/monitor/plans")
+    assert_patch(view, "/system/monitor/plans")
 
     assert %Plan{
              provider: "google_ai",

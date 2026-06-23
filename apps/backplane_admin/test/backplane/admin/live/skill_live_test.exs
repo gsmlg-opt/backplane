@@ -23,8 +23,8 @@ defmodule Backplane.Admin.SkillLiveTest do
   end
 
   describe "Overview page" do
-    test "/admin/skills renders the overview dashboard", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/skills")
+    test "/skills renders the overview dashboard", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/skills")
 
       assert html =~ "Skills Overview"
       assert html =~ "Total Skills"
@@ -32,7 +32,7 @@ defmodule Backplane.Admin.SkillLiveTest do
   end
 
   describe "Browse page" do
-    test "/admin/skills/browse lists skills in a table", %{
+    test "/skills/browse lists skills in a table", %{
       conn: conn,
       tmp_dir: tmp_dir
     } do
@@ -42,7 +42,7 @@ defmodule Backplane.Admin.SkillLiveTest do
           tags: ["archive", "alpha"]
         )
 
-      {:ok, _view, html} = live(conn, "/admin/skills/browse")
+      {:ok, _view, html} = live(conn, "/skills/browse")
 
       assert html =~ "Skills"
       assert html =~ "Alpha Skill"
@@ -55,7 +55,7 @@ defmodule Backplane.Admin.SkillLiveTest do
       ingest_archive!(tmp_dir, "alpha-skill", name: "Alpha Skill", tags: ["archive", "alpha"])
       ingest_archive!(tmp_dir, "beta-skill", name: "Beta Skill", tags: ["archive", "beta"])
 
-      {:ok, _view, html} = live(conn, "/admin/skills/browse?q=alpha")
+      {:ok, _view, html} = live(conn, "/skills/browse?q=alpha")
 
       assert html =~ "Alpha Skill"
       # When searching, beta may or may not appear depending on full-text match
@@ -64,7 +64,7 @@ defmodule Backplane.Admin.SkillLiveTest do
     test "delete removes a skill and updates the list", %{conn: conn, tmp_dir: tmp_dir} do
       ingest_archive!(tmp_dir, "delete-skill", name: "Delete Skill")
 
-      {:ok, view, html} = live(conn, "/admin/skills/browse")
+      {:ok, view, html} = live(conn, "/skills/browse")
 
       assert html =~ "Delete Skill"
 
@@ -77,8 +77,8 @@ defmodule Backplane.Admin.SkillLiveTest do
   end
 
   describe "Metadata page" do
-    test "/admin/skills/metadata renders tags and categories", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/skills/metadata")
+    test "/skills/metadata renders tags and categories", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/skills/metadata")
 
       assert html =~ "Metadata"
       assert html =~ "Tags"
@@ -87,16 +87,16 @@ defmodule Backplane.Admin.SkillLiveTest do
   end
 
   describe "Upstream page" do
-    test "/admin/skills/upstream renders the upstream sources page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/skills/upstream")
+    test "/skills/upstream renders the upstream sources page", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/skills/upstream")
 
       assert html =~ "Upstream Sources"
     end
   end
 
   describe "Draft page" do
-    test "/admin/skills/draft renders the draft skills page", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/admin/skills/draft")
+    test "/skills/draft renders the draft skills page", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/skills/draft")
 
       assert html =~ "Draft Skills"
       assert html =~ "New Skill"

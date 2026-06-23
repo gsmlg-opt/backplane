@@ -9,7 +9,7 @@ defmodule Backplane.Admin.MemoryAuditLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/memory/audit",
+       current_path: "/memory/audit",
        entries: [],
        page: 1,
        page_size: @page_size
@@ -96,10 +96,10 @@ defmodule Backplane.Admin.MemoryAuditLive do
       <div class="flex items-center justify-between mt-4 text-sm">
         <div class="text-on-surface-variant">Page {@page}</div>
         <div class="flex items-center gap-2">
-          <.link :if={@page > 1} patch={~p"/admin/memory/audit?#{%{page: @page - 1}}"}>
+          <.link :if={@page > 1} patch={~p"/memory/audit?#{%{page: @page - 1}}"}>
             <.dm_btn size="xs">Previous</.dm_btn>
           </.link>
-          <.link :if={length(@entries) == @page_size} patch={~p"/admin/memory/audit?#{%{page: @page + 1}}"}>
+          <.link :if={length(@entries) == @page_size} patch={~p"/memory/audit?#{%{page: @page + 1}}"}>
             <.dm_btn size="xs">Next</.dm_btn>
           </.link>
         </div>

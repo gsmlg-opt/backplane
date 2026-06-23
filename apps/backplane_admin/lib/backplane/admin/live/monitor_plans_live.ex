@@ -9,7 +9,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       current_path: "/admin/system/monitor/plans",
+       current_path: "/system/monitor/plans",
        loading: true,
        editing: nil,
        form: nil,
@@ -45,7 +45,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
       nil ->
         socket
         |> put_flash(:error, "Plan not found")
-        |> push_patch(to: ~p"/admin/system/monitor/plans")
+        |> push_patch(to: ~p"/system/monitor/plans")
 
       plan ->
         changeset = Plan.changeset(plan, %{})
@@ -108,7 +108,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
             {:noreply,
              socket
              |> put_flash(:info, "Plan #{plan.name} deleted")
-             |> push_patch(to: ~p"/admin/system/monitor/plans")}
+             |> push_patch(to: ~p"/system/monitor/plans")}
 
           {:error, _} ->
             {:noreply, put_flash(socket, :error, "Failed to delete plan")}
@@ -122,7 +122,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} created")
-         |> push_patch(to: ~p"/admin/system/monitor/plans")}
+         |> push_patch(to: ~p"/system/monitor/plans")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: plan_form(changeset))}
@@ -135,7 +135,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} updated")
-         |> push_patch(to: ~p"/admin/system/monitor/plans")}
+         |> push_patch(to: ~p"/system/monitor/plans")}
 
       {:error, changeset} ->
         {:noreply, assign(socket, form: plan_form(changeset))}
@@ -211,7 +211,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">Plan Usage</h1>
-        <.link patch={~p"/admin/system/monitor/plans/new"}>
+        <.link patch={~p"/system/monitor/plans/new"}>
           <.dm_btn variant="primary" size="sm">New Plan</.dm_btn>
         </.link>
       </div>
@@ -283,7 +283,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
 
           <div class="flex gap-2">
             <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-            <.link patch={~p"/admin/system/monitor/plans"} class="no-underline">
+            <.link patch={~p"/system/monitor/plans"} class="no-underline">
               <.dm_btn type="button">Cancel</.dm_btn>
             </.link>
           </div>
@@ -346,7 +346,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
             </.dm_tooltip>
 
             <.dm_tooltip content="Edit" position="bottom">
-              <.link patch={~p"/admin/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
+              <.link patch={~p"/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
                 <.dm_btn
                   type="button"
                   size="xs"

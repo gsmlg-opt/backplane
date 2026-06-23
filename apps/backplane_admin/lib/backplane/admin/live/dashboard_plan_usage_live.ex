@@ -27,7 +27,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/dashboard/usage/plans",
+       current_path: "/dashboard/usage/plans",
        loading: true,
        plan_data: []
      )}
@@ -73,7 +73,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
       <div class="flex items-center justify-between gap-4">
         <h1 class="text-2xl font-bold">Plan Usage</h1>
         <div class="flex items-center gap-3">
-          <.link navigate={~p"/admin/system/monitor/plans"} class="text-sm text-primary underline">
+          <.link navigate={~p"/system/monitor/plans"} class="text-sm text-primary underline">
             Manage Plans
           </.link>
           <.dm_btn variant="primary" size="sm" phx-click="refresh">Refresh</.dm_btn>
@@ -82,7 +82,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
       <div :if={@plan_data == [] && !@loading} class="text-on-surface-variant">
         No active plans configured.
-        <.link navigate={~p"/admin/system/monitor/plans"} class="text-primary underline">
+        <.link navigate={~p"/system/monitor/plans"} class="text-primary underline">
           Add a plan
         </.link>
         to start monitoring usage.

@@ -12,7 +12,7 @@ defmodule Backplane.Admin.ProvidersLive do
 
     {:ok,
      assign(socket,
-       current_path: "/admin/llama/providers",
+       current_path: "/llama/providers",
        loading: true,
        providers: []
      )}
@@ -100,7 +100,7 @@ defmodule Backplane.Admin.ProvidersLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">LLM Providers</h1>
-        <.link navigate={~p"/admin/llama/providers/new"} class="no-underline">
+        <.link navigate={~p"/llama/providers/new"} class="no-underline">
           <.dm_btn variant="primary" size="sm">Add Provider</.dm_btn>
         </.link>
       </div>
@@ -114,7 +114,7 @@ defmodule Backplane.Admin.ProvidersLive do
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <.link
-                navigate={~p"/admin/llama/providers/#{provider.id}"}
+                navigate={~p"/llama/providers/#{provider.id}"}
                 class="truncate font-medium text-primary hover:underline"
               >
                 {provider.name}
@@ -158,7 +158,7 @@ defmodule Backplane.Admin.ProvidersLive do
         <:col :let={provider} label="Actions">
           <div class="flex items-center gap-1">
             <.dm_tooltip content="View" position="bottom">
-              <.link navigate={~p"/admin/llama/providers/#{provider.id}"} class="no-underline">
+              <.link navigate={~p"/llama/providers/#{provider.id}"} class="no-underline">
                 <.dm_btn
                   type="button"
                   size="xs"
