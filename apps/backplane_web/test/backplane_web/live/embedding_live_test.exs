@@ -91,6 +91,72 @@ defmodule BackplaneWeb.EmbeddingLiveTest do
     refute html =~ ~s(phx-click="use_model")
   end
 
+  test "edits and removes an embedding provider from the table", %{
+    conn: conn,
+    credential: credential
+  } do
+    {:ok, %{model: model}} =
+      Embedding.create_provider_with_model(%{
+        "name" => "embedding-edit",
+        "credential" => credential,
+        "enabled" => "true",
+        "base_url" => "https://api.example.com/v1",
+        "default_headers" => "{}",
+        "model" => "text-embedding-3-small",
+        "display_name" => "Text Embedding 3 Small",
+        "model_enabled" => "true",
+        "metadata" => "{}"
+      })
+
+    {:ok, view, html} = live(conn, "/admin/llama/embedding")
+
+    assert html =~ "embedding-edit/text-embedding-3-small"
+    assert has_element?(view, "#edit-embedding-model-#{model.id}")
+    assert has_element?(view, "#delete-embedding-model-#{model.id}")
+
+    html =
+      view
+      |> element("#edit-embedding-model-#{model.id}")
+      |> render_click()
+
+    assert html =~ "Edit Embedding Provider"
+    assert html =~ "Text Embedding 3 Small"
+
+    html =
+      view
+      |> form("#embedding-provider-form", %{
+        "provider" => %{
+          "name" => "embedding-edited",
+          "credential" => credential,
+          "enabled" => "true",
+          "base_url" => "https://api.example.com/v2/",
+          "default_headers" => ~s({"x-provider": "edited"}),
+          "model" => "text-embedding-3-large",
+          "display_name" => "Text Embedding 3 Large",
+          "model_enabled" => "true",
+          "metadata" => ~s({"dimensions": 3072})
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Embedding provider updated"
+    assert html =~ "embedding-edited/text-embedding-3-large"
+    assert html =~ "Text Embedding 3 Large"
+    refute html =~ "embedding-edit/text-embedding-3-small"
+    refute has_element?(view, "#embedding-provider-modal")
+
+    [updated_model] = Embedding.list_enabled_models()
+
+    html =
+      view
+      |> element("#delete-embedding-model-#{updated_model.id}")
+      |> render_click()
+
+    assert html =~ "Embedding provider embedding-edited deleted"
+    refute html =~ "embedding-edited/text-embedding-3-large"
+    assert Embedding.list_enabled_models() == []
+  end
+
   test "does not list LLM provider models on the embedding page", %{
     conn: conn,
     credential: credential

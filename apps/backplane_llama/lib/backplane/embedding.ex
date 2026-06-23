@@ -36,6 +36,16 @@ defmodule Backplane.Embedding do
     |> Repo.all()
   end
 
+  @doc "Get a single embedding model whose provider is still active."
+  @spec get_model(binary()) :: Model.t() | nil
+  def get_model(id) do
+    Model
+    |> join(:inner, [model], provider in assoc(model, :provider))
+    |> where([_model, provider], is_nil(provider.deleted_at))
+    |> preload([_model, provider], provider: provider)
+    |> Repo.get(id)
+  end
+
   @doc "Create an embedding provider and its first model."
   @spec create_provider_with_model(map()) ::
           {:ok, %{provider: Provider.t(), model: Model.t()}} | {:error, map()}
@@ -54,6 +64,38 @@ defmodule Backplane.Embedding do
         {:error, %Ecto.Changeset{} = changeset} -> Repo.rollback(changeset_errors(changeset))
       end
     end)
+  end
+
+  @doc "Update an embedding provider and one of its models together."
+  @spec update_provider_with_model(Model.t(), map()) ::
+          {:ok, %{provider: Provider.t(), model: Model.t()}} | {:error, map()}
+  def update_provider_with_model(%Model{} = model, attrs) do
+    Repo.transaction(fn ->
+      model = Repo.preload(model, :provider)
+
+      with %Provider{} = provider <- model.provider,
+           {:ok, provider} <-
+             provider
+             |> Provider.changeset(provider_attrs(attrs))
+             |> Repo.update(),
+           {:ok, model} <-
+             model
+             |> Model.changeset(model_attrs(provider, attrs))
+             |> Repo.update() do
+        %{provider: provider, model: %{model | provider: provider}}
+      else
+        {:error, %Ecto.Changeset{} = changeset} -> Repo.rollback(changeset_errors(changeset))
+        _ -> Repo.rollback(%{"provider" => "not found"})
+      end
+    end)
+  end
+
+  @doc "Soft-delete an embedding provider and exclude its models from resolution."
+  @spec soft_delete_provider(Provider.t()) :: {:ok, Provider.t()} | {:error, Ecto.Changeset.t()}
+  def soft_delete_provider(%Provider{} = provider) do
+    provider
+    |> Ecto.Changeset.change(deleted_at: DateTime.utc_now(), enabled: false)
+    |> Repo.update()
   end
 
   @doc "Resolve `provider/model` to an enabled embedding provider and raw model id."

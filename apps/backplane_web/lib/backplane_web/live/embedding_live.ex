@@ -10,6 +10,8 @@ defmodule BackplaneWeb.EmbeddingLive do
      assign(socket,
        current_path: "/admin/llama/embedding",
        provider_modal_open: false,
+       provider_modal_mode: :new,
+       editing_model: nil,
        provider_form: to_form(provider_defaults(), as: :provider),
        provider_errors: %{},
        credential_options: [],
@@ -24,16 +26,93 @@ defmodule BackplaneWeb.EmbeddingLive do
 
   @impl true
   def handle_event("open_provider_modal", _params, socket) do
-    {:noreply, assign(socket, provider_modal_open: true, provider_errors: %{})}
+    {:noreply,
+     assign(socket,
+       provider_modal_open: true,
+       provider_modal_mode: :new,
+       editing_model: nil,
+       provider_form: to_form(provider_defaults(), as: :provider),
+       provider_errors: %{}
+     )}
   end
 
   def handle_event("close_provider_modal", _params, socket) do
     {:noreply,
      assign(socket,
        provider_modal_open: false,
+       provider_modal_mode: :new,
+       editing_model: nil,
        provider_form: to_form(provider_defaults(), as: :provider),
        provider_errors: %{}
      )}
+  end
+
+  def handle_event("edit_provider", %{"id" => id}, socket) do
+    case Embedding.get_model(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Embedding provider not found")}
+
+      model ->
+        {:noreply,
+         assign(socket,
+           provider_modal_open: true,
+           provider_modal_mode: :edit,
+           editing_model: model,
+           provider_form: to_form(provider_model_params(model), as: :provider),
+           provider_errors: %{}
+         )}
+    end
+  end
+
+  def handle_event("delete_provider", %{"id" => id}, socket) do
+    case Embedding.get_model(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Embedding provider not found")}
+
+      model ->
+        case Embedding.soft_delete_provider(model.provider) do
+          {:ok, _provider} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Embedding provider #{model.provider.name} deleted")
+             |> load_embedding_models()}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Failed to delete embedding provider")}
+        end
+    end
+  end
+
+  def handle_event(
+        "save_provider",
+        %{"provider" => params},
+        %{
+          assigns: %{provider_modal_mode: :edit, editing_model: %Embedding.Model{} = model}
+        } = socket
+      ) do
+    case Embedding.update_provider_with_model(model, params) do
+      {:ok, _result} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Embedding provider updated")
+         |> assign(
+           provider_modal_open: false,
+           provider_modal_mode: :new,
+           editing_model: nil,
+           provider_form: to_form(provider_defaults(), as: :provider),
+           provider_errors: %{}
+         )
+         |> load_embedding_models()}
+
+      {:error, errors} ->
+        {:noreply,
+         assign(socket,
+           provider_modal_open: true,
+           provider_modal_mode: :edit,
+           provider_form: to_form(params, as: :provider),
+           provider_errors: errors
+         )}
+    end
   end
 
   def handle_event("save_provider", %{"provider" => params}, socket) do
@@ -44,6 +123,8 @@ defmodule BackplaneWeb.EmbeddingLive do
          |> put_flash(:info, "Embedding provider added")
          |> assign(
            provider_modal_open: false,
+           provider_modal_mode: :new,
+           editing_model: nil,
            provider_form: to_form(provider_defaults(), as: :provider),
            provider_errors: %{}
          )
@@ -53,6 +134,8 @@ defmodule BackplaneWeb.EmbeddingLive do
         {:noreply,
          assign(socket,
            provider_modal_open: true,
+           provider_modal_mode: :new,
+           editing_model: nil,
            provider_form: to_form(params, as: :provider),
            provider_errors: errors
          )}
@@ -98,6 +181,23 @@ defmodule BackplaneWeb.EmbeddingLive do
       "metadata" => "{}"
     }
   end
+
+  defp provider_model_params(%Embedding.Model{provider: provider} = model) do
+    %{
+      "name" => provider.name,
+      "credential" => provider.credential,
+      "base_url" => provider.base_url,
+      "enabled" => to_string(provider.enabled),
+      "default_headers" => encode_json_map(provider.default_headers),
+      "model" => model.model,
+      "display_name" => model.display_name || "",
+      "model_enabled" => to_string(model.enabled),
+      "metadata" => encode_json_map(model.metadata)
+    }
+  end
+
+  defp encode_json_map(value) when is_map(value), do: Jason.encode!(value)
+  defp encode_json_map(_value), do: "{}"
 
   defp display_name(model) do
     model.display_name || model.model
@@ -174,11 +274,47 @@ defmodule BackplaneWeb.EmbeddingLive do
               </.dm_badge>
             </div>
           </:col>
+          <:col :let={model} label="Actions">
+            <div class="flex items-center gap-1">
+              <.dm_tooltip content="Edit" position="bottom">
+                <.dm_btn
+                  id={"edit-embedding-model-#{model.id}"}
+                  type="button"
+                  size="xs"
+                  shape="circle"
+                  variant="outline"
+                  aria-label={"Edit embedding provider #{model.provider.name}"}
+                  phx-click="edit_provider"
+                  phx-value-id={model.id}
+                >
+                  <.dm_mdi name="pencil" class="h-4 w-4" />
+                  <span class="sr-only">Edit</span>
+                </.dm_btn>
+              </.dm_tooltip>
+              <.dm_tooltip content="Delete" position="bottom">
+                <.dm_btn
+                  id={"delete-embedding-model-#{model.id}"}
+                  type="button"
+                  size="xs"
+                  shape="circle"
+                  variant="error"
+                  aria-label={"Delete embedding provider #{model.provider.name}"}
+                  data-confirm={"Delete embedding provider #{model.provider.name}?"}
+                  phx-click="delete_provider"
+                  phx-value-id={model.id}
+                >
+                  <.dm_mdi name="delete" class="h-4 w-4" />
+                  <span class="sr-only">Delete</span>
+                </.dm_btn>
+              </.dm_tooltip>
+            </div>
+          </:col>
         </.dm_table>
       </.dm_card>
 
       <.provider_modal
         :if={@provider_modal_open}
+        mode={@provider_modal_mode}
         provider_form={@provider_form}
         provider_errors={@provider_errors}
         credential_options={@credential_options}
@@ -202,10 +338,10 @@ defmodule BackplaneWeb.EmbeddingLive do
         <div class="mb-5 flex items-center justify-between gap-4">
           <div>
             <h2 id="embedding-provider-modal-title" class="text-lg font-semibold text-on-surface">
-              Add Embedding Provider
+              {provider_modal_title(@mode)}
             </h2>
             <p class="mt-1 text-sm text-on-surface-variant">
-              Configure an embedding-only provider and its first model.
+              {provider_modal_description(@mode)}
             </p>
           </div>
           <button
@@ -325,11 +461,24 @@ defmodule BackplaneWeb.EmbeddingLive do
             <.dm_btn type="button" variant="outline" size="sm" phx-click="close_provider_modal">
               Cancel
             </.dm_btn>
-            <.dm_btn type="submit" variant="primary" size="sm">Add Provider</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">
+              {provider_modal_submit(@mode)}
+            </.dm_btn>
           </div>
         </.form>
       </div>
     </div>
     """
   end
+
+  defp provider_modal_title(:edit), do: "Edit Embedding Provider"
+  defp provider_modal_title(_mode), do: "Add Embedding Provider"
+
+  defp provider_modal_description(:edit), do: "Update the embedding provider and model."
+
+  defp provider_modal_description(_mode),
+    do: "Configure an embedding-only provider and its first model."
+
+  defp provider_modal_submit(:edit), do: "Save Provider"
+  defp provider_modal_submit(_mode), do: "Add Provider"
 end
