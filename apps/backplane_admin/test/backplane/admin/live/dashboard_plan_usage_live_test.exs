@@ -26,8 +26,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
 
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
 
-    res = Credentials.store("minimax-test-cred", "mock-api-key", "service")
-    IO.puts("STORE RESULT: #{inspect(res)}")
+    {:ok, _credential} = Credentials.store("minimax-test-cred", "mock-api-key", "service")
 
     {:ok, plan} =
       Repo.insert(%Plan{
