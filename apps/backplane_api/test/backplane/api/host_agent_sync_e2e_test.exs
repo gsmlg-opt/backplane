@@ -1,5 +1,5 @@
-defmodule BackplaneWeb.HostAgentSyncE2ETest do
-  use Backplane.ChannelCase, async: false
+defmodule Backplane.Api.HostAgentSyncE2ETest do
+  use Backplane.Api.ChannelCase, async: false
 
   alias Backplane.Fixtures
   alias Backplane.Skills.{Assignments, DesiredState, Hosts}

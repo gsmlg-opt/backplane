@@ -1,8 +1,8 @@
-defmodule BackplaneWeb.HostAgentSocketTest do
-  use Backplane.ChannelCase, async: false
+defmodule Backplane.Api.HostAgentSocketTest do
+  use Backplane.Api.ChannelCase, async: false
 
   alias Backplane.Skills.{AgentManage, Hosts}
-  alias BackplaneWeb.HostAgentSocket
+  alias Backplane.Api.HostAgentSocket
 
   setup do
     AgentManage.clear()
@@ -11,7 +11,7 @@ defmodule BackplaneWeb.HostAgentSocketTest do
 
   test "endpoint requests x_headers and peer_data for the host agent websocket" do
     assert {"/host-agent/socket", HostAgentSocket, opts} =
-             Enum.find(BackplaneWeb.Endpoint.__sockets__(), fn {path, _socket, _opts} ->
+             Enum.find(Backplane.Api.Endpoint.__sockets__(), fn {path, _socket, _opts} ->
                path == "/host-agent/socket"
              end)
 

@@ -1,12 +1,12 @@
-defmodule BackplaneWeb.HostAgentChannelTest do
-  use Backplane.ChannelCase, async: false
+defmodule Backplane.Api.HostAgentChannelTest do
+  use Backplane.Api.ChannelCase, async: false
 
   import Backplane.SkillArchiveCase
 
   alias Backplane.Repo
   alias Backplane.Skills
   alias Backplane.Skills.{AgentManage, Assignments, HostStatus, Hosts}
-  alias BackplaneWeb.HostAgentSocket
+  alias Backplane.Api.HostAgentSocket
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
@@ -207,11 +207,11 @@ defmodule BackplaneWeb.HostAgentChannelTest do
   describe "memory_call" do
     setup %{host: host, socket: socket} do
       :persistent_term.put({StubMemoryService, :owner}, self())
-      Application.put_env(:backplane_web, :memory_service, StubMemoryService)
+      Application.put_env(:backplane_api, :memory_service, StubMemoryService)
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
       on_exit(fn ->
-        Application.delete_env(:backplane_web, :memory_service)
+        Application.delete_env(:backplane_api, :memory_service)
         _ = :persistent_term.erase({StubMemoryService, :owner})
       end)
 
@@ -354,10 +354,10 @@ defmodule BackplaneWeb.HostAgentChannelTest do
   describe "host memory sync" do
     setup %{host: host, socket: socket} do
       :persistent_term.put({StubHostMemorySync, :owner}, self())
-      Application.put_env(:backplane_web, :host_memory_sync_adapter, StubHostMemorySync)
+      Application.put_env(:backplane_api, :host_memory_sync_adapter, StubHostMemorySync)
 
       on_exit(fn ->
-        Application.delete_env(:backplane_web, :host_memory_sync_adapter)
+        Application.delete_env(:backplane_api, :host_memory_sync_adapter)
         _ = :persistent_term.erase({StubHostMemorySync, :owner})
       end)
 

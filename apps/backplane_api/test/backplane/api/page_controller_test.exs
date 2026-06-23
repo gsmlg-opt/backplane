@@ -1,5 +1,5 @@
-defmodule BackplaneWeb.PageControllerTest do
-  use Backplane.LiveCase, async: false
+defmodule Backplane.Api.PageControllerTest do
+  use Backplane.Api.ConnCase, async: false
 
   setup do
     original_username = Application.get_env(:backplane, :admin_username)

@@ -1,16 +1,16 @@
-defmodule BackplaneWeb.HostAgentMemorySyncTest do
+defmodule Backplane.Api.HostAgentMemorySyncTest do
   use Backplane.DataCase, async: false
 
   import Ecto.Query
 
   alias Backplane.Repo
   alias Backplane.Skills.Hosts
-  alias BackplaneWeb.HostAgentMemorySync
+  alias Backplane.Api.HostAgentMemorySync
   alias BackplaneMemory.Memories.Memory, as: MemorySchema
 
   setup do
-    Application.delete_env(:backplane_web, :host_memory_sync_adapter)
-    Application.delete_env(:backplane_web, :memory_service)
+    Application.delete_env(:backplane_api, :host_memory_sync_adapter)
+    Application.delete_env(:backplane_api, :memory_service)
     :ok
   end
 

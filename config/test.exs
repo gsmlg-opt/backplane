@@ -27,6 +27,11 @@ config :backplane_web, BackplaneWeb.Endpoint,
   secret_key_base: secret_key_base,
   server: false
 
+config :backplane_api, Backplane.Api.Endpoint,
+  http: [ip: {127, 0, 0, 1}, port: 4002],
+  secret_key_base: secret_key_base,
+  server: false
+
 config :backplane_host_agent, start_on_application: false
 
 config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
