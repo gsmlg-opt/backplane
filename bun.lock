@@ -7,8 +7,17 @@
         "ws": "8.21.0",
       },
     },
-    "apps/backplane_web": {
-      "name": "backplane_web",
+    "apps/backplane_admin": {
+      "name": "backplane_admin",
+      "dependencies": {
+        "@duskmoon-dev/art-elements": "1.5.4",
+        "@duskmoon-dev/core": "1.17.0",
+        "@duskmoon-dev/css-art": "1.17.0",
+        "@duskmoon-dev/elements": "1.5.4",
+      },
+    },
+    "apps/backplane_api": {
+      "name": "backplane_api",
       "dependencies": {
         "@duskmoon-dev/art-elements": "1.5.4",
         "@duskmoon-dev/core": "1.17.0",
@@ -248,7 +257,9 @@
 
     "acorn": ["acorn@8.16.0", "", { "bin": "bin/acorn" }, ""],
 
-    "backplane_web": ["backplane_web@workspace:apps/backplane_web"],
+    "backplane_admin": ["backplane_admin@workspace:apps/backplane_admin"],
+
+    "backplane_api": ["backplane_api@workspace:apps/backplane_api"],
 
     "bail": ["bail@2.0.2", "", {}, ""],
 
