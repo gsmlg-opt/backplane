@@ -27,11 +27,11 @@ defmodule Backplane.WebOriginsTest do
     Application.put_env(:backplane, :api_url, "http://api.example.test")
     Application.put_env(:backplane, :admin_url, "http://admin.example.test")
 
-    assert WebOrigins.api_url("/api/mcp") == "http://api.example.test/api/mcp"
-    assert WebOrigins.api_url("api/mcp") == "http://api.example.test/api/mcp"
+    assert WebOrigins.api_url("/mcp") == "http://api.example.test/mcp"
+    assert WebOrigins.api_url("mcp") == "http://api.example.test/mcp"
 
-    assert WebOrigins.admin_url("/admin/dashboard/overview") ==
-             "http://admin.example.test/admin/dashboard/overview"
+    assert WebOrigins.admin_url("/dashboard/overview") ==
+             "http://admin.example.test/dashboard/overview"
   end
 
   test "uses development defaults when origins are not configured" do

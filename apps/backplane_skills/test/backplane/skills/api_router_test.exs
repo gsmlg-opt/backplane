@@ -27,25 +27,25 @@ defmodule Backplane.Skills.ApiRouterTest do
     {:ok, blob_root: blob_root}
   end
 
-  describe "GET /api/skills" do
+  describe "GET /skills" do
     test "lists matching skills by query, tags, and limit", %{tmp_dir: tmp_dir} do
       ingest_archive!(tmp_dir, "alpha-skill", name: "Alpha Skill", tags: ["archive", "alpha"])
       ingest_archive!(tmp_dir, "beta-skill", name: "Beta Skill", tags: ["archive", "beta"])
 
-      conn = api_request(:get, "/api/skills?q=skill&tags=archive,alpha&limit=1")
+      conn = api_request(:get, "/skills?q=skill&tags=archive,alpha&limit=1")
 
       assert conn.status == 200
       assert %{"data" => [%{"slug" => "alpha-skill"}]} = json_body(conn)
     end
   end
 
-  describe "GET /api/skills/:slug" do
+  describe "GET /skills/:slug" do
     test "returns skill metadata without full content and includes archive files", %{
       tmp_dir: tmp_dir
     } do
       ingest_archive!(tmp_dir, "detail-skill", name: "Detail Skill")
 
-      conn = api_request(:get, "/api/skills/detail-skill")
+      conn = api_request(:get, "/skills/detail-skill")
 
       assert conn.status == 200
 
@@ -59,7 +59,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
 
     test "returns 404 for a missing skill" do
-      conn = api_request(:get, "/api/skills/missing")
+      conn = api_request(:get, "/skills/missing")
 
       assert conn.status == 404
       assert %{"error" => "not found"} = json_body(conn)
@@ -73,18 +73,18 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert {:ok, skill} = Skills.get_by_slug("missing-blob-detail")
       assert :ok = Blob.delete(skill.archive_ref, root: blob_root)
 
-      conn = api_request(:get, "/api/skills/missing-blob-detail")
+      conn = api_request(:get, "/skills/missing-blob-detail")
 
       assert conn.status == 500
       assert %{"error" => _reason} = json_body(conn)
     end
   end
 
-  describe "GET /api/skills/:slug/archive" do
+  describe "GET /skills/:slug/archive" do
     test "streams the stored archive", %{tmp_dir: tmp_dir} do
       archive = ingest_archive!(tmp_dir, "download-skill", name: "Download Skill")
 
-      conn = api_request(:get, "/api/skills/download-skill/archive")
+      conn = api_request(:get, "/skills/download-skill/archive")
 
       assert conn.status == 200
       assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
@@ -95,7 +95,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       archive = ingest_archive!(tmp_dir, "accept-archive-skill", name: "Accept Archive Skill")
 
       conn =
-        api_request(:get, "/api/skills/accept-archive-skill/archive", "", [
+        api_request(:get, "/skills/accept-archive-skill/archive", "", [
           {"accept", "application/x-tar+gzip"}
         ])
 
@@ -105,11 +105,11 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
-  describe "GET /api/skills/export" do
+  describe "GET /skills/export" do
     test "streams a collection archive before treating export as a slug", %{tmp_dir: tmp_dir} do
       archive = ingest_archive!(tmp_dir, "export", name: "Export Skill")
 
-      conn = api_request(:get, "/api/skills/export")
+      conn = api_request(:get, "/skills/export")
 
       assert conn.status == 200
       assert get_resp_header(conn, "content-type") == ["application/x-tar+gzip"]
@@ -126,7 +126,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
-  describe "POST /api/skills" do
+  describe "POST /skills" do
     test "ingests a raw application/x-tar+gzip body with casing and parameters", %{
       tmp_dir: tmp_dir
     } do
@@ -139,7 +139,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert File.stat!(archive).size > 64_000
 
       conn =
-        api_request(:post, "/api/skills", File.read!(archive), [
+        api_request(:post, "/skills", File.read!(archive), [
           {"content-type", "APPLICATION/X-TAR+GZIP; charset=binary"}
         ])
 
@@ -154,7 +154,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       {body, boundary} = multipart_archive_body(archive, "multipart-upload.tar.gz")
 
       conn =
-        api_request(:post, "/api/skills", body, [
+        api_request(:post, "/skills", body, [
           {"content-type", "multipart/form-data; boundary=#{boundary}"}
         ])
 
@@ -173,7 +173,7 @@ defmodule Backplane.Skills.ApiRouterTest do
 
     test "returns 422 for invalid upload without committing a blob", %{blob_root: blob_root} do
       conn =
-        api_request(:post, "/api/skills", "not a tarball", [
+        api_request(:post, "/skills", "not a tarball", [
           {"content-type", "application/x-tar+gzip"}
         ])
 
@@ -183,7 +183,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
-  describe "POST /api/skills/import" do
+  describe "POST /skills/import" do
     test "ingests a raw collection archive before the generic upload route", %{tmp_dir: tmp_dir} do
       ingest_archive!(tmp_dir, "import-a", name: "Import A")
       ingest_archive!(tmp_dir, "import-b", name: "Import B")
@@ -197,7 +197,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert {:ok, _deleted} = Skills.delete(skill)
 
       conn =
-        api_request(:post, "/api/skills/import", File.read!(collection), [
+        api_request(:post, "/skills/import", File.read!(collection), [
           {"content-type", "APPLICATION/X-TAR+GZIP; charset=binary"}
         ])
 
@@ -222,7 +222,7 @@ defmodule Backplane.Skills.ApiRouterTest do
         )
 
       conn =
-        api_request(:post, "/api/skills/import", File.read!(collection), [
+        api_request(:post, "/skills/import", File.read!(collection), [
           {"content-type", "application/x-tar+gzip"}
         ])
 
@@ -231,7 +231,7 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
-  describe "DELETE /api/skills/:slug" do
+  describe "DELETE /skills/:slug" do
     test "deletes the skill and unreferenced archive blob", %{
       blob_root: blob_root,
       tmp_dir: tmp_dir
@@ -240,7 +240,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert {:ok, skill} = Skills.get_by_slug("delete-skill")
       assert Blob.exists?(skill.archive_ref, root: blob_root)
 
-      conn = api_request(:delete, "/api/skills/delete-skill")
+      conn = api_request(:delete, "/skills/delete-skill")
 
       assert conn.status == 200
       assert %{"ok" => true} = json_body(conn)
@@ -267,7 +267,7 @@ defmodule Backplane.Skills.ApiRouterTest do
       })
       |> Repo.insert!()
 
-      conn = api_request(:delete, "/api/skills/shared-delete-a")
+      conn = api_request(:delete, "/skills/shared-delete-a")
 
       assert conn.status == 200
       assert %{"ok" => true} = json_body(conn)

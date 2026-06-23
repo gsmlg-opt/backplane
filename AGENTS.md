@@ -6,7 +6,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 Backplane is a private, self-hosted gateway with exactly two features:
 
-1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /api/mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
+1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
 2. **LLM Proxy** — A credential-injecting, model-routing reverse proxy for LLM APIs (Anthropic/OpenAI format) with usage tracking.
 
 Everything else — git access, documentation search, skill libraries — is delivered as either an upstream MCP server or a managed MCP service. Backplane proxies tool calls to services that implement those concerns.
@@ -19,14 +19,16 @@ The public/API dev endpoint listens on `http://localhost:4220`; the admin dev en
 
 | Method | Path | Endpoint | Purpose |
 |--------|------|----------|---------|
-| `POST` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP JSON-RPC endpoint |
-| `GET` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP SSE notification stream |
-| `DELETE` | `/api/mcp` | API (`:backplane_api`, dev 4220) | MCP session cleanup |
+| `POST` | `/mcp` | API (`:backplane_api`, dev 4220) | MCP JSON-RPC endpoint |
+| `GET` | `/mcp` | API (`:backplane_api`, dev 4220) | MCP SSE notification stream |
+| `DELETE` | `/mcp` | API (`:backplane_api`, dev 4220) | MCP session cleanup |
 | `GET` | `/health` | API (`:backplane_api`, dev 4220) | Health check JSON |
 | `GET` | `/metrics` | API (`:backplane_api`, dev 4220) | Runtime metrics |
-| `*` | `/api/v1/*` | API (`:backplane_api`, dev 4220) | LLM proxy (OpenAI-compatible) |
-| `*` | `/api/anthropic/*` | API (`:backplane_api`, dev 4220) | LLM proxy (Anthropic Messages) |
-| `*` | `/api/llm/*` | API (`:backplane_api`, dev 4220) | LLM admin API (providers, aliases) |
+| `*` | `/v1/*` | API (`:backplane_api`, dev 4220) | LLM proxy (OpenAI-compatible) |
+| `POST` | `/v1/messages` | API (`:backplane_api`, dev 4220) | LLM proxy (Anthropic Messages) |
+| `*` | `/llm/*` | API (`:backplane_api`, dev 4220) | LLM provider and alias API |
+| `*` | `/skills/*` | API (`:backplane_api`, dev 4220) | Skill library API |
+| `*` | `/host-agent/*` | API (`:backplane_api`, dev 4220) | Host-agent API |
 | `*` | `/` | Admin (`:backplane_admin`, dev 4221) | Admin UI (LiveView) |
 
 ### MCP Auth Modes
@@ -40,7 +42,7 @@ The public/API dev endpoint listens on `http://localhost:4220`; the admin dev en
 This is an umbrella project. Key apps include:
 
 - **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
-- **`apps/backplane_api`** (`:backplane_api`) — Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets; dev port 4220.
+- **`apps/backplane_api`** (`:backplane_api`) — Phoenix public/API endpoint for `/`, `/mcp`, `/v1/*`, `/llm/*`, `/skills/*`, `/host-agent/*`, `/health`, `/metrics`, and host-agent sockets; dev port 4220.
 - **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint on its own port with routes rooted at `/`; dev port 4221.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM APIs.
 - **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
@@ -75,8 +77,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 
 ### Key Internal Modules
 
-- `Backplane.Transport.Router` — Plug router dispatching `POST /api/mcp`, `GET /api/mcp` (SSE), `DELETE /api/mcp`, health, and metrics
-- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /api/mcp`
+- `Backplane.Transport.Router` — Plug router dispatching `POST /mcp`, `GET /mcp` (SSE), `DELETE /mcp`, health, and metrics
+- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Transport.AuthPlug` — Client bearer token validation with scope filtering
 - `Backplane.Registry.ToolRegistry` — ETS-backed unified tool registry (upstream + managed + hub + native)

@@ -1,7 +1,7 @@
 defmodule Backplane.Api.Router do
   use Backplane.Api, :router
 
-  forward("/api/mcp", Backplane.Transport.McpPlug)
+  forward("/mcp", Backplane.Transport.McpPlug)
   forward("/health", Backplane.Transport.HealthPlug)
   forward("/metrics", Backplane.Transport.MetricsPlug)
 
@@ -28,13 +28,13 @@ defmodule Backplane.Api.Router do
     get("/", PageController, :home)
   end
 
-  scope "/api" do
+  scope "/" do
     pipe_through(:api)
 
     forward("/llm", Backplane.LLM.ApiRouter)
   end
 
-  scope "/api" do
+  scope "/" do
     pipe_through(:skills_api)
 
     forward("/host-agent", Backplane.Skills.HostAgentApiRouter)

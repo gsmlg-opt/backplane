@@ -5,8 +5,7 @@ defmodule Backplane.LLM.Router do
   Aggregates LLM providers behind a single OpenAI/Anthropic-compatible endpoint.
   Routes:
   - GET  /v1/models                    — aggregated model listing
-  - GET  /anthropic/v1/models          — Anthropic model listing
-  - POST /anthropic/v1/messages        — Anthropic Messages API
+  - POST /v1/messages                  — Anthropic Messages API
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
@@ -57,15 +56,8 @@ defmodule Backplane.LLM.Router do
     send_json(conn, 200, %{"object" => "list", "data" => models})
   end
 
-  get "/anthropic/v1/models" do
-    models = build_model_list(:anthropic)
-    send_json(conn, 200, %{"object" => "list", "data" => models})
-  end
-
-  post "/anthropic/v1/messages" do
-    conn
-    |> strip_request_prefix("anthropic")
-    |> proxy_request(:anthropic)
+  post "/v1/messages" do
+    proxy_request(conn, :anthropic)
   end
 
   post "/v1/embeddings" do
@@ -92,16 +84,6 @@ defmodule Backplane.LLM.Router do
   end
 
   # ── Proxy dispatch ────────────────────────────────────────────────────────────
-
-  defp strip_request_prefix(conn, prefix) do
-    case conn.path_info do
-      [^prefix | rest] ->
-        put_request_path(conn, rest)
-
-      _ ->
-        conn
-    end
-  end
 
   defp strip_repeated_request_prefix(%Plug.Conn{} = conn, prefix) do
     stripped = Enum.drop_while(conn.path_info, &(&1 == prefix))
@@ -482,69 +464,10 @@ defmodule Backplane.LLM.Router do
     provider_entries ++ auto_model_entries ++ custom_alias_entries
   end
 
-  defp build_model_list(api_type) when api_type in [:openai, :anthropic] do
-    providers =
-      Provider.list()
-      |> Enum.filter(& &1.enabled)
-
-    provider_entries =
-      for provider <- providers,
-          model <- provider.models,
-          model.enabled,
-          provider_model_available_for_surface?(provider, model, api_type) do
-        %{
-          "id" => "#{provider.name}/#{model.model}",
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => provider.name
-        }
-      end
-
-    auto_model_entries =
-      for auto_model <- AutoModel.list_configurations(),
-          auto_model.enabled,
-          auto_model_available?(auto_model, api_type) do
-        %{
-          "id" => auto_model.name,
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => "backplane"
-        }
-      end
-
-    custom_alias_entries =
-      for model_alias <- ModelAlias.list(),
-          custom_alias_available?(model_alias, api_type) do
-        %{
-          "id" => model_alias.alias,
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => "backplane"
-        }
-      end
-
-    provider_entries ++ auto_model_entries ++ custom_alias_entries
-  end
-
-  defp provider_model_available_for_surface?(provider, model, api_type) do
-    provider_api_ids =
-      provider.apis
-      |> Enum.filter(&(&1.enabled and &1.api_surface == api_type))
-      |> MapSet.new(& &1.id)
-
-    Enum.any?(model.surfaces, fn surface ->
-      surface.enabled and MapSet.member?(provider_api_ids, surface.provider_api_id)
-    end)
-  end
-
   defp custom_alias_available?(%ModelAlias{} = model_alias) do
     Enum.any?([:openai, :anthropic], fn api_type ->
       match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_type, model_alias.alias))
     end)
-  end
-
-  defp custom_alias_available?(%ModelAlias{} = model_alias, api_type) do
-    match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_type, model_alias.alias))
   end
 
   defp auto_model_available?(auto_model) do
@@ -561,24 +484,6 @@ defmodule Backplane.LLM.Router do
 
              target.enabled and surface.enabled and model.enabled and provider.enabled and
                is_nil(provider.deleted_at) and api.enabled
-           end))
-    end)
-  end
-
-  defp auto_model_available?(auto_model, api_type) do
-    configured_model_ids = AutoModel.configured_model_ids(auto_model.name)
-
-    Enum.any?(auto_model.routes, fn route ->
-      route.enabled and route.api_surface == api_type and
-        (AutoModel.available_surfaces_for(api_type, configured_model_ids) != [] or
-           Enum.any?(route.targets, fn target ->
-             surface = target.provider_model_surface
-             model = surface.provider_model
-             provider = model.provider
-             api = surface.provider_api
-
-             target.enabled and surface.enabled and model.enabled and provider.enabled and
-               is_nil(provider.deleted_at) and api.enabled and api.api_surface == api_type
            end))
     end)
   end
@@ -650,7 +555,7 @@ defmodule Backplane.LLM.Router do
     send_json(conn, 400, %{
       "error" => %{
         "message" =>
-          "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /anthropic/v1/messages instead.",
+          "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /v1/messages instead.",
         "type" => "invalid_request_error",
         "code" => "api_type_mismatch"
       }

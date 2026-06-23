@@ -88,7 +88,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "non-streaming proxy" do
     test "proxies anthropic request end-to-end" do
       conn =
-        llm_request(:post, "/anthropic/v1/messages", %{
+        llm_request(:post, "/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -102,7 +102,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
     test "rewrites model field in forwarded body" do
       conn =
-        llm_request(:post, "/anthropic/v1/messages", %{
+        llm_request(:post, "/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -168,7 +168,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "streaming proxy" do
     test "streams anthropic SSE events to client" do
       conn =
-        llm_request(:post, "/anthropic/v1/messages", %{
+        llm_request(:post, "/v1/messages", %{
           "model" => "test-integration/claude-test",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10,
@@ -191,7 +191,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   describe "error handling" do
     test "returns 404 for unknown model" do
       conn =
-        llm_request(:post, "/anthropic/v1/messages", %{
+        llm_request(:post, "/v1/messages", %{
           "model" => "nonexistent/model",
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
@@ -202,7 +202,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
     test "returns 400 for missing model field" do
       conn =
-        llm_request(:post, "/anthropic/v1/messages", %{
+        llm_request(:post, "/v1/messages", %{
           "messages" => [%{"role" => "user", "content" => "hi"}],
           "max_tokens" => 10
         })

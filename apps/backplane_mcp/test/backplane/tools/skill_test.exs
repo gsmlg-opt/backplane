@@ -217,7 +217,7 @@ defmodule Backplane.Tools.SkillTest do
       assert {:ok, result} =
                SkillTool.call(%{"_handler" => "download", "slug" => "downloadable-skill"})
 
-      assert result.archive_url == "/api/skills/downloadable-skill/archive"
+      assert result.archive_url == "/skills/downloadable-skill/archive"
       assert result.content_hash == sha256_file(archive)
       assert result.size_bytes == File.stat!(archive).size
       assert result.metadata.slug == "downloadable-skill"

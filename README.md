@@ -4,7 +4,7 @@ Backplane is a private, self-hosted gateway for agent infrastructure.
 
 It provides two main surfaces:
 
-- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /api/mcp` that aggregates upstream MCP servers and built-in managed services.
+- **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /mcp` that aggregates upstream MCP servers and built-in managed services.
 - **LLM Proxy**: a credential-injecting, model-routing reverse proxy for LLM APIs, with provider health checks and usage tracking.
 
 Operational configuration is managed through the Phoenix admin UI and persisted in PostgreSQL.
@@ -14,7 +14,7 @@ Operational configuration is managed through the Phoenix admin UI and persisted 
 This repository is an Elixir umbrella project:
 
 - `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, native math engine, LLM proxy, clients, settings, credentials, Oban jobs.
-- `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/api/*`, `/health`, `/metrics`, and host-agent sockets.
+- `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/mcp`, `/v1/*`, `/llm/*`, `/skills/*`, `/host-agent/*`, `/health`, `/metrics`, and host-agent sockets.
 - `apps/backplane_admin`: Phoenix admin UI endpoint on its own port, with routes rooted at `/`.
 - `apps/relayixir`: HTTP/WebSocket reverse proxy library used internally by the LLM proxy.
 - `apps/day_ex`: date/time utility library exposed through the `day::` managed MCP tools.
@@ -65,16 +65,20 @@ http://localhost:4221
 
 Useful routes:
 
-- `POST /api/mcp`: MCP JSON-RPC endpoint
-- `GET /api/mcp`: MCP SSE notification stream
-- `DELETE /api/mcp`: MCP session cleanup
+- `POST /mcp`: MCP JSON-RPC endpoint
+- `GET /mcp`: MCP SSE notification stream
+- `DELETE /mcp`: MCP session cleanup
 - `GET /health`: health check JSON
 - `GET /metrics`: runtime metrics
+- `/v1/*`: LLM proxy routes
+- `/v1/messages`: Anthropic Messages-compatible route
+- `/llm/*`: LLM provider and alias API routes
+- `/skills/*`: skill library API routes
+- `/host-agent/*`: host-agent API routes
 - Admin endpoint `/`: admin UI redirect
 - Admin endpoint `/dashboard/overview`: dashboard
 - Admin endpoint `/mcp/managed`: managed service toggles and tool lists
 - Admin endpoint `/system/credentials`: credentials vault
-- `/api/llm/*`: LLM proxy API routes
 
 ## Common Commands
 

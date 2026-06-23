@@ -25,7 +25,7 @@ defmodule Backplane.Skills.HostAgentApiRouterTest do
   test "mounted retired host-agent API route returns not found" do
     conn =
       :get
-      |> conn("/api/host-agent/skills/repo-review/download")
+      |> conn("/host-agent/skills/repo-review/download")
       |> Endpoint.call([])
 
     assert conn.status == 404

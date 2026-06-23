@@ -52,10 +52,10 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
   test "does not serve public or API routes", %{conn: conn} do
     routes = [
-      {:post, "/api/mcp"},
-      {:get, "/api/v1/models"},
-      {:get, "/api/anthropic/v1/messages"},
-      {:get, "/api/host-agent/something"},
+      {:post, "/mcp"},
+      {:get, "/v1/models"},
+      {:get, "/v1/messages"},
+      {:get, "/host-agent/something"},
       {:get, "/host-agent/socket"}
     ]
 

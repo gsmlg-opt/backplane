@@ -38,7 +38,7 @@ defmodule BackplaneMemory.Embedding.Client do
   defp do_embed(texts, mode, model, opts) do
     inputs = prepare_inputs(texts, mode)
     base_url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
-    url = "#{base_url}/api/v1/embeddings"
+    url = "#{base_url}/v1/embeddings"
     req_options = Keyword.get(opts, :req_options, [])
 
     req_opts =

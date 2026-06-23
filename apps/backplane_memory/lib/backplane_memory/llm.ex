@@ -95,7 +95,7 @@ defmodule BackplaneMemory.LLM do
   defp do_llm_call(prompt, model) do
     url = Application.get_env(:backplane_memory, :llm_proxy_url, "http://localhost:4220")
 
-    case Req.post("#{url}/api/v1/chat/completions",
+    case Req.post("#{url}/v1/chat/completions",
            json: %{model: model, messages: [%{role: "user", content: prompt}]}
          ) do
       {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}} ->

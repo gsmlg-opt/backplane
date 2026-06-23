@@ -24,19 +24,28 @@ defmodule Backplane.LLM.ProxyPlugTest do
     end
 
     test "passes through LLM admin API paths" do
-      conn = conn(:get, "/api/llm/providers")
+      conn = conn(:get, "/llm/providers")
       result = ProxyPlug.call(conn, ProxyPlug.init([]))
 
-      assert result.path_info == ["api", "llm", "providers"]
-      assert result.request_path == "/api/llm/providers"
+      assert result.path_info == ["llm", "providers"]
+      assert result.request_path == "/llm/providers"
       refute result.halted
     end
 
-    test "passes through /api/mcp paths (handled by Phoenix router)" do
-      conn = conn(:get, "/api/mcp")
+    test "passes through /mcp paths (handled by Phoenix router)" do
+      conn = conn(:get, "/mcp")
       result = ProxyPlug.call(conn, ProxyPlug.init([]))
 
-      assert result.path_info == ["api", "mcp"]
+      assert result.path_info == ["mcp"]
+      refute result.halted
+    end
+
+    test "passes through retired /api-prefixed paths" do
+      conn = conn(:post, "/api/v1/responses")
+      result = ProxyPlug.call(conn, ProxyPlug.init([]))
+
+      assert result.path_info == ["api", "v1", "responses"]
+      assert result.request_path == "/api/v1/responses"
       refute result.halted
     end
   end

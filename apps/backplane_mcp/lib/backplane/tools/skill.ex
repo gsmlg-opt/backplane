@@ -237,7 +237,7 @@ defmodule Backplane.Tools.Skill do
   defp download_metadata(%SkillSchema{} = skill) do
     {:ok,
      %{
-       archive_url: "/api/skills/#{URI.encode(skill.slug)}/archive",
+       archive_url: "/skills/#{URI.encode(skill.slug)}/archive",
        content_hash: skill.content_hash,
        size_bytes: skill.size_bytes,
        metadata: metadata(skill)
