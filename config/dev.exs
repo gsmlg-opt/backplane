@@ -11,6 +11,7 @@ config :backplane_system, Backplane.Repo,
 
 config :backplane_web, dev_routes: true
 config :backplane_api, dev_routes: true
+config :backplane_admin, dev_routes: true
 
 secret_key_base =
   "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_only_do_not_use"
@@ -43,6 +44,17 @@ config :backplane_api, Backplane.Api.Endpoint,
     bun_api: {Bun, :install_and_run, [:backplane_api, ~w(--sourcemap=inline --watch)]}
   ]
 
+config :backplane_admin, Backplane.Admin.Endpoint,
+  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4221],
+  check_origin: false,
+  code_reloader: true,
+  debug_errors: true,
+  secret_key_base: secret_key_base,
+  watchers: [
+    tailwind_admin: {Tailwind, :install_and_run, [:backplane_admin, ~w(--watch)]},
+    bun_admin: {Bun, :install_and_run, [:backplane_admin, ~w(--sourcemap=inline --watch)]}
+  ]
+
 config :backplane_web, BackplaneWeb.Endpoint,
   live_reload: [
     patterns: [
@@ -56,6 +68,14 @@ config :backplane_api, Backplane.Api.Endpoint,
     patterns: [
       ~r"apps/backplane_api/priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
       ~r"apps/backplane_api/lib/backplane/api/(controllers|channels|components)/.*(ex|heex)$"
+    ]
+  ]
+
+config :backplane_admin, Backplane.Admin.Endpoint,
+  live_reload: [
+    patterns: [
+      ~r"apps/backplane_admin/priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"apps/backplane_admin/lib/backplane/admin/(controllers|live|components)/.*(ex|heex)$"
     ]
   ]
 

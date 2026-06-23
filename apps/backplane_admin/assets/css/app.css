@@ -1,0 +1,352 @@
+@import "tailwindcss" source(none);
+@source "../css";
+@source "../js";
+@source "../../lib/backplane/admin";
+@source "../../../deps/phoenix_duskmoon/lib";
+@source "../../../deps/phoenix_duskmoon/assets/js";
+@plugin "@duskmoon-dev/core/plugin";
+@import "@duskmoon-dev/core/themes/sunshine";
+@import "@duskmoon-dev/core/themes/moonlight";
+@import "@duskmoon-dev/core/components";
+
+@layer utilities {
+  .bg-secondary {
+    background-color: var(--color-secondary);
+  }
+
+  .text-secondary-content {
+    color: var(--color-secondary-content);
+  }
+}
+
+/* Force table thead visible — Tailwind v4 scanner misses md:table-header-group
+   from EEx inside deps/phoenix_duskmoon */
+.table thead {
+  display: table-header-group;
+}
+
+/* Pure CSS description tooltip for skill browse table */
+.desc-tooltip-wrap {
+  position: relative;
+}
+
+.desc-tooltip-content {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 16rem;
+  max-width: 24rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-outline-variant, #444);
+  background: var(--color-surface-container, #1e1e1e);
+  color: var(--color-on-surface, #e0e0e0);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: opacity 150ms ease, visibility 150ms ease;
+  pointer-events: none;
+}
+
+.desc-tooltip-wrap:hover .desc-tooltip-content {
+  visibility: visible;
+  opacity: 1;
+}
+
+.appbar-actions .appbar-action {
+  width: auto;
+  height: auto;
+  padding: 0.375rem 0.75rem;
+}
+
+.split-btn-left {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  height: 42px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+.split-btn-trigger {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 42px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+  font-family: inherit !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  line-height: 1.25rem !important;
+  text-align: center !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  vertical-align: middle !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  border: 1px solid transparent !important;
+  border-left: 1px solid color-mix(in oklch, currentColor 20%, transparent) !important;
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  border-top-right-radius: var(--radius-sm) !important;
+  border-bottom-right-radius: var(--radius-sm) !important;
+  background-color: var(--color-primary) !important;
+  color: var(--color-primary-content) !important;
+  transition: all 150ms ease-in-out !important;
+}
+
+.split-btn-trigger:hover {
+  background-color: color-mix(in oklch, var(--color-primary), black 10%) !important;
+}
+.split-btn-dropdown {
+  background-color: var(--color-primary) !important;
+  color: var(--color-primary-content) !important;
+  border-color: var(--color-primary) !important;
+
+  /* Force correct anchor positioning alignment */
+  position: fixed !important;
+  top: anchor(bottom) !important;
+  right: anchor(right) !important;
+  left: auto !important;
+  margin-top: 0.5rem !important;
+}
+
+.split-btn-dropdown .popover-menu-item {
+  color: var(--color-primary-content) !important;
+}
+
+.split-btn-dropdown .popover-menu-item:hover {
+  background-color: color-mix(in oklch, var(--color-primary), black 10%) !important;
+  color: var(--color-primary-content) !important;
+}
+
+.admin-top-nav {
+  flex: 1 1 auto;
+  flex-shrink: 1;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.admin-top-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.admin-appbar-tools {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.appbar-primary .admin-top-nav .appbar-action[aria-current="page"] {
+  background-color: var(--color-primary-container);
+  color: var(--color-on-primary-container);
+}
+
+/* Make LiveView content stretch to fill available vertical space.
+   Cascade flex-column through classless wrapper divs (Phoenix LV container,
+   render root, view root). Styled divs with classes are not affected. */
+.admin-content > div:not([class]),
+.admin-content > div > div:not([class]),
+.admin-content > div > div > div:not([class]) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The admin-content itself has a class, so we target it explicitly */
+.admin-content > div[class*="phx-"] {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-content .overflow-x-auto {
+  flex: 1 1 auto;
+}
+
+#disconnected .toast-message svg {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+}
+
+
+.admin-sidebar {
+  --admin-sidebar-bg: #efc886;
+  --admin-sidebar-text: #120607;
+  --admin-sidebar-muted: #594136;
+  --admin-sidebar-active: #241d20;
+  --admin-sidebar-active-text: #eee8ea;
+
+  background: var(--admin-sidebar-bg);
+  border-right: 1px solid color-mix(in oklch, var(--admin-sidebar-text), transparent 72%);
+  color: var(--admin-sidebar-text);
+}
+
+.admin-sidebar-nav {
+  display: flex;
+  gap: 0.375rem;
+  overflow-x: auto;
+  padding: 0.625rem;
+  scrollbar-width: none;
+}
+
+.admin-sidebar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.admin-sidebar-section {
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--admin-sidebar-muted);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-sidebar-link,
+.admin-sidebar-group-title {
+  align-items: center;
+  border-radius: 0.625rem;
+  color: var(--admin-sidebar-text);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.625rem;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.75rem;
+  text-decoration: none;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+  white-space: nowrap;
+}
+
+.admin-sidebar-link {
+  font-size: 0.875rem;
+  font-weight: 800;
+}
+
+.admin-sidebar-link:hover {
+  background: color-mix(in oklch, var(--admin-sidebar-active), transparent 88%);
+  color: var(--admin-sidebar-text);
+}
+
+.admin-sidebar-link.is-active {
+  background: var(--admin-sidebar-active);
+  color: var(--admin-sidebar-active-text);
+  box-shadow: 0 1rem 2rem color-mix(in oklch, var(--admin-sidebar-active), transparent 82%);
+}
+
+.admin-sidebar-link.is-active:hover {
+  color: var(--admin-sidebar-active-text);
+}
+
+.admin-sidebar-icon {
+  flex: 0 0 1.25rem;
+  height: 1.25rem;
+  width: 1.25rem;
+}
+
+.admin-sidebar-group {
+  display: contents;
+}
+
+.admin-sidebar-group-title {
+  color: var(--admin-sidebar-muted);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  .admin-sidebar {
+    min-height: calc(100vh - 4rem);
+  }
+
+  .admin-sidebar-nav {
+    flex-direction: column;
+    gap: 0.375rem;
+    overflow: visible;
+    padding: 1.5rem 1rem 1rem;
+  }
+
+  .admin-sidebar-section {
+    align-self: stretch;
+    margin-bottom: 0.625rem;
+    padding: 0 0.75rem;
+  }
+
+  .admin-sidebar-link,
+  .admin-sidebar-group-title {
+    display: flex;
+    min-height: 2.875rem;
+    padding: 0.625rem 0.875rem;
+    width: 100%;
+  }
+
+  .admin-sidebar-link {
+    font-size: 0.9375rem;
+  }
+
+  .admin-sidebar-link:hover {
+    transform: translateX(2px);
+  }
+
+  .admin-sidebar-icon {
+    flex-basis: 1.25rem;
+    height: 1.25rem;
+    width: 1.25rem;
+  }
+
+  .admin-sidebar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .admin-sidebar-group-title {
+    min-height: auto;
+    padding-bottom: 0.125rem;
+    padding-top: 0.625rem;
+  }
+}
+
+/* Fix confirm dialog footer layout in el-dm-dialog */
+el-dm-dialog div[slot="footer"] {
+  display: flex !important;
+  flex-direction: row-reverse !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  gap: 0.75rem !important;
+  margin-top: 1.5rem !important;
+}
+
+el-dm-dialog div[slot="footer"] form {
+  display: inline-block !important;
+  margin: 0 !important;
+}

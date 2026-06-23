@@ -1,0 +1,80 @@
+<% current_path = assigns[:current_path] || "/admin/dashboard/overview" %>
+<% left_nav_items = Backplane.Admin.Layouts.left_nav_items(current_path) %>
+<% left_nav_heading = Backplane.Admin.Layouts.left_nav_heading(current_path) %>
+
+<div class="min-h-full bg-surface text-on-surface">
+  <header class="appbar appbar-sticky appbar-primary">
+    <a href={Backplane.WebOrigins.api_url("/")} class="appbar-brand no-underline">
+      <img
+        src={~p"/images/backplane-logo.png"}
+        alt=""
+        class="h-8 w-8 shrink-0 rounded-md object-contain"
+        aria-hidden="true"
+      />
+      <span class="appbar-title">Backplane</span>
+    </a>
+
+    <nav class="appbar-actions admin-top-nav" aria-label="Main navigation">
+      <.link
+        :for={item <- Backplane.Admin.Layouts.top_nav_items()}
+        navigate={item.path}
+        class="appbar-action w-auto rounded-md px-3 whitespace-nowrap no-underline"
+        aria-current={Backplane.Admin.Layouts.active_top_nav?(current_path, item.section) && "page"}
+      >
+        {item.label}
+      </.link>
+    </nav>
+
+    <div class="appbar-trailing admin-appbar-tools">
+      <.dm_theme_switcher id="admin-theme-switcher" button_text="Theme" theme="moonlight" />
+    </div>
+  </header>
+
+  <div class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex">
+    <aside class="admin-sidebar lg:w-60 lg:shrink-0 xl:w-64">
+      <nav class="admin-sidebar-nav" aria-label={left_nav_heading <> " navigation"}>
+        <div class="admin-sidebar-section">{left_nav_heading}</div>
+        <div :for={item <- left_nav_items} class="contents lg:block">
+          <div :if={Map.has_key?(item, :items)} class="admin-sidebar-group">
+            <div class="admin-sidebar-group-title">
+              <.dm_mdi :if={item[:icon]} name={item[:icon]} class="admin-sidebar-icon" />
+              <span>{item.label}</span>
+            </div>
+            <.link
+              :for={child <- item.items}
+              navigate={child.path}
+              class={[
+                "admin-sidebar-link",
+                Backplane.Admin.Layouts.active_left_nav?(current_path, child) && "is-active"
+              ]}
+              aria-current={Backplane.Admin.Layouts.active_left_nav?(current_path, child) && "page"}
+            >
+              <.dm_mdi :if={child[:icon]} name={child[:icon]} class="admin-sidebar-icon" />
+              <span>{child.label}</span>
+            </.link>
+          </div>
+
+          <.link
+            :if={!Map.has_key?(item, :items)}
+            navigate={item.path}
+            class={[
+              "admin-sidebar-link",
+              Backplane.Admin.Layouts.active_left_nav?(current_path, item) && "is-active"
+            ]}
+            aria-current={Backplane.Admin.Layouts.active_left_nav?(current_path, item) && "page"}
+          >
+            <.dm_mdi :if={item[:icon]} name={item[:icon]} class="admin-sidebar-icon" />
+            <span>{item.label}</span>
+          </.link>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="min-w-0 flex-1 flex flex-col">
+      <div class="admin-content mx-auto max-w-7xl w-full flex-1 flex flex-col px-4 py-6 sm:px-6 lg:px-8">
+        <.dm_flash_group flash={@flash} />
+        {@inner_content}
+      </div>
+    </main>
+  </div>
+</div>

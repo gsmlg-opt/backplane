@@ -49,6 +49,16 @@ config :backplane_api, Backplane.Api.Endpoint,
   pubsub_server: Backplane.PubSub,
   live_view: [signing_salt: "bkpln_api_lv_salt"]
 
+config :backplane_admin, Backplane.Admin.Endpoint,
+  url: [host: "localhost"],
+  adapter: Bandit.PhoenixAdapter,
+  render_errors: [
+    formats: [html: Backplane.Admin.ErrorHTML, json: Backplane.Admin.ErrorJSON],
+    layout: false
+  ],
+  pubsub_server: Backplane.PubSub,
+  live_view: [signing_salt: "bkpln_admin_lv_salt"]
+
 # Bun bundler
 config :bun,
   version: "1.3.3",
@@ -63,6 +73,12 @@ config :bun,
       ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
     cd: Path.expand("../apps/backplane_api", __DIR__),
     env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
+  ],
+  backplane_admin: [
+    args:
+      ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
+    cd: Path.expand("../apps/backplane_admin", __DIR__),
+    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
   ]
 
 # Tailwind v4
@@ -75,6 +91,10 @@ config :tailwind,
   backplane_api: [
     args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
     cd: Path.expand("../apps/backplane_api", __DIR__)
+  ],
+  backplane_admin: [
+    args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
+    cd: Path.expand("../apps/backplane_admin", __DIR__)
   ]
 
 config :logger, :console,
