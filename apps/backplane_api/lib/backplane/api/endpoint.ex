@@ -38,7 +38,17 @@ defmodule Backplane.Api.Endpoint do
   )
 
   plug(Plug.MethodOverride)
+  # Short-circuit HEAD on the MCP endpoint before Plug.Head rewrites it to GET.
+  # Otherwise a HEAD hits the SSE stream handler and never completes, pinning the
+  # upstream connection a reverse proxy may reuse for the next request.
+  plug(:mcp_head_no_content)
   plug(Plug.Head)
   plug(Plug.Session, @session_options)
   plug(Backplane.Api.Router)
+
+  defp mcp_head_no_content(%Plug.Conn{method: "HEAD", path_info: ["mcp" | _]} = conn, _opts) do
+    conn |> send_resp(204, "") |> halt()
+  end
+
+  defp mcp_head_no_content(conn, _opts), do: conn
 end

@@ -18,6 +18,22 @@ defmodule Backplane.Api.RouteBoundaryTest do
     assert json_response(conn, 200)["status"] in ["ok", "healthy"]
   end
 
+  @tag timeout: 5_000
+  test "HEAD /mcp returns 204 without opening the SSE stream", %{conn: conn} do
+    # Runs through the full endpoint (incl. Plug.Head). Without the short-circuit
+    # the HEAD would reach the SSE handler and stream forever, so dispatch in a
+    # task and fail fast instead of hanging if that regresses.
+    task = Task.async(fn -> head(conn, "/mcp") end)
+
+    conn =
+      case Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill) do
+        {:ok, conn} -> conn
+        nil -> flunk("HEAD /mcp opened the SSE stream instead of returning immediately")
+      end
+
+    assert response(conn, 204) == ""
+  end
+
   test "does not serve retired /api-prefixed public routes", %{conn: conn} do
     assert post(conn, "/api/mcp", %{}) |> response(404)
     assert get(conn, "/api/v1/models") |> response(404)

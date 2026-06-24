@@ -267,8 +267,7 @@ defmodule Backplane.HostAgent.Memory do
         items =
           rows
           |> Enum.map(&Reducer.row_to_item(&1))
-          |> Enum.filter(&matches_tag?(&1, tag))
-          |> Enum.filter(&matches_facet?(&1, facet))
+          |> Enum.filter(&(matches_tag?(&1, tag) and matches_facet?(&1, facet)))
           |> Enum.take(Reducer.limit(args))
 
         {:ok, %{"items" => items}}

@@ -68,7 +68,14 @@ defmodule Backplane.Transport.McpPlug do
 
   defp sse_notification_loop(conn) do
     Phoenix.PubSub.subscribe(Backplane.PubSub, "mcp:notifications")
-    sse_loop(conn)
+
+    # Probe the connection immediately. A peer that has already gone away
+    # is detected on this first write instead of after a full keepalive
+    # interval, so the upstream connection isn't pinned needlessly.
+    case Plug.Conn.chunk(conn, ": connected\n\n") do
+      {:ok, conn} -> sse_loop(conn)
+      {:error, _} -> conn
+    end
   after
     Phoenix.PubSub.unsubscribe(Backplane.PubSub, "mcp:notifications")
   end
