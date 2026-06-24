@@ -31,6 +31,7 @@ config :backplane_monitor, repo: Backplane.Repo
 config :backplane_api, Backplane.Api.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
+  check_origin: false,
   render_errors: [
     formats: [html: Backplane.Api.ErrorHTML, json: Backplane.Api.ErrorJSON],
     layout: false
@@ -41,6 +42,7 @@ config :backplane_api, Backplane.Api.Endpoint,
 config :backplane_admin, Backplane.Admin.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
+  check_origin: false,
   render_errors: [
     formats: [html: Backplane.Admin.ErrorHTML, json: Backplane.Admin.ErrorJSON],
     layout: false
