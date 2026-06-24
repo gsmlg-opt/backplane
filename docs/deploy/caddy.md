@@ -34,8 +34,9 @@ body forever. Caddy then returns that still-busy upstream connection to its pool
 and reuses it for the next request (e.g. a `POST /mcp`), which blocks until it
 times out.
 
-The backend side of this is fixed: `Backplane.Transport.McpPlug` short-circuits
-`HEAD` at the MCP root with `204 No Content` before the SSE loop, and the SSE loop
+The backend side of this is fixed in `Backplane.Api.Endpoint`: a `HEAD` to the MCP
+path is answered with `204 No Content` *before* `Plug.Head` rewrites it to a `GET`
+(which would otherwise reach the SSE handler and stream forever). The SSE loop also
 probes the connection on open so a vanished peer is detected immediately. The
 `flush_interval -1` setting above is the matching proxy-side hardening.
 
