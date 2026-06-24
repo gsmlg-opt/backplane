@@ -3,7 +3,10 @@ defmodule Backplane.LLM.ModelDiscovery do
   Discovers provider models from configured API surfaces.
   """
 
+  import Ecto.Query
+
   alias Backplane.LLM.{CredentialPlug, Provider, ProviderApi, ProviderModel, ProviderModelSurface}
+  alias Backplane.Repo
   alias Backplane.Settings.Credentials
 
   @default_openai_codex_models ~w(gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex)
@@ -279,9 +282,56 @@ defmodule Backplane.LLM.ModelDiscovery do
           add_error(result, "#{model_id}: #{format_error(reason)}")
       end
     end)
+    |> maybe_prune_stale_models(provider, api, model_ids)
     |> tap(fn _result ->
       ProviderApi.update(api, %{last_discovered_at: DateTime.utc_now()})
     end)
+  end
+
+  defp maybe_prune_stale_models(%{errors: []} = result, provider, api, model_ids) do
+    remove_stale_model_surfaces(provider, api, model_ids)
+    remove_provider_models_without_surfaces(provider)
+
+    result
+  end
+
+  defp maybe_prune_stale_models(result, _provider, _api, _model_ids), do: result
+
+  defp remove_stale_model_surfaces(provider, api, [] = _model_ids) do
+    ProviderModelSurface
+    |> join(:inner, [surface], model in ProviderModel, on: model.id == surface.provider_model_id)
+    |> where(
+      [surface, model],
+      model.provider_id == ^provider.id and surface.provider_api_id == ^api.id
+    )
+    |> Repo.delete_all()
+  end
+
+  defp remove_stale_model_surfaces(provider, api, model_ids) do
+    ProviderModelSurface
+    |> join(:inner, [surface], model in ProviderModel, on: model.id == surface.provider_model_id)
+    |> where(
+      [surface, model],
+      model.provider_id == ^provider.id and surface.provider_api_id == ^api.id and
+        model.model not in ^model_ids
+    )
+    |> Repo.delete_all()
+  end
+
+  defp remove_provider_models_without_surfaces(provider) do
+    orphan_model_ids =
+      ProviderModel
+      |> join(:left, [model], surface in ProviderModelSurface,
+        on: surface.provider_model_id == model.id
+      )
+      |> where([model], model.provider_id == ^provider.id)
+      |> group_by([model], model.id)
+      |> having([_model, surface], count(surface.id) == 0)
+      |> select([model], model.id)
+
+    ProviderModel
+    |> where([model], model.id in subquery(orphan_model_ids))
+    |> Repo.delete_all()
   end
 
   defp upsert_model_surface(provider, api, model_id) do

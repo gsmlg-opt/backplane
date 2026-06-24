@@ -520,12 +520,27 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           credential: "test-cred"
         })
 
-      {:ok, _api} =
+      {:ok, api} =
         ProviderApi.create(%{
           provider_id: provider.id,
           api_surface: :openai,
           base_url: "https://api.example.com/v1",
           model_discovery_path: "/models"
+        })
+
+      {:ok, old_model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "provider-stale-model",
+          source: :discovered,
+          enabled: true
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: old_model.id,
+          provider_api_id: api.id,
+          enabled: true
         })
 
       {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
@@ -537,6 +552,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert html =~ "provider-api-model"
       assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-api-model")
+      refute Repo.get_by(ProviderModel, provider_id: provider.id, model: "provider-stale-model")
     end
 
     test "provider detail loads openai codex oauth models from local catalog", %{conn: conn} do
