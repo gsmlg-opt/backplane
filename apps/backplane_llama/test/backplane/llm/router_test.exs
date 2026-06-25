@@ -370,6 +370,7 @@ defmodule Backplane.LLM.RouterTest do
         llm_request(:post, "/v1/chat/completions", %{
           "model" => "openai-codex-router/gpt-5.5",
           "stream" => true,
+          "max_tokens" => 100,
           "messages" => [%{"role" => "user", "content" => "hi"}]
         })
 
@@ -386,6 +387,7 @@ defmodule Backplane.LLM.RouterTest do
       assert {"originator", "codex_cli_rs"} in request.headers
       assert request.body["model"] == "gpt-5.5"
       assert request.body["stream"] == true
+      refute Map.has_key?(request.body, "max_output_tokens")
       assert [%{"role" => "user", "content" => "hi"}] = request.body["input"]
     end
   end

@@ -138,10 +138,6 @@ defmodule Backplane.LLM.OpenAICodexCompat do
       |> put_if_present("instructions", instructions)
       |> put_if_present("tools", empty_to_nil(tools))
       |> put_if_present("tool_choice", tool_choice_to_responses(chat["tool_choice"]))
-      |> put_if_present(
-        "max_output_tokens",
-        first_present(chat, ["max_completion_tokens", "max_tokens"])
-      )
       |> put_if_present("reasoning", reasoning_to_responses(chat))
 
     {:ok, responses}
@@ -309,13 +305,6 @@ defmodule Backplane.LLM.OpenAICodexCompat do
   end
 
   defp reasoning_to_responses(_chat), do: nil
-
-  defp first_present(map, keys) do
-    Enum.find_value(keys, fn key ->
-      value = Map.get(map, key)
-      if value in [nil, ""], do: nil, else: value
-    end)
-  end
 
   defp put_if_present(map, _key, nil), do: map
   defp put_if_present(map, _key, []), do: map
