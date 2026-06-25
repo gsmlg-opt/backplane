@@ -16,4 +16,10 @@ defmodule Backplane.Admin.EndpointTest do
     assert Keyword.has_key?(opts, :websocket)
     assert Keyword.fetch!(opts, :longpoll) == false
   end
+
+  test "admin LiveSocket does not enable longpoll fallback" do
+    app_js = File.read!(Path.expand("../../../assets/js/app.js", __DIR__))
+
+    refute app_js =~ "longPollFallbackMs"
+  end
 end
