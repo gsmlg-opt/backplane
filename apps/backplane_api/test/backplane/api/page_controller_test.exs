@@ -10,11 +10,9 @@ defmodule Backplane.Api.PageControllerTest do
     assert html =~ "Complete catalog"
     assert html =~ "MCP session API"
     assert html =~ "LLM proxy API"
-    assert html =~ "LLM provider API"
     assert html =~ "Skills API"
-    assert html =~ "Host-agent and runtime endpoints"
+    assert html =~ "Host-agent endpoint"
     assert html =~ "Client configuration"
-    assert html =~ "Health check"
     assert html =~ "Claude Code"
     assert html =~ "Codex"
     assert html =~ "ANTHROPIC_BASE_URL"
@@ -31,30 +29,21 @@ defmodule Backplane.Api.PageControllerTest do
           "POST /v1/responses",
           "POST /v1/embeddings",
           "/v1/*",
-          "/llm/providers",
-          "/llm/providers/:id",
-          "/llm/aliases",
-          "/llm/aliases/:id",
           "/skills",
           "/skills/export",
           "/skills/import",
           "/skills/:slug",
           "/skills/:slug/archive",
-          "/host-agent/socket",
-          "/health",
-          "/metrics",
-          "/metrics/prometheus"
+          "/host-agent/socket"
         ] do
       assert html =~ endpoint
     end
 
-    assert html =~ "PATCH"
     assert html =~ "WS"
     assert html =~ ~s(src="/images/backplane-icon.png")
     assert html =~ "appbar"
     assert html =~ ~s(aria-label="Endpoints")
     assert html =~ ~s(aria-label="Clients")
-    assert html =~ ~s(aria-label="Health")
     assert html =~ "theme-controller-dropdown"
     assert html =~ "theme-controller-dropdown-icon"
     assert html =~ ~s(aria-label="Select theme")
@@ -74,6 +63,14 @@ defmodule Backplane.Api.PageControllerTest do
     refute html =~ "/llama/providers"
     refute html =~ "/mcp/upstreams"
     refute html =~ "/system/clients"
+    refute html =~ "Provider API"
+    refute html =~ "LLM provider API"
+    refute html =~ "Health check"
+    refute html =~ ~s(aria-label="Health")
+    refute html =~ "/llm/providers"
+    refute html =~ "/llm/aliases"
+    refute html =~ "/health"
+    refute html =~ "/metrics"
     refute html =~ "/api"
     refute html =~ "/anthropic"
     refute html =~ "w-auto px-3 rounded-md whitespace-nowrap"

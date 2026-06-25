@@ -2,8 +2,6 @@ defmodule Backplane.Api.Router do
   use Backplane.Api, :router
 
   forward("/mcp", Backplane.Transport.McpPlug)
-  forward("/health", Backplane.Transport.HealthPlug)
-  forward("/metrics", Backplane.Transport.MetricsPlug)
 
   pipeline :public_browser do
     plug(:accepts, ["html"])
@@ -14,10 +12,6 @@ defmodule Backplane.Api.Router do
     plug(:put_secure_browser_headers)
   end
 
-  pipeline :api do
-    plug(:accepts, ["json"])
-  end
-
   pipeline :skills_api do
     plug(:accepts, ["json", "gz"])
   end
@@ -26,12 +20,6 @@ defmodule Backplane.Api.Router do
     pipe_through(:public_browser)
 
     get("/", PageController, :home)
-  end
-
-  scope "/" do
-    pipe_through(:api)
-
-    forward("/llm", Backplane.LLM.ApiRouter)
   end
 
   scope "/" do

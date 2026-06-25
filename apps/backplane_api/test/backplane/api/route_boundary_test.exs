@@ -12,10 +12,14 @@ defmodule Backplane.Api.RouteBoundaryTest do
     assert get(conn, "/admin/dashboard/overview") |> response(404)
   end
 
-  test "routes health through API endpoint", %{conn: conn} do
-    conn = get(conn, "/health")
-
-    assert json_response(conn, 200)["status"] in ["ok", "healthy"]
+  test "does not serve provider or operational routes", %{conn: conn} do
+    assert get(conn, "/llm/providers") |> response(404)
+    assert post(conn, "/llm/providers", %{}) |> response(404)
+    assert get(conn, "/llm/aliases") |> response(404)
+    assert post(conn, "/llm/aliases", %{}) |> response(404)
+    assert get(conn, "/health") |> response(404)
+    assert get(conn, "/metrics") |> response(404)
+    assert get(conn, "/metrics/prometheus") |> response(404)
   end
 
   @tag timeout: 5_000
