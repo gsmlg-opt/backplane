@@ -9,9 +9,18 @@ if bun_path = System.get_env("MIX_BUN_PATH") || System.find_executable("bun") do
 end
 
 if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable("tailwindcss") do
-  tailwind_str = System.cmd(tailwind_path, ["--help"]) |> elem(0)
-  tailwind_version = Regex.run(~r/tailwindcss v([0-9.]+)/, tailwind_str) |> Enum.at(1)
-  config :tailwind, path: tailwind_path, version: tailwind_version
+  try do
+    {tailwind_str, 0} = System.cmd(tailwind_path, ["--help"])
+    tailwind_version =
+      case Regex.run(~r/tailwindcss v([0-9.]+)/, tailwind_str) do
+        [_, version] -> version
+        _ -> "0.0.0"
+      end
+    config :tailwind, path: tailwind_path, version: tailwind_version
+  rescue
+    _ ->
+      config :tailwind, path: tailwind_path, version: "0.0.0"
+  end
 end
 
 if config_env() == :prod do

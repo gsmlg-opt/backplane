@@ -96,6 +96,17 @@ defmodule Backplane.Skills.ApiRouter do
     end
   end
 
+  put "/:slug" do
+    with {:ok, skill} <- Skills.get_by_slug(slug),
+         {:ok, updated} <- Skills.update(skill, conn.body_params) do
+      json(conn, 200, serialize_metadata(updated))
+    else
+      {:error, :not_found} -> json(conn, 404, %{error: "not found"})
+      {:error, %Ecto.Changeset{} = changeset} -> json(conn, 422, %{errors: format_changeset_errors(changeset)})
+      {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
+    end
+  end
+
   delete "/:slug" do
     with {:ok, skill} <- Skills.get_by_slug(slug),
          {:ok, _deleted} <- Skills.delete(skill) do
@@ -270,6 +281,7 @@ defmodule Backplane.Skills.ApiRouter do
       slug: skill.slug,
       name: skill.name,
       description: skill.description,
+      category: skill.category,
       tags: skill.tags,
       version: skill.version,
       license: skill.license,
@@ -290,6 +302,7 @@ defmodule Backplane.Skills.ApiRouter do
       :slug,
       :name,
       :description,
+      :category,
       :tags,
       :version,
       :license,
@@ -313,4 +326,12 @@ defmodule Backplane.Skills.ApiRouter do
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)
+
+  defp format_changeset_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+  end
 end

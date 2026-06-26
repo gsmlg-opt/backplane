@@ -98,6 +98,35 @@ defmodule Backplane.Skills do
     end
   end
 
+  @doc "Update an existing skill."
+  @spec update(Skill.t(), map()) :: {:ok, Skill.t()} | {:error, Ecto.Changeset.t()}
+  def update(%Skill{} = skill, attrs) do
+    metadata = %{action: "update", skill_id: skill.id, slug: skill.slug}
+
+    :telemetry.span([:backplane, :skills, :access], metadata, fn ->
+      result =
+        skill
+        |> Skill.update_changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} ->
+            Registry.refresh()
+            {:ok, updated}
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+
+      status =
+        case result do
+          {:ok, _} -> %{status: :ok}
+          {:error, reason} -> %{status: :error, error: inspect(reason)}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
+  end
+
   @doc "Ingest an archive-backed skill."
   @spec ingest_archive(term(), map() | keyword()) :: {:ok, Skill.t()} | {:error, term()}
   def ingest_archive(archive, opts) do

@@ -231,6 +231,72 @@ defmodule Backplane.Skills.ApiRouterTest do
     end
   end
 
+  describe "PUT /skills/:slug" do
+    test "updates existing skill attributes and refreshes registry", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "put-skill", name: "Put Skill", description: "Original description", tags: ["original"])
+
+      conn =
+        api_request(
+          :put,
+          "/skills/put-skill",
+          Jason.encode!(%{
+            "description" => "Updated description",
+            "tags" => ["updated", "new"],
+            "category" => "testing",
+            "enabled" => false
+          }),
+          [{"content-type", "application/json"}]
+        )
+
+      assert conn.status == 200
+      body = json_body(conn)
+      assert body["slug"] == "put-skill"
+      assert body["description"] == "Updated description"
+      assert body["tags"] == ["updated", "new"]
+      assert body["category"] == "testing"
+
+      # Verify database and registry cache are updated
+      assert {:ok, skill} = Skills.get_by_slug("put-skill")
+      assert skill.description == "Updated description"
+      assert skill.tags == ["updated", "new"]
+      assert skill.category == "testing"
+      assert skill.enabled == false
+
+      # Verify it's no longer listed in active registry list due to enabled == false
+      refute Enum.any?(Skills.Registry.list(), &(&1.slug == "put-skill"))
+    end
+
+    test "returns 404 when updating non-existent skill" do
+      conn =
+        api_request(
+          :put,
+          "/skills/missing-put",
+          Jason.encode!(%{"description" => "Updated description"}),
+          [{"content-type", "application/json"}]
+        )
+
+      assert conn.status == 404
+      assert %{"error" => "not found"} = json_body(conn)
+    end
+
+    test "returns 422 for invalid parameter types", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "invalid-put-skill", name: "Invalid Put Skill")
+
+      conn =
+        api_request(
+          :put,
+          "/skills/invalid-put-skill",
+          Jason.encode!(%{
+            "enabled" => "not-a-boolean"
+          }),
+          [{"content-type", "application/json"}]
+        )
+
+      assert conn.status == 422
+      assert %{"errors" => %{"enabled" => ["is invalid"]}} = json_body(conn)
+    end
+  end
+
   describe "DELETE /skills/:slug" do
     test "deletes the skill and unreferenced archive blob", %{
       blob_root: blob_root,

@@ -93,6 +93,7 @@ defmodule Backplane.Skills.SearchTest do
                slug: "ecto-queries",
                name: "Ecto Queries",
                description: "Advanced Ecto query composition",
+               category: nil,
                tags: ["elixir", "ecto"],
                version: "1.2.3",
                license: "MIT",
