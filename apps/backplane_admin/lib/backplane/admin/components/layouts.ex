@@ -14,6 +14,7 @@ defmodule Backplane.Admin.Layouts do
       %{label: "MCP", path: "/mcp/managed", section: :mcp},
       %{label: "Memory", path: "/memory", section: :memory},
       %{label: "Skills", path: "/skills", section: :skill},
+      %{label: "Auth", path: "/auth/overview", section: :auth},
       %{label: "System", path: "/system/clients", section: :system}
     ]
   end
@@ -71,6 +72,41 @@ defmodule Backplane.Admin.Layouts do
           %{label: "Upload", path: "/skills/upload", icon: "upload"}
         ]
 
+      :auth ->
+        [
+          %{label: "Overview", path: "/auth/overview", icon: "view-dashboard-outline"},
+          %{
+            label: "OAuth",
+            icon: "shield-key",
+            items: [
+              %{label: "Providers", path: "/auth/oauth/providers", icon: "account-switch"},
+              %{label: "Clients", path: "/auth/oauth/clients", icon: "application-braces"},
+              %{
+                label: "Client Policies",
+                path: "/auth/oauth/client-policies",
+                icon: "shield-check"
+              },
+              %{label: "Tokens", path: "/auth/oauth/tokens", icon: "key-chain"},
+              %{label: "Scopes", path: "/auth/oauth/scopes", icon: "format-list-checks"},
+              %{label: "Protocol Support", path: "/auth/oauth/protocol-support", icon: "protocol"}
+            ]
+          },
+          %{
+            label: "RBAC",
+            icon: "account-key",
+            items: [
+              %{label: "Users", path: "/auth/rbac/users", icon: "account-group"},
+              %{label: "Roles", path: "/auth/rbac/roles", icon: "account-cog"},
+              %{
+                label: "Assignments",
+                path: "/auth/rbac/assignments",
+                icon: "account-multiple-check"
+              }
+            ]
+          },
+          %{label: "Audit", path: "/auth/audit", icon: "text-box-search"}
+        ]
+
       :system ->
         [
           %{label: "Clients", path: "/system/clients", icon: "account-group"},
@@ -107,6 +143,7 @@ defmodule Backplane.Admin.Layouts do
       :mcp -> "MCP Hub"
       :memory -> "Memory"
       :skill -> "Skills"
+      :auth -> "Auth"
       :system -> "System"
     end
   end
@@ -134,6 +171,7 @@ defmodule Backplane.Admin.Layouts do
       String.starts_with?(current_path, "/mcp") -> :mcp
       String.starts_with?(current_path, "/memory") -> :memory
       skill_path?(current_path) -> :skill
+      String.starts_with?(current_path, "/auth") -> :auth
       String.starts_with?(current_path, "/system") -> :system
       true -> :dashboard
     end
