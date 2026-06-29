@@ -3,6 +3,11 @@ defmodule Backplane.Math.RegistrationTest do
 
   alias Backplane.Registry.ToolRegistry
 
+  setup do
+    {:ok, _config} = Backplane.Math.Config.save(%{enabled: true})
+    :ok
+  end
+
   test "math::evaluate is registered at boot" do
     names = ToolRegistry.list_all() |> Enum.map(& &1.name)
     assert "math::evaluate" in names

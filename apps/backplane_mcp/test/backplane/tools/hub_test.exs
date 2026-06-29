@@ -104,6 +104,9 @@ defmodule Backplane.Tools.HubTest do
           name: "echo",
           description: "Echo tool from upstream",
           input_schema: %{"type" => "object", "properties" => %{}},
+          output_schema: %{"type" => "object", "properties" => %{}},
+          annotations: nil,
+          icon: nil,
           timeout: 30_000
         }
       ]
@@ -128,7 +131,6 @@ defmodule Backplane.Tools.HubTest do
       {:ok, result} = Hub.call(%{"_handler" => "status"})
       assert is_list(result.skill_sources)
     end
-
 
     test "returns total tool count" do
       {:ok, result} = Hub.call(%{"_handler" => "status"})

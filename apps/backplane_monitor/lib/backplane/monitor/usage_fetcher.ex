@@ -55,32 +55,26 @@ defmodule Backplane.Monitor.UsageFetcher do
   defp fetch_credential(_provider, credential_name), do: Credentials.fetch(credential_name)
 
   defp fetch_claude_code_usage(%Plan{credential_name: credential_name, config: config}) do
-    with {:ok, credential_type} <- claude_code_credential_type(credential_name),
-         {:ok, credential} <- Credentials.fetch(credential_name) do
-      case credential_type do
-        :anthropic_oauth -> ClaudeCode.fetch_oauth(credential, config || %{})
-        :script -> ClaudeCode.fetch(credential, config || %{})
-      end
+    with {:ok, _credential} <- claude_code_credential(credential_name),
+         {:ok, access_token} <- Credentials.fetch(credential_name) do
+      ClaudeCode.fetch_oauth(access_token, config || %{})
     end
   end
 
-  defp claude_code_credential_type(credential_name) do
+  defp claude_code_credential(credential_name) do
     case Vault.get(credential_name) do
       nil ->
         {:error, :not_found}
 
-      %{metadata: %{"auth_type" => "anthropic_oauth"}} ->
-        {:ok, :anthropic_oauth}
-
-      %{kind: "script"} ->
-        {:ok, :script}
+      %{metadata: %{"auth_type" => "anthropic_oauth"}} = credential ->
+        {:ok, credential}
 
       %{kind: "llm", metadata: metadata} ->
         auth_type = (metadata || %{})["auth_type"] || "api_key"
         {:error, {:invalid_credential_auth_type, auth_type, "anthropic_oauth"}}
 
       %{kind: kind} ->
-        {:error, {:invalid_credential_kind, kind, "script or anthropic_oauth"}}
+        {:error, {:invalid_credential_kind, kind, "anthropic_oauth"}}
     end
   end
 

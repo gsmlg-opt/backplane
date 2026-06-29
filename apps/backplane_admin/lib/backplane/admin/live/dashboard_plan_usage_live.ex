@@ -939,10 +939,6 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
   defp format_error({:invalid_credential_auth_type, auth_type, expected}),
     do: "Credential auth type #{auth_type} is not #{expected}"
 
-  defp format_error({:script_runtime_failed, reason}),
-    do: "Script runtime failed: #{inspect(reason)}"
-
-  defp format_error({:script_failed, reason}), do: "Script failed: #{inspect(reason)}"
   defp format_error({:api_error, status, _}), do: "API returned #{status}"
   defp format_error({:refresh_failed, status}), do: "OAuth refresh returned #{status}"
 

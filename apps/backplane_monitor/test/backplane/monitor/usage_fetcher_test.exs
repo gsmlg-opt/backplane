@@ -82,11 +82,11 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     :ok
   end
 
-  test "fetch_usage/1 runs Claude Code script credentials" do
+  test "fetch_usage/1 rejects Claude Code script credentials" do
     credential_name = unique_name("claude-script")
-    usage = %{"subscription" => "max", "tokens" => %{"used" => 9, "limit" => 20}}
 
-    {:ok, _credential} = Credentials.store(credential_name, usage_script(usage), "script")
+    {:ok, _credential} =
+      Credentials.store(credential_name, "fetch('https://example.com')", "script")
 
     plan = %Plan{
       provider: "claude_code",
@@ -95,9 +95,8 @@ defmodule Backplane.Monitor.UsageFetcherTest do
       active: true
     }
 
-    assert {:ok, result} = UsageFetcher.fetch_usage(plan)
-    assert result.provider == "claude_code"
-    assert result.usage == usage
+    assert {:error, {:invalid_credential_kind, "script", "anthropic_oauth"}} =
+             UsageFetcher.fetch_usage(plan)
   end
 
   test "fetch_usage/1 fetches Claude Code usage with Anthropic OAuth credentials" do
@@ -461,18 +460,6 @@ defmodule Backplane.Monitor.UsageFetcherTest do
 
     assert {:error, {:invalid_credential_auth_type, "api_key", "google_oauth"}} =
              UsageFetcher.fetch_usage(plan)
-  end
-
-  defp usage_script(usage) do
-    """
-    const response = await fetch("#{data_url(usage)}");
-    const data = await response.json();
-    return data;
-    """
-  end
-
-  defp data_url(payload) do
-    "data:application/json;base64,#{payload |> Jason.encode!() |> Base.encode64()}"
   end
 
   defp unique_name(prefix) do

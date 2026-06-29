@@ -23,6 +23,14 @@ if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable
   end
 end
 
+parse_csv_env = fn name ->
+  name
+  |> System.get_env("")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+end
+
 if config_env() == :prod do
   config :backplane_system, Backplane.Repo, types: Backplane.PostgrexTypes
 
@@ -100,10 +108,17 @@ if config_env() == :prod do
       port_str -> String.to_integer(port_str)
     end
 
+  api_url = System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}")
+  admin_url = System.get_env("BACKPLANE_ADMIN_URL", "http://#{host}:#{admin_port}")
+  bootstrap_admin_emails = parse_csv_env.("BACKPLANE_BOOTSTRAP_ADMIN_EMAILS")
+
   config :backplane,
     secret_key_base: secret_key_base,
-    api_url: System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}"),
-    admin_url: System.get_env("BACKPLANE_ADMIN_URL", "http://#{host}:#{admin_port}")
+    api_url: api_url,
+    admin_url: admin_url,
+    bootstrap_admin_emails: bootstrap_admin_emails
+
+  config :boruta, Boruta.Oauth, issuer: api_url
 
   config :backplane_api, Backplane.Api.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

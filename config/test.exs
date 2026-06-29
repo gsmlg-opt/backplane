@@ -21,6 +21,8 @@ config :backplane,
   api_url: "http://localhost:4002",
   admin_url: "http://localhost:4003"
 
+config :boruta, Boruta.Oauth, issuer: "http://localhost:4002"
+
 config :backplane_api, Backplane.Api.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: secret_key_base,

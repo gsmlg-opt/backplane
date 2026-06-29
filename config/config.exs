@@ -4,6 +4,15 @@ config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
 
 config :backplane_system, ecto_repos: [Backplane.Repo]
 
+config :backplane, bootstrap_admin_emails: []
+
+config :boruta, Boruta.Oauth,
+  repo: Backplane.Repo,
+  issuer: "http://localhost:4220",
+  contexts: [
+    resource_owners: Backplane.Accounts.ResourceOwners
+  ]
+
 config :backplane_system, Backplane.Repo,
   database: "backplane_#{config_env()}",
   hostname: "localhost",

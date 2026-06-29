@@ -795,13 +795,13 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
 
     test "forward returns error when upstream HTTP returns non-200 status" do
-      {:ok, _} = start_mock_non200_server(4220)
+      {:ok, _} = start_mock_non200_server(4320)
 
       config = %{
         name: "test-non200",
         prefix: "non200",
         transport: "http",
-        url: "http://127.0.0.1:4220/mcp",
+        url: "http://127.0.0.1:4320/mcp",
         headers: %{}
       }
 
@@ -816,13 +816,13 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
 
     test "forward to dead upstream returns error via catch" do
-      {:ok, _} = start_mock_http_server(4221)
+      {:ok, _} = start_mock_http_server(4321)
 
       config = %{
         name: "test-catch-exit",
         prefix: "catchexit",
         transport: "http",
-        url: "http://127.0.0.1:4221/mcp",
+        url: "http://127.0.0.1:4321/mcp",
         headers: %{}
       }
 

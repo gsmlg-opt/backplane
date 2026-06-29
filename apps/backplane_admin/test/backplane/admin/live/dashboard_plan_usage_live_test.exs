@@ -4,12 +4,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   alias Backplane.Monitor.Plan
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
-  alias Backplane.Monitor.Providers.{GoogleAntigravity, MiniMax, OpenAICodex}
+  alias Backplane.Monitor.Providers.{ClaudeCode, GoogleAntigravity, MiniMax, OpenAICodex}
 
   setup do
     previous_minimax = Application.get_env(:backplane, :minimax_monitor_req_options)
     previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
     previous_google = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
+    previous_claude = Application.get_env(:backplane, :claude_code_monitor_req_options)
     previous_req_test_owner = Application.get_env(:backplane_monitor, :req_test_owner)
 
     Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
@@ -20,6 +21,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
 
     Application.put_env(:backplane, :google_antigravity_monitor_req_options,
       plug: {Req.Test, GoogleAntigravity}
+    )
+
+    Application.put_env(:backplane, :claude_code_monitor_req_options,
+      plug: {Req.Test, ClaudeCode}
     )
 
     Application.put_env(:backplane_monitor, :req_test_owner, self())
@@ -53,6 +58,12 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous_google)
       else
         Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
+      end
+
+      if previous_claude do
+        Application.put_env(:backplane, :claude_code_monitor_req_options, previous_claude)
+      else
+        Application.delete_env(:backplane, :claude_code_monitor_req_options)
       end
 
       if previous_req_test_owner do
@@ -114,7 +125,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     assert html =~ "4d 14h left"
   end
 
-  test "renders Claude Code script usage windows", %{conn: conn} do
+  test "renders Claude Code OAuth usage windows", %{conn: conn} do
     Req.Test.stub(MiniMax, fn conn ->
       body = %{"model_remains" => []}
 
@@ -151,8 +162,29 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
       "tangelo" => nil
     }
 
+    Req.Test.stub(ClaudeCode, fn conn ->
+      assert {"authorization", "Bearer sk-ant-oat01-dashboard"} in conn.req_headers
+      assert {"anthropic-beta", "oauth-2025-04-20"} in conn.req_headers
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(usage))
+    end)
+
+    raw_json =
+      Jason.encode!(%{
+        "claudeAiOauth" => %{
+          "accessToken" => "sk-ant-oat01-dashboard",
+          "refreshToken" => "sk-ant-ort01-dashboard",
+          "expiresAt" => System.system_time(:millisecond) + 60 * 60 * 1000,
+          "scopes" => ["user:inference"],
+          "subscriptionType" => "max"
+        },
+        "organizationUuid" => "org-dashboard"
+      })
+
     {:ok, credential} =
-      Credentials.store("claude-code-script-cred", usage_script(usage), "script")
+      Credentials.import_cli_auth("claude-code-oauth-cred", raw_json)
 
     Backplane.Settings.Credentials.Vault.put(credential)
 
@@ -160,7 +192,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
       Repo.insert(%Plan{
         name: "My Claude Code Plan",
         provider: "claude_code",
-        credential_name: "claude-code-script-cred",
+        credential_name: "claude-code-oauth-cred",
         active: true
       })
 
@@ -348,18 +380,6 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     refute html =~ "chat_20706"
     assert html =~ "Credits"
     assert html =~ "Activity"
-  end
-
-  defp usage_script(usage) do
-    """
-    const response = await fetch("#{data_url(usage)}");
-    const data = await response.json();
-    return data;
-    """
-  end
-
-  defp data_url(payload) do
-    "data:application/json;base64,#{payload |> Jason.encode!() |> Base.encode64()}"
   end
 
   defp openai_token_set(access_token, refresh_token, account_id) do
