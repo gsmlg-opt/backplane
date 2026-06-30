@@ -11,13 +11,12 @@ defmodule Backplane.HostAgent.Memory do
   @default_agent_id "local"
   @default_scope "proj_local"
   @methods ~w(remember recall list forget stats slot_read slot_write slot_list facet_tag facet_query)
-  @method_set MapSet.new(@methods)
 
   @doc "List of local memory methods exposed by the host-agent router."
   def methods, do: @methods
 
   @doc "True if `method` is a local memory method."
-  def valid_method?(method) when is_binary(method), do: MapSet.member?(@method_set, method)
+  def valid_method?(method) when is_binary(method), do: method in @methods
   def valid_method?(_method), do: false
 
   def remember(args, opts \\ []) when is_map(args) do
@@ -660,6 +659,5 @@ defmodule Backplane.HostAgent.Memory do
     |> DateTime.to_iso8601()
   end
 
-  defp storage_error({:storage_error, _reason} = error), do: {:error, error}
   defp storage_error(reason), do: {:error, {:storage_error, reason}}
 end

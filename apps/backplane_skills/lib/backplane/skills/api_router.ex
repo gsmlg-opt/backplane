@@ -101,9 +101,11 @@ defmodule Backplane.Skills.ApiRouter do
          {:ok, updated} <- Skills.update(skill, conn.body_params) do
       json(conn, 200, serialize_metadata(updated))
     else
-      {:error, :not_found} -> json(conn, 404, %{error: "not found"})
-      {:error, %Ecto.Changeset{} = changeset} -> json(conn, 422, %{errors: format_changeset_errors(changeset)})
-      {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
+      {:error, :not_found} ->
+        json(conn, 404, %{error: "not found"})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        json(conn, 422, %{errors: format_changeset_errors(changeset)})
     end
   end
 

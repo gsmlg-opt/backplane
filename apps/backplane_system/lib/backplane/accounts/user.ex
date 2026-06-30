@@ -8,6 +8,8 @@ defmodule Backplane.Accounts.User do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec]
 
+  @type t :: %__MODULE__{}
+
   schema "users" do
     field :email, :string
     field :name, :string

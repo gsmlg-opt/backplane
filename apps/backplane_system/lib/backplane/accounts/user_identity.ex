@@ -8,6 +8,8 @@ defmodule Backplane.Accounts.UserIdentity do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec]
 
+  @type t :: %__MODULE__{}
+
   schema "user_identities" do
     belongs_to :user, Backplane.Accounts.User
     belongs_to :provider, Backplane.Accounts.AuthProvider
