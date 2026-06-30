@@ -1,5 +1,11 @@
 # Backplane OAuth & RBAC — Design Spec (v1)
 
+> Superseded implementation note: this document is an older MCP OAuth/RBAC design sketch.
+> The current first release implements Backplane Auth as a standalone OAuth/OIDC provider
+> inside the Backplane umbrella, exposed through `backplane_api`, for first-party GSMLG
+> applications such as `gsmlg_umbrella` and `gsmlg_app_backend`. Do not treat the endpoint,
+> app-boundary, or MCP-specific assumptions below as the current release contract.
+
 Status: design, pre-implementation. Targets MCP Authorization spec **2025-11-25**.
 
 ## 1. Goal
