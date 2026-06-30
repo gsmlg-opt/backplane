@@ -92,6 +92,19 @@ defmodule Backplane.Auth.AccountsTest do
 
       assert {:error, :not_found} = Auth.Accounts.get_session_by_token(token)
     end
+
+    test "lists sessions with users and revokes by id" do
+      user = user!("alice@example.com")
+      assert {:ok, %{session: session}} = Auth.Accounts.create_session(user)
+
+      assert [%Session{id: session_id, user: %User{email: "alice@example.com"}}] =
+               Auth.Accounts.list_sessions()
+
+      assert session_id == session.id
+
+      assert {:ok, %Session{revoked_at: %DateTime{}}} =
+               Auth.Accounts.revoke_session_by_id(session.id)
+    end
   end
 
   describe "list_users/1" do

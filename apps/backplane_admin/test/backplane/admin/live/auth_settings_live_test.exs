@@ -102,6 +102,42 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert %{"disabled" => true} = Auth.OAuth.get_client(client.id).metadata
   end
 
+  test "OAuth clients page creates clients and rotates confidential secrets", %{conn: conn} do
+    scope!("openid")
+    scope!("app:read")
+
+    {:ok, view, _html} = live(conn, "/auth/oauth/clients")
+
+    html =
+      view
+      |> form("#oauth-client-form", %{
+        "client" => %{
+          "name" => "Created Backend",
+          "redirect_uris" => "https://created.example.test/auth/callback",
+          "scopes" => "openid app:read",
+          "confidential" => "true"
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Created Backend"
+    assert html =~ "Client secret"
+    assert html =~ "app:read"
+
+    created = Enum.find(Auth.OAuth.list_clients(), &(&1.name == "Created Backend"))
+    assert created.confidential
+
+    old_secret = created.secret
+
+    html =
+      view
+      |> element(~s(el-dm-button[phx-click="rotate-client-secret"][phx-value-id="#{created.id}"]))
+      |> render_click()
+
+    assert html =~ "Client secret"
+    assert Auth.OAuth.get_client(created.id).secret != old_secret
+  end
+
   test "OAuth scopes page lists the real scope catalog", %{conn: conn} do
     scope!("gsmlg:read", label: "Read GSMLG data")
 
@@ -112,6 +148,21 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert html =~ "Read GSMLG data"
     assert html =~ "Public"
     refute html =~ "Scopes map OAuth grants"
+  end
+
+  test "OAuth scopes page creates scopes", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/auth/oauth/scopes")
+
+    html =
+      view
+      |> form("#oauth-scope-form", %{
+        "scope" => %{"name" => "reports:read", "label" => "Read reports", "public" => "true"}
+      })
+      |> render_submit()
+
+    assert html =~ "reports:read"
+    assert html =~ "Read reports"
+    assert %Boruta.Ecto.Scope{name: "reports:read"} = Auth.OAuth.get_scope("reports:read")
   end
 
   test "OAuth tokens page lists issued tokens and revokes access", %{conn: conn} do
@@ -148,6 +199,27 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert {:error, :invalid_token} = Auth.Tokens.verify_access_token(access_token)
   end
 
+  test "OAuth tokens page lists and revokes browser sessions", %{conn: conn} do
+    user = auth_user!(email: "session-user@example.com", name: "Session User")
+    {:ok, %{session: session}} = Auth.Accounts.create_session(user)
+
+    {:ok, view, html} = live(conn, "/auth/oauth/tokens")
+
+    assert html =~ "Browser Sessions"
+    assert html =~ "Session User"
+    assert html =~ "session-user@example.com"
+    assert html =~ "Active"
+
+    html =
+      view
+      |> element(~s(el-dm-button[phx-click="revoke-session"][phx-value-id="#{session.id}"]))
+      |> render_click()
+
+    assert html =~ "Revoked"
+    assert {:error, :not_found} = Auth.Accounts.get_session_by_token("invalid-token")
+    assert Enum.find(Auth.Accounts.list_sessions(), &(&1.id == session.id)).revoked_at
+  end
+
   test "RBAC users page lists local auth users and disables them", %{conn: conn} do
     user = auth_user!(email: "admin@example.com", name: "Admin Example")
 
@@ -168,6 +240,32 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     refute Auth.Accounts.get_user(user.id).active
   end
 
+  test "RBAC users page creates password users", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/auth/rbac/users")
+
+    html =
+      view
+      |> form("#auth-user-form", %{
+        "user" => %{
+          "email" => "created-user@example.com",
+          "name" => "Created User",
+          "password" => "correct horse battery staple"
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Created User"
+    assert html =~ "created-user@example.com"
+
+    assert {:ok, user} =
+             Auth.Accounts.authenticate(
+               "created-user@example.com",
+               "correct horse battery staple"
+             )
+
+    assert user.name == "Created User"
+  end
+
   test "RBAC roles page lists real roles and granted scopes", %{conn: conn} do
     scope!("gsmlg:read")
     {:ok, role} = Auth.RBAC.create_role(%{name: "operator", label: "Operator"})
@@ -181,6 +279,27 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert html =~ "gsmlg:read"
     assert html =~ "Custom"
     refute html =~ "Built-in Roles"
+  end
+
+  test "RBAC roles page creates roles and grants scopes", %{conn: conn} do
+    scope!("reports:write")
+
+    {:ok, view, _html} = live(conn, "/auth/rbac/roles")
+
+    html =
+      view
+      |> form("#auth-role-form", %{
+        "role" => %{
+          "name" => "reporter",
+          "label" => "Reporter",
+          "scope" => "reports:write"
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Reporter"
+    assert html =~ "reporter"
+    assert html =~ "reports:write"
   end
 
   test "RBAC assignments page lists user roles and effective scopes", %{conn: conn} do
@@ -201,6 +320,26 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert html =~ "gsmlg:read"
     assert html =~ "gsmlg:write"
     refute html =~ "Operators assign roles"
+  end
+
+  test "RBAC assignments page assigns roles to users", %{conn: conn} do
+    user = auth_user!(email: "assign-form@example.com", name: "Assign Form")
+    scope!("reports:read")
+    {:ok, role} = Auth.RBAC.create_role(%{name: "report-viewer", label: "Report Viewer"})
+    {:ok, _role_scope} = Auth.RBAC.assign_role_scope(role, "reports:read")
+
+    {:ok, view, _html} = live(conn, "/auth/rbac/assignments")
+
+    html =
+      view
+      |> form("#auth-assignment-form", %{
+        "assignment" => %{"user_id" => user.id, "role_id" => role.id}
+      })
+      |> render_submit()
+
+    assert html =~ "Assign Form"
+    assert html =~ "Report Viewer"
+    assert html =~ "reports:read"
   end
 
   defp auth_user!(attrs) do

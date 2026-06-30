@@ -7,6 +7,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
+       client_secret: nil,
        clients: [],
        current_path: "/auth/overview",
        issuer: nil,
@@ -14,6 +15,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
        page: page(:overview),
        provider_metadata: [],
        scopes: [],
+       sessions: [],
        tokens: [],
        users_by_id: %{}
      )}
@@ -30,6 +32,37 @@ defmodule Backplane.Admin.AuthOAuthLive do
   end
 
   @impl true
+  def handle_event("create-client", %{"client" => params}, socket) do
+    case Auth.OAuth.create_client(client_attrs(params)) do
+      {:ok, %{client: client, secret: secret}} ->
+        Auth.Audit.record(
+          "client.created",
+          %{actor_type: "admin_ui", actor_id: "backplane_admin"},
+          %{
+            target_type: "oauth_client",
+            target_id: client.id,
+            metadata: %{"client_name" => client.name}
+          }
+        )
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "OAuth client created.")
+         |> assign(:client_secret, %{client_id: client.id, name: client.name, secret: secret})
+         |> assign_action_data(socket.assigns.live_action)}
+
+      {:ok, _client} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "OAuth client created.")
+         |> assign(:client_secret, nil)
+         |> assign_action_data(socket.assigns.live_action)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "OAuth client could not be created.")}
+    end
+  end
+
   def handle_event("disable-client", %{"id" => id}, socket) do
     with %{name: name} = client <- Auth.OAuth.get_client(id),
          {:ok, _client} <- Auth.OAuth.disable_client(client) do
@@ -53,6 +86,53 @@ defmodule Backplane.Admin.AuthOAuthLive do
     end
   end
 
+  def handle_event("rotate-client-secret", %{"id" => id}, socket) do
+    with %{name: name} = client <- Auth.OAuth.get_client(id),
+         {:ok, %{client: rotated, secret: secret}} <- Auth.OAuth.rotate_client_secret(client) do
+      Auth.Audit.record(
+        "client.secret_rotated",
+        %{actor_type: "admin_ui", actor_id: "backplane_admin"},
+        %{
+          target_type: "oauth_client",
+          target_id: id,
+          metadata: %{"client_name" => name}
+        }
+      )
+
+      {:noreply,
+       socket
+       |> put_flash(:info, "OAuth client secret rotated.")
+       |> assign(:client_secret, %{client_id: rotated.id, name: rotated.name, secret: secret})
+       |> assign_action_data(socket.assigns.live_action)}
+    else
+      _error ->
+        {:noreply, put_flash(socket, :error, "OAuth client secret could not be rotated.")}
+    end
+  end
+
+  def handle_event("create-scope", %{"scope" => params}, socket) do
+    case Auth.OAuth.create_scope(scope_attrs(params)) do
+      {:ok, scope} ->
+        Auth.Audit.record(
+          "scope.created",
+          %{actor_type: "admin_ui", actor_id: "backplane_admin"},
+          %{
+            target_type: "oauth_scope",
+            target_id: scope.id,
+            metadata: %{"scope" => scope.name}
+          }
+        )
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "OAuth scope created.")
+         |> assign_action_data(socket.assigns.live_action)}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "OAuth scope could not be created.")}
+    end
+  end
+
   def handle_event("revoke-token", %{"id" => id}, socket) do
     case Auth.Tokens.revoke_token_by_id(id) do
       {:ok, _token} ->
@@ -72,6 +152,25 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
       {:error, :not_found} ->
         {:noreply, put_flash(socket, :error, "OAuth token was not found.")}
+    end
+  end
+
+  def handle_event("revoke-session", %{"id" => id}, socket) do
+    case Auth.Accounts.revoke_session_by_id(id) do
+      {:ok, _session} ->
+        Auth.Audit.record(
+          "session.revoked",
+          %{actor_type: "admin_ui", actor_id: "backplane_admin"},
+          %{target_type: "auth_session", target_id: id}
+        )
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Auth session revoked.")
+         |> assign_action_data(socket.assigns.live_action)}
+
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Auth session was not found.")}
     end
   end
 
@@ -137,6 +236,42 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
       <.dm_card :if={@live_action == :clients} variant="bordered">
         <:title>Registered Clients</:title>
+        <form id="oauth-client-form" phx-submit="create-client" class="mb-4 grid gap-3 lg:grid-cols-5">
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="client[name]"
+            placeholder="Client name"
+            required
+          />
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm lg:col-span-2"
+            name="client[redirect_uris]"
+            placeholder="https://app.example.com/auth/callback"
+            required
+          />
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="client[scopes]"
+            placeholder="openid profile email"
+          />
+          <label class="flex items-center gap-2 text-sm">
+            <input type="hidden" name="client[confidential]" value="false" />
+            <input type="checkbox" name="client[confidential]" value="true" checked />
+            Confidential
+          </label>
+          <div class="lg:col-span-5">
+            <.dm_btn type="submit" variant="primary" size="sm">Create Client</.dm_btn>
+          </div>
+        </form>
+
+        <div
+          :if={@client_secret}
+          class="mb-4 rounded-md border border-outline-variant bg-surface-container-high p-3"
+        >
+          <div class="text-sm font-medium">Client secret for {@client_secret.name}</div>
+          <code class="mt-1 block break-all text-sm">{@client_secret.secret}</code>
+        </div>
+
         <div :if={@clients == []} class="py-8 text-center text-on-surface-variant">
           No OAuth clients registered.
         </div>
@@ -177,17 +312,30 @@ defmodule Backplane.Admin.AuthOAuthLive do
             </div>
           </:col>
           <:col :let={client} label="Actions">
-            <.dm_btn
-              :if={!client_disabled?(client)}
-              type="button"
-              variant="error"
-              size="xs"
-              phx-click="disable-client"
-              phx-value-id={client.id}
-              data-confirm={"Disable OAuth client #{client.name}?"}
-            >
-              Disable
-            </.dm_btn>
+            <div class="flex flex-wrap gap-2">
+              <.dm_btn
+                :if={client.confidential}
+                type="button"
+                variant="outline"
+                size="xs"
+                phx-click="rotate-client-secret"
+                phx-value-id={client.id}
+                data-confirm={"Rotate secret for #{client.name}?"}
+              >
+                Rotate
+              </.dm_btn>
+              <.dm_btn
+                :if={!client_disabled?(client)}
+                type="button"
+                variant="error"
+                size="xs"
+                phx-click="disable-client"
+                phx-value-id={client.id}
+                data-confirm={"Disable OAuth client #{client.name}?"}
+              >
+                Disable
+              </.dm_btn>
+            </div>
             <span :if={client_disabled?(client)} class="text-sm text-on-surface-variant">
               Disabled
             </span>
@@ -253,8 +401,70 @@ defmodule Backplane.Admin.AuthOAuthLive do
         </.dm_table>
       </.dm_card>
 
+      <.dm_card :if={@live_action == :tokens} variant="bordered">
+        <:title>Browser Sessions</:title>
+        <div :if={@sessions == []} class="py-8 text-center text-on-surface-variant">
+          No browser Auth sessions.
+        </div>
+
+        <.dm_table :if={@sessions != []} id="auth-session-table" data={@sessions} hover zebra>
+          <:col :let={session} label="Session">
+            <div class="font-medium">auth_session</div>
+            <code class="text-xs text-on-surface-variant">{session.id}</code>
+          </:col>
+          <:col :let={session} label="User">
+            <div class="font-medium">{session.user.name || session.user.email}</div>
+            <code class="text-xs text-on-surface-variant">{session.user.email}</code>
+          </:col>
+          <:col :let={session} label="Status">
+            <.dm_badge variant={session_status_variant(session)}>{session_status(session)}</.dm_badge>
+          </:col>
+          <:col :let={session} label="Expires">
+            <span class="text-sm text-on-surface-variant">{format_datetime(session.expires_at)}</span>
+          </:col>
+          <:col :let={session} label="Actions">
+            <.dm_btn
+              :if={session_status(session) == "Active"}
+              type="button"
+              variant="error"
+              size="xs"
+              phx-click="revoke-session"
+              phx-value-id={session.id}
+              data-confirm="Revoke this Auth session?"
+            >
+              Revoke
+            </.dm_btn>
+            <span :if={session_status(session) != "Active"} class="text-sm text-on-surface-variant">
+              {session_status(session)}
+            </span>
+          </:col>
+        </.dm_table>
+      </.dm_card>
+
       <.dm_card :if={@live_action == :scopes} variant="bordered">
         <:title>Scope Catalog</:title>
+        <form id="oauth-scope-form" phx-submit="create-scope" class="mb-4 grid gap-3 md:grid-cols-4">
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="scope[name]"
+            placeholder="scope:name"
+            required
+          />
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm md:col-span-2"
+            name="scope[label]"
+            placeholder="Display label"
+          />
+          <label class="flex items-center gap-2 text-sm">
+            <input type="hidden" name="scope[public]" value="false" />
+            <input type="checkbox" name="scope[public]" value="true" checked />
+            Public
+          </label>
+          <div class="md:col-span-4">
+            <.dm_btn type="submit" variant="primary" size="sm">Create Scope</.dm_btn>
+          </div>
+        </form>
+
         <div :if={@scopes == []} class="py-8 text-center text-on-surface-variant">
           No OAuth scopes configured.
         </div>
@@ -294,6 +504,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
       overview_stats: overview_stats(),
       provider_metadata: provider_metadata(oauth_issuer()),
       scopes: scopes(action),
+      sessions: sessions(action),
       tokens: tokens(action),
       users_by_id: users_by_id(action)
     )
@@ -307,6 +518,9 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   defp tokens(action) when action in [:overview, :tokens], do: Auth.Tokens.list_tokens()
   defp tokens(_action), do: []
+
+  defp sessions(:tokens), do: Auth.Accounts.list_sessions()
+  defp sessions(_action), do: []
 
   defp users_by_id(:tokens) do
     Auth.Accounts.list_users()
@@ -498,6 +712,36 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   defp scope_names(_scopes), do: []
 
+  defp client_attrs(params) do
+    %{
+      name: Map.get(params, "name"),
+      redirect_uris: split_values(Map.get(params, "redirect_uris")),
+      scopes: split_values(Map.get(params, "scopes")),
+      confidential: truthy?(Map.get(params, "confidential")),
+      pkce: true
+    }
+  end
+
+  defp scope_attrs(params) do
+    %{
+      name: Map.get(params, "name"),
+      label: Map.get(params, "label"),
+      public: truthy?(Map.get(params, "public"))
+    }
+  end
+
+  defp split_values(value) when is_binary(value) do
+    value
+    |> String.split([",", "\n", "\r", "\t", " "], trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp split_values(_value), do: []
+
+  defp truthy?(value) when value in [true, "true", "on", "1"], do: true
+  defp truthy?(_value), do: false
+
   defp client_disabled?(client) do
     metadata = client.metadata || %{}
     Map.get(metadata, "disabled") || Map.get(metadata, :disabled) || false
@@ -524,8 +768,25 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   defp token_status(_token), do: "Unknown"
 
+  defp session_status(%{revoked_at: %DateTime{}}), do: "Revoked"
+
+  defp session_status(%{expires_at: %DateTime{} = expires_at}) do
+    if DateTime.compare(expires_at, DateTime.utc_now()) == :gt, do: "Active", else: "Expired"
+  end
+
+  defp session_status(_session), do: "Unknown"
+
   defp token_status_variant(token) do
     case token_status(token) do
+      "Active" -> "success"
+      "Revoked" -> "error"
+      "Expired" -> "warning"
+      _status -> "neutral"
+    end
+  end
+
+  defp session_status_variant(session) do
+    case session_status(session) do
       "Active" -> "success"
       "Revoked" -> "error"
       "Expired" -> "warning"

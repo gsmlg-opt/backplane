@@ -21,6 +21,13 @@ defmodule Backplane.Auth.Accounts do
     |> Repo.all()
   end
 
+  def list_sessions do
+    Session
+    |> preload(:user)
+    |> order_by(desc: :inserted_at)
+    |> Repo.all()
+  end
+
   def get_user(id) when is_binary(id), do: Repo.get(User, id)
 
   def set_password(%User{id: user_id}, password) when is_binary(password) do
@@ -142,6 +149,13 @@ defmodule Backplane.Auth.Accounts do
       )
 
       {:ok, revoked}
+    end
+  end
+
+  def revoke_session_by_id(id) when is_binary(id) do
+    case Repo.get(Session, id) do
+      %Session{} = session -> revoke_session(session)
+      nil -> {:error, :not_found}
     end
   end
 
