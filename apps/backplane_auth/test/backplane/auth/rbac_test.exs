@@ -18,6 +18,9 @@ defmodule Backplane.Auth.RBACTest do
 
       assert role_scope.role_id == role.id
       assert role_scope.scope_name == "gsmlg:read"
+
+      assert [%Role{name: "reader", role_scopes: [%RoleScope{scope_name: "gsmlg:read"}]}] =
+               Auth.RBAC.list_roles()
     end
 
     test "assigns roles to users and computes effective scopes as a union" do
@@ -35,6 +38,10 @@ defmodule Backplane.Auth.RBACTest do
       assert {:ok, %UserRole{}} = Auth.RBAC.assign_user_role(user, writer)
 
       assert ["gsmlg:read", "gsmlg:write"] = Auth.RBAC.effective_scope_names(user)
+
+      assert user_roles = Auth.RBAC.list_user_roles()
+      assert Enum.any?(user_roles, &(&1.user.email == user.email and &1.role.name == "reader"))
+      assert Enum.any?(user_roles, &(&1.user.email == user.email and &1.role.name == "writer"))
     end
 
     test "system roles are seeded and cannot be deleted" do

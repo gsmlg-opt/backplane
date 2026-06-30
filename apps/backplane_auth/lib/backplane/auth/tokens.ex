@@ -180,13 +180,7 @@ defmodule Backplane.Auth.Tokens do
   def revoke(token, %Client{} = client) when is_binary(token) do
     case get_client_token(token, client) || get_client_refresh_token(token, client) do
       %Token{} = token ->
-        token
-        |> change(revoked_at: now(), refresh_token_revoked_at: now())
-        |> Repo.update()
-        |> case do
-          {:ok, _token} -> :ok
-          {:error, changeset} -> {:error, changeset}
-        end
+        token |> revoke_token() |> ok_result()
 
       nil ->
         :ok
@@ -221,6 +215,21 @@ defmodule Backplane.Auth.Tokens do
   end
 
   def find_active_access_token(token) when is_binary(token), do: active_access_token(token)
+
+  def list_tokens(limit \\ 100) when is_integer(limit) and limit > 0 do
+    Token
+    |> preload(:client)
+    |> order_by(desc: :inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  def revoke_token_by_id(id) when is_binary(id) do
+    case Repo.get(Token, id) do
+      %Token{} = token -> revoke_token(token)
+      nil -> {:error, :not_found}
+    end
+  end
 
   defp create_signing_key do
     kid = "auth-#{Ecto.UUID.generate()}"
@@ -367,6 +376,15 @@ defmodule Backplane.Auth.Tokens do
     |> where([candidate], candidate.sub == ^token.sub)
     |> Repo.update_all(set: [revoked_at: now(), refresh_token_revoked_at: now()])
   end
+
+  defp revoke_token(%Token{} = token) do
+    token
+    |> change(revoked_at: now(), refresh_token_revoked_at: now())
+    |> Repo.update()
+  end
+
+  defp ok_result({:ok, _token}), do: :ok
+  defp ok_result({:error, changeset}), do: {:error, changeset}
 
   defp scope_string(scopes) do
     scopes

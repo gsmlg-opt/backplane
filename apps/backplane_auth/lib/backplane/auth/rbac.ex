@@ -23,6 +23,13 @@ defmodule Backplane.Auth.RBAC do
     Repo.get_by(Role, name: name |> String.trim() |> String.downcase())
   end
 
+  def list_roles do
+    Role
+    |> preload(:role_scopes)
+    |> order_by(:name)
+    |> Repo.all()
+  end
+
   def delete_role(%Role{system: true}), do: {:error, :system_role}
   def delete_role(%Role{} = role), do: Repo.delete(role)
 
@@ -74,6 +81,15 @@ defmodule Backplane.Auth.RBAC do
     |> select([role_scope], role_scope.scope_name)
     |> distinct(true)
     |> order_by([role_scope], role_scope.scope_name)
+    |> Repo.all()
+  end
+
+  def list_user_roles do
+    UserRole
+    |> join(:inner, [user_role], user in assoc(user_role, :user))
+    |> join(:inner, [user_role, _user], role in assoc(user_role, :role))
+    |> order_by([_user_role, user, role], asc: user.email, asc: role.name)
+    |> preload([_user_role, user, role], user: user, role: {role, :role_scopes})
     |> Repo.all()
   end
 

@@ -64,6 +64,20 @@ defmodule Backplane.Auth.TokensTest do
     refute inactive.active
   end
 
+  test "lists token metadata and revokes a token by id" do
+    user = auth_user_fixture!(email: "listed@example.com")
+    client = confidential_client!(scopes: ["openid"])
+    assert {:ok, tokens} = Auth.Tokens.issue_access_token(user, client, ["openid"])
+
+    assert [%Boruta.Ecto.Token{id: token_id, client: listed_client}] = Auth.Tokens.list_tokens()
+    assert token_id == tokens.token.id
+    assert listed_client.id == client.id
+
+    assert {:ok, revoked} = Auth.Tokens.revoke_token_by_id(token_id)
+    assert revoked.revoked_at
+    assert {:error, :invalid_token} = Auth.Tokens.verify_access_token(tokens.access_token)
+  end
+
   test "rotates refresh tokens and invalidates the previous refresh token" do
     user = auth_user_fixture!()
     client = confidential_client!(scopes: ["openid"])
