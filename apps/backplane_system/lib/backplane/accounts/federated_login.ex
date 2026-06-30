@@ -54,7 +54,6 @@ defmodule Backplane.Accounts.FederatedLogin do
       {:ok, Map.put(provisioned, :resume_params, Map.get(state_attrs, "resume_params", %{}))}
     else
       nil -> {:error, :provider_not_found}
-      :error -> {:error, :invalid_state}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -236,8 +235,6 @@ defmodule Backplane.Accounts.FederatedLogin do
   rescue
     _error -> nil
   end
-
-  defp verify_id_token_with_key(_id_token, _jwk), do: nil
 
   defp validate_id_token_claims(provider, state_attrs, claims) do
     cond do

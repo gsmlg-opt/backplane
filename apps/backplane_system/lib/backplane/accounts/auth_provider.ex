@@ -10,6 +10,8 @@ defmodule Backplane.Accounts.AuthProvider do
   @timestamps_opts [type: :utc_datetime_usec]
   @kinds ~w(oidc oauth2)
 
+  @type t :: %__MODULE__{}
+
   schema "auth_providers" do
     field :slug, :string
     field :name, :string

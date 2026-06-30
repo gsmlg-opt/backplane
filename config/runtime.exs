@@ -11,11 +11,13 @@ end
 if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable("tailwindcss") do
   try do
     {tailwind_str, 0} = System.cmd(tailwind_path, ["--help"])
+
     tailwind_version =
       case Regex.run(~r/tailwindcss v([0-9.]+)/, tailwind_str) do
         [_, version] -> version
         _ -> "0.0.0"
       end
+
     config :tailwind, path: tailwind_path, version: tailwind_version
   rescue
     _ ->
