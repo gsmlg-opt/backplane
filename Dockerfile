@@ -24,6 +24,7 @@ RUN mix local.hex --force && mix local.rebar --force
 COPY mix.exs mix.lock package.json bun.lock ./
 COPY config ./config
 COPY apps/backplane/mix.exs ./apps/backplane/mix.exs
+COPY apps/backplane_auth/mix.exs ./apps/backplane_auth/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
