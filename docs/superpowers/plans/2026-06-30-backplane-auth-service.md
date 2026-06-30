@@ -58,6 +58,7 @@ Modify:
 - `apps/backplane_api/lib/backplane/api/router.ex` - add OAuth/OIDC and login routes.
 - `apps/backplane_api/lib/backplane/api/controllers/auth/*.ex` - OAuth/OIDC controllers.
 - `apps/backplane_api/test/backplane/api/auth/**/*_test.exs` - route and protocol tests.
+- `apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs` - full OAuth/OIDC client journey through `backplane_api`.
 - `apps/backplane_admin/mix.exs` - depend on `:backplane_auth`.
 - `apps/backplane_admin/lib/backplane/admin/live/auth_oauth_live.ex` - replace fake OAuth cards.
 - `apps/backplane_admin/lib/backplane/admin/live/auth_rbac_live.ex` - replace fake RBAC cards.
@@ -67,6 +68,18 @@ Modify:
 - `docs/integrations/auth-gsmlg-app-backend.md` - integration example.
 
 Do not modify existing `Backplane.Transport.AuthPlug` in v1 except to add regression tests proving it is unchanged.
+
+## Required Test Standard
+
+Every implementation phase must add tests before code. The final release is not acceptable unless these layers exist:
+
+- Domain tests in `apps/backplane_auth/test/backplane/auth/*_test.exs` for schemas, contexts, tokens, RBAC, audit, and policy decisions.
+- Controller tests in `apps/backplane_api/test/backplane/api/auth/*_test.exs` for each OAuth/OIDC endpoint.
+- LiveView tests in `apps/backplane_admin/test/backplane/admin/live/auth_settings_live_test.exs` for real operator actions.
+- End-to-end OAuth tests in `apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs` that drive a realistic first-party app login flow through HTTP.
+- Regression tests proving existing Backplane service routes keep their current auth behavior.
+
+The e2e test must use the public `backplane_api` route layer for the user-facing flow. It may use `Backplane.Auth` fixtures to seed users, clients, scopes, and roles, but it must not bypass `/oauth/authorize`, `/oauth/login`, `/oauth/token`, `/oauth/jwks`, `/oauth/userinfo`, `/oauth/introspect`, or `/oauth/revoke` when proving the OAuth contract.
 
 ## Phase 0: Worktree And Baseline
 
@@ -351,6 +364,7 @@ disable_client(client)
 list_clients(opts \\ [])
 get_client(id)
 create_scope(attrs)
+get_scope(name)
 list_scopes(opts \\ [])
 assign_client_scopes(client, scope_names)
 validate_redirect_uri(client, redirect_uri)
@@ -612,7 +626,384 @@ git add apps/backplane_auth apps/backplane_api
 git commit -m "feat(auth): add oidc tokens and lifecycle endpoints"
 ```
 
-## Phase 6: Real Admin UI
+## Phase 6: OAuth End-To-End Contract Tests
+
+**Files:**
+- Create: `apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs`
+- Modify: `apps/backplane_auth/test/support/fixtures.ex`
+
+- [ ] **Step 1: Add Auth fixtures required by e2e tests**
+
+Add these fixture helpers to `apps/backplane_auth/test/support/fixtures.ex`:
+
+```elixir
+defmodule Backplane.AuthFixtures do
+  @moduledoc false
+
+  alias Backplane.Auth
+
+  def unique_email, do: "user-#{System.unique_integer([:positive])}@example.com"
+
+  def user_fixture(attrs \\ []) do
+    password = Keyword.get(attrs, :password, "correct horse battery staple")
+    email = Keyword.get(attrs, :email, unique_email())
+
+    {:ok, user} =
+      Auth.Accounts.create_user(%{
+        email: email,
+        name: Keyword.get(attrs, :name, "Test User"),
+        active: Keyword.get(attrs, :active, true)
+    })
+
+    {:ok, _credential} = Auth.Accounts.set_password(user, password)
+
+    user
+    |> Map.from_struct()
+    |> Map.put(:password, password)
+    |> Map.put(:record, user)
+  end
+
+  def scope_fixture(name, attrs \\ []) do
+    case Auth.OAuth.get_scope(name) do
+      nil ->
+        {:ok, scope} =
+          Auth.OAuth.create_scope(%{
+            name: name,
+            label: Keyword.get(attrs, :label, name),
+            public: Keyword.get(attrs, :public, true)
+          })
+
+        scope
+
+      scope ->
+        scope
+    end
+  end
+
+  def public_client_fixture(attrs \\ []) do
+    redirect_uris =
+      Keyword.get(attrs, :redirect_uris, ["http://localhost:4555/auth/callback"])
+
+    scopes = Keyword.get(attrs, :scopes, ["openid", "profile", "email"])
+    Enum.each(scopes, &scope_fixture/1)
+
+    {:ok, client} =
+      Auth.OAuth.create_client(%{
+        name: Keyword.get(attrs, :name, "Local public app"),
+        public: true,
+        pkce: true,
+        redirect_uris: redirect_uris,
+        allowed_scopes: scopes
+      })
+
+    client
+  end
+
+  def confidential_client_fixture(attrs \\ []) do
+    redirect_uris =
+      Keyword.get(attrs, :redirect_uris, ["https://app.example.com/auth/callback"])
+
+    scopes = Keyword.get(attrs, :scopes, ["openid", "profile", "email", "app:read"])
+    Enum.each(scopes, &scope_fixture/1)
+
+    {:ok, %{client: client, client_secret: secret}} =
+      Auth.OAuth.create_client(%{
+        name: Keyword.get(attrs, :name, "Server app"),
+        public: false,
+        pkce: true,
+        redirect_uris: redirect_uris,
+        allowed_scopes: scopes
+      })
+
+    client
+    |> Map.from_struct()
+    |> Map.put(:client_secret, secret)
+    |> Map.put(:record, client)
+  end
+
+  def pkce_pair do
+    verifier = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+    challenge =
+      :sha256
+      |> :crypto.hash(verifier)
+      |> Base.url_encode64(padding: false)
+
+    {verifier, challenge}
+  end
+end
+```
+
+If the actual context return values differ, adjust this fixture and the context tests in the same phase so the public helper contract remains this shape.
+
+- [ ] **Step 2: Add the public-client OAuth e2e test**
+
+Create `apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs` with this test module skeleton:
+
+```elixir
+defmodule Backplane.Api.Auth.OAuthE2ETest do
+  use Backplane.Api.ConnCase, async: false
+
+  import Plug.Conn
+  import Backplane.AuthFixtures
+
+  describe "authorization code with PKCE" do
+    test "public first-party app completes login, token exchange, JWKS verification, userinfo, refresh, and revoke", %{
+      conn: conn
+    } do
+      user = user_fixture(password: "correct horse battery staple")
+      client = public_client_fixture(scopes: ["openid", "profile", "email", "app:read"])
+      {verifier, challenge} = pkce_pair()
+
+      authorize_params = %{
+        "response_type" => "code",
+        "client_id" => client.id,
+        "redirect_uri" => "http://localhost:4555/auth/callback",
+        "scope" => "openid profile email app:read",
+        "state" => "state-123",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      }
+
+      conn = get(conn, "/oauth/authorize", authorize_params)
+      assert redirected_to(conn) =~ "/oauth/login"
+
+      conn =
+        conn
+        |> recycle()
+        |> post("/oauth/login", %{
+          "email" => user.email,
+          "password" => "correct horse battery staple"
+        })
+
+      assert redirected_to(conn) =~ "/oauth/authorize"
+
+      conn =
+        conn
+        |> recycle()
+        |> get(redirected_to(conn))
+
+      callback = redirected_to(conn)
+      assert callback =~ "http://localhost:4555/auth/callback"
+
+      callback_params =
+        callback
+        |> URI.parse()
+        |> Map.fetch!(:query)
+        |> URI.decode_query()
+
+      assert callback_params["state"] == "state-123"
+      code = callback_params["code"]
+      assert is_binary(code)
+
+      token_conn =
+        post(build_conn(), "/oauth/token", %{
+          "grant_type" => "authorization_code",
+          "client_id" => client.id,
+          "redirect_uri" => "http://localhost:4555/auth/callback",
+          "code" => code,
+          "code_verifier" => verifier
+        })
+
+      token_body = json_response(token_conn, 200)
+      assert token_body["token_type"] == "Bearer"
+      assert is_binary(token_body["access_token"])
+      assert is_binary(token_body["refresh_token"])
+      assert is_binary(token_body["id_token"])
+      assert token_body["scope"] == "openid profile email app:read"
+
+      jwks_body =
+        build_conn()
+        |> get("/oauth/jwks")
+        |> json_response(200)
+
+      access_claims = verify_with_jwks!(token_body["access_token"], jwks_body)
+      assert access_claims["iss"] == Backplane.WebOrigins.api_base_url()
+      assert access_claims["sub"] == user.id
+      assert access_claims["client_id"] == client.id
+      assert "app:read" in String.split(access_claims["scope"])
+
+      userinfo_body =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token_body["access_token"]}")
+        |> get("/oauth/userinfo")
+        |> json_response(200)
+
+      assert userinfo_body["sub"] == user.id
+      assert userinfo_body["email"] == user.email
+
+      refresh_body =
+        post(build_conn(), "/oauth/token", %{
+          "grant_type" => "refresh_token",
+          "client_id" => client.id,
+          "refresh_token" => token_body["refresh_token"]
+        })
+        |> json_response(200)
+
+      assert refresh_body["refresh_token"] != token_body["refresh_token"]
+
+      revoke_conn =
+        post(build_conn(), "/oauth/revoke", %{
+          "client_id" => client.id,
+          "token" => refresh_body["refresh_token"],
+          "token_type_hint" => "refresh_token"
+        })
+
+      assert response(revoke_conn, 200) == ""
+
+      revoked_userinfo_conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{refresh_body["access_token"]}")
+        |> get("/oauth/userinfo")
+
+      assert json_response(revoked_userinfo_conn, 401)["error"] == "invalid_token"
+    end
+  end
+
+  defp verify_with_jwks!(jwt, %{"keys" => keys}) do
+    [encoded_header, _encoded_claims, _encoded_signature] = String.split(jwt, ".")
+
+    {:ok, header_json} = Base.url_decode64(encoded_header, padding: false)
+    {:ok, %{"kid" => kid}} = Jason.decode(header_json)
+
+    jwk_map = Enum.find(keys, &(Map.get(&1, "kid") == kid))
+    jwk = JOSE.JWK.from_map(jwk_map)
+    {true, %JOSE.JWT{fields: claims}, _jws} = JOSE.JWT.verify_strict(jwk, ["RS256"], jwt)
+    claims
+  end
+end
+```
+
+Run:
+
+```bash
+devenv shell -- mix test apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs
+```
+
+Expected before implementation: failure at the first missing fixture, route, or context. Expected after phases 2-5: pass.
+
+- [ ] **Step 3: Add confidential-client introspection e2e coverage**
+
+In the same file, add:
+
+```elixir
+describe "confidential client introspection" do
+  test "confidential app introspects an active access token and rejects bad client secret", %{conn: conn} do
+    user = user_fixture(password: "correct horse battery staple")
+    client = confidential_client_fixture(scopes: ["openid", "profile", "email", "app:read"])
+    {verifier, challenge} = pkce_pair()
+
+    access_token =
+      conn
+      |> complete_authorization_code_flow(user, client, verifier, challenge)
+      |> Map.fetch!("access_token")
+
+    active_body =
+      build_conn()
+      |> put_req_header("authorization", basic_auth(client.id, client.client_secret))
+      |> post("/oauth/introspect", %{"token" => access_token})
+      |> json_response(200)
+
+    assert active_body["active"] == true
+    assert active_body["sub"] == user.id
+    assert active_body["client_id"] == client.id
+    assert "app:read" in String.split(active_body["scope"])
+
+    bad_secret_conn =
+      build_conn()
+      |> put_req_header("authorization", basic_auth(client.id, "wrong-secret"))
+      |> post("/oauth/introspect", %{"token" => access_token})
+
+    assert json_response(bad_secret_conn, 401)["error"] == "invalid_client"
+  end
+end
+
+defp complete_authorization_code_flow(conn, user, client, verifier, challenge) do
+  authorize_params = %{
+    "response_type" => "code",
+    "client_id" => client.id,
+    "redirect_uri" => hd(client.redirect_uris),
+    "scope" => "openid profile email app:read",
+    "state" => "state-#{System.unique_integer([:positive])}",
+    "code_challenge" => challenge,
+    "code_challenge_method" => "S256"
+  }
+
+  conn = get(conn, "/oauth/authorize", authorize_params)
+
+  conn =
+    conn
+    |> recycle()
+    |> post("/oauth/login", %{
+      "email" => user.email,
+      "password" => user.password
+    })
+
+  conn =
+    conn
+    |> recycle()
+    |> get(redirected_to(conn))
+
+  code =
+    conn
+    |> redirected_to()
+    |> URI.parse()
+    |> Map.fetch!(:query)
+    |> URI.decode_query()
+    |> Map.fetch!("code")
+
+  build_conn()
+  |> put_req_header("authorization", basic_auth(client.id, client.client_secret))
+  |> post("/oauth/token", %{
+    "grant_type" => "authorization_code",
+    "redirect_uri" => hd(client.redirect_uris),
+    "code" => code,
+    "code_verifier" => verifier
+  })
+  |> json_response(200)
+end
+
+defp basic_auth(client_id, client_secret) do
+  encoded = Base.encode64("#{client_id}:#{client_secret}")
+  "Basic #{encoded}"
+end
+```
+
+If public and confidential clients require different token-exchange parameters, keep both paths in the e2e file and assert the different client-auth behavior explicitly.
+
+- [ ] **Step 4: Add negative e2e coverage**
+
+Add tests in `oauth_e2e_test.exs` for:
+
+- reused authorization code returns `400 invalid_grant`
+- mismatched `redirect_uri` returns `400 invalid_request` before login
+- missing `code_verifier` returns `400 invalid_grant`
+- refresh-token reuse returns `400 invalid_grant` and makes the latest token family inactive
+- revoked access token fails `/oauth/userinfo`
+- unsupported `response_type=token` returns `400 unsupported_response_type`
+
+Each negative test must go through the HTTP route that an external app would call.
+
+- [ ] **Step 5: Run the e2e suite with endpoint/controller tests**
+
+Run:
+
+```bash
+devenv shell -- mix test apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs apps/backplane_api/test/backplane/api/auth
+```
+
+Expected: pass before admin UI implementation begins.
+
+- [ ] **Step 6: Commit phase 6**
+
+Run:
+
+```bash
+git add apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs apps/backplane_auth/test/support/fixtures.ex
+git commit -m "test(auth): cover oauth end-to-end flow"
+```
+
+## Phase 7: Real Admin UI
 
 **Files:**
 - Modify: `apps/backplane_admin/lib/backplane/admin/live/auth_oauth_live.ex`
@@ -674,7 +1065,7 @@ devenv shell -- mix assets.build
 
 Expected: API and admin assets build successfully.
 
-- [ ] **Step 7: Commit phase 6**
+- [ ] **Step 7: Commit phase 7**
 
 Run:
 
@@ -683,7 +1074,7 @@ git add apps/backplane_admin
 git commit -m "feat(auth): replace auth admin placeholders"
 ```
 
-## Phase 7: Integration Docs And Release Verification
+## Phase 8: Integration Docs And Release Verification
 
 **Files:**
 - Create: `docs/integrations/auth-gsmlg-umbrella.md`
@@ -758,7 +1149,7 @@ npx gitnexus detect-changes
 
 Expected: affected symbols and flows are limited to Auth, API Auth routes, and Auth admin pages. If GitNexus misses visible git changes, use `git status`, `git diff --stat`, and focused tests as the source of truth.
 
-- [ ] **Step 7: Commit phase 7**
+- [ ] **Step 7: Commit phase 8**
 
 Run:
 
@@ -772,6 +1163,7 @@ git commit -m "docs(auth): add first-party integration guidance"
 - [ ] `backplane_auth` is included in the Backplane release.
 - [ ] `backplane_api` exposes OIDC discovery, authorize, token, JWKS, userinfo, introspection, revocation, login, and logout routes.
 - [ ] A test client completes authorization code + PKCE login and receives access token, refresh token, and ID token.
+- [ ] `apps/backplane_api/test/backplane/api/auth/oauth_e2e_test.exs` covers public-client and confidential-client OAuth flows through HTTP routes.
 - [ ] JWTs verify against `/oauth/jwks`.
 - [ ] Operators manage real users, clients, roles, scopes, sessions, and audit events from `/auth/*` admin pages.
 - [ ] Existing Backplane MCP, LLM, skills, and host-agent auth behavior is unchanged.
