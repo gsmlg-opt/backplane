@@ -166,10 +166,316 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert response(revoke_conn, 200) == ""
   end
 
+  test "public first-party app completes authorization code PKCE flow without a client secret",
+       %{conn: conn} do
+    user =
+      auth_user_fixture!(email: "public@example.com", name: "Public User", password: @password)
+
+    client =
+      oauth_client_fixture!(
+        name: "GSMLG Umbrella",
+        redirect_uris: ["http://localhost:4555/auth/callback"],
+        scopes: ["openid", "profile", "email", "app:read"],
+        confidential: false,
+        pkce: true
+      )
+
+    {verifier, challenge} = pkce_pair()
+
+    token_response =
+      complete_authorization_code_flow(conn, user, client, verifier, challenge,
+        redirect_uri: "http://localhost:4555/auth/callback",
+        scope: "openid profile email app:read"
+      )
+
+    assert token_response["token_type"] == "Bearer"
+    assert fetch_string!(token_response, "access_token")
+    assert fetch_string!(token_response, "refresh_token")
+    assert fetch_string!(token_response, "id_token")
+    assert scope_includes?(token_response["scope"], "app:read")
+  end
+
+  test "confidential client introspection rejects a bad client secret", %{conn: conn} do
+    user = auth_user_fixture!(email: "introspect@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email", "app:read"])
+    {verifier, challenge} = pkce_pair()
+
+    token_response =
+      complete_authorization_code_flow(conn, user, client, verifier, challenge,
+        redirect_uri: hd(client.redirect_uris),
+        scope: "openid profile email app:read"
+      )
+
+    active_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/introspect", %{"token" => token_response["access_token"]})
+      |> json_response(200)
+
+    assert active_body["active"] == true
+    assert active_body["sub"] == user.id
+    assert active_body["client_id"] == client.id
+
+    bad_secret_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, "wrong-secret")
+      |> post("/oauth/introspect", %{"token" => token_response["access_token"]})
+      |> json_response(401)
+
+    assert bad_secret_body["error"] == "invalid_client"
+  end
+
+  test "reused authorization code is rejected", %{conn: conn} do
+    user = auth_user_fixture!(email: "reuse-code@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email"])
+    verifier = "reused-code-verifier-that-is-long-enough"
+
+    code =
+      authorize_code!(
+        conn,
+        user,
+        client,
+        verifier,
+        hd(client.redirect_uris),
+        "openid profile email"
+      )
+
+    first =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => hd(client.redirect_uris),
+        "code_verifier" => verifier
+      })
+
+    assert json_response(first, 200)["access_token"]
+
+    second =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => hd(client.redirect_uris),
+        "code_verifier" => verifier
+      })
+      |> json_response(400)
+
+    assert second["error"] == "invalid_grant"
+  end
+
+  test "mismatched redirect URI is rejected before login", %{conn: conn} do
+    client = oauth_client_fixture!(redirect_uris: [@redirect_uri])
+
+    body =
+      conn
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => "https://evil.example.test/auth/callback",
+        "response_type" => "code",
+        "scope" => "openid profile email",
+        "state" => "state-redirect-mismatch",
+        "code_challenge" => pkce_challenge("redirect-mismatch-verifier"),
+        "code_challenge_method" => "S256"
+      })
+      |> response(400)
+
+    assert body == "invalid_request"
+  end
+
+  test "missing PKCE verifier is rejected during token exchange", %{conn: conn} do
+    user = auth_user_fixture!(email: "missing-verifier@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid"])
+    verifier = "missing-verifier-valid-original"
+    code = authorize_code!(conn, user, client, verifier, hd(client.redirect_uris), "openid")
+
+    body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => hd(client.redirect_uris)
+      })
+      |> json_response(400)
+
+    assert body["error"] == "invalid_grant"
+  end
+
+  test "refresh token reuse revokes the latest token family", %{conn: conn} do
+    user = auth_user_fixture!(email: "reuse-refresh@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email"])
+    {verifier, challenge} = pkce_pair()
+
+    token_response =
+      complete_authorization_code_flow(conn, user, client, verifier, challenge,
+        redirect_uri: hd(client.redirect_uris),
+        scope: "openid profile email"
+      )
+
+    refreshed =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "refresh_token",
+        "refresh_token" => token_response["refresh_token"]
+      })
+      |> json_response(200)
+
+    reused =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "refresh_token",
+        "refresh_token" => token_response["refresh_token"]
+      })
+      |> json_response(400)
+
+    assert reused["error"] == "invalid_grant"
+
+    revoked_userinfo =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{refreshed["access_token"]}")
+      |> get("/oauth/userinfo")
+      |> json_response(401)
+
+    assert revoked_userinfo["error"] == "invalid_token"
+  end
+
+  test "revoked access token fails userinfo", %{conn: conn} do
+    user = auth_user_fixture!(email: "revoked-access@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email"])
+    {verifier, challenge} = pkce_pair()
+
+    token_response =
+      complete_authorization_code_flow(conn, user, client, verifier, challenge,
+        redirect_uri: hd(client.redirect_uris),
+        scope: "openid profile email"
+      )
+
+    revoke_conn =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/revoke", %{"token" => token_response["access_token"]})
+
+    assert response(revoke_conn, 200) == ""
+
+    body =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{token_response["access_token"]}")
+      |> get("/oauth/userinfo")
+      |> json_response(401)
+
+    assert body["error"] == "invalid_token"
+  end
+
+  test "unsupported implicit response type is rejected", %{conn: conn} do
+    client = oauth_client_fixture!(redirect_uris: [@redirect_uri])
+
+    body =
+      conn
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "token",
+        "scope" => "openid profile email",
+        "state" => "state-implicit",
+        "code_challenge" => pkce_challenge("implicit-verifier"),
+        "code_challenge_method" => "S256"
+      })
+      |> response(400)
+
+    assert body == "unsupported_response_type"
+  end
+
   defp pkce_challenge(verifier) do
     :sha256
     |> :crypto.hash(verifier)
     |> Base.url_encode64(padding: false)
+  end
+
+  defp pkce_pair do
+    verifier =
+      32
+      |> :crypto.strong_rand_bytes()
+      |> Base.url_encode64(padding: false)
+
+    {verifier, pkce_challenge(verifier)}
+  end
+
+  defp complete_authorization_code_flow(conn, user, client, verifier, challenge, opts) do
+    redirect_uri = Keyword.fetch!(opts, :redirect_uri)
+    scope = Keyword.fetch!(opts, :scope)
+    code = authorize_code!(conn, user, client, verifier, redirect_uri, scope, challenge)
+
+    token_params = %{
+      "grant_type" => "authorization_code",
+      "client_id" => client.id,
+      "code" => code,
+      "redirect_uri" => redirect_uri,
+      "code_verifier" => verifier
+    }
+
+    conn
+    |> recycle()
+    |> maybe_put_basic_auth(client)
+    |> post("/oauth/token", token_params)
+    |> json_response(200)
+  end
+
+  defp authorize_code!(conn, user, client, verifier, redirect_uri, scope) do
+    authorize_code!(conn, user, client, verifier, redirect_uri, scope, pkce_challenge(verifier))
+  end
+
+  defp authorize_code!(conn, user, client, _verifier, redirect_uri, scope, challenge) do
+    authorize_conn =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => redirect_uri,
+        "response_type" => "code",
+        "scope" => scope,
+        "state" => "state-#{System.unique_integer([:positive])}",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      })
+
+    login_location = redirected_to(authorize_conn, 302)
+
+    login_conn =
+      authorize_conn
+      |> recycle()
+      |> get(path_with_query(login_location))
+
+    login_params =
+      login_conn
+      |> html_response(200)
+      |> form_inputs("#oauth-login-form")
+      |> Map.merge(%{"email" => user.email, "password" => @password})
+
+    callback_uri =
+      login_conn
+      |> recycle()
+      |> post("/oauth/login", login_params)
+      |> redirected_to(302)
+      |> URI.parse()
+
+    callback_uri.query
+    |> URI.decode_query()
+    |> Map.fetch!("code")
   end
 
   defp path_with_query(location) do
@@ -198,6 +504,12 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     credentials = Base.encode64("#{client_id}:#{secret}")
     put_req_header(conn, "authorization", "Basic #{credentials}")
   end
+
+  defp maybe_put_basic_auth(conn, %{plaintext_secret: secret, id: client_id}) do
+    put_basic_auth(conn, client_id, secret)
+  end
+
+  defp maybe_put_basic_auth(conn, _client), do: conn
 
   defp fetch_string!(map, key) do
     value = Map.fetch!(map, key)

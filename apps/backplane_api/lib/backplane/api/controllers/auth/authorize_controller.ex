@@ -47,6 +47,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
       {:ok, client}
     else
       nil -> {:error, :invalid_client}
+      {:error, :invalid_redirect_uri} -> {:error, :invalid_request}
       {:error, reason} -> {:error, reason}
     end
   end
