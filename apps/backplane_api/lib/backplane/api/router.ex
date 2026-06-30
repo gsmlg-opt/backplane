@@ -24,6 +24,8 @@ defmodule Backplane.Api.Router do
     pipe_through(:public_browser)
 
     get("/", PageController, :home)
+    get("/docs", PageController, :docs)
+    get("/docs/:section", PageController, :docs)
     get("/oauth/authorize", Auth.AuthorizeController, :authorize)
     get("/oauth/login", Auth.LoginController, :new)
     post("/oauth/login", Auth.LoginController, :create)
