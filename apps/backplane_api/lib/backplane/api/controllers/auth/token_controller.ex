@@ -8,7 +8,9 @@ defmodule Backplane.Api.Auth.TokenController do
   def token(conn, %{"grant_type" => "authorization_code"} = params) do
     with {:ok, %Client{} = client} <- Helpers.authenticate_client(conn, params),
          {:ok, tokens} <- Auth.Tokens.exchange_authorization_code(params["code"], client, params) do
-      json(conn, token_response(tokens))
+      conn
+      |> put_token_response_headers()
+      |> json(token_response(tokens))
     else
       {:error, :invalid_client} -> Helpers.json_error(conn, 401, "invalid_client")
       {:error, reason} -> Helpers.json_error(conn, 400, "invalid_grant", to_string(reason))
@@ -18,7 +20,9 @@ defmodule Backplane.Api.Auth.TokenController do
   def token(conn, %{"grant_type" => "refresh_token"} = params) do
     with {:ok, %Client{} = client} <- Helpers.authenticate_client(conn, params),
          {:ok, tokens} <- Auth.Tokens.rotate_refresh_token(params["refresh_token"], client) do
-      json(conn, token_response(tokens))
+      conn
+      |> put_token_response_headers()
+      |> json(token_response(tokens))
     else
       {:error, :invalid_client} ->
         Helpers.json_error(conn, 401, "invalid_client")
@@ -40,5 +44,11 @@ defmodule Backplane.Api.Auth.TokenController do
     |> Map.take([:access_token, :refresh_token, :id_token, :token_type, :expires_in, :scope])
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
+  end
+
+  defp put_token_response_headers(conn) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_header("pragma", "no-cache")
   end
 end

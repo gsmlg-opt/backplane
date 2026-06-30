@@ -3,6 +3,8 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
 
   import Backplane.Auth.Fixtures
 
+  alias Backplane.Auth
+
   @redirect_uri "https://gsmlg-app-backend.example.test/auth/callback"
   @issuer "http://localhost:4002"
   @password "correct horse battery staple"
@@ -32,6 +34,8 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
         confidential: true,
         pkce: true
       )
+
+    grant_scopes!(user, ["openid", "profile", "email", "gsmlg:read"])
 
     verifier = "a-very-long-pkce-verifier-for-the-gsmlg-app-backend-client"
     state = "state-#{System.unique_integer([:positive])}"
@@ -90,6 +94,8 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
       })
 
     token_response = json_response(token_conn, 200)
+    assert get_resp_header(token_conn, "cache-control") == ["no-store"]
+    assert get_resp_header(token_conn, "pragma") == ["no-cache"]
     assert token_response["token_type"] == "Bearer"
     assert is_integer(token_response["expires_in"])
     assert scope_includes?(token_response["scope"], "openid")
@@ -270,6 +276,183 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert second["error"] == "invalid_grant"
   end
 
+  test "authorization rejects scopes not granted to the user through RBAC", %{conn: conn} do
+    user = auth_user_fixture!(email: "missing-rbac@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email", "app:read"])
+
+    {verifier, challenge} = pkce_pair()
+
+    authorize_conn =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => hd(client.redirect_uris),
+        "response_type" => "code",
+        "scope" => "openid profile email app:read",
+        "state" => "state-missing-rbac",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      })
+
+    login_location = redirected_to(authorize_conn, 302)
+
+    login_conn =
+      authorize_conn
+      |> recycle()
+      |> get(path_with_query(login_location))
+
+    login_params =
+      login_conn
+      |> html_response(200)
+      |> form_inputs("#oauth-login-form")
+      |> Map.merge(%{"email" => user.email, "password" => @password})
+
+    body =
+      login_conn
+      |> recycle()
+      |> post("/oauth/login", login_params)
+      |> response(400)
+
+    assert body == "invalid_scope"
+    assert is_binary(verifier)
+  end
+
+  test "disabled clients cannot authorize or use the token endpoint", %{conn: conn} do
+    client = oauth_client_fixture!(scopes: ["openid"], redirect_uris: [@redirect_uri])
+    assert {:ok, _disabled} = client.id |> Auth.OAuth.get_client() |> Auth.OAuth.disable_client()
+
+    authorize_body =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "openid",
+        "state" => "state-disabled-client",
+        "code_challenge" => pkce_challenge("disabled-client-verifier"),
+        "code_challenge_method" => "S256"
+      })
+      |> response(400)
+
+    assert authorize_body == "invalid_client"
+
+    token_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/token", %{
+        "grant_type" => "refresh_token",
+        "refresh_token" => "missing-refresh"
+      })
+      |> json_response(401)
+
+    assert token_body["error"] == "invalid_client"
+  end
+
+  test "userinfo only exposes claims allowed by OIDC scopes", %{conn: conn} do
+    user = auth_user_fixture!(email: "userinfo-scopes@example.com", name: "Scoped User")
+    client = oauth_client_fixture!(scopes: ["openid", "profile", "email", "app:read"])
+
+    assert {:ok, openid_tokens} =
+             Auth.Tokens.issue_access_token(
+               Auth.Accounts.get_user(user.id),
+               Auth.OAuth.get_client(client.id),
+               [
+                 "openid"
+               ]
+             )
+
+    openid_body =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{openid_tokens.access_token}")
+      |> get("/oauth/userinfo")
+      |> json_response(200)
+
+    assert openid_body["sub"] == user.id
+    refute Map.has_key?(openid_body, "email")
+    refute Map.has_key?(openid_body, "name")
+
+    assert {:ok, app_tokens} =
+             Auth.Tokens.issue_access_token(
+               Auth.Accounts.get_user(user.id),
+               Auth.OAuth.get_client(client.id),
+               [
+                 "app:read"
+               ]
+             )
+
+    app_body =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{app_tokens.access_token}")
+      |> get("/oauth/userinfo")
+      |> json_response(401)
+
+    assert app_body["error"] == "invalid_token"
+  end
+
+  test "revoking the persisted browser session forces OAuth login again", %{conn: conn} do
+    user = auth_user_fixture!(email: "browser-session@example.com", password: @password)
+    client = oauth_client_fixture!(scopes: ["openid"], redirect_uris: [@redirect_uri])
+    grant_scopes!(user, ["openid"])
+    {verifier, challenge} = pkce_pair()
+
+    authorize_conn =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "openid",
+        "state" => "state-session-revoke",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      })
+
+    login_location = redirected_to(authorize_conn, 302)
+
+    login_conn =
+      authorize_conn
+      |> recycle()
+      |> get(path_with_query(login_location))
+
+    login_params =
+      login_conn
+      |> html_response(200)
+      |> form_inputs("#oauth-login-form")
+      |> Map.merge(%{"email" => user.email, "password" => @password})
+
+    callback_conn =
+      login_conn
+      |> recycle()
+      |> post("/oauth/login", login_params)
+
+    assert redirected_to(callback_conn, 302) =~ @redirect_uri
+
+    [session] = Auth.Accounts.list_sessions()
+    assert session.user_id == user.id
+    assert {:ok, _revoked} = Auth.Accounts.revoke_session(session)
+
+    next_authorize_conn =
+      callback_conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "openid",
+        "state" => "state-session-revoked-next",
+        "code_challenge" => pkce_challenge(verifier),
+        "code_challenge_method" => "S256"
+      })
+
+    assert redirected_to(next_authorize_conn, 302) == "/oauth/login"
+  end
+
   test "mismatched redirect URI is rejected before login", %{conn: conn} do
     client = oauth_client_fixture!(redirect_uris: [@redirect_uri])
 
@@ -440,6 +623,8 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
   end
 
   defp authorize_code!(conn, user, client, _verifier, redirect_uri, scope, challenge) do
+    grant_scopes!(user, String.split(scope, " ", trim: true))
+
     authorize_conn =
       conn
       |> recycle()
@@ -523,6 +708,23 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
 
   defp scope_includes?(scopes, scope) when is_list(scopes), do: scope in scopes
   defp scope_includes?(_scopes, _scope), do: false
+
+  defp grant_scopes!(user, scopes) do
+    Enum.each(scopes, fn scope ->
+      Auth.OAuth.get_scope(scope) ||
+        Auth.OAuth.create_scope(%{name: scope, label: scope, public: true})
+    end)
+
+    role_name = "oauth-e2e-#{System.unique_integer([:positive])}"
+    assert {:ok, role} = Auth.RBAC.create_role(%{name: role_name, label: role_name})
+
+    Enum.each(scopes, fn scope ->
+      assert {:ok, _role_scope} = Auth.RBAC.assign_role_scope(role, scope)
+    end)
+
+    assert {:ok, _user_role} = Auth.RBAC.assign_user_role(user, role)
+    role
+  end
 
   defp verify_jwt_with_jwks!(jwt, %{"keys" => keys}) when is_list(keys) do
     Enum.find_value(keys, fn jwk ->

@@ -31,11 +31,12 @@ defmodule Backplane.Auth.OAuth do
 
     with :ok <- validate_client_attrs(attrs),
          {:ok, scopes} <- ensure_scopes(attrs.scopes),
-         {:ok, client} <- Admin.create_client(to_boruta_client_attrs(attrs, scopes)) do
+         {:ok, client} <- Admin.create_client(to_boruta_client_attrs(attrs, scopes)),
+         {:ok, client, plaintext_secret} <- hash_client_secret(client) do
       client = Repo.preload(client, :authorized_scopes)
 
       if client.confidential do
-        {:ok, %{client: client, secret: client.secret}}
+        {:ok, %{client: client, secret: plaintext_secret}}
       else
         {:ok, client}
       end
@@ -43,14 +44,36 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def rotate_client_secret(%Client{} = client) do
-    with {:ok, client} <- Admin.regenerate_client_secret(client) do
-      {:ok, %{client: client, secret: client.secret}}
+    with {:ok, client} <- Admin.regenerate_client_secret(client),
+         {:ok, client, plaintext_secret} <- hash_client_secret(client) do
+      {:ok, %{client: Repo.preload(client, :authorized_scopes), secret: plaintext_secret}}
     end
   end
 
   def disable_client(%Client{} = client) do
     metadata = Map.put(client.metadata || %{}, "disabled", true)
-    Admin.update_client(client, %{metadata: metadata})
+
+    client
+    |> change(metadata: metadata)
+    |> Repo.update()
+  end
+
+  def client_disabled?(%Client{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, "disabled") == true or Map.get(metadata, :disabled) == true
+  end
+
+  def client_disabled?(%Client{}), do: false
+
+  def client_enabled?(%Client{} = client), do: not client_disabled?(client)
+
+  def get_enabled_client(id) when is_binary(id) do
+    case get_client(id) do
+      %Client{} = client ->
+        if client_enabled?(client), do: client
+
+      nil ->
+        nil
+    end
   end
 
   def list_clients do
@@ -145,6 +168,15 @@ defmodule Backplane.Auth.OAuth do
       id_token_signature_alg: "RS256",
       authorized_scopes: Enum.map(scopes, &%{id: &1.id})
     })
+  end
+
+  defp hash_client_secret(%Client{secret: secret} = client) when is_binary(secret) do
+    hashed_secret = Bcrypt.hash_pwd_salt(secret)
+
+    case client |> change(secret: hashed_secret) |> Repo.update() do
+      {:ok, updated} -> {:ok, updated, secret}
+      {:error, changeset} -> {:error, changeset}
+    end
   end
 
   defp ensure_scopes(scope_names) do

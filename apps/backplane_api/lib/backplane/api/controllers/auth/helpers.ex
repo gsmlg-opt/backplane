@@ -19,7 +19,7 @@ defmodule Backplane.Api.Auth.Helpers do
 
   def authenticate_client(conn, params) do
     with {:ok, client_id, secret} <- client_credentials(conn, params),
-         %Client{} = client <- Auth.OAuth.get_client(client_id),
+         %Client{} = client <- Auth.OAuth.get_enabled_client(client_id),
          :ok <- verify_client_secret(client, secret) do
       {:ok, client}
     else
@@ -73,7 +73,7 @@ defmodule Backplane.Api.Auth.Helpers do
 
   defp verify_client_secret(%Client{confidential: true, secret: secret}, provided)
        when is_binary(provided) do
-    if Plug.Crypto.secure_compare(secret, provided) do
+    if client_secret_matches?(secret, provided) do
       :ok
     else
       {:error, :invalid_client}
@@ -82,6 +82,19 @@ defmodule Backplane.Api.Auth.Helpers do
 
   defp verify_client_secret(%Client{confidential: true}, _provided), do: {:error, :invalid_client}
   defp verify_client_secret(%Client{confidential: false}, _provided), do: :ok
+
+  defp client_secret_matches?(stored, provided) do
+    Bcrypt.verify_pass(provided, stored) or secure_compare?(stored, provided)
+  rescue
+    _error -> secure_compare?(stored, provided)
+  end
+
+  defp secure_compare?(stored, provided)
+       when is_binary(stored) and is_binary(provided) and byte_size(stored) == byte_size(provided) do
+    Plug.Crypto.secure_compare(stored, provided)
+  end
+
+  defp secure_compare?(_stored, _provided), do: false
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

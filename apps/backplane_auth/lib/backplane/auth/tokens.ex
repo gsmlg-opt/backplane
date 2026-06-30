@@ -4,9 +4,10 @@ defmodule Backplane.Auth.Tokens do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.Auth.Accounts
+  alias Backplane.Auth.{Accounts, Audit, OAuth, RBAC}
   alias Backplane.Auth.Schemas.{SigningKey, User}
   alias Backplane.Repo
+  alias Backplane.Settings.Encryption
   alias Backplane.WebOrigins
   alias Boruta.Ecto.{Client, Token}
 
@@ -38,7 +39,9 @@ defmodule Backplane.Auth.Tokens do
 
   def issue_access_token(%User{} = user, %Client{} = client, scopes, opts \\ [])
       when is_list(scopes) do
-    with {:ok, key} <- ensure_active_signing_key() do
+    with :ok <- validate_active_user(user),
+         :ok <- validate_active_client(client),
+         {:ok, key} <- ensure_active_signing_key() do
       now = System.system_time(:second)
       expires_in = Keyword.get(opts, :expires_in, client.access_token_ttl || @access_token_ttl)
       expires_at = now + expires_in
@@ -105,6 +108,7 @@ defmodule Backplane.Auth.Tokens do
   def issue_authorization_code(%User{} = user, %Client{} = client, params) when is_map(params) do
     method = Map.get(params, "code_challenge_method") || Map.get(params, :code_challenge_method)
     challenge = Map.get(params, "code_challenge") || Map.get(params, :code_challenge)
+    requested_scope = Map.get(params, "scope") || Map.get(params, :scope) || ""
 
     cond do
       method != "S256" ->
@@ -114,34 +118,40 @@ defmodule Backplane.Auth.Tokens do
         {:error, :missing_code_challenge}
 
       true ->
-        code = random_token()
-        now = System.system_time(:second)
+        with :ok <- validate_active_user(user),
+             :ok <- validate_active_client(client),
+             :ok <- validate_user_scopes(user, requested_scope) do
+          code = random_token()
+          now = System.system_time(:second)
 
-        attrs = %{
-          type: "code",
-          value: code,
-          client_id: client.id,
-          sub: user.id,
-          redirect_uri: Map.get(params, "redirect_uri") || Map.get(params, :redirect_uri),
-          state: Map.get(params, "state") || Map.get(params, :state),
-          nonce: Map.get(params, "nonce") || Map.get(params, :nonce),
-          scope: Map.get(params, "scope") || Map.get(params, :scope) || "",
-          code_challenge_hash: challenge,
-          code_challenge_method: "S256",
-          expires_at: now + (client.authorization_code_ttl || 60)
-        }
+          attrs = %{
+            type: "code",
+            value: code,
+            client_id: client.id,
+            sub: user.id,
+            redirect_uri: Map.get(params, "redirect_uri") || Map.get(params, :redirect_uri),
+            state: Map.get(params, "state") || Map.get(params, :state),
+            nonce: Map.get(params, "nonce") || Map.get(params, :nonce),
+            scope: requested_scope,
+            code_challenge_hash: challenge,
+            code_challenge_method: "S256",
+            expires_at: now + (client.authorization_code_ttl || 60)
+          }
 
-        with {:ok, token} <- insert_token(attrs) do
-          {:ok, %{code: code, token: token}}
+          with {:ok, token} <- insert_token(attrs) do
+            {:ok, %{code: code, token: token}}
+          end
         end
     end
   end
 
   def exchange_authorization_code(code, %Client{} = client, attrs) when is_binary(code) do
-    with %Token{} = code_token <- get_code_token(code, client),
+    with :ok <- validate_active_client(client),
+         %Token{} = code_token <- get_code_token(code, client),
          :ok <- validate_code_token(code_token, attrs),
-         {:ok, _revoked_code} <- code_token |> change(revoked_at: now()) |> Repo.update(),
-         %User{} = user <- Accounts.get_user(code_token.sub) do
+         {:ok, _revoked_code} <- revoke_code_once(code_token),
+         %User{} = user <- Accounts.get_user(code_token.sub),
+         :ok <- validate_active_user(user) do
       issue_access_token(user, client, String.split(code_token.scope, " ", trim: true),
         nonce: code_token.nonce,
         redirect_uri: code_token.redirect_uri
@@ -155,7 +165,8 @@ defmodule Backplane.Auth.Tokens do
   def verify_access_token(token) when is_binary(token) do
     with {:ok, claims} <- verify_jwt(token),
          :ok <- validate_expiration(claims),
-         {:ok, _token} <- active_access_token(token) do
+         {:ok, token_record} <- active_access_token(token),
+         :ok <- validate_token_principals(token_record) do
       {:ok, claims}
     end
   end
@@ -165,7 +176,7 @@ defmodule Backplane.Auth.Tokens do
       %Token{} = token ->
         {:ok,
          %{
-           active: active_token?(token),
+           active: token_active_for_principals?(token),
            sub: token.sub,
            client_id: token.client_id,
            scope: token.scope,
@@ -188,17 +199,26 @@ defmodule Backplane.Auth.Tokens do
   end
 
   def rotate_refresh_token(refresh_token, %Client{} = client) when is_binary(refresh_token) do
+    with :ok <- validate_active_client(client) do
+      do_rotate_refresh_token(refresh_token, client)
+    end
+  end
+
+  defp do_rotate_refresh_token(refresh_token, %Client{} = client) do
     case get_client_refresh_token(refresh_token, client) do
       %Token{refresh_token_revoked_at: %DateTime{}} = token ->
+        audit_refresh_reuse(token, client)
         revoke_family(token)
         {:error, :reuse_detected}
 
       %Token{} = token ->
-        with {:ok, _revoked} <-
+        with :ok <- validate_refresh_token(token, client),
+             {:ok, _revoked} <-
                token
                |> change(refresh_token_revoked_at: now())
                |> Repo.update(),
-             %User{} = user <- Accounts.get_user(token.sub) do
+             %User{} = user <- Accounts.get_user(token.sub),
+             :ok <- validate_active_user(user) do
           issue_access_token(user, client, String.split(token.scope, " ", trim: true),
             nonce: token.nonce,
             redirect_uri: token.redirect_uri,
@@ -244,7 +264,7 @@ defmodule Backplane.Auth.Tokens do
     %SigningKey{}
     |> SigningKey.changeset(%{
       kid: kid,
-      private_jwk: private_jwk,
+      encrypted_private_jwk: Encryption.encrypt(Jason.encode!(private_jwk)),
       public_jwk: public_jwk,
       active: true
     })
@@ -271,7 +291,7 @@ defmodule Backplane.Auth.Tokens do
   defp sign_jwt!(%SigningKey{} = key, claims) do
     signer = JOSE.JWS.from_map(%{"alg" => @alg, "kid" => key.kid})
 
-    key.private_jwk
+    private_jwk!(key)
     |> JOSE.JWK.from_map()
     |> JOSE.JWT.sign(signer, claims)
     |> JOSE.JWS.compact()
@@ -315,6 +335,79 @@ defmodule Backplane.Auth.Tokens do
 
       nil ->
         {:error, :invalid_token}
+    end
+  end
+
+  defp validate_token_principals(%Token{} = token) do
+    with %User{} = user <- Accounts.get_user(token.sub),
+         :ok <- validate_active_user(user),
+         %Client{} = client <- OAuth.get_client(token.client_id),
+         :ok <- validate_active_client(client) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_token}
+    end
+  end
+
+  defp token_active_for_principals?(%Token{} = token) do
+    active_token?(token) and validate_token_principals(token) == :ok
+  end
+
+  defp validate_active_user(%User{active: true}), do: :ok
+  defp validate_active_user(%User{active: false}), do: {:error, :resource_owner_inactive}
+  defp validate_active_user(_user), do: {:error, :resource_owner_not_found}
+
+  defp validate_active_client(%Client{} = client) do
+    if OAuth.client_enabled?(client), do: :ok, else: {:error, :invalid_client}
+  end
+
+  defp validate_active_client(_client), do: {:error, :invalid_client}
+
+  defp validate_user_scopes(%User{} = user, scope) do
+    requested = scope |> to_string() |> String.split(" ", trim: true)
+    effective = RBAC.effective_scope_names(user)
+
+    if Enum.all?(requested, &(&1 in effective)) do
+      :ok
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
+  defp validate_refresh_token(%Token{} = token, %Client{} = client) do
+    cond do
+      not is_nil(token.revoked_at) ->
+        {:error, :invalid_refresh_token}
+
+      refresh_token_expired?(token, client) ->
+        {:error, :expired_refresh_token}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp refresh_token_expired?(%Token{inserted_at: %DateTime{} = inserted_at}, %Client{} = client) do
+    ttl = client.refresh_token_ttl || 2_592_000
+    DateTime.to_unix(inserted_at) + ttl <= System.system_time(:second)
+  end
+
+  defp refresh_token_expired?(_token, _client), do: false
+
+  defp revoke_code_once(%Token{} = token) do
+    revoked_at = now()
+
+    {count, _result} =
+      Token
+      |> where([candidate], candidate.id == ^token.id)
+      |> where([candidate], is_nil(candidate.revoked_at))
+      |> where([candidate], candidate.expires_at > ^System.system_time(:second))
+      |> Repo.update_all(set: [revoked_at: revoked_at, updated_at: revoked_at])
+
+    if count == 1 do
+      {:ok, %{token | revoked_at: revoked_at, updated_at: revoked_at}}
+    else
+      {:error, :invalid_grant}
     end
   end
 
@@ -370,6 +463,19 @@ defmodule Backplane.Auth.Tokens do
     token.expires_at > System.system_time(:second) and is_nil(token.revoked_at)
   end
 
+  defp audit_refresh_reuse(%Token{} = token, %Client{} = client) do
+    Audit.record(
+      "token.refresh_reuse_detected",
+      %{actor_type: "oauth_client", actor_id: client.id},
+      %{
+        target_type: "oauth_token",
+        target_id: token.id,
+        severity: "error",
+        metadata: %{"sub" => token.sub}
+      }
+    )
+  end
+
   defp revoke_family(%Token{} = token) do
     Token
     |> where([candidate], candidate.client_id == ^token.client_id)
@@ -410,4 +516,13 @@ defmodule Backplane.Auth.Tokens do
   end
 
   defp now, do: DateTime.utc_now()
+
+  defp private_jwk!(%SigningKey{encrypted_private_jwk: encrypted}) do
+    with {:ok, raw_jwk} <- Encryption.decrypt(encrypted),
+         {:ok, private_jwk} <- Jason.decode(raw_jwk) do
+      private_jwk
+    else
+      _error -> raise "could not decrypt auth signing key #{inspect(encrypted)}"
+    end
+  end
 end

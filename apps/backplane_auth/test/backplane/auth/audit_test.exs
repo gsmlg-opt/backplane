@@ -41,6 +41,29 @@ defmodule Backplane.Auth.AuditTest do
       refute Map.has_key?(event.metadata, "session_token")
       assert event.metadata["safe"] == "value"
     end
+
+    test "filters audit events by event type, severity, and target type" do
+      assert {:ok, _event} =
+               Auth.Audit.record("login.success", nil, %{
+                 target_type: "auth_user",
+                 target_id: "user-1",
+                 severity: "info"
+               })
+
+      assert {:ok, refresh_reuse} =
+               Auth.Audit.record("token.refresh_reuse_detected", nil, %{
+                 target_type: "oauth_token",
+                 target_id: "token-1",
+                 severity: "error"
+               })
+
+      assert [^refresh_reuse] =
+               Auth.Audit.list_events(
+                 event_type: "token.refresh_reuse_detected",
+                 severity: "error",
+                 target_type: "oauth_token"
+               )
+    end
   end
 
   describe "login events" do

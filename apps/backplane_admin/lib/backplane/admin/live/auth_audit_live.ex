@@ -8,8 +8,19 @@ defmodule Backplane.Admin.AuthAuditLive do
     {:ok,
      assign(socket,
        current_path: "/auth/audit",
-       events: Auth.Audit.list_events()
+       events: [],
+       filters: empty_filters()
      )}
+  end
+
+  @impl true
+  def handle_params(params, uri, socket) do
+    filters = audit_filters(params)
+
+    {:noreply,
+     socket
+     |> assign(current_path: URI.parse(uri).path, filters: filters)
+     |> assign(events: Auth.Audit.list_events(filters))}
   end
 
   @impl true
@@ -25,6 +36,45 @@ defmodule Backplane.Admin.AuthAuditLive do
 
       <.dm_card variant="bordered">
         <:title>Audit Events</:title>
+
+        <form
+          id="auth-audit-filter-form"
+          method="get"
+          action="/auth/audit"
+          class="mb-4 grid gap-3 md:grid-cols-4"
+        >
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="event_type"
+            placeholder="Event type"
+            value={@filters["event_type"]}
+          />
+          <select
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="severity"
+          >
+            <option value="" selected={@filters["severity"] == ""}>All severities</option>
+            <option value="info" selected={@filters["severity"] == "info"}>info</option>
+            <option value="warning" selected={@filters["severity"] == "warning"}>warning</option>
+            <option value="error" selected={@filters["severity"] == "error"}>error</option>
+          </select>
+          <input
+            class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+            name="target_type"
+            placeholder="Target type"
+            value={@filters["target_type"]}
+          />
+          <div class="flex gap-2">
+            <input
+              class="min-w-0 flex-1 rounded-md border border-outline bg-surface px-3 py-2 text-sm"
+              name="search"
+              placeholder="Search ids"
+              value={@filters["search"]}
+            />
+            <.dm_btn type="submit" variant="primary" size="sm">Filter</.dm_btn>
+          </div>
+        </form>
+
         <div :if={@events == []} class="py-8 text-center text-on-surface-variant">
           No Auth audit events recorded.
         </div>
@@ -81,4 +131,19 @@ defmodule Backplane.Admin.AuthAuditLive do
 
   defp format_datetime(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")
+
+  defp audit_filters(params) do
+    empty_filters()
+    |> Map.merge(Map.take(params, ["event_type", "severity", "target_type", "search"]))
+    |> Map.new(fn {key, value} -> {key, String.trim(to_string(value || ""))} end)
+  end
+
+  defp empty_filters do
+    %{
+      "event_type" => "",
+      "severity" => "",
+      "target_type" => "",
+      "search" => ""
+    }
+  end
 end

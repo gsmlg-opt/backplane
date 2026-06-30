@@ -47,18 +47,8 @@ defmodule Backplane.Admin.AuthRbacLive do
   end
 
   def handle_event("disable-user", %{"id" => id}, socket) do
-    with %{email: email} = user <- Auth.Accounts.get_user(id),
-         {:ok, _user} <- Auth.Accounts.disable_user(user) do
-      Auth.Audit.record(
-        "user.disabled",
-        %{actor_type: "admin_ui", actor_id: "backplane_admin"},
-        %{
-          target_type: "auth_user",
-          target_id: id,
-          metadata: %{"email" => email}
-        }
-      )
-
+    with user when not is_nil(user) <- Auth.Accounts.get_user(id),
+         {:ok, _user} <- Auth.Accounts.disable_user(user, admin_actor()) do
       {:noreply,
        socket
        |> put_flash(:info, "Auth user disabled.")
@@ -111,6 +101,8 @@ defmodule Backplane.Admin.AuthRbacLive do
         {:noreply, put_flash(socket, :error, "RBAC role could not be assigned.")}
     end
   end
+
+  defp admin_actor, do: %{actor_type: "admin_ui", actor_id: "backplane_admin"}
 
   @impl true
   def render(assigns) do

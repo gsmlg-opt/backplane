@@ -34,10 +34,45 @@ defmodule Backplane.Auth.Audit do
     |> Repo.insert()
   end
 
-  def list_events do
+  def list_events(filters \\ []) do
+    filters = normalize_filters(filters)
+
     AuditEvent
+    |> maybe_filter(:event_type, filters)
+    |> maybe_filter(:severity, filters)
+    |> maybe_filter(:target_type, filters)
+    |> maybe_filter(:actor_type, filters)
+    |> maybe_search(filters)
     |> order_by(desc: :inserted_at)
     |> Repo.all()
+  end
+
+  defp maybe_filter(query, field, filters) do
+    case Map.get(filters, field) do
+      value when is_binary(value) and value != "" ->
+        where(query, [event], field(event, ^field) == ^value)
+
+      _empty ->
+        query
+    end
+  end
+
+  defp maybe_search(query, filters) do
+    case Map.get(filters, :search) do
+      value when is_binary(value) and value != "" ->
+        pattern = "%#{value}%"
+
+        where(
+          query,
+          [event],
+          ilike(event.event_type, ^pattern) or
+            ilike(event.actor_id, ^pattern) or
+            ilike(event.target_id, ^pattern)
+        )
+
+      _empty ->
+        query
+    end
   end
 
   defp actor_attrs(nil), do: %{}
@@ -58,6 +93,11 @@ defmodule Backplane.Auth.Audit do
       {key, value}, acc when is_binary(key) -> Map.put(acc, String.to_atom(key), value)
     end)
   end
+
+  defp normalize_filters(filters) when is_list(filters),
+    do: filters |> Map.new() |> atom_key_attrs()
+
+  defp normalize_filters(filters) when is_map(filters), do: atom_key_attrs(filters)
 
   defp sanitize_metadata(metadata) when is_map(metadata) do
     Enum.reduce(metadata, %{}, fn {key, value}, acc ->

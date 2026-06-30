@@ -41,7 +41,8 @@ defmodule Backplane.Auth.OAuthTest do
       assert client.confidential
       assert client.pkce
       assert is_binary(secret)
-      assert client.secret == secret
+      refute client.secret == secret
+      assert Bcrypt.verify_pass(secret, client.secret)
       assert ["gsmlg:read", "openid"] = scope_names(client.authorized_scopes)
     end
 
@@ -126,6 +127,44 @@ defmodule Backplane.Auth.OAuthTest do
 
       assert {:ok, %Client{} = updated} = Auth.OAuth.assign_client_scopes(client, ["email"])
       assert ["email"] = scope_names(updated.authorized_scopes)
+    end
+
+    test "rotates confidential client secrets without storing the plaintext secret" do
+      scope!("openid")
+
+      assert {:ok, %{client: client, secret: first_secret}} =
+               Auth.OAuth.create_client(%{
+                 name: "Rotating Secret App",
+                 redirect_uris: ["https://app.example.test/auth/callback"],
+                 scopes: ["openid"],
+                 confidential: true,
+                 pkce: true
+               })
+
+      assert {:ok, %{client: rotated, secret: second_secret}} =
+               Auth.OAuth.rotate_client_secret(client)
+
+      assert is_binary(second_secret)
+      refute second_secret == first_secret
+      refute rotated.secret == second_secret
+      assert Bcrypt.verify_pass(second_secret, rotated.secret)
+    end
+
+    test "marks disabled clients as unusable" do
+      assert {:ok, client} =
+               Auth.OAuth.create_client(%{
+                 name: "Disable App",
+                 redirect_uris: ["https://app.example.test/auth/callback"],
+                 scopes: [],
+                 confidential: false,
+                 pkce: true
+               })
+
+      refute Auth.OAuth.client_disabled?(client)
+
+      assert {:ok, disabled} = Auth.OAuth.disable_client(client)
+      assert Auth.OAuth.client_disabled?(disabled)
+      assert is_nil(Auth.OAuth.get_enabled_client(disabled.id))
     end
   end
 

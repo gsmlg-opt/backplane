@@ -72,6 +72,34 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     refute html =~ "Persistent Auth audit storage is not implemented yet"
   end
 
+  test "Auth audit route filters events by severity and event type", %{conn: conn} do
+    {:ok, _info_event} =
+      Auth.Audit.record("login.success", %{actor_type: "auth_admin", actor_id: "admin-1"}, %{
+        target_type: "auth_user",
+        target_id: "user-1",
+        severity: "info"
+      })
+
+    {:ok, _error_event} =
+      Auth.Audit.record(
+        "token.refresh_reuse_detected",
+        %{actor_type: "oauth_client", actor_id: "client-1"},
+        %{
+          target_type: "oauth_token",
+          target_id: "token-1",
+          severity: "error"
+        }
+      )
+
+    {:ok, _view, html} =
+      live(conn, "/auth/audit?event_type=token.refresh_reuse_detected&severity=error")
+
+    assert html =~ ~s(id="auth-audit-filter-form")
+    assert html =~ "token.refresh_reuse_detected"
+    assert html =~ "error"
+    refute html =~ "login.success"
+  end
+
   test "OAuth clients page lists real clients and disables them", %{conn: conn} do
     client =
       oauth_client!(

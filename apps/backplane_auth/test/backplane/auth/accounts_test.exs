@@ -105,6 +105,17 @@ defmodule Backplane.Auth.AccountsTest do
       assert {:ok, %Session{revoked_at: %DateTime{}}} =
                Auth.Accounts.revoke_session_by_id(session.id)
     end
+
+    test "disabling a user revokes active browser sessions" do
+      user = user!("alice@example.com")
+      assert {:ok, %{session: session, token: token}} = Auth.Accounts.create_session(user)
+
+      assert {:ok, _resolved} = Auth.Accounts.get_session_by_token(token)
+      assert {:ok, _disabled} = Auth.Accounts.disable_user(user)
+
+      assert {:error, :not_found} = Auth.Accounts.get_session_by_token(token)
+      assert %Session{revoked_at: %DateTime{}} = Backplane.Repo.get!(Session, session.id)
+    end
   end
 
   describe "list_users/1" do

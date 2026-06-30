@@ -156,14 +156,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   end
 
   def handle_event("revoke-session", %{"id" => id}, socket) do
-    case Auth.Accounts.revoke_session_by_id(id) do
+    case Auth.Accounts.revoke_session_by_id(id, admin_actor()) do
       {:ok, _session} ->
-        Auth.Audit.record(
-          "session.revoked",
-          %{actor_type: "admin_ui", actor_id: "backplane_admin"},
-          %{target_type: "auth_session", target_id: id}
-        )
-
         {:noreply,
          socket
          |> put_flash(:info, "Auth session revoked.")
@@ -173,6 +167,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
         {:noreply, put_flash(socket, :error, "Auth session was not found.")}
     end
   end
+
+  defp admin_actor, do: %{actor_type: "admin_ui", actor_id: "backplane_admin"}
 
   @impl true
   def render(assigns) do

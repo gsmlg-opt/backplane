@@ -9,7 +9,7 @@ defmodule Backplane.Auth.Schemas.SigningKey do
 
   schema "auth_signing_keys" do
     field :kid, :string
-    field :private_jwk, :map
+    field :encrypted_private_jwk, :binary, redact: true
     field :public_jwk, :map
     field :active, :boolean, default: true
     field :retired_at, :utc_datetime_usec
@@ -19,8 +19,8 @@ defmodule Backplane.Auth.Schemas.SigningKey do
 
   def changeset(signing_key, attrs) do
     signing_key
-    |> cast(attrs, [:kid, :private_jwk, :public_jwk, :active, :retired_at])
-    |> validate_required([:kid, :private_jwk, :public_jwk, :active])
+    |> cast(attrs, [:kid, :encrypted_private_jwk, :public_jwk, :active, :retired_at])
+    |> validate_required([:kid, :encrypted_private_jwk, :public_jwk, :active])
     |> unique_constraint(:kid)
   end
 end

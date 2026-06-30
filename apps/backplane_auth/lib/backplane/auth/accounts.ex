@@ -80,14 +80,15 @@ defmodule Backplane.Auth.Accounts do
     end
   end
 
-  def disable_user(%User{} = user) do
+  def disable_user(%User{} = user, actor \\ nil) do
     result =
       user
       |> User.changeset(%{active: false})
       |> Repo.update()
 
     with {:ok, disabled} <- result do
-      Audit.record("user.disabled", disabled, target_attrs(disabled))
+      revoke_sessions_for_user(disabled.id)
+      Audit.record("user.disabled", actor || disabled, target_attrs(disabled))
       {:ok, disabled}
     end
   end
@@ -135,7 +136,7 @@ defmodule Backplane.Auth.Accounts do
     end
   end
 
-  def revoke_session(%Session{} = session) do
+  def revoke_session(%Session{} = session, actor \\ nil) do
     result =
       session
       |> Session.changeset(%{revoked_at: now()})
@@ -144,7 +145,7 @@ defmodule Backplane.Auth.Accounts do
     with {:ok, revoked} <- result do
       Audit.record(
         "session.revoked",
-        %{actor_type: "auth_session", actor_id: revoked.id},
+        actor || %{actor_type: "auth_session", actor_id: revoked.id},
         %{target_type: "auth_session", target_id: revoked.id}
       )
 
@@ -152,9 +153,9 @@ defmodule Backplane.Auth.Accounts do
     end
   end
 
-  def revoke_session_by_id(id) when is_binary(id) do
+  def revoke_session_by_id(id, actor \\ nil) when is_binary(id) do
     case Repo.get(Session, id) do
-      %Session{} = session -> revoke_session(session)
+      %Session{} = session -> revoke_session(session, actor)
       nil -> {:error, :not_found}
     end
   end
@@ -183,6 +184,13 @@ defmodule Backplane.Auth.Accounts do
 
   defp target_attrs(%User{id: id}) do
     %{target_type: "auth_user", target_id: id}
+  end
+
+  defp revoke_sessions_for_user(user_id) do
+    Session
+    |> where([session], session.user_id == ^user_id)
+    |> where([session], is_nil(session.revoked_at))
+    |> Repo.update_all(set: [revoked_at: now(), updated_at: now()])
   end
 
   defp attr(attrs, key, default \\ nil) do

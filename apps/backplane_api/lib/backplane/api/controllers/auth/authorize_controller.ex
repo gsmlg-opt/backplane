@@ -39,7 +39,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
   end
 
   defp validate_authorize_request(%{"client_id" => client_id} = params) do
-    with %Client{} = client <- Auth.OAuth.get_client(client_id),
+    with %Client{} = client <- Auth.OAuth.get_enabled_client(client_id),
          :ok <- validate_response_type(params),
          :ok <- Auth.OAuth.validate_redirect_uri(client, params["redirect_uri"]),
          :ok <- validate_pkce(params),
@@ -55,15 +55,17 @@ defmodule Backplane.Api.Auth.AuthorizeController do
   defp validate_authorize_request(_params), do: {:error, :invalid_request}
 
   defp current_user(conn) do
-    case get_session(conn, :auth_user_id) do
-      nil ->
-        :login_required
-
-      user_id ->
-        case Auth.Accounts.get_user(user_id) do
-          %User{active: true} = user -> {:ok, user}
-          _missing -> {:error, :login_required}
+    case get_session(conn, :auth_session_token) do
+      token when is_binary(token) ->
+        with {:ok, session} <- Auth.Accounts.get_session_by_token(token),
+             %User{active: true} = user <- Auth.Accounts.get_user(session.user_id) do
+          {:ok, user}
+        else
+          _invalid -> :login_required
         end
+
+      _missing ->
+        :login_required
     end
   end
 

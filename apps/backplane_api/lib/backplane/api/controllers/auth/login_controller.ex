@@ -15,20 +15,26 @@ defmodule Backplane.Api.Auth.LoginController do
 
     case Auth.Accounts.authenticate(email, password) do
       {:ok, user} ->
-        conn =
-          conn
-          |> configure_session(renew: true)
-          |> put_session(:auth_user_id, user.id)
+        case Auth.Accounts.create_session(user, session_attrs(conn)) do
+          {:ok, %{token: session_token}} ->
+            conn =
+              conn
+              |> configure_session(renew: true)
+              |> put_session(:auth_session_token, session_token)
 
-        case {pending_params, Auth.OAuth.get_client(pending_client_id || "")} do
-          {%{} = params, %Client{} = client} ->
-            conn
-            |> delete_session(:pending_oauth_authorize)
-            |> delete_session(:pending_oauth_client_id)
-            |> AuthorizeController.redirect_with_code(params, user, client)
+            case {pending_params, Auth.OAuth.get_enabled_client(pending_client_id || "")} do
+              {%{} = params, %Client{} = client} ->
+                conn
+                |> delete_session(:pending_oauth_authorize)
+                |> delete_session(:pending_oauth_client_id)
+                |> AuthorizeController.redirect_with_code(params, user, client)
 
-          _missing ->
-            redirect(conn, to: "/")
+              _missing ->
+                redirect(conn, to: "/")
+            end
+
+          {:error, _changeset} ->
+            send_resp(conn, 500, "session_create_failed")
         end
 
       {:error, _reason} ->
@@ -45,6 +51,8 @@ defmodule Backplane.Api.Auth.LoginController do
   end
 
   def delete(conn, _params) do
+    revoke_current_session(conn)
+
     conn
     |> configure_session(drop: true)
     |> send_resp(204, "")
@@ -53,7 +61,12 @@ defmodule Backplane.Api.Auth.LoginController do
   defp login_form(error \\ nil) do
     error_html =
       if error do
-        ~s(<p class="error">#{Phoenix.HTML.html_escape(error)}</p>)
+        escaped_error =
+          error
+          |> Phoenix.HTML.html_escape()
+          |> Phoenix.HTML.safe_to_string()
+
+        ~s(<p class="error">#{escaped_error}</p>)
       else
         ""
       end
@@ -76,5 +89,31 @@ defmodule Backplane.Api.Auth.LoginController do
       </body>
     </html>
     """
+  end
+
+  defp session_attrs(conn) do
+    %{
+      user_agent: conn |> get_req_header("user-agent") |> List.first(),
+      ip: remote_ip(conn)
+    }
+  end
+
+  defp remote_ip(%{remote_ip: remote_ip}) when is_tuple(remote_ip) do
+    remote_ip
+    |> :inet.ntoa()
+    |> to_string()
+  rescue
+    _error -> nil
+  end
+
+  defp remote_ip(_conn), do: nil
+
+  defp revoke_current_session(conn) do
+    with token when is_binary(token) <- get_session(conn, :auth_session_token),
+         {:ok, session} <- Auth.Accounts.get_session_by_token(token) do
+      Auth.Accounts.revoke_session(session)
+    else
+      _missing -> :ok
+    end
   end
 end
