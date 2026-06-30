@@ -1,6 +1,8 @@
 defmodule Backplane.Api.RouteBoundaryTest do
   use Backplane.Api.ConnCase, async: false
 
+  alias Backplane.Auth
+
   test "serves public home page", %{conn: conn} do
     conn = get(conn, "/")
 
@@ -44,5 +46,70 @@ defmodule Backplane.Api.RouteBoundaryTest do
     assert post(conn, "/api/anthropic/v1/messages", %{}) |> response(404)
     assert get(conn, "/api/skills") |> response(404)
     assert get(conn, "/api/host-agent/skills/repo-review/download") |> response(404)
+  end
+
+  test "Backplane Auth tokens do not change existing service route auth behavior", %{conn: conn} do
+    access_token = issue_auth_access_token!()
+
+    mcp_conn =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{access_token}")
+      |> put_req_header("content-type", "application/json")
+      |> post("/mcp", Jason.encode!(%{"jsonrpc" => "2.0", "method" => "initialize", "id" => 1}))
+
+    assert json_response(mcp_conn, 200)["result"]["serverInfo"]["name"] == "backplane"
+    assert get_resp_header(mcp_conn, "location") == []
+    assert get_resp_header(mcp_conn, "www-authenticate") == []
+
+    models_conn =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{access_token}")
+      |> get("/v1/models")
+
+    assert json_response(models_conn, 200)["object"] == "list"
+    assert get_resp_header(models_conn, "location") == []
+    assert get_resp_header(models_conn, "www-authenticate") == []
+
+    skills_conn =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{access_token}")
+      |> get("/skills")
+
+    assert json_response(skills_conn, 200)["data"] == []
+    assert get_resp_header(skills_conn, "location") == []
+    assert get_resp_header(skills_conn, "www-authenticate") == []
+
+    host_agent_conn =
+      conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{access_token}")
+      |> get("/host-agent/skills/repo-review/download")
+
+    assert response(host_agent_conn, 404) == "not found"
+    assert get_resp_header(host_agent_conn, "location") == []
+    assert get_resp_header(host_agent_conn, "www-authenticate") == []
+  end
+
+  defp issue_auth_access_token! do
+    {:ok, user} =
+      Auth.Accounts.create_user(%{
+        email: "route-boundary-#{System.unique_integer([:positive])}@example.com",
+        name: "Route Boundary"
+      })
+
+    {:ok, %{client: client}} =
+      Auth.OAuth.create_client(%{
+        name: "Route Boundary App",
+        redirect_uris: ["https://app.example.test/auth/callback"],
+        scopes: ["openid", "profile", "email"],
+        confidential: true,
+        pkce: true
+      })
+
+    {:ok, tokens} = Auth.Tokens.issue_access_token(user, client, ["openid", "profile", "email"])
+    tokens.access_token
   end
 end
