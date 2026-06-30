@@ -10,7 +10,7 @@ config :boruta, Boruta.Oauth,
   repo: Backplane.Repo,
   issuer: "http://localhost:4220",
   contexts: [
-    resource_owners: Backplane.Accounts.ResourceOwners
+    resource_owners: Backplane.Auth.ResourceOwners
   ]
 
 config :backplane_system, Backplane.Repo,

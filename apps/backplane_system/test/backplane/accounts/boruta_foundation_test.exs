@@ -12,7 +12,7 @@ defmodule Backplane.Accounts.BorutaFoundationTest do
     assert Keyword.fetch!(oauth_config, :repo) == Backplane.Repo
     assert Boruta.Config.repo() == Backplane.Repo
     assert Boruta.Config.issuer() == Application.fetch_env!(:backplane, :api_url)
-    assert Boruta.Config.resource_owners() == Backplane.Accounts.ResourceOwners
+    assert Boruta.Config.resource_owners() == Backplane.Auth.ResourceOwners
     assert Code.ensure_loaded?(Client)
     assert Code.ensure_loaded?(Scope)
     assert Code.ensure_loaded?(Token)

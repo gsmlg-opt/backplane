@@ -1,0 +1,53 @@
+defmodule Backplane.Auth.RBACTest do
+  use Backplane.Auth.DataCase, async: false
+
+  import Backplane.Auth.Fixtures
+
+  alias Backplane.Auth
+  alias Backplane.Auth.Schemas.{Role, RoleScope, UserRole}
+
+  describe "roles and scopes" do
+    test "creates roles and assigns scopes" do
+      scope!("gsmlg:read")
+
+      assert {:ok, %Role{} = role} =
+               Auth.RBAC.create_role(%{name: "reader", label: "Reader"})
+
+      assert {:ok, %RoleScope{} = role_scope} =
+               Auth.RBAC.assign_role_scope(role, "gsmlg:read")
+
+      assert role_scope.role_id == role.id
+      assert role_scope.scope_name == "gsmlg:read"
+    end
+
+    test "assigns roles to users and computes effective scopes as a union" do
+      user = auth_user_fixture!()
+      scope!("gsmlg:read")
+      scope!("gsmlg:write")
+
+      assert {:ok, reader} = Auth.RBAC.create_role(%{name: "reader", label: "Reader"})
+      assert {:ok, writer} = Auth.RBAC.create_role(%{name: "writer", label: "Writer"})
+      assert {:ok, _role_scope} = Auth.RBAC.assign_role_scope(reader, "gsmlg:read")
+      assert {:ok, _role_scope} = Auth.RBAC.assign_role_scope(writer, "gsmlg:read")
+      assert {:ok, _role_scope} = Auth.RBAC.assign_role_scope(writer, "gsmlg:write")
+
+      assert {:ok, %UserRole{}} = Auth.RBAC.assign_user_role(user, reader)
+      assert {:ok, %UserRole{}} = Auth.RBAC.assign_user_role(user, writer)
+
+      assert ["gsmlg:read", "gsmlg:write"] = Auth.RBAC.effective_scope_names(user)
+    end
+
+    test "system roles are seeded and cannot be deleted" do
+      assert :ok = Auth.RBAC.seed_system_roles()
+
+      role = Auth.RBAC.get_role("admin")
+      assert %Role{name: "admin", system: true} = role
+      assert {:error, :system_role} = Auth.RBAC.delete_role(role)
+    end
+  end
+
+  defp scope!(name) do
+    assert {:ok, scope} = Auth.OAuth.create_scope(%{name: name, label: name, public: true})
+    scope
+  end
+end
