@@ -30,6 +30,7 @@ defmodule BackplaneAdmin.MixProject do
   defp deps do
     [
       {:backplane, in_umbrella: true},
+      {:backplane_auth, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_mcp, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},

@@ -46,6 +46,7 @@ defmodule Backplane.Umbrella.MixProject do
         include_executables_for: [:unix],
         applications: [
           backplane: :permanent,
+          backplane_auth: :permanent,
           backplane_api: :permanent,
           backplane_admin: :permanent,
           backplane_memory: :permanent,
