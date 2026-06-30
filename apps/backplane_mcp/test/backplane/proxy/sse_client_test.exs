@@ -4,15 +4,14 @@ defmodule Backplane.Proxy.SSEClientTest do
   alias Backplane.Proxy.SSEClient
 
   setup do
-    {:ok, _} = Backplane.Test.MockSseMcpServer.start_link()
-    port = 4270
+    start_supervised!(Backplane.Test.MockSseMcpServer)
 
-    {:ok, _} =
-      Bandit.start_link(
-        plug: Backplane.Test.MockSseMcpServer.Router,
-        port: port,
-        ip: {127, 0, 0, 1}
+    bandit =
+      start_supervised!(
+        {Bandit, plug: Backplane.Test.MockSseMcpServer.Router, port: 0, ip: {127, 0, 0, 1}}
       )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
     %{port: port}
   end
