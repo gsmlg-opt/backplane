@@ -71,13 +71,13 @@
     </:user_profile>
   </.dm_appbar>
 
-  <div id="home-body" class="mx-auto max-w-7xl">
+  <main id="home-body" class="bg-surface">
     <header class="border-b border-outline-variant bg-surface-container-low">
-      <div class="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:px-6 lg:grid-cols-[1fr_18rem] lg:px-8">
-        <div class="max-w-3xl">
+      <div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-8">
+        <div class="max-w-3xl self-center">
           <div class="flex flex-wrap gap-2">
             <.dm_badge variant="primary" soft>Gateway overview</.dm_badge>
-            <.dm_badge variant="secondary" soft>Self-hosted edge</.dm_badge>
+            <.dm_badge variant="secondary" soft>Docs-first contract</.dm_badge>
           </div>
           <h1 class="mt-4 text-3xl font-bold tracking-normal text-on-surface sm:text-4xl">
             One public surface for agents, tools, and model traffic
@@ -98,31 +98,67 @@
               </.dm_btn>
             </a>
           </div>
+
+          <div class="mt-8 grid gap-3 sm:grid-cols-3">
+            <div class="rounded-md border border-outline-variant bg-surface-container p-4">
+              <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
+                Model path
+              </div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">Routed centrally</div>
+            </div>
+            <div class="rounded-md border border-outline-variant bg-surface-container p-4">
+              <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
+                Tool path
+              </div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">Namespaced access</div>
+            </div>
+            <div class="rounded-md border border-outline-variant bg-surface-container p-4">
+              <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
+                Skill path
+              </div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">Reusable records</div>
+            </div>
+          </div>
         </div>
 
         <div class="flex items-center justify-center lg:justify-end">
-          <div class="relative aspect-square w-52 rounded-lg border border-outline-variant bg-surface p-8 shadow-sm">
-            <div class="absolute inset-x-8 top-8 h-px bg-outline-variant"></div>
-            <div class="absolute inset-y-8 left-8 w-px bg-outline-variant"></div>
-            <img
-              src={~p"/images/backplane-icon.png"}
-              alt="Backplane"
-              class="relative z-10 h-full w-full object-contain"
-            />
+          <div class="w-full max-w-sm rounded-md border border-outline-variant bg-surface p-4 shadow-sm">
+            <div class="rounded-md border border-outline-variant bg-surface-container p-8">
+              <img
+                src={~p"/images/backplane-icon.png"}
+                alt="Backplane"
+                class="mx-auto aspect-square w-36 object-contain"
+              />
+            </div>
+            <div class="mt-4 grid gap-2 text-sm">
+              <div class="flex items-center justify-between rounded-md bg-surface-container px-3 py-2">
+                <span class="text-on-surface-variant">Agents</span>
+                <span class="font-medium text-on-surface">Public origin</span>
+              </div>
+              <div class="flex items-center justify-between rounded-md bg-surface-container px-3 py-2">
+                <span class="text-on-surface-variant">Backplane</span>
+                <span class="font-medium text-on-surface">Private routing</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </header>
 
-    <main class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-      <section class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <section class="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+      <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <a
           href={~p"/docs/llama"}
-          class="rounded-md border border-outline-variant bg-surface p-5 text-on-surface no-underline transition hover:bg-surface-container"
+          class="group rounded-md border border-outline-variant bg-surface-container p-5 text-on-surface no-underline transition hover:-translate-y-0.5 hover:bg-surface-container-high"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold tracking-normal">Model gateway</h2>
-            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary" />
+            <div class="flex items-center gap-3">
+              <span class="rounded-md bg-primary-container p-2 text-on-primary-container">
+                <.dm_mdi name="routes" class="h-5 w-5" />
+              </span>
+              <h2 class="text-xl font-semibold tracking-normal">Model gateway</h2>
+            </div>
+            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
             Provider routing, model aliases, usage capture, and compatible model APIs.
@@ -130,11 +166,16 @@
         </a>
         <a
           href={~p"/docs/mcp"}
-          class="rounded-md border border-outline-variant bg-surface p-5 text-on-surface no-underline transition hover:bg-surface-container"
+          class="group rounded-md border border-outline-variant bg-surface-container p-5 text-on-surface no-underline transition hover:-translate-y-0.5 hover:bg-surface-container-high"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold tracking-normal">MCP Hub</h2>
-            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary" />
+            <div class="flex items-center gap-3">
+              <span class="rounded-md bg-secondary-container p-2 text-on-secondary-container">
+                <.dm_mdi name="hubspot" class="h-5 w-5" />
+              </span>
+              <h2 class="text-xl font-semibold tracking-normal">MCP Hub</h2>
+            </div>
+            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
             One managed tool gateway with upstream services and namespaced tools.
@@ -142,11 +183,16 @@
         </a>
         <a
           href={~p"/docs/skills"}
-          class="rounded-md border border-outline-variant bg-surface p-5 text-on-surface no-underline transition hover:bg-surface-container"
+          class="group rounded-md border border-outline-variant bg-surface-container p-5 text-on-surface no-underline transition hover:-translate-y-0.5 hover:bg-surface-container-high"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold tracking-normal">Skills library</h2>
-            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary" />
+            <div class="flex items-center gap-3">
+              <span class="rounded-md bg-tertiary-container p-2 text-on-tertiary-container">
+                <.dm_mdi name="library" class="h-5 w-5" />
+              </span>
+              <h2 class="text-xl font-semibold tracking-normal">Skills library</h2>
+            </div>
+            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
             Reusable skill records, archive handling, and managed skill tools.
@@ -154,11 +200,16 @@
         </a>
         <a
           href={~p"/docs/agents"}
-          class="rounded-md border border-outline-variant bg-surface p-5 text-on-surface no-underline transition hover:bg-surface-container"
+          class="group rounded-md border border-outline-variant bg-surface-container p-5 text-on-surface no-underline transition hover:-translate-y-0.5 hover:bg-surface-container-high"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold tracking-normal">Agent setup</h2>
-            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary" />
+            <div class="flex items-center gap-3">
+              <span class="rounded-md bg-primary-container p-2 text-on-primary-container">
+                <.dm_mdi name="console-line" class="h-5 w-5" />
+              </span>
+              <h2 class="text-xl font-semibold tracking-normal">Agent setup</h2>
+            </div>
+            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
             Configure coding agents and API clients to use Backplane.
@@ -166,50 +217,67 @@
         </a>
         <a
           href={~p"/docs/auth"}
-          class="rounded-md border border-outline-variant bg-surface p-5 text-on-surface no-underline transition hover:bg-surface-container"
+          class="group rounded-md border border-outline-variant bg-surface-container p-5 text-on-surface no-underline transition hover:-translate-y-0.5 hover:bg-surface-container-high md:col-span-2 lg:col-span-1"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold tracking-normal">Authentication</h2>
-            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary" />
+            <div class="flex items-center gap-3">
+              <span class="rounded-md bg-secondary-container p-2 text-on-secondary-container">
+                <.dm_mdi name="shield-key" class="h-5 w-5" />
+              </span>
+              <h2 class="text-xl font-semibold tracking-normal">Authentication</h2>
+            </div>
+            <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
             Client tokens, open local mode, and public OAuth endpoints.
           </p>
         </a>
-      </section>
-    </main>
-  </div>
-
-  <.dm_page_footer
-    label="Backplane footer"
-    class="border-t border-outline-variant bg-secondary text-secondary-content py-8"
-  >
-    <:section class="md:col-span-2" body_class="gap-3" title="Public gateway contract">
-      <div class="flex flex-wrap gap-2">
-        <.dm_badge variant="primary" soft>One model gateway</.dm_badge>
-        <.dm_badge variant="tertiary" soft>One tool gateway</.dm_badge>
       </div>
-      <p class="max-w-2xl text-sm leading-6 text-secondary-content">
-        Keep agents connected to stable public routes while Backplane handles routing, credentials,
-        model aliases, tool namespaces, and usage capture behind the gateway.
-      </p>
-    </:section>
-    <:section title="Docs" body_class="gap-2 text-sm">
-      <a href={~p"/docs/llama"} class="text-secondary-content no-underline hover:underline">
-        Model gateway
-      </a>
-      <a href={~p"/docs/mcp"} class="text-secondary-content no-underline hover:underline">
-        MCP Hub
-      </a>
-      <a href={~p"/docs/skills"} class="text-secondary-content no-underline hover:underline">
-        Skills library
-      </a>
-      <a href={~p"/docs/agents"} class="text-secondary-content no-underline hover:underline">
-        Agent setup
-      </a>
-      <a href={~p"/docs/auth"} class="text-secondary-content no-underline hover:underline">
-        Authentication
-      </a>
-    </:section>
-  </.dm_page_footer>
+    </section>
+  </main>
+
+  <footer class="border-t border-outline-variant bg-surface-container-high text-on-surface">
+    <div class="mx-auto grid max-w-6xl gap-8 px-4 py-8 sm:px-6 md:grid-cols-[minmax(0,1fr)_18rem] lg:px-8">
+      <div>
+        <div class="flex flex-wrap gap-2">
+          <.dm_badge variant="primary" soft>Public gateway contract</.dm_badge>
+          <.dm_badge variant="secondary" soft>{@base_url}</.dm_badge>
+        </div>
+        <p class="mt-4 max-w-2xl text-sm leading-6 text-on-surface-variant">
+          Keep agents connected to a stable public origin while Backplane handles model routing,
+          tool namespaces, credentials, and usage capture behind the gateway.
+        </p>
+        <div class="mt-5 flex flex-wrap gap-2">
+          <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
+            One model gateway
+          </span>
+          <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
+            One tool gateway
+          </span>
+          <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
+            Docs own route details
+          </span>
+        </div>
+      </div>
+
+      <nav aria-label="Footer docs" class="grid gap-2 text-sm">
+        <div class="font-semibold text-on-surface">Docs</div>
+        <a href={~p"/docs/llama"} class="text-on-surface-variant no-underline hover:text-primary">
+          Model gateway
+        </a>
+        <a href={~p"/docs/mcp"} class="text-on-surface-variant no-underline hover:text-primary">
+          MCP Hub
+        </a>
+        <a href={~p"/docs/skills"} class="text-on-surface-variant no-underline hover:text-primary">
+          Skills library
+        </a>
+        <a href={~p"/docs/agents"} class="text-on-surface-variant no-underline hover:text-primary">
+          Agent setup
+        </a>
+        <a href={~p"/docs/auth"} class="text-on-surface-variant no-underline hover:text-primary">
+          Authentication
+        </a>
+      </nav>
+    </div>
+  </footer>
 </div>

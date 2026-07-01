@@ -7,7 +7,10 @@ defmodule Backplane.Api.PageControllerTest do
 
     assert html =~ "Backplane"
     assert html =~ "Gateway overview"
+    assert html =~ "Docs-first contract"
     assert html =~ "Docs now own the endpoint catalog"
+    assert html =~ "Routed centrally"
+    assert html =~ "Namespaced access"
 
     for docs_path <- [
           "/docs/llama",
@@ -30,10 +33,12 @@ defmodule Backplane.Api.PageControllerTest do
     assert html =~ ~s(<svg xmlns="http://www.w3.org/2000/svg")
     assert html =~ ~s(phx-hook="ThemeSwitcher")
     assert html =~ "<footer"
-    assert html =~ "bg-secondary text-secondary-content"
+    assert html =~ "bg-surface-container-high text-on-surface"
     assert html =~ "Public gateway contract"
+    assert html =~ ~s(aria-label="Footer docs")
+    assert html =~ "Docs own route details"
     assert html =~ ~s(id="home-body")
-    assert html =~ "max-w-7xl"
+    assert html =~ "max-w-6xl"
 
     refute html =~ "All API endpoints"
     refute html =~ "Complete catalog"
@@ -69,6 +74,7 @@ defmodule Backplane.Api.PageControllerTest do
     refute html =~ "/metrics"
     refute html =~ "/api"
     refute html =~ "/anthropic"
+    refute html =~ "bg-secondary text-secondary-content"
     refute html =~ "w-auto px-3 rounded-md whitespace-nowrap"
   end
 
