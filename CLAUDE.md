@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Backplane is a private, self-hosted gateway with exactly two features:
 
-1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /api/mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
-2. **LLM Proxy** — A credential-injecting, model-routing reverse proxy for LLM APIs (Anthropic/OpenAI format) with usage tracking.
+1. **MCP Hub** — A single MCP Streamable HTTP endpoint (`POST /mcp`) that aggregates N upstream MCP servers plus built-in managed services. Connect once, access everything. Tools from all sources are namespaced as `prefix::tool_name`.
+2. **LLM Proxy** — A credential-injecting, model-routing reverse proxy for LLM provider protocols with usage tracking.
 
 Everything else — git access, documentation search, skill libraries — is delivered as either an upstream MCP server or a managed MCP service. Backplane proxies tool calls to services that implement those concerns.
 
@@ -19,16 +19,15 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/mcp` | MCP JSON-RPC endpoint |
-| `GET` | `/api/mcp` | MCP SSE notification stream |
-| `DELETE` | `/api/mcp` | MCP session cleanup |
+| `POST` | `/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/mcp` | MCP SSE notification stream |
+| `DELETE` | `/mcp` | MCP session cleanup |
 | `GET` | `/health` | Health check JSON |
 | `GET` | `/metrics` | Runtime metrics |
-| `*` | `/api/v1/*` | LLM proxy (OpenAI-compatible) |
-| `*` | `/api/anthropic/*` | LLM proxy (Anthropic Messages) |
-| `*` | `/api/llm/*` | LLM admin API (providers, aliases) |
-| `*` | `/api/skills/*` | Skills REST API |
-| `*` | `/api/host-agent/*` | Host agent API |
+| `*` | `/v1/*` | LLM proxy (OpenAI-compatible) |
+| `POST` | `/v1/messages` | LLM proxy (Anthropic Messages) |
+| `*` | `/skills/*` | Skills HTTP surface |
+| `*` | `/host-agent/*` | Host agent HTTP surface |
 | `*` | `/admin` | Admin UI (LiveView) |
 
 ### MCP Auth Modes
@@ -39,7 +38,7 @@ Dev server listens on `http://localhost:4220`. Production defaults to port 4100.
 
 ## Umbrella Structure
 
-This is an umbrella project. Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses `config :backplane_web, ...`.
+This is an umbrella project. Config lives at the umbrella root (`config/`). Core config uses `config :backplane, ...`, web config uses the Phoenix endpoint configuration.
 
 **Core apps:**
 
@@ -89,7 +88,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 ### Key Internal Modules
 
 **Transport (backplane_mcp)**
-- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /api/mcp`
+- `Backplane.Transport.McpPlug` — JSON-RPC entry point for `POST /mcp`
 - `Backplane.Transport.McpHandler` — Method dispatcher (initialize, tools/list, tools/call, ping)
 - `Backplane.Transport.AuthPlug` — Client bearer token validation with scope filtering
 - `Backplane.Transport.Session` / `TaskManager` — SSE session and async task lifecycle
@@ -111,7 +110,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `BackplaneMemory.Service` — `memory::*` tools (in `backplane_memory`)
 
 **LLM Proxy (backplane_llama)**
-- `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector, ApiRouter
+- `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector, and routing modules
 - `Backplane.Embedding` — Embedding provider/model context
 
 **System Infrastructure (backplane_system)**
@@ -198,7 +197,7 @@ PostgreSQL. Key table groups:
 - `tool_call_log` — MCP tool call audit log
 
 **LLM Proxy**
-- `llm_providers` / `llm_provider_apis` / `llm_provider_models` / `llm_provider_model_surfaces` — Provider definitions and model surfaces
+- `llm_providers` / `llm_provider_models` / `llm_provider_model_surfaces` — Provider definitions and model surfaces
 - `llm_auto_models` / `llm_auto_model_routes` / `llm_auto_model_targets` — Auto-routing rules
 - `embedding_providers` / `embedding_models` — Embedding provider/model definitions
 - `llm_logs` — Insert-only LLM request usage records
@@ -293,47 +292,3 @@ If you encounter missing features, bugs, or need functionality not yet available
 ## Commit Conventions
 
 Use Conventional Commits with a scope prefix: `feat(mcp):`, `fix(hub):`, `test(day_ex):`, `docs:`, `ci:`. Pull requests should describe behavior changes, list validation commands, and include screenshots for admin UI changes.
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **backplane** (3806 symbols, 6857 relationships, 274 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/backplane/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/backplane/clusters` | All functional areas |
-| `gitnexus://repo/backplane/processes` | All execution flows |
-| `gitnexus://repo/backplane/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
