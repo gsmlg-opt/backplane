@@ -19,6 +19,63 @@ defmodule Backplane.LLM.RouterTest do
 
   alias Backplane.Settings.Credentials
 
+  defmodule MoonshotUpstream do
+    use Plug.Router
+
+    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+    plug(:match)
+    plug(:dispatch)
+
+    post "/v1/chat/completions" do
+      moonshot_response(conn)
+    end
+
+    post "/anthropic/v1/messages" do
+      moonshot_response(conn)
+    end
+
+    defp moonshot_response(conn) do
+      if store = Application.get_env(:backplane, :router_test_moonshot_store) do
+        Agent.update(store, &Map.put(&1, :body, conn.body_params))
+      end
+
+      if get_in(conn.body_params, ["thinking", "type"]) == "disabled" do
+        send_resp(
+          conn,
+          400,
+          Jason.encode!(%{
+            "error" => %{
+              "type" => "invalid_request_error",
+              "message" => "invalid thinking: only type=enabled is allowed for this model"
+            }
+          })
+        )
+      else
+        send_resp(
+          conn,
+          200,
+          Jason.encode!(%{
+            "id" => "chatcmpl-moonshot-test",
+            "object" => "chat.completion",
+            "model" => conn.body_params["model"],
+            "choices" => [
+              %{
+                "index" => 0,
+                "message" => %{"role" => "assistant", "content" => "ok"},
+                "finish_reason" => "stop"
+              }
+            ],
+            "usage" => %{"prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2}
+          })
+        )
+      end
+    end
+
+    match _ do
+      send_resp(conn, 404, "Not Found")
+    end
+  end
+
   defmodule CodexUpstream do
     use Plug.Router
 
@@ -285,6 +342,139 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       assert is_map(body["error"])
       assert body["error"]["code"] == "model_not_found"
+    end
+
+    test "omits disabled thinking for Moonshot K2.7 code models" do
+      {:ok, store} = Agent.start_link(fn -> %{} end)
+      {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+
+      previous_store = Application.get_env(:backplane, :router_test_moonshot_store)
+      Application.put_env(:backplane, :router_test_moonshot_store, store)
+
+      on_exit(fn ->
+        restore_env(:router_test_moonshot_store, previous_store)
+
+        try do
+          ThousandIsland.stop(server_pid)
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          Agent.stop(store)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "moonshot-cn-router",
+          credential: "router-openai-cred",
+          preset_key: "moonshot-cn"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "http://localhost:#{port}"
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "kimi-k2.7-code",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      conn =
+        llm_request(:post, "/v1/chat/completions", %{
+          "model" => "moonshot-cn-router/kimi-k2.7-code",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "thinking" => %{"type" => "disabled"}
+        })
+
+      assert conn.status == 200
+
+      request = Agent.get(store, & &1)
+      assert request.body["model"] == "kimi-k2.7-code"
+      refute Map.has_key?(request.body, "thinking")
+    end
+
+    test "omits disabled thinking for Moonshot Anthropic K2.7 code models" do
+      {:ok, store} = Agent.start_link(fn -> %{} end)
+      {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+
+      previous_store = Application.get_env(:backplane, :router_test_moonshot_store)
+      Application.put_env(:backplane, :router_test_moonshot_store, store)
+
+      on_exit(fn ->
+        restore_env(:router_test_moonshot_store, previous_store)
+
+        try do
+          ThousandIsland.stop(server_pid)
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          Agent.stop(store)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "moonshot-cn-anthropic-router",
+          credential: "router-openai-cred",
+          preset_key: "moonshot-cn"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :anthropic,
+          base_url: "http://localhost:#{port}/anthropic"
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "kimi-k2.7-code",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      conn =
+        llm_request(:post, "/v1/messages", %{
+          "model" => "moonshot-cn-anthropic-router/kimi-k2.7-code",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "max_tokens" => 100,
+          "thinking" => %{"type" => "disabled"}
+        })
+
+      assert conn.status == 200
+
+      request = Agent.get(store, & &1)
+      assert request.body["model"] == "kimi-k2.7-code"
+      refute Map.has_key?(request.body, "thinking")
     end
 
     test "adapts OpenAI Codex OAuth chat completions to the Codex Responses backend" do

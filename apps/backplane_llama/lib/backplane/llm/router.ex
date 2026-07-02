@@ -24,6 +24,7 @@ defmodule Backplane.LLM.Router do
     ModelAlias,
     ModelExtractor,
     ModelResolver,
+    MoonshotCompat,
     OpenAICodexCompat,
     Provider,
     ProviderApi,
@@ -113,7 +114,14 @@ defmodule Backplane.LLM.Router do
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
-             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
+             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type),
+             {:ok, rewritten_body} <-
+               MoonshotCompat.normalize_request_body(
+                 provider,
+                 provider_api,
+                 raw_model,
+                 rewritten_body
+               ) do
           codex_backend? = OpenAICodexCompat.enabled?(provider, provider_api)
           provider_api = OpenAICodexCompat.effective_api(provider_api, codex_backend?)
 
