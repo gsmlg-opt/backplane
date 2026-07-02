@@ -160,7 +160,7 @@ defmodule Backplane.Admin.ClientsLive do
     end
   end
 
-  defp prepare_params(params, _token) do
+  defp prepare_params(params, token) do
     scopes =
       (params["scopes"] || "")
       |> String.split(",", trim: true)
@@ -169,9 +169,13 @@ defmodule Backplane.Admin.ClientsLive do
 
     scopes = if scopes == [], do: ["*"], else: scopes
 
-    # Build a token_hash placeholder for changeset validation (actual hashing happens in context)
-    Map.put(params, "scopes", scopes)
-    |> Map.put("token_hash", "placeholder")
+    attrs = Map.put(params, "scopes", scopes)
+
+    if token do
+      Map.put(attrs, "token_hash", "placeholder")
+    else
+      attrs
+    end
   end
 
   defp load_clients(socket) do
