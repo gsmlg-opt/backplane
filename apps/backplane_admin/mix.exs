@@ -58,7 +58,11 @@ defmodule BackplaneAdmin.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": ["bun.install --if-missing", "tailwind.install --if-missing"],
+      "assets.setup": [
+        "bun.install --if-missing",
+        "cmd ../../_build/bun install --cwd ../.. --frozen-lockfile",
+        "tailwind.install --if-missing"
+      ],
       "assets.build": [
         "cmd mkdir -p priv/static/assets",
         "bun backplane_admin",
