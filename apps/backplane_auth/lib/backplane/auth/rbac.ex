@@ -72,6 +72,22 @@ defmodule Backplane.Auth.RBAC do
     end
   end
 
+  @doc """
+  Validates that every scope in the requested scope string is granted to the
+  user through one of their roles. Enforced before delegating authorization
+  to Boruta, which treats public scopes as authorized for everyone.
+  """
+  def validate_user_scopes(%User{} = user, scope) do
+    requested = scope |> to_string() |> String.split(" ", trim: true)
+    effective = effective_scope_names(user)
+
+    if Enum.all?(requested, &(&1 in effective)) do
+      :ok
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
   def effective_scope_names(%User{id: user_id}) do
     RoleScope
     |> join(:inner, [role_scope], user_role in UserRole,

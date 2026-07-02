@@ -17,17 +17,6 @@ defmodule Backplane.Api.Auth.Helpers do
     |> json(body)
   end
 
-  def authenticate_client(conn, params) do
-    with {:ok, client_id, secret} <- client_credentials(conn, params),
-         %Client{} = client <- Auth.OAuth.get_enabled_client(client_id),
-         :ok <- verify_client_secret(client, secret) do
-      {:ok, client}
-    else
-      nil -> {:error, :invalid_client}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   def bearer_token(conn) do
     conn
     |> get_req_header("authorization")
@@ -37,7 +26,23 @@ defmodule Backplane.Api.Auth.Helpers do
     end
   end
 
-  defp client_credentials(conn, params) do
+  @doc """
+  Rejects requests from clients disabled through the admin UI before they
+  reach Boruta, which has no notion of the metadata disabled flag. Missing
+  or unknown client credentials fall through so Boruta renders the proper
+  protocol error.
+  """
+  def check_client_enabled(conn, params) do
+    with {:ok, client_id, _secret} <- client_credentials(conn, params),
+         %Client{} = client <- Auth.OAuth.get_client(client_id) do
+      if Auth.OAuth.client_enabled?(client), do: :ok, else: {:error, :invalid_client}
+    else
+      _unknown -> :ok
+    end
+  end
+
+  @doc "Extracts client credentials from HTTP basic auth or request params."
+  def client_credentials(conn, params) do
     case basic_credentials(conn) do
       {:ok, client_id, secret} ->
         {:ok, client_id, secret}
@@ -70,31 +75,6 @@ defmodule Backplane.Api.Auth.Helpers do
         :error
     end
   end
-
-  defp verify_client_secret(%Client{confidential: true, secret: secret}, provided)
-       when is_binary(provided) do
-    if client_secret_matches?(secret, provided) do
-      :ok
-    else
-      {:error, :invalid_client}
-    end
-  end
-
-  defp verify_client_secret(%Client{confidential: true}, _provided), do: {:error, :invalid_client}
-  defp verify_client_secret(%Client{confidential: false}, _provided), do: :ok
-
-  defp client_secret_matches?(stored, provided) do
-    Bcrypt.verify_pass(provided, stored) or secure_compare?(stored, provided)
-  rescue
-    _error -> secure_compare?(stored, provided)
-  end
-
-  defp secure_compare?(stored, provided)
-       when is_binary(stored) and is_binary(provided) and byte_size(stored) == byte_size(provided) do
-    Plug.Crypto.secure_compare(stored, provided)
-  end
-
-  defp secure_compare?(_stored, _provided), do: false
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

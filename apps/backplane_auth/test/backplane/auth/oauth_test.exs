@@ -41,8 +41,7 @@ defmodule Backplane.Auth.OAuthTest do
       assert client.confidential
       assert client.pkce
       assert is_binary(secret)
-      refute client.secret == secret
-      assert Bcrypt.verify_pass(secret, client.secret)
+      assert client.secret == secret
       assert ["gsmlg:read", "openid"] = scope_names(client.authorized_scopes)
     end
 
@@ -129,7 +128,7 @@ defmodule Backplane.Auth.OAuthTest do
       assert ["email"] = scope_names(updated.authorized_scopes)
     end
 
-    test "rotates confidential client secrets without storing the plaintext secret" do
+    test "rotates confidential client secrets" do
       scope!("openid")
 
       assert {:ok, %{client: client, secret: first_secret}} =
@@ -146,8 +145,7 @@ defmodule Backplane.Auth.OAuthTest do
 
       assert is_binary(second_secret)
       refute second_secret == first_secret
-      refute rotated.secret == second_secret
-      assert Bcrypt.verify_pass(second_secret, rotated.secret)
+      assert rotated.secret == second_secret
     end
 
     test "marks disabled clients as unusable" do

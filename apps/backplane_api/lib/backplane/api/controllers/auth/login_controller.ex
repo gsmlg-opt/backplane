@@ -27,7 +27,7 @@ defmodule Backplane.Api.Auth.LoginController do
                 conn
                 |> delete_session(:pending_oauth_authorize)
                 |> delete_session(:pending_oauth_client_id)
-                |> AuthorizeController.redirect_with_code(params, user, client)
+                |> AuthorizeController.authorize_for_user(params, user, client)
 
               _missing ->
                 redirect(conn, to: "/")

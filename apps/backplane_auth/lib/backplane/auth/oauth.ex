@@ -31,12 +31,11 @@ defmodule Backplane.Auth.OAuth do
 
     with :ok <- validate_client_attrs(attrs),
          {:ok, scopes} <- ensure_scopes(attrs.scopes),
-         {:ok, client} <- Admin.create_client(to_boruta_client_attrs(attrs, scopes)),
-         {:ok, client, plaintext_secret} <- hash_client_secret(client) do
+         {:ok, client} <- Admin.create_client(to_boruta_client_attrs(attrs, scopes)) do
       client = Repo.preload(client, :authorized_scopes)
 
       if client.confidential do
-        {:ok, %{client: client, secret: plaintext_secret}}
+        {:ok, %{client: client, secret: client.secret}}
       else
         {:ok, client}
       end
@@ -44,9 +43,8 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def rotate_client_secret(%Client{} = client) do
-    with {:ok, client} <- Admin.regenerate_client_secret(client),
-         {:ok, client, plaintext_secret} <- hash_client_secret(client) do
-      {:ok, %{client: Repo.preload(client, :authorized_scopes), secret: plaintext_secret}}
+    with {:ok, client} <- Admin.regenerate_client_secret(client) do
+      {:ok, %{client: Repo.preload(client, :authorized_scopes), secret: client.secret}}
     end
   end
 
@@ -82,11 +80,17 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def get_client(id) when is_binary(id) do
-    Client
-    |> Repo.get(id)
-    |> case do
-      nil -> nil
-      client -> Repo.preload(client, :authorized_scopes)
+    case Ecto.UUID.cast(id) do
+      {:ok, _uuid} ->
+        Client
+        |> Repo.get(id)
+        |> case do
+          nil -> nil
+          client -> Repo.preload(client, :authorized_scopes)
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -123,7 +127,9 @@ defmodule Backplane.Auth.OAuth do
       redirect_uris: Map.get(attrs, :redirect_uris, []),
       scopes: Map.get(attrs, :scopes, Map.get(attrs, :allowed_scopes, [])),
       confidential: confidential?,
-      pkce: Map.get(attrs, :pkce, false),
+      # PKCE is required for every client (Boruta only verifies code
+      # challenges when the client has pkce enabled).
+      pkce: Map.get(attrs, :pkce, true),
       access_token_ttl: Map.get(attrs, :access_token_ttl, 3_600),
       authorization_code_ttl: Map.get(attrs, :authorization_code_ttl, 60),
       refresh_token_ttl: Map.get(attrs, :refresh_token_ttl, 2_592_000),
@@ -161,22 +167,15 @@ defmodule Backplane.Auth.OAuth do
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.merge(%{
       authorize_scope: true,
-      public_refresh_token: true,
-      public_revoke: true,
+      # Confidential clients must present their secret for refresh and
+      # revoke; public clients have no secret to present.
+      public_refresh_token: not attrs.confidential,
+      public_revoke: not attrs.confidential,
       supported_grant_types: @supported_grant_types,
       token_endpoint_auth_methods: ["client_secret_basic", "client_secret_post"],
       id_token_signature_alg: "RS256",
       authorized_scopes: Enum.map(scopes, &%{id: &1.id})
     })
-  end
-
-  defp hash_client_secret(%Client{secret: secret} = client) when is_binary(secret) do
-    hashed_secret = Bcrypt.hash_pwd_salt(secret)
-
-    case client |> change(secret: hashed_secret) |> Repo.update() do
-      {:ok, updated} -> {:ok, updated, secret}
-      {:error, changeset} -> {:error, changeset}
-    end
   end
 
   defp ensure_scopes(scope_names) do

@@ -1,41 +1,60 @@
 defmodule Backplane.Api.Auth.AuthorizeController do
   use Backplane.Api, :controller
 
+  @behaviour Boruta.Oauth.AuthorizeApplication
+
   alias Backplane.Auth
   alias Backplane.Auth.Schemas.User
   alias Boruta.Ecto.Client
+  alias Boruta.Oauth.AuthorizeResponse
+  alias Boruta.Oauth.Error
 
   def authorize(conn, params) do
-    with {:ok, client} <- validate_authorize_request(params),
-         {:ok, user} <- current_user(conn) do
-      redirect_with_code(conn, params, user, client)
-    else
-      :login_required ->
-        {:ok, client} = validate_authorize_request(params)
+    case validate_authorize_request(params) do
+      {:ok, client} ->
+        case current_user(conn) do
+          {:ok, user} ->
+            authorize_for_user(conn, params, user, client)
 
-        conn
-        |> put_session(:pending_oauth_authorize, params)
-        |> put_session(:pending_oauth_client_id, client.id)
-        |> redirect(to: "/oauth/login")
+          :login_required ->
+            conn
+            |> put_session(:pending_oauth_authorize, params)
+            |> put_session(:pending_oauth_client_id, client.id)
+            |> redirect(to: "/oauth/login")
+        end
 
       {:error, reason} ->
         send_resp(conn, 400, to_string(reason))
     end
   end
 
-  def redirect_with_code(conn, params, %User{} = user, %Client{} = client) do
-    case Auth.Tokens.issue_authorization_code(user, client, params) do
-      {:ok, %{code: code}} ->
-        location =
-          params
-          |> Map.fetch!("redirect_uri")
-          |> append_query(%{"code" => code, "state" => params["state"]})
+  @doc """
+  Runs the Boruta authorization for an authenticated user. Also invoked by
+  the login controller when resuming a pending authorize request.
 
-        redirect(conn, external: location)
+  RBAC scopes are validated here because Boruta treats public scopes as
+  authorized for every resource owner.
+  """
+  def authorize_for_user(conn, params, %User{} = user, %Client{}) do
+    case Auth.RBAC.validate_user_scopes(user, params["scope"] || "") do
+      :ok ->
+        conn
+        |> Map.put(:query_params, params)
+        |> Boruta.Oauth.authorize(Auth.ResourceOwners.from_user(user), __MODULE__)
 
       {:error, reason} ->
         send_resp(conn, 400, to_string(reason))
     end
+  end
+
+  @impl Boruta.Oauth.AuthorizeApplication
+  def authorize_success(conn, %AuthorizeResponse{} = response) do
+    redirect(conn, external: AuthorizeResponse.redirect_to_url(response))
+  end
+
+  @impl Boruta.Oauth.AuthorizeApplication
+  def authorize_error(conn, %Error{error: error}) do
+    send_resp(conn, 400, to_string(error))
   end
 
   defp validate_authorize_request(%{"client_id" => client_id} = params) do
@@ -94,21 +113,5 @@ defmodule Backplane.Api.Auth.AuthorizeController do
     else
       {:error, :invalid_scope}
     end
-  end
-
-  defp append_query(uri, params) do
-    params =
-      params
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
-
-    separator =
-      if URI.parse(uri).query do
-        "&"
-      else
-        "?"
-      end
-
-    uri <> separator <> URI.encode_query(params)
   end
 end

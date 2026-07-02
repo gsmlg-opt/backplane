@@ -1,18 +1,28 @@
 defmodule Backplane.Auth.Tokens do
-  @moduledoc "JWT signing, refresh-token rotation, introspection, and revocation."
+  @moduledoc """
+  JWT signing keys, access-token verification, and token administration for
+  Backplane Auth.
+
+  OAuth grant flows (authorize, token, introspect, revoke) are delegated to
+  Boruta; this module owns what Boruta does not: the server-wide RS256 signing
+  key used for JWT access tokens, local verification of those JWTs, refresh
+  token reuse detection with family revocation, and admin-facing token
+  management.
+  """
 
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.Auth.{Accounts, Audit, OAuth, RBAC}
+  alias Backplane.Auth.{Accounts, Audit, OAuth}
   alias Backplane.Auth.Schemas.{SigningKey, User}
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
-  alias Backplane.WebOrigins
   alias Boruta.Ecto.{Client, Token}
 
   @alg "RS256"
   @access_token_ttl 3_600
+
+  ## Signing keys / JWKS
 
   def ensure_active_signing_key do
     SigningKey
@@ -37,130 +47,31 @@ defmodule Backplane.Auth.Tokens do
     %{"keys" => keys}
   end
 
-  def issue_access_token(%User{} = user, %Client{} = client, scopes, opts \\ [])
-      when is_list(scopes) do
-    with :ok <- validate_active_user(user),
-         :ok <- validate_active_client(client),
-         {:ok, key} <- ensure_active_signing_key() do
-      now = System.system_time(:second)
-      expires_in = Keyword.get(opts, :expires_in, client.access_token_ttl || @access_token_ttl)
-      expires_at = now + expires_in
-      scope = scope_string(scopes)
-      token_id = Ecto.UUID.generate()
+  @doc """
+  Signs the RS256 JWT value for a Boruta access token.
 
-      access_claims = %{
-        "iss" => WebOrigins.api_base_url(),
-        "sub" => user.id,
-        "aud" => client.id,
-        "client_id" => client.id,
-        "scope" => scope,
-        "iat" => now,
-        "exp" => expires_at,
-        "jti" => token_id
-      }
+  Invoked from `Backplane.Auth.AccessTokenGenerator` while Boruta builds the
+  token row. `expires_at` is not set on the struct at that point, so `exp` is
+  derived from the client's `access_token_ttl`.
+  """
+  def sign_access_token!(%Token{client_id: client_id, sub: sub, scope: scope} = token) do
+    {:ok, key} = ensure_active_signing_key()
+    now = System.system_time(:second)
+    ttl = token.access_token_ttl || @access_token_ttl
 
-      access_token = sign_jwt!(key, access_claims)
-      refresh_token = random_token()
-
-      id_token =
-        if "openid" in scopes do
-          issue_id_token!(key, user, client, now, expires_at, Keyword.get(opts, :nonce))
-        end
-
-      attrs = %{
-        id: token_id,
-        type: "access_token",
-        value: access_token,
-        refresh_token: refresh_token,
-        client_id: client.id,
-        sub: user.id,
-        scope: scope,
-        nonce: Keyword.get(opts, :nonce),
-        redirect_uri: Keyword.get(opts, :redirect_uri),
-        previous_token: Keyword.get(opts, :previous_token),
-        expires_at: expires_at
-      }
-
-      with {:ok, token} <- insert_token(attrs) do
-        {:ok,
-         %{
-           access_token: access_token,
-           refresh_token: refresh_token,
-           id_token: id_token,
-           token_type: "Bearer",
-           expires_in: expires_in,
-           scope: scope,
-           token: token
-         }}
-      end
-    end
+    sign_jwt!(key, %{
+      "iss" => Boruta.Config.issuer(),
+      "sub" => sub,
+      "aud" => client_id,
+      "client_id" => client_id,
+      "scope" => scope || "",
+      "iat" => now,
+      "exp" => now + ttl,
+      "jti" => Ecto.UUID.generate()
+    })
   end
 
-  def issue_id_token(%User{} = user, %Client{} = client, opts \\ []) do
-    with {:ok, key} <- ensure_active_signing_key() do
-      now = System.system_time(:second)
-      expires_at = now + Keyword.get(opts, :expires_in, client.id_token_ttl || @access_token_ttl)
-
-      {:ok, issue_id_token!(key, user, client, now, expires_at, Keyword.get(opts, :nonce))}
-    end
-  end
-
-  def issue_authorization_code(%User{} = user, %Client{} = client, params) when is_map(params) do
-    method = Map.get(params, "code_challenge_method") || Map.get(params, :code_challenge_method)
-    challenge = Map.get(params, "code_challenge") || Map.get(params, :code_challenge)
-    requested_scope = Map.get(params, "scope") || Map.get(params, :scope) || ""
-
-    cond do
-      method != "S256" ->
-        {:error, :unsupported_code_challenge_method}
-
-      not is_binary(challenge) or challenge == "" ->
-        {:error, :missing_code_challenge}
-
-      true ->
-        with :ok <- validate_active_user(user),
-             :ok <- validate_active_client(client),
-             :ok <- validate_user_scopes(user, requested_scope) do
-          code = random_token()
-          now = System.system_time(:second)
-
-          attrs = %{
-            type: "code",
-            value: code,
-            client_id: client.id,
-            sub: user.id,
-            redirect_uri: Map.get(params, "redirect_uri") || Map.get(params, :redirect_uri),
-            state: Map.get(params, "state") || Map.get(params, :state),
-            nonce: Map.get(params, "nonce") || Map.get(params, :nonce),
-            scope: requested_scope,
-            code_challenge_hash: challenge,
-            code_challenge_method: "S256",
-            expires_at: now + (client.authorization_code_ttl || 60)
-          }
-
-          with {:ok, token} <- insert_token(attrs) do
-            {:ok, %{code: code, token: token}}
-          end
-        end
-    end
-  end
-
-  def exchange_authorization_code(code, %Client{} = client, attrs) when is_binary(code) do
-    with :ok <- validate_active_client(client),
-         %Token{} = code_token <- get_code_token(code, client),
-         :ok <- validate_code_token(code_token, attrs),
-         {:ok, _revoked_code} <- revoke_code_once(code_token),
-         %User{} = user <- Accounts.get_user(code_token.sub),
-         :ok <- validate_active_user(user) do
-      issue_access_token(user, client, String.split(code_token.scope, " ", trim: true),
-        nonce: code_token.nonce,
-        redirect_uri: code_token.redirect_uri
-      )
-    else
-      nil -> {:error, :invalid_grant}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  ## Access token verification (resource-server side)
 
   def verify_access_token(token) when is_binary(token) do
     with {:ok, claims} <- verify_jwt(token),
@@ -171,70 +82,30 @@ defmodule Backplane.Auth.Tokens do
     end
   end
 
-  def introspect(token, %Client{} = client) when is_binary(token) do
-    case get_client_token(token, client) do
-      %Token{} = token ->
-        {:ok,
-         %{
-           active: token_active_for_principals?(token),
-           sub: token.sub,
-           client_id: token.client_id,
-           scope: token.scope,
-           exp: token.expires_at
-         }}
-
-      nil ->
-        {:ok, %{active: false}}
-    end
-  end
-
-  def revoke(token, %Client{} = client) when is_binary(token) do
-    case get_client_token(token, client) || get_client_refresh_token(token, client) do
-      %Token{} = token ->
-        token |> revoke_token() |> ok_result()
-
-      nil ->
-        :ok
-    end
-  end
-
-  def rotate_refresh_token(refresh_token, %Client{} = client) when is_binary(refresh_token) do
-    with :ok <- validate_active_client(client) do
-      do_rotate_refresh_token(refresh_token, client)
-    end
-  end
-
-  defp do_rotate_refresh_token(refresh_token, %Client{} = client) do
-    case get_client_refresh_token(refresh_token, client) do
-      %Token{refresh_token_revoked_at: %DateTime{}} = token ->
-        audit_refresh_reuse(token, client)
-        revoke_family(token)
-        {:error, :reuse_detected}
-
-      %Token{} = token ->
-        with :ok <- validate_refresh_token(token, client),
-             {:ok, _revoked} <-
-               token
-               |> change(refresh_token_revoked_at: now())
-               |> Repo.update(),
-             %User{} = user <- Accounts.get_user(token.sub),
-             :ok <- validate_active_user(user) do
-          issue_access_token(user, client, String.split(token.scope, " ", trim: true),
-            nonce: token.nonce,
-            redirect_uri: token.redirect_uri,
-            previous_token: token.value
-          )
-        else
-          nil -> {:error, :resource_owner_not_found}
-          {:error, changeset} -> {:error, changeset}
-        end
-
-      nil ->
-        {:error, :invalid_refresh_token}
-    end
-  end
-
   def find_active_access_token(token) when is_binary(token), do: active_access_token(token)
+
+  ## Refresh token reuse detection
+
+  @doc """
+  Checks whether a failed refresh grant presented an already-rotated refresh
+  token. On reuse, audits the event and revokes every token the client holds
+  for that subject. Called from the token endpoint error path.
+  """
+  def detect_refresh_token_reuse(refresh_token, client_id)
+      when is_binary(refresh_token) and is_binary(client_id) do
+    with {:ok, _uuid} <- Ecto.UUID.cast(client_id),
+         %Token{} = token <- get_reused_refresh_token(refresh_token, client_id) do
+      audit_refresh_reuse(token)
+      revoke_family(token)
+      :reuse_detected
+    else
+      _no_reuse -> :ok
+    end
+  end
+
+  def detect_refresh_token_reuse(_refresh_token, _client_id), do: :ok
+
+  ## Admin token management
 
   def list_tokens(limit \\ 100) when is_integer(limit) and limit > 0 do
     Token
@@ -250,6 +121,8 @@ defmodule Backplane.Auth.Tokens do
       nil -> {:error, :not_found}
     end
   end
+
+  ## Internals
 
   defp create_signing_key do
     kid = "auth-#{Ecto.UUID.generate()}"
@@ -269,23 +142,6 @@ defmodule Backplane.Auth.Tokens do
       active: true
     })
     |> Repo.insert()
-  end
-
-  defp issue_id_token!(key, user, client, now, expires_at, nonce) do
-    claims =
-      %{
-        "iss" => WebOrigins.api_base_url(),
-        "sub" => user.id,
-        "aud" => client.id,
-        "iat" => now,
-        "exp" => expires_at,
-        "email" => user.email,
-        "email_verified" => true,
-        "name" => user.name
-      }
-      |> maybe_put("nonce", nonce)
-
-    sign_jwt!(key, claims)
   end
 
   defp sign_jwt!(%SigningKey{} = key, claims) do
@@ -321,15 +177,8 @@ defmodule Backplane.Auth.Tokens do
 
   defp validate_expiration(_claims), do: {:error, :invalid_token}
 
-  defp insert_token(attrs) do
-    %Token{}
-    |> change(attrs)
-    |> foreign_key_constraint(:client_id)
-    |> Repo.insert()
-  end
-
   defp active_access_token(token) do
-    case get_token_by_value(token) do
+    case Repo.get_by(Token, value: token) do
       %Token{} = token ->
         if active_token?(token), do: {:ok, token}, else: {:error, :invalid_token}
 
@@ -349,10 +198,6 @@ defmodule Backplane.Auth.Tokens do
     end
   end
 
-  defp token_active_for_principals?(%Token{} = token) do
-    active_token?(token) and validate_token_principals(token) == :ok
-  end
-
   defp validate_active_user(%User{active: true}), do: :ok
   defp validate_active_user(%User{active: false}), do: {:error, :resource_owner_inactive}
   defp validate_active_user(_user), do: {:error, :resource_owner_not_found}
@@ -363,110 +208,22 @@ defmodule Backplane.Auth.Tokens do
 
   defp validate_active_client(_client), do: {:error, :invalid_client}
 
-  defp validate_user_scopes(%User{} = user, scope) do
-    requested = scope |> to_string() |> String.split(" ", trim: true)
-    effective = RBAC.effective_scope_names(user)
-
-    if Enum.all?(requested, &(&1 in effective)) do
-      :ok
-    else
-      {:error, :invalid_scope}
-    end
-  end
-
-  defp validate_refresh_token(%Token{} = token, %Client{} = client) do
-    cond do
-      not is_nil(token.revoked_at) ->
-        {:error, :invalid_refresh_token}
-
-      refresh_token_expired?(token, client) ->
-        {:error, :expired_refresh_token}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp refresh_token_expired?(%Token{inserted_at: %DateTime{} = inserted_at}, %Client{} = client) do
-    ttl = client.refresh_token_ttl || 2_592_000
-    DateTime.to_unix(inserted_at) + ttl <= System.system_time(:second)
-  end
-
-  defp refresh_token_expired?(_token, _client), do: false
-
-  defp revoke_code_once(%Token{} = token) do
-    revoked_at = now()
-
-    {count, _result} =
-      Token
-      |> where([candidate], candidate.id == ^token.id)
-      |> where([candidate], is_nil(candidate.revoked_at))
-      |> where([candidate], candidate.expires_at > ^System.system_time(:second))
-      |> Repo.update_all(set: [revoked_at: revoked_at, updated_at: revoked_at])
-
-    if count == 1 do
-      {:ok, %{token | revoked_at: revoked_at, updated_at: revoked_at}}
-    else
-      {:error, :invalid_grant}
-    end
-  end
-
-  defp get_code_token(code, %Client{id: client_id}) do
-    Token
-    |> where([token], token.client_id == ^client_id)
-    |> where([token], token.value == ^code)
-    |> where([token], token.type == "code")
-    |> Repo.one()
-  end
-
-  defp validate_code_token(%Token{} = token, attrs) do
-    verifier = Map.get(attrs, "code_verifier") || Map.get(attrs, :code_verifier)
-    redirect_uri = Map.get(attrs, "redirect_uri") || Map.get(attrs, :redirect_uri)
-
-    cond do
-      not active_token?(token) ->
-        {:error, :invalid_grant}
-
-      redirect_uri != token.redirect_uri ->
-        {:error, :invalid_grant}
-
-      not is_binary(verifier) ->
-        {:error, :invalid_grant}
-
-      pkce_challenge(verifier) != token.code_challenge_hash ->
-        {:error, :invalid_grant}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp get_client_token(token, %Client{id: client_id}) do
-    Token
-    |> where([token], token.client_id == ^client_id)
-    |> where([token], token.value == ^token)
-    |> Repo.one()
-  end
-
-  defp get_client_refresh_token(refresh_token, %Client{id: client_id}) do
-    Token
-    |> where([token], token.client_id == ^client_id)
-    |> where([token], token.refresh_token == ^refresh_token)
-    |> Repo.one()
-  end
-
-  defp get_token_by_value(value) do
-    Repo.get_by(Token, value: value)
-  end
-
   defp active_token?(%Token{} = token) do
     token.expires_at > System.system_time(:second) and is_nil(token.revoked_at)
   end
 
-  defp audit_refresh_reuse(%Token{} = token, %Client{} = client) do
+  defp get_reused_refresh_token(refresh_token, client_id) do
+    Token
+    |> where([token], token.client_id == ^client_id)
+    |> where([token], token.refresh_token == ^refresh_token)
+    |> where([token], not is_nil(token.refresh_token_revoked_at))
+    |> Repo.one()
+  end
+
+  defp audit_refresh_reuse(%Token{} = token) do
     Audit.record(
       "token.refresh_reuse_detected",
-      %{actor_type: "oauth_client", actor_id: client.id},
+      %{actor_type: "oauth_client", actor_id: token.client_id},
       %{
         target_type: "oauth_token",
         target_id: token.id,
@@ -476,43 +233,44 @@ defmodule Backplane.Auth.Tokens do
     )
   end
 
-  defp revoke_family(%Token{} = token) do
+  defp revoke_family(%Token{client_id: client_id, sub: sub}) do
+    now = now()
+
+    tokens =
+      Token
+      |> where([candidate], candidate.client_id == ^client_id)
+      |> where([candidate], candidate.sub == ^sub)
+      |> Repo.all()
+
     Token
-    |> where([candidate], candidate.client_id == ^token.client_id)
-    |> where([candidate], candidate.sub == ^token.sub)
-    |> Repo.update_all(set: [revoked_at: now(), refresh_token_revoked_at: now()])
+    |> where([candidate], candidate.client_id == ^client_id)
+    |> where([candidate], candidate.sub == ^sub)
+    |> Repo.update_all(set: [revoked_at: now, refresh_token_revoked_at: now, updated_at: now])
+
+    Enum.each(tokens, &invalidate_boruta_cache/1)
   end
 
   defp revoke_token(%Token{} = token) do
-    token
-    |> change(revoked_at: now(), refresh_token_revoked_at: now())
-    |> Repo.update()
+    result =
+      token
+      |> change(revoked_at: now(), refresh_token_revoked_at: now())
+      |> Repo.update()
+
+    with {:ok, revoked} <- result do
+      invalidate_boruta_cache(revoked)
+      {:ok, revoked}
+    end
   end
 
-  defp ok_result({:ok, _token}), do: :ok
-  defp ok_result({:error, changeset}), do: {:error, changeset}
-
-  defp scope_string(scopes) do
-    scopes
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
-    |> Enum.join(" ")
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp random_token do
-    32
-    |> :crypto.strong_rand_bytes()
-    |> Base.url_encode64(padding: false)
-  end
-
-  defp pkce_challenge(verifier) do
-    :sha256
-    |> :crypto.hash(verifier)
-    |> Base.url_encode64(padding: false)
+  # Boruta serves token lookups from its Nebulex cache; direct Repo writes
+  # must invalidate the corresponding entries or revocation is delayed until
+  # the cache entry expires.
+  defp invalidate_boruta_cache(%Token{type: type, value: value, refresh_token: refresh_token}) do
+    Boruta.Ecto.TokenStore.invalidate(%Boruta.Oauth.Token{
+      type: type,
+      value: value,
+      refresh_token: refresh_token
+    })
   end
 
   defp now, do: DateTime.utc_now()

@@ -204,8 +204,8 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
         pkce: true
       )
 
-    {:ok, %{access_token: access_token, token: token}} =
-      Auth.Tokens.issue_access_token(user, client, ["openid", "app:read"])
+    token = Backplane.Auth.Fixtures.access_token_fixture!(user, client, ["openid", "app:read"])
+    access_token = token.value
 
     {:ok, view, html} = live(conn, "/auth/oauth/tokens")
 

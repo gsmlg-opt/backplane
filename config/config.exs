@@ -9,6 +9,7 @@ config :backplane, bootstrap_admin_emails: []
 config :boruta, Boruta.Oauth,
   repo: Backplane.Repo,
   issuer: "http://localhost:4220",
+  token_generator: Backplane.Auth.AccessTokenGenerator,
   contexts: [
     resource_owners: Backplane.Auth.ResourceOwners
   ]

@@ -41,6 +41,26 @@ defmodule Backplane.Auth.Fixtures do
     end
   end
 
+  @doc """
+  Issues an access token (with refresh token) through Boruta's adapter, the
+  same path the token endpoint uses. Returns the `Boruta.Ecto.Token` row;
+  the JWT access token is its `value`.
+  """
+  def access_token_fixture!(user, client, scopes) when is_list(scopes) do
+    oauth_client =
+      client.id
+      |> Auth.OAuth.get_client()
+      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+
+    {:ok, token} =
+      Boruta.Ecto.AccessTokens.create(
+        %{client: oauth_client, sub: user.id, scope: Enum.join(scopes, " ")},
+        refresh_token: true
+      )
+
+    Backplane.Repo.get_by!(Boruta.Ecto.Token, value: token.value)
+  end
+
   defp client_with_secret(client, secret) when is_map(client) do
     client
     |> struct_to_map()

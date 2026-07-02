@@ -44,6 +44,23 @@ defmodule Backplane.Auth.RBACTest do
       assert Enum.any?(user_roles, &(&1.user.email == user.email and &1.role.name == "writer"))
     end
 
+    test "validates requested scopes against the user's effective scopes" do
+      user = auth_user_fixture!()
+      scope!("gsmlg:read")
+      scope!("gsmlg:write")
+
+      assert {:ok, reader} = Auth.RBAC.create_role(%{name: "reader", label: "Reader"})
+      assert {:ok, _role_scope} = Auth.RBAC.assign_role_scope(reader, "gsmlg:read")
+      assert {:ok, %UserRole{}} = Auth.RBAC.assign_user_role(user, reader)
+
+      assert :ok = Auth.RBAC.validate_user_scopes(user, "gsmlg:read")
+      assert :ok = Auth.RBAC.validate_user_scopes(user, "")
+      assert {:error, :invalid_scope} = Auth.RBAC.validate_user_scopes(user, "gsmlg:write")
+
+      assert {:error, :invalid_scope} =
+               Auth.RBAC.validate_user_scopes(user, "gsmlg:read gsmlg:write")
+    end
+
     test "system roles are seeded and cannot be deleted" do
       assert :ok = Auth.RBAC.seed_system_roles()
 

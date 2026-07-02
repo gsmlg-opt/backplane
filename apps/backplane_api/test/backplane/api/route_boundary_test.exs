@@ -109,7 +109,9 @@ defmodule Backplane.Api.RouteBoundaryTest do
         pkce: true
       })
 
-    {:ok, tokens} = Auth.Tokens.issue_access_token(user, client, ["openid", "profile", "email"])
-    tokens.access_token
+    token =
+      Backplane.Auth.Fixtures.access_token_fixture!(user, client, ["openid", "profile", "email"])
+
+    token.value
   end
 end

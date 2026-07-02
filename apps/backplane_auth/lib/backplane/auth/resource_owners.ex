@@ -40,11 +40,12 @@ defmodule Backplane.Auth.ResourceOwners do
     Map.put_new(claims || %{}, "email_verified", true)
   end
 
-  defp to_result(%User{active: true} = user), do: {:ok, to_resource_owner(user)}
+  defp to_result(%User{active: true} = user), do: {:ok, from_user(user)}
   defp to_result(%User{}), do: {:error, "resource owner is inactive"}
   defp to_result(nil), do: {:error, "resource owner not found"}
 
-  defp to_resource_owner(%User{} = user) do
+  @doc "Builds the Boruta resource owner for an authenticated user."
+  def from_user(%User{} = user) do
     %ResourceOwner{
       sub: user.id,
       username: user.email,

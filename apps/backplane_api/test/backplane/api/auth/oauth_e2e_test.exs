@@ -355,19 +355,12 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     user = auth_user_fixture!(email: "userinfo-scopes@example.com", name: "Scoped User")
     client = oauth_client_fixture!(scopes: ["openid", "profile", "email", "app:read"])
 
-    assert {:ok, openid_tokens} =
-             Auth.Tokens.issue_access_token(
-               Auth.Accounts.get_user(user.id),
-               Auth.OAuth.get_client(client.id),
-               [
-                 "openid"
-               ]
-             )
+    openid_token = access_token_fixture!(user, client, ["openid"])
 
     openid_body =
       conn
       |> recycle()
-      |> put_req_header("authorization", "Bearer #{openid_tokens.access_token}")
+      |> put_req_header("authorization", "Bearer #{openid_token.value}")
       |> get("/oauth/userinfo")
       |> json_response(200)
 
@@ -375,19 +368,12 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     refute Map.has_key?(openid_body, "email")
     refute Map.has_key?(openid_body, "name")
 
-    assert {:ok, app_tokens} =
-             Auth.Tokens.issue_access_token(
-               Auth.Accounts.get_user(user.id),
-               Auth.OAuth.get_client(client.id),
-               [
-                 "app:read"
-               ]
-             )
+    app_token = access_token_fixture!(user, client, ["app:read"])
 
     app_body =
       conn
       |> recycle()
-      |> put_req_header("authorization", "Bearer #{app_tokens.access_token}")
+      |> put_req_header("authorization", "Bearer #{app_token.value}")
       |> get("/oauth/userinfo")
       |> json_response(401)
 
