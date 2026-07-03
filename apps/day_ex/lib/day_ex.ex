@@ -31,16 +31,11 @@ defmodule DayEx do
   end
 
   def parse(ts) when is_float(ts) do
-    seconds = trunc(ts)
-    microseconds = round((ts - seconds) * 1_000_000)
+    microseconds = round(ts * 1_000_000)
 
-    case DateTime.from_unix(seconds) do
-      {:ok, dt} ->
-        dt = %{dt | microsecond: {microseconds, 6}}
-        {:ok, %DayEx{datetime: dt}}
-
-      {:error, reason} ->
-        {:error, "invalid unix timestamp: #{inspect(reason)}"}
+    case DateTime.from_unix(microseconds, :microsecond) do
+      {:ok, dt} -> {:ok, %DayEx{datetime: dt}}
+      {:error, reason} -> {:error, "invalid unix timestamp: #{inspect(reason)}"}
     end
   end
 
@@ -186,15 +181,18 @@ defmodule DayEx do
 
   def add(%DayEx{} = d, n, :week), do: add(d, n * 7, :day)
 
+  def add(%DayEx{datetime: %DateTime{} = dt} = d, n, :day) do
+    %{d | datetime: shift_datetime_date(dt, n)}
+  end
+
   def add(%DayEx{datetime: %DateTime{} = dt} = d, n, unit)
-      when unit in [:day, :hour, :minute, :second, :millisecond] do
+      when unit in [:hour, :minute, :second, :millisecond] do
     new_dt =
       case unit do
         :millisecond -> DateTime.add(dt, n, :millisecond)
         :second -> DateTime.add(dt, n, :second)
         :minute -> DateTime.add(dt, n * 60, :second)
         :hour -> DateTime.add(dt, n * 3_600, :second)
-        :day -> DateTime.add(dt, n * 86_400, :second)
       end
 
     %{d | datetime: new_dt}
@@ -349,7 +347,8 @@ defmodule DayEx do
     }
   end
 
-  def to_date(%DayEx{datetime: dt}), do: dt
+  def to_date(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_date(dt)
+  def to_date(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: NaiveDateTime.to_date(ndt)
 
   # --- Comparison & Query ---
 
@@ -404,14 +403,20 @@ defmodule DayEx do
   end
 
   def diff(%DayEx{} = a, %DayEx{} = b), do: to_unix_ms(a) - to_unix_ms(b)
+
+  def diff(%DayEx{} = a, %DayEx{} = b, :year), do: trunc(calendar_month_diff(a, b) / 12)
+  def diff(%DayEx{} = a, %DayEx{} = b, :month), do: calendar_month_diff(a, b)
+
+  def diff(%DayEx{} = a, %DayEx{} = b, :week),
+    do: trunc(calendar_day_ms(a, b) / unit_to_ms(:week))
+
+  def diff(%DayEx{} = a, %DayEx{} = b, :day), do: trunc(calendar_day_ms(a, b) / unit_to_ms(:day))
   def diff(%DayEx{} = a, %DayEx{} = b, unit), do: trunc(diff(a, b) / unit_to_ms(unit))
 
   def diff(%DayEx{} = a, %DayEx{} = b, unit, opts) do
-    ms = diff(a, b)
-
     if Keyword.get(opts, :float, false),
-      do: ms / unit_to_ms(unit),
-      else: trunc(ms / unit_to_ms(unit))
+      do: diff_float(a, b, unit),
+      else: diff(a, b, unit)
   end
 
   def leap_year?(%DayEx{} = d), do: Calendar.ISO.leap_year?(year(d))
@@ -570,23 +575,75 @@ defmodule DayEx do
 
   def compare(%DayEx{datetime: dt1}, %DayEx{datetime: dt2}) do
     case {dt1, dt2} do
-      {%DateTime{}, %DateTime{}} -> DateTime.compare(dt1, dt2)
-      {%NaiveDateTime{}, %NaiveDateTime{}} -> NaiveDateTime.compare(dt1, dt2)
-      {%DateTime{} = a, %NaiveDateTime{} = b} -> NaiveDateTime.compare(DateTime.to_naive(a), b)
-      {%NaiveDateTime{} = a, %DateTime{} = b} -> NaiveDateTime.compare(a, DateTime.to_naive(b))
+      {%DateTime{}, %DateTime{}} ->
+        DateTime.compare(dt1, dt2)
+
+      {%NaiveDateTime{}, %NaiveDateTime{}} ->
+        NaiveDateTime.compare(dt1, dt2)
+
+      {%DateTime{} = a, %NaiveDateTime{} = b} ->
+        DateTime.compare(a, DateTime.from_naive!(b, "Etc/UTC"))
+
+      {%NaiveDateTime{} = a, %DateTime{} = b} ->
+        DateTime.compare(DateTime.from_naive!(a, "Etc/UTC"), b)
     end
+  end
+
+  defp diff_float(a, b, :year), do: calendar_month_diff_float(a, b) / 12
+  defp diff_float(a, b, :month), do: calendar_month_diff_float(a, b)
+  defp diff_float(a, b, :week), do: calendar_day_ms(a, b) / unit_to_ms(:week)
+  defp diff_float(a, b, :day), do: calendar_day_ms(a, b) / unit_to_ms(:day)
+  defp diff_float(a, b, unit), do: diff(a, b) / unit_to_ms(unit)
+
+  defp calendar_month_diff(a, b) do
+    months = (year(a) - year(b)) * 12 + (month(a) - month(b))
+
+    cond do
+      months > 0 and compare(a, add(b, months, :month)) == :lt -> months - 1
+      months < 0 and compare(a, add(b, months, :month)) == :gt -> months + 1
+      true -> months
+    end
+  end
+
+  defp calendar_month_diff_float(a, b) do
+    whole_months = calendar_month_diff(a, b)
+    anchor = add(b, whole_months, :month)
+
+    case compare(a, anchor) do
+      :eq ->
+        whole_months * 1.0
+
+      comparison ->
+        direction = if comparison == :gt, do: 1, else: -1
+        next_anchor = add(b, whole_months + direction, :month)
+        span = abs(diff(next_anchor, anchor))
+
+        if span == 0 do
+          whole_months * 1.0
+        else
+          whole_months + direction * (abs(diff(a, anchor)) / span)
+        end
+    end
+  end
+
+  defp calendar_day_ms(a, b), do: diff(a, b) + utc_offset_ms(a) - utc_offset_ms(b)
+
+  defp utc_offset_ms(%DayEx{datetime: %DateTime{utc_offset: offset, std_offset: std}}),
+    do: (offset + std) * 1_000
+
+  defp utc_offset_ms(%DayEx{datetime: %NaiveDateTime{}}), do: 0
+
+  defp shift_datetime_date(%DateTime{} = dt, days) do
+    date = dt |> DateTime.to_date() |> Date.add(days)
+    time = DateTime.to_time(dt)
+    DateTime.new(date, time, dt.time_zone) |> resolve_datetime()
   end
 
   defp update_datetime(%DateTime{} = dt, updates) do
     {date_fields, time_fields} = split_date_time_fields(updates)
     date = update_date(dt, date_fields)
     time = update_time(dt, time_fields)
-
-    case DateTime.new(date, time, dt.time_zone) do
-      {:ok, new_dt} -> new_dt
-      {:ambiguous, first, _second} -> first
-      {:gap, _just_before, just_after} -> just_after
-    end
+    DateTime.new(date, time, dt.time_zone) |> resolve_datetime()
   end
 
   defp update_datetime(%NaiveDateTime{} = ndt, updates) do
@@ -595,6 +652,10 @@ defmodule DayEx do
     time = update_time(ndt, time_fields)
     NaiveDateTime.new!(date, time)
   end
+
+  defp resolve_datetime({:ok, dt}), do: dt
+  defp resolve_datetime({:ambiguous, first, _second}), do: first
+  defp resolve_datetime({:gap, _just_before, just_after}), do: just_after
 
   defp split_date_time_fields(updates) do
     date_keys = [:year, :month, :day]

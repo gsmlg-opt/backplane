@@ -39,6 +39,29 @@ defmodule DayEx.ParseTest do
     test "invalid input returns error" do
       assert {:error, _} = DayEx.parse("not-valid", "YYYY-MM-DD")
     end
+
+    test "trailing input returns error" do
+      assert {:error, _} = DayEx.parse("2024-03-15junk", "YYYY-MM-DD")
+    end
+
+    test "timezone offset token creates an offset-aware instant" do
+      assert {:ok, d} = DayEx.parse("2024-03-15T12:30:00+05:30", "YYYY-MM-DDTHH:mm:ssZ")
+      assert %DateTime{} = d.datetime
+      assert DateTime.compare(d.datetime, ~U[2024-03-15 07:00:00Z]) == :eq
+    end
+
+    test "unix timestamp tokens create UTC datetimes" do
+      assert {:ok, seconds} = DayEx.parse("1710469845", "X")
+      assert DayEx.to_unix(seconds) == 1_710_469_845
+
+      assert {:ok, milliseconds} = DayEx.parse("1710469845123", "x")
+      assert DayEx.to_unix(milliseconds) == 1_710_469_845
+      assert DayEx.millisecond(milliseconds) == 123
+    end
+
+    test "unsupported format tokens return error" do
+      assert {:error, _} = DayEx.parse("2024-074", "YYYY-DDDD")
+    end
   end
 
   describe "parse!/2" do

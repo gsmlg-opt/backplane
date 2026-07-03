@@ -27,8 +27,11 @@ defmodule DayEx.Parse do
     locale_mod = DayEx.Locale.get(locale)
 
     case consume_tokens(input, tokens, %{}, locale_mod) do
-      {:ok, fields, _rest} ->
+      {:ok, fields, ""} ->
         build_daytime(fields, locale)
+
+      {:ok, _fields, rest} ->
+        {:error, "unexpected trailing input: #{inspect(rest)}"}
 
       {:error, reason} ->
         {:error, reason}
@@ -200,6 +203,28 @@ defmodule DayEx.Parse do
     end
   end
 
+  # Z — timezone offset like +05:30, -04:00, or Z
+  defp consume_token(input, "Z", _locale), do: consume_offset(input, :colon)
+
+  # ZZ — timezone offset like +0530, -0400, or Z
+  defp consume_token(input, "ZZ", _locale), do: consume_offset(input, :compact)
+
+  # X — unix timestamp in seconds
+  defp consume_token(input, "X", _locale) do
+    case take_signed_digits(input) do
+      {:ok, digits, rest} -> {:ok, :unix_seconds, String.to_integer(digits), rest}
+      :error -> {:error, "expected unix timestamp seconds"}
+    end
+  end
+
+  # x — unix timestamp in milliseconds
+  defp consume_token(input, "x", _locale) do
+    case take_signed_digits(input) do
+      {:ok, digits, rest} -> {:ok, :unix_milliseconds, String.to_integer(digits), rest}
+      :error -> {:error, "expected unix timestamp milliseconds"}
+    end
+  end
+
   # A — uppercase AM/PM
   defp consume_token(input, "A", locale) do
     {am, pm} = locale.meridiem_upper()
@@ -232,12 +257,23 @@ defmodule DayEx.Parse do
     end
   end
 
-  # Unhandled tokens — skip (consume nothing, just ignore)
-  defp consume_token(input, _token, _locale) do
-    {:ok, :ignored, nil, input}
-  end
+  defp consume_token(_input, token, _locale), do: {:error, "unsupported format token: #{token}"}
 
   # Build the NaiveDateTime from parsed fields
+  defp build_daytime(%{unix_seconds: seconds}, _locale) do
+    case DateTime.from_unix(seconds) do
+      {:ok, dt} -> {:ok, %DayEx{datetime: dt}}
+      {:error, reason} -> {:error, "invalid unix timestamp: #{inspect(reason)}"}
+    end
+  end
+
+  defp build_daytime(%{unix_milliseconds: milliseconds}, _locale) do
+    case DateTime.from_unix(milliseconds, :millisecond) do
+      {:ok, dt} -> {:ok, %DayEx{datetime: dt}}
+      {:error, reason} -> {:error, "invalid unix timestamp: #{inspect(reason)}"}
+    end
+  end
+
   defp build_daytime(fields, locale) do
     year = Map.get(fields, :year, 2000)
     month = Map.get(fields, :month, 1)
@@ -261,10 +297,20 @@ defmodule DayEx.Parse do
           0
       end
 
-    case NaiveDateTime.new(year, month, day, hour, minute, second, {ms * 1000, 3}) do
-      {:ok, ndt} ->
-        {:ok, %DayEx{datetime: ndt, locale: locale}}
+    with {:ok, ndt} <- NaiveDateTime.new(year, month, day, hour, minute, second, {ms * 1000, 3}) do
+      case Map.fetch(fields, :offset_seconds) do
+        {:ok, offset_seconds} ->
+          datetime =
+            ndt
+            |> DateTime.from_naive!("Etc/UTC")
+            |> DateTime.add(-offset_seconds, :second)
 
+          {:ok, %DayEx{datetime: datetime, locale: locale}}
+
+        :error ->
+          {:ok, %DayEx{datetime: ndt, locale: locale}}
+      end
+    else
       {:error, reason} ->
         {:error, "invalid date/time fields: #{inspect(reason)}"}
     end
@@ -298,6 +344,46 @@ defmodule DayEx.Parse do
     else
       {acc, str}
     end
+  end
+
+  defp take_signed_digits("-" <> rest) do
+    case take_digits(rest, 1, String.length(rest)) do
+      {:ok, digits, remainder} -> {:ok, "-" <> digits, remainder}
+      :error -> :error
+    end
+  end
+
+  defp take_signed_digits(str), do: take_digits(str, 1, String.length(str))
+
+  defp consume_offset("Z" <> rest, _style), do: {:ok, :offset_seconds, 0, rest}
+
+  defp consume_offset(input, :colon) do
+    case Regex.run(~r/^([+-])(\d{2}):(\d{2})/, input) do
+      [match, sign, hours, minutes] ->
+        offset = offset_seconds(sign, hours, minutes)
+        rest = String.slice(input, String.length(match)..-1//1)
+        {:ok, :offset_seconds, offset, rest}
+
+      _ ->
+        {:error, "expected timezone offset"}
+    end
+  end
+
+  defp consume_offset(input, :compact) do
+    case Regex.run(~r/^([+-])(\d{2})(\d{2})/, input) do
+      [match, sign, hours, minutes] ->
+        offset = offset_seconds(sign, hours, minutes)
+        rest = String.slice(input, String.length(match)..-1//1)
+        {:ok, :offset_seconds, offset, rest}
+
+      _ ->
+        {:error, "expected timezone offset"}
+    end
+  end
+
+  defp offset_seconds(sign, hours, minutes) do
+    multiplier = if sign == "-", do: -1, else: 1
+    multiplier * (String.to_integer(hours) * 3_600 + String.to_integer(minutes) * 60)
   end
 
   # Try to match the input against a list of names (case-insensitive prefix match).

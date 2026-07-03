@@ -124,6 +124,12 @@ defmodule DayEx.DurationTest do
       d = Duration.new(0)
       assert Duration.to_iso_string(d) == "P0D"
     end
+
+    test "combines seconds and milliseconds as fractional seconds" do
+      d = Duration.new(%{seconds: 1, milliseconds: 500})
+      assert Duration.to_iso_string(d) == "PT1.5S"
+      assert Duration.new(Duration.to_iso_string(d)) == d
+    end
   end
 
   describe "arithmetic" do

@@ -198,8 +198,7 @@ defmodule DayEx.Duration do
       [
         if(d.hours != 0, do: "#{d.hours}H", else: ""),
         if(d.minutes != 0, do: "#{d.minutes}M", else: ""),
-        if(d.seconds != 0, do: "#{d.seconds}S", else: ""),
-        if(d.milliseconds != 0, do: "#{d.milliseconds / 1000}S", else: "")
+        iso_seconds(d.seconds, d.milliseconds)
       ]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join()
@@ -208,6 +207,25 @@ defmodule DayEx.Duration do
     body = date_part <> time_section
 
     if body == "", do: "P0D", else: "P#{body}"
+  end
+
+  defp iso_seconds(0, 0), do: ""
+  defp iso_seconds(seconds, 0), do: "#{seconds}S"
+
+  defp iso_seconds(seconds, milliseconds) do
+    total_ms = seconds * 1_000 + milliseconds
+    sign = if total_ms < 0, do: "-", else: ""
+    abs_ms = abs(total_ms)
+    whole_seconds = div(abs_ms, 1_000)
+
+    fraction =
+      abs_ms
+      |> rem(1_000)
+      |> Integer.to_string()
+      |> String.pad_leading(3, "0")
+      |> String.trim_trailing("0")
+
+    "#{sign}#{whole_seconds}.#{fraction}S"
   end
 
   # --- Arithmetic ---

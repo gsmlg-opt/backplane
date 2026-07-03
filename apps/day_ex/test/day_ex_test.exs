@@ -96,6 +96,11 @@ defmodule DayExTest do
       assert %DateTime{} = dt
     end
 
+    test "parses negative fractional unix timestamp" do
+      assert {:ok, %DayEx{datetime: dt}} = DayEx.parse(-0.5)
+      assert dt == ~U[1969-12-31 23:59:59.500000Z]
+    end
+
     test "parses DateTime" do
       {:ok, input, _} = DateTime.from_iso8601("2024-01-15T10:30:00Z")
       assert {:ok, %DayEx{datetime: ^input}} = DayEx.parse(input)
@@ -321,6 +326,12 @@ defmodule DayExTest do
       assert DayEx.second(result) == 1
       assert DayEx.millisecond(result) == 500
     end
+
+    test "adds calendar days across DST boundaries" do
+      d = DayEx.tz("2024-03-09T12:00:00", "America/New_York")
+      result = DayEx.add(d, 1, :day)
+      assert DayEx.format(result, "YYYY-MM-DD HH:mm Z") == "2024-03-10 12:00 -04:00"
+    end
   end
 
   describe "subtract/3" do
@@ -460,6 +471,15 @@ defmodule DayExTest do
       assert DayEx.same?(a, b, :day)
       refute DayEx.same?(a, b, :hour)
     end
+
+    test "mixed DateTime and NaiveDateTime comparisons use instant semantics" do
+      zoned = DayEx.tz("2024-01-15T10:00:00", "America/New_York")
+      naive = DayEx.parse!("2024-01-15T10:00:00")
+
+      assert DayEx.after?(zoned, naive)
+      refute DayEx.same?(zoned, naive)
+      assert DayEx.diff(zoned, naive) == 18_000_000
+    end
   end
 
   describe "same_or_before?/2" do
@@ -529,6 +549,30 @@ defmodule DayExTest do
       b = DayEx.parse!("2024-01-15T00:00:00Z")
       assert DayEx.diff(a, b, :day) == -5
     end
+
+    test "diff in calendar months" do
+      feb = DayEx.parse!("2024-02-01T00:00:00Z")
+      mar = DayEx.parse!("2024-03-01T00:00:00Z")
+
+      assert DayEx.diff(feb, mar, :month) == -1
+      assert DayEx.diff(mar, feb, :month) == 1
+    end
+
+    test "diff in calendar years" do
+      start = DayEx.parse!("2023-01-01T00:00:00Z")
+      finish = DayEx.parse!("2024-01-01T00:00:00Z")
+
+      assert DayEx.diff(start, finish, :year) == -1
+      assert DayEx.diff(finish, start, :year) == 1
+    end
+
+    test "diff in calendar days across DST boundaries" do
+      before = DayEx.tz("2024-03-09T12:00:00", "America/New_York")
+      after_day = DayEx.tz("2024-03-10T12:00:00", "America/New_York")
+
+      assert DayEx.diff(after_day, before, :day) == 1
+      assert DayEx.diff(before, after_day, :day) == -1
+    end
   end
 
   describe "leap_year?/1" do
@@ -584,6 +628,13 @@ defmodule DayExTest do
       d = DayEx.parse!("2024-01-15T10:00:00Z")
       result = DayEx.local(d)
       assert %NaiveDateTime{} = result.datetime
+    end
+  end
+
+  describe "to_date/1" do
+    test "returns a Date" do
+      d = DayEx.parse!("2024-01-15T10:30:00Z")
+      assert DayEx.to_date(d) == ~D[2024-01-15]
     end
   end
 
