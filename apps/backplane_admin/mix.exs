@@ -50,7 +50,7 @@ defmodule BackplaneAdmin.MixProject do
       {:bun, "~> 2.0", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.4", runtime: Mix.env() == :dev},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
-      {:floki, ">= 0.30.0", only: :test},
+      {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}
     ]
   end
