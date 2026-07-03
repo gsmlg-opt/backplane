@@ -127,7 +127,7 @@ defmodule Backplane.Services.Day do
 
       with {:ok, from} <- DayEx.parse(args["from"]),
            {:ok, to} <- DayEx.parse(args["to"]) do
-        diff = DayEx.diff(from, to, unit)
+        diff = DayEx.diff(to, from, unit)
         {:ok, %{diff: diff, unit: unit_str}}
       else
         {:error, reason} -> {:error, reason}

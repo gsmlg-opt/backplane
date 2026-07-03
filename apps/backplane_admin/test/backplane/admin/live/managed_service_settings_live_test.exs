@@ -390,7 +390,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       |> render_submit()
 
     assert html =~ "Tool Result"
-    assert html =~ "&quot;diff&quot;: -1"
+    assert html =~ "&quot;diff&quot;: 1"
     assert html =~ "&quot;unit&quot;: &quot;day&quot;"
   end
 
