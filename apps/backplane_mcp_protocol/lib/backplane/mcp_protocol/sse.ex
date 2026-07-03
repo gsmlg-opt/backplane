@@ -1,100 +1,153 @@
-defmodule Backplane.McpProtocol.Sse do
-  @moduledoc """
-  Pure helpers for Server-Sent Events frames.
+defmodule Backplane.McpProtocol.SSE do
+  @moduledoc false
+
+  use Backplane.McpProtocol.Logging
+
+  alias Backplane.McpProtocol.SSE.Parser
+
+  @connection_headers %{
+    "accept" => "text/event-stream",
+    "cache-control" => "no-cache",
+    "connection" => "keep-alive"
+  }
+
+  @default_http_opts [
+    receive_timeout: :infinity,
+    request_timeout: :infinity,
+    max_reconnections: 5,
+    default_backoff: to_timeout(second: 1),
+    max_backoff: to_timeout(second: 15)
+  ]
+
+  @retry_opts [:max_reconnections, :default_backoff, :max_backoff]
+
+  @doc """
+  Connects to a server-sent event stream.
+
+  ## Parameters
+
+    - `server_url` - the URL of the server to connect to.
+    - `headers` - additional headers to send with the request.
+    - `opts` - additional options to pass to the HTTP client.
+
+  ## Examples
+
+      iex> Backplane.McpProtocol.SSE.connect("http://localhost:4000")
+      #Stream<[ref: 1, task: #PID<0.123.0>]>
+
   """
+  @spec connect(String.t(), map(), Keyword.t()) :: Enumerable.t()
+  def connect(server_url, headers \\ %{}, opts \\ []) do
+    opts = Keyword.merge(@default_http_opts, opts)
 
-  defmodule Event do
-    @moduledoc """
-    Parsed Server-Sent Events frame.
-    """
+    with {:ok, uri} <- parse_uri(server_url) do
+      headers = headers |> Map.merge(@connection_headers) |> Map.to_list()
 
-    @type t :: %__MODULE__{
-            event: String.t(),
-            data: String.t(),
-            id: String.t() | nil,
-            retry: non_neg_integer() | nil
-          }
+      req = Finch.build(:get, uri, headers)
+      ref = make_ref()
+      task = spawn_stream_task(req, ref, opts)
 
-    defstruct event: "message", data: "", id: nil, retry: nil
-  end
-
-  @spec encode(String.t(), term()) :: String.t()
-  def encode(event, data) when is_binary(event) do
-    encoded_data = if is_binary(data), do: data, else: Jason.encode!(data)
-
-    "event: #{event}\n" <>
-      "data: #{encoded_data}\n\n"
-  end
-
-  @spec parse(String.t(), String.t()) :: {[Event.t()], String.t()}
-  def parse(chunk, buffer \\ "") when is_binary(chunk) and is_binary(buffer) do
-    input =
-      (buffer <> chunk)
-      |> String.replace("\r\n", "\n")
-      |> String.replace("\r", "\n")
-
-    {frames, rest} = split_complete_frames(input)
-
-    events =
-      frames
-      |> Enum.map(&parse_frame/1)
-      |> Enum.reject(&is_nil/1)
-
-    {events, rest}
-  end
-
-  defp split_complete_frames(buffer) do
-    parts = String.split(buffer, "\n\n")
-
-    case String.ends_with?(buffer, "\n\n") do
-      true -> {Enum.reject(parts, &(&1 == "")), ""}
-      false -> {Enum.drop(parts, -1), List.last(parts) || ""}
+      Stream.resource(
+        fn -> {ref, task} end,
+        &process_task_stream/1,
+        &shutdown_task/1
+      )
     end
   end
 
-  defp parse_frame(frame) do
-    parsed =
-      frame
-      |> String.split("\n")
-      |> Enum.reduce(%{event: "message", data: [], id: nil, retry: nil}, &parse_line/2)
+  defp parse_uri(url) do
+    with {:error, _} <- URI.new(url), do: {:error, :invalid_url}
+  end
 
-    case parsed.data do
-      [] ->
-        nil
+  defp spawn_stream_task(%Finch.Request{} = req, ref, opts) do
+    dest = Keyword.get(opts, :dest, self())
 
-      data ->
-        %Event{
-          event: parsed.event,
-          data: data |> Enum.reverse() |> Enum.join("\n"),
-          id: parsed.id,
-          retry: parsed.retry
-        }
+    Task.async(fn -> loop_sse_stream(req, ref, dest, opts) end)
+  end
+
+  defp loop_sse_stream(req, ref, dest, opts, attempt \\ 1) do
+    {retry, http} = Keyword.split(opts, @retry_opts)
+
+    if attempt <= retry[:max_reconnections] do
+      max_backoff = retry[:max_backoff]
+      base_backoff = retry[:default_backoff]
+      backoff = calculate_reconnect_backoff(attempt, max_backoff, base_backoff)
+
+      on_chunk = &process_sse_stream(&1, &2, dest, ref)
+
+      case Finch.stream_while(req, Backplane.McpProtocol.Finch, nil, on_chunk, http) do
+        {:ok, _acc} ->
+          Backplane.McpProtocol.Logging.transport_event("sse_reconnect", %{
+            reason: "success",
+            attempt: attempt,
+            max_attempts: retry[:max_reconnections]
+          })
+
+          Process.sleep(backoff)
+          loop_sse_stream(req, ref, dest, opts, attempt + 1)
+
+        {:error, exc, _acc} ->
+          Backplane.McpProtocol.Logging.transport_event(
+            "sse_reconnect",
+            %{
+              reason: "error",
+              error: Exception.message(exc),
+              attempt: attempt,
+              max_attempts: retry[:max_reconnections]
+            },
+            level: :error
+          )
+
+          Process.sleep(backoff + to_timeout(second: 1))
+          loop_sse_stream(req, ref, dest, opts, attempt + 1)
+      end
+    else
+      send(dest, {:chunk, :halted, ref})
+
+      Backplane.McpProtocol.Logging.transport_event(
+        "sse_max_reconnects",
+        %{
+          max_attempts: retry[:max_reconnections]
+        },
+        level: :error
+      )
     end
   end
 
-  defp parse_line(":" <> _comment, event), do: event
-  defp parse_line("", event), do: event
+  defp calculate_reconnect_backoff(attempt, max, base) do
+    min(max, attempt ** 2 * base)
+  end
 
-  defp parse_line(line, event) do
-    case String.split(line, ":", parts: 2) do
-      [field, value] -> apply_field(field, strip_leading_space(value), event)
-      [_field_without_value] -> event
+  # the raw streaming response
+  defp process_sse_stream({:status, status}, acc, _dest, _ref) when status != 200, do: {:halt, acc}
+
+  defp process_sse_stream(chunk, acc, dest, ref) do
+    send(dest, {:chunk, chunk, ref})
+    {:cont, acc}
+  end
+
+  defp process_task_stream({ref, _task} = state) do
+    receive do
+      {:chunk, {:data, data}, ^ref} ->
+        {Parser.run(data), state}
+
+      {:chunk, {:status, status}, ^ref} ->
+        Backplane.McpProtocol.Logging.transport_event("sse_status", status)
+        {[], state}
+
+      {:chunk, {:headers, headers}, ^ref} ->
+        Backplane.McpProtocol.Logging.transport_event("sse_headers", headers)
+        {[], state}
+
+      {:chunk, :halted, ^ref} ->
+        Backplane.McpProtocol.Logging.transport_event("sse_halted", "Transport will be restarted")
+        {[{:error, :halted}], state}
+
+      {:chunk, unknown, ^ref} ->
+        Backplane.McpProtocol.Logging.transport_event("sse_unknown_chunk", unknown)
+        {[], state}
     end
   end
 
-  defp strip_leading_space(" " <> value), do: value
-  defp strip_leading_space(value), do: value
-
-  defp apply_field("event", value, event), do: %{event | event: value}
-  defp apply_field("data", value, event), do: %{event | data: [value | event.data]}
-  defp apply_field("id", value, event), do: %{event | id: value}
-
-  defp apply_field("retry", value, event) do
-    case Integer.parse(value) do
-      {retry, ""} -> %{event | retry: retry}
-      _other -> event
-    end
-  end
-
-  defp apply_field(_field, _value, event), do: event
+  defp shutdown_task({_ref, task}), do: Task.shutdown(task)
 end

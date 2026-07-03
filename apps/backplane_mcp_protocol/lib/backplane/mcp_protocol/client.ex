@@ -1,0 +1,1640 @@
+defmodule Backplane.McpProtocol.Client do
+  @moduledoc """
+  MCP (Model Context Protocol) client for connecting to MCP servers.
+
+  This module provides a fully functional MCP client with automatic supervision,
+  transport management, and all standard MCP operations. No macros needed — just
+  add it to your supervision tree with the desired configuration.
+
+  ## Usage
+
+  Add the client to your supervision tree:
+
+      children = [
+        {Backplane.McpProtocol.Client,
+         name: MyApp.MCPClient,
+         transport: {:stdio, command: "uvx", args: ["mcp-server-anthropic"]},
+         client_info: %{"name" => "MyApp", "version" => "1.0.0"},
+         capabilities: %{"roots" => %{}},
+         protocol_version: "2025-06-18"}
+      ]
+
+  Use the client by passing the registered name:
+
+      {:ok, tools} = Backplane.McpProtocol.Client.list_tools(MyApp.MCPClient)
+      {:ok, result} = Backplane.McpProtocol.Client.call_tool(MyApp.MCPClient, "search", %{query: "elixir"})
+
+  ## Capabilities
+
+  Capabilities are passed as a map with string keys:
+
+      %{"roots" => %{}, "sampling" => %{}}
+
+  For convenience, use `parse_capability/2` to build from atoms:
+
+      capabilities =
+        [:roots, {:sampling, list_changed?: true}]
+        |> Enum.reduce(%{}, &Backplane.McpProtocol.Client.parse_capability/2)
+
+  ## Transport Configuration
+
+  When starting the client, provide transport configuration:
+
+    * `{:stdio, command: "cmd", args: ["arg1", "arg2"]}`
+    * `{:sse, base_url: "http://localhost:8000"}`
+    * `{:websocket, url: "ws://localhost:8000/ws"}`
+    * `{:streamable_http, url: "http://localhost:8000/mcp"}`
+
+  ## Process Naming
+
+  The `:name` option controls process registration. You can use any valid
+  `GenServer.name()` — an atom, a PID, or a `{:via, module, term}` tuple:
+
+      # Atom name
+      {Backplane.McpProtocol.Client, name: MyApp.MCPClient, transport: ...}
+
+      # For distributed systems with registries (e.g., Horde)
+      {Backplane.McpProtocol.Client,
+       name: {:via, Horde.Registry, {MyCluster, "client_1"}},
+       transport_name: {:via, Horde.Registry, {MyCluster, "transport_1"}},
+       transport: ...}
+
+  When using via tuples or other non-atom names, you must explicitly provide
+  the `:transport_name` option. For atom names, the transport is automatically
+  named as `Module.concat(ClientName, "Transport")`.
+
+  ## Dynamic Client Management
+
+  For applications that need to manage multiple client connections dynamically
+  (e.g., user-configured MCP servers), use a `DynamicSupervisor`:
+
+      DynamicSupervisor.start_child(
+        MyApp.DynamicSupervisor,
+        {Backplane.McpProtocol.Client,
+         name: {:via, Registry, {MyApp.Registry, client_id}},
+         transport_name: {:via, Registry, {MyApp.Registry, {client_id, :transport}}},
+         transport: {:streamable_http, base_url: url},
+         client_info: %{"name" => "MyApp", "version" => "1.0.0"},
+         capabilities: %{},
+         protocol_version: "2025-06-18"}
+      )
+  """
+
+  use GenServer
+  use Backplane.McpProtocol.Logging
+
+  import Peri
+
+  alias Backplane.McpProtocol.Client.Cache
+  alias Backplane.McpProtocol.Client.Elicitation
+  alias Backplane.McpProtocol.Client.Handlers
+  alias Backplane.McpProtocol.Client.Operation
+  alias Backplane.McpProtocol.Client.Request
+  alias Backplane.McpProtocol.Client.Sampling
+  alias Backplane.McpProtocol.Client.State
+  alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.MCP.Message
+  alias Backplane.McpProtocol.MCP.Response
+  alias Backplane.McpProtocol.Protocol
+  alias Backplane.McpProtocol.Telemetry
+
+  require Message
+
+  @client_capabilities ~w(roots sampling elicitation)a
+
+  @default_protocol_version Protocol.latest_version()
+  @default_operation_timeout to_timeout(second: 30)
+
+  @type t :: GenServer.server()
+
+  @type capability :: :roots | :sampling | :elicitation
+  @type capability_opts :: [list_changed?: boolean()]
+  @type capabilities_input :: [capability() | {capability(), capability_opts()} | map()]
+
+  @typedoc """
+  Progress callback function type.
+
+  Called when progress notifications are received for a specific progress token.
+
+  ## Parameters
+    - `progress_token` - String or integer identifier for the progress operation
+    - `progress` - Current progress value
+    - `total` - Total expected value (nil if unknown)
+
+  ## Returns
+    - The return value is ignored
+  """
+  @type progress_callback ::
+          (progress_token :: String.t() | integer(), progress :: number(), total :: number() | nil ->
+             any())
+
+  @typedoc """
+  Log callback function type.
+
+  Called when log message notifications are received from the server.
+
+  ## Parameters
+    - `level` - Log level as a string (e.g., "debug", "info", "warning", "error")
+    - `data` - Log message data, typically a map with message details
+    - `logger` - Optional logger name identifying the source
+
+  ## Returns
+    - The return value is ignored
+  """
+  @type log_callback ::
+          (level :: String.t(), data :: term(), logger :: String.t() | nil -> any())
+
+  @typedoc """
+  Root directory specification.
+
+  Represents a root directory that the client has access to.
+
+  ## Fields
+    - `:uri` - File URI for the root directory (e.g., "file:///home/user/project")
+    - `:name` - Optional human-readable name for the root
+  """
+  @type root :: %{
+          uri: String.t(),
+          name: String.t() | nil
+        }
+
+  @typedoc """
+  MCP client transport options
+
+  - `:layer` - The transport layer to use, either `Backplane.McpProtocol.Transport.STDIO`, `Backplane.McpProtocol.Transport.SSE`, `Backplane.McpProtocol.Transport.WebSocket`, or `Backplane.McpProtocol.Transport.StreamableHTTP` (required)
+  - `:name` - The transport optional custom name
+  """
+  @type transport ::
+          list(
+            {:layer,
+             Backplane.McpProtocol.Transport.STDIO
+             | Backplane.McpProtocol.Transport.SSE
+             | Backplane.McpProtocol.Transport.WebSocket
+             | Backplane.McpProtocol.Transport.StreamableHTTP}
+            | {:name, GenServer.server()}
+          )
+
+  @typedoc """
+  MCP client metadata info
+
+  - `:name` - The name of the client (required)
+  - `:version` - The version of the client
+  """
+  @type client_info :: %{
+          required(:name | String.t()) => String.t(),
+          optional(:version | String.t()) => String.t()
+        }
+
+  @typedoc """
+  MCP client capabilities
+
+  - `:roots` - Capabilities related to the roots resource
+    - `:listChanged` - Whether the client can handle listChanged notifications
+  - `:sampling` - Capabilities related to sampling
+  - `:elicitation` - Capabilities related to elicitation (server-initiated user input requests, 2025-06-18)
+
+  MCP describes these client capabilities on its [specification](https://spec.modelcontextprotocol.io/specification/2025-06-18/client/)
+  """
+  @type capabilities :: %{
+          optional(:roots | String.t()) => %{
+            optional(:listChanged | String.t()) => boolean
+          },
+          optional(:sampling | String.t()) => %{},
+          optional(:elicitation | String.t()) => %{}
+        }
+
+  @typedoc """
+  MCP client initialization options
+
+  - `:name` - Following the `GenServer` patterns described on "Name registration".
+  - `:transport` - The MCP transport options
+  - `:client_info` - Information about the client
+  - `:capabilities` - Client capabilities to advertise to the MCP server
+  - `:protocol_version` - Protocol version to use (defaults to "2024-11-05")
+
+  Any other option support by `GenServer`.
+  """
+  @type option ::
+          {:name, GenServer.name()}
+          | {:transport, transport}
+          | {:client_info, map}
+          | {:capabilities, map}
+          | {:protocol_version, String.t()}
+          | GenServer.option()
+
+  defschema(:parse_options, [
+    {:name, {{:custom, &Backplane.McpProtocol.genserver_name/1}, {:default, __MODULE__}}},
+    {:transport, {:required, {:custom, &Backplane.McpProtocol.client_transport/1}}},
+    {:client_info, {:required, :map}},
+    {:capabilities, {:required, :map}},
+    {:protocol_version, {:string, {:default, @default_protocol_version}}},
+    {:timeout, {:integer, {:default, @default_operation_timeout}}}
+  ])
+
+  @doc """
+  Guard to check if an atom is a valid client capability.
+  """
+  defguard is_client_capability(capability) when capability in @client_capabilities
+
+  @doc """
+  Guard to check if a capability is supported by checking map keys.
+  """
+  defguard is_supported_capability(capabilities, capability)
+           when is_map_key(capabilities, capability)
+
+  @doc """
+  Converts a capability atom or tuple into a map entry.
+
+  Useful for building capability maps from ergonomic shorthand:
+
+      capabilities =
+        [:roots, {:sampling, list_changed?: true}]
+        |> Enum.reduce(%{}, &Backplane.McpProtocol.Client.parse_capability/2)
+      # => %{"roots" => %{}, "sampling" => %{}}
+  """
+  @spec parse_capability(capability() | {capability(), capability_opts()}, map()) :: map()
+  def parse_capability(capability, %{} = capabilities) when is_client_capability(capability) do
+    Map.put(capabilities, to_string(capability), %{})
+  end
+
+  def parse_capability({capability, opts}, %{} = capabilities) when is_client_capability(capability) do
+    list_changed? = opts[:list_changed?]
+
+    capabilities
+    |> Map.put(to_string(capability), %{})
+    |> then(
+      &if(is_nil(list_changed?),
+        do: &1,
+        else: Map.put(&1, "listChanged", list_changed?)
+      )
+    )
+  end
+
+  # Supervision integration
+
+  @doc """
+  Returns a child specification for starting the client under a supervisor.
+
+  This starts a supervision tree containing both the client GenServer and
+  the configured transport process, linked with a `:one_for_all` strategy.
+  """
+  def child_spec(opts) do
+    id = opts[:name] || __MODULE__
+
+    %{
+      id: id,
+      start: {Backplane.McpProtocol.Client.Supervisor, :start_link, [opts]},
+      type: :supervisor,
+      restart: :permanent
+    }
+  end
+
+  @doc """
+  Starts the client supervision tree (client + transport).
+
+  This is the primary entry point for starting a client. It creates a supervisor
+  that manages both the client GenServer and the transport process.
+  """
+  @spec start_link(keyword()) :: Supervisor.on_start()
+  def start_link(opts) do
+    Backplane.McpProtocol.Client.Supervisor.start_link(opts)
+  end
+
+  @doc false
+  @spec start_link_server(Enumerable.t(option)) :: GenServer.on_start()
+  def start_link_server(opts) do
+    opts = parse_options!(opts)
+
+    protocol_version = opts[:protocol_version]
+    layer = opts[:transport][:layer]
+
+    with :ok <- Protocol.validate_version(protocol_version),
+         :ok <- Protocol.validate_transport(protocol_version, layer) do
+      GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
+    end
+  end
+
+  # Public API
+
+  @doc """
+  Sends a ping request to the server to check connection health. Returns `:pong` if successful.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds (default: 30s)
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec ping(t, keyword) :: :pong | {:error, Error.t()}
+  def ping(client, opts \\ []) when is_list(opts) do
+    operation =
+      Operation.new(%{
+        method: "ping",
+        params: %{},
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Lists available resources from the server.
+
+  ## Options
+
+    * `:cursor` - Pagination cursor for continuing a previous request
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec list_resources(t, keyword) :: {:ok, Response.t()} | {:error, Error.t()}
+  def list_resources(client, opts \\ []) do
+    cursor = Keyword.get(opts, :cursor)
+    params = if cursor, do: %{"cursor" => cursor}, else: %{}
+
+    operation =
+      Operation.new(%{
+        method: "resources/list",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Lists available resource templates from the server.
+
+  ## Options
+
+    * `:cursor` - Pagination cursor for continuing a previous request
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec list_resource_templates(t, keyword) :: {:ok, Response.t()} | {:error, Error.t()}
+  def list_resource_templates(client, opts \\ []) do
+    cursor = Keyword.get(opts, :cursor)
+    params = if cursor, do: %{"cursor" => cursor}, else: %{}
+
+    operation =
+      Operation.new(%{
+        method: "resources/templates/list",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Reads a specific resource from the server.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec read_resource(t, String.t(), keyword) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def read_resource(client, uri, opts \\ []) do
+    operation =
+      Operation.new(%{
+        method: "resources/read",
+        params: %{"uri" => uri},
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Subscribes to updates for a specific resource URI.
+
+  After a successful subscribe, the server may send `notifications/resources/updated`
+  notifications for this URI. The server must declare the `resources.subscribe`
+  capability for this method to succeed.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds
+  """
+  @spec subscribe_resource(t, String.t(), keyword) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def subscribe_resource(client, uri, opts \\ []) do
+    operation =
+      Operation.new(%{
+        method: "resources/subscribe",
+        params: %{"uri" => uri},
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Unsubscribes from updates for a previously-subscribed resource URI.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds
+  """
+  @spec unsubscribe_resource(t, String.t(), keyword) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def unsubscribe_resource(client, uri, opts \\ []) do
+    operation =
+      Operation.new(%{
+        method: "resources/unsubscribe",
+        params: %{"uri" => uri},
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Lists available prompts from the server.
+
+  ## Options
+
+    * `:cursor` - Pagination cursor for continuing a previous request
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec list_prompts(t, keyword) :: {:ok, Response.t()} | {:error, Error.t()}
+  def list_prompts(client, opts \\ []) do
+    cursor = Keyword.get(opts, :cursor)
+    params = if cursor, do: %{"cursor" => cursor}, else: %{}
+
+    operation =
+      Operation.new(%{
+        method: "prompts/list",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Gets a specific prompt from the server.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec get_prompt(t, String.t(), map() | nil, keyword) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def get_prompt(client, name, arguments \\ nil, opts \\ []) do
+    params = %{"name" => name}
+    params = if arguments, do: Map.put(params, "arguments", arguments), else: params
+
+    operation =
+      Operation.new(%{
+        method: "prompts/get",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Lists available tools from the server.
+
+  ## Options
+
+    * `:cursor` - Pagination cursor for continuing a previous request
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec list_tools(t, keyword) :: {:ok, Response.t()} | {:error, Error.t()}
+  def list_tools(client, opts \\ []) do
+    cursor = Keyword.get(opts, :cursor)
+    params = if cursor, do: %{"cursor" => cursor}, else: %{}
+
+    operation =
+      Operation.new(%{
+        method: "tools/list",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Calls a tool on the server.
+
+  ## Options
+
+    * `:timeout` - Request timeout in milliseconds
+    * `:progress` - Progress tracking options
+      * `:token` - A unique token to track progress (string or integer)
+      * `:callback` - A function to call when progress updates are received
+  """
+  @spec call_tool(t, String.t(), map() | nil, keyword) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def call_tool(client, name, arguments \\ nil, opts \\ []) do
+    params = %{"name" => name}
+    params = if arguments, do: Map.put(params, "arguments", arguments), else: params
+
+    operation =
+      Operation.new(%{
+        method: "tools/call",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Merges additional capabilities into the client's capabilities.
+  """
+  @spec merge_capabilities(t, map(), opts :: Keyword.t()) :: map()
+  def merge_capabilities(client, additional_capabilities, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:merge_capabilities, additional_capabilities}, timeout)
+  end
+
+  @doc """
+  Gets the server's capabilities as reported during initialization.
+
+  Returns `nil` if the client has not been initialized yet.
+  """
+  @spec get_server_capabilities(t, opts :: Keyword.t()) :: map() | nil
+  def get_server_capabilities(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :get_server_capabilities, timeout)
+  end
+
+  @doc """
+  Gets the server's information as reported during initialization.
+
+  Returns `nil` if the client has not been initialized yet.
+  """
+  @spec get_server_info(t, opts :: Keyword.t()) :: map() | nil
+  def get_server_info(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :get_server_info, timeout)
+  end
+
+  @doc """
+  Blocks until the client has completed the MCP initialization handshake.
+
+  Returns `:ok` once the server capabilities have been received.
+  If the server has already been initialized, returns immediately.
+  Otherwise, the caller is parked until the initialization response arrives
+  or the GenServer call times out.
+
+  ## Options
+
+    * `:timeout` - Maximum time to wait in milliseconds (default: 30s)
+
+  ## Examples
+
+      {:ok, _supervisor} = Backplane.McpProtocol.Client.start_link(opts)
+      :ok = Backplane.McpProtocol.Client.await_ready(MyApp.MCPClient, timeout: 10_000)
+      {:ok, tools} = Backplane.McpProtocol.Client.list_tools(MyApp.MCPClient)
+  """
+  @spec await_ready(t, keyword()) :: :ok
+  def await_ready(client, opts \\ []) do
+    timeout = opts[:timeout] || @default_operation_timeout
+    GenServer.call(client, :await_ready, timeout)
+  end
+
+  @doc """
+  Sets the minimum log level for the server to send log messages.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `level` - The minimum log level (debug, info, notice, warning, error, critical, alert, emergency)
+
+  Returns {:ok, result} if successful, {:error, reason} otherwise.
+  """
+  @spec set_log_level(t, String.t()) :: {:ok, Response.t()} | {:error, Error.t()}
+  def set_log_level(client, level) when level in ~w(debug info notice warning error critical alert emergency) do
+    operation =
+      Operation.new(%{
+        method: "logging/setLevel",
+        params: %{"level" => level},
+        timeout: @default_operation_timeout
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Requests autocompletion suggestions for prompt arguments or resource URIs.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `ref` - Reference to what is being completed (required)
+      * For prompts: `%{"type" => "ref/prompt", "name" => prompt_name}`
+      * For resources: `%{"type" => "ref/resource", "uri" => resource_uri}`
+    * `argument` - The argument being completed (required)
+      * `%{"name" => arg_name, "value" => current_value}`
+    * `opts` - Additional options
+      * `:timeout` - Request timeout in milliseconds
+      * `:progress` - Progress tracking options
+        * `:token` - A unique token to track progress (string or integer)
+        * `:callback` - A function to call when progress updates are received
+
+  ## Returns
+
+  Returns `{:ok, response}` with completion suggestions if successful, or `{:error, reason}` if an error occurs.
+
+  The response result contains a "completion" object with:
+  * `values` - List of completion suggestions (maximum 100)
+  * `total` - Optional total number of matching items
+  * `hasMore` - Boolean indicating if more results are available
+  """
+  @spec complete(t, map(), map(), keyword()) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def complete(client, ref, argument, opts \\ []) do
+    params = %{
+      "ref" => ref,
+      "argument" => argument
+    }
+
+    operation =
+      Operation.new(%{
+        method: "completion/complete",
+        params: params,
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    buffer_timeout = operation.timeout + to_timeout(second: 1)
+    GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Registers a callback function to be called when log messages are received.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `callback` - A function that takes three arguments: level, data, and logger name
+
+  The callback function will be called whenever a log message notification is received.
+  """
+  @spec register_log_callback(t, log_callback(), opts :: Keyword.t()) :: :ok
+  def register_log_callback(client, callback, opts \\ []) when is_function(callback, 3) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:register_log_callback, callback}, timeout)
+  end
+
+  @doc """
+  Unregisters a previously registered log callback.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `callback` - The callback function to unregister
+  """
+  @spec unregister_log_callback(t, opts :: Keyword.t()) :: :ok
+  def unregister_log_callback(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :unregister_log_callback, timeout)
+  end
+
+  @doc """
+  Registers a callback function to be called when progress notifications are received
+  for the specified progress token.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `progress_token` - The progress token to watch for (string or integer)
+    * `callback` - A function that takes three arguments: progress_token, progress, and total
+
+  The callback function will be called whenever a progress notification with the
+  matching token is received.
+  """
+  @spec register_progress_callback(
+          t,
+          String.t() | integer(),
+          progress_callback(),
+          opts :: Keyword.t()
+        ) ::
+          :ok
+  def register_progress_callback(client, progress_token, callback, opts \\ [])
+      when is_function(callback, 3) and (is_binary(progress_token) or is_integer(progress_token)) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+
+    GenServer.call(
+      client,
+      {:register_progress_callback, progress_token, callback},
+      timeout
+    )
+  end
+
+  @doc """
+  Unregisters a previously registered progress callback for the specified token.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `progress_token` - The progress token to stop watching (string or integer)
+  """
+  @spec unregister_progress_callback(t, String.t() | integer(), opts :: Keyword.t()) ::
+          :ok
+  def unregister_progress_callback(client, progress_token, opts \\ [])
+      when is_binary(progress_token) or is_integer(progress_token) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:unregister_progress_callback, progress_token}, timeout)
+  end
+
+  @doc """
+  Sends a progress notification to the server for a long-running operation.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `progress_token` - The progress token provided in the original request (string or integer)
+    * `progress` - The current progress value (number)
+    * `total` - The optional total value for the operation (number)
+
+  Returns `:ok` if notification was sent successfully, or `{:error, reason}` otherwise.
+  """
+  @spec send_progress(
+          t,
+          String.t() | integer(),
+          number(),
+          number() | nil,
+          opts :: Keyword.t()
+        ) ::
+          :ok | {:error, term()}
+  def send_progress(client, progress_token, progress, total \\ nil, opts \\ [])
+      when is_number(progress) and (is_binary(progress_token) or is_integer(progress_token)) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+
+    GenServer.call(
+      client,
+      {:send_progress, progress_token, progress, total},
+      timeout
+    )
+  end
+
+  @doc """
+  Cancels an in-progress request.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `request_id` - The ID of the request to cancel
+    * `reason` - Optional reason for cancellation
+
+  ## Returns
+
+    * `:ok` if the cancellation was successful
+    * `{:error, reason}` if an error occurred
+    * `{:not_found, request_id}` if the request ID was not found
+  """
+  @spec cancel_request(t, String.t(), String.t(), opts :: Keyword.t()) ::
+          :ok | {:error, Error.t()}
+  def cancel_request(client, request_id, reason \\ "client_cancelled", opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:cancel_request, request_id, reason}, timeout)
+  end
+
+  @doc """
+  Cancels all pending requests.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `reason` - Optional reason for cancellation (defaults to "client_cancelled")
+
+  ## Returns
+
+    * `{:ok, requests}` - A list of the Request structs that were cancelled
+    * `{:error, reason}` - If an error occurred
+  """
+  @spec cancel_all_requests(t, String.t(), opts :: Keyword.t()) ::
+          {:ok, list(Request.t())} | {:error, Error.t()}
+  def cancel_all_requests(client, reason \\ "client_cancelled", opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:cancel_all_requests, reason}, timeout)
+  end
+
+  @doc """
+  Adds a root directory to the client's roots list.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `uri` - The URI of the root directory (must start with "file://")
+    * `name` - Optional human-readable name for the root
+    * `opts` - Additional options
+      * `:timeout` - Request timeout in milliseconds
+  """
+  @spec add_root(t, String.t(), String.t() | nil, opts :: Keyword.t()) :: :ok
+  def add_root(client, uri, name \\ nil, opts \\ []) when is_binary(uri) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:add_root, uri, name}, timeout)
+  end
+
+  @doc """
+  Removes a root directory from the client's roots list.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `uri` - The URI of the root directory to remove
+    * `opts` - Additional options
+      * `:timeout` - Request timeout in milliseconds
+  """
+  @spec remove_root(t, String.t(), opts :: Keyword.t()) :: :ok
+  def remove_root(client, uri, opts \\ []) when is_binary(uri) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, {:remove_root, uri}, timeout)
+  end
+
+  @doc """
+  Gets a list of all root directories.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `opts` - Additional options
+      * `:timeout` - Request timeout in milliseconds
+  """
+  @spec list_roots(t, opts :: Keyword.t()) :: [map()]
+  def list_roots(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :list_roots, timeout)
+  end
+
+  @doc """
+  Clears all root directories.
+
+  ## Parameters
+
+    * `client` - The client process
+    * `opts` - Additional options
+      * `:timeout` - Request timeout in milliseconds
+  """
+  @spec clear_roots(t, opts :: Keyword.t()) :: :ok
+  def clear_roots(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :clear_roots, timeout)
+  end
+
+  @doc """
+  Registers a callback function to handle sampling requests from the server.
+
+  The callback function will be called when the server sends a `sampling/createMessage` request.
+  The callback should implement user approval and return the LLM response.
+
+  ## Callback Function
+
+  The callback receives the sampling parameters and must return:
+  - `{:ok, response_map}` - Where response_map contains:
+    - `"role"` - Usually "assistant"
+    - `"content"` - Message content (text, image, or audio)
+    - `"model"` - The model that was used
+    - `"stopReason"` - Why generation stopped (e.g., "endTurn")
+  - `{:error, reason}` - If the user rejects or an error occurs
+  """
+  @spec register_sampling_callback(
+          t,
+          (map() -> {:ok, map()} | {:error, String.t()})
+        ) :: :ok
+  def register_sampling_callback(client, callback) when is_function(callback, 1) do
+    GenServer.call(client, {:register_sampling_callback, callback})
+  end
+
+  @doc """
+  Unregisters the sampling callback.
+  """
+  @spec unregister_sampling_callback(t) :: :ok
+  def unregister_sampling_callback(client) do
+    GenServer.call(client, :unregister_sampling_callback)
+  end
+
+  @typedoc """
+  Elicitation callback function type.
+
+  Called when the server sends an `elicitation/create` request. The callback
+  receives the human-readable `message` and the `requestedSchema` (a restricted
+  JSON Schema subset). It must return one of:
+
+    * `{:accept, content}` — user submitted `content` (a flat map matching the schema)
+    * `:decline` — user explicitly declined
+    * `:cancel` — user dismissed without an explicit choice
+    * `{:error, reason}` — internal error; sent back as a JSON-RPC error
+  """
+  @type elicitation_callback ::
+          (message :: String.t(), requested_schema :: map() ->
+             {:accept, map()} | :decline | :cancel | {:error, String.t()})
+
+  @doc """
+  Registers a callback function to handle elicitation requests from the server.
+
+  The client must advertise the `elicitation` capability during initialization
+  for servers to send `elicitation/create` requests.
+
+  Per the MCP specification, the client SHOULD present the request to the user
+  with clear UI, allow them to review and modify their response, and provide
+  decline/cancel options.
+  """
+  @spec register_elicitation_callback(t, elicitation_callback) :: :ok
+  def register_elicitation_callback(client, callback) when is_function(callback, 2) do
+    GenServer.call(client, {:register_elicitation_callback, callback})
+  end
+
+  @doc """
+  Unregisters the elicitation callback.
+  """
+  @spec unregister_elicitation_callback(t) :: :ok
+  def unregister_elicitation_callback(client) do
+    GenServer.call(client, :unregister_elicitation_callback)
+  end
+
+  @doc """
+  Closes the client connection and terminates the process.
+  """
+  @spec close(t) :: :ok
+  def close(client) do
+    GenServer.cast(client, :close)
+  end
+
+  # GenServer Callbacks
+
+  @impl true
+  def init(%{} = opts) do
+    layer = opts.transport[:layer]
+    name = opts.transport[:name] || layer
+    protocol_version = opts.protocol_version
+    transport = %{layer: layer, name: name}
+
+    transport_parse_state =
+      if function_exported?(layer, :transport_init, 1) do
+        {:ok, ps} = layer.transport_init()
+        ps
+      end
+
+    state =
+      State.new(%{
+        client_info: opts.client_info,
+        capabilities: opts.capabilities,
+        protocol_version: protocol_version,
+        transport: transport,
+        timeout: opts.timeout,
+        transport_parse_state: transport_parse_state
+      })
+
+    client_name = get_in(opts, [:client_info, "name"])
+
+    Logger.metadata(
+      mcp_client: opts.name,
+      mcp_client_name: client_name,
+      mcp_transport: opts.transport
+    )
+
+    Logging.client_event("initializing", %{
+      protocol_version: protocol_version,
+      capabilities: opts.capabilities,
+      transport: layer
+    })
+
+    Telemetry.execute(
+      Telemetry.event_client_init(),
+      %{system_time: System.system_time()},
+      %{
+        client_name: client_name,
+        transport: transport,
+        protocol_version: protocol_version,
+        capabilities: opts.capabilities
+      }
+    )
+
+    {:ok, state, :hibernate}
+  end
+
+  @impl true
+  def handle_call({:operation, %Operation{} = operation}, from, state) do
+    method = operation.method
+
+    params_with_token =
+      State.add_progress_token_to_params(operation.params, operation.progress_opts)
+
+    with :ok <- State.validate_capability(state, method),
+         {request_id, updated_state} =
+           State.add_request_from_operation(state, operation, from),
+         {:ok, request_data} <- encode_request(method, params_with_token, request_id),
+         :ok <- send_to_transport(state.transport, request_data, timeout: operation.timeout) do
+      Telemetry.execute(
+        Telemetry.event_client_request(),
+        %{system_time: System.system_time()},
+        %{method: method, request_id: request_id}
+      )
+
+      {:noreply, updated_state}
+    else
+      err -> {:reply, err, state}
+    end
+  end
+
+  def handle_call({:merge_capabilities, additional_capabilities}, _from, state) do
+    updated = State.merge_capabilities(state, additional_capabilities)
+    {:reply, updated.capabilities, updated}
+  end
+
+  def handle_call(:get_server_capabilities, _from, state) do
+    {:reply, State.get_server_capabilities(state), state}
+  end
+
+  def handle_call(:get_server_info, _from, state) do
+    {:reply, State.get_server_info(state), state}
+  end
+
+  def handle_call(:await_ready, _from, %{server_capabilities: caps} = state) when not is_nil(caps) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:await_ready, from, state) do
+    {:noreply, %{state | ready_waiters: [from | state.ready_waiters]}}
+  end
+
+  def handle_call({:register_log_callback, callback}, _from, state) do
+    {:reply, :ok, State.set_log_callback(state, callback)}
+  end
+
+  def handle_call(:unregister_log_callback, _from, state) do
+    {:reply, :ok, State.clear_log_callback(state)}
+  end
+
+  def handle_call({:register_sampling_callback, callback}, _from, state) do
+    {:reply, :ok, State.set_sampling_callback(state, callback)}
+  end
+
+  def handle_call(:unregister_sampling_callback, _from, state) do
+    {:reply, :ok, State.clear_sampling_callback(state)}
+  end
+
+  def handle_call({:register_elicitation_callback, callback}, _from, state) do
+    {:reply, :ok, State.set_elicitation_callback(state, callback)}
+  end
+
+  def handle_call(:unregister_elicitation_callback, _from, state) do
+    {:reply, :ok, State.clear_elicitation_callback(state)}
+  end
+
+  def handle_call({:register_progress_callback, token, callback}, _from, state) do
+    {:reply, :ok, State.register_progress_callback(state, token, callback)}
+  end
+
+  def handle_call({:unregister_progress_callback, token}, _from, state) do
+    {:reply, :ok, State.unregister_progress_callback(state, token)}
+  end
+
+  def handle_call({:send_progress, progress_token, progress, total}, _from, state) do
+    {:reply,
+     with {:ok, notification} <-
+            Message.encode_progress_notification(%{
+              "progressToken" => progress_token,
+              "progress" => progress,
+              "total" => total
+            }) do
+       send_to_transport(state.transport, notification, timeout: state.timeout)
+     end, state}
+  end
+
+  def handle_call({:add_root, uri, name}, _from, state) do
+    {:reply, :ok, State.add_root(state, uri, name), {:continue, :roots_list_changed}}
+  end
+
+  def handle_call({:remove_root, uri}, _from, state) do
+    {:reply, :ok, State.remove_root(state, uri), {:continue, :roots_list_changed}}
+  end
+
+  def handle_call(:list_roots, _from, state) do
+    {:reply, State.list_roots(state), state}
+  end
+
+  def handle_call(:clear_roots, _from, state) do
+    {:reply, :ok, State.clear_roots(state), {:continue, :roots_list_changed}}
+  end
+
+  def handle_call({:cancel_request, request_id, reason}, _from, state) do
+    with true <- Map.has_key?(state.pending_requests, request_id),
+         :ok <- send_cancellation(state, request_id, reason) do
+      {request, updated_state} = State.remove_request(state, request_id)
+
+      error =
+        Error.transport(:request_cancelled, %{
+          message: "Request cancelled by client",
+          reason: reason
+        })
+
+      GenServer.reply(request.from, {:error, error})
+      {:reply, :ok, updated_state}
+    else
+      false -> {:reply, Error.transport(:request_not_found), state}
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:cancel_all_requests, reason}, _from, state) do
+    pending_requests = State.list_pending_requests(state)
+
+    if Enum.empty?(pending_requests) do
+      {:reply, {:ok, []}, state}
+    else
+      cancelled_requests =
+        for request <- pending_requests do
+          _ = send_cancellation(state, request.id, reason)
+
+          error =
+            Error.transport(:request_cancelled, %{
+              message: "Request cancelled by client",
+              reason: reason
+            })
+
+          GenServer.reply(request.from, {:error, error})
+
+          request
+        end
+
+      {:reply, {:ok, cancelled_requests}, %{state | pending_requests: %{}}}
+    end
+  end
+
+  @impl true
+  def handle_continue(:roots_list_changed, state) do
+    Task.start(fn -> send_roots_list_changed_notification(state) end)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:close, state) do
+    {:stop, :normal, state}
+  end
+
+  def handle_cast(:initialize, state) do
+    Logging.client_event("handshake", "Making initial client <> server handshake")
+
+    params = %{
+      "protocolVersion" => state.protocol_version,
+      "capabilities" => state.capabilities,
+      "clientInfo" => state.client_info
+    }
+
+    operation =
+      Operation.new(%{
+        method: "initialize",
+        params: params,
+        timeout: state.timeout
+      })
+
+    {request_id, updated_state} =
+      State.add_request_from_operation(state, operation, {self(), make_ref()})
+
+    with {:ok, request_data} <- encode_request("initialize", params, request_id),
+         :ok <- send_to_transport(state.transport, request_data, timeout: operation.timeout) do
+      {:noreply, updated_state}
+    else
+      err -> {:stop, err, state}
+    end
+  rescue
+    e ->
+      err = Exception.format(:error, e, __STACKTRACE__)
+      Logging.client_event("initialization_failed", %{error: err})
+      {:stop, :unexpected, state}
+  end
+
+  @impl true
+  def handle_cast({:response, response_data}, state) do
+    case parse_response(response_data, state) do
+      {:ok, messages, state} ->
+        state =
+          Enum.reduce(messages, state, fn message, acc ->
+            handle_message(message, acc)
+          end)
+
+        {:noreply, state}
+
+      {:error, error} ->
+        Logging.client_event("decode_failed", %{error: error}, level: :warning)
+        {:noreply, state}
+    end
+  rescue
+    e ->
+      err = Exception.format(:error, e, __STACKTRACE__)
+      Logging.client_event("response_handling_failed", %{error: err}, level: :error)
+
+      {:noreply, state}
+  end
+
+  defp parse_response(data, %{transport_parse_state: nil} = state) do
+    case Message.decode(data) do
+      {:ok, messages} -> {:ok, messages, state}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp parse_response(data, %{transport: %{layer: layer}} = state) do
+    case layer.parse(data, state.transport_parse_state) do
+      {:ok, messages, new_parse_state} ->
+        {:ok, messages, %{state | transport_parse_state: new_parse_state}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # Server request handling
+
+  defp handle_server_request(%{"method" => "roots/list", "id" => id}, state) do
+    roots = State.list_roots(state)
+    roots_result = %{"roots" => roots}
+    roots_count = Enum.count(roots)
+
+    with {:ok, response_data} <-
+           Message.encode_response(%{"result" => roots_result}, id),
+         :ok <- send_to_transport(state.transport, response_data, timeout: state.timeout) do
+      Logging.client_event("roots_list_request", %{id: id, roots_count: roots_count})
+
+      Telemetry.execute(
+        Telemetry.event_client_roots(),
+        %{system_time: System.system_time()},
+        %{action: :list, count: roots_count, request_id: id}
+      )
+
+      {:noreply, state}
+    else
+      err ->
+        Logging.client_event("roots_list_error", %{id: id, error: err}, level: :error)
+
+        Telemetry.execute(
+          Telemetry.event_client_error(),
+          %{system_time: System.system_time()},
+          %{method: "roots/list", request_id: id, error: err}
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  defp handle_server_request(%{"method" => "ping", "id" => id}, state) do
+    with {:ok, response_data} <- Message.encode_response(%{"result" => %{}}, id),
+         :ok <- send_to_transport(state.transport, response_data, timeout: state.timeout) do
+      {:noreply, state}
+    else
+      err ->
+        Logging.client_event("ping_response_error", %{id: id, error: err}, level: :error)
+
+        Telemetry.execute(
+          Telemetry.event_client_error(),
+          %{system_time: System.system_time()},
+          %{method: "ping", request_id: id, error: err}
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  defp handle_server_request(%{"method" => "sampling/createMessage"} = request, state) do
+    {:noreply, Sampling.handle_request(request, state)}
+  end
+
+  defp handle_server_request(%{"method" => "elicitation/create"} = request, state) do
+    {:noreply, Elicitation.handle_request(request, state)}
+  end
+
+  @impl true
+  def handle_info({:request_timeout, request_id}, state) do
+    case State.handle_request_timeout(state, request_id) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {request, updated_state} ->
+        elapsed_ms = Request.elapsed_time(request)
+
+        error =
+          Error.transport(:request_timeout, %{
+            message: "Request timed out after #{elapsed_ms}ms"
+          })
+
+        GenServer.reply(request.from, {:error, error})
+
+        _ = send_cancellation(updated_state, request_id, "timeout")
+
+        {:noreply, updated_state}
+    end
+  end
+
+  @impl true
+  def terminate(reason, %{client_info: %{"name" => name}} = state) do
+    Logging.client_event("terminating", %{
+      name: name,
+      reason: reason
+    })
+
+    pending_requests = State.list_pending_requests(state)
+    pending_count = length(pending_requests)
+
+    if pending_count > 0 do
+      Logging.client_event("pending_requests", %{
+        count: pending_count
+      })
+    end
+
+    Telemetry.execute(
+      Telemetry.event_client_terminate(),
+      %{system_time: System.system_time()},
+      %{
+        client_name: name,
+        reason: reason,
+        pending_requests: pending_count
+      }
+    )
+
+    for request <- pending_requests do
+      error =
+        Error.transport(:request_cancelled, %{
+          message: "Request cancelled by client",
+          reason: "client closed"
+        })
+
+      GenServer.reply(request.from, {:error, error})
+
+      send_notification(state, "notifications/cancelled", %{
+        "requestId" => request.id,
+        "reason" => "client closed"
+      })
+    end
+
+    for waiter <- state.ready_waiters do
+      GenServer.reply(waiter, {:error, Error.transport(:client_terminated, %{reason: reason})})
+    end
+
+    Cache.cleanup(state.client_info["name"])
+
+    state.transport.layer.shutdown(state.transport.name)
+  end
+
+  # Message handling
+
+  defp handle_message(message, state) do
+    cond do
+      Message.is_error(message) ->
+        Logging.message("incoming", "error", message["id"], message)
+        handle_error_response(message, message["id"], state)
+
+      Message.is_response(message) ->
+        Logging.message("incoming", "response", message["id"], message)
+        handle_success_response(message, message["id"], state)
+
+      Message.is_notification(message) ->
+        Logging.message("incoming", "notification", nil, message)
+        Handlers.handle_notification(message, state)
+
+      Message.is_request(message) ->
+        Logging.message("incoming", "request", message["id"], message)
+        {_, state} = handle_server_request(message, state)
+        state
+
+      true ->
+        state
+    end
+  end
+
+  # Response handling
+
+  defp handle_error_response(%{"error" => json_error, "id" => id}, id, state) do
+    case State.remove_request(state, id) do
+      {nil, state} ->
+        log_unknown_error_response(id, json_error)
+        state
+
+      {request, updated_state} ->
+        process_error_response(request, json_error, id, updated_state)
+    end
+  end
+
+  defp log_unknown_error_response(id, json_error) do
+    Logging.client_event("unknown_error_response", %{
+      id: id,
+      code: json_error["code"],
+      message: json_error["message"]
+    })
+  end
+
+  defp process_error_response(request, json_error, id, state) do
+    error = Error.from_json_rpc(json_error)
+    elapsed_ms = Request.elapsed_time(request)
+
+    log_error_response(request, id, elapsed_ms, json_error)
+    GenServer.reply(request.from, {:error, error})
+
+    state
+  end
+
+  defp log_error_response(request, id, elapsed_ms, error) do
+    Logging.client_event("error_response", %{
+      id: id,
+      method: request.method
+    })
+
+    meta =
+      if is_map(error),
+        do: %{error_code: error["code"], error_message: error["message"]},
+        else: %{errors: Enum.map(error, &Peri.Error.error_to_map/1)}
+
+    Telemetry.execute(
+      Telemetry.event_client_error(),
+      %{duration: elapsed_ms, system_time: System.system_time()},
+      Map.merge(%{id: id, method: request.method}, meta)
+    )
+  end
+
+  defp handle_success_response(%{"id" => id, "result" => %{"serverInfo" => _} = result}, id, state) do
+    case State.remove_request(state, id) do
+      {nil, state} ->
+        state
+
+      {_request, state} ->
+        state =
+          State.update_server_info(
+            state,
+            result["capabilities"],
+            result["serverInfo"]
+          )
+
+        Logging.client_event("initialized", %{
+          server_info: result["serverInfo"],
+          capabilities: result["capabilities"]
+        })
+
+        :ok = send_notification(state, "notifications/initialized")
+
+        Enum.each(state.ready_waiters, &GenServer.reply(&1, :ok))
+        %{state | ready_waiters: []}
+    end
+  end
+
+  defp handle_success_response(%{"id" => id, "result" => result}, id, state) do
+    case State.remove_request(state, id) do
+      {nil, state} ->
+        Logging.client_event("unknown_response", %{id: id})
+        state
+
+      {request, updated_state} ->
+        process_successful_response(request, result, id, updated_state)
+    end
+  end
+
+  defp process_successful_response(%{method: "tools/call"} = request, result, id, state) do
+    response = Response.from_json_rpc(%{"result" => result, "id" => id})
+    response = %{response | method: request.method}
+    elapsed_ms = Request.elapsed_time(request)
+
+    client = state.client_info["name"]
+    structured = result["structuredContent"]
+    tool = request.params["name"]
+    validator = Cache.get_tool_validator(client, tool)
+
+    if is_map(structured) and is_function(validator, 1) do
+      case validator.(structured) do
+        {:ok, _} ->
+          GenServer.reply(request.from, {:ok, response})
+
+        {:error, errors} ->
+          log_error_response(request, id, elapsed_ms, errors)
+
+          GenServer.reply(
+            request.from,
+            {:error,
+             Error.protocol(:parse_error, %{
+               errors: errors,
+               tool: tool,
+               request_id: request.id,
+               request_params: request.params,
+               request_method: request.method
+             })}
+          )
+      end
+    else
+      log_success_response(request, id, elapsed_ms)
+      GenServer.reply(request.from, {:ok, response})
+    end
+
+    state
+  end
+
+  defp process_successful_response(request, result, id, state) do
+    response = Response.from_json_rpc(%{"result" => result, "id" => id})
+    response = %{response | method: request.method}
+    elapsed_ms = Request.elapsed_time(request)
+
+    log_success_response(request, id, elapsed_ms)
+
+    method = request.method
+    from = request.from
+
+    if method == "tools/list" do
+      tools = response.result["tools"]
+      client = state.client_info["name"]
+      Cache.clear_tool_validators(client)
+      Cache.put_tool_validators(client, tools)
+    end
+
+    if method == "ping",
+      do: GenServer.reply(from, :pong),
+      else: GenServer.reply(from, {:ok, response})
+
+    state
+  end
+
+  defp log_success_response(request, id, elapsed_ms) do
+    Logging.client_event("success_response", %{id: id, method: request.method})
+
+    Telemetry.execute(
+      Telemetry.event_client_response(),
+      %{duration: elapsed_ms, system_time: System.system_time()},
+      %{
+        id: id,
+        method: request.method,
+        status: :success
+      }
+    )
+  end
+
+  # Helper functions
+
+  defp encode_request(method, params, request_id) do
+    request = %{"method" => method, "params" => params}
+    Logging.message("outgoing", "request", request_id, request)
+    Message.encode_request(request, request_id)
+  end
+
+  defp encode_notification(method, params) do
+    notification = %{"method" => method, "params" => params}
+    Logging.message("outgoing", "notification", nil, notification)
+    Message.encode_notification(notification)
+  end
+
+  defp send_cancellation(state, request_id, reason) do
+    params = %{
+      "requestId" => request_id,
+      "reason" => reason
+    }
+
+    send_notification(state, "notifications/cancelled", params)
+  end
+
+  defp send_to_transport(transport, data, opts) do
+    with {:error, reason} <- transport.layer.send_message(transport.name, data, opts) do
+      {:error, Error.transport(:send_failure, %{original_reason: reason})}
+    end
+  end
+
+  defp send_notification(state, method, params \\ %{}) do
+    with {:ok, notification_data} <- encode_notification(method, params) do
+      send_to_transport(state.transport, notification_data, timeout: state.timeout)
+    end
+  end
+
+  defp send_roots_list_changed_notification(state) do
+    Logging.client_event("sending_roots_list_changed", nil)
+    send_notification(state, "notifications/roots/list_changed")
+  end
+end

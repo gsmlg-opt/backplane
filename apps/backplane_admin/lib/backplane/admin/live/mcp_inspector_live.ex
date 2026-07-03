@@ -14,6 +14,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   @json_rpc_version "2.0"
   # 10 MB buffer cap
   @max_buffer_size 10_000_000
+  @default_stdio_timeout_ms 30_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -45,6 +46,7 @@ defmodule Backplane.Admin.McpInspectorLive do
        port: nil,
        buffer: "",
        pending_requests: %{},
+       pending_timers: %{},
        next_id: 1,
        # Request log
        request_log: [],
@@ -88,6 +90,8 @@ defmodule Backplane.Admin.McpInspectorLive do
           expanded_tools: MapSet.new(),
           tool_calls: %{},
           error: nil,
+          pending_requests: %{},
+          pending_timers: %{},
           request_log: []
         )
       else
@@ -389,14 +393,21 @@ defmodule Backplane.Admin.McpInspectorLive do
   end
 
   def handle_info({port, {:exit_status, status}}, %{assigns: %{port: port}} = socket) do
+    cancel_pending_timers(socket.assigns.pending_timers)
+
     {:noreply,
      assign(socket,
        port: nil,
        buffer: "",
        connected: false,
        pending_requests: %{},
+       pending_timers: %{},
        error: "MCP process exited (status #{status})"
      )}
+  end
+
+  def handle_info({:stdio_request_timeout, id}, socket) do
+    {:noreply, handle_stdio_timeout(socket, id)}
   end
 
   def handle_info(_msg, socket) do
@@ -609,7 +620,14 @@ defmodule Backplane.Admin.McpInspectorLive do
 
         port = Port.open({:spawn_executable, executable}, port_opts)
 
-        socket = assign(socket, port: port, buffer: "", pending_requests: %{}, next_id: 1)
+        socket =
+          assign(socket,
+            port: port,
+            buffer: "",
+            pending_requests: %{},
+            pending_timers: %{},
+            next_id: 1
+          )
 
         # Send initialize request
         request =
@@ -624,14 +642,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
         case send_stdio(port, request) do
           :ok ->
-            pending = Map.put(socket.assigns.pending_requests, id, {:initialize, nil})
-            log_entry = make_log_entry("initialize", request, nil, :pending)
-
-            {:noreply,
-             assign(socket,
-               pending_requests: pending,
-               request_log: [log_entry | socket.assigns.request_log]
-             )}
+            {:noreply, put_pending_stdio(socket, id, {:initialize, nil}, "initialize", request)}
 
           {:error, reason} ->
             {:noreply,
@@ -655,14 +666,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
       case send_stdio(socket.assigns.port, request) do
         :ok ->
-          pending = Map.put(socket.assigns.pending_requests, id, {:list_tools, nil})
-          log_entry = make_log_entry("tools/list", request, nil, :pending)
-
-          {:noreply,
-           assign(socket,
-             pending_requests: pending,
-             request_log: [log_entry | socket.assigns.request_log]
-           )}
+          {:noreply, put_pending_stdio(socket, id, {:list_tools, nil}, "tools/list", request)}
 
         {:error, reason} ->
           {:noreply, assign(socket, error: "Send failed: #{inspect(reason)}", loading: false)}
@@ -680,14 +684,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
       case send_stdio(socket.assigns.port, request) do
         :ok ->
-          pending = Map.put(socket.assigns.pending_requests, id, {:call_tool, name})
-          log_entry = make_log_entry("tools/call", request, nil, :pending)
-
-          {:noreply,
-           assign(socket,
-             pending_requests: pending,
-             request_log: [log_entry | socket.assigns.request_log]
-           )}
+          {:noreply, put_pending_stdio(socket, id, {:call_tool, name}, "tools/call", request)}
 
         {:error, reason} ->
           tool_calls =
@@ -741,7 +738,17 @@ defmodule Backplane.Admin.McpInspectorLive do
       {nil, _} ->
         socket
 
-      {{:initialize, _}, pending} ->
+      {pending_request, pending} ->
+        socket =
+          socket
+          |> cancel_pending_timer(id)
+          |> assign(pending_requests: pending)
+
+        dispatch_pending_stdio_response(socket, pending_request, response)
+    end
+  end
+
+  defp dispatch_pending_stdio_response(socket, {:initialize, _}, response) do
         response_json = Jason.encode!(response, pretty: true)
 
         log_entry =
@@ -761,14 +768,14 @@ defmodule Backplane.Admin.McpInspectorLive do
           end
 
         assign(socket,
-          pending_requests: pending,
           loading: false,
           connected: response["error"] == nil,
           server_info: server_info,
           request_log: [log_entry | socket.assigns.request_log]
         )
+  end
 
-      {{:list_tools, _}, pending} ->
+  defp dispatch_pending_stdio_response(socket, {:list_tools, _}, response) do
         response_json = Jason.encode!(response, pretty: true)
 
         log_entry =
@@ -787,15 +794,15 @@ defmodule Backplane.Admin.McpInspectorLive do
           end)
 
         assign(socket,
-          pending_requests: pending,
           loading: false,
           tools: tools,
           tool_calls: tool_calls,
           expanded_tools: MapSet.new(),
           request_log: [log_entry | socket.assigns.request_log]
         )
+  end
 
-      {{:call_tool, tool_name}, pending} ->
+  defp dispatch_pending_stdio_response(socket, {:call_tool, tool_name}, response) do
         response_json = Jason.encode!(response, pretty: true)
 
         log_entry =
@@ -814,22 +821,20 @@ defmodule Backplane.Admin.McpInspectorLive do
           end)
 
         assign(socket,
-          pending_requests: pending,
           tool_calls: tool_calls,
           request_log: [log_entry | socket.assigns.request_log]
         )
+  end
 
-      {{:ping, _}, pending} ->
+  defp dispatch_pending_stdio_response(socket, {:ping, _}, response) do
         response_json = Jason.encode!(response, pretty: true)
 
         log_entry =
           make_log_entry("ping", nil, response_json, if(response["error"], do: :error, else: :ok))
 
         assign(socket,
-          pending_requests: pending,
           request_log: [log_entry | socket.assigns.request_log]
         )
-    end
   end
 
   defp send_stdio(port, request) when is_port(port) do
@@ -842,6 +847,70 @@ defmodule Backplane.Admin.McpInspectorLive do
 
   defp send_stdio(nil, _request), do: {:error, :not_connected}
 
+  defp put_pending_stdio(socket, id, pending_request, method, request) do
+    timer_ref = Process.send_after(self(), {:stdio_request_timeout, id}, stdio_timeout_ms())
+    pending = Map.put(socket.assigns.pending_requests, id, pending_request)
+    pending_timers = Map.put(socket.assigns.pending_timers, id, timer_ref)
+    log_entry = make_log_entry(method, request, nil, :pending)
+
+    assign(socket,
+      pending_requests: pending,
+      pending_timers: pending_timers,
+      request_log: [log_entry | socket.assigns.request_log]
+    )
+  end
+
+  defp handle_stdio_timeout(socket, id) do
+    case Map.pop(socket.assigns.pending_requests, id) do
+      {nil, _pending} ->
+        socket
+
+      {pending_request, pending} ->
+        socket =
+          socket
+          |> cancel_pending_timer(id)
+          |> assign(pending_requests: pending)
+
+        method = pending_stdio_method(pending_request)
+        timeout_ms = stdio_timeout_ms()
+        message = "Timed out waiting for stdio #{method} response after #{timeout_ms}ms"
+        log_entry = make_log_entry(method, nil, message, :error)
+
+        socket =
+          socket
+          |> assign(
+            loading: false,
+            error: message,
+            request_log: [log_entry | socket.assigns.request_log]
+          )
+          |> clear_tool_loading_on_timeout(pending_request)
+
+        case pending_request do
+          {:initialize, _} -> maybe_close_port(socket)
+          _ -> socket
+        end
+    end
+  end
+
+  defp clear_tool_loading_on_timeout(socket, {:call_tool, tool_name}) do
+    tool_calls =
+      Map.update(
+        socket.assigns.tool_calls,
+        tool_name,
+        %{args: "{}", result: nil, loading: false},
+        fn tc -> %{tc | loading: false} end
+      )
+
+    assign(socket, tool_calls: tool_calls)
+  end
+
+  defp clear_tool_loading_on_timeout(socket, _pending_request), do: socket
+
+  defp pending_stdio_method({:initialize, _}), do: "initialize"
+  defp pending_stdio_method({:list_tools, _}), do: "tools/list"
+  defp pending_stdio_method({:call_tool, _}), do: "tools/call"
+  defp pending_stdio_method({:ping, _}), do: "ping"
+
   defp maybe_close_port(socket) do
     if socket.assigns.port do
       try do
@@ -851,12 +920,29 @@ defmodule Backplane.Admin.McpInspectorLive do
       end
     end
 
+    cancel_pending_timers(socket.assigns.pending_timers)
+
     assign(socket,
       port: nil,
       buffer: "",
       pending_requests: %{},
+      pending_timers: %{},
       connected: false
     )
+  end
+
+  defp cancel_pending_timer(socket, id) do
+    {timer_ref, pending_timers} = Map.pop(socket.assigns.pending_timers, id)
+
+    if timer_ref, do: Process.cancel_timer(timer_ref)
+
+    assign(socket, pending_timers: pending_timers)
+  end
+
+  defp cancel_pending_timers(pending_timers) do
+    pending_timers
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer/1)
   end
 
   # ── Shared helpers ─────────────────────────────────────────────────────────
@@ -947,6 +1033,13 @@ defmodule Backplane.Admin.McpInspectorLive do
     case System.find_executable(command) do
       nil -> command
       path -> path
+    end
+  end
+
+  defp stdio_timeout_ms do
+    case Application.get_env(:backplane_admin, :mcp_inspector_stdio_timeout_ms) do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> @default_stdio_timeout_ms
     end
   end
 
@@ -1124,7 +1217,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             </.dm_badge>
           </div>
         </:title>
-        <form phx-change="update_config" phx-submit="connect" class="space-y-4">
+        <form id="mcp-inspector-external-form" phx-change="update_config" phx-submit="connect" class="space-y-4">
           <%!-- Transport selector --%>
           <div class="max-w-xs">
             <.dm_select

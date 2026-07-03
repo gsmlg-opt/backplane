@@ -1,0 +1,17 @@
+defmodule Upcase.Router do
+  use Plug.Router
+
+  alias Backplane.McpProtocol.Server.Transport.StreamableHTTP
+
+  plug Plug.Logger
+  plug :match
+  plug :dispatch
+
+  forward "/mcp",
+    to: StreamableHTTP.Plug,
+    init_opts: [server: Upcase.Server, request_timeout: 10_000]
+
+  match _ do
+    send_resp(conn, 404, "not found")
+  end
+end

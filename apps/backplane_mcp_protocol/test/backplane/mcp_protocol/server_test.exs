@@ -1,0 +1,116 @@
+defmodule Backplane.McpProtocol.ServerTest do
+  use ExUnit.Case, async: true
+
+  alias Backplane.McpProtocol.Server
+  alias Backplane.McpProtocol.Server.Component
+  alias Backplane.McpProtocol.Server.Component.Resource
+
+  describe "parse_components/1 with resource templates" do
+    defmodule TestResourceTemplate do
+      @moduledoc "Test resource template for parsing"
+
+      use Component,
+        type: :resource,
+        uri_template: "test:///{category}/{id}",
+        name: "test_template",
+        description: "Test resource template",
+        mime_type: "application/json"
+
+      alias Backplane.McpProtocol.MCP.Error
+      alias Backplane.McpProtocol.Server.Response
+
+      @impl true
+      def read(%{"uri" => "test:///" <> _rest}, frame) do
+        {:reply, Response.json(Response.resource(), %{}), frame}
+      end
+
+      def read(_params, frame) do
+        {:error, Error.resource(:not_found, %{}), frame}
+      end
+    end
+
+    test "parses resource template component correctly" do
+      [resource] = Server.parse_components({:resource, "test_template", TestResourceTemplate})
+
+      assert %Resource{} = resource
+      assert resource.uri_template == "test:///{category}/{id}"
+      assert resource.name == "test_template"
+      assert resource.description == "Test resource template for parsing"
+      assert resource.mime_type == "application/json"
+      assert resource.handler == TestResourceTemplate
+      assert is_nil(resource.uri)
+    end
+  end
+
+  describe "parse_components/1 with static resources" do
+    defmodule TestStaticResource do
+      @moduledoc "Test static resource for parsing"
+
+      use Component,
+        type: :resource,
+        uri: "test:///static",
+        name: "test_static",
+        mime_type: "text/plain"
+
+      alias Backplane.McpProtocol.Server.Response
+
+      @impl true
+      def read(_params, frame) do
+        {:reply, Response.text(Response.resource(), "content"), frame}
+      end
+    end
+
+    test "parses static resource component correctly" do
+      [resource] = Server.parse_components({:resource, "test_static", TestStaticResource})
+
+      assert %Resource{} = resource
+      assert resource.uri == "test:///static"
+      assert resource.name == "test_static"
+      assert resource.mime_type == "text/plain"
+      assert resource.handler == TestStaticResource
+      assert is_nil(resource.uri_template)
+    end
+  end
+
+  describe "parse_components/1 with raw {module, opts} tuples" do
+    defmodule RawTuplePromptComponent do
+      @moduledoc "Prompt for raw-tuple parsing"
+
+      use Component, type: :prompt
+
+      alias Backplane.McpProtocol.Server.Response
+
+      schema do
+        field(:topic, :string, required: true)
+      end
+
+      @impl true
+      def get_messages(_params, frame) do
+        {:reply, Response.user_message(Response.prompt(), "ok"), frame}
+      end
+    end
+
+    test "normalizes {module, opts} by deriving type and default name" do
+      [prompt] = Server.parse_components({RawTuplePromptComponent, []})
+
+      assert prompt.handler == RawTuplePromptComponent
+      assert prompt.name == "raw_tuple_prompt_component"
+    end
+
+    test "honors opts[:name] override" do
+      [prompt] = Server.parse_components({RawTuplePromptComponent, name: "custom"})
+
+      assert prompt.name == "custom"
+    end
+
+    test "raises ArgumentError on non-component module" do
+      defmodule NotAComponent do
+        @moduledoc false
+      end
+
+      assert_raise ArgumentError, ~r/is not a valid component/, fn ->
+        Server.parse_components({NotAComponent, []})
+      end
+    end
+  end
+end

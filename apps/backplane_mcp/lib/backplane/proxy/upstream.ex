@@ -14,7 +14,7 @@ defmodule Backplane.Proxy.Upstream do
   require Logger
 
   alias Backplane.PubSubBroadcaster
-  alias Backplane.McpProtocol.JsonRpc
+  alias Backplane.MCP.JsonRpc
   alias Backplane.Registry.{Tool, ToolRegistry}
 
   @default_timeout 30_000

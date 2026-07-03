@@ -1,0 +1,861 @@
+defmodule Backplane.McpProtocol.Server do
+  @moduledoc """
+  Build MCP servers that extend language model capabilities.
+
+  MCP servers are specialized processes that provide three core primitives to AI assistants:
+  **Resources** (contextual data like files or schemas), **Tools** (actions the model can invoke),
+  and **Prompts** (user-selectable templates). They operate in a secure, isolated architecture
+  where clients maintain 1:1 connections with servers, enabling composable functionality while
+  maintaining strict security boundaries.
+
+  ## Quick Start
+
+  Create a server in three steps:
+
+      defmodule MyServer do
+        use Backplane.McpProtocol.Server,
+          name: "my-server",
+          version: "1.0.0",
+          capabilities: [:tools]
+
+        component MyServer.Calculator
+      end
+
+      defmodule MyServer.Calculator do
+        @moduledoc "Add two numbers"
+
+        use Backplane.McpProtocol.Server.Component, type: :tool
+
+        schema do
+          field :a, :number, required: true
+          field :b, :number, required: true
+        end
+
+        def execute(%{a: a, b: b}, _frame) do
+          {:ok, a + b}
+        end
+      end
+
+      # In your supervision tree
+      children = [{MyServer, transport: :stdio}]
+      Supervisor.start_link(children, strategy: :one_for_one)
+
+  Your server is now a living process that AI assistants can connect to, discover available
+  tools, and execute calculations through a secure protocol boundary.
+
+  ## Capabilities
+
+  Declare what your server can do:
+
+  - **`:tools`** - Execute functions with structured inputs and outputs
+  - **`:resources`** - Provide data that models can read (files, APIs, databases)
+  - **`:prompts`** - Offer reusable templates for common interactions
+  - **`:logging`** - Allow clients to configure verbosity levels
+
+  Configure capabilities with options:
+
+      use Backplane.McpProtocol.Server,
+        capabilities: [
+          :tools,
+          {:resources, subscribe?: true},      # Enable resource update subscriptions
+          {:prompts, list_changed?: true}      # Notify when prompts change
+        ]
+
+  ## Components
+
+  Register tools, resources, and prompts as components:
+
+      component MyServer.FileReader           # Auto-named as "file_reader"
+      component MyServer.ApiClient, name: "api"   # Custom name
+
+  Components are modules that implement specific behaviors
+  and are automatically discovered by clients through the protocol.
+
+  ## Server Lifecycle
+
+  Your server follows a predictable lifecycle with callbacks you can hook into:
+
+  1. **`init/2`** - Set up initial state when the server starts
+  2. **`handle_request/2`** - Process MCP protocol requests from clients
+  3. **`handle_notification/2`** - React to one-way client messages
+  4. **`handle_info/2`** - Bridge external events into MCP notifications
+
+  Most protocol handling is automatic - you typically only implement `init/2` for setup
+  and occasionally override other callbacks for custom behavior.
+
+  ## Sending Notifications
+
+  Notification functions use `send(self(), ...)` and must be called from within the
+  Session process (i.e., inside callbacks). For sending from external processes or tasks,
+  use `send/2` with the session PID directly.
+
+      # Inside a callback:
+      def handle_info(:data_changed, frame) do
+        Backplane.McpProtocol.Server.send_tools_list_changed()
+        {:noreply, frame}
+      end
+  """
+
+  alias Backplane.McpProtocol.MCP.ElicitationSchema
+  alias Backplane.McpProtocol.Server.Component
+  alias Backplane.McpProtocol.Server.Component.Prompt
+  alias Backplane.McpProtocol.Server.Component.Resource
+  alias Backplane.McpProtocol.Server.Component.Tool
+  alias Backplane.McpProtocol.Server.ConfigurationError
+  alias Backplane.McpProtocol.Server.Frame
+  alias Backplane.McpProtocol.Server.Handlers
+  alias Backplane.McpProtocol.Server.Response
+
+  @server_capabilities ~w(prompts tools resources logging completion)a
+  @protocol_versions Backplane.McpProtocol.Protocol.Registry.supported_versions()
+
+  @type request :: map()
+  @type response :: map()
+  @type notification :: map()
+  @type mcp_error :: Backplane.McpProtocol.MCP.Error.t()
+  @type server_info :: map()
+  @type server_capabilities :: map()
+
+  @doc """
+  Called after a client requests a `initialize` request.
+
+  This callback is invoked while the MCP handshake starts and so the client may not sent
+  the `notifications/initialized` message yet. For checking if the notification was already sent
+  and the MCP handshake was successfully completed, you can check the `context.initialized` field
+  in the frame.
+
+  It receives the client's information and
+  the current frame, allowing you to perform client-specific setup, validate capabilities,
+  or prepare resources based on the connected client.
+  """
+  @callback init(client_info :: map(), Frame.t()) :: {:ok, Frame.t()}
+
+  @doc """
+  Handles a tool call request.
+
+  This callback is invoked when a client calls a specific tool. It receives the tool name,
+  the arguments provided by the client, and the current frame.
+  """
+  @callback handle_tool_call(name :: String.t(), arguments :: map(), Frame.t()) ::
+              {:reply, result :: term(), Frame.t()}
+              | {:error, mcp_error(), Frame.t()}
+
+  @doc """
+  Handles a resource read request.
+  """
+  @callback handle_resource_read(uri :: String.t(), Frame.t()) ::
+              {:reply, content :: map(), Frame.t()}
+              | {:error, mcp_error(), Frame.t()}
+
+  @doc """
+  Handles a prompt get request.
+  """
+  @callback handle_prompt_get(name :: String.t(), arguments :: map(), Frame.t()) ::
+              {:reply, messages :: list(), Frame.t()}
+              | {:error, mcp_error(), Frame.t()}
+
+  @doc """
+  Low-level handler for any MCP request.
+
+  When implemented, it bypasses automatic routing to specific handlers.
+  """
+  @callback handle_request(request :: request(), state :: Frame.t()) ::
+              {:reply, response :: response(), new_state :: Frame.t()}
+              | {:noreply, new_state :: Frame.t()}
+              | {:error, error :: mcp_error(), new_state :: Frame.t()}
+
+  @doc """
+  Handles incoming MCP notifications from clients.
+  """
+  @callback handle_notification(notification :: notification(), state :: Frame.t()) ::
+              {:noreply, new_state :: Frame.t()}
+              | {:error, error :: mcp_error(), new_state :: Frame.t()}
+
+  @callback server_info :: server_info()
+  @callback server_capabilities :: server_capabilities()
+  @callback supported_protocol_versions() :: [String.t()]
+
+  @doc """
+  Returns optional instructions describing how to use the server and its features.
+
+  This can be used by clients to improve the LLM's understanding of available tools,
+  resources, etc. It can be thought of like a "hint" to the model. For example, this
+  information MAY be added to the system prompt.
+
+  Return `nil` to omit the instructions field from the initialize response.
+  """
+  @callback server_instructions() :: String.t() | nil
+
+  @doc """
+  Called when a session is being auto-recovered after expiry.
+
+  Invoked during `auto_initialize/1` instead of the normal client handshake.
+  Receives the session ID and the current frame (pre-populated from the session
+  store if one is configured).
+
+  Return values:
+  - `{:ok, frame}` — accept recovery using synthetic client info
+  - `{:ok, client_info, frame}` — accept recovery and supply real client info
+  - `{:error, reason}` — reject recovery; the client receives an internal error
+
+  If this callback is not implemented, the default behavior is unchanged:
+  synthetic client info is used and `init/2` is called normally.
+  """
+  @callback handle_session_expired(session_id :: String.t(), Frame.t()) ::
+              {:ok, Frame.t()}
+              | {:ok, client_info :: map(), Frame.t()}
+              | {:error, reason :: term()}
+
+  @callback handle_info(event :: term, Frame.t()) ::
+              {:noreply, Frame.t()}
+              | {:noreply, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
+              | {:stop, reason :: term, Frame.t()}
+
+  @callback handle_call(request :: term, from :: GenServer.from(), Frame.t()) ::
+              {:reply, reply :: term, Frame.t()}
+              | {:reply, reply :: term, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
+              | {:noreply, Frame.t()}
+              | {:noreply, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
+              | {:stop, reason :: term, reply :: term, Frame.t()}
+              | {:stop, reason :: term, Frame.t()}
+
+  @callback handle_cast(request :: term, Frame.t()) ::
+              {:noreply, Frame.t()}
+              | {:noreply, Frame.t(), timeout() | :hibernate | {:continue, arg :: term}}
+              | {:stop, reason :: term, Frame.t()}
+
+  @callback terminate(reason :: term, Frame.t()) :: term
+
+  @callback handle_sampling(
+              response :: map(),
+              request_id :: String.t(),
+              Frame.t()
+            ) ::
+              {:noreply, Frame.t()}
+              | {:stop, reason :: term(), Frame.t()}
+
+  @callback handle_completion(ref :: String.t(), argument :: map(), Frame.t()) ::
+              {:reply, Response.t() | map(), Frame.t()}
+              | {:error, mcp_error(), Frame.t()}
+
+  @callback handle_roots(
+              roots :: list(map()),
+              request_id :: String.t(),
+              Frame.t()
+            ) ::
+              {:noreply, Frame.t()}
+              | {:stop, reason :: term(), Frame.t()}
+
+  @callback handle_elicitation(
+              response :: map(),
+              request_id :: String.t(),
+              Frame.t()
+            ) ::
+              {:noreply, Frame.t()}
+              | {:stop, reason :: term(), Frame.t()}
+
+  @optional_callbacks handle_notification: 2,
+                      handle_info: 2,
+                      handle_call: 3,
+                      handle_cast: 2,
+                      terminate: 2,
+                      handle_tool_call: 3,
+                      handle_resource_read: 2,
+                      handle_prompt_get: 3,
+                      handle_request: 2,
+                      init: 2,
+                      handle_sampling: 3,
+                      handle_completion: 3,
+                      handle_roots: 3,
+                      handle_elicitation: 3,
+                      server_instructions: 0,
+                      handle_session_expired: 2
+
+  @doc false
+  defguard is_server_capability(capability) when capability in @server_capabilities
+
+  @doc false
+  defguard is_supported_capability(capabilities, capability)
+           when is_map_key(capabilities, capability)
+
+  @doc false
+  defmacro __using__(opts) do
+    quote generated: true do
+      @behaviour Backplane.McpProtocol.Server
+
+      import Backplane.McpProtocol.Server
+      import Backplane.McpProtocol.Server.Component, only: [field: 3]
+      import Backplane.McpProtocol.Server.Frame
+
+      require Backplane.McpProtocol.MCP.Message
+
+      Module.register_attribute(__MODULE__, :components, accumulate: true)
+      Module.register_attribute(__MODULE__, :backplane_mcp_protocol_server_opts, persist: true)
+      Module.put_attribute(__MODULE__, :backplane_mcp_protocol_server_opts, unquote(opts))
+
+      @before_compile Backplane.McpProtocol.Server
+      @after_compile Backplane.McpProtocol.Server
+
+      @__authorization_config__ unquote(Keyword.get(opts, :authorization))
+
+      def __authorization__, do: @__authorization_config__
+
+      def child_spec(opts) do
+        auth_config = @__authorization_config__
+
+        opts =
+          if auth_config && not Keyword.has_key?(opts, :authorization) do
+            Keyword.put(opts, :authorization, auth_config)
+          else
+            opts
+          end
+
+        %{
+          id: __MODULE__,
+          start: {Backplane.McpProtocol.Server.Supervisor, :start_link, [__MODULE__, opts]},
+          type: :supervisor,
+          restart: :permanent
+        }
+      end
+
+      defoverridable child_spec: 1
+    end
+  end
+
+  @doc """
+  Registers a component (tool, prompt, or resource) with the server.
+  """
+  defmacro component(module, opts \\ []) do
+    quote bind_quoted: [module: module, opts: opts] do
+      @components {module, opts}
+    end
+  end
+
+  @doc false
+  def __derive_component_name__(module) do
+    defined? = Backplane.McpProtocol.exported?(module, :name, 0)
+    name = if defined?, do: module.name()
+
+    if is_nil(name) do
+      module
+      |> Module.split()
+      |> List.last()
+      |> Macro.underscore()
+    else
+      name
+    end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    components = Module.get_attribute(env.module, :components, [])
+    opts = get_server_opts(env.module)
+
+    quote generated: true do
+      def __components__, do: Backplane.McpProtocol.Server.parse_components(unquote(Macro.escape(components)))
+      def __components__(:tool), do: Enum.filter(__components__(), &match?(%Tool{}, &1))
+      def __components__(:prompt), do: Enum.filter(__components__(), &match?(%Prompt{}, &1))
+      def __components__(:resource), do: Enum.filter(__components__(), &match?(%Resource{}, &1))
+
+      @impl Backplane.McpProtocol.Server
+      def handle_request(%{} = request, frame) do
+        Handlers.handle(request, __MODULE__, frame)
+      end
+
+      unquote(maybe_define_server_info(env.module, opts[:name], opts[:version]))
+      unquote(maybe_define_server_capabilities(env.module, opts[:capabilities]))
+      unquote(maybe_define_protocol_versions(env.module, opts[:protocol_versions]))
+      unquote(maybe_define_server_instructions(env.module, opts[:instructions]))
+
+      defoverridable handle_request: 2
+    end
+  end
+
+  @doc false
+  def parse_components(components) when is_list(components) do
+    components
+    |> Enum.flat_map(&parse_components/1)
+    |> Enum.sort_by(& &1.name)
+  end
+
+  def parse_components({mod, opts}) when is_atom(mod) and is_list(opts) do
+    Code.ensure_loaded(mod)
+
+    if not function_exported?(mod, :__mcp_component_type__, 0) do
+      raise ArgumentError,
+            "Module #{inspect(mod)} is not a valid component. " <>
+              "Use `use Backplane.McpProtocol.Server.Component, type: :tool/:prompt/:resource`"
+    end
+
+    type = Component.get_type(mod)
+    name = opts[:name] || __derive_component_name__(mod)
+    parse_components({type, name, mod})
+  end
+
+  def parse_components({:tool, name, mod}) do
+    annotations = if Backplane.McpProtocol.exported?(mod, :annotations, 0), do: mod.annotations()
+    meta = if Backplane.McpProtocol.exported?(mod, :meta, 0), do: mod.meta()
+    output_schema = if Backplane.McpProtocol.exported?(mod, :output_schema, 0), do: mod.output_schema()
+    task_support = if Backplane.McpProtocol.exported?(mod, :task_support, 0), do: mod.task_support(), else: :forbidden
+    title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
+    title = determine_tool_title(annotations, title)
+    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    validate_output =
+      if output_schema do
+        fn params ->
+          mod.__mcp_output_schema__()
+          |> Component.__clean_schema_for_peri__()
+          |> Peri.validate(params)
+        end
+      end
+
+    if Backplane.McpProtocol.exported?(mod, :input_schema, 0) do
+      validate_input = fn params ->
+        mod.__mcp_raw_schema__()
+        |> Component.__clean_schema_for_peri__()
+        |> Peri.validate(params)
+      end
+
+      [
+        %Tool{
+          name: name,
+          title: title,
+          description: Component.get_description(mod),
+          input_schema: mod.input_schema(),
+          output_schema: output_schema,
+          annotations: annotations,
+          meta: meta,
+          task_support: task_support,
+          handler: mod,
+          validate_input: validate_input,
+          validate_output: validate_output,
+          scopes: scopes
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  def parse_components({:prompt, name, mod}) do
+    title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
+    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    if Backplane.McpProtocol.exported?(mod, :arguments, 0) do
+      validate_input = fn params ->
+        mod.__mcp_raw_schema__()
+        |> Component.__clean_schema_for_peri__()
+        |> Peri.validate(params)
+      end
+
+      [
+        %Prompt{
+          name: name,
+          title: title,
+          description: Component.get_description(mod),
+          arguments: mod.arguments(),
+          handler: mod,
+          validate_input: validate_input,
+          scopes: scopes
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  def parse_components({:resource, name, mod}) do
+    title = if Backplane.McpProtocol.exported?(mod, :title, 0), do: mod.title(), else: name
+    has_uri = Backplane.McpProtocol.exported?(mod, :uri, 0)
+    has_uri_template = Backplane.McpProtocol.exported?(mod, :uri_template, 0)
+    scopes = if Backplane.McpProtocol.exported?(mod, :__scopes__, 0), do: mod.__scopes__(), else: []
+
+    cond do
+      has_uri ->
+        [
+          %Resource{
+            uri: mod.uri(),
+            name: name,
+            title: title,
+            description: Component.get_description(mod),
+            mime_type: mod.mime_type(),
+            handler: mod,
+            scopes: scopes
+          }
+        ]
+
+      has_uri_template ->
+        [
+          %Resource{
+            uri_template: mod.uri_template(),
+            name: name,
+            title: title,
+            description: Component.get_description(mod),
+            mime_type: mod.mime_type(),
+            handler: mod,
+            scopes: scopes
+          }
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp determine_tool_title(%{"title" => title}, _) when is_binary(title), do: title
+  defp determine_tool_title(%{title: title}, _) when is_binary(title), do: title
+  defp determine_tool_title(_, title) when is_binary(title), do: title
+
+  defp get_server_opts(module) do
+    case Module.get_attribute(module, :backplane_mcp_protocol_server_opts, []) do
+      [opts] when is_list(opts) -> opts
+      opts when is_list(opts) -> opts
+      _ -> []
+    end
+  end
+
+  defp maybe_define_server_info(module, name, version) do
+    if not Module.defines?(module, {:server_info, 0}) or is_nil(name) or
+         is_nil(version) do
+      quote generated: true do
+        @impl Backplane.McpProtocol.Server
+        def server_info,
+          do: %{"name" => unquote(name), "version" => unquote(version)}
+      end
+    end
+  end
+
+  defp maybe_define_server_capabilities(module, capabilities_config) do
+    if not Module.defines?(module, {:server_capabilities, 0}) do
+      capabilities = Enum.reduce(capabilities_config || [], %{}, &parse_capability/2)
+
+      quote generated: true do
+        @impl Backplane.McpProtocol.Server
+        def server_capabilities, do: unquote(Macro.escape(capabilities))
+      end
+    end
+  end
+
+  defp maybe_define_protocol_versions(module, protocol_versions) do
+    if not Module.defines?(module, {:supported_protocol_versions, 0}) do
+      versions = protocol_versions || @protocol_versions
+
+      quote generated: true do
+        @impl Backplane.McpProtocol.Server
+        def supported_protocol_versions, do: unquote(versions)
+      end
+    end
+  end
+
+  @doc false
+  defp maybe_define_server_instructions(module, instructions) do
+    if not Module.defines?(module, {:server_instructions, 0}) do
+      quote generated: true do
+        @impl Backplane.McpProtocol.Server
+        def server_instructions, do: unquote(instructions)
+      end
+    end
+  end
+
+  @doc false
+  def parse_capability(capability, %{} = capabilities) when is_server_capability(capability) do
+    Map.put(capabilities, to_string(capability), %{})
+  end
+
+  def parse_capability({:resources, opts}, %{} = capabilities) do
+    subscribe? = opts[:subscribe?]
+    list_changed? = opts[:list_changed?]
+
+    resources_config =
+      %{}
+      |> then(&if(is_nil(subscribe?), do: &1, else: Map.put(&1, :subscribe, subscribe?)))
+      |> then(&if(is_nil(list_changed?), do: &1, else: Map.put(&1, :listChanged, list_changed?)))
+
+    Map.put(capabilities, "resources", resources_config)
+  end
+
+  def parse_capability({capability, opts}, %{} = capabilities) when is_server_capability(capability) do
+    list_changed? = opts[:list_changed?]
+
+    capability_config = if is_nil(list_changed?), do: %{}, else: %{listChanged: list_changed?}
+
+    Map.put(capabilities, to_string(capability), capability_config)
+  end
+
+  def parse_capability(:tasks, %{} = capabilities) do
+    parse_capability({:tasks, []}, capabilities)
+  end
+
+  def parse_capability({:tasks, opts}, %{} = capabilities) do
+    Map.put(capabilities, "tasks", build_tasks_capability(opts))
+  end
+
+  defp build_tasks_capability(opts) do
+    list? = Keyword.get(opts, :list?, false)
+    cancel? = Keyword.get(opts, :cancel?, true)
+    requests = Keyword.get(opts, :requests, tools: [:call])
+
+    %{}
+    |> maybe_put_tasks_flag("list", list?)
+    |> maybe_put_tasks_flag("cancel", cancel?)
+    |> Map.put("requests", build_tasks_requests(requests))
+  end
+
+  defp maybe_put_tasks_flag(map, _key, false), do: map
+  defp maybe_put_tasks_flag(map, key, true), do: Map.put(map, key, %{})
+
+  defp build_tasks_requests(requests) when is_list(requests) do
+    Enum.reduce(requests, %{}, fn {category, methods}, acc ->
+      Map.put(acc, to_string(category), build_tasks_request_methods(methods))
+    end)
+  end
+
+  defp build_tasks_request_methods(methods) when is_list(methods) do
+    Map.new(methods, fn method -> {to_string(method), %{}} end)
+  end
+
+  @doc false
+  def __after_compile__(env, _bytecode) do
+    module = env.module
+
+    opts =
+      case Module.get_attribute(module, :backplane_mcp_protocol_server_opts, []) do
+        [opts] when is_list(opts) -> opts
+        opts when is_list(opts) -> opts
+        _ -> []
+      end
+
+    name = opts[:name]
+    version = opts[:version]
+
+    if not Module.defines?(env.module, {:server_info, 0}) do
+      validate_server_info!(module, name, version)
+    end
+  end
+
+  @doc false
+  def validate_server_info!(module, nil, nil) do
+    raise ConfigurationError, module: module, missing_key: :both
+  end
+
+  def validate_server_info!(module, nil, _) do
+    raise ConfigurationError, module: module, missing_key: :name
+  end
+
+  def validate_server_info!(module, _, nil) do
+    raise ConfigurationError, module: module, missing_key: :version
+  end
+
+  def validate_server_info!(_, name, version) when is_binary(name) and is_binary(version), do: :ok
+
+  # Notification Functions — all use send(self(), ...) to the current Session process
+
+  @doc """
+  Sends a resources list changed notification.
+
+  **Must be called from within a Session callback** — the current process must be
+  the Session GenServer. Calling from outside a callback will silently lose the message.
+
+  For external processes, use `send(session_pid, {:send_notification, "notifications/resources/list_changed", %{}})`.
+  """
+  @spec send_resources_list_changed :: :ok
+  def send_resources_list_changed do
+    send(self(), {:send_notification, "notifications/resources/list_changed", %{}})
+    :ok
+  end
+
+  @doc """
+  Sends a resource updated notification for a specific resource.
+
+  Subscription-gated: only emits if the current session has previously
+  received a `resources/subscribe` request for this URI. Calls for
+  unsubscribed URIs are silently dropped.
+
+  **Must be called from within a Session callback** — see `send_resources_list_changed/0` for details.
+  """
+  @spec send_resource_updated(uri :: String.t(), timestamp :: DateTime.t() | nil) :: :ok
+  def send_resource_updated(uri, timestamp \\ nil) do
+    params = %{"uri" => uri}
+    params = if timestamp, do: Map.put(params, "timestamp", timestamp), else: params
+    send(self(), {:send_resource_update, uri, params})
+    :ok
+  end
+
+  @doc """
+  Sends a prompts list changed notification.
+
+  **Must be called from within a Session callback** — see `send_resources_list_changed/0` for details.
+  """
+  @spec send_prompts_list_changed :: :ok
+  def send_prompts_list_changed do
+    send(self(), {:send_notification, "notifications/prompts/list_changed", %{}})
+    :ok
+  end
+
+  @doc """
+  Sends a tools list changed notification.
+
+  **Must be called from within a Session callback** — see `send_resources_list_changed/0` for details.
+  """
+  @spec send_tools_list_changed :: :ok
+  def send_tools_list_changed do
+    send(self(), {:send_notification, "notifications/tools/list_changed", %{}})
+    :ok
+  end
+
+  @doc """
+  Sends a log message to the client.
+
+  **Must be called from within a Session callback** — see `send_resources_list_changed/0` for details.
+  """
+  @spec send_log_message(level :: Logger.level(), message :: String.t(), metadata :: map() | nil) :: :ok
+  def send_log_message(level, message, data \\ nil) do
+    params = %{"level" => level, "message" => message}
+    params = if data, do: Map.put(params, "data", data), else: params
+    send(self(), {:send_notification, "notifications/log/message", params})
+    :ok
+  end
+
+  @type progress_token :: String.t() | non_neg_integer
+  @type progress_step :: number
+  @type progress_total :: number
+
+  @doc """
+  Sends a progress notification for an ongoing operation.
+  """
+  @spec send_progress(progress_token, progress_step, opts) :: :ok
+        when opts: list({:total, progress_total} | {:message, String.t()})
+  def send_progress(progress_token, progress, opts \\ []) do
+    total = opts[:total]
+    message = opts[:message]
+    params = %{"progressToken" => progress_token, "progress" => progress}
+    params = if total, do: Map.put(params, "total", total), else: params
+    params = if message, do: Map.put(params, "message", message), else: params
+    send(self(), {:send_notification, "notifications/progress", params})
+    :ok
+  end
+
+  @doc """
+  Sends a `notifications/tasks/status` notification with the current state of
+  the given task.
+
+  **Must be called from within a Session callback** — see
+  `send_resources_list_changed/0` for details.
+
+  Per spec (2025-11-25), receivers MAY send these notifications when a task's
+  status changes; they are optional and requestors MUST NOT rely on them. This
+  helper looks up the task in the configured task store and emits the full
+  `Task` projection.
+  """
+  @spec send_task_status(task_id :: String.t()) :: :ok
+  def send_task_status(task_id) when is_binary(task_id) do
+    send(self(), {:send_task_status, task_id})
+    :ok
+  end
+
+  @doc """
+  Sends a sampling/createMessage request to the client.
+
+  This is an asynchronous operation. The response will be delivered to your
+  `handle_sampling/3` callback.
+  """
+  @spec send_sampling_request(list(map()), configuration) :: :ok
+        when configuration:
+               list(
+                 {:model_preferences, map() | nil}
+                 | {:system_prompt, String.t() | nil}
+                 | {:max_tokens, non_neg_integer() | nil}
+                 | {:timeout, non_neg_integer() | nil}
+               )
+  def send_sampling_request(messages, opts \\ []) when is_list(messages) do
+    params = %{"messages" => messages}
+
+    params =
+      opts
+      |> Keyword.take([:model_preferences, :system_prompt, :max_tokens])
+      |> Enum.reduce(params, fn
+        {:model_preferences, prefs}, acc -> Map.put(acc, "modelPreferences", prefs)
+        {:system_prompt, prompt}, acc -> Map.put(acc, "systemPrompt", prompt)
+        {:max_tokens, max}, acc -> Map.put(acc, "maxTokens", max)
+      end)
+
+    timeout = Keyword.get(opts, :timeout, 30_000)
+    send(self(), {:send_sampling_request, params, timeout})
+    :ok
+  end
+
+  @doc """
+  Sends a roots/list request to the client.
+  """
+  @spec send_roots_request(list({:timeout, non_neg_integer() | nil})) :: :ok
+  def send_roots_request(opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 30_000)
+    send(self(), {:send_roots_request, timeout})
+    :ok
+  end
+
+  @doc """
+  Sends an `elicitation/create` request to the client.
+
+  Per the MCP 2025-06-18 specification, the server provides a human-readable
+  `message` and a restricted-subset JSON `requested_schema` describing the
+  expected user input. The client presents this to the user and returns one of
+  three actions: `accept` (with content matching the schema), `decline`, or
+  `cancel`.
+
+  This is an asynchronous operation. The response will be delivered to your
+  `handle_elicitation/3` callback.
+
+  The `requested_schema` is validated synchronously before any wire I/O. The
+  client must advertise the `elicitation` capability or the call returns
+  `{:error, :capability_not_supported}` after enqueueing.
+
+  ## Schema Subset
+
+    * Top level must be `%{"type" => "object", "properties" => %{...}}`
+    * Properties may declare `"type"` of `"string"`, `"number"`, `"integer"`,
+      `"boolean"`, or use `"enum"` (string-only)
+    * String properties may set `"format"` of `"email"`, `"uri"`, `"date"`,
+      or `"date-time"`
+
+  Per the spec, **servers MUST NOT request sensitive information** through
+  elicitation.
+
+  ## Example
+
+      defmodule MyServer.Tools.Greet do
+        use Backplane.McpProtocol.Server.Component, type: :tool
+
+        @impl true
+        def execute(_args, frame) do
+          Backplane.McpProtocol.Server.send_elicitation_request("What's your name?", %{
+            "type" => "object",
+            "properties" => %{
+              "name" => %{"type" => "string", "minLength" => 1}
+            },
+            "required" => ["name"]
+          })
+
+          {:reply, "asked for name", frame}
+        end
+      end
+  """
+  @spec send_elicitation_request(String.t(), map(), configuration) ::
+          :ok | {:error, term()}
+        when configuration: list({:timeout, non_neg_integer() | nil})
+  def send_elicitation_request(message, requested_schema, opts \\ [])
+      when is_binary(message) and is_map(requested_schema) do
+    with :ok <- ElicitationSchema.validate(requested_schema) do
+      timeout = Keyword.get(opts, :timeout, 30_000)
+
+      params = %{
+        "message" => message,
+        "requestedSchema" => requested_schema
+      }
+
+      send(self(), {:send_elicitation_request, params, requested_schema, timeout})
+      :ok
+    end
+  end
+end

@@ -1,0 +1,2262 @@
+defmodule Backplane.McpProtocol.ClientTest do
+  use Backplane.McpProtocol.MCP.Case, async: false
+
+  import Mox
+
+  alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.MCP.ID
+  alias Backplane.McpProtocol.MCP.Message
+  alias Backplane.McpProtocol.MCP.Response
+
+  @moduletag capture_log: true
+
+  setup :set_mox_from_context
+  setup :verify_on_exit!
+
+  setup do
+    Mox.stub_with(Backplane.McpProtocol.MockTransport, MockTransport)
+    test_pid = self()
+
+    Mox.stub(Backplane.McpProtocol.MockTransport, :send_message, fn _, msg, _ ->
+      send(test_pid, {:mcp_send, msg})
+      :ok
+    end)
+
+    :ok
+  end
+
+  describe "start_link/1" do
+    test "starts the client with proper initialization" do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        assert String.contains?(message, "initialize")
+        assert String.contains?(message, "protocolVersion")
+        assert String.contains?(message, "capabilities")
+        assert String.contains?(message, "clientInfo")
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+      initialize_client(client)
+
+      assert Process.alive?(client)
+    end
+  end
+
+  describe "request methods" do
+    setup :initialized_client
+
+    test "ping sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "ping"
+        assert decoded["params"] == %{}
+        assert decoded["jsonrpc"] == "2.0"
+        assert is_binary(decoded["id"])
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.ping(client) end)
+
+      request_id = get_request_id(client, "ping")
+      assert request_id
+
+      response = ping_response(request_id)
+      send_response(client, response)
+
+      assert :pong = Task.await(task)
+    end
+
+    test "list_resources sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        assert decoded["params"] == %{}
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_resources(client) end)
+
+      request_id = get_request_id(client, "resources/list")
+      assert request_id
+
+      resources = [%{"name" => "test", "uri" => "test://uri"}]
+      response = resources_list_response(request_id, resources)
+      send_response(client, response)
+
+      expected_result = %{
+        "resources" => resources,
+        "nextCursor" => nil
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "list_resource_templates sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/templates/list"
+        assert decoded["params"] == %{}
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_resource_templates(client) end)
+
+      request_id = get_request_id(client, "resources/templates/list")
+      assert request_id
+
+      resources = [%{"name" => "test", "uriTemplate" => "test://uri/{some-param}"}]
+      response = resources_templates_list_response(request_id, resources)
+      send_response(client, response)
+
+      expected_result = %{
+        "resourceTemplates" => resources,
+        "nextCursor" => nil
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "list_resources with cursor", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        assert decoded["params"] == %{"cursor" => "next-page"}
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.list_resources(client, cursor: "next-page")
+        end)
+
+      request_id = get_request_id(client, "resources/list")
+      assert request_id
+
+      resources = [%{"name" => "test2", "uri" => "test://uri2"}]
+      response = resources_list_response(request_id, resources)
+      send_response(client, response)
+
+      expected_result = %{
+        "resources" => resources,
+        "nextCursor" => nil
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "read_resource sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/read"
+        assert decoded["params"] == %{"uri" => "test://uri"}
+        :ok
+      end)
+
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.read_resource(client, "test://uri") end)
+
+      request_id = get_request_id(client, "resources/read")
+      assert request_id
+
+      contents = [%{"text" => "resource content", "uri" => "test://uri"}]
+      response = resources_read_response(request_id, contents)
+      send_response(client, response)
+
+      expected_result = %{
+        "contents" => contents
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    @tag server_capabilities: %{"resources" => %{"subscribe" => true}, "tools" => %{}, "prompts" => %{}}
+    test "subscribe_resource sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:request_sent, JSON.decode!(message)})
+        :ok
+      end)
+
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.subscribe_resource(client, "file:///watched") end)
+
+      assert_receive {:request_sent, decoded}, 200
+      assert decoded["method"] == "resources/subscribe"
+      assert decoded["params"] == %{"uri" => "file:///watched"}
+      assert decoded["jsonrpc"] == "2.0"
+      assert is_binary(decoded["id"])
+
+      send_response(client, build_response(%{}, decoded["id"]))
+
+      assert {:ok, %Response{result: %{}}} = Task.await(task)
+    end
+
+    @tag server_capabilities: %{"resources" => %{"subscribe" => true}, "tools" => %{}, "prompts" => %{}}
+    test "unsubscribe_resource sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:request_sent, JSON.decode!(message)})
+        :ok
+      end)
+
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///watched") end)
+
+      assert_receive {:request_sent, decoded}, 200
+      assert decoded["method"] == "resources/unsubscribe"
+      assert decoded["params"] == %{"uri" => "file:///watched"}
+
+      send_response(client, build_response(%{}, decoded["id"]))
+
+      assert {:ok, %Response{result: %{}}} = Task.await(task)
+    end
+
+    @tag server_capabilities: %{"resources" => %{}, "tools" => %{}, "prompts" => %{}}
+    test "subscribe_resource fails when server did not declare subscribe capability",
+         %{client: client} do
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.subscribe_resource(client, "file:///x") end)
+
+      assert {:error, %Error{reason: :method_not_found, data: %{method: "resources/subscribe"}}} =
+               Task.await(task)
+    end
+
+    @tag server_capabilities: %{"resources" => %{}, "tools" => %{}, "prompts" => %{}}
+    test "unsubscribe_resource fails when server did not declare subscribe capability",
+         %{client: client} do
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///x") end)
+
+      assert {:error, %Error{reason: :method_not_found, data: %{method: "resources/unsubscribe"}}} =
+               Task.await(task)
+    end
+
+    test "list_prompts sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "prompts/list"
+        assert decoded["params"] == %{}
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_prompts(client) end)
+
+      request_id = get_request_id(client, "prompts/list")
+      assert request_id
+
+      prompts = [%{"name" => "test_prompt"}]
+      response = prompts_list_response(request_id, prompts)
+      send_response(client, response)
+
+      expected_result = %{
+        "prompts" => prompts,
+        "nextCursor" => nil
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "get_prompt sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "prompts/get"
+
+        assert decoded["params"] == %{
+                 "name" => "test_prompt",
+                 "arguments" => %{"arg1" => "value1"}
+               }
+
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.get_prompt(client, "test_prompt", %{"arg1" => "value1"})
+        end)
+
+      request_id = get_request_id(client, "prompts/get")
+      assert request_id
+
+      messages = [
+        %{"role" => "user", "content" => %{"type" => "text", "text" => "Hello"}}
+      ]
+
+      response = prompts_get_response(request_id, messages)
+      send_response(client, response)
+
+      expected_result = %{
+        "messages" => messages
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "list_tools sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/list"
+        assert decoded["params"] == %{}
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+
+      request_id = get_request_id(client, "tools/list")
+      assert request_id
+
+      tools = [%{"name" => "test_tool"}]
+      response = tools_list_response(request_id, tools)
+      send_response(client, response)
+
+      expected_result = %{
+        "tools" => tools,
+        "nextCursor" => nil
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "call_tool sends correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/call"
+
+        assert decoded["params"] == %{
+                 "name" => "test_tool",
+                 "arguments" => %{"arg1" => "value1"}
+               }
+
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.call_tool(client, "test_tool", %{"arg1" => "value1"})
+        end)
+
+      request_id = get_request_id(client, "tools/call")
+      assert request_id
+
+      content = [%{"type" => "text", "text" => "Tool result"}]
+      response = tools_call_response(request_id, content)
+      send_response(client, response)
+
+      expected_result = %{
+        "content" => content,
+        "isError" => false
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == false
+    end
+
+    test "handles domain error responses as {:ok, response}", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/call"
+
+        assert decoded["params"] == %{
+                 "name" => "test_tool",
+                 "arguments" => %{"arg1" => "value1"}
+               }
+
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.call_tool(client, "test_tool", %{"arg1" => "value1"})
+        end)
+
+      request_id = get_request_id(client, "tools/call")
+      assert request_id
+
+      # Response with isError: true but still a valid domain response
+      content = [
+        %{"type" => "text", "text" => "Tool execution failed: invalid argument"}
+      ]
+
+      response = tools_call_response(request_id, content, true)
+      send_response(client, response)
+
+      expected_result = %{
+        "content" => content,
+        "isError" => true
+      }
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+      assert response.result == expected_result
+      assert response.is_error == true
+    end
+  end
+
+  describe "non support request methods" do
+    setup :initialized_client
+
+    test "ping sends correct request since it is always supported", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "ping"
+        assert decoded["params"] == %{}
+        assert decoded["jsonrpc"] == "2.0"
+        assert is_binary(decoded["id"])
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.ping(client) end)
+
+      request_id = get_request_id(client, "ping")
+      assert request_id
+
+      response = ping_response(request_id)
+      send_response(client, response)
+
+      assert :pong = Task.await(task)
+    end
+
+    @tag server_capabilities: %{"prompts" => %{}}
+    test "tools/list fails since this capability isn't supported", %{client: client} do
+      _test_pid = self()
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+
+      assert {:error, %Error{reason: :method_not_found, data: %{method: "tools/list"}}} =
+               Task.await(task)
+    end
+  end
+
+  describe "error handling" do
+    setup :initialized_client
+
+    test "handles error response", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "ping"
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.ping(client) end)
+
+      request_id = get_request_id(client, "ping")
+      assert request_id
+
+      error_response = error_response(request_id)
+      send_error(client, error_response)
+
+      {:error, error} = Task.await(task)
+      assert error.code == -32_601
+      assert error.reason == :method_not_found
+      assert error.message == "Method not found"
+    end
+
+    test "handles transport error", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        {:error, :connection_closed}
+      end)
+
+      assert {:error, error} = Backplane.McpProtocol.Client.ping(client)
+      assert error.reason == :send_failure
+      assert error.data.original_reason == :connection_closed
+    end
+  end
+
+  describe "capability management" do
+    test "merge_capabilities correctly merges capabilities" do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: :test_cap_client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{"roots" => %{}}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      initialize_client(client)
+
+      new_capabilities = %{"sampling" => %{}}
+
+      updated = Backplane.McpProtocol.Client.merge_capabilities(client, new_capabilities)
+
+      assert updated == %{"roots" => %{}, "sampling" => %{}}
+
+      nested_capabilities = %{"roots" => %{"listChanged" => true}}
+
+      final = Backplane.McpProtocol.Client.merge_capabilities(client, nested_capabilities)
+
+      assert final == %{"sampling" => %{}, "roots" => %{"listChanged" => true}}
+    end
+  end
+
+  describe "server information" do
+    setup :initialized_client
+
+    test "get_server_capabilities returns server capabilities", %{client: client} do
+      _test_pid = self()
+      capabilities = Backplane.McpProtocol.Client.get_server_capabilities(client)
+
+      assert Map.has_key?(capabilities, "resources")
+      assert Map.has_key?(capabilities, "tools")
+      assert Map.has_key?(capabilities, "prompts")
+    end
+
+    test "get_server_info returns server info", %{client: client} do
+      _test_pid = self()
+      server_info = Backplane.McpProtocol.Client.get_server_info(client)
+
+      assert server_info == %{"name" => "TestServer", "version" => "1.0.0"}
+    end
+  end
+
+  describe "progress tracking" do
+    setup :initialized_client
+
+    test "registers and calls progress callback when notification is received", %{
+      client: client
+    } do
+      test_pid = self()
+      progress_token = "test_progress_token"
+      progress_value = 50
+      total_value = 100
+
+      :ok =
+        Backplane.McpProtocol.Client.register_progress_callback(
+          client,
+          progress_token,
+          fn token, progress, total ->
+            send(test_pid, {:progress_callback, token, progress, total})
+          end
+        )
+
+      progress_notification =
+        progress_notification(progress_token, progress_value, total_value)
+
+      send_notification(client, progress_notification)
+
+      assert_receive {:progress_callback, ^progress_token, ^progress_value, ^total_value},
+                     1000
+    end
+
+    test "unregisters progress callback", %{client: client} do
+      test_pid = self()
+      progress_token = "unregister_test_token"
+
+      :ok =
+        Backplane.McpProtocol.Client.register_progress_callback(client, progress_token, fn _, _, _ ->
+          send(test_pid, :should_not_be_called)
+        end)
+
+      :ok = Backplane.McpProtocol.Client.unregister_progress_callback(client, progress_token)
+
+      progress_notification = progress_notification(progress_token)
+      send_notification(client, progress_notification)
+
+      refute_receive :should_not_be_called, 500
+    end
+
+    test "request with progress token includes it in params", %{client: client} do
+      test_pid = self()
+      progress_token = "request_token_test"
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+
+        assert decoded["params"] == %{
+                 "_meta" => %{"progressToken" => progress_token}
+               }
+
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.list_resources(client,
+            progress: [token: progress_token]
+          )
+        end)
+
+      request_id = get_request_id(client, "resources/list")
+      assert request_id
+
+      response = resources_list_response(request_id, [])
+      send_response(client, response)
+
+      assert {:ok, _} = Task.await(task)
+    end
+
+    test "generates unique progress tokens" do
+      _test_pid = self()
+      token1 = ID.generate_progress_token()
+      token2 = ID.generate_progress_token()
+
+      assert is_binary(token1)
+      assert is_binary(token2)
+      assert token1 != token2
+      assert String.starts_with?(token1, "progress_")
+      assert String.starts_with?(token2, "progress_")
+    end
+  end
+
+  describe "logging" do
+    setup :initialized_client
+
+    @tag server_capabilities: %{
+           "logging" => %{},
+           "resources" => %{},
+           "tools" => %{},
+           "prompts" => %{}
+         }
+
+    test "set_log_level sends the correct request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "logging/setLevel"
+        assert decoded["params"]["level"] == "info"
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.set_log_level(client, "info") end)
+
+      request_id = get_request_id(client, "logging/setLevel")
+      assert request_id
+
+      response = empty_result_response(request_id)
+      send_response(client, response)
+
+      assert {:ok, %{}} = Task.await(task)
+    end
+
+    @tag server_capabilities: %{
+           "completion" => %{},
+           "logging" => %{},
+           "resources" => %{},
+           "tools" => %{},
+           "prompts" => %{}
+         }
+    test "complete sends correct completion/complete request for prompt reference",
+         %{client: client} do
+      test_pid = self()
+      ref = %{"type" => "ref/prompt", "name" => "code_review"}
+      argument = %{"name" => "language", "value" => "py"}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "completion/complete"
+        assert decoded["params"]["ref"]["type"] == "ref/prompt"
+        assert decoded["params"]["ref"]["name"] == "code_review"
+        assert decoded["params"]["argument"]["name"] == "language"
+        assert decoded["params"]["argument"]["value"] == "py"
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.complete(client, ref, argument) end)
+
+      request_id = get_request_id(client, "completion/complete")
+      assert request_id
+
+      values = ["python", "pytorch", "pyside"]
+      response = completion_complete_response(request_id, values, 3, false)
+      send_response(client, response)
+
+      assert {:ok, response} = Task.await(task)
+      assert %Response{} = response
+
+      completion = Response.unwrap(response)["completion"]
+      assert is_map(completion)
+      assert completion["values"] == values
+      assert completion["total"] == 3
+      assert completion["hasMore"] == false
+    end
+
+    @tag server_capabilities: %{
+           "completion" => %{},
+           "logging" => %{},
+           "resources" => %{},
+           "tools" => %{},
+           "prompts" => %{}
+         }
+    test "complete sends correct completion/complete request for resource reference",
+         %{client: client} do
+      test_pid = self()
+      ref = %{"type" => "ref/resource", "uri" => "file:///path/to/file.txt"}
+      argument = %{"name" => "encoding", "value" => "ut"}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "completion/complete"
+        assert decoded["params"]["ref"]["type"] == "ref/resource"
+        assert decoded["params"]["ref"]["uri"] == "file:///path/to/file.txt"
+        assert decoded["params"]["argument"]["name"] == "encoding"
+        assert decoded["params"]["argument"]["value"] == "ut"
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.complete(client, ref, argument) end)
+
+      request_id = get_request_id(client, "completion/complete")
+      assert request_id
+
+      values = ["utf-8", "utf-16"]
+      response = completion_complete_response(request_id, values, 2, false)
+      send_response(client, response)
+
+      assert {:ok, response} = Task.await(task)
+
+      completion = Response.unwrap(response)["completion"]
+      assert completion["values"] == values
+      assert completion["total"] == 2
+      assert completion["hasMore"] == false
+    end
+
+    test "register_log_callback sets the callback", %{client: client} do
+      _test_pid = self()
+      callback = fn _, _, _ -> nil end
+      :ok = Backplane.McpProtocol.Client.register_log_callback(client, callback)
+
+      state = :sys.get_state(client)
+      assert state.log_callback == callback
+    end
+
+    test "unregister_log_callback removes the callback", %{client: client} do
+      _test_pid = self()
+      callback = fn _, _, _ -> nil end
+
+      assert :ok = Backplane.McpProtocol.Client.register_log_callback(client, callback)
+      assert :ok = Backplane.McpProtocol.Client.unregister_log_callback(client)
+
+      state = :sys.get_state(client)
+      assert is_nil(state.log_callback)
+    end
+
+    test "handles log notifications and triggers callbacks", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_log_callback(client, fn level, data, logger ->
+          send(test_pid, {:log_callback, level, data, logger})
+        end)
+
+      log_notification =
+        log_notification("error", "Test error message", "test-logger")
+
+      send_notification(client, log_notification)
+
+      assert_receive {:log_callback, "error", "Test error message", "test-logger"},
+                     1000
+    end
+  end
+
+  describe "notification handling" do
+    test "sends initialized notification after init" do
+      test_pid = self()
+
+      Backplane.McpProtocol.MockTransport
+      # the handle_continue
+      |> expect(:send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "initialize"
+        assert decoded["jsonrpc"] == "2.0"
+        :ok
+      end)
+      # the send_notification
+      |> expect(:send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "notifications/initialized"
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: :test_notif_client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      initialize_client(client)
+
+      # The client should have sent the initialized notification
+      state = :sys.get_state(client)
+      assert state.server_info
+      assert state.server_capabilities
+    end
+  end
+
+  describe "resource update notifications" do
+    setup :initialized_client
+
+    test "handles notifications/resources/updated", %{client: client} do
+      # The client's notification handler logs + emits telemetry; success here
+      # means (1) the dispatcher recognized the method, (2) the Peri schema
+      # accepted the payload (regression for the missing-method bug we fixed),
+      # and (3) the URI made it through to the metadata.
+      test_pid = self()
+      handler_id = "test-resource-updated-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:backplane_mcp_protocol | Backplane.McpProtocol.Telemetry.event_client_notification()],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:client_notification, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      send_notification(
+        client,
+        build_notification("notifications/resources/updated", %{"uri" => "file:///x"})
+      )
+
+      assert_receive {:client_notification, %{method: "resources/updated", uri: "file:///x"}}, 200
+    end
+  end
+
+  describe "cancellation" do
+    setup :initialized_client
+
+    test "handles cancelled notification from server", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/call"
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.call_tool(client, "long_running_tool")
+        end)
+
+      request_id = get_request_id(client, "tools/call")
+      assert request_id
+
+      cancelled_notification = cancelled_notification(request_id, "server timeout")
+      send_notification(client, cancelled_notification)
+
+      assert {:error, error} = Task.await(task)
+      assert error.reason == :request_cancelled
+      assert error.data[:reason] == "server timeout"
+
+      state = :sys.get_state(client)
+      assert state.pending_requests[request_id] == nil
+    end
+
+    test "client can cancel a request", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_resources(client) end)
+
+      request_id = get_request_id(client, "resources/list")
+      assert request_id
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "notifications/cancelled"
+        assert decoded["params"]["requestId"] == request_id
+        assert decoded["params"]["reason"] == "test cancellation"
+        :ok
+      end)
+
+      assert :ok =
+               Backplane.McpProtocol.Client.cancel_request(
+                 client,
+                 request_id,
+                 "test cancellation"
+               )
+
+      assert {:error, error} = Task.await(task)
+      assert error.reason == :request_cancelled
+      assert error.data[:reason] == "test cancellation"
+
+      state = :sys.get_state(client)
+      assert state.pending_requests[request_id] == nil
+    end
+
+    test "client returns not_found when cancelling non-existent request", %{
+      client: client
+    } do
+      result = Backplane.McpProtocol.Client.cancel_request(client, "non_existent_id")
+      assert %Error{reason: :request_not_found} = result
+    end
+
+    test "cancel_all_requests cancels all pending requests", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, 2, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] in ["resources/list", "tools/list"]
+        :ok
+      end)
+
+      task1 = Task.async(fn -> Backplane.McpProtocol.Client.list_resources(client) end)
+      task2 = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+
+      Process.sleep(50)
+
+      state = :sys.get_state(client)
+      pending_count = map_size(state.pending_requests)
+      assert pending_count == 2
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, 2, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "notifications/cancelled"
+        assert decoded["params"]["reason"] == "batch cancellation"
+        :ok
+      end)
+
+      {:ok, cancelled_requests} =
+        Backplane.McpProtocol.Client.cancel_all_requests(client, "batch cancellation")
+
+      assert length(cancelled_requests) == 2
+
+      assert {:error, error1} = Task.await(task1)
+      assert {:error, error2} = Task.await(task2)
+
+      assert error1.reason == :request_cancelled
+      assert error2.reason == :request_cancelled
+
+      state = :sys.get_state(client)
+      assert map_size(state.pending_requests) == 0
+    end
+
+    test "request timeout sends cancellation notification", %{client: client} do
+      test_pid = self()
+      test_timeout = 50
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        :ok
+      end)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "notifications/cancelled"
+        assert decoded["params"]["reason"] == "timeout"
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.list_resources(client, timeout: test_timeout)
+        end)
+
+      Process.sleep(test_timeout * 2)
+
+      assert {:error, error} = Task.await(task)
+      assert error.reason == :request_timeout
+
+      state = :sys.get_state(client)
+      assert map_size(state.pending_requests) == 0
+    end
+
+    test "buffer timeout allows operation timeout to trigger before GenServer timeout",
+         %{client: client} do
+      test_pid = self()
+      test_timeout = 50
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        Process.sleep(test_timeout + 10)
+        :ok
+      end)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.list_resources(client, timeout: test_timeout)
+        end)
+
+      result = Task.await(task)
+      assert {:error, error} = result
+      assert error.reason == :request_timeout
+
+      refute_receive {:EXIT, _, {:timeout, _}}, 100
+    end
+
+    test "client.close sends cancellation for pending requests", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "resources/list"
+        :ok
+      end)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "notifications/cancelled"
+        assert decoded["params"]["reason"] == "client closed"
+        :ok
+      end)
+
+      expect(Backplane.McpProtocol.MockTransport, :shutdown, fn _ -> :ok end)
+
+      Process.flag(:trap_exit, true)
+      %{pid: pid} = Task.async(fn -> Backplane.McpProtocol.Client.list_resources(client) end)
+      assert get_request_id(client, "resources/list")
+
+      Backplane.McpProtocol.Client.close(client)
+
+      Process.sleep(50)
+      refute Process.alive?(client)
+
+      # The task exits normally when the client closes
+      assert_receive {:EXIT, ^pid, :normal}
+    end
+  end
+
+  describe "roots management" do
+    setup :initialized_client
+
+    test "add_root adds a root directory", %{client: client} do
+      _test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project",
+          "My Project"
+        )
+
+      roots = Backplane.McpProtocol.Client.list_roots(client)
+      assert length(roots) == 1
+
+      [root] = roots
+      assert root.uri == "file:///home/user/project"
+      assert root.name == "My Project"
+    end
+
+    test "list_roots returns all roots", %{client: client} do
+      _test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project1",
+          "Project 1"
+        )
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project2",
+          "Project 2"
+        )
+
+      roots = Backplane.McpProtocol.Client.list_roots(client)
+      assert length(roots) == 2
+
+      uris = Enum.map(roots, & &1.uri)
+      assert "file:///home/user/project1" in uris
+      assert "file:///home/user/project2" in uris
+    end
+
+    test "remove_root removes a specific root", %{client: client} do
+      _test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project1",
+          "Project 1"
+        )
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project2",
+          "Project 2"
+        )
+
+      :ok = Backplane.McpProtocol.Client.remove_root(client, "file:///home/user/project1")
+
+      roots = Backplane.McpProtocol.Client.list_roots(client)
+      assert length(roots) == 1
+      assert hd(roots).uri == "file:///home/user/project2"
+    end
+
+    test "clear_roots removes all roots", %{client: client} do
+      _test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project1",
+          "Project 1"
+        )
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project2",
+          "Project 2"
+        )
+
+      :ok = Backplane.McpProtocol.Client.clear_roots(client)
+
+      roots = Backplane.McpProtocol.Client.list_roots(client)
+      assert Enum.empty?(roots)
+    end
+
+    test "add_root doesn't add duplicates", %{client: client} do
+      _test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project",
+          "My Project"
+        )
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project",
+          "Duplicate Project"
+        )
+
+      roots = Backplane.McpProtocol.Client.list_roots(client)
+      assert length(roots) == 1
+      assert hd(roots).name == "My Project"
+    end
+  end
+
+  describe "server requests" do
+    setup :initialized_client
+
+    test "server can request roots list", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project1",
+          "Project 1"
+        )
+
+      :ok =
+        Backplane.McpProtocol.Client.add_root(
+          client,
+          "file:///home/user/project2",
+          "Project 2"
+        )
+
+      request_id = "server_req_123"
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["id"] == request_id
+        assert Map.has_key?(decoded, "result")
+
+        roots = decoded["result"]["roots"]
+        assert is_list(roots)
+        assert length(roots) == 2
+
+        uris = Enum.map(roots, & &1["uri"])
+        assert "file:///home/user/project1" in uris
+        assert "file:///home/user/project2" in uris
+
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(%{"method" => "roots/list"}, request_id)
+
+      GenServer.cast(client, {:response, encoded})
+
+      Process.sleep(50)
+    end
+  end
+
+  describe "sampling" do
+    setup :initialized_client
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "register_sampling_callback sets the callback", %{client: client} do
+      _test_pid = self()
+
+      callback = fn _params ->
+        {:ok, %{role: "assistant", content: %{type: "text", text: "Hello"}}}
+      end
+
+      :ok = Backplane.McpProtocol.Client.register_sampling_callback(client, callback)
+
+      state = :sys.get_state(client)
+      assert is_function(state.sampling_callback, 1)
+    end
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "unregister_sampling_callback removes the callback", %{client: client} do
+      _test_pid = self()
+
+      callback = fn _params ->
+        {:ok, %{role: "assistant", content: %{type: "text", text: "Hello"}}}
+      end
+
+      assert :ok = Backplane.McpProtocol.Client.register_sampling_callback(client, callback)
+      assert :ok = Backplane.McpProtocol.Client.unregister_sampling_callback(client)
+
+      state = :sys.get_state(client)
+      assert is_nil(state.sampling_callback)
+    end
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "handles sampling/createMessage request from server", %{client: client} do
+      test_pid = self()
+
+      # Register a sampling callback
+      :ok =
+        Backplane.McpProtocol.Client.register_sampling_callback(client, fn params ->
+          send(test_pid, {:sampling_called, params})
+
+          {:ok,
+           %{
+             "role" => "assistant",
+             "content" => %{"type" => "text", "text" => "Generated response"},
+             "model" => "test-model",
+             "stopReason" => "endTurn"
+           }}
+        end)
+
+      request_id = "server_sampling_req_123"
+
+      params = %{
+        "messages" => [
+          %{"role" => "user", "content" => %{"type" => "text", "text" => "Hello"}}
+        ],
+        "maxTokens" => 100,
+        "modelPreferences" => %{}
+      }
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["id"] == request_id
+        assert Map.has_key?(decoded, "result")
+
+        result = decoded["result"]
+        assert result["role"] == "assistant"
+        assert result["content"]["type"] == "text"
+        assert result["content"]["text"] == "Generated response"
+        assert result["model"] == "test-model"
+
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "sampling/createMessage", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      assert_receive {:sampling_called, ^params}
+    end
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "handles sampling error when no callback registered", %{client: client} do
+      test_pid = self()
+      request_id = "server_sampling_req_456"
+
+      params = %{
+        "messages" => [
+          %{"role" => "user", "content" => %{"type" => "text", "text" => "Hello"}}
+        ],
+        "modelPreferences" => %{}
+      }
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["id"] == request_id
+        assert Map.has_key?(decoded, "error")
+
+        error = decoded["error"]
+        assert error["code"] == -1
+        assert error["message"] =~ "No sampling callback registered"
+
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "sampling/createMessage", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+
+      Process.sleep(100)
+    end
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "handles sampling callback error", %{client: client} do
+      test_pid = self()
+
+      # Register a callback that returns an error
+      :ok =
+        Backplane.McpProtocol.Client.register_sampling_callback(client, fn params ->
+          send(test_pid, {:sampling_called, params})
+          {:error, "Model unavailable"}
+        end)
+
+      request_id = "server_sampling_req_789"
+      params = %{"messages" => [], "modelPreferences" => %{}}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["id"] == request_id
+        assert Map.has_key?(decoded, "error")
+
+        error = decoded["error"]
+        assert error["message"] == "Model unavailable"
+
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "sampling/createMessage", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      assert_receive {:sampling_called, ^params}
+    end
+
+    @tag client_capabilities: %{"sampling" => %{}}
+    test "handles sampling callback exception", %{client: client} do
+      test_pid = self()
+
+      # Register a callback that raises an exception
+      :ok =
+        Backplane.McpProtocol.Client.register_sampling_callback(client, fn params ->
+          send(test_pid, {:sampling_called, params})
+          raise "Something went wrong!"
+        end)
+
+      request_id = "server_sampling_req_999"
+      params = %{"messages" => [], "modelPreferences" => %{}}
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "sampling/createMessage", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      assert_receive {:sampling_called, ^params}
+
+      assert_receive {:mcp_send, message}, 500
+      decoded = JSON.decode!(message)
+      assert decoded["jsonrpc"] == "2.0"
+      assert decoded["id"] == request_id
+      assert Map.has_key?(decoded, "error")
+
+      error = decoded["error"]
+      assert error["message"] =~ "Sampling callback error"
+      assert error["message"] =~ "Something went wrong!"
+    end
+  end
+
+  describe "elicitation" do
+    setup :initialized_client
+
+    @schema %{
+      "type" => "object",
+      "properties" => %{"name" => %{"type" => "string"}},
+      "required" => ["name"]
+    }
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "register_elicitation_callback sets the callback", %{client: client} do
+      _test_pid = self()
+      callback = fn _msg, _schema -> {:accept, %{"name" => "x"}} end
+
+      :ok = Backplane.McpProtocol.Client.register_elicitation_callback(client, callback)
+
+      state = :sys.get_state(client)
+      assert is_function(state.elicitation_callback, 2)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "unregister_elicitation_callback removes the callback", %{client: client} do
+      _test_pid = self()
+      callback = fn _msg, _schema -> :decline end
+
+      :ok = Backplane.McpProtocol.Client.register_elicitation_callback(client, callback)
+      :ok = Backplane.McpProtocol.Client.unregister_elicitation_callback(client)
+
+      state = :sys.get_state(client)
+      assert is_nil(state.elicitation_callback)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "handles elicitation/create accept", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn message, schema ->
+          send(test_pid, {:elicit_called, message, schema})
+          {:accept, %{"name" => "octocat"}}
+        end)
+
+      request_id = "elicit_req_accept"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["id"] == request_id
+        assert decoded["result"]["action"] == "accept"
+        assert decoded["result"]["content"] == %{"name" => "octocat"}
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      assert_receive {:elicit_called, "Name?", @schema}
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "handles elicitation/create decline", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema -> :decline end)
+
+      request_id = "elicit_req_decline"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["result"]["action"] == "decline"
+        refute Map.has_key?(decoded["result"], "content")
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "handles elicitation/create cancel", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema -> :cancel end)
+
+      request_id = "elicit_req_cancel"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["result"]["action"] == "cancel"
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "rejects accept content not matching schema", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema ->
+          {:accept, %{"name" => 42}}
+        end)
+
+      request_id = "elicit_req_invalid"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert Map.has_key?(decoded, "error")
+        assert decoded["error"]["message"] =~ "does not match requested schema"
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "errors when no callback registered", %{client: client} do
+      test_pid = self()
+      request_id = "elicit_req_no_cb"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["error"]["message"] =~ "No elicitation callback"
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+
+    test "errors when capability not advertised", %{client: client} do
+      test_pid = self()
+      request_id = "elicit_req_no_cap"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["error"]["message"] =~ "elicitation capability"
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+
+    @tag client_capabilities: %{"elicitation" => %{}}
+    test "handles elicitation callback exception", %{client: client} do
+      test_pid = self()
+
+      :ok =
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema ->
+          raise "boom"
+        end)
+
+      request_id = "elicit_req_raise"
+      params = %{"message" => "Name?", "requestedSchema" => @schema}
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["error"]["message"] =~ "Elicitation callback error"
+        :ok
+      end)
+
+      assert {:ok, encoded} =
+               Message.encode_request(
+                 %{"method" => "elicitation/create", "params" => params},
+                 request_id
+               )
+
+      GenServer.cast(client, {:response, encoded})
+      Process.sleep(100)
+    end
+  end
+
+  describe "automatic roots notification" do
+    setup :initialized_client
+
+    @tag client_capabilities: %{"roots" => %{"listChanged" => true}}
+    test "sends notification when adding a root", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["method"] == "notifications/roots/list_changed"
+        assert is_map(decoded["params"])
+        :ok
+      end)
+
+      assert :ok =
+               Backplane.McpProtocol.Client.add_root(client, "file:///test/root", "Test Root")
+
+      _ = :sys.get_state(client)
+
+      Process.sleep(50)
+    end
+
+    @tag client_capabilities: %{"roots" => %{"listChanged" => true}}
+    test "sends notification when removing a root", %{client: client} do
+      test_pid = self()
+
+      assert :ok =
+               Backplane.McpProtocol.Client.add_root(client, "file:///test/root", "Test Root")
+
+      Process.sleep(50)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["method"] == "notifications/roots/list_changed"
+        assert is_map(decoded["params"])
+        :ok
+      end)
+
+      assert :ok = Backplane.McpProtocol.Client.remove_root(client, "file:///test/root")
+      _ = :sys.get_state(client)
+
+      Process.sleep(50)
+    end
+
+    @tag client_capabilities: %{"roots" => %{"listChanged" => true}}
+    test "sends notification when clearing roots", %{client: client} do
+      test_pid = self()
+
+      assert :ok =
+               Backplane.McpProtocol.Client.add_root(
+                 client,
+                 "file:///test/root1",
+                 "Test Root 1"
+               )
+
+      assert :ok =
+               Backplane.McpProtocol.Client.add_root(
+                 client,
+                 "file:///test/root2",
+                 "Test Root 2"
+               )
+
+      Process.sleep(50)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["jsonrpc"] == "2.0"
+        assert decoded["method"] == "notifications/roots/list_changed"
+        assert is_map(decoded["params"])
+        :ok
+      end)
+
+      assert :ok = Backplane.McpProtocol.Client.clear_roots(client)
+
+      _ = :sys.get_state(client)
+      Process.sleep(50)
+    end
+
+    @tag client_capabilities: %{"roots" => %{"listChanged" => false}}
+    test "doesn't send notification when doesn't support listChanged", %{
+      client: client
+    } do
+      assert :ok =
+               Backplane.McpProtocol.Client.add_root(client, "file:///test/root", "Test Root")
+
+      _ = :sys.get_state(client)
+    end
+  end
+
+  describe "tool output schema validation caching" do
+    setup :initialized_client
+
+    test "validates tool call output when structuredContent is present", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/list"
+        :ok
+      end)
+
+      list_task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      request_id = get_request_id(client, "tools/list")
+
+      tools = [
+        %{
+          "name" => "get_weather",
+          "outputSchema" => %{
+            "type" => "object",
+            "properties" => %{
+              "temperature" => %{"type" => "number"},
+              "conditions" => %{"type" => "string"}
+            },
+            "required" => ["temperature", "conditions"]
+          }
+        }
+      ]
+
+      response = tools_list_response(request_id, tools)
+      send_response(client, response)
+      assert {:ok, _} = Task.await(list_task)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+
+        decoded = JSON.decode!(message)
+        assert decoded["method"] == "tools/call"
+        assert decoded["params"]["name"] == "get_weather"
+        :ok
+      end)
+
+      call_task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.call_tool(client, "get_weather", %{"location" => "NYC"})
+        end)
+
+      call_request_id = get_request_id(client, "tools/call")
+
+      valid_structured = %{
+        "temperature" => 72.5,
+        "conditions" => "sunny"
+      }
+
+      content = [
+        %{
+          "type" => "text",
+          "text" => "The weather in NYC is 72.5°F and sunny"
+        }
+      ]
+
+      response = %{
+        "jsonrpc" => "2.0",
+        "id" => call_request_id,
+        "result" => %{
+          "content" => content,
+          "structuredContent" => valid_structured,
+          "isError" => false
+        }
+      }
+
+      send_response(client, response)
+
+      assert {:ok, response} = Task.await(call_task)
+      assert response.result["structuredContent"] == valid_structured
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      invalid_task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.call_tool(client, "get_weather", %{"location" => "LA"})
+        end)
+
+      invalid_request_id = get_request_id(client, "tools/call")
+
+      invalid_structured = %{
+        "temperature" => "not a number",
+        "conditions" => "cloudy"
+      }
+
+      invalid_response = %{
+        "jsonrpc" => "2.0",
+        "id" => invalid_request_id,
+        "result" => %{
+          "content" => content,
+          "structuredContent" => invalid_structured,
+          "isError" => false
+        }
+      }
+
+      send_response(client, invalid_response)
+
+      assert {:error, error} = Task.await(invalid_task)
+      assert error.reason == :parse_error
+      assert error.data[:tool] == "get_weather"
+      assert is_list(error.data[:errors])
+      refute Enum.empty?(error.data[:errors])
+    end
+
+    test "handles tools with complex outputSchema", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      request_id = get_request_id(client, "tools/list")
+
+      tools = [
+        %{
+          "name" => "complex_tool",
+          "outputSchema" => %{
+            "type" => "object",
+            "properties" => %{
+              "items" => %{
+                "type" => "array",
+                "items" => %{
+                  "type" => "object",
+                  "properties" => %{
+                    "id" => %{"type" => "integer"},
+                    "name" => %{"type" => "string"},
+                    "tags" => %{
+                      "type" => "array",
+                      "items" => %{"type" => "string"}
+                    }
+                  },
+                  "required" => ["id", "name"]
+                }
+              },
+              "metadata" => %{
+                "type" => "object",
+                "properties" => %{
+                  "count" => %{"type" => "integer"},
+                  "hasMore" => %{"type" => "boolean"}
+                }
+              }
+            },
+            "required" => ["items"]
+          }
+        }
+      ]
+
+      response = tools_list_response(request_id, tools)
+      send_response(client, response)
+      assert {:ok, _} = Task.await(task)
+    end
+  end
+
+  describe "await_ready/2" do
+    test "returns :ok immediately when client is already initialized" do
+      test_pid = self()
+
+      stub(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+      initialize_client(client)
+
+      assert :ok = Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000)
+    end
+
+    test "blocks until initialization completes" do
+      test_pid = self()
+
+      stub(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      # Start waiting before initialization
+      task = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 5_000) end)
+
+      # Give the call time to arrive and park
+      Process.sleep(50)
+
+      # Now trigger initialization
+      GenServer.cast(client, :initialize)
+      request_id = get_request_id(client, "initialize")
+      assert request_id
+
+      response =
+        init_response(
+          request_id,
+          "2025-03-26",
+          %{"name" => "TestServer", "version" => "1.0.0"},
+          %{"tools" => %{}}
+        )
+
+      send_response(client, response)
+
+      assert :ok = Task.await(task, 2_000)
+    end
+
+    test "multiple waiters all get notified" do
+      test_pid = self()
+
+      stub(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      tasks =
+        for _ <- 1..3 do
+          Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 5_000) end)
+        end
+
+      Process.sleep(50)
+
+      GenServer.cast(client, :initialize)
+      request_id = get_request_id(client, "initialize")
+      assert request_id
+
+      response =
+        init_response(
+          request_id,
+          "2025-03-26",
+          %{"name" => "TestServer", "version" => "1.0.0"},
+          %{"tools" => %{}}
+        )
+
+      send_response(client, response)
+
+      results = Task.await_many(tasks, 2_000)
+      assert results == [:ok, :ok, :ok]
+    end
+
+    test "times out when initialization never completes" do
+      test_pid = self()
+
+      stub(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      assert catch_exit(Backplane.McpProtocol.Client.await_ready(client, timeout: 100))
+    end
+  end
+
+  describe "chunked STDIO response buffering" do
+    test "handles response split across multiple port data messages" do
+      test_pid = self()
+      :persistent_term.put({BufferedMockTransport, :test_pid}, test_pid)
+      on_exit(fn -> :persistent_term.erase({BufferedMockTransport, :test_pid}) end)
+
+      client =
+        start_supervised!(%{
+          id: Backplane.McpProtocol.Client,
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: BufferedMockTransport, name: BufferedMockTransport],
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      initialize_client(client)
+
+      # Start list_tools which registers a pending request
+      task =
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.list_tools(client, timeout: 5_000)
+        end)
+
+      Process.sleep(50)
+
+      # Get the actual request ID that the client generated
+      request_id = get_request_id(client, "tools/list")
+      assert request_id
+
+      # Build the response with the correct request ID
+      response_json =
+        JSON.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => request_id,
+          "result" => %{
+            "tools" => [
+              %{
+                "name" => "search",
+                "description" => "Search for things",
+                "inputSchema" => %{"type" => "object"}
+              }
+            ]
+          }
+        })
+
+      full_message = response_json <> "\n"
+
+      # Split in the middle to simulate chunked port delivery
+      split_point = div(byte_size(full_message), 2)
+      <<chunk1::binary-size(split_point), chunk2::binary>> = full_message
+
+      # Send chunks separately — first chunk has no newline, so it should buffer
+      GenServer.cast(client, {:response, chunk1})
+      Process.sleep(20)
+
+      # Second chunk completes the line — now it should decode and reply
+      GenServer.cast(client, {:response, chunk2})
+
+      assert {:ok, %Response{result: %{"tools" => [%{"name" => "search"}]}}} =
+               Task.await(task, 2_000)
+    end
+  end
+end

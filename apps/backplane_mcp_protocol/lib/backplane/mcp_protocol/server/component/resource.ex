@@ -1,0 +1,252 @@
+defmodule Backplane.McpProtocol.Server.Component.Resource do
+  @moduledoc """
+  Defines the behaviour for MCP resources.
+
+  Resources represent data that can be read by the client, such as files,
+  documents, or any other content. Each resource is identified by a URI
+  and can provide content in various formats.
+
+  ## Example
+
+      defmodule MyServer.Resources.Documentation do
+        @behaviour Backplane.McpProtocol.Server.Behaviour.Resource
+
+        alias Backplane.McpProtocol.Server.{Frame, Response}
+        alias Backplane.McpProtocol.MCP.Error
+
+        @impl true
+        def uri, do: "file:///docs/readme.md"
+
+        @impl true
+        def name, do: "Project README"
+
+        @impl true
+        def description, do: "The main documentation for this project"
+
+        @impl true
+        def mime_type, do: "text/markdown"
+
+        @impl true
+        def read(_params, frame) do
+          case File.read("README.md") do
+            {:ok, content} ->
+              # Can track access in frame
+              new_frame = Frame.assign(frame, :last_resource_access, DateTime.utc_now())
+              {:reply, Response.text(Response.resource(), content), new_frame}
+
+            {:error, reason} ->
+              {:error, Error.domain_error("Failed to read README: \#{inspect(reason)}"), frame}
+          end
+        end
+      end
+
+  ## Example with URI template (parameterized resource)
+
+      defmodule MyServer.Resources.UserDoc do
+        use Backplane.McpProtocol.Server.Component,
+          type: :resource,
+          uri_template: "file:///docs/{user}/{filename}"
+
+        alias Backplane.McpProtocol.Server.Response
+
+        @impl true
+        def read(%{"params" => %{"user" => user, "filename" => name}}, frame) do
+          path = Path.join(["docs", user, name])
+
+          case File.read(path) do
+            {:ok, content} ->
+              {:reply, Response.text(Response.resource(), content), frame}
+
+            {:error, _} ->
+              {:error, Backplane.McpProtocol.MCP.Error.resource(:not_found, %{message: "no such file"}), frame}
+          end
+        end
+      end
+
+  Variables in `uri_template` follow RFC 6570 (Level 1 — simple `{var}` expansion).
+  Extracted variables are delivered to `read/2` as the `"params"` key of the first argument.
+
+  ## Example with dynamic content
+
+      defmodule MyServer.Resources.SystemStatus do
+        @behaviour Backplane.McpProtocol.Server.Behaviour.Resource
+
+        @impl true
+        def uri, do: "system://status"
+
+        @impl true
+        def name, do: "System Status"
+
+        @impl true
+        def description, do: "Current system status and metrics"
+
+        @impl true
+        def mime_type, do: "application/json"
+
+        @impl true
+        def read(_params, frame) do
+          status = %{
+            uptime: System.uptime(),
+            memory: :erlang.memory(),
+            user_id: frame.assigns[:user_id],
+            timestamp: DateTime.utc_now()
+          }
+
+          {:reply, Response.json(Response.resource(), status), frame}
+        end
+      end
+  """
+
+  alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.Server.Frame
+  alias Backplane.McpProtocol.Server.Response
+
+  @type params :: map()
+  @type content :: binary() | String.t()
+
+  @type t :: %__MODULE__{
+          uri: String.t() | nil,
+          uri_template: String.t() | nil,
+          name: String.t(),
+          description: String.t() | nil,
+          mime_type: String.t(),
+          handler: module | nil,
+          title: String.t() | nil,
+          scopes: [String.t()]
+        }
+
+  defstruct [
+    :uri,
+    :uri_template,
+    :name,
+    description: nil,
+    mime_type: "text/plain",
+    handler: nil,
+    title: nil,
+    scopes: []
+  ]
+
+  @doc """
+  Returns the URI that identifies this resource.
+
+  The URI should be unique within the server and follow standard URI conventions.
+  Common schemes include:
+  - `file://` for file-based resources
+  - `http://` or `https://` for web resources
+  - Custom schemes for application-specific resources
+
+  Note: Either `uri/0` or `uri_template/0` must be implemented, but not both.
+  """
+  @callback uri() :: String.t()
+
+  @doc """
+  Returns the URI template that identifies this resource template.
+
+  URI templates follow RFC 6570 syntax and allow parameterized resource URIs.
+  For example: `file:///{path}` or `db:///{table}/{id}`
+
+  Note: Either `uri/0` or `uri_template/0` must be implemented, but not both.
+  """
+  @callback uri_template() :: String.t()
+
+  @doc """
+  Returns the `name` that identifies this resource.
+
+  Intended for programmatic or logical use, but used as a
+  display name in past specs or fallback (if title isn't present).
+  """
+  @callback name() :: String.t()
+
+  @doc """
+  Returns the title that identifies this resource.
+
+  Intended for UI and end-user contexts — optimized to be human-readable and easily understood,
+  even by those unfamiliar with domain-specific terminology.
+
+  If not provided, the name should be used for display.
+  """
+  @callback title() :: String.t()
+
+  @doc """
+  Returns the MIME type of the resource content.
+
+  Common MIME types:
+  - `text/plain` for plain text
+  - `text/markdown` for Markdown
+  - `application/json` for JSON data
+  - `text/html` for HTML
+  - `application/octet-stream` for binary data
+  """
+  @callback mime_type() :: String.t()
+
+  @doc """
+  Returns the description of this resource.
+
+  The description helps AI assistants understand what data the resource provides.
+  If not provided, the module's `@moduledoc` will be used automatically.
+
+  ## Examples
+
+      def description do
+        "Application configuration settings"
+      end
+
+      # With dynamic content
+      def description do
+        {uptime_ms, _} = :erlang.statistics(:wall_clock)
+        "System metrics (uptime: \#{div(uptime_ms, 1000)}s)"
+      end
+  """
+  @callback description() :: String.t()
+
+  @doc """
+  Reads the resource content.
+
+  ## Parameters
+
+  - `params` - Optional parameters from the client (typically empty for resources)
+  - `frame` - The server frame containing context and state
+
+  ## Return Values
+
+  - `{:reply, %Response{}, frame}` - Resource read successfully
+  - `{:noreply, frame}` - No reply needed
+  - `{:error, %Error{}, frame}` - Failed to read resource
+
+  ## Building Responses
+
+  Use `Response.resource/0` to create a resource response, then set content
+  with the appropriate builder:
+  - `Response.text/2` for text content (plain text, markdown, etc.)
+  - `Response.json/2` for JSON data (automatically encoded)
+  - `Response.blob/2` for binary data
+  """
+  @callback read(params :: params(), frame :: Frame.t()) ::
+              {:reply, response :: Response.t(), new_state :: Frame.t()}
+              | {:noreply, new_state :: Frame.t()}
+              | {:error, error :: Error.t(), new_state :: Frame.t()}
+
+  @optional_callbacks title: 0, uri: 0, uri_template: 0, description: 0
+
+  defimpl JSON.Encoder, for: __MODULE__ do
+    alias Backplane.McpProtocol.Server.Component.Resource
+
+    def encode(%Resource{uri_template: uri_template} = resource, _) when not is_nil(uri_template) do
+      %{
+        uriTemplate: uri_template,
+        name: resource.name
+      }
+      |> then(&if resource.title, do: Map.put(&1, :title, resource.title), else: &1)
+      |> then(&if resource.description, do: Map.put(&1, :description, resource.description), else: &1)
+      |> then(&if resource.mime_type, do: Map.put(&1, :mimeType, resource.mime_type), else: &1)
+      |> JSON.encode!()
+    end
+
+    def encode(%Resource{} = resource, _) do
+      resource
+      |> Map.take([:name, :uri, :description, :title])
+      |> Map.put(:mimeType, resource.mime_type)
+      |> JSON.encode!()
+    end
+  end
+end

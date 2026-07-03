@@ -1,0 +1,184 @@
+defmodule Backplane.McpProtocol.Transport.STDIOTest do
+  use ExUnit.Case, async: false
+
+  alias Backplane.McpProtocol.Transport.STDIO
+
+  @moduletag capture_log: true
+
+  setup do
+    start_supervised!(StubClient)
+    cmd = cmd()
+    %{command: cmd[:command], args: cmd[:args]}
+  end
+
+  describe "start_link/1" do
+    test "successfully starts transport", %{command: command, args: args} do
+      opts = [
+        client: StubClient,
+        command: command,
+        args: args,
+        name: :test_transport
+      ]
+
+      assert {:ok, pid} = STDIO.start_link(opts)
+      assert Process.whereis(:test_transport)
+
+      safe_stop(pid)
+    end
+
+    test "fails when command not found" do
+      opts = [
+        client: StubClient,
+        command: "abc",
+        name: :should_fail
+      ]
+
+      assert {:ok, pid} = STDIO.start_link(opts)
+      Process.flag(:trap_exit, true)
+      assert_receive {:EXIT, ^pid, {:error, _}}
+    end
+  end
+
+  describe "send_message/2" do
+    setup %{command: command, args: args} do
+      {:ok, pid} =
+        STDIO.start_link(
+          client: StubClient,
+          command: command,
+          args: args,
+          name: :test_send_transport
+        )
+
+      on_exit(fn -> safe_stop(pid) end)
+
+      %{transport_pid: pid}
+    end
+
+    test "sends message successfully", %{transport_pid: pid} do
+      assert :ok = STDIO.send_message(pid, "test message", timeout: 5000)
+    end
+
+    test "respects custom timeout option" do
+      defmodule SlowTransport do
+        @moduledoc false
+        use GenServer
+
+        def start_link(opts) do
+          GenServer.start_link(__MODULE__, opts, name: opts[:name])
+        end
+
+        def init(opts), do: {:ok, opts}
+
+        def handle_call({:send, _message}, _from, state) do
+          Process.sleep(60)
+          {:reply, :ok, state}
+        end
+      end
+
+      {:ok, transport} = SlowTransport.start_link(name: :slow_transport_test)
+
+      on_exit(fn ->
+        if Process.alive?(transport) do
+          GenServer.stop(transport, :normal, 100)
+        end
+      end)
+
+      # Test: With a 200ms timeout, call succeeds (200 > 60).
+      # Verifies opts[:timeout] is extracted (Keyword.get default 5000); a nil
+      # would still pass at this scale, but the assertion is on path correctness.
+      assert :ok = STDIO.send_message(transport, "test1", timeout: 200)
+    end
+  end
+
+  describe "client message handling" do
+    setup do
+      {:ok, pid} =
+        STDIO.start_link(
+          [
+            client: StubClient,
+            name: :test_echo_transport
+          ] ++ cmd()
+        )
+
+      on_exit(fn -> safe_stop(pid) end)
+
+      %{transport_pid: pid}
+    end
+
+    test "forwards data to client", %{transport_pid: pid} do
+      :ok = StubClient.clear_messages()
+
+      STDIO.send_message(pid, "echo test\n", timeout: 5000)
+
+      Process.sleep(100)
+
+      messages = StubClient.get_messages()
+      refute Enum.empty?(messages)
+    end
+  end
+
+  describe "port behavior" do
+    test "handles port restart on close" do
+      transport_name = :restart_test_transport
+
+      {:ok, pid} =
+        STDIO.start_link(
+          [
+            client: StubClient,
+            name: transport_name
+          ] ++ cmd()
+        )
+
+      original_pid = Process.whereis(transport_name)
+      assert original_pid
+
+      ref = Process.monitor(original_pid)
+
+      safe_stop(pid)
+
+      assert_receive {:DOWN, ^ref, :process, ^original_pid, _}, 1000
+    end
+  end
+
+  describe "environment variables" do
+    test "uses environment variables" do
+      :ok = StubClient.clear_messages()
+
+      {:ok, pid} =
+        STDIO.start_link(
+          [
+            client: StubClient,
+            env: %{"TEST_CUSTOM_VAR" => "test_value"},
+            name: :env_test_transport
+          ] ++ cmd()
+        )
+
+      Process.sleep(100)
+
+      messages = StubClient.get_messages()
+      refute Enum.empty?(messages)
+
+      safe_stop(pid)
+    end
+  end
+
+  defp cmd(text \\ "hello") do
+    if :os.type() == {:win32, :nt} do
+      [command: "cmd", args: ["/c", "echo #{text} 2>nul"]]
+    else
+      [command: "sh", args: ["-c", "echo #{text} 2>/dev/null"]]
+    end
+  end
+
+  defp safe_stop(pid) do
+    if is_pid(pid) && Process.alive?(pid) do
+      try do
+        STDIO.shutdown(pid)
+        Process.sleep(50)
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+  end
+end

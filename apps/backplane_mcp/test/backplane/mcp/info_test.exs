@@ -2,14 +2,15 @@ defmodule Backplane.MCP.InfoTest do
   use ExUnit.Case, async: true
 
   alias Backplane.MCP.Info
-  alias Backplane.McpProtocol
 
-  test "declares the shared protocol package as an application dependency" do
-    assert :backplane_mcp_protocol in Application.spec(:backplane_mcp, :applications)
+  test "declares backplane_mcp_protocol as the protocol application dependency" do
+    applications = Application.spec(:backplane_mcp, :applications)
+
+    assert :backplane_mcp_protocol in applications
   end
 
-  test "uses the shared MCP protocol package for version metadata" do
-    assert Info.protocol_version() == McpProtocol.protocol_version()
-    assert Info.supported_versions() == McpProtocol.supported_protocol_versions()
+  test "uses Backplane.McpProtocol for version metadata" do
+    assert Info.protocol_version() == Backplane.McpProtocol.Protocol.latest_version()
+    assert Info.supported_versions() == Backplane.McpProtocol.Protocol.supported_versions()
   end
 end

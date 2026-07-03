@@ -1,0 +1,951 @@
+defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
+  use ExUnit.Case, async: true
+
+  alias Backplane.McpProtocol.Server.Component.Schema
+
+  describe "to_json_schema/1" do
+    test "converts nil to empty object schema" do
+      assert Schema.to_json_schema(nil) == %{"type" => "object"}
+    end
+
+    test "converts basic types" do
+      schema = %{
+        name: :string,
+        age: :integer,
+        height: :float,
+        active: :boolean,
+        data: :any
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result == %{
+               "type" => "object",
+               "properties" => %{
+                 "name" => %{"type" => "string"},
+                 "age" => %{"type" => "integer"},
+                 "height" => %{"type" => "number"},
+                 "active" => %{"type" => "boolean"},
+                 "data" => %{}
+               }
+             }
+    end
+
+    test "handles required fields" do
+      schema = %{
+        name: {:required, :string},
+        age: :integer,
+        email: {:required, :string}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert %{
+               "type" => "object",
+               "properties" => %{
+                 "name" => %{"type" => "string"},
+                 "age" => %{"type" => "integer"},
+                 "email" => %{"type" => "string"}
+               },
+               "required" => required
+             } = result
+
+      assert length(required) == 2
+      assert "email" in required
+      assert "name" in required
+    end
+
+    test "converts string constraints" do
+      schema = %{
+        pattern: {:string, {:regex, ~r/^[A-Z]+$/}},
+        short: {:string, {:min, 5}},
+        long: {:string, {:max, 100}}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["pattern"] == %{
+               "type" => "string",
+               "pattern" => "^[A-Z]+$"
+             }
+
+      assert result["properties"]["short"] == %{"type" => "string", "minLength" => 5}
+
+      assert result["properties"]["long"] == %{
+               "type" => "string",
+               "maxLength" => 100
+             }
+    end
+
+    test "converts numeric constraints" do
+      schema = %{
+        eq_int: {:integer, {:eq, 42}},
+        neq_int: {:integer, {:neq, 0}},
+        gt_int: {:integer, {:gt, 0}},
+        gte_int: {:integer, {:gte, 18}},
+        lt_int: {:integer, {:lt, 100}},
+        lte_int: {:integer, {:lte, 99}},
+        range_int: {:integer, {:range, {1, 10}}},
+        eq_float: {:float, {:eq, 3.14}},
+        neq_float: {:float, {:neq, 0.0}},
+        gt_float: {:float, {:gt, 0.0}},
+        gte_float: {:float, {:gte, 1.5}},
+        lt_float: {:float, {:lt, 100.0}},
+        lte_float: {:float, {:lte, 99.9}},
+        range_float: {:float, {:range, {1.0, 10.0}}}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["eq_int"] == %{
+               "type" => "integer",
+               "const" => 42
+             }
+
+      assert result["properties"]["neq_int"] == %{
+               "type" => "integer",
+               "not" => %{"const" => 0}
+             }
+
+      assert result["properties"]["gt_int"] == %{
+               "type" => "integer",
+               "exclusiveMinimum" => 0
+             }
+
+      assert result["properties"]["gte_int"] == %{
+               "type" => "integer",
+               "minimum" => 18
+             }
+
+      assert result["properties"]["lt_int"] == %{
+               "type" => "integer",
+               "exclusiveMaximum" => 100
+             }
+
+      assert result["properties"]["lte_int"] == %{
+               "type" => "integer",
+               "maximum" => 99
+             }
+
+      assert result["properties"]["range_int"] == %{
+               "type" => "integer",
+               "minimum" => 1,
+               "maximum" => 10
+             }
+
+      assert result["properties"]["eq_float"] == %{
+               "type" => "number",
+               "const" => 3.14
+             }
+
+      assert result["properties"]["neq_float"] == %{
+               "type" => "number",
+               "not" => %{"const" => 0.0}
+             }
+
+      assert result["properties"]["gt_float"] == %{
+               "type" => "number",
+               "exclusiveMinimum" => 0.0
+             }
+
+      assert result["properties"]["gte_float"] == %{
+               "type" => "number",
+               "minimum" => 1.5
+             }
+
+      assert result["properties"]["lt_float"] == %{
+               "type" => "number",
+               "exclusiveMaximum" => 100.0
+             }
+
+      assert result["properties"]["lte_float"] == %{
+               "type" => "number",
+               "maximum" => 99.9
+             }
+
+      assert result["properties"]["range_float"] == %{
+               "type" => "number",
+               "minimum" => 1.0,
+               "maximum" => 10.0
+             }
+    end
+
+    test "converts enum types" do
+      schema = %{
+        status: {:enum, ["active", "inactive", "pending"]},
+        role: {:required, {:enum, [:admin, :user, :guest]}}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["status"] == %{
+               "enum" => ["active", "inactive", "pending"]
+             }
+
+      assert result["properties"]["role"] == %{"enum" => [:admin, :user, :guest]}
+      assert result["required"] == ["role"]
+    end
+
+    test "converts collection types" do
+      schema = %{
+        tags: {:list, :string},
+        numbers: {:list, :integer},
+        metadata: {:map, :string},
+        scores: {:map, :float}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["tags"] == %{
+               "type" => "array",
+               "items" => %{"type" => "string"}
+             }
+
+      assert result["properties"]["numbers"] == %{
+               "type" => "array",
+               "items" => %{"type" => "integer"}
+             }
+
+      assert result["properties"]["metadata"] == %{
+               "type" => "object",
+               "additionalProperties" => %{"type" => "string"}
+             }
+
+      assert result["properties"]["scores"] == %{
+               "type" => "object",
+               "additionalProperties" => %{"type" => "number"}
+             }
+    end
+
+    test "converts literal types" do
+      schema = %{
+        version: {:literal, "1.0.0"},
+        type: {:literal, :tool}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["version"] == %{"const" => "1.0.0"}
+      assert result["properties"]["type"] == %{"const" => :tool}
+    end
+
+    test "converts either and oneof types" do
+      schema = %{
+        id: {:either, {:string, :integer}},
+        value: {:oneof, [:string, :integer, :boolean]}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["id"] == %{
+               "oneOf" => [
+                 %{"type" => "string"},
+                 %{"type" => "integer"}
+               ]
+             }
+
+      assert result["properties"]["value"] == %{
+               "oneOf" => [
+                 %{"type" => "string"},
+                 %{"type" => "integer"},
+                 %{"type" => "boolean"}
+               ]
+             }
+    end
+
+    test "handles nested schemas" do
+      schema = %{
+        user: %{
+          name: {:required, :string},
+          profile: %{
+            age: :integer,
+            bio: :string
+          }
+        }
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["user"] == %{
+               "type" => "object",
+               "properties" => %{
+                 "name" => %{"type" => "string"},
+                 "profile" => %{
+                   "type" => "object",
+                   "properties" => %{
+                     "age" => %{"type" => "integer"},
+                     "bio" => %{"type" => "string"}
+                   }
+                 }
+               },
+               "required" => ["name"]
+             }
+    end
+
+    test "ignores default values in conversion" do
+      schema = %{
+        limit: {:integer, {:default, 10}},
+        sort: {:string, {:default, "asc"}}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["limit"] == %{"type" => "integer"}
+      assert result["properties"]["sort"] == %{"type" => "string"}
+    end
+  end
+
+  describe "to_prompt_arguments/1" do
+    test "returns empty list for nil schema" do
+      assert Schema.to_prompt_arguments(nil) == []
+    end
+
+    test "converts basic schema to arguments" do
+      schema = %{
+        language: {:required, :string},
+        code: {:required, :string},
+        focus: :string
+      }
+
+      result = Schema.to_prompt_arguments(schema)
+
+      assert length(result) == 3
+
+      assert %{
+               "name" => "language",
+               "description" => "Required string parameter",
+               "required" => true
+             } in result
+
+      assert %{
+               "name" => "code",
+               "description" => "Required string parameter",
+               "required" => true
+             } in result
+
+      assert %{
+               "name" => "focus",
+               "description" => "Optional string parameter",
+               "required" => false
+             } in result
+    end
+
+    test "describes different types correctly" do
+      schema = %{
+        count: :integer,
+        rate: :float,
+        enabled: :boolean,
+        tags: {:list, :string},
+        data: {:map, :any},
+        status: {:enum, ["on", "off"]},
+        config: %{nested: :string}
+      }
+
+      result = Schema.to_prompt_arguments(schema)
+      descriptions = Map.new(result, fn arg -> {arg["name"], arg["description"]} end)
+
+      assert descriptions["count"] == "Optional integer parameter"
+      assert descriptions["rate"] == "Optional number parameter"
+      assert descriptions["enabled"] == "Optional boolean parameter"
+
+      assert descriptions["tags"] ==
+               "Optional array of string parameter elements parameter"
+
+      assert descriptions["data"] == "Optional object parameter"
+      assert descriptions["status"] == ~s(Optional one of: ["on", "off"])
+      assert descriptions["config"] == "Optional nested object"
+    end
+  end
+
+  describe "format_errors/1" do
+    test "formats simple error messages" do
+      errors = ["Field is required", "Invalid type"]
+      assert Schema.format_errors(errors) == "Field is required; Invalid type"
+    end
+
+    test "formats errors with paths" do
+      errors = [
+        %{path: ["user", "email"], message: "is required"},
+        %{path: ["age"], message: "must be a positive integer"},
+        %{path: [], message: "invalid schema"}
+      ]
+
+      result = Schema.format_errors(errors)
+
+      assert result ==
+               "user.email: is required; age: must be a positive integer; invalid schema"
+    end
+
+    test "handles mixed error formats" do
+      errors = [
+        "Simple error",
+        %{path: ["field"], message: "complex error"},
+        {:unexpected, "format"}
+      ]
+
+      result = Schema.format_errors(errors)
+
+      assert result ==
+               "Simple error; field: complex error; {:unexpected, \"format\"}"
+    end
+  end
+
+  describe "to_json_schema/1 with metadata" do
+    test "converts field with format and description" do
+      schema = %{
+        email: {:required, :string, format: "email", description: "User's email address"},
+        age: {:integer, description: "Age in years"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result == %{
+               "type" => "object",
+               "properties" => %{
+                 "email" => %{
+                   "type" => "string",
+                   "format" => "email",
+                   "description" => "User's email address"
+                 },
+                 "age" => %{
+                   "type" => "integer",
+                   "description" => "Age in years"
+                 }
+               },
+               "required" => ["email"]
+             }
+    end
+
+    test "handles nested fields with constraints" do
+      schema = %{
+        website: {:string, format: "uri"},
+        score: {:integer, min: 0, max: 100, description: "Score percentage"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result == %{
+               "type" => "object",
+               "properties" => %{
+                 "website" => %{
+                   "type" => "string",
+                   "format" => "uri"
+                 },
+                 "score" => %{
+                   "type" => "integer",
+                   "minimum" => 0,
+                   "maximum" => 100,
+                   "description" => "Score percentage"
+                 }
+               }
+             }
+    end
+
+    test "handles required field with metadata" do
+      schema = %{
+        name: {:required, :string, description: "Full name"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result == %{
+               "type" => "object",
+               "properties" => %{
+                 "name" => %{
+                   "type" => "string",
+                   "description" => "Full name"
+                 }
+               },
+               "required" => ["name"]
+             }
+    end
+  end
+
+  describe "to_prompt_arguments/1 with metadata" do
+    test "uses custom description from metadata" do
+      schema = %{
+        language: {:required, :string, description: "Programming language"},
+        focus: {:string, description: "Areas to focus on"}
+      }
+
+      result = Schema.to_prompt_arguments(schema)
+
+      assert result == [
+               %{
+                 "name" => "language",
+                 "description" => "Programming language",
+                 "required" => true
+               },
+               %{
+                 "name" => "focus",
+                 "description" => "Areas to focus on",
+                 "required" => false
+               }
+             ]
+    end
+
+    test "falls back to generated description when not provided" do
+      schema = %{
+        count: {:integer, format: "int32"}
+      }
+
+      result = Schema.to_prompt_arguments(schema)
+
+      assert result == [
+               %{
+                 "name" => "count",
+                 "description" => "Optional integer parameter",
+                 "required" => false
+               }
+             ]
+    end
+  end
+
+  describe "nested schemas with metadata" do
+    test "handles nested schemas with metadata" do
+      schema = %{
+        user: %{
+          email: {:required, :string, format: "email", description: "Email address"},
+          profile: %{
+            age: {:integer, description: "User age"},
+            website: {:string, format: "uri"}
+          }
+        },
+        settings:
+          {:object,
+           %{
+             theme: :string,
+             notifications: :boolean
+           }, description: "User settings object"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result == %{
+               "type" => "object",
+               "properties" => %{
+                 "user" => %{
+                   "type" => "object",
+                   "properties" => %{
+                     "email" => %{
+                       "type" => "string",
+                       "format" => "email",
+                       "description" => "Email address"
+                     },
+                     "profile" => %{
+                       "type" => "object",
+                       "properties" => %{
+                         "age" => %{
+                           "type" => "integer",
+                           "description" => "User age"
+                         },
+                         "website" => %{
+                           "type" => "string",
+                           "format" => "uri"
+                         }
+                       }
+                     }
+                   },
+                   "required" => ["email"]
+                 },
+                 "settings" => %{
+                   "type" => "object",
+                   "properties" => %{
+                     "theme" => %{"type" => "string"},
+                     "notifications" => %{"type" => "boolean"}
+                   },
+                   "description" => "User settings object"
+                 }
+               }
+             }
+    end
+  end
+
+  describe "integration with runtime format" do
+    test "complete workflow from runtime format to JSON Schema" do
+      runtime_schema = %{
+        query: {:required, :string, description: "Search query"},
+        limit: {:integer, min: 1, max: 100, default: 10},
+        filters:
+          {:object,
+           %{
+             status: {:required, :enum, values: ["active", "inactive"], type: :string, description: "possible statuses"},
+             created_after: :datetime
+           }, description: "Search filters"}
+      }
+
+      json_schema = Schema.to_json_schema(runtime_schema)
+
+      assert json_schema == %{
+               "type" => "object",
+               "properties" => %{
+                 "query" => %{
+                   "type" => "string",
+                   "description" => "Search query"
+                 },
+                 "limit" => %{
+                   "type" => "integer",
+                   "minimum" => 1,
+                   "maximum" => 100
+                 },
+                 "filters" => %{
+                   "type" => "object",
+                   "required" => ["status"],
+                   "properties" => %{
+                     "status" => %{
+                       "enum" => ["active", "inactive"],
+                       "type" => "string",
+                       "description" => "possible statuses"
+                     },
+                     "created_after" => %{
+                       "type" => "string",
+                       "format" => "date-time"
+                     }
+                   },
+                   "description" => "Search filters"
+                 }
+               },
+               "required" => ["query"]
+             }
+    end
+
+    test "runtime format preserves validation behavior" do
+      runtime_schema = %{
+        email: {:required, :string, format: "email", description: "Email address"},
+        age: {:integer, min: 0, max: 150}
+      }
+
+      validator = Schema.validator(runtime_schema)
+
+      assert {:ok, _} = validator.(%{email: "test@example.com", age: 25})
+
+      assert {:error, errors} = validator.(%{age: 25})
+      refute Enum.empty?(errors)
+
+      assert {:error, errors} = validator.(%{email: "test@example.com", age: 200})
+      refute Enum.empty?(errors)
+    end
+  end
+
+  describe "GitHub issues regression tests" do
+    test "issue honungsburk: string length constraints work in JSON schema generation" do
+      schema = %{
+        username: {:string, min_length: 3, max_length: 20, description: "Username"},
+        bio: {:string, max_length: 500, description: "Bio"},
+        code: {:string, min_length: 1, description: "Code"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["username"]["minLength"] == 3
+      assert result["properties"]["username"]["maxLength"] == 20
+      assert result["properties"]["bio"]["maxLength"] == 500
+      assert result["properties"]["code"]["minLength"] == 1
+    end
+
+    test "issue honungsburk: regex constraints work in JSON schema generation" do
+      schema = %{
+        email: {:string, regex: ~r/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/},
+        phone: {:string, regex: ~r/^\+?[\d\s\-\(\)]{10,}$/}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["email"]["pattern"] == "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+      assert result["properties"]["phone"]["pattern"] == "^\\+?[\\d\\s\\-\\(\\)]{10,}$"
+    end
+
+    test "issue honungsburk: numeric constraints work in JSON schema generation" do
+      schema = %{
+        age: {:integer, min: 18, max: 120},
+        price: {:float, min: 0.01, max: 999_999.99},
+        score: {:integer, min: 0}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["age"]["minimum"] == 18
+      assert result["properties"]["age"]["maximum"] == 120
+      assert result["properties"]["price"]["minimum"] == 0.01
+      assert result["properties"]["price"]["maximum"] == 999_999.99
+      assert result["properties"]["score"]["minimum"] == 0
+      refute Map.has_key?(result["properties"]["score"], "maximum")
+    end
+
+    test "issue johns10: enum constraints generate proper JSON schema with values" do
+      schema = %{
+        type: {:enum, [:genserver, :context, :coordination_context, :schema, :repository, :task, :registry, :other]},
+        status: {:enum, ["active", "inactive", "pending"]},
+        priority: {:required, {:enum, ["low", "medium", "high"]}}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Main issue: enum values should be present in JSON schema
+      assert result["properties"]["type"]["enum"] == [
+               :genserver,
+               :context,
+               :coordination_context,
+               :schema,
+               :repository,
+               :task,
+               :registry,
+               :other
+             ]
+
+      assert result["properties"]["status"]["enum"] == ["active", "inactive", "pending"]
+      assert result["properties"]["priority"]["enum"] == ["low", "medium", "high"]
+
+      # Ensure properties are not empty objects
+      refute result["properties"]["type"] == %{}
+      refute result["properties"]["status"] == %{}
+      refute result["properties"]["priority"] == %{}
+
+      # Required array should be proper array, not numbered keys
+      assert result["required"] == ["priority"]
+      refute is_map(result["required"])
+    end
+
+    test "issue johns10: enum with type specification works correctly" do
+      schema = %{
+        category: {:enum, [1, 2, 3], :integer},
+        level: {:enum, ["beginner", "intermediate", "advanced"], :string}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["category"]["enum"] == [1, 2, 3]
+      assert result["properties"]["category"]["type"] == "integer"
+      assert result["properties"]["level"]["enum"] == ["beginner", "intermediate", "advanced"]
+      assert result["properties"]["level"]["type"] == "string"
+    end
+
+    test "complex constraints with metadata work correctly" do
+      schema = %{
+        username: {:string, [min_length: 3, max_length: 20, regex: ~r/^[a-zA-Z0-9_]+$/, description: "Username"]},
+        age: {:integer, [min: 13, max: 120, description: "Age in years"]},
+        role: {:meta, {:enum, ["admin", "user", "guest"]}, description: "User role"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Test all constraints are applied
+      assert result["properties"]["username"]["minLength"] == 3
+      assert result["properties"]["username"]["maxLength"] == 20
+      assert result["properties"]["username"]["pattern"] == "^[a-zA-Z0-9_]+$"
+      assert result["properties"]["username"]["description"] == "Username"
+
+      assert result["properties"]["age"]["minimum"] == 13
+      assert result["properties"]["age"]["maximum"] == 120
+      assert result["properties"]["age"]["description"] == "Age in years"
+
+      assert result["properties"]["role"]["enum"] == ["admin", "user", "guest"]
+      assert result["properties"]["role"]["description"] == "User role"
+    end
+
+    test "mixed constraint types with required fields work correctly" do
+      schema = %{
+        name: {:required, :string, min_length: 2, max_length: 50},
+        type: {:required, {:enum, ["tool", "prompt", "resource"]}},
+        timeout: {:integer, min: 1000, max: 60_000},
+        pattern: {:string, regex: ~r/^[A-Z][a-z]+$/},
+        enabled: {:boolean, default: true}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Check required fields are in array format
+      assert "name" in result["required"]
+      assert "type" in result["required"]
+      assert length(result["required"]) == 2
+
+      # Check constraints are preserved
+      assert result["properties"]["name"]["minLength"] == 2
+      assert result["properties"]["name"]["maxLength"] == 50
+      assert result["properties"]["type"]["enum"] == ["tool", "prompt", "resource"]
+      assert result["properties"]["timeout"]["minimum"] == 1000
+      assert result["properties"]["timeout"]["maximum"] == 60_000
+      assert result["properties"]["pattern"]["pattern"] == "^[A-Z][a-z]+$"
+
+      # Default values should not appear in JSON schema
+      refute Map.has_key?(result["properties"]["enabled"], "default")
+    end
+
+    test "edge case: empty enum list is handled gracefully" do
+      schema = %{
+        empty_enum: {:enum, []},
+        normal_field: :string
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      assert result["properties"]["empty_enum"]["enum"] == []
+      assert result["properties"]["normal_field"]["type"] == "string"
+    end
+
+    test "edge case: regex with special characters is properly escaped" do
+      schema = %{
+        special_pattern: {:string, regex: ~r/^[\w\-\.]+@[\w\-\.]+\.[a-zA-Z]{2,}$/}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Check that the regex pattern is properly escaped for JSON Schema
+      assert result["properties"]["special_pattern"]["pattern"] == "^[\\w\\-\\.]+@[\\w\\-\\.]+\\.[a-zA-Z]{2,}$"
+    end
+
+    test "natural enum syntax: field :name, :enum, type: :string, values: [...] works correctly" do
+      schema = %{
+        status: {:meta, {:enum, ["active", "inactive", "pending"], [type: :string]}, description: "Status"},
+        priority: {:required, :enum, [type: :string, values: ["low", "medium", "high"], description: "Priority"]},
+        category: {:meta, {:enum, [1, 2, 3], [type: :integer]}, description: "Category"}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Test string enum
+      assert result["properties"]["status"]["enum"] == ["active", "inactive", "pending"]
+      assert result["properties"]["status"]["type"] == "string"
+      assert result["properties"]["status"]["description"] == "Status"
+
+      # Test required enum
+      assert result["properties"]["priority"]["enum"] == ["low", "medium", "high"]
+      assert result["properties"]["priority"]["type"] == "string"
+      assert result["required"] == ["priority"]
+
+      # Test integer enum
+      assert result["properties"]["category"]["enum"] == [1, 2, 3]
+      assert result["properties"]["category"]["type"] == "integer"
+    end
+
+    test "string constraints: min: and max: on strings emit minLength/maxLength not minimum/maximum" do
+      schema = %{
+        text: {:string, [max: 150, description: "Text field"]},
+        short_code: {:string, [min: 3, max: 10]},
+        long_text: {:string, [min: 5]}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Check that string constraints use minLength/maxLength
+      assert result["properties"]["text"]["maxLength"] == 150
+      assert result["properties"]["text"]["description"] == "Text field"
+      refute Map.has_key?(result["properties"]["text"], "maximum")
+
+      assert result["properties"]["short_code"]["minLength"] == 3
+      assert result["properties"]["short_code"]["maxLength"] == 10
+      refute Map.has_key?(result["properties"]["short_code"], "minimum")
+      refute Map.has_key?(result["properties"]["short_code"], "maximum")
+
+      assert result["properties"]["long_text"]["minLength"] == 5
+      refute Map.has_key?(result["properties"]["long_text"], "minimum")
+    end
+
+    test "numeric constraints: min: and max: on integers/floats still emit minimum/maximum" do
+      schema = %{
+        age: {:integer, [min: 18, max: 120]},
+        price: {:float, [min: 0.01, max: 999.99]}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Check that numeric constraints use minimum/maximum
+      assert result["properties"]["age"]["minimum"] == 18
+      assert result["properties"]["age"]["maximum"] == 120
+      refute Map.has_key?(result["properties"]["age"], "minLength")
+      refute Map.has_key?(result["properties"]["age"], "maxLength")
+
+      assert result["properties"]["price"]["minimum"] == 0.01
+      assert result["properties"]["price"]["maximum"] == 999.99
+      refute Map.has_key?(result["properties"]["price"], "minLength")
+      refute Map.has_key?(result["properties"]["price"], "maxLength")
+    end
+
+    test "string validation: validator accepts strings within min:/max: constraints" do
+      schema = %{
+        text: {:string, [max: 150, description: "Text field"]}
+      }
+
+      validator = Schema.validator(schema)
+
+      # Valid: short string
+      assert {:ok, %{text: "hello"}} = validator.(%{"text" => "hello"})
+
+      # Valid: at max length
+      long_text = String.duplicate("x", 150)
+      assert {:ok, %{text: ^long_text}} = validator.(%{"text" => long_text})
+
+      # Invalid: exceeds max length
+      too_long = String.duplicate("x", 151)
+      assert {:error, errors} = validator.(%{"text" => too_long})
+      refute Enum.empty?(errors)
+    end
+
+    test "string validation: validator accepts strings within min: constraints" do
+      schema = %{
+        code: {:string, [min: 3]}
+      }
+
+      validator = Schema.validator(schema)
+
+      # Valid: at min length
+      assert {:ok, %{code: "abc"}} = validator.(%{"code" => "abc"})
+
+      # Valid: above min length
+      assert {:ok, %{code: "abcd"}} = validator.(%{"code" => "abcd"})
+
+      # Invalid: below min length
+      assert {:error, errors} = validator.(%{"code" => "ab"})
+      refute Enum.empty?(errors)
+    end
+
+    test "string validation: validator respects both min: and max: constraints" do
+      schema = %{
+        username: {:string, [min: 3, max: 20]}
+      }
+
+      validator = Schema.validator(schema)
+
+      # Valid: within range
+      assert {:ok, %{username: "alice"}} = validator.(%{"username" => "alice"})
+
+      # Invalid: too short
+      assert {:error, _} = validator.(%{"username" => "ab"})
+
+      # Invalid: too long
+      assert {:error, _} = validator.(%{"username" => String.duplicate("x", 21)})
+    end
+
+    test "required string constraints: min:/max: work on required strings" do
+      schema = %{
+        text: {:required, :string, [max: 100]}
+      }
+
+      result = Schema.to_json_schema(schema)
+
+      # Check required flag and string constraints
+      assert "text" in result["required"]
+      assert result["properties"]["text"]["maxLength"] == 100
+      refute Map.has_key?(result["properties"]["text"], "maximum")
+    end
+
+    test "field macro with min:/max: works and validates correctly" do
+      # Simulate what field() macro generates
+      schema = %{
+        content: {:required, :string, [max: 500, description: "Post content"]}
+      }
+
+      json_schema = Schema.to_json_schema(schema)
+      validator = Schema.validator(schema)
+
+      # JSON Schema should have correct constraint
+      assert json_schema["properties"]["content"]["maxLength"] == 500
+      refute Map.has_key?(json_schema["properties"]["content"], "maximum")
+      assert "content" in json_schema["required"]
+
+      # Validation should work
+      assert {:ok, _} = validator.(%{"content" => "Short text"})
+      assert {:error, _} = validator.(%{"content" => String.duplicate("x", 501)})
+    end
+  end
+end

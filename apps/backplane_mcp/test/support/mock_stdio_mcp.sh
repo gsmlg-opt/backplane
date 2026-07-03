@@ -4,7 +4,7 @@
 
 while IFS= read -r line; do
   method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"//;s/"//')
-  id=$(echo "$line" | grep -o '"id":[0-9]*' | sed 's/"id"://')
+  id=$(echo "$line" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*("[^"]*"|-?[0-9]+|null).*/\1/p')
 
   case "$method" in
     initialize)

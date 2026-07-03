@@ -1,0 +1,63 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+hermes_mcp-*.tar
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# Dialyzer
+/priv/plts/
+
+# Python specific
+/priv/dev/**/__pycache__/
+/priv/dev/**/.venv/
+
+# golang specific
+/.gopath/
+/priv/dev/calculator/calculator
+
+/.context/
+
+# Burrito specific
+/burrito_out/
+
+# Local envs
+.env.*
+.direnv
+
+# Nix files
+result
+.nix-mix
+
+# Claude
+/.claude/
+/rag/
+
+# LSP
+/.lexical/
+/.expert/
+/.elixir-tools/
+.dexter.*
+
+# macOS
+**/.DS_Store
+
+# redis
+dump.rdb

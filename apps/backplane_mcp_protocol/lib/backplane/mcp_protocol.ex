@@ -1,19 +1,74 @@
 defmodule Backplane.McpProtocol do
-  @moduledoc """
-  First-party MCP protocol implementation for Backplane.
+  @moduledoc false
+
+  import Peri
+
+  alias Backplane.McpProtocol.Server.Transport.SSE, as: ServerSSE
+  alias Backplane.McpProtocol.Server.Transport.STDIO, as: ServerSTDIO
+  alias Backplane.McpProtocol.Server.Transport.StreamableHTTP, as: ServerStreamableHTTP
+  alias Backplane.McpProtocol.Transport.SSE, as: ClientSSE
+  alias Backplane.McpProtocol.Transport.STDIO, as: ClientSTDIO
+  alias Backplane.McpProtocol.Transport.StreamableHTTP, as: ClientStreamableHTTP
+
+  @client_transports if Mix.env() == :test,
+                       do: [
+                         ClientSTDIO,
+                         ClientSSE,
+                         ClientStreamableHTTP,
+                         StubTransport,
+                         Backplane.McpProtocol.MockTransport,
+                         BufferedMockTransport
+                       ],
+                       else: [ClientSTDIO, ClientSSE, ClientStreamableHTTP]
+
+  @server_transports if Mix.env() == :test,
+                       do: [
+                         ServerSTDIO,
+                         ServerStreamableHTTP,
+                         ServerSSE,
+                         StubTransport
+                       ],
+                       else: [ServerSTDIO, ServerStreamableHTTP, ServerSSE]
+
+  defschema :client_transport,
+    layer: {:required, {:enum, @client_transports}},
+    name: {:required, get_schema(:process_name)}
+
+  defschema :server_transport,
+    layer: {:required, {:enum, @server_transports}},
+    name: {:required, get_schema(:process_name)}
+
+  defschema :process_name, {:either, {:pid, {:custom, &genserver_name/1}}}
+
+  @doc "Checks if Backplane.McpProtocol should be compiled/used as standalone CLI or OTP library"
+  def should_compile_cli? do
+    Code.ensure_loaded?(Burrito) and
+      Application.get_env(:backplane_mcp_protocol, :compile_cli?, false)
+  end
+
+  @doc """
+  Validates a possible GenServer name using `peri` `:custom` type definition.
   """
+  def genserver_name({:via, registry, _}) when is_atom(registry), do: :ok
+  def genserver_name({:global, _}), do: :ok
+  def genserver_name(name) when is_atom(name), do: :ok
 
-  @latest_protocol_version "2025-11-25"
-  @supported_protocol_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+  def genserver_name(val) do
+    {:error, "#{inspect(val, pretty: true)} is not a valid name for a GenServer"}
+  end
 
-  @spec protocol_version() :: String.t()
-  def protocol_version, do: @latest_protocol_version
+  @doc false
+  def exported?(m, f, a) do
+    function_exported?(m, f, a) or
+      (Code.ensure_loaded?(m) and function_exported?(m, f, a))
+  end
 
-  @spec supported_protocol_versions() :: [String.t()]
-  def supported_protocol_versions, do: @supported_protocol_versions
+  @spec get_session_store_adapter :: nil | module
+  def get_session_store_adapter do
+    config = Application.get_env(:backplane_mcp_protocol, :session_store)
+    enabled? = config[:enabled] || false
+    adapter = config[:adapter]
 
-  @spec negotiate_version(String.t() | nil) :: String.t()
-  def negotiate_version(nil), do: @latest_protocol_version
-  def negotiate_version(version) when version in @supported_protocol_versions, do: version
-  def negotiate_version(_version), do: @latest_protocol_version
+    if enabled? && Code.ensure_loaded?(adapter), do: adapter
+  end
 end

@@ -12,7 +12,8 @@ defmodule Backplane.Transport.SSE do
 
   import Plug.Conn
 
-  alias Backplane.McpProtocol.{JsonRpc, Sse}
+  alias Backplane.MCP.JsonRpc
+  alias Backplane.MCP.SSE, as: McpSSE
 
   @doc """
   Returns true if the client requested SSE streaming via Accept header.
@@ -46,7 +47,7 @@ defmodule Backplane.Transport.SSE do
   """
   @spec send_event(Plug.Conn.t(), term(), map()) :: Plug.Conn.t()
   def send_event(conn, id, result) do
-    safe_chunk(conn, Sse.encode("message", JsonRpc.result(id, result)))
+    safe_chunk(conn, McpSSE.encode("message", JsonRpc.result(id, result)))
   end
 
   @doc """
@@ -54,7 +55,7 @@ defmodule Backplane.Transport.SSE do
   """
   @spec send_error_event(Plug.Conn.t(), term(), integer(), String.t()) :: Plug.Conn.t()
   def send_error_event(conn, id, code, message) do
-    safe_chunk(conn, Sse.encode("message", JsonRpc.error(id, code, message)))
+    safe_chunk(conn, McpSSE.encode("message", JsonRpc.error(id, code, message)))
   end
 
   defp safe_chunk(conn, data) do

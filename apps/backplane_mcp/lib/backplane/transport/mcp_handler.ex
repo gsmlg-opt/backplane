@@ -19,7 +19,7 @@ defmodule Backplane.Transport.McpHandler do
 
   alias Backplane.Clients
   alias Backplane.MCP.Info
-  alias Backplane.McpProtocol.{JsonRpc, Message}
+  alias Backplane.MCP.JsonRpc
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
@@ -81,11 +81,11 @@ defmodule Backplane.Transport.McpHandler do
 
   defp handle_message(conn, %{"method" => method} = params) do
     cond do
-      Message.request?(params) ->
+      request?(params) ->
         Telemetry.emit_mcp_request(method)
         dispatch(conn, method, params["id"], params["params"])
 
-      Message.notification?(params) ->
+      notification?(params) ->
         # Notification (no id) — acknowledge but don't respond with result
         dispatch_notification(conn, method, params["params"])
 
@@ -111,11 +111,11 @@ defmodule Backplane.Transport.McpHandler do
     {to_dispatch, notifications_count} =
       Enum.reduce(requests, {[], 0}, fn request, {items, notif_count} ->
         cond do
-          Message.request?(request) ->
+          request?(request) ->
             {[{:request, request["method"], request["id"], request["params"]} | items],
              notif_count}
 
-          Message.notification?(request) ->
+          notification?(request) ->
             {items, notif_count + 1}
 
           true ->
@@ -168,6 +168,19 @@ defmodule Backplane.Transport.McpHandler do
         |> send_resp(200, Jason.encode!(responses))
     end
   end
+
+  defp request?(%{"jsonrpc" => "2.0", "method" => method} = message) when is_binary(method) do
+    Map.has_key?(message, "id")
+  end
+
+  defp request?(_message), do: false
+
+  defp notification?(%{"jsonrpc" => "2.0", "method" => method} = message)
+       when is_binary(method) do
+    not Map.has_key?(message, "id")
+  end
+
+  defp notification?(_message), do: false
 
   # Batch dispatch: returns a JSON-RPC response map (no conn)
   defp dispatch_single("tools/list", id, params, scopes, _client) do
