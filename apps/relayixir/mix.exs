@@ -51,7 +51,7 @@ defmodule Relayixir.MixProject do
       {:mint, "~> 1.6"},
       {:mint_web_socket, "~> 1.0"},
       {:telemetry, "~> 1.2"},
-      {:websock_adapter, "~> 0.5"}
+      {:websock, "~> 0.5"}
     ]
   end
 

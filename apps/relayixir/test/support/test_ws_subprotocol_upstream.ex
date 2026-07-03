@@ -88,7 +88,7 @@ defmodule Relayixir.TestWsSubprotocolRouter do
 
     conn
     |> maybe_set_subprotocol(protocol)
-    |> WebSockAdapter.upgrade(
+    |> Relayixir.Proxy.WebSocket.Adapter.upgrade(
       Relayixir.TestWsSubprotocolUpstream,
       %{protocol: protocol},
       opts

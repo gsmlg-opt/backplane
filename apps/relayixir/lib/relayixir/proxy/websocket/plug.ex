@@ -7,7 +7,7 @@ defmodule Relayixir.Proxy.WebSocket.Plug do
   require Logger
 
   alias Relayixir.Proxy.Upstream
-  alias Relayixir.Proxy.WebSocket.{Bridge, Frame}
+  alias Relayixir.Proxy.WebSocket.{Adapter, Bridge, Frame}
 
   @behaviour WebSock
 
@@ -21,7 +21,7 @@ defmodule Relayixir.Proxy.WebSocket.Plug do
       ws_headers = extract_ws_headers(conn)
 
       conn
-      |> WebSockAdapter.upgrade(
+      |> Adapter.upgrade(
         __MODULE__,
         %{upstream: upstream, ws_headers: ws_headers},
         []

@@ -58,7 +58,7 @@ defmodule Relayixir.TestWsRouter do
 
   get "/ws" do
     conn
-    |> WebSockAdapter.upgrade(Relayixir.TestWsUpstream, %{}, [])
+    |> Relayixir.Proxy.WebSocket.Adapter.upgrade(Relayixir.TestWsUpstream, %{}, [])
     |> halt()
   end
 
