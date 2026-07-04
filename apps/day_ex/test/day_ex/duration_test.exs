@@ -149,4 +149,19 @@ defmodule DayEx.DurationTest do
       assert Duration.minutes(result) == 15
     end
   end
+
+  describe "valid?/1" do
+    test "returns true for a duration with integer fields" do
+      assert Duration.valid?(Duration.new(%{years: 1, months: 2, milliseconds: 3}))
+    end
+
+    test "returns false for structs with non-integer fields" do
+      refute Duration.valid?(%Duration{seconds: 1.5})
+    end
+
+    test "returns false for non-duration values" do
+      refute Duration.valid?(%{})
+      refute Duration.valid?(nil)
+    end
+  end
 end

@@ -126,6 +126,52 @@ defmodule DayExTest do
       assert clone.datetime == original.datetime
     end
 
+    test "parses map constructor with atom keys" do
+      assert {:ok, %DayEx{datetime: dt, locale: :fr}} =
+               DayEx.parse(%{
+                 year: 2024,
+                 month: 3,
+                 date: 15,
+                 hour: 14,
+                 minute: 30,
+                 second: 45,
+                 millisecond: 123,
+                 locale: :fr
+               })
+
+      assert %NaiveDateTime{} = dt
+      assert dt == ~N[2024-03-15 14:30:45.123]
+    end
+
+    test "parses map constructor with string keys and timezone" do
+      assert {:ok, %DayEx{datetime: dt}} =
+               DayEx.parse(%{
+                 "year" => 2024,
+                 "month" => 3,
+                 "date" => 15,
+                 "hour" => 10,
+                 "time_zone" => "America/New_York"
+               })
+
+      assert %DateTime{} = dt
+      assert dt.time_zone == "America/New_York"
+      assert DayEx.format(%DayEx{datetime: dt}, "YYYY-MM-DD HH:mm Z") == "2024-03-15 10:00 -04:00"
+    end
+
+    test "parses list constructor fields" do
+      assert {:ok, d} = DayEx.parse([2024, 3, 15, 14, 30, 45, 123])
+      assert d.datetime == ~N[2024-03-15 14:30:45.123]
+    end
+
+    test "returns error for invalid map constructor fields" do
+      assert {:error, "invalid date/time fields: :invalid_date"} =
+               DayEx.parse(%{year: 2024, month: 2, date: 31})
+    end
+
+    test "returns error for invalid list constructor arity" do
+      assert {:error, "expected list constructor with 2 to 7 values"} = DayEx.parse([2024])
+    end
+
     test "returns error for invalid input" do
       assert {:error, _} = DayEx.parse("not-a-date")
     end
@@ -638,6 +684,28 @@ defmodule DayExTest do
     end
   end
 
+  describe "conversion helpers" do
+    test "to_datetime/1 returns DateTime values unchanged" do
+      d = DayEx.parse!("2024-01-15T10:30:00Z")
+      assert DayEx.to_datetime(d) == ~U[2024-01-15 10:30:00Z]
+    end
+
+    test "to_datetime/1 treats NaiveDateTime values as UTC" do
+      d = DayEx.parse!("2024-01-15T10:30:00")
+      assert DayEx.to_datetime(d) == ~U[2024-01-15 10:30:00Z]
+    end
+
+    test "to_naive_datetime/1 strips timezone from DateTime values" do
+      d = DayEx.parse!("2024-01-15T10:30:00Z")
+      assert DayEx.to_naive_datetime(d) == ~N[2024-01-15 10:30:00]
+    end
+
+    test "to_unix_millisecond/1 returns unix milliseconds" do
+      d = DayEx.parse!("1970-01-01T00:00:01.123Z")
+      assert DayEx.to_unix_millisecond(d) == 1123
+    end
+  end
+
   describe "utc_offset/1" do
     test "UTC offset is 0" do
       d = DayEx.parse!("2024-01-15T10:00:00Z")
@@ -733,6 +801,60 @@ defmodule DayExTest do
       d = DayEx.parse!("2024-01-15T00:00:00Z")
       result = DayEx.locale(d, :fr)
       assert result.locale == :fr
+    end
+  end
+
+  describe "unit aliases" do
+    test "add/3 accepts plural and short unit aliases" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+
+      assert DayEx.date(DayEx.add(d, 2, :days)) == 17
+      assert DayEx.hour(DayEx.add(d, 2, "h")) == 12
+      assert DayEx.minute(DayEx.add(d, 15, "minutes")) == 15
+    end
+
+    test "set/3 accepts plural aliases" do
+      d = DayEx.parse!("2024-01-15T10:00:00Z")
+
+      assert DayEx.year(DayEx.set(d, :years, 2025)) == 2025
+      assert DayEx.date(DayEx.set(d, "dates", 20)) == 20
+    end
+
+    test "query helpers accept unit aliases" do
+      a = DayEx.parse!("2024-01-15T10:00:00Z")
+      b = DayEx.parse!("2024-01-15T22:00:00Z")
+
+      assert DayEx.same?(a, b, "day")
+      refute DayEx.same?(a, b, :hours)
+      assert DayEx.before?(a, b, "h")
+    end
+  end
+
+  describe "quarter unit" do
+    test "add/3 adds calendar quarters" do
+      d = DayEx.parse!("2024-01-31T10:00:00Z")
+      result = DayEx.add(d, 1, :quarter)
+
+      assert DayEx.month(result) == 4
+      assert DayEx.date(result) == 30
+    end
+
+    test "start_of/2 and end_of/2 support quarter aliases" do
+      d = DayEx.parse!("2024-05-15T14:30:45Z")
+
+      assert DayEx.format(DayEx.start_of(d, "quarter"), "YYYY-MM-DD HH:mm:ss") ==
+               "2024-04-01 00:00:00"
+
+      assert DayEx.format(DayEx.end_of(d, :quarters), "YYYY-MM-DD HH:mm:ss.SSS") ==
+               "2024-06-30 23:59:59.999"
+    end
+
+    test "diff/3 supports quarter aliases" do
+      start = DayEx.parse!("2024-01-01T00:00:00Z")
+      finish = DayEx.parse!("2024-07-01T00:00:00Z")
+
+      assert DayEx.diff(finish, start, :quarter) == 2
+      assert DayEx.diff(finish, start, "quarters", float: true) == 2.0
     end
   end
 end

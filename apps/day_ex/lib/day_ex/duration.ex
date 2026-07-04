@@ -91,6 +91,24 @@ defmodule DayEx.Duration do
   @spec milliseconds(t()) :: integer()
   def milliseconds(%__MODULE__{milliseconds: v}), do: v
 
+  @spec valid?(term()) :: boolean()
+  def valid?(%__MODULE__{} = duration) do
+    Enum.all?(
+      [
+        duration.years,
+        duration.months,
+        duration.days,
+        duration.hours,
+        duration.minutes,
+        duration.seconds,
+        duration.milliseconds
+      ],
+      &is_integer/1
+    )
+  end
+
+  def valid?(_), do: false
+
   # --- Total converters ---
 
   @doc "Returns total duration in milliseconds."

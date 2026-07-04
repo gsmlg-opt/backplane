@@ -15,6 +15,69 @@ defmodule DayEx do
 
   defstruct [:datetime, locale: :en]
 
+  @unit_aliases %{
+    :year => :year,
+    :years => :year,
+    :y => :year,
+    "year" => :year,
+    "years" => :year,
+    "y" => :year,
+    :quarter => :quarter,
+    :quarters => :quarter,
+    :Q => :quarter,
+    "quarter" => :quarter,
+    "quarters" => :quarter,
+    "Q" => :quarter,
+    :month => :month,
+    :months => :month,
+    :M => :month,
+    "month" => :month,
+    "months" => :month,
+    "M" => :month,
+    :week => :week,
+    :weeks => :week,
+    :w => :week,
+    "week" => :week,
+    "weeks" => :week,
+    "w" => :week,
+    :day => :day,
+    :days => :day,
+    :d => :day,
+    "day" => :day,
+    "days" => :day,
+    "d" => :day,
+    :date => :date,
+    :dates => :date,
+    :D => :date,
+    "date" => :date,
+    "dates" => :date,
+    "D" => :date,
+    :hour => :hour,
+    :hours => :hour,
+    :h => :hour,
+    "hour" => :hour,
+    "hours" => :hour,
+    "h" => :hour,
+    :minute => :minute,
+    :minutes => :minute,
+    :m => :minute,
+    "minute" => :minute,
+    "minutes" => :minute,
+    "m" => :minute,
+    :second => :second,
+    :seconds => :second,
+    :s => :second,
+    "second" => :second,
+    "seconds" => :second,
+    "s" => :second,
+    :millisecond => :millisecond,
+    :milliseconds => :millisecond,
+    :ms => :millisecond,
+    "millisecond" => :millisecond,
+    "milliseconds" => :millisecond,
+    "ms" => :millisecond
+  }
+
   def now, do: %DayEx{datetime: DateTime.utc_now()}
   def now(locale) when is_atom(locale), do: %DayEx{datetime: DateTime.utc_now(), locale: locale}
 
@@ -22,6 +85,8 @@ defmodule DayEx do
   def parse(%DateTime{} = dt), do: {:ok, %DayEx{datetime: dt}}
   def parse(%NaiveDateTime{} = ndt), do: {:ok, %DayEx{datetime: ndt}}
   def parse(%Date{} = date), do: {:ok, %DayEx{datetime: NaiveDateTime.new!(date, ~T[00:00:00])}}
+  def parse(fields) when is_map(fields), do: parse_map(fields)
+  def parse(fields) when is_list(fields), do: parse_list(fields)
 
   def parse(ts) when is_integer(ts) do
     case DateTime.from_unix(ts) do
@@ -151,22 +216,20 @@ defmodule DayEx do
   def millisecond(%DayEx{datetime: dt} = d, value),
     do: %{d | datetime: update_datetime(dt, microsecond: {value * 1000, 3})}
 
-  def set(d, :year, value), do: year(d, value)
-  def set(d, :month, value), do: month(d, value)
-  def set(d, :date, value), do: date(d, value)
-  def set(d, :hour, value), do: hour(d, value)
-  def set(d, :minute, value), do: minute(d, value)
-  def set(d, :second, value), do: second(d, value)
-  def set(d, :millisecond, value), do: millisecond(d, value)
+  def set(%DayEx{} = d, unit, value), do: do_set(d, normalize_unit(unit), value)
 
-  def add(%DayEx{} = d, n, :year) do
+  def add(%DayEx{} = d, n, unit), do: do_add(d, n, normalize_unit(unit))
+
+  defp do_add(%DayEx{} = d, n, :year) do
     new_year = year(d) + n
     max_day = Calendar.ISO.days_in_month(new_year, month(d))
     clamped_day = min(date(d), max_day)
     %{d | datetime: update_datetime(d.datetime, year: new_year, day: clamped_day)}
   end
 
-  def add(%DayEx{} = d, n, :month) do
+  defp do_add(%DayEx{} = d, n, :quarter), do: do_add(d, n * 3, :month)
+
+  defp do_add(%DayEx{} = d, n, :month) do
     total_months = (year(d) - 1) * 12 + (month(d) - 1) + n
     new_year = div(total_months, 12) + 1
     new_month = rem(total_months, 12) + 1
@@ -179,14 +242,15 @@ defmodule DayEx do
     }
   end
 
-  def add(%DayEx{} = d, n, :week), do: add(d, n * 7, :day)
+  defp do_add(%DayEx{} = d, n, :week), do: do_add(d, n * 7, :day)
+  defp do_add(%DayEx{} = d, n, :date), do: do_add(d, n, :day)
 
-  def add(%DayEx{datetime: %DateTime{} = dt} = d, n, :day) do
+  defp do_add(%DayEx{datetime: %DateTime{} = dt} = d, n, :day) do
     %{d | datetime: shift_datetime_date(dt, n)}
   end
 
-  def add(%DayEx{datetime: %DateTime{} = dt} = d, n, unit)
-      when unit in [:hour, :minute, :second, :millisecond] do
+  defp do_add(%DayEx{datetime: %DateTime{} = dt} = d, n, unit)
+       when unit in [:hour, :minute, :second, :millisecond] do
     new_dt =
       case unit do
         :millisecond -> DateTime.add(dt, n, :millisecond)
@@ -198,8 +262,8 @@ defmodule DayEx do
     %{d | datetime: new_dt}
   end
 
-  def add(%DayEx{datetime: %NaiveDateTime{} = ndt} = d, n, unit)
-      when unit in [:day, :hour, :minute, :second, :millisecond] do
+  defp do_add(%DayEx{datetime: %NaiveDateTime{} = ndt} = d, n, unit)
+       when unit in [:day, :hour, :minute, :second, :millisecond] do
     new_ndt =
       case unit do
         :millisecond -> NaiveDateTime.add(ndt, n, :millisecond)
@@ -214,7 +278,9 @@ defmodule DayEx do
 
   def subtract(%DayEx{} = d, n, unit), do: add(d, -n, unit)
 
-  def start_of(%DayEx{} = d, :year),
+  def start_of(%DayEx{} = d, unit), do: do_start_of(d, normalize_unit(unit))
+
+  defp do_start_of(%DayEx{} = d, :year),
     do: %{
       d
       | datetime:
@@ -228,34 +294,47 @@ defmodule DayEx do
           )
     }
 
-  def start_of(%DayEx{} = d, :month),
+  defp do_start_of(%DayEx{} = d, :quarter) do
+    quarter_start_month = (quarter(d) - 1) * 3 + 1
+
+    d
+    |> month(quarter_start_month)
+    |> date(1)
+    |> do_start_of(:day)
+  end
+
+  defp do_start_of(%DayEx{} = d, :month),
     do: %{
       d
       | datetime:
           update_datetime(d.datetime, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0})
     }
 
-  def start_of(%DayEx{} = d, :week) do
+  defp do_start_of(%DayEx{} = d, :week) do
     days_since_sunday = day(d)
     d |> subtract(days_since_sunday, :day) |> start_of(:day)
   end
 
-  def start_of(%DayEx{} = d, :day),
+  defp do_start_of(%DayEx{} = d, :date), do: do_start_of(d, :day)
+
+  defp do_start_of(%DayEx{} = d, :day),
     do: %{
       d
       | datetime: update_datetime(d.datetime, hour: 0, minute: 0, second: 0, microsecond: {0, 0})
     }
 
-  def start_of(%DayEx{} = d, :hour),
+  defp do_start_of(%DayEx{} = d, :hour),
     do: %{d | datetime: update_datetime(d.datetime, minute: 0, second: 0, microsecond: {0, 0})}
 
-  def start_of(%DayEx{} = d, :minute),
+  defp do_start_of(%DayEx{} = d, :minute),
     do: %{d | datetime: update_datetime(d.datetime, second: 0, microsecond: {0, 0})}
 
-  def start_of(%DayEx{} = d, :second),
+  defp do_start_of(%DayEx{} = d, :second),
     do: %{d | datetime: update_datetime(d.datetime, microsecond: {0, 0})}
 
-  def end_of(%DayEx{} = d, :year),
+  def end_of(%DayEx{} = d, unit), do: do_end_of(d, normalize_unit(unit))
+
+  defp do_end_of(%DayEx{} = d, :year),
     do: %{
       d
       | datetime:
@@ -269,7 +348,14 @@ defmodule DayEx do
           )
     }
 
-  def end_of(%DayEx{} = d, :month) do
+  defp do_end_of(%DayEx{} = d, :quarter) do
+    d
+    |> do_start_of(:quarter)
+    |> do_add(3, :month)
+    |> do_add(-1, :millisecond)
+  end
+
+  defp do_end_of(%DayEx{} = d, :month) do
     max_day = Calendar.ISO.days_in_month(year(d), month(d))
 
     %{
@@ -285,28 +371,30 @@ defmodule DayEx do
     }
   end
 
-  def end_of(%DayEx{} = d, :week) do
+  defp do_end_of(%DayEx{} = d, :week) do
     days_until_saturday = 6 - day(d)
     d |> add(days_until_saturday, :day) |> end_of(:day)
   end
 
-  def end_of(%DayEx{} = d, :day),
+  defp do_end_of(%DayEx{} = d, :date), do: do_end_of(d, :day)
+
+  defp do_end_of(%DayEx{} = d, :day),
     do: %{
       d
       | datetime:
           update_datetime(d.datetime, hour: 23, minute: 59, second: 59, microsecond: {999_000, 3})
     }
 
-  def end_of(%DayEx{} = d, :hour),
+  defp do_end_of(%DayEx{} = d, :hour),
     do: %{
       d
       | datetime: update_datetime(d.datetime, minute: 59, second: 59, microsecond: {999_000, 3})
     }
 
-  def end_of(%DayEx{} = d, :minute),
+  defp do_end_of(%DayEx{} = d, :minute),
     do: %{d | datetime: update_datetime(d.datetime, second: 59, microsecond: {999_000, 3})}
 
-  def end_of(%DayEx{} = d, :second),
+  defp do_end_of(%DayEx{} = d, :second),
     do: %{d | datetime: update_datetime(d.datetime, microsecond: {999_000, 3})}
 
   def valid?(%DayEx{datetime: nil}), do: false
@@ -327,10 +415,20 @@ defmodule DayEx do
 
   def to_json(%DayEx{} = d), do: to_iso_string(d)
 
+  def to_datetime(%DayEx{datetime: %DateTime{} = dt}), do: dt
+
+  def to_datetime(%DayEx{datetime: %NaiveDateTime{} = ndt}),
+    do: DateTime.from_naive!(ndt, "Etc/UTC")
+
+  def to_naive_datetime(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_naive(dt)
+  def to_naive_datetime(%DayEx{datetime: %NaiveDateTime{} = ndt}), do: ndt
+
   def to_unix(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt)
 
   def to_unix(%DayEx{datetime: %NaiveDateTime{} = ndt}),
     do: ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
+
+  def to_unix_millisecond(%DayEx{} = d), do: to_unix_ms(d)
 
   def to_list(%DayEx{} = d),
     do: [year(d), month(d), date(d), hour(d), minute(d), second(d), millisecond(d)]
@@ -404,18 +502,19 @@ defmodule DayEx do
 
   def diff(%DayEx{} = a, %DayEx{} = b), do: to_unix_ms(a) - to_unix_ms(b)
 
-  def diff(%DayEx{} = a, %DayEx{} = b, :year), do: trunc(calendar_month_diff(a, b) / 12)
-  def diff(%DayEx{} = a, %DayEx{} = b, :month), do: calendar_month_diff(a, b)
-
-  def diff(%DayEx{} = a, %DayEx{} = b, :week),
-    do: trunc(calendar_day_ms(a, b) / unit_to_ms(:week))
-
-  def diff(%DayEx{} = a, %DayEx{} = b, :day), do: trunc(calendar_day_ms(a, b) / unit_to_ms(:day))
-  def diff(%DayEx{} = a, %DayEx{} = b, unit), do: trunc(diff(a, b) / unit_to_ms(unit))
+  def diff(%DayEx{} = a, %DayEx{} = b, unit) do
+    case normalize_unit(unit) do
+      :year -> trunc(calendar_month_diff(a, b) / 12)
+      :quarter -> trunc(calendar_month_diff(a, b) / 3)
+      :month -> calendar_month_diff(a, b)
+      unit when unit in [:week, :day, :date] -> trunc(calendar_day_ms(a, b) / unit_to_ms(unit))
+      unit -> trunc(diff(a, b) / unit_to_ms(unit))
+    end
+  end
 
   def diff(%DayEx{} = a, %DayEx{} = b, unit, opts) do
     if Keyword.get(opts, :float, false),
-      do: diff_float(a, b, unit),
+      do: diff_float(a, b, normalize_unit(unit)),
       else: diff(a, b, unit)
   end
 
@@ -559,6 +658,66 @@ defmodule DayEx do
   defp to_elixir_date(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_date(ndt)
 
   # Private helpers
+  defp parse_map(fields) do
+    locale = map_get(fields, :locale, :en)
+    timezone = map_get(fields, :time_zone, nil) || map_get(fields, :timezone, nil)
+
+    with {:ok, ndt} <- build_naive_datetime(fields) do
+      if is_binary(timezone) do
+        case DateTime.from_naive(ndt, timezone) do
+          {:ok, dt} -> {:ok, %DayEx{datetime: dt, locale: locale}}
+          {:ambiguous, first, _second} -> {:ok, %DayEx{datetime: first, locale: locale}}
+          {:gap, _before, after_gap} -> {:ok, %DayEx{datetime: after_gap, locale: locale}}
+          {:error, reason} -> {:error, "invalid timezone: #{inspect(reason)}"}
+        end
+      else
+        {:ok, %DayEx{datetime: ndt, locale: locale}}
+      end
+    end
+  end
+
+  defp parse_list(fields) when length(fields) in 2..7 do
+    keys = [:year, :month, :date, :hour, :minute, :second, :millisecond]
+
+    fields
+    |> Enum.zip(keys)
+    |> Map.new(fn {value, key} -> {key, value} end)
+    |> parse_map()
+  end
+
+  defp parse_list(_fields), do: {:error, "expected list constructor with 2 to 7 values"}
+
+  defp build_naive_datetime(fields) do
+    year = map_get(fields, :year, 2000)
+    month = map_get(fields, :month, 1)
+    day = map_get(fields, :date, nil) || map_get(fields, :day, 1)
+    hour = map_get(fields, :hour, 0)
+    minute = map_get(fields, :minute, 0)
+    second = map_get(fields, :second, 0)
+    millisecond = map_get(fields, :millisecond, 0)
+
+    with true <- Enum.all?([year, month, day, hour, minute, second, millisecond], &is_integer/1),
+         {:ok, ndt} <-
+           NaiveDateTime.new(year, month, day, hour, minute, second, {millisecond * 1000, 3}) do
+      {:ok, ndt}
+    else
+      false -> {:error, "invalid date/time fields: :invalid_field"}
+      {:error, reason} -> {:error, "invalid date/time fields: #{inspect(reason)}"}
+    end
+  end
+
+  defp map_get(map, key, default) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  end
+
+  defp do_set(%DayEx{} = d, :year, value), do: year(d, value)
+  defp do_set(%DayEx{} = d, :month, value), do: month(d, value)
+  defp do_set(%DayEx{} = d, unit, value) when unit in [:date, :day], do: date(d, value)
+  defp do_set(%DayEx{} = d, :hour, value), do: hour(d, value)
+  defp do_set(%DayEx{} = d, :minute, value), do: minute(d, value)
+  defp do_set(%DayEx{} = d, :second, value), do: second(d, value)
+  defp do_set(%DayEx{} = d, :millisecond, value), do: millisecond(d, value)
+
   defp to_unix_ms(%DayEx{datetime: %DateTime{} = dt}), do: DateTime.to_unix(dt, :millisecond)
 
   defp to_unix_ms(%DayEx{datetime: %NaiveDateTime{} = ndt}),
@@ -569,6 +728,7 @@ defmodule DayEx do
   defp unit_to_ms(:minute), do: 60_000
   defp unit_to_ms(:hour), do: 3_600_000
   defp unit_to_ms(:day), do: 86_400_000
+  defp unit_to_ms(:date), do: unit_to_ms(:day)
   defp unit_to_ms(:week), do: 604_800_000
   defp unit_to_ms(:month), do: 2_629_746_000
   defp unit_to_ms(:year), do: 31_556_952_000
@@ -590,10 +750,19 @@ defmodule DayEx do
   end
 
   defp diff_float(a, b, :year), do: calendar_month_diff_float(a, b) / 12
+  defp diff_float(a, b, :quarter), do: calendar_month_diff_float(a, b) / 3
   defp diff_float(a, b, :month), do: calendar_month_diff_float(a, b)
   defp diff_float(a, b, :week), do: calendar_day_ms(a, b) / unit_to_ms(:week)
   defp diff_float(a, b, :day), do: calendar_day_ms(a, b) / unit_to_ms(:day)
+  defp diff_float(a, b, :date), do: calendar_day_ms(a, b) / unit_to_ms(:day)
   defp diff_float(a, b, unit), do: diff(a, b) / unit_to_ms(unit)
+
+  defp normalize_unit(unit) do
+    case Map.fetch(@unit_aliases, unit) do
+      {:ok, normalized} -> normalized
+      :error -> raise ArgumentError, "unsupported unit: #{inspect(unit)}"
+    end
+  end
 
   defp calendar_month_diff(a, b) do
     months = (year(a) - year(b)) * 12 + (month(a) - month(b))
