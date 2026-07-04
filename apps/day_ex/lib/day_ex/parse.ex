@@ -54,12 +54,27 @@ defmodule DayEx.Parse do
   end
 
   defp consume_tokens(input, [{:token, token} | tokens], fields, locale_mod) do
-    case consume_token(input, token, locale_mod) do
-      {:ok, key, value, rest} ->
-        consume_tokens(rest, tokens, Map.put(fields, key, value), locale_mod)
+    if DayEx.Format.localized_token?(token) do
+      localized_tokens =
+        token
+        |> DayEx.Format.localized_template(locale_mod)
+        |> DayEx.Format.tokenize()
 
-      {:error, reason} ->
-        {:error, reason}
+      case consume_tokens(input, localized_tokens, fields, locale_mod) do
+        {:ok, localized_fields, rest} ->
+          consume_tokens(rest, tokens, localized_fields, locale_mod)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      case consume_token(input, token, locale_mod) do
+        {:ok, key, value, rest} ->
+          consume_tokens(rest, tokens, Map.put(fields, key, value), locale_mod)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -120,6 +135,14 @@ defmodule DayEx.Parse do
     case take_digits(input, 2, 2) do
       {:ok, digits, rest} -> {:ok, :day, String.to_integer(digits), rest}
       :error -> {:error, "expected 2-digit day"}
+    end
+  end
+
+  # Do — localized ordinal day
+  defp consume_token(input, "Do", locale) do
+    case match_ordinal(input, 1..31, locale) do
+      {:ok, day, rest} -> {:ok, :day, day, rest}
+      :error -> {:error, "expected ordinal day, got: #{inspect(String.slice(input, 0, 4))}"}
     end
   end
 
@@ -384,6 +407,25 @@ defmodule DayEx.Parse do
   defp offset_seconds(sign, hours, minutes) do
     multiplier = if sign == "-", do: -1, else: 1
     multiplier * (String.to_integer(hours) * 3_600 + String.to_integer(minutes) * 60)
+  end
+
+  defp match_ordinal(input, range, locale) do
+    input_lower = String.downcase(input)
+
+    range
+    |> Enum.map(fn n -> {locale.ordinal(n), n} end)
+    |> Enum.sort_by(fn {ordinal, _n} -> -String.length(ordinal) end)
+    |> Enum.find(fn {ordinal, _n} ->
+      String.starts_with?(input_lower, String.downcase(ordinal))
+    end)
+    |> case do
+      {ordinal, n} ->
+        rest = String.slice(input, String.length(ordinal)..-1//1)
+        {:ok, n, rest}
+
+      nil ->
+        :error
+    end
   end
 
   # Try to match the input against a list of names (case-insensitive prefix match).

@@ -20,6 +20,22 @@ defmodule DayEx.Locale.Fr do
   def weekdays_min, do: ~w(di lu ma me je ve sa)
 
   @impl true
+  def formats do
+    %{
+      "LT" => "HH:mm",
+      "LTS" => "HH:mm:ss",
+      "L" => "DD/MM/YYYY",
+      "LL" => "D MMMM YYYY",
+      "LLL" => "D MMMM YYYY HH:mm",
+      "LLLL" => "dddd D MMMM YYYY HH:mm",
+      "l" => "D/M/YYYY",
+      "ll" => "D MMM YYYY",
+      "lll" => "D MMM YYYY HH:mm",
+      "llll" => "ddd D MMM YYYY HH:mm"
+    }
+  end
+
+  @impl true
   def relative_time do
     %{
       s: "quelques secondes",

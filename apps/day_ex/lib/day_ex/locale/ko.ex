@@ -18,6 +18,22 @@ defmodule DayEx.Locale.Ko do
   def weekdays_min, do: ~w(일 월 화 수 목 금 토)
 
   @impl true
+  def formats do
+    %{
+      "LT" => "A h:mm",
+      "LTS" => "A h:mm:ss",
+      "L" => "YYYY.MM.DD.",
+      "LL" => "YYYY년 M월 D일",
+      "LLL" => "YYYY년 M월 D일 A h:mm",
+      "LLLL" => "YYYY년 M월 D일 dddd A h:mm",
+      "l" => "YYYY.M.D.",
+      "ll" => "YYYY년 M월 D일",
+      "lll" => "YYYY년 M월 D일 A h:mm",
+      "llll" => "YYYY년 M월 D일 ddd A h:mm"
+    }
+  end
+
+  @impl true
   def relative_time do
     %{
       s: "몇 초",

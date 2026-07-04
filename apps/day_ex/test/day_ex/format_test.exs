@@ -136,5 +136,29 @@ defmodule DayEx.FormatTest do
       assert is_binary(result)
       assert String.to_integer(result) > 0
     end
+
+    test "localized format tokens — LT LTS L LL LLL LLLL", %{d: d} do
+      assert DayEx.Format.format(d, "LT") == "2:30 PM"
+      assert DayEx.Format.format(d, "LTS") == "2:30:45 PM"
+      assert DayEx.Format.format(d, "L") == "03/15/2024"
+      assert DayEx.Format.format(d, "LL") == "March 15, 2024"
+      assert DayEx.Format.format(d, "LLL") == "March 15, 2024 2:30 PM"
+      assert DayEx.Format.format(d, "LLLL") == "Friday, March 15, 2024 2:30 PM"
+    end
+
+    test "short localized format tokens — l ll lll llll", %{d: d} do
+      assert DayEx.Format.format(d, "l") == "3/15/2024"
+      assert DayEx.Format.format(d, "ll") == "Mar 15, 2024"
+      assert DayEx.Format.format(d, "lll") == "Mar 15, 2024 2:30 PM"
+      assert DayEx.Format.format(d, "llll") == "Fri, Mar 15, 2024 2:30 PM"
+    end
+
+    test "localized format tokens use the selected locale", %{d: d} do
+      d = DayEx.locale(d, :fr)
+
+      assert DayEx.Format.format(d, "L") == "15/03/2024"
+      assert DayEx.Format.format(d, "LL") == "15 mars 2024"
+      assert DayEx.Format.format(d, "LLLL") == "vendredi 15 mars 2024 14:30"
+    end
   end
 end

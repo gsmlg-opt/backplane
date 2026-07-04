@@ -62,6 +62,32 @@ defmodule DayEx.ParseTest do
     test "unsupported format tokens return error" do
       assert {:error, _} = DayEx.parse("2024-074", "YYYY-DDDD")
     end
+
+    test "localized format tokens parse complete input" do
+      assert {:ok, d} = DayEx.parse("March 15, 2024 2:30 PM", "LLL")
+      assert DayEx.year(d) == 2024
+      assert DayEx.month(d) == 3
+      assert DayEx.date(d) == 15
+      assert DayEx.hour(d) == 14
+      assert DayEx.minute(d) == 30
+    end
+
+    test "localized format parsing uses the selected locale" do
+      assert {:ok, d} = DayEx.parse("15 mars 2024 14:30", "LLL", :fr)
+      assert d.locale == :fr
+      assert DayEx.year(d) == 2024
+      assert DayEx.month(d) == 3
+      assert DayEx.date(d) == 15
+      assert DayEx.hour(d) == 14
+      assert DayEx.minute(d) == 30
+    end
+
+    test "ordinal day token parses locale ordinals" do
+      assert {:ok, d} = DayEx.parse("March 15th, 2024", "MMMM Do, YYYY")
+      assert DayEx.month(d) == 3
+      assert DayEx.date(d) == 15
+      assert DayEx.year(d) == 2024
+    end
   end
 
   describe "parse!/2" do

@@ -6,8 +6,12 @@ defmodule DayEx.Format do
   Handles `[escaped]` text in square brackets as literals.
   """
 
+  @localized_tokens ~w(LLLL LLL LTS LL LT L llll lll ll l)
+
   # Tokens ordered for greedy matching — longest first within same prefix
   @tokens ~w(
+    LLLL LLL LTS LL LT L
+    llll lll ll l
     YYYY YY
     MMMM MMM MM M
     DDDD DD Do D
@@ -25,6 +29,14 @@ defmodule DayEx.Format do
     WW W
     ww wo w
   )
+
+  @doc false
+  def localized_token?(token), do: token in @localized_tokens
+
+  @doc false
+  def localized_template(token, locale) when token in @localized_tokens do
+    locale.formats() |> Map.fetch!(token)
+  end
 
   @doc """
   Tokenize a format string into a list of `{:token, string}` or `{:literal, string}` tuples.
@@ -81,6 +93,10 @@ defmodule DayEx.Format do
       {:token, token} -> render_token(d, token, locale_mod)
     end)
     |> Enum.join()
+  end
+
+  defp render_token(d, token, locale) when token in @localized_tokens do
+    format(d, localized_template(token, locale))
   end
 
   defp render_token(d, "YYYY", _locale), do: String.pad_leading(to_string(DayEx.year(d)), 4, "0")

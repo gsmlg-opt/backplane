@@ -6,6 +6,7 @@ defmodule DayEx.Locale do
   @callback weekdays_full() :: [String.t()]
   @callback weekdays_short() :: [String.t()]
   @callback weekdays_min() :: [String.t()]
+  @callback formats() :: %{String.t() => String.t()}
   @callback relative_time() :: map()
   @callback ordinal(integer()) :: String.t()
   @callback week_start() :: 0..6
