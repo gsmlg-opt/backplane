@@ -37,6 +37,7 @@ COPY apps/backplane_telemetry/mix.exs ./apps/backplane_telemetry/mix.exs
 COPY apps/backplane_api/mix.exs apps/backplane_api/package.json ./apps/backplane_api/
 COPY apps/backplane_admin/mix.exs apps/backplane_admin/package.json ./apps/backplane_admin/
 COPY apps/day_ex/mix.exs ./apps/day_ex/mix.exs
+COPY apps/math_ex/mix.exs ./apps/math_ex/mix.exs
 COPY apps/relayixir/mix.exs ./apps/relayixir/mix.exs
 
 RUN mix deps.get --only prod
