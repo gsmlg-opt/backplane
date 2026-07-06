@@ -34,6 +34,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   @impl true
   def init(opts) do
     state = normalize_opts(opts)
+    recover_inflight(state.store)
     schedule_drain(state)
     {:ok, state}
   end
@@ -54,21 +55,26 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       if outbox_rows == [] do
         {:ok, %{"drained" => 0}}
       else
-        items = Enum.map(outbox_rows, &payload_item!(opts.store, &1))
+        {items, failed_rows} = build_payload_items(opts.store, outbox_rows, opts.max_attempts)
         payload = %{"protocol" => @protocol, "items" => items}
+        pushed_rows = outbox_rows -- failed_rows
 
-        case push_sync(opts.channel_module, channel, payload) do
-          {:ok, %{"items" => ack_items}} ->
-            apply_acks(opts.store, outbox_rows, ack_items, opts.max_attempts)
-            {:ok, %{"drained" => length(items)}}
+        if items == [] do
+          {:ok, %{"drained" => 0}}
+        else
+          case push_sync(opts.channel_module, channel, payload) do
+            {:ok, %{"items" => ack_items}} ->
+              apply_acks(opts.store, pushed_rows, ack_items, opts.max_attempts)
+              {:ok, %{"drained" => length(items)}}
 
-          {:ok, _reply} ->
-            reset_pending(opts.store, Enum.map(outbox_rows, & &1["seq"]))
-            {:error, :invalid_ack}
+            {:ok, _reply} ->
+              reset_pending(opts.store, Enum.map(pushed_rows, & &1["seq"]))
+              {:error, :invalid_ack}
 
-          {:error, reason} ->
-            reset_pending(opts.store, Enum.map(outbox_rows, & &1["seq"]))
-            {:error, reason}
+            {:error, reason} ->
+              reset_pending(opts.store, Enum.map(pushed_rows, & &1["seq"]))
+              {:error, reason}
+          end
         end
       end
     else
@@ -156,43 +162,71 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end)
   end
 
-  defp payload_item!(store, %{"op" => "remember", "seq" => seq, "memory_id" => memory_id}) do
-    row = fetch_memory!(store, memory_id)
-
-    %{
-      "seq" => seq,
-      "op" => "remember",
-      "id" => row["id"],
-      "content" => row["content"],
-      "content_hash" => row["content_hash"],
-      "scope" => row["scope"],
-      "agent_id" => row["agent_id"],
-      "session_id" => row["session_id"],
-      "tags" => Reducer.decode_json(row["tags"], []),
-      "metadata" => Reducer.decode_json(row["metadata"], %{}),
-      "confidence" => row["confidence"],
-      "inserted_at" => row["inserted_at"],
-      "updated_at" => row["updated_at"]
-    }
+  defp recover_inflight(store) do
+    Store.execute(
+      store,
+      "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE state = 'inflight'",
+      [timestamp()]
+    )
+  rescue
+    error -> {:error, error}
+  catch
+    :exit, reason -> {:error, reason}
   end
 
-  defp payload_item!(store, %{"op" => "forget", "seq" => seq, "memory_id" => memory_id}) do
-    row = fetch_memory!(store, memory_id)
+  defp build_payload_items(store, outbox_rows, max_attempts) do
+    Enum.reduce(outbox_rows, {[], []}, fn row, {items, failed_rows} ->
+      case payload_item(store, row) do
+        {:ok, item} ->
+          {[item | items], failed_rows}
 
-    %{
-      "seq" => seq,
-      "op" => "forget",
-      "id" => row["id"],
-      "remote_id" => row["remote_id"],
-      "content_hash" => row["content_hash"],
-      "scope" => row["scope"],
-      "inserted_at" => row["inserted_at"],
-      "updated_at" => row["updated_at"],
-      "deleted_at" => row["deleted_at"]
-    }
+        {:error, reason} ->
+          mark_failed(store, row["seq"], reason, max_attempts)
+          {items, [row | failed_rows]}
+      end
+    end)
+    |> then(fn {items, failed_rows} -> {Enum.reverse(items), failed_rows} end)
   end
 
-  defp fetch_memory!(store, memory_id) do
+  defp payload_item(store, %{"op" => "remember", "seq" => seq, "memory_id" => memory_id}) do
+    with {:ok, row} <- fetch_memory(store, memory_id) do
+      {:ok,
+       %{
+         "seq" => seq,
+         "op" => "remember",
+         "id" => row["id"],
+         "content" => row["content"],
+         "content_hash" => row["content_hash"],
+         "scope" => row["scope"],
+         "agent_id" => row["agent_id"],
+         "session_id" => row["session_id"],
+         "tags" => Reducer.decode_json(row["tags"], []),
+         "metadata" => Reducer.decode_json(row["metadata"], %{}),
+         "confidence" => row["confidence"],
+         "inserted_at" => row["inserted_at"],
+         "updated_at" => row["updated_at"]
+       }}
+    end
+  end
+
+  defp payload_item(store, %{"op" => "forget", "seq" => seq, "memory_id" => memory_id}) do
+    with {:ok, row} <- fetch_memory(store, memory_id) do
+      {:ok,
+       %{
+         "seq" => seq,
+         "op" => "forget",
+         "id" => row["id"],
+         "remote_id" => row["remote_id"],
+         "content_hash" => row["content_hash"],
+         "scope" => row["scope"],
+         "inserted_at" => row["inserted_at"],
+         "updated_at" => row["updated_at"],
+         "deleted_at" => row["deleted_at"]
+       }}
+    end
+  end
+
+  defp fetch_memory(store, memory_id) do
     case Store.query(
            store,
            """
@@ -204,9 +238,9 @@ defmodule Backplane.HostAgent.Memory.Syncer do
            """,
            [memory_id]
          ) do
-      {:ok, %Result{rows: [row]}} -> row
-      {:ok, %Result{rows: []}} -> raise "memory row not found for outbox item #{memory_id}"
-      {:error, reason} -> raise "memory row lookup failed: #{inspect(reason)}"
+      {:ok, %Result{rows: [row]}} -> {:ok, row}
+      {:ok, %Result{rows: []}} -> {:error, "memory row not found for outbox item #{memory_id}"}
+      {:error, reason} -> {:error, "memory row lookup failed: #{inspect(reason)}"}
     end
   end
 

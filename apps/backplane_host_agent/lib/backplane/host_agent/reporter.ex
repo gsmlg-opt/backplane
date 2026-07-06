@@ -18,7 +18,10 @@ defmodule Backplane.HostAgent.Reporter do
 
   @doc "Builds a host-agent sync result payload."
   def sync_result(status, results) do
-    started_at = DateTime.utc_now()
+    sync_result(status, results, DateTime.utc_now())
+  end
+
+  def sync_result(status, results, started_at) do
     finished_at = DateTime.utc_now()
 
     %{

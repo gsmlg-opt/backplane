@@ -101,6 +101,59 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "pending", 0)
   end
 
+  test "start resets stranded inflight rows to pending", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "claimed before crash"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
+               [
+                 id
+               ]
+             )
+
+    {:ok, pid} = Syncer.start_link(store: store, channel: self(), interval_ms: 0)
+    ref = Process.monitor(pid)
+    GenServer.stop(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+
+    assert_outbox(store, id, "pending", 0)
+  end
+
+  test "missing memory rows are marked failed while the rest of the batch drains", %{
+    store: store,
+    opts: opts
+  } do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               """
+               INSERT INTO memory_outbox(op, memory_id, state, inserted_at, updated_at)
+               VALUES ('remember', 'missing_memory', 'pending', ?, ?)
+               """,
+               [now, now]
+             )
+
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "still syncs"}, opts)
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_receive {:memory_push, "memory_sync", %{"items" => [%{"id" => ^id}]}}
+
+    assert {:ok, %Result{rows: [%{"state" => "failed", "attempts" => 1, "last_error" => error}]}} =
+             Store.query(
+               store,
+               "SELECT state, attempts, last_error FROM memory_outbox WHERE memory_id = 'missing_memory'"
+             )
+
+    assert error =~ "memory row not found"
+    assert_outbox(store, id, "done", 0)
+  end
+
   test "validation errors mark rows failed and increment attempts", %{store: store, opts: opts} do
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad payload"}, opts)
 

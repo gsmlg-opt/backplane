@@ -19,7 +19,7 @@ defmodule Backplane.HostAgent.Checksum do
     if File.regular?(path) do
       actual =
         path
-        |> File.stream!([], 2048)
+        |> File.stream!(2048)
         |> Enum.reduce(:crypto.hash_init(:sha256), fn chunk, context ->
           :crypto.hash_update(context, chunk)
         end)

@@ -49,4 +49,12 @@ defmodule Backplane.HostAgent.ReporterTest do
     assert {:ok, _started, _offset} = DateTime.from_iso8601(started_at)
     assert {:ok, _finished, _offset} = DateTime.from_iso8601(finished_at)
   end
+
+  test "uses the supplied sync result start time" do
+    started_at = ~U[2026-06-17 12:34:56Z]
+
+    payload = Reporter.sync_result(:synced, [], started_at)
+
+    assert payload["started_at"] == DateTime.to_iso8601(started_at)
+  end
 end
