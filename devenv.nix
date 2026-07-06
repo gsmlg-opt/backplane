@@ -47,7 +47,7 @@ in {
       mix ecto.create --quiet
       mix ecto.migrate
       echo "Database is ready, starting backplane..."
-      exec mix phx.server
+      exec mix backplane.run
     '';
   };
 
