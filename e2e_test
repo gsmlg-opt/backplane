@@ -3,4 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-devenv shell -- mix test apps/backplane_web/test/e2e/skills_hub_e2e_test.exs "$@"
+mapfile -t tests < <(find apps -path '*e2e_test.exs' -print | sort)
+
+if [ "${#tests[@]}" -eq 0 ]; then
+  echo "No e2e tests found under apps/" >&2
+  exit 1
+fi
+
+devenv shell -- mix test "${tests[@]}" "$@"
