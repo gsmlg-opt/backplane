@@ -33,6 +33,7 @@ defmodule BackplaneMcp.MixProject do
       {:backplane_llama, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},
       {:day_ex, in_umbrella: true},
+      {:math_ex, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:phoenix, "~> 1.8"},
       {:bandit, "~> 1.5"},
