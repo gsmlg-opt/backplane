@@ -5,6 +5,9 @@ defmodule Backplane.HostAgent.Worker do
 
   require Logger
 
+  defguardp channel_exit_reason(reason)
+            when is_tuple(reason) and tuple_size(reason) == 2 and elem(reason, 0) == :channel_exit
+
   alias Backplane.HostAgent.{
     Channel,
     Config,
@@ -12,7 +15,6 @@ defmodule Backplane.HostAgent.Worker do
     HttpServer,
     Installer,
     Manifest,
-    McpManager,
     MemoryProxy,
     Reconciler,
     Reporter
@@ -36,20 +38,17 @@ defmodule Backplane.HostAgent.Worker do
   def run_once(%{channel: channel, config: config} = state)
       when not is_nil(channel) and not is_nil(config) do
     channel_module = Map.get(state, :channel_module, Channel)
+    started_at = DateTime.utc_now()
 
     with {:ok, _reply} <- push(channel_module, channel, "heartbeat", Reporter.heartbeat(config)),
          {:ok, desired_state} <- desired_state(state),
          {:ok, manifest} <- read_manifest(config) do
-      # Reconcile MCP servers
-      mcp_manager = Map.get(state, :mcp_manager_module, McpManager)
-      reconcile_mcp_servers(mcp_manager, desired_state)
-
       # Reconcile skills
       desired = skills(desired_state)
       actions = Reconciler.plan(desired, manifest)
       results = execute_actions(actions, state)
       status = sync_status(results)
-      result_payload = Reporter.sync_result(status, results)
+      result_payload = Reporter.sync_result(status, results, started_at)
 
       with {:ok, _reply} <- push(channel_module, channel, "sync_result", result_payload),
            :ok <- maybe_write_manifest(config, manifest, actions, results, status) do
@@ -69,12 +68,17 @@ defmodule Backplane.HostAgent.Worker do
   @impl true
   def init(opts) do
     case initial_state(opts) do
+      {:continue, state} ->
+        {:ok, state, {:continue, :connect}}
+
       {:ok, state} ->
         {:ok, maybe_schedule_initial_sync(state)}
-
-      {:error, reason} ->
-        {:stop, reason}
     end
+  end
+
+  @impl true
+  def handle_continue(:connect, state) do
+    connect_or_retry(state)
   end
 
   @impl true
@@ -97,6 +101,10 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
+  def handle_info(:connect_retry, state) do
+    connect_or_retry(%{state | connect_retry_ref: nil})
+  end
+
   defp desired_state(%{desired: desired}) when not is_nil(desired), do: {:ok, desired}
 
   defp desired_state(%{channel: channel} = state) do
@@ -107,7 +115,7 @@ defmodule Backplane.HostAgent.Worker do
 
   defp initial_state(opts) do
     if connect_on_start?(opts) do
-      connect_state(opts)
+      {:continue, state_from_opts(Keyword.put(opts, :owns_connection?, true))}
     else
       {:ok, state_from_opts(opts)}
     end
@@ -121,33 +129,68 @@ defmodule Backplane.HostAgent.Worker do
     )
   end
 
-  defp connect_state(opts) do
+  defp connect_state(opts, state) do
     config_module = Keyword.get(opts, :config_module, Config)
     connector_module = Keyword.get(opts, :connector_module, Connector)
     http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
     memory_proxy_module = Keyword.get(opts, :memory_proxy_module, MemoryProxy)
 
-    with {:ok, config} <- config_module.load_default(),
-         :ok <- validate_required_config(config),
-         {:ok, %{channel: channel} = connection} <- connector_module.connect(config),
-         :ok <- set_memory_connection(memory_proxy_module, connection, config),
-         {:ok, memory_supervisor} <- maybe_start_memory(config),
-         {:ok, http_supervisor} <- maybe_start_http_server(http_server_module, config) do
-      opts =
-        opts
-        |> Keyword.put(:channel, channel)
-        |> Keyword.put(:config, config)
-        |> Keyword.put(:http_supervisor, http_supervisor)
-        |> Keyword.put(:memory_supervisor, memory_supervisor)
+    case config_module.load_default() do
+      {:ok, config} ->
+        connect_loaded_state(
+          opts,
+          state,
+          config,
+          connector_module,
+          http_server_module,
+          memory_proxy_module
+        )
 
-      {:ok, state_from_opts(opts)}
-    else
       {:error, {:missing, path}} ->
         maybe_write_sample(config_module, path)
         {:error, {:missing_config, path}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp connect_loaded_state(
+         opts,
+         state,
+         config,
+         connector_module,
+         http_server_module,
+         memory_proxy_module
+       ) do
+    with :ok <- validate_required_config(config),
+         {:ok, %{channel: channel} = connection} <- connector_module.connect(config),
+         :ok <- set_memory_connection(memory_proxy_module, connection, config),
+         {:ok, memory_supervisor} <-
+           maybe_start_memory(config, Map.get(state, :memory_supervisor)),
+         {:ok, http_supervisor} <-
+           maybe_start_http_server(http_server_module, config, Map.get(state, :http_supervisor)) do
+      opts =
+        opts
+        |> Keyword.put(:channel, channel)
+        |> Keyword.put(:config, config)
+        |> Keyword.put(:http_supervisor, http_supervisor)
+        |> Keyword.put(:memory_supervisor, memory_supervisor)
+        |> Keyword.put(:owns_connection?, true)
+
+      connected_state =
+        opts
+        |> state_from_opts()
+        |> Map.put(:sync_timer_ref, Map.get(state, :sync_timer_ref))
+        |> Map.put(:connect_retry_ref, Map.get(state, :connect_retry_ref))
+
+      {:ok, connected_state}
+    else
+      {:error, {:missing_required_config, _fields} = reason} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason, config}
     end
   end
 
@@ -160,12 +203,51 @@ defmodule Backplane.HostAgent.Worker do
       http_supervisor: Keyword.get(opts, :http_supervisor),
       memory_supervisor: Keyword.get(opts, :memory_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
-      mcp_manager_module: Keyword.get(opts, :mcp_manager_module, McpManager),
+      config_module: Keyword.get(opts, :config_module, Config),
+      connector_module: Keyword.get(opts, :connector_module, Connector),
+      http_server_module: Keyword.get(opts, :http_server_module, HttpServer),
+      memory_proxy_module: Keyword.get(opts, :memory_proxy_module, MemoryProxy),
+      connect_opts: opts,
+      owns_connection?: Keyword.get(opts, :owns_connection?, false),
       last_sync: nil,
       last_error: nil,
       sync_on_start?: Keyword.get(opts, :sync_on_start?, true),
-      sync_timer_ref: nil
+      sync_timer_ref: nil,
+      connect_retry_ref: nil
     }
+  end
+
+  defp connect_or_retry(state) do
+    case connect_state(Map.get(state, :connect_opts, []), state) do
+      {:ok, connected_state} ->
+        connected_state =
+          connected_state
+          |> Map.put(:last_error, nil)
+          |> Map.put(:connect_retry_ref, nil)
+
+        {:noreply, maybe_schedule_initial_sync(connected_state)}
+
+      {:error, {:missing_config, _path} = reason} ->
+        {:stop, reason, state}
+
+      {:error, {:missing_required_config, _fields} = reason} ->
+        {:stop, reason, state}
+
+      {:error, reason, config} ->
+        Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
+        {:noreply, schedule_connect_retry(%{state | config: config, last_error: reason})}
+
+      {:error, reason} ->
+        Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
+        {:noreply, schedule_connect_retry(%{state | last_error: reason})}
+    end
+  end
+
+  defp schedule_connect_retry(%{connect_retry_ref: ref} = state) when is_reference(ref), do: state
+
+  defp schedule_connect_retry(state) do
+    interval_ms = reconnect_interval_ms(state)
+    %{state | connect_retry_ref: Process.send_after(self(), :connect_retry, interval_ms)}
   end
 
   defp maybe_schedule_initial_sync(
@@ -182,14 +264,24 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp schedule_sync(state, interval_ms) do
+    cancel_timer(state.sync_timer_ref)
     %{state | sync_timer_ref: Process.send_after(self(), :sync, interval_ms)}
   end
 
-  defp sync_interval_ms(config) do
+  defp sync_interval_ms(config) when is_map(config) do
     case Map.get(config, :interval_ms, 60_000) do
       interval_ms when is_integer(interval_ms) and interval_ms > 0 -> interval_ms
       _ -> 60_000
     end
+  end
+
+  defp sync_interval_ms(_config), do: 60_000
+
+  defp reconnect_interval_ms(state) do
+    state
+    |> Map.get(:config)
+    |> sync_interval_ms()
+    |> min(60_000)
   end
 
   defp set_memory_connection(memory_proxy_module, connection, config) do
@@ -200,7 +292,16 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do
+  defp cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
+  defp cancel_timer(_ref), do: false
+
+  defp maybe_start_memory(config, existing_pid \\ nil)
+
+  defp maybe_start_memory(config, existing_pid) when is_pid(existing_pid) do
+    if Process.alive?(existing_pid), do: {:ok, existing_pid}, else: maybe_start_memory(config)
+  end
+
+  defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}, _existing_pid) do
     case MemorySupervisor.start_link(memory_config) do
       {:ok, pid} ->
         configure_memory_router(memory_config)
@@ -218,7 +319,7 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp maybe_start_memory(_config), do: {:ok, nil}
+  defp maybe_start_memory(_config, _existing_pid), do: {:ok, nil}
 
   defp configure_memory_router(memory_config) do
     Application.put_env(:backplane_host_agent, :memory_config, memory_config)
@@ -246,7 +347,18 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp maybe_start_http_server(http_server_module, config) do
+  defp maybe_start_http_server(http_server_module, config, existing_pid \\ nil)
+
+  defp maybe_start_http_server(http_server_module, config, existing_pid)
+       when is_pid(existing_pid) do
+    if Process.alive?(existing_pid) do
+      {:ok, existing_pid}
+    else
+      maybe_start_http_server(http_server_module, config)
+    end
+  end
+
+  defp maybe_start_http_server(http_server_module, config, _existing_pid) do
     case http_server_module.child_spec(config) do
       nil ->
         {:ok, nil}
@@ -328,6 +440,17 @@ defmodule Backplane.HostAgent.Worker do
     {:ok, Map.merge(state, %{last_sync: DateTime.utc_now(), last_error: nil})}
   end
 
+  defp fail_run(%{owns_connection?: true} = state, reason)
+       when reason == :not_connected or channel_exit_reason(reason) do
+    state =
+      state
+      |> Map.put(:channel, nil)
+      |> Map.put(:last_error, reason)
+      |> schedule_connect_retry()
+
+    {:error, reason, state}
+  end
+
   defp fail_run(state, reason) do
     {:error, reason, Map.put(state, :last_error, reason)}
   end
@@ -345,18 +468,6 @@ defmodule Backplane.HostAgent.Worker do
   defp skills(%{"skills" => skills}) when is_list(skills), do: skills
   defp skills(%{skills: skills}) when is_list(skills), do: skills
   defp skills(_desired_state), do: []
-
-  defp mcp_servers(%{"mcp_servers" => servers}) when is_list(servers), do: servers
-  defp mcp_servers(%{mcp_servers: servers}) when is_list(servers), do: servers
-  defp mcp_servers(_desired_state), do: []
-
-  defp reconcile_mcp_servers(mcp_manager, desired_state) do
-    servers = mcp_servers(desired_state)
-    mcp_manager.reconcile(servers)
-  catch
-    kind, reason ->
-      Logger.warning("MCP server reconciliation failed: #{inspect(kind)} #{inspect(reason)}")
-  end
 
   defp status_for(:install), do: :installed
   defp status_for(:update), do: :updated

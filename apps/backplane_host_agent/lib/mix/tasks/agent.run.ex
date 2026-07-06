@@ -26,7 +26,6 @@ defmodule Mix.Tasks.Agent.Run do
     Config,
     Connector,
     HttpServer,
-    McpManager,
     MemoryProxy,
     RunLock,
     Worker
@@ -100,7 +99,6 @@ defmodule Mix.Tasks.Agent.Run do
 
   defp connect_and_run(config) do
     MemoryProxy.set_config(config)
-    ensure_mcp_manager_started()
     maybe_start_memory(config)
 
     %{channel: channel} = link = connect_with_retry(config)
@@ -116,19 +114,6 @@ defmodule Mix.Tasks.Agent.Run do
 
     Mix.shell().info("Host agent worker started (pid=#{inspect(worker)}). Idling…")
     Process.sleep(:infinity)
-  end
-
-  defp ensure_mcp_manager_started do
-    case McpManager.start_link(name: McpManager) do
-      {:ok, _pid} ->
-        :ok
-
-      {:error, {:already_started, _pid}} ->
-        :ok
-
-      {:error, reason} ->
-        Mix.raise("failed to start host agent MCP manager: #{inspect(reason)}")
-    end
   end
 
   defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do

@@ -18,8 +18,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   use Plug.Router
 
-  alias Backplane.HostAgent.{McpManager, Memory}
-  alias Backplane.HostAgent.Memory.Store
+  alias Backplane.HostAgent.Services
+  alias Backplane.HostAgent.HubProxy
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -46,6 +46,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
     handle_mcp(conn, agent_id)
   end
 
+  post "/mcp" do
+    handle_mcp(conn, nil)
+  end
+
   post "/:agent_id/mcp" do
     handle_mcp(conn, agent_id)
   end
@@ -62,7 +66,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
         _ -> %{}
       end
 
-    case call_memory(method, args, agent_id) do
+    case Backplane.HostAgent.Services.Memory.call(method, args, %{agent_id: agent_id}) do
       {:ok, result} ->
         send_json(conn, 200, %{"ok" => true, "result" => result})
 
@@ -87,7 +91,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
     case method do
       "tools/list" ->
-        send_json(conn, 200, jsonrpc_result(id, %{"tools" => tool_descriptors()}))
+        send_json(conn, 200, jsonrpc_result(id, %{"tools" => list_tools()}))
 
       "tools/call" ->
         tool_call(conn, id, agent_id, params)
@@ -128,12 +132,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
-    method = strip_prefix(name)
+    case Services.resolve(name) do
+      {:ok, service, bare} ->
+        call_local_tool(conn, id, service, bare, args, tool_ctx(agent_id, args))
 
-    if String.starts_with?(name, "memory::") do
-      call_memory_tool(conn, id, agent_id, method, args)
-    else
-      call_mcp_tool(conn, id, name, args)
+      :error ->
+        route_unknown_tool(conn, id, name, args)
     end
   end
 
@@ -158,24 +162,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp direct_call_args(args, _method), do: args
 
-  defp tool_descriptors do
-    memory_tools =
-      Enum.map(Memory.methods(), fn method ->
-        %{"name" => "memory::#{method}", "description" => "Memory operation: #{method}"}
-      end)
-
-    mcp_tools =
-      try do
-        McpManager.list_tools()
-      catch
-        _, _ -> []
-      end
-
-    memory_tools ++ mcp_tools
-  end
-
-  defp call_memory_tool(conn, id, agent_id, method, args) do
-    case call_memory(method, args, agent_id) do
+  defp call_local_tool(conn, id, service, method, args, ctx) do
+    case service.call(method, args, ctx) do
       {:ok, result} ->
         send_json(
           conn,
@@ -190,7 +178,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
         send_json(
           conn,
           200,
-          jsonrpc_error(id, -32_601, "Unknown memory method: #{method}")
+          jsonrpc_error(id, -32_601, unknown_method_message(service, method))
         )
 
       {:error, {:memory_unavailable, _reason}} ->
@@ -201,29 +189,80 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  defp call_mcp_tool(conn, id, name, args) do
-    case McpManager.call_tool(name, args) do
+  defp route_unknown_tool(conn, id, name, args) do
+    case hub_proxy().call_tool(name, args) do
       {:ok, result} ->
-        send_json(
-          conn,
-          200,
-          jsonrpc_result(id, %{
-            "content" => [%{"type" => "text", "text" => Jason.encode!(result)}],
-            "isError" => false
-          })
-        )
+        send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
 
       {:error, reason} ->
         send_json(
           conn,
           200,
-          jsonrpc_result(id, %{
-            "content" => [%{"type" => "text", "text" => format_error(reason)}],
-            "isError" => true
-          })
+          jsonrpc_result(id, tool_result(hub_unreachable_message(reason), true))
         )
     end
   end
+
+  defp list_tools do
+    local_tools = Services.list_tools()
+
+    case hub_proxy().list_tools() do
+      {:ok, hub_tools} -> local_tools ++ reject_local_prefixes(hub_tools)
+      {:error, _reason} -> local_tools
+    end
+  end
+
+  defp reject_local_prefixes(tools) do
+    local_prefixes = Services.services() |> Enum.map(& &1.prefix()) |> MapSet.new()
+
+    Enum.reject(tools, fn tool ->
+      tool
+      |> tool_name()
+      |> local_prefix?()
+      |> case do
+        {:ok, prefix} -> MapSet.member?(local_prefixes, prefix)
+        :error -> false
+      end
+    end)
+  end
+
+  defp tool_name(%{"name" => name}) when is_binary(name), do: name
+  defp tool_name(%{name: name}) when is_binary(name), do: name
+  defp tool_name(_tool), do: nil
+
+  defp local_prefix?(name) when is_binary(name) do
+    case String.split(name, "::", parts: 2) do
+      [prefix, _bare] -> {:ok, prefix}
+      _ -> :error
+    end
+  end
+
+  defp local_prefix?(_name), do: :error
+
+  defp tool_result(result, is_error) do
+    %{
+      "content" => [%{"type" => "text", "text" => format_tool_result(result)}],
+      "isError" => is_error
+    }
+  end
+
+  defp format_tool_result(result) when is_binary(result), do: result
+  defp format_tool_result(result), do: Jason.encode!(result)
+
+  defp hub_unreachable_message(reason), do: "hub unreachable: #{format_error(reason)}"
+
+  defp hub_proxy do
+    Application.get_env(:backplane_host_agent, :hub_proxy_module, HubProxy)
+  end
+
+  defp tool_ctx(nil, args), do: %{agent_id: Map.get(args, "agent_id", "local")}
+  defp tool_ctx(agent_id, _args), do: %{agent_id: agent_id}
+
+  defp unknown_method_message(Backplane.HostAgent.Services.Memory, method),
+    do: "Unknown memory method: #{method}"
+
+  defp unknown_method_message(service, method),
+    do: "Unknown #{service.prefix()} method: #{method}"
 
   defp jsonrpc_result(id, result), do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}
 
@@ -237,41 +276,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
     |> send_resp(status, Jason.encode!(body))
   end
 
-  defp call_memory(method, args, agent_id) do
-    if Memory.valid_method?(method) do
-      do_call_memory(method, args, memory_opts(agent_id))
-    else
-      {:error, {:unknown_method, method}}
-    end
-  rescue
-    error -> {:error, {:memory_unavailable, Exception.message(error)}}
-  catch
-    :exit, reason -> {:error, {:memory_unavailable, reason}}
-  end
-
-  defp do_call_memory("remember", args, opts), do: Memory.remember(args, opts)
-  defp do_call_memory("recall", args, opts), do: Memory.recall(args, opts)
-  defp do_call_memory("list", args, opts), do: Memory.list(args, opts)
-  defp do_call_memory("forget", args, opts), do: Memory.forget(args, opts)
-  defp do_call_memory("stats", args, opts), do: Memory.stats(args, opts)
-  defp do_call_memory("slot_read", args, opts), do: Memory.slot_read(args, opts)
-  defp do_call_memory("slot_write", args, opts), do: Memory.slot_write(args, opts)
-  defp do_call_memory("slot_list", args, opts), do: Memory.slot_list(args, opts)
-  defp do_call_memory("facet_tag", args, opts), do: Memory.facet_tag(args, opts)
-  defp do_call_memory("facet_query", args, opts), do: Memory.facet_query(args, opts)
-
-  defp memory_opts(agent_id) do
-    [
-      store: Application.get_env(:backplane_host_agent, :memory_store, Store),
-      config: Application.get_env(:backplane_host_agent, :memory_config, %{}),
-      agent_id: agent_id
-    ]
-  end
-
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_error({:invalid_args, message}) when is_binary(message), do: message
-  defp format_error({:memory_unavailable, _reason}), do: "local memory is not configured"
   defp format_error({:storage_error, _reason}), do: "local memory storage error"
   defp format_error(%{"reason" => reason}) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)

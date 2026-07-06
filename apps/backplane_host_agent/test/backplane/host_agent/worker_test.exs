@@ -23,14 +23,6 @@ defmodule Backplane.HostAgent.WorkerTest do
     end
   end
 
-  defmodule FakeMcpManager do
-    def reconcile(servers) do
-      owner = Process.get(:test_owner) || :persistent_term.get({__MODULE__, :owner}, self())
-      send(owner, {:reconcile_mcp_servers, servers})
-      :ok
-    end
-  end
-
   defmodule FakeInstaller do
     def install(skill, config) do
       send(self(), {:install, skill, config})
@@ -56,11 +48,48 @@ defmodule Backplane.HostAgent.WorkerTest do
     end
   end
 
+  defmodule FastRuntimeConfig do
+    def load_default do
+      {:ok,
+       %{
+         host_id: "host-1",
+         hub_url: "http://localhost:4220",
+         interval_ms: 10,
+         machine_name: "t430",
+         manifest_path: "/tmp/manifest.json",
+         token: "host-token"
+       }}
+    end
+  end
+
+  defmodule ReconnectRuntimeConfig do
+    def load_default do
+      {:ok,
+       %{
+         host_id: "host-1",
+         hub_url: "http://localhost:4220",
+         interval_ms: 60_000,
+         machine_name: "t430",
+         manifest_path: "/tmp/manifest.json",
+         memory: %{enabled: true},
+         token: "host-token"
+       }}
+    end
+  end
+
   defmodule FakeConnector do
     def connect(config) do
       owner = :persistent_term.get({__MODULE__, :owner})
       send(owner, {:connect, config})
       {:ok, %{channel: self(), host_id: "host-1", host_name: "t430", socket: self()}}
+    end
+  end
+
+  defmodule FailingConnector do
+    def connect(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:connect_failed, config})
+      {:error, :hub_down}
     end
   end
 
@@ -74,6 +103,14 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defmodule FakeHttpServer do
     def child_spec(_config), do: nil
+  end
+
+  defmodule CountingHttpServer do
+    def child_spec(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:http_child_spec_called, config})
+      nil
+    end
   end
 
   test "status returns last sync state" do
@@ -108,15 +145,131 @@ defmodule Backplane.HostAgent.WorkerTest do
              GenServer.call(pid, :status)
   end
 
+  test "survives startup connect failure and retries" do
+    :persistent_term.put({FailingConnector, :owner}, self())
+
+    on_exit(fn ->
+      :persistent_term.erase({FailingConnector, :owner})
+    end)
+
+    {:ok, pid} =
+      Worker.start_link(
+        name: nil,
+        config_module: FastRuntimeConfig,
+        connector_module: FailingConnector,
+        http_server_module: FakeHttpServer,
+        sync_on_start?: false
+      )
+
+    assert_receive {:connect_failed, %{host_id: "host-1", interval_ms: 10}}
+    assert Process.alive?(pid)
+
+    assert %{channel: nil, last_error: :hub_down, connect_retry_ref: retry_ref} =
+             GenServer.call(pid, :status)
+
+    assert is_reference(retry_ref)
+    assert_receive {:connect_failed, %{host_id: "host-1", interval_ms: 10}}, 100
+  end
+
+  test "reconnect reuses alive side supervisors" do
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+    :persistent_term.put({CountingHttpServer, :owner}, self())
+
+    memory_supervisor = alive_pid()
+    http_supervisor = alive_pid()
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+      :persistent_term.erase({CountingHttpServer, :owner})
+      stop_pid(memory_supervisor)
+      stop_pid(http_supervisor)
+    end)
+
+    {:ok, pid} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        config_module: ReconnectRuntimeConfig,
+        connector_module: FakeConnector,
+        http_server_module: CountingHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        memory_supervisor: memory_supervisor,
+        http_supervisor: http_supervisor,
+        owns_connection?: true,
+        sync_on_start?: false
+      )
+
+    send(pid, :connect_retry)
+
+    assert_receive {:connect, %{memory: %{enabled: true}}}
+    assert_receive {:set_channel, ^pid}
+    refute_receive {:http_child_spec_called, _config}, 50
+
+    assert %{
+             channel: ^pid,
+             memory_supervisor: ^memory_supervisor,
+             http_supervisor: ^http_supervisor,
+             last_error: nil
+           } = GenServer.call(pid, :status)
+  end
+
+  @tag :tmp_dir
+  test "reconnect replaces the existing sync timer instead of leaving it pending", %{
+    tmp_dir: tmp_dir
+  } do
+    config = Map.put(config(tmp_dir), :interval_ms, 60_000)
+    :persistent_term.put({FakeChannel, :owner}, self())
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeChannel, :owner})
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+    end)
+
+    {:ok, pid} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        channel: self(),
+        channel_module: FakeChannel,
+        config: config,
+        config_module: FakeRuntimeConfig,
+        connector_module: FakeConnector,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        desired: %{"skills" => []},
+        installer_module: FakeInstaller,
+        owns_connection?: true
+      )
+
+    assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
+    assert_receive {:push, "sync_result", %{"status" => "synced"}}
+
+    assert %{sync_timer_ref: old_timer_ref} = GenServer.call(pid, :status)
+    assert is_reference(old_timer_ref)
+
+    send(pid, :connect_retry)
+
+    assert_receive {:connect, %{host_id: "host-1"}}
+    assert_receive {:set_channel, ^pid}
+
+    assert %{sync_timer_ref: new_timer_ref} = GenServer.call(pid, :status)
+    assert is_reference(new_timer_ref)
+    assert new_timer_ref != old_timer_ref
+    assert Process.cancel_timer(old_timer_ref) == false
+  end
+
   @tag :tmp_dir
   test "schedules an immediate sync after startup", %{tmp_dir: tmp_dir} do
     config = config(tmp_dir)
     :persistent_term.put({FakeChannel, :owner}, self())
-    :persistent_term.put({FakeMcpManager, :owner}, self())
 
     on_exit(fn ->
       :persistent_term.erase({FakeChannel, :owner})
-      :persistent_term.erase({FakeMcpManager, :owner})
     end)
 
     {:ok, pid} =
@@ -127,12 +280,10 @@ defmodule Backplane.HostAgent.WorkerTest do
         channel_module: FakeChannel,
         config: Map.put(config, :interval_ms, 60_000),
         desired: %{"skills" => []},
-        installer_module: FakeInstaller,
-        mcp_manager_module: FakeMcpManager
+        installer_module: FakeInstaller
       )
 
     assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
-    assert_receive {:reconcile_mcp_servers, []}
     assert_receive {:push, "sync_result", %{"status" => "synced", "results" => []}}
 
     assert %{last_sync: %DateTime{}, last_error: nil, sync_timer_ref: timer_ref} =
@@ -263,6 +414,30 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert updated.last_error == {:channel_exit, :shutdown}
     assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
+  end
+
+  @tag :tmp_dir
+  test "owned worker clears dead channel and schedules reconnect on not_connected", %{
+    tmp_dir: tmp_dir
+  } do
+    config = config(tmp_dir)
+    Process.put({FakeChannel, "sync_result"}, {:error, :not_connected})
+
+    state =
+      config
+      |> state(desired: %{"skills" => []})
+      |> Map.merge(%{
+        connect_retry_ref: nil,
+        connect_opts: [],
+        owns_connection?: true,
+        sync_timer_ref: nil
+      })
+
+    assert {:error, :not_connected, updated} = Worker.run_once(state)
+
+    assert updated.channel == nil
+    assert updated.last_error == :not_connected
+    assert is_reference(updated.connect_retry_ref)
   end
 
   @tag :tmp_dir
@@ -429,8 +604,7 @@ defmodule Backplane.HostAgent.WorkerTest do
       desired: Keyword.get(opts, :desired),
       installer_module: FakeInstaller,
       last_error: nil,
-      last_sync: nil,
-      mcp_manager_module: FakeMcpManager
+      last_sync: nil
     }
   end
 
@@ -453,5 +627,17 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert install_config.targets == config.targets
     assert install_config.channel == self()
     assert install_config.channel_module == FakeChannel
+  end
+
+  defp alive_pid do
+    spawn(fn ->
+      receive do
+        :stop -> :ok
+      end
+    end)
+  end
+
+  defp stop_pid(pid) do
+    if Process.alive?(pid), do: send(pid, :stop)
   end
 end

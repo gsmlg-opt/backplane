@@ -4,6 +4,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   import Backplane.SkillArchiveCase
 
   alias Backplane.Repo
+  alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills
   alias Backplane.Skills.{AgentManage, Assignments, HostStatus, Hosts}
   alias Backplane.Api.HostAgentSocket
@@ -21,6 +22,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
       AgentManage.clear()
+      ToolRegistry.deregister_native("test::host_agent_channel_echo")
     end)
 
     {host, _auth_token, token} = create_agent_with_token!("channel-host")
@@ -297,6 +299,62 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
     test "malformed payload returns an invalid_payload error", %{socket: socket} do
       ref = push(socket, "memory_call", %{"bad" => true})
+      assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+  end
+
+  defmodule StubMcpTool do
+    def call(args), do: {:ok, %{"echo" => args}}
+  end
+
+  describe "hub MCP proxy events" do
+    setup %{host: host, socket: socket} do
+      ToolRegistry.deregister_native("test::host_agent_channel_echo")
+
+      :ok =
+        ToolRegistry.register_native(%Tool{
+          name: "test::host_agent_channel_echo",
+          description: "Echo test tool",
+          input_schema: %{
+            "type" => "object",
+            "properties" => %{"value" => %{"type" => "string"}}
+          },
+          origin: :native,
+          module: StubMcpTool
+        })
+
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      %{socket: socket}
+    end
+
+    test "mcp_tools_list replies with the registry tool catalog", %{socket: socket} do
+      ref = push(socket, "mcp_tools_list", %{})
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => tools}})
+
+      assert %{
+               "name" => "test::host_agent_channel_echo",
+               "description" => "Echo test tool",
+               "inputSchema" => %{"type" => "object"}
+             } = Enum.find(tools, &(&1["name"] == "test::host_agent_channel_echo"))
+    end
+
+    test "mcp_tool_call dispatches through the MCP handler", %{socket: socket} do
+      ref =
+        push(socket, "mcp_tool_call", %{
+          "name" => "test::host_agent_channel_echo",
+          "arguments" => %{"value" => "ok"}
+        })
+
+      assert_reply(ref, :ok, %{
+        "ok" => true,
+        "result" => %{"echo" => %{"value" => "ok"}}
+      })
+    end
+
+    test "mcp_tool_call returns invalid_payload for malformed payloads", %{socket: socket} do
+      ref = push(socket, "mcp_tool_call", %{"name" => "test::host_agent_channel_echo"})
       assert_reply(ref, :error, %{"reason" => "invalid_payload"})
     end
   end

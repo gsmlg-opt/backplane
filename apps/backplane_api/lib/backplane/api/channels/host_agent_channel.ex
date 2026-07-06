@@ -2,7 +2,9 @@ defmodule Backplane.Api.HostAgentChannel do
   use Backplane.Api, :channel
 
   alias Backplane.PubSubBroadcaster
+  alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, SyncStatuses}
+  alias Backplane.Transport.McpHandler
 
   @impl true
   def join("host_agent:" <> host_id, payload, socket) do
@@ -127,6 +129,33 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   def handle_in("memory_call", _payload, socket) do
+    invalid_payload(socket)
+  end
+
+  def handle_in("mcp_tools_list", payload, socket) when is_map(payload) do
+    tools =
+      ToolRegistry.list_all()
+      |> Enum.map(&tool_to_json/1)
+
+    {:reply, {:ok, %{"ok" => true, "result" => %{"tools" => tools}}}, socket}
+  end
+
+  def handle_in("mcp_tools_list", _payload, socket) do
+    invalid_payload(socket)
+  end
+
+  def handle_in("mcp_tool_call", %{"name" => name, "arguments" => args}, socket)
+      when is_binary(name) and is_map(args) do
+    case McpHandler.dispatch_tool_call(name, args) do
+      {:ok, result} ->
+        {:reply, {:ok, %{"ok" => true, "result" => result}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:ok, %{"ok" => false, "error" => format_memory_error(reason)}}, socket}
+    end
+  end
+
+  def handle_in("mcp_tool_call", _payload, socket) do
     invalid_payload(socket)
   end
 
@@ -315,6 +344,20 @@ defmodule Backplane.Api.HostAgentChannel do
   defp format_memory_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_memory_error({:unknown_method, name}), do: "unknown memory method: #{name}"
   defp format_memory_error(reason), do: inspect(reason)
+
+  defp tool_to_json(tool) do
+    %{
+      "name" => tool.name,
+      "description" => tool.description,
+      "inputSchema" => tool.input_schema
+    }
+    |> maybe_put("annotations", tool.annotations)
+    |> maybe_put("outputSchema", tool.output_schema)
+    |> maybe_put("icon", tool.icon)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp invalid_payload(socket) do
     {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}

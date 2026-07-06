@@ -23,9 +23,38 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     on_exit(fn ->
       Application.delete_env(:backplane_host_agent, :memory_store)
       Application.delete_env(:backplane_host_agent, :memory_config)
+      Application.delete_env(:backplane_host_agent, :local_services)
+      Application.delete_env(:backplane_host_agent, :hub_proxy_module)
+      _ = :persistent_term.erase({StubHubProxy, :owner})
     end)
 
     {:ok, store: store}
+  end
+
+  defmodule StubHubProxy do
+    def list_tools do
+      owner = :persistent_term.get({__MODULE__, :owner})
+
+      send(owner, :list_tools)
+
+      {:ok,
+       [
+         %{"name" => "memory::hub_shadow", "description" => "must not override local memory"},
+         %{"name" => "hub::remote", "description" => "remote hub tool"}
+       ]}
+    end
+
+    def call_tool(name, args) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:call_tool, name, args})
+
+      {:ok, %{"echo" => name, "arguments" => args}}
+    end
+  end
+
+  defmodule ErrorHubProxy do
+    def list_tools, do: {:error, :not_connected}
+    def call_tool(_name, _args), do: {:error, :not_connected}
   end
 
   describe "POST /memory/:agent_id/call/:method" do
@@ -271,6 +300,39 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                |> Jason.decode!()
     end
 
+    test "routes tools/call recall through local memory" do
+      remember!("offline local recall")
+
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "recall",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "memory::recall",
+            "arguments" => %{"query" => "offline", "limit" => 1}
+          }
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      decoded = Jason.decode!(conn.resp_body)
+      assert decoded["id"] == "recall"
+      assert decoded["result"]["isError"] == false
+
+      assert %{"hits" => [%{"content" => "offline local recall"}]} =
+               decoded["result"]["content"]
+               |> hd()
+               |> Map.fetch!("text")
+               |> Jason.decode!()
+    end
+
     test "returns JSON-RPC error for unknown memory tools" do
       body =
         Jason.encode!(%{
@@ -290,6 +352,139 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       decoded = Jason.decode!(conn.resp_body)
       assert decoded["error"]["code"] == -32_601
       assert decoded["error"]["message"] == "Unknown memory method: semantic_search"
+    end
+
+    test "proxies unknown service tools through the hub" do
+      :persistent_term.put({StubHubProxy, :owner}, self())
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 8,
+          "method" => "tools/call",
+          "params" => %{"name" => "unknown::tool", "arguments" => %{"x" => 1}}
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+      decoded = Jason.decode!(conn.resp_body)
+      assert decoded["result"]["isError"] == false
+
+      assert %{"echo" => "unknown::tool", "arguments" => %{"x" => 1}} =
+               decoded["result"]["content"] |> hd() |> Map.fetch!("text") |> Jason.decode!()
+
+      assert_received {:call_tool, "unknown::tool", %{"x" => 1}}
+      _ = :persistent_term.erase({StubHubProxy, :owner})
+    end
+
+    test "returns a tool error result when the hub proxy is disconnected" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 8,
+          "method" => "tools/call",
+          "params" => %{"name" => "unknown::tool", "arguments" => %{}}
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"result" => %{"isError" => true, "content" => [%{"text" => message}]}} =
+               Jason.decode!(conn.resp_body)
+
+      assert message == "hub unreachable: not_connected"
+    end
+
+    test "merges tools/list with hub tools while filtering local prefix collisions" do
+      :persistent_term.put({StubHubProxy, :owner}, self())
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      tool_names =
+        conn.resp_body
+        |> Jason.decode!()
+        |> get_in(["result", "tools"])
+        |> Enum.map(& &1["name"])
+
+      assert "memory::remember" in tool_names
+      refute "memory::hub_shadow" in tool_names
+      assert "hub::remote" in tool_names
+      assert_received :list_tools
+      _ = :persistent_term.erase({StubHubProxy, :owner})
+    end
+
+    test "tools/list returns local tools only when hub proxy is disconnected" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      tool_names =
+        conn.resp_body
+        |> Jason.decode!()
+        |> get_in(["result", "tools"])
+        |> Enum.map(& &1["name"])
+
+      assert "memory::remember" in tool_names
+      refute "hub::remote" in tool_names
+    end
+
+    test "root /mcp defaults tool context agent_id to local", %{store: store} do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "local-agent",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "memory::remember",
+            "arguments" => %{"content" => "root mcp"}
+          }
+        })
+
+      conn =
+        :post
+        |> conn("/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"result" => %{"isError" => false, "content" => [%{"text" => text}]}} =
+               Jason.decode!(conn.resp_body)
+
+      assert %{"id" => id} = Jason.decode!(text)
+
+      assert {:ok, %Result{rows: [%{"agent_id" => "local"}]}} =
+               Store.query(store, "SELECT agent_id FROM memories WHERE id = ?", [id])
     end
 
     test "returns JSON-RPC error for unknown JSON-RPC method" do

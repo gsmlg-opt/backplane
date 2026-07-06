@@ -35,6 +35,8 @@ defmodule Backplane.HostAgent.MixProject do
       {:plug, "~> 1.16"},
       {:bandit, "~> 1.5"},
       {:telemetry, "~> 1.2"},
+      {:day_ex, in_umbrella: true},
+      {:math_ex, in_umbrella: true},
       {:ex_turso, "~> 0.2"}
     ]
   end
