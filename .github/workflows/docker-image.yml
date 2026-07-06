@@ -33,6 +33,16 @@ on:
         required: false
         default: ""
         type: string
+    outputs:
+      digest:
+        description: "Digest of the published image"
+        value: ${{ jobs.docker-image.outputs.digest }}
+      tags:
+        description: "Comma-separated list of published image tags"
+        value: ${{ jobs.docker-image.outputs.tags }}
+      version:
+        description: "Resolved image version"
+        value: ${{ jobs.docker-image.outputs.version }}
     secrets:
       GHCR_TOKEN:
         required: true
@@ -49,6 +59,11 @@ jobs:
   docker-image:
     name: Build and publish image
     runs-on: ubuntu-24.04
+
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      tags: ${{ steps.metadata.outputs.tags }}
+      version: ${{ steps.metadata.outputs.version }}
 
     steps:
       - name: Checkout
@@ -72,6 +87,10 @@ jobs:
             exit 1
           fi
 
+          image_tag="${{ inputs.image_tag }}"
+          image_repo="${image_tag%:*}"
+          tags="$image_tag,$image_repo:$version"
+
           build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           revision="$(git rev-parse HEAD)"
 
@@ -79,6 +98,7 @@ jobs:
           echo "git_ref=${{ inputs.git_ref }}" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -91,12 +111,13 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Build and publish image
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ inputs.image_tag }}
+          tags: ${{ steps.metadata.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.metadata.outputs.build_date }}
             GIT_REF=${{ steps.metadata.outputs.git_ref }}

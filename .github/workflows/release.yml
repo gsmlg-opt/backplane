@@ -114,6 +114,9 @@ jobs:
             release-${{ matrix.target.name }}-${{ matrix.release }}-
             release-${{ matrix.target.name }}-
 
+      - name: Unify app versions
+        run: bash scripts/set-version.sh "${{ steps.version.outputs.version }}"
+
       - name: Install dependencies
         run: mix deps.get --only prod
 
@@ -152,6 +155,10 @@ jobs:
     permissions:
       contents: write
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commitish: ${{ steps.bump.outputs.commitish }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -172,6 +179,48 @@ jobs:
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Unify app versions
+        run: bash scripts/set-version.sh "${{ steps.version.outputs.version }}"
+
+      - name: Commit version bump
+        id: bump
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "All mix.exs files already at ${{ steps.version.outputs.version }}; nothing to commit"
+            echo "commitish=${{ inputs.git_ref }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v${{ steps.version.outputs.version }}"
+
+          if git push origin "HEAD:refs/heads/${{ inputs.git_ref }}"; then
+            echo "commitish=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not push version bump to ${{ inputs.git_ref }} (not a branch?); releasing from the original ref" >&2
+            echo "commitish=${{ inputs.git_ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare deploy docs and release notes
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p dist
+
+          sed "s/{{VERSION}}/$version/g" docs/deploy/backplane.md > "dist/backplane-$version-deploy.md"
+          sed "s/{{VERSION}}/$version/g" docs/deploy/host_agent.md > "dist/host_agent-$version-deploy.md"
+
+          cat > release-notes-header.md <<EOF
+          ## Deployment
+
+          - **Backplane server** — see the attached \`backplane-$version-deploy.md\` (Docker and OTP release instructions).
+          - **Host agent** — see the attached \`host_agent-$version-deploy.md\` (per-platform tarballs and YAML config).
+
+          Docker image details are appended to these notes after the image is published.
+          EOF
+
       - name: Download release artifacts
         uses: actions/download-artifact@v7
         with:
@@ -182,8 +231,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          target_commitish: ${{ inputs.git_ref }}
+          target_commitish: ${{ steps.bump.outputs.commitish }}
           name: Backplane v${{ steps.version.outputs.version }}
+          body_path: release-notes-header.md
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
@@ -205,7 +255,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.git_ref }}
+          ref: ${{ needs.publish.outputs.commitish }}
 
       - name: Resolve release version
         id: version
@@ -220,6 +270,9 @@ jobs:
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Unify app versions
+        run: bash scripts/set-version.sh "${{ steps.version.outputs.version }}"
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -279,8 +332,50 @@ jobs:
       contents: read
       packages: write
     with:
-      git_ref: ${{ inputs.git_ref }}
+      git_ref: ${{ needs.publish.outputs.commitish }}
       image_tag: ghcr.io/gsmlg-dev/backplane:latest
       version: ${{ inputs.version }}
     secrets:
       GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+  release-docker-info:
+    name: Update release page with Docker info
+    needs:
+      - publish
+      - docker-image
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Append Docker image info to release notes
+        shell: bash
+        run: |
+          version="${{ needs.publish.outputs.version }}"
+          release_tag="v$version"
+          digest="${{ needs.docker-image.outputs.digest }}"
+          tags="${{ needs.docker-image.outputs.tags }}"
+
+          gh release view "$release_tag" -R "${{ github.repository }}" --json body -q .body > body.md
+
+          {
+            echo ""
+            echo "## Docker image"
+            echo ""
+            echo '```sh'
+            echo "docker pull ghcr.io/gsmlg-dev/backplane:$version"
+            echo '```'
+            echo ""
+            echo "- Tags:"
+            IFS=',' read -ra tag_list <<< "$tags"
+            for image_tag in "${tag_list[@]}"; do
+              echo "  - \`$image_tag\`"
+            done
+            echo "- Digest: \`$digest\`"
+          } >> body.md
+
+          gh release edit "$release_tag" -R "${{ github.repository }}" --notes-file body.md
