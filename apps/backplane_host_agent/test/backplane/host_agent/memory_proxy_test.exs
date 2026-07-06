@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.MemoryProxyTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.MemoryProxy
+  alias Backplane.HostAgent.{MemoryProxy, Trace}
 
   defmodule FakeConnector do
     def connect(config) do
@@ -281,6 +281,30 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
                     %{duration: duration}, %{agent_id: "hermes", method: "list", result: :ok}}
 
     assert is_integer(duration)
+  end
+
+  test "memory call payload carries child traceparent when context exists" do
+    MemoryProxy.set_channel(self())
+    ctx = Trace.new_ctx()
+
+    assert {:ok, %{"status" => "ok"}} =
+             Trace.with_ctx(ctx, fn ->
+               MemoryProxy.call("list", %{"scope" => "/tmp"},
+                 agent_id: "hermes",
+                 channel_module: FakeChannel
+               )
+             end)
+
+    assert_receive {:push, _channel, "memory_call",
+                    %{
+                      "method" => "list",
+                      "arguments" => %{"agent_id" => "hermes", "scope" => "/tmp"},
+                      "traceparent" => traceparent
+                    }}
+
+    assert {:ok, child} = Trace.parse_traceparent(traceparent)
+    assert child.trace_id == ctx.trace_id
+    assert child.parent_id != nil
   end
 
   test "emits telemetry for memory call errors" do

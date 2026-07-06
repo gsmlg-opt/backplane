@@ -21,6 +21,7 @@ defmodule Backplane.HostAgent.Worker do
   }
 
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
+  alias Backplane.HostAgent.TraceSupervisor
 
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -168,6 +169,8 @@ defmodule Backplane.HostAgent.Worker do
          :ok <- set_memory_connection(memory_proxy_module, connection, config),
          {:ok, memory_supervisor} <-
            maybe_start_memory(config, Map.get(state, :memory_supervisor)),
+         {:ok, trace_supervisor} <-
+           maybe_start_trace(config, Map.get(state, :trace_supervisor)),
          {:ok, http_supervisor} <-
            maybe_start_http_server(http_server_module, config, Map.get(state, :http_supervisor)) do
       opts =
@@ -176,6 +179,7 @@ defmodule Backplane.HostAgent.Worker do
         |> Keyword.put(:config, config)
         |> Keyword.put(:http_supervisor, http_supervisor)
         |> Keyword.put(:memory_supervisor, memory_supervisor)
+        |> Keyword.put(:trace_supervisor, trace_supervisor)
         |> Keyword.put(:owns_connection?, true)
 
       connected_state =
@@ -202,6 +206,7 @@ defmodule Backplane.HostAgent.Worker do
       desired: Keyword.get(opts, :desired),
       http_supervisor: Keyword.get(opts, :http_supervisor),
       memory_supervisor: Keyword.get(opts, :memory_supervisor),
+      trace_supervisor: Keyword.get(opts, :trace_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
       config_module: Keyword.get(opts, :config_module, Config),
       connector_module: Keyword.get(opts, :connector_module, Connector),
@@ -320,6 +325,36 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp maybe_start_memory(_config, _existing_pid), do: {:ok, nil}
+
+  defp maybe_start_trace(config, existing_pid \\ nil)
+
+  defp maybe_start_trace(config, existing_pid) when is_pid(existing_pid) do
+    if Process.alive?(existing_pid), do: {:ok, existing_pid}, else: maybe_start_trace(config)
+  end
+
+  defp maybe_start_trace(%{telemetry: %{enabled: true} = telemetry_config}, _existing_pid) do
+    case TraceSupervisor.start_link(telemetry_config) do
+      {:ok, pid} ->
+        configure_trace(telemetry_config)
+        {:ok, pid}
+
+      :ignore ->
+        {:ok, nil}
+
+      {:error, {:already_started, pid}} ->
+        configure_trace(telemetry_config)
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, {:trace_start_failed, reason}}
+    end
+  end
+
+  defp maybe_start_trace(_config, _existing_pid), do: {:ok, nil}
+
+  defp configure_trace(telemetry_config) do
+    Application.put_env(:backplane_host_agent, :telemetry_config, telemetry_config)
+  end
 
   defp configure_memory_router(memory_config) do
     Application.put_env(:backplane_host_agent, :memory_config, memory_config)

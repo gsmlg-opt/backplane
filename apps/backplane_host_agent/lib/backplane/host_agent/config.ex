@@ -18,6 +18,7 @@ defmodule Backplane.HostAgent.Config do
     :manifest_path,
     :work_dir,
     :memory,
+    :telemetry,
     interval_ms: 60_000,
     targets: [],
     http_bind: "127.0.0.1",
@@ -66,6 +67,13 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: 50
       max_attempts: 5
       tombstone_relearn: block
+
+    telemetry:
+      enabled: true
+      dir: #{Path.join(work_dir, "telemetry")}
+      sync_interval_ms: 10000
+      sync_batch_size: 100
+      retention_days: 14
 
     targets:
       - name: agents
@@ -154,6 +162,7 @@ defmodule Backplane.HostAgent.Config do
       http_bind: agent["http_bind"] || "127.0.0.1",
       http_port: http_port,
       memory: parse_memory(raw["memory"], work_dir, http_port),
+      telemetry: parse_telemetry(raw["telemetry"], work_dir),
       targets: parse_targets(raw["targets"] || [])
     }
   end
@@ -218,6 +227,23 @@ defmodule Backplane.HostAgent.Config do
 
   defp parse_tombstone_relearn("allow_with_log"), do: "allow_with_log"
   defp parse_tombstone_relearn(_value), do: "block"
+
+  defp parse_telemetry(raw, work_dir) do
+    raw = if is_map(raw), do: raw, else: %{}
+
+    %{
+      enabled: parse_bool(raw["enabled"], true),
+      dir: expand_path(raw["dir"] || default_telemetry_dir(work_dir)),
+      sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 10_000),
+      sync_batch_size: parse_positive_int(raw["sync_batch_size"], 100),
+      retention_days: parse_positive_int(raw["retention_days"], 14)
+    }
+  end
+
+  defp default_telemetry_dir(work_dir) do
+    base_dir = work_dir || default_work_dir()
+    Path.join(base_dir, "telemetry")
+  end
 
   defp expand_path(path) when is_binary(path), do: Path.expand(path)
   defp expand_path(path), do: path

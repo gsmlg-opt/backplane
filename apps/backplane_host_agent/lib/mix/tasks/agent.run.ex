@@ -32,6 +32,7 @@ defmodule Mix.Tasks.Agent.Run do
   }
 
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
+  alias Backplane.HostAgent.TraceSupervisor
 
   @retry_interval_ms 4_000
 
@@ -100,6 +101,7 @@ defmodule Mix.Tasks.Agent.Run do
   defp connect_and_run(config) do
     MemoryProxy.set_config(config)
     maybe_start_memory(config)
+    maybe_start_trace(config)
 
     %{channel: channel} = link = connect_with_retry(config)
     MemoryProxy.set_connection(link, config)
@@ -134,6 +136,26 @@ defmodule Mix.Tasks.Agent.Run do
   end
 
   defp maybe_start_memory(_config), do: :ok
+
+  defp maybe_start_trace(%{telemetry: %{enabled: true} = telemetry_config}) do
+    case TraceSupervisor.start_link(telemetry_config) do
+      {:ok, _pid} ->
+        Application.put_env(:backplane_host_agent, :telemetry_config, telemetry_config)
+        Mix.shell().info("Trace store ready at #{telemetry_config.dir}.")
+        :ok
+
+      :ignore ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("failed to start trace store: #{inspect(reason)}")
+    end
+  end
+
+  defp maybe_start_trace(_config), do: :ok
 
   defp connect_with_retry(config) do
     Mix.shell().info("Connecting host agent #{config.machine_name} to #{config.hub_url}…")

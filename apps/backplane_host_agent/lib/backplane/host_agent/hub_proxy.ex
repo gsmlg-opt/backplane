@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.HubProxy do
   Proxies local MCP requests to the Backplane hub over the host-agent channel.
   """
 
-  alias Backplane.HostAgent.{Channel, MemoryProxy}
+  alias Backplane.HostAgent.{Channel, MemoryProxy, Trace}
 
   @tool_call_timeout 30_000
 
@@ -15,7 +15,7 @@ defmodule Backplane.HostAgent.HubProxy do
 
   @spec call_tool(String.t(), map()) :: {:ok, term()} | {:error, term()}
   def call_tool(name, args) when is_binary(name) and is_map(args) do
-    push("mcp_tool_call", %{"name" => name, "arguments" => args})
+    push("mcp_tool_call", trace_payload(%{"name" => name, "arguments" => args}))
     |> normalize_tool_call()
   end
 
@@ -23,7 +23,7 @@ defmodule Backplane.HostAgent.HubProxy do
     with channel when is_pid(channel) <- MemoryProxy.channel(),
          true <- Process.alive?(channel) do
       try do
-        Channel.push(channel, event, payload, @tool_call_timeout)
+        channel_module().push(channel, event, payload, @tool_call_timeout)
       catch
         :exit, reason -> {:error, push_exit_reason(reason)}
       end
@@ -54,4 +54,15 @@ defmodule Backplane.HostAgent.HubProxy do
 
   defp push_exit_reason({reason, _stack}), do: reason
   defp push_exit_reason(reason), do: reason
+
+  defp channel_module do
+    Application.get_env(:backplane_host_agent, :channel_module, Channel)
+  end
+
+  defp trace_payload(payload) do
+    case Trace.child_ctx(Trace.current()) do
+      nil -> payload
+      ctx -> Map.put(payload, "traceparent", Trace.to_traceparent(ctx))
+    end
+  end
 end

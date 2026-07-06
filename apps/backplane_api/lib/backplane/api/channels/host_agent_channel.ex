@@ -1,6 +1,7 @@
 defmodule Backplane.Api.HostAgentChannel do
   use Backplane.Api, :channel
 
+  alias Backplane.AgentTraces
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, SyncStatuses}
@@ -156,6 +157,20 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   def handle_in("mcp_tool_call", _payload, socket) do
+    invalid_payload(socket)
+  end
+
+  def handle_in("trace_sync", %{"protocol" => "host_trace.v1", "items" => items}, socket)
+      when is_list(items) do
+    ack_items =
+      socket.assigns.host.id
+      |> AgentTraces.ingest(items)
+      |> Enum.map(&trace_sync_ack_item/1)
+
+    {:reply, {:ok, %{"ok" => true, "result" => %{"items" => ack_items}}}, socket}
+  end
+
+  def handle_in("trace_sync", _payload, socket) do
     invalid_payload(socket)
   end
 
@@ -344,6 +359,14 @@ defmodule Backplane.Api.HostAgentChannel do
   defp format_memory_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_memory_error({:unknown_method, name}), do: "unknown memory method: #{name}"
   defp format_memory_error(reason), do: inspect(reason)
+
+  defp trace_sync_ack_item({seq, :ok}) do
+    %{"seq" => seq, "status" => "ok"}
+  end
+
+  defp trace_sync_ack_item({seq, {:error, reason}}) do
+    %{"seq" => seq, "status" => "error", "error" => format_memory_error(reason)}
+  end
 
   defp tool_to_json(tool) do
     %{

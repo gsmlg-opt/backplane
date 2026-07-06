@@ -18,8 +18,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   use Plug.Router
 
-  alias Backplane.HostAgent.Services
   alias Backplane.HostAgent.HubProxy
+  alias Backplane.HostAgent.Services
+  alias Backplane.HostAgent.Trace
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -83,7 +84,13 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp handle_mcp(conn, agent_id) do
     body = conn.body_params || %{}
-    handle_jsonrpc(conn, agent_id, body)
+    ctx = trace_context(conn)
+
+    Trace.with_ctx(ctx, fn ->
+      span_mcp_request(conn, agent_id, body, fn ->
+        handle_jsonrpc(conn, agent_id, body)
+      end)
+    end)
   end
 
   defp handle_jsonrpc(conn, agent_id, %{"jsonrpc" => "2.0", "id" => id, "method" => method} = req) do
@@ -257,6 +264,49 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_ctx(nil, args), do: %{agent_id: Map.get(args, "agent_id", "local")}
   defp tool_ctx(agent_id, _args), do: %{agent_id: agent_id}
+
+  defp trace_context(conn) do
+    conn
+    |> get_req_header("traceparent")
+    |> List.first()
+    |> Trace.parse_traceparent()
+    |> case do
+      {:ok, ctx} -> ctx
+      :error -> Trace.new_ctx()
+    end
+  end
+
+  defp span_mcp_request(conn, agent_id, body, fun) do
+    metadata = mcp_metadata(conn, agent_id, body)
+
+    :telemetry.span([:backplane, :host_agent, :mcp, :request], metadata, fn ->
+      result = fun.()
+      {result, Map.put(metadata, :status, result.status)}
+    end)
+  end
+
+  defp mcp_metadata(conn, agent_id, %{"method" => method} = body) do
+    params = Map.get(body, "params", %{})
+
+    %{
+      agent_id: agent_id,
+      method: method,
+      path: conn.request_path,
+      tool_name: tool_name_from_params(params)
+    }
+  end
+
+  defp mcp_metadata(conn, agent_id, _body) do
+    %{
+      agent_id: agent_id,
+      method: nil,
+      path: conn.request_path,
+      tool_name: nil
+    }
+  end
+
+  defp tool_name_from_params(%{"name" => name}) when is_binary(name), do: name
+  defp tool_name_from_params(_params), do: nil
 
   defp unknown_method_message(Backplane.HostAgent.Services.Memory, method),
     do: "Unknown memory method: #{method}"

@@ -4,6 +4,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   import Backplane.SkillArchiveCase
 
   alias Backplane.Repo
+  alias Backplane.AgentTraces.Event
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills
   alias Backplane.Skills.{AgentManage, Assignments, HostStatus, Hosts}
@@ -518,8 +519,80 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
   end
 
+  describe "host trace sync" do
+    test "trace_sync persists items and returns per-item ok acks", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "trace_sync", %{
+          "protocol" => "host_trace.v1",
+          "items" => [valid_trace_item(1)]
+        })
+
+      assert_reply(ref, :ok, %{
+        "ok" => true,
+        "result" => %{"items" => [%{"seq" => 1, "status" => "ok"}]}
+      })
+
+      event = Repo.get_by!(Event, host_id: host.id, agent_seq: 1)
+      assert event.trace_id == "0123456789abcdef0123456789abcdef"
+      assert event.span_id == "0123456789abcdef"
+      assert event.event == "agent.started"
+    end
+
+    test "trace_sync returns mixed ok and error item acks", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "trace_sync", %{
+          "protocol" => "host_trace.v1",
+          "items" => [
+            valid_trace_item(1),
+            valid_trace_item(2, %{"span_id" => "bad"})
+          ]
+        })
+
+      assert_reply(ref, :ok, %{
+        "ok" => true,
+        "result" => %{
+          "items" => [
+            %{"seq" => 1, "status" => "ok"},
+            %{"seq" => 2, "status" => "error", "error" => error}
+          ]
+        }
+      })
+
+      assert error =~ "span_id"
+      assert Repo.get_by!(Event, host_id: host.id, agent_seq: 1)
+      refute Repo.get_by(Event, host_id: host.id, agent_seq: 2)
+    end
+
+    test "trace_sync rejects malformed payloads", %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref = push(socket, "trace_sync", %{"protocol" => "host_trace.v1", "items" => "bad"})
+      assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+  end
+
   defp create_agent_with_token!(name) do
     assert {:ok, host, auth_token, token} = Hosts.create_agent_with_token(%{"name" => name})
     {host, auth_token, token}
+  end
+
+  defp valid_trace_item(seq, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "seq" => seq,
+        "trace_id" => "0123456789abcdef0123456789abcdef",
+        "span_id" => "0123456789abcdef",
+        "parent_id" => nil,
+        "event" => "agent.started",
+        "measurements" => %{"duration_ms" => 12.5},
+        "metadata" => %{"tool" => "test"},
+        "occurred_at" => "2026-07-06T10:15:30.123456Z"
+      },
+      overrides
+    )
   end
 end

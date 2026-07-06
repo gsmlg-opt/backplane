@@ -2,7 +2,9 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
+  alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.MemoryRouter
+  alias Backplane.HostAgent.Trace
   alias ExTurso.Result
 
   import Plug.Conn
@@ -25,6 +27,8 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       Application.delete_env(:backplane_host_agent, :memory_config)
       Application.delete_env(:backplane_host_agent, :local_services)
       Application.delete_env(:backplane_host_agent, :hub_proxy_module)
+      Application.delete_env(:backplane_host_agent, :channel_module)
+      MemoryProxy.set_channel(nil)
       _ = :persistent_term.erase({StubHubProxy, :owner})
     end)
 
@@ -55,6 +59,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   defmodule ErrorHubProxy do
     def list_tools, do: {:error, :not_connected}
     def call_tool(_name, _args), do: {:error, :not_connected}
+  end
+
+  defmodule FakeHubChannel do
+    def push(channel, event, payload, _timeout \\ 5_000) do
+      send(channel, {:hub_push, event, payload})
+      {:ok, %{"ok" => true, "result" => %{"echo" => payload["name"]}}}
+    end
   end
 
   describe "POST /memory/:agent_id/call/:method" do
@@ -381,6 +392,43 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert_received {:call_tool, "unknown::tool", %{"x" => 1}}
       _ = :persistent_term.erase({StubHubProxy, :owner})
+    end
+
+    test "sets context from incoming traceparent and propagates it to hub calls" do
+      incoming = Trace.to_traceparent(Trace.new_ctx())
+      "00-" <> trace_id_and_rest = incoming
+      <<trace_id::binary-size(32), _rest::binary>> = trace_id_and_rest
+
+      MemoryProxy.set_channel(self())
+      Application.delete_env(:backplane_host_agent, :hub_proxy_module)
+      Application.put_env(:backplane_host_agent, :channel_module, FakeHubChannel)
+
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 9,
+          "method" => "tools/call",
+          "params" => %{"name" => "unknown::tool", "arguments" => %{"x" => 1}}
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("traceparent", incoming)
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert_receive {:hub_push, "mcp_tool_call",
+                      %{
+                        "name" => "unknown::tool",
+                        "arguments" => %{"x" => 1},
+                        "traceparent" => outgoing
+                      }}
+
+      assert outgoing =~ "00-#{trace_id}-"
+      assert outgoing != incoming
     end
 
     test "returns a tool error result when the hub proxy is disconnected" do

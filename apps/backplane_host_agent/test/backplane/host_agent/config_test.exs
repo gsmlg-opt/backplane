@@ -92,6 +92,9 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert sample =~ "\nmemory:\n"
     assert sample =~ "db_path:"
     assert sample =~ "local_ttl_days: 90"
+    assert sample =~ "\ntelemetry:\n"
+    assert sample =~ "sync_interval_ms: 10000"
+    assert sample =~ "retention_days: 14"
     refute sample =~ "# http_port"
   end
 
@@ -121,6 +124,47 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_batch_size: 50,
              max_attempts: 5,
              tombstone_relearn: "block"
+           }
+
+    assert config.telemetry == %{
+             enabled: true,
+             dir: Path.join(work_dir, "telemetry"),
+             sync_interval_ms: 10_000,
+             sync_batch_size: 100,
+             retention_days: 14
+           }
+  end
+
+  @tag :tmp_dir
+  test "parses explicit telemetry config and expands dir", %{tmp_dir: tmp_dir} do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+    telemetry_dir = Path.join(tmp_dir, "trace-files")
+
+    File.write!(config_path, """
+    agent:
+      machine_name: t430
+      hub_url: http://localhost:4220
+      host_id: host-123
+      token: secret-token
+      manifest_path: #{Path.join(tmp_dir, "manifest.json")}
+      work_dir: #{Path.join(tmp_dir, "work")}
+
+    telemetry:
+      enabled: false
+      dir: #{telemetry_dir}
+      sync_interval_ms: 250
+      sync_batch_size: 8
+      retention_days: 3
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.telemetry == %{
+             enabled: false,
+             dir: telemetry_dir,
+             sync_interval_ms: 250,
+             sync_batch_size: 8,
+             retention_days: 3
            }
   end
 

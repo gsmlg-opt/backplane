@@ -9,7 +9,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
   channel process dies.
   """
 
-  alias Backplane.HostAgent.{Channel, Connector, Telemetry}
+  alias Backplane.HostAgent.{Channel, Connector, Telemetry, Trace}
 
   @methods ~w(remember recall list forget stats)
   @method_set MapSet.new(@methods)
@@ -101,10 +101,12 @@ defmodule Backplane.HostAgent.MemoryProxy do
         {:error, {:unknown_method, method}}
 
       true ->
-        payload = %{
-          "method" => method,
-          "arguments" => Map.put(args, "agent_id", agent_id)
-        }
+        payload =
+          %{
+            "method" => method,
+            "arguments" => Map.put(args, "agent_id", agent_id)
+          }
+          |> trace_payload()
 
         push_module =
           Keyword.get(opts, :channel_module) ||
@@ -348,4 +350,11 @@ defmodule Backplane.HostAgent.MemoryProxy do
   defp push_exit_reason({:timeout, _}), do: :timeout
   defp push_exit_reason(:timeout), do: :timeout
   defp push_exit_reason(reason), do: {:channel_exit, reason}
+
+  defp trace_payload(payload) do
+    case Trace.child_ctx(Trace.current()) do
+      nil -> payload
+      ctx -> Map.put(payload, "traceparent", Trace.to_traceparent(ctx))
+    end
+  end
 end
