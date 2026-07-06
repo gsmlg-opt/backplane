@@ -284,14 +284,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            apps/backplane_mcp_protocol/deps
-            apps/backplane_mcp_protocol/_build/dev
-          key: hex-backplane-mcp-protocol-${{ hashFiles('apps/backplane_mcp_protocol/mix.exs') }}
+            deps
+            _build/dev
+          key: hex-backplane-mcp-protocol-${{ hashFiles('mix.lock', 'apps/backplane_mcp_protocol/mix.exs') }}
           restore-keys: |
             hex-backplane-mcp-protocol-
 
       - name: Install dependencies
-        working-directory: apps/backplane_mcp_protocol
         run: mix deps.get
 
       - name: Validate package version

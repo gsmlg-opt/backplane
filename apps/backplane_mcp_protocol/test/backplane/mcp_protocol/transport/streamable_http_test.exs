@@ -644,8 +644,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
 
       assert Process.alive?(transport)
 
+      ref = Process.monitor(transport)
       StreamableHTTP.shutdown(transport)
 
+      assert_receive {:DOWN, ^ref, :process, ^transport, _reason}
       refute Process.alive?(transport)
 
       StubClient.clear_messages()

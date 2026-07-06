@@ -2,12 +2,16 @@ defmodule Backplane.McpProtocol.MixProject do
   use Mix.Project
 
   @version "0.3.0"
-  @source_url "https://github.com/gsmlg-opt/backplane"
+  @source_url "https://github.com/gsmlg-opt/backplane/tree/main/apps/backplane_mcp_protocol"
 
   def project do
     [
       app: :backplane_mcp_protocol,
       version: @version,
+      build_path: "../../_build",
+      config_path: "../../config/config.exs",
+      deps_path: "../../deps",
+      lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),

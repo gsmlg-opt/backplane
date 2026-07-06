@@ -130,4 +130,7 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_console: false,
   log_to_file: nil
 
+config :backplane_mcp_protocol,
+  compile_cli?: System.get_env("BACKPLANE_MCP_PROTOCOL_COMPILE_CLI") in ["1", "true"]
+
 import_config "#{config_env()}.exs"
