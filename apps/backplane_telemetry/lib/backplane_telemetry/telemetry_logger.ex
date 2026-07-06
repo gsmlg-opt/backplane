@@ -113,8 +113,6 @@ defmodule BackplaneTelemetry.TelemetryLogger do
         case Jason.encode(sanitized_event) do
           {:ok, json_line} ->
             IO.write(state.file_device, json_line <> "\n")
-            # Flush immediately to avoid losing buffer on crashes
-            :file.datasync(state.file_device)
             state
 
           {:error, reason} ->
@@ -135,7 +133,12 @@ defmodule BackplaneTelemetry.TelemetryLogger do
 
     # 3. Log human-readable format via Logger if enabled
     if state.log_to_logger do
-      msg = format_message(sanitized_event["event"], sanitized_event["measurements"], sanitized_event["metadata"])
+      msg =
+        format_message(
+          sanitized_event["event"],
+          sanitized_event["measurements"],
+          sanitized_event["metadata"]
+        )
 
       if String.contains?(sanitized_event["event"], "exception") do
         Logger.error(msg)

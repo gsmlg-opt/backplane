@@ -37,7 +37,6 @@ defmodule BackplaneLlama.MixProject do
       {:oban, "~> 2.18"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
-      {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

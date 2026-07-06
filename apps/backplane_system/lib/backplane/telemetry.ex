@@ -7,7 +7,6 @@ defmodule Backplane.Telemetry do
     - [:backplane, :tool_call, :stop]
     - [:backplane, :tool_call, :exception]
     - [:backplane, :mcp_request, :start]
-    - [:backplane, :mcp_request, :stop]
     - [:backplane, :sse_stream, :start]
     - [:backplane, :sse_stream, :stop]
   """

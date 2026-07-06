@@ -42,7 +42,6 @@ defmodule BackplaneSystem.MixProject do
       {:jose, "~> 1.11"},
       {:jason, "~> 1.4"},
       {:toml, "~> 0.7"},
-      {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       {:plug, "~> 1.16"},
       {:bandit, "~> 1.5", only: :test},
