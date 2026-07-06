@@ -29,6 +29,7 @@ defmodule Backplane.Umbrella.MixProject do
       "ecto.setup": ["do --app backplane_system cmd mix ecto.setup"],
       "ecto.reset": ["do --app backplane_system cmd mix ecto.reset"],
       "ecto.migrate": ["do --app backplane_system cmd mix ecto.migrate"],
+      "backplane.run": ["phx.server"],
       "agent.run": [
         "do --app backplane_host_agent cmd mix agent.run"
       ],
