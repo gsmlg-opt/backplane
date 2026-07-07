@@ -21,6 +21,7 @@ defmodule Backplane.HostAgent.RunLockTest do
     assert {:error, {:already_running, pid, path}} = RunLock.acquire(config_path)
     assert pid == lock.pid
     assert path == lock.path
+    assert File.read!(lock.path) == "#{lock.pid}\n"
 
     assert :ok = RunLock.release(lock)
   end
@@ -34,6 +35,20 @@ defmodule Backplane.HostAgent.RunLockTest do
     assert {:ok, lock} = RunLock.acquire(config_path)
     assert lock.path == lock_path
     refute lock.pid == "999999999"
+    assert File.read!(lock_path) == "#{lock.pid}\n"
+
+    assert :ok = RunLock.release(lock)
+  end
+
+  test "acquire clears invalid pid files" do
+    config_path = config_path()
+    lock_path = RunLock.path_for(config_path)
+    File.mkdir_p!(Path.dirname(lock_path))
+    File.write!(lock_path, "not-a-pid\n")
+
+    assert {:ok, lock} = RunLock.acquire(config_path)
+    assert lock.path == lock_path
+    assert File.read!(lock_path) == "#{lock.pid}\n"
 
     assert :ok = RunLock.release(lock)
   end

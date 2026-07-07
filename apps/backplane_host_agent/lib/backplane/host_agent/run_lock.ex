@@ -57,7 +57,7 @@ defmodule Backplane.HostAgent.RunLock do
   defp handle_existing_lock(path, pid) do
     with {:ok, contents} <- File.read(path),
          existing_pid when is_binary(existing_pid) and existing_pid != "" <- parse_pid(contents),
-         true <- pid_alive?(existing_pid) do
+         true <- pid_exists?(existing_pid) do
       {:error, {:already_running, existing_pid, path}}
     else
       _stale_or_missing ->
@@ -79,7 +79,17 @@ defmodule Backplane.HostAgent.RunLock do
     |> String.trim()
   end
 
-  defp pid_alive?(pid) do
+  defp pid_exists?(pid) do
+    if valid_pid?(pid) do
+      do_pid_exists?(pid)
+    else
+      false
+    end
+  end
+
+  defp valid_pid?(pid), do: Regex.match?(~r/\A[1-9][0-9]*\z/, pid)
+
+  defp do_pid_exists?(pid) do
     case System.cmd("kill", ["-0", pid], stderr_to_stdout: true) do
       {_, 0} -> true
       _ -> false
