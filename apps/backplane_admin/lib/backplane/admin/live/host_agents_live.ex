@@ -1,16 +1,32 @@
 defmodule Backplane.Admin.HostAgentsLive do
   use Backplane.Admin, :live_view
 
-  alias Backplane.Skills.{AgentManage, DesiredState, Host, Hosts}
+  alias Backplane.Skills.{AgentManage, AgentPlugins, DesiredState, Host, Hosts}
 
   @tabs [
     {"overview", "Overview"},
-    {"setup", "Setup"},
     {"auth", "Auth"},
     {"config", "Config"},
+    {"plugin", "Plugin"},
     {"desired", "Desired State"},
     {"sync", "Sync/MCP"},
     {"danger", "Danger"}
+  ]
+  @tab_ids Enum.map(@tabs, &elem(&1, 0))
+  @default_tab "overview"
+  @memory_plugin_rows [
+    %{
+      "plugin" => "memory",
+      "name" => "Backplane Memory",
+      "runtime" => "hermes",
+      "target_path" => "~/.hermes/plugins/backplane-memory"
+    },
+    %{
+      "plugin" => "memory",
+      "name" => "Backplane Memory",
+      "runtime" => "openclaw",
+      "target_path" => "~/.openclaw/extensions/backplane-memory"
+    }
   ]
 
   @impl true
@@ -31,21 +47,24 @@ defmodule Backplane.Admin.HostAgentsLive do
        delete_error: nil,
        delete_modal_open: false,
        generated_token: nil,
-       revealed_token: nil
+       revealed_token: nil,
+       plugin_statuses: nil,
+       plugin_result: nil,
+       plugin_error: nil
      )}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     case socket.assigns.live_action do
-      :show -> {:noreply, load_show(socket, params["id"])}
+      :show -> {:noreply, load_show(socket, params["id"], params["tab"])}
       _ -> {:noreply, load_index(socket)}
     end
   end
 
   @impl true
   def handle_info(:agents_changed, %{assigns: %{live_action: :show, entry: entry}} = socket) do
-    {:noreply, load_show(socket, entry && entry.host.id)}
+    {:noreply, load_show(socket, entry && entry.host.id, socket.assigns.active_tab)}
   end
 
   def handle_info(:agents_changed, socket) do
@@ -84,20 +103,50 @@ defmodule Backplane.Admin.HostAgentsLive do
     end
   end
 
-  def handle_event("select_tab", %{"tab" => tab}, socket)
-      when tab in [
-             "overview",
-             "setup",
-             "auth",
-             "config",
-             "desired",
-             "sync",
-             "danger"
-           ] do
-    {:noreply, assign(socket, active_tab: tab)}
+  def handle_event("refresh_plugins", _params, %{assigns: %{entry: entry}} = socket) do
+    case AgentPlugins.list(entry) do
+      {:ok, statuses} ->
+        {:noreply,
+         assign(socket,
+           plugin_statuses: statuses,
+           plugin_result: "Plugin status refreshed",
+           plugin_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, plugin_result: nil, plugin_error: plugin_error(reason))}
+    end
   end
 
-  def handle_event("select_tab", _params, socket), do: {:noreply, socket}
+  def handle_event("install_plugin", %{"plugin" => params}, %{assigns: %{entry: entry}} = socket) do
+    case AgentPlugins.install(entry, params) do
+      {:ok, status} ->
+        {:noreply,
+         assign(socket,
+           plugin_statuses: merge_plugin_status(socket.assigns.plugin_statuses, status),
+           plugin_result: plugin_action_message(status, "installed"),
+           plugin_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, plugin_result: nil, plugin_error: plugin_error(reason))}
+    end
+  end
+
+  def handle_event("remove_plugin", %{"plugin" => params}, %{assigns: %{entry: entry}} = socket) do
+    case AgentPlugins.remove(entry, params) do
+      {:ok, status} ->
+        {:noreply,
+         assign(socket,
+           plugin_statuses: merge_plugin_status(socket.assigns.plugin_statuses, status),
+           plugin_result: plugin_action_message(status, "removed"),
+           plugin_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, plugin_result: nil, plugin_error: plugin_error(reason))}
+    end
+  end
 
   def handle_event("rename_agent", %{"agent" => params}, %{assigns: %{entry: entry}} = socket) do
     case Hosts.update_agent(entry.host, normalize_agent_params(params)) do
@@ -105,7 +154,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         {:noreply,
          socket
          |> assign(rename_error: nil)
-         |> load_show(host.id)}
+         |> load_show(host.id, socket.assigns.active_tab)}
 
       {:error, changeset} ->
         {:noreply, assign(socket, rename_error: changeset_summary(changeset))}
@@ -126,7 +175,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         {:noreply,
          socket
          |> assign(token_error: nil, revealed_token: %{token_id: auth_token.id, value: token})
-         |> load_show(entry.host.id)}
+         |> load_show(entry.host.id, socket.assigns.active_tab)}
 
       {:error, changeset} ->
         {:noreply, assign(socket, token_error: changeset_summary(changeset))}
@@ -150,7 +199,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         {:noreply,
          socket
          |> assign(token_error: nil, revealed_token: nil)
-         |> load_show(entry.host.id)}
+         |> load_show(entry.host.id, socket.assigns.active_tab)}
 
       {:error, _reason} ->
         {:noreply, assign(socket, token_error: "Unable to revoke token")}
@@ -203,12 +252,10 @@ defmodule Backplane.Admin.HostAgentsLive do
       </div>
 
       <div class="mb-6 flex flex-wrap gap-2 border-b border-outline-variant pb-2">
-        <button
+        <.link
           :for={{tab, label} <- @tabs}
           id={"agent-tab-#{tab}"}
-          type="button"
-          phx-click="select_tab"
-          phx-value-tab={tab}
+          patch={~p"/system/host-agents/#{@entry.host.id}/#{tab}"}
           class={[
             "rounded px-3 py-2 text-sm font-medium",
             tab == @active_tab && "bg-primary text-on-primary",
@@ -216,11 +263,10 @@ defmodule Backplane.Admin.HostAgentsLive do
           ]}
         >
           {label}
-        </button>
+        </.link>
       </div>
 
       <.overview_tab :if={@active_tab == "overview"} entry={@entry} error={@rename_error} />
-      <.setup_tab :if={@active_tab == "setup"} entry={@entry} />
       <.auth_tab
         :if={@active_tab == "auth"}
         entry={@entry}
@@ -228,6 +274,13 @@ defmodule Backplane.Admin.HostAgentsLive do
         revealed_token={@revealed_token}
       />
       <.config_tab :if={@active_tab == "config"} entry={@entry} />
+      <.plugin_tab
+        :if={@active_tab == "plugin"}
+        entry={@entry}
+        statuses={@plugin_statuses}
+        result={@plugin_result}
+        error={@plugin_error}
+      />
       <.desired_tab :if={@active_tab == "desired"} entry={@entry} />
       <.sync_tab :if={@active_tab == "sync"} entry={@entry} />
       <.danger_tab :if={@active_tab == "danger"} entry={@entry} />
@@ -301,7 +354,7 @@ defmodule Backplane.Admin.HostAgentsLive do
               <td class="px-3 py-2 align-top">
                 <.dm_tooltip content="View" position="bottom">
                   <.link
-                    navigate={~p"/system/host-agents/#{entry.host.id}"}
+                    navigate={~p"/system/host-agents/#{entry.host.id}/overview"}
                     aria-label="View"
                   >
                     <.dm_btn type="button" size="xs" shape="circle" variant="outline" aria-label="View">
@@ -333,17 +386,22 @@ defmodule Backplane.Admin.HostAgentsLive do
       delete_error: nil,
       delete_modal_open: false,
       generated_token: socket.assigns.generated_token,
-      revealed_token: nil
+      revealed_token: nil,
+      plugin_statuses: nil,
+      plugin_result: nil,
+      plugin_error: nil
     )
   end
 
-  defp load_show(socket, nil) do
+  defp load_show(socket, nil, _tab) do
     socket
     |> put_flash(:error, "Host agent not found")
     |> push_navigate(to: ~p"/system/host-agents")
   end
 
-  defp load_show(socket, id) do
+  defp load_show(socket, id, tab) do
+    {active_tab, redirect?} = normalize_tab(tab)
+
     with {:error, :not_found} <- AgentManage.get_agent(id),
          %Host{} = host <- Hosts.get_host(id),
          {:ok, _pid} <- AgentManage.ensure_agent(host) do
@@ -351,20 +409,30 @@ defmodule Backplane.Admin.HostAgentsLive do
     end
     |> case do
       {:ok, entry} ->
-        assign(socket,
-          current_path: "/system/host-agents/#{entry.host.id}",
-          agents: [],
-          entry: entry,
-          active_tab: socket.assigns.active_tab || "overview",
-          agent_modal_open: false,
-          create_error: nil,
-          delete_modal_open: socket.assigns.delete_modal_open
-        )
+        socket =
+          assign(socket,
+            current_path: "/system/host-agents/#{entry.host.id}/#{active_tab}",
+            agents: [],
+            entry: entry,
+            active_tab: active_tab,
+            agent_modal_open: false,
+            create_error: nil,
+            delete_modal_open: socket.assigns.delete_modal_open
+          )
+
+        if redirect? do
+          push_patch(socket, to: ~p"/system/host-agents/#{entry.host.id}/#{active_tab}")
+        else
+          socket
+        end
 
       _ ->
-        load_show(socket, nil)
+        load_show(socket, nil, tab)
     end
   end
+
+  defp normalize_tab(tab) when tab in @tab_ids, do: {tab, false}
+  defp normalize_tab(_tab), do: {@default_tab, true}
 
   defp normalize_agent_params(params) do
     Map.update(params, "name", "", &String.trim/1)
@@ -416,20 +484,6 @@ defmodule Backplane.Admin.HostAgentsLive do
         </form>
       </.dm_card>
     </div>
-    """
-  end
-
-  defp setup_tab(assigns) do
-    ~H"""
-    <.dm_card variant="bordered">
-      <:title>Setup</:title>
-      <div class="space-y-4 text-sm">
-        <p class="text-on-surface-variant">
-          Use this host ID with an assigned token on the host agent.
-        </p>
-        <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{agent_yaml(@entry)}</code></pre>
-      </div>
-    </.dm_card>
     """
   end
 
@@ -510,6 +564,16 @@ defmodule Backplane.Admin.HostAgentsLive do
     ~H"""
     <div class="space-y-6">
       <.dm_card variant="bordered">
+        <:title>Setup Example</:title>
+        <div class="space-y-4 text-sm">
+          <p class="text-on-surface-variant">
+            Use this host ID with an assigned token on the host agent.
+          </p>
+          <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{agent_yaml(@entry)}</code></pre>
+        </div>
+      </.dm_card>
+
+      <.dm_card variant="bordered">
         <:title>Reported Config</:title>
         <div :if={is_nil(@entry.config)} class="text-sm text-on-surface-variant">
           Config not reported yet.
@@ -551,6 +615,95 @@ defmodule Backplane.Admin.HostAgentsLive do
       <.dm_card :if={@entry.config} variant="bordered">
         <:title>Raw Config JSON</:title>
         <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{json(@entry.config)}</code></pre>
+      </.dm_card>
+    </div>
+    """
+  end
+
+  defp plugin_tab(assigns) do
+    assigns =
+      assigns
+      |> assign(:plugin_rows, plugin_rows(assigns.statuses))
+      |> assign(:plugin_endpoint, plugin_endpoint(assigns.entry))
+      |> assign(:plugin_example, plugin_example(assigns.entry))
+
+    ~H"""
+    <div class="space-y-6">
+      <.dm_card variant="bordered">
+        <:title>Packaged Plugins</:title>
+        <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div class="text-sm text-on-surface-variant">
+            Memory is the only packaged plugin currently available.
+          </div>
+          <.dm_btn id="refresh-plugin-status" type="button" size="sm" variant="outline" phx-click="refresh_plugins">
+            Refresh
+          </.dm_btn>
+        </div>
+
+        <p :if={@result} class="mb-3 text-sm text-success">{@result}</p>
+        <p :if={@error} class="mb-3 text-sm text-error">{@error}</p>
+
+        <div class="overflow-x-auto">
+          <table id="host-agent-plugins-table" class="min-w-full text-sm">
+            <thead class="bg-surface-container-high text-on-surface">
+              <tr>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Plugin</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Target</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-outline-variant">
+              <tr :for={row <- @plugin_rows}>
+                <td class="px-3 py-2 align-top font-medium">{row["name"]}</td>
+                <td class="px-3 py-2 align-top">{runtime_label(row["runtime"])}</td>
+                <td class="px-3 py-2 align-top">
+                  <.dm_badge variant={plugin_status_variant(row)} size="sm">
+                    {plugin_status_label(row)}
+                  </.dm_badge>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <code class="text-xs break-all">{row["target_path"]}</code>
+                </td>
+                <td class="px-3 py-2 align-top">
+                  <div class="flex flex-wrap gap-2">
+                    <form id={"install-plugin-#{row["runtime"]}"} phx-submit="install_plugin">
+                      <input type="hidden" name="plugin[plugin]" value={row["plugin"]} />
+                      <input type="hidden" name="plugin[runtime]" value={row["runtime"]} />
+                      <input type="hidden" name="plugin[force]" value="true" />
+                      <.dm_btn type="submit" size="xs" variant="primary">
+                        Install
+                      </.dm_btn>
+                    </form>
+                    <form id={"remove-plugin-#{row["runtime"]}"} phx-submit="remove_plugin">
+                      <input type="hidden" name="plugin[plugin]" value={row["plugin"]} />
+                      <input type="hidden" name="plugin[runtime]" value={row["runtime"]} />
+                      <.dm_btn type="submit" size="xs" variant="outline">
+                        Remove
+                      </.dm_btn>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </.dm_card>
+
+      <.dm_card variant="bordered">
+        <:title>Plugin Config</:title>
+        <dl class="mb-4 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+          <div>
+            <dt class="font-medium">Local MCP Endpoint</dt>
+            <dd class="text-on-surface-variant break-all">{@plugin_endpoint}</dd>
+          </div>
+          <div>
+            <dt class="font-medium">Tool Prefix</dt>
+            <dd class="text-on-surface-variant">host_agent</dd>
+          </div>
+        </dl>
+        <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{@plugin_example}</code></pre>
       </.dm_card>
     </div>
     """
@@ -770,6 +923,92 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp config_targets(%{"targets" => targets}) when is_list(targets), do: targets
   defp config_targets(_config), do: []
+
+  defp plugin_rows(statuses) when is_list(statuses) do
+    status_by_key =
+      Map.new(statuses, fn status ->
+        {{status["plugin"], status["runtime"]}, status}
+      end)
+
+    Enum.map(@memory_plugin_rows, fn row ->
+      Map.merge(row, Map.get(status_by_key, {row["plugin"], row["runtime"]}, %{}))
+    end)
+  end
+
+  defp plugin_rows(_statuses), do: @memory_plugin_rows
+
+  defp merge_plugin_status(statuses, status) when is_map(status) do
+    statuses
+    |> List.wrap()
+    |> Enum.reject(&(&1["plugin"] == status["plugin"] and &1["runtime"] == status["runtime"]))
+    |> Kernel.++([status])
+  end
+
+  defp plugin_status_label(%{"valid" => true}), do: "Installed"
+  defp plugin_status_label(%{"installed" => true}), do: "Invalid"
+  defp plugin_status_label(%{"installed" => false}), do: "Not installed"
+  defp plugin_status_label(_row), do: "Unknown"
+
+  defp plugin_status_variant(%{"valid" => true}), do: "success"
+  defp plugin_status_variant(%{"installed" => true}), do: "warning"
+  defp plugin_status_variant(%{"installed" => false}), do: "neutral"
+  defp plugin_status_variant(_row), do: "info"
+
+  defp plugin_endpoint(entry) do
+    case AgentPlugins.endpoint(entry) do
+      {:ok, url} -> url
+      {:error, reason} -> "Unavailable: #{plugin_error(reason)}"
+    end
+  end
+
+  defp plugin_example(entry) do
+    url =
+      case AgentPlugins.endpoint(entry) do
+        {:ok, endpoint} -> endpoint
+        {:error, _reason} -> "http://127.0.0.1:4222/memory/#{entry.host.id}/mcp"
+      end
+
+    body = %{
+      "jsonrpc" => "2.0",
+      "id" => 1,
+      "method" => "tools/call",
+      "params" => %{
+        "name" => "host_agent::install_plugin",
+        "arguments" => %{"plugin" => "memory", "runtime" => "hermes"}
+      }
+    }
+
+    """
+    curl -s -X POST #{url} \\
+      -H 'content-type: application/json' \\
+      -d '#{Jason.encode!(body)}'
+    """
+  end
+
+  defp plugin_action_message(status, action) do
+    "#{status["name"] || status["plugin"]} #{runtime_label(status["runtime"])} #{action}"
+  end
+
+  defp plugin_error(:http_disabled), do: "host-agent HTTP endpoint is disabled"
+  defp plugin_error(:http_unavailable), do: "host-agent HTTP endpoint is unavailable"
+  defp plugin_error(:connect_ip_unavailable), do: "host-agent connect IP is unavailable"
+
+  defp plugin_error(%{__struct__: struct, reason: reason}) when is_atom(struct),
+    do: "#{inspect(struct)}: #{inspect(reason)}"
+
+  defp plugin_error({:http_error, status, _body}), do: "HTTP #{status}"
+  defp plugin_error({:unexpected_result, result}), do: "unexpected result: #{inspect(result)}"
+
+  defp plugin_error({:unexpected_response, response}),
+    do: "unexpected response: #{inspect(response)}"
+
+  defp plugin_error(reason) when is_binary(reason), do: reason
+  defp plugin_error(reason), do: inspect(reason)
+
+  defp runtime_label("hermes"), do: "Hermes"
+  defp runtime_label("openclaw"), do: "OpenClaw"
+  defp runtime_label(runtime) when is_binary(runtime), do: String.capitalize(runtime)
+  defp runtime_label(_runtime), do: "Unknown"
 
   defp status_label(status) when is_atom(status),
     do: status |> Atom.to_string() |> String.capitalize()

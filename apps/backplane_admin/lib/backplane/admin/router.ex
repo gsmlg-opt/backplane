@@ -80,6 +80,7 @@ defmodule Backplane.Admin.Router do
     live("/system/credentials/:name/edit", SettingsLive, :credentials_edit)
     live("/system/host-agents", HostAgentsLive, :index)
     live("/system/host-agents/:id", HostAgentsLive, :show)
+    live("/system/host-agents/:id/:tab", HostAgentsLive, :show)
     live("/dashboard/usage/plans", DashboardPlanUsageLive, :index)
     get("/oauth/callback", OAuthCallbackController, :callback)
   end

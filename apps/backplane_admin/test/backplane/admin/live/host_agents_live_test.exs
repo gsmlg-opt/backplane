@@ -33,8 +33,8 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert html =~ "203.0.113.7"
     assert html =~ "0.1.0"
     assert html =~ "agents, commands"
-    assert html =~ ~s(href="/system/host-agents/#{host.id}")
-    assert html =~ ~s(href="/system/host-agents/#{offline_host.id}")
+    assert html =~ ~s(href="/system/host-agents/#{host.id}/overview")
+    assert html =~ ~s(href="/system/host-agents/#{offline_host.id}/overview")
     refute html =~ "Agent Auth"
     refute html =~ "Agent Live"
     refute html =~ ~s(href="/system/host-agents/manage")
@@ -59,7 +59,15 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert [%{host: %{name: "new-host"}}] = AgentManage.list_agents()
   end
 
-  test "detail page manages overview auth setup config desired sync and danger tabs", %{
+  test "legacy detail path redirects to overview tab", %{conn: conn} do
+    assert {:ok, host} = Hosts.create_agent(%{"name" => "legacy-host"})
+    expected_path = "/system/host-agents/#{host.id}/overview"
+
+    assert {:error, {:live_redirect, %{to: ^expected_path}}} =
+             live(conn, "/system/host-agents/#{host.id}")
+  end
+
+  test "detail page manages overview auth config plugin desired sync and danger tabs", %{
     conn: conn
   } do
     assert {:ok, host, auth_token, _token} = Hosts.create_agent_with_token(%{"name" => "t430"})
@@ -76,17 +84,19 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
                "targets" => [%{"name" => "agents", "path" => "/tmp/skills"}]
              })
 
-    {:ok, view, html} = live(conn, "/system/host-agents/#{host.id}")
+    {:ok, view, html} = live(conn, "/system/host-agents/#{host.id}/overview")
 
     assert html =~ "t430"
     assert html =~ "198.51.100.4"
     assert has_element?(view, "#agent-tab-overview")
-    assert has_element?(view, "#agent-tab-setup")
+    refute has_element?(view, "#agent-tab-setup")
     assert has_element?(view, "#agent-tab-auth")
     assert has_element?(view, "#agent-tab-config")
+    assert has_element?(view, "#agent-tab-plugin")
     assert has_element?(view, "#agent-tab-desired")
     assert has_element?(view, "#agent-tab-sync")
     assert has_element?(view, "#agent-tab-danger")
+    assert html =~ ~s(href="/system/host-agents/#{host.id}/config")
 
     html =
       view
@@ -104,19 +114,27 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
 
     html =
       view
-      |> element("#agent-tab-setup")
-      |> render_click()
-
-    assert html =~ "host_id: #{host.id}"
-    assert html =~ "token: PASTE_TOKEN_HERE"
-
-    html =
-      view
       |> element("#agent-tab-config")
       |> render_click()
 
+    assert html =~ "Setup Example"
+    assert html =~ "host_id: #{host.id}"
+    assert html =~ "token: PASTE_TOKEN_HERE"
     assert html =~ "Reported Config"
     assert html =~ "/tmp/skills"
+
+    html =
+      view
+      |> element("#agent-tab-plugin")
+      |> render_click()
+
+    assert html =~ "Packaged Plugins"
+    assert html =~ "Backplane Memory"
+    assert html =~ "Hermes"
+    assert html =~ "OpenClaw"
+    assert html =~ "host_agent::install_plugin"
+    assert has_element?(view, "#install-plugin-hermes")
+    assert has_element?(view, "#remove-plugin-hermes")
 
     html =
       view
@@ -150,7 +168,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert {:ok, host, auth_token, token} =
              Hosts.create_agent_with_token(%{"name" => "delete-me"})
 
-    {:ok, view, _html} = live(conn, "/system/host-agents/#{host.id}")
+    {:ok, view, _html} = live(conn, "/system/host-agents/#{host.id}/overview")
 
     view
     |> element("#agent-tab-danger")
