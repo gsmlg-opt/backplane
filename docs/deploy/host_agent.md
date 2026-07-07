@@ -40,7 +40,7 @@ agent:
   work_dir: ~/.local/share/backplane/host_agent
   # Local MCP/memory HTTP API; set http_port to 0 to disable.
   http_bind: 127.0.0.1
-  http_port: 4221
+  http_port: 4222
 
 memory:
   enabled: true
@@ -60,5 +60,20 @@ targets:
 
 The agent connects to the hub over WebSocket, heartbeats, syncs assigned
 skills into the configured targets, and serves the local MCP endpoint at
-`http://127.0.0.1:4221/mcp` (memory routes under `/memory/:agent_id/...`).
+`http://127.0.0.1:4222/memory/:agent_id/mcp`.
 Tools not handled locally are forwarded to the hub with the host token.
+
+## 5. Install memory plugins
+
+The host-agent release packages the OpenClaw and Hermes memory plugins. Install
+one through the local MCP endpoint:
+
+```sh
+curl http://127.0.0.1:4222/memory/host_agent/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"hermes"}}}'
+```
+
+Use `"runtime":"openclaw"` for OpenClaw. The installer writes
+`backplane-memory` under the runtime's default plugin directory in the current
+user's home directory and replaces an older copy by default.

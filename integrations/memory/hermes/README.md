@@ -6,7 +6,7 @@ Persistent cross-session memory for [Hermes Agent](https://github.com/NousResear
 
 ```
 Hermes ──HTTP──▶ Backplane host agent ──WebSocket──▶ Backplane hub ──Postgres+pgvector
-        :4221                                       (memory::* tools)
+        :4222                                       (memory::* tools)
 ```
 
 The host agent runs locally, authenticates to the Backplane hub once with a host token, then exposes `/memory/:agent_id/...` on `127.0.0.1` for any process on the machine. This plugin is a thin HTTP client that follows Hermes' `MemoryProvider` contract.
@@ -22,15 +22,19 @@ The host agent runs locally, authenticates to the Backplane hub once with a host
      hub_url: https://backplane.example.com
      token: <host-token-from-admin-ui>
      http_bind: 127.0.0.1
-     http_port: 4221
+     http_port: 4222
    ```
 
    Start it with `mix agent.run` (from a Backplane checkout). See [the Host Agents admin page](http://localhost:4220/admin/system/host-agents) for the full setup walkthrough.
 
 ## Install
 
+The host agent can install the packaged plugin:
+
 ```bash
-cp -r integrations/memory/hermes ~/.hermes/plugins/backplane-memory
+curl http://127.0.0.1:4222/memory/hermes/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"hermes"}}}'
 ```
 
 Then in `~/.hermes/config.yaml`:
@@ -46,7 +50,7 @@ Restart Hermes.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKPLANE_MEMORY_URL` | `http://127.0.0.1:4221` | Host agent base URL |
+| `BACKPLANE_MEMORY_URL` | `http://127.0.0.1:4222` | Host agent base URL |
 | `BACKPLANE_MEMORY_AGENT_ID` | `hermes` | Logical agent id used in the URL path |
 
 The plugin also reads `~/.config/backplane/host_agent_client.env` (or `$XDG_CONFIG_HOME/backplane/host_agent_client.env`) at import time using `os.environ.setdefault`, so anything you set explicitly in the shell wins.
@@ -68,7 +72,7 @@ The plugin also reads `~/.config/backplane/host_agent_client.env` (or `$XDG_CONF
 
 ## Troubleshooting
 
-**`hermes memory status` reports unavailable** — the plugin's `is_available()` only validates the URL syntax; check that the host agent is actually running and listening with `curl http://127.0.0.1:4221/memory/hermes/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: application/json'`.
+**`hermes memory status` reports unavailable** — the plugin's `is_available()` only validates the URL syntax; check that the host agent is actually running and listening with `curl http://127.0.0.1:4222/memory/hermes/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: application/json'`.
 
 **503 "host agent is not connected"** — the host agent is up but its WebSocket channel to the Backplane hub isn't joined yet. Check the agent's logs.
 

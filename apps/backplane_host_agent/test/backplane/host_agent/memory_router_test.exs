@@ -279,6 +279,8 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert "memory::remember" in tool_names
       assert "memory::slot_write" in tool_names
       assert "memory::facet_query" in tool_names
+      assert "host_agent::install_plugin" in tool_names
+      assert "host_agent::remove_plugin" in tool_names
     end
 
     test "routes tools/call through local memory" do

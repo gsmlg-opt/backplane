@@ -1,10 +1,12 @@
 defmodule Backplane.Umbrella.MixProject do
   use Mix.Project
 
+  @version "0.3.1"
+
   def project do
     [
       apps_path: "apps",
-      version: "0.3.1",
+      version: @version,
       start_permanent: Mix.env() == :prod,
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
@@ -57,11 +59,19 @@ defmodule Backplane.Umbrella.MixProject do
       host_agent: [
         include_executables_for: [:unix],
         runtime_config_path: "config/host_agent_runtime.exs",
+        overlays: host_agent_overlays(),
         applications: [
           backplane_host_agent: :permanent,
           runtime_tools: :permanent
         ]
       ]
+    ]
+  end
+
+  defp host_agent_overlays do
+    [
+      {:copy, "integrations/memory",
+       "lib/backplane_host_agent-#{@version}/priv/integrations/memory"}
     ]
   end
 

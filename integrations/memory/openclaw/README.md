@@ -6,7 +6,7 @@ Persistent cross-session memory for [OpenClaw](https://github.com/openclaw/openc
 
 ```
 OpenClaw ──fetch──▶ Backplane host agent ──WebSocket──▶ Backplane hub ──Postgres+pgvector
-         :4221                                          (memory::* tools)
+         :4222                                          (memory::* tools)
 ```
 
 The host agent runs locally, authenticates to the Backplane hub once with a host token, then exposes `/memory/:agent_id/...` on `127.0.0.1` for any process on the machine. This plugin is a thin HTTP client that implements the OpenClaw memory-slot contract.
@@ -22,16 +22,19 @@ The host agent runs locally, authenticates to the Backplane hub once with a host
      hub_url: https://backplane.example.com
      token: <host-token-from-admin-ui>
      http_bind: 127.0.0.1
-     http_port: 4221
+     http_port: 4222
    ```
 
    Start it with `mix agent.run`. See [the Host Agents admin page](http://localhost:4220/admin/system/host-agents) for the full setup walkthrough.
 
 ## Install
 
+The host agent can install the packaged plugin:
+
 ```bash
-mkdir -p ~/.openclaw/extensions
-cp -r integrations/memory/openclaw ~/.openclaw/extensions/backplane-memory
+curl http://127.0.0.1:4222/memory/openclaw/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"openclaw"}}}'
 ```
 
 Then in `~/.openclaw/openclaw.json`:
@@ -46,7 +49,7 @@ Then in `~/.openclaw/openclaw.json`:
       "backplane-memory": {
         "enabled": true,
         "config": {
-          "base_url": "http://127.0.0.1:4221",
+          "base_url": "http://127.0.0.1:4222",
           "agent_id": "openclaw",
           "token_budget": 2000,
           "min_confidence": 0.5,
@@ -72,7 +75,7 @@ Restart OpenClaw.
 | Key | Default | Description |
 |---|---|---|
 | `enabled` | `true` | Toggle the plugin without uninstalling it |
-| `base_url` | `http://127.0.0.1:4221` | Host agent base URL |
+| `base_url` | `http://127.0.0.1:4222` | Host agent base URL |
 | `agent_id` | `openclaw` | Logical agent id used in the URL path |
 | `token_budget` | `2000` | Approximate context budget for the recall block |
 | `min_confidence` | `0.5` | Reserved — currently informational |
@@ -83,7 +86,7 @@ Restart OpenClaw.
 
 **Plugin validates but does not load** — ensure `package.json`, `openclaw.plugin.json`, and `plugin.mjs` are all present in the extension directory and that `plugins.slots.memory` is set to `backplane-memory`.
 
-**Connection refused on port 4221** — the host agent is not running, or `http_port` is not set in `host_agent.yaml`. Add `http_port: 4221` and rerun `mix agent.run`.
+**Connection refused on port 4222** — the host agent is not running, or `http_port` is not set in `host_agent.yaml`. Add `http_port: 4222` and rerun `mix agent.run`.
 
 **503 "host agent is not connected"** — the host agent is up but its WebSocket channel to the Backplane hub hasn't joined yet. Check the agent's logs.
 
