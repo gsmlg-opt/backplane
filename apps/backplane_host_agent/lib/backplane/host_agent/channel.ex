@@ -52,7 +52,7 @@ defmodule Backplane.HostAgent.Channel do
       Application.get_env(
         :backplane_host_agent,
         :socket_channel_module,
-        Phoenix.SocketClient.Channel
+        Backplane.HostAgent.AgentChannel
       )
 
     channel_module.join(socket, "host_agent:#{host_id}", Syncer.join_payload())

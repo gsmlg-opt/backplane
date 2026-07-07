@@ -45,6 +45,16 @@ defmodule Backplane.Skills.AgentManage.Manager do
     GenServer.call(pid, {:record_sync, payload})
   end
 
+  def call_local_tool(pid, tool_name, arguments, timeout) do
+    GenServer.call(pid, {:call_local_tool, tool_name, arguments, timeout}, timeout + 1_000)
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+  end
+
+  def complete_plugin_call(pid, call_id, payload) do
+    GenServer.call(pid, {:complete_plugin_call, call_id, payload})
+  end
+
   def disconnect(pid) do
     GenServer.call(pid, :disconnect)
   end
@@ -68,7 +78,8 @@ defmodule Backplane.Skills.AgentManage.Manager do
        runtime: %{},
        config: nil,
        last_sync: nil,
-       last_error: nil
+       last_error: nil,
+       pending_plugin_calls: %{}
      }}
   end
 
@@ -114,6 +125,40 @@ defmodule Backplane.Skills.AgentManage.Manager do
     {:reply, :ok, state}
   end
 
+  def handle_call({:call_local_tool, tool_name, arguments, timeout}, from, state) do
+    if state.status == :online and is_pid(state.channel_pid) do
+      call_id = Ecto.UUID.generate()
+      payload = %{"call_id" => call_id, "name" => tool_name, "arguments" => arguments}
+
+      case push_module().push(state.channel_pid, "plugin_call", payload) do
+        :ok ->
+          timer = Process.send_after(self(), {:plugin_call_timeout, call_id}, timeout)
+          pending = Map.put(state.pending_plugin_calls, call_id, {from, timer})
+          {:noreply, %{state | pending_plugin_calls: pending}}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+
+        other ->
+          {:reply, {:error, {:unexpected_push_reply, other}}, state}
+      end
+    else
+      {:reply, {:error, :not_connected}, state}
+    end
+  end
+
+  def handle_call({:complete_plugin_call, call_id, payload}, _from, state) do
+    case Map.pop(state.pending_plugin_calls, call_id) do
+      {{from, timer}, pending} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, normalize_plugin_reply(payload))
+        {:reply, :ok, %{state | pending_plugin_calls: pending}}
+
+      {nil, _pending} ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
   def handle_call(:disconnect, _from, state) do
     state = remove_connection(state, notify?: true, reason: :explicit)
     broadcast_changed()
@@ -128,6 +173,17 @@ defmodule Backplane.Skills.AgentManage.Manager do
     state = remove_connection(state, notify?: false, reason: reason)
     broadcast_changed()
     {:noreply, state}
+  end
+
+  def handle_info({:plugin_call_timeout, call_id}, state) do
+    case Map.pop(state.pending_plugin_calls, call_id) do
+      {{from, _timer}, pending} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | pending_plugin_calls: pending}}
+
+      {nil, _pending} ->
+        {:noreply, state}
+    end
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -175,14 +231,19 @@ defmodule Backplane.Skills.AgentManage.Manager do
       )
     end
 
-    %{
-      state
-      | auth_token_id: nil,
-        channel_pid: nil,
-        monitor_ref: nil,
-        status: :offline,
-        runtime: %{}
-    }
+    state
+    |> reply_pending_plugin_calls({:error, :not_connected})
+    |> then(fn state ->
+      %{
+        state
+        | auth_token_id: nil,
+          channel_pid: nil,
+          monitor_ref: nil,
+          status: :offline,
+          runtime: %{},
+          pending_plugin_calls: %{}
+      }
+    end)
   end
 
   defp public_entry(state) do
@@ -237,6 +298,29 @@ defmodule Backplane.Skills.AgentManage.Manager do
   end
 
   defp sync_error(_payload), do: nil
+
+  defp normalize_plugin_reply(%{"ok" => true, "result" => result}), do: {:ok, result}
+  defp normalize_plugin_reply(%{ok: true, result: result}), do: {:ok, result}
+  defp normalize_plugin_reply(%{"ok" => false, "error" => error}), do: {:error, error}
+  defp normalize_plugin_reply(%{ok: false, error: error}), do: {:error, error}
+  defp normalize_plugin_reply(payload), do: {:error, {:unexpected_reply, payload}}
+
+  defp reply_pending_plugin_calls(state, reply) do
+    Enum.each(state.pending_plugin_calls, fn {_call_id, {from, timer}} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, reply)
+    end)
+
+    state
+  end
+
+  defp push_module do
+    Application.get_env(
+      :backplane_skills,
+      :host_agent_channel_push_module,
+      Backplane.Skills.AgentManage.ChannelPush
+    )
+  end
 
   defp broadcast_changed do
     if Process.whereis(Backplane.PubSub) do

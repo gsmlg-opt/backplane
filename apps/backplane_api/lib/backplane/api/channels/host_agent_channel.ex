@@ -118,6 +118,18 @@ defmodule Backplane.Api.HostAgentChannel do
     invalid_payload(socket)
   end
 
+  def handle_in("plugin_call_result", %{"call_id" => call_id} = payload, socket)
+      when is_binary(call_id) do
+    case AgentManage.complete_plugin_call(socket.assigns.host.id, call_id, payload) do
+      :ok -> {:reply, {:ok, %{"ok" => true}}, socket}
+      {:error, _reason} -> invalid_payload(socket)
+    end
+  end
+
+  def handle_in("plugin_call_result", _payload, socket) do
+    invalid_payload(socket)
+  end
+
   def handle_in("memory_call", %{"method" => method, "arguments" => args}, socket)
       when is_binary(method) and is_map(args) do
     case dispatch_memory(method, args, socket.assigns.host.id) do
@@ -213,6 +225,11 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_info({:mcp_notification, notification}, socket) do
     push(socket, "mcp_notification", notification)
+    {:noreply, socket}
+  end
+
+  def handle_info({:agent_push, event, payload}, socket) do
+    push(socket, event, payload)
     {:noreply, socket}
   end
 

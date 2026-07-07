@@ -7,7 +7,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   alias Backplane.AgentTraces.Event
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills
-  alias Backplane.Skills.{AgentManage, Assignments, HostStatus, Hosts}
+  alias Backplane.Skills.{AgentManage, AgentPlugins, Assignments, HostStatus, Hosts}
   alias Backplane.Api.HostAgentSocket
 
   @moduletag :tmp_dir
@@ -191,6 +191,41 @@ defmodule Backplane.Api.HostAgentChannelTest do
       })
 
     assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+  end
+
+  test "plugin_call_result completes an admin-initiated host-agent plugin call", %{
+    host: host,
+    socket: socket
+  } do
+    assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+
+    task =
+      Task.async(fn ->
+        AgentPlugins.install(entry, %{
+          "plugin" => "memory",
+          "runtime" => "hermes",
+          "force" => "true"
+        })
+      end)
+
+    assert_push("plugin_call", %{
+      "call_id" => call_id,
+      "name" => "host_agent::install_plugin",
+      "arguments" => %{"plugin" => "memory", "runtime" => "hermes", "force" => true}
+    })
+
+    status = %{"plugin" => "memory", "runtime" => "hermes", "installed" => true}
+
+    ref =
+      push(socket, "plugin_call_result", %{
+        "call_id" => call_id,
+        "ok" => true,
+        "result" => status
+      })
+
+    assert_reply(ref, :ok, %{"ok" => true})
+    assert {:ok, ^status} = Task.await(task)
   end
 
   defmodule StubMemoryService do

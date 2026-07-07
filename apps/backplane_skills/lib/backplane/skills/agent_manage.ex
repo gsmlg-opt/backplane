@@ -182,6 +182,30 @@ defmodule Backplane.Skills.AgentManage do
 
   def record_sync(_host_id, _payload), do: {:error, :not_connected}
 
+  @doc "Call a local tool exposed by the connected host agent."
+  @spec call_local_tool(Ecto.UUID.t(), String.t(), map(), pos_integer()) ::
+          {:ok, term()} | {:error, term()}
+  def call_local_tool(host_id, tool_name, arguments, timeout \\ 30_000)
+      when is_binary(host_id) and is_binary(tool_name) and is_map(arguments) and
+             is_integer(timeout) and timeout > 0 do
+    with {:ok, pid} <- lookup(host_id) do
+      Manager.call_local_tool(pid, tool_name, arguments, timeout)
+    else
+      _ -> {:error, :not_connected}
+    end
+  end
+
+  @doc "Complete a pending local tool call from a connected host agent."
+  @spec complete_plugin_call(Ecto.UUID.t(), String.t(), map()) :: :ok | {:error, term()}
+  def complete_plugin_call(host_id, call_id, payload)
+      when is_binary(host_id) and is_binary(call_id) and is_map(payload) do
+    with {:ok, pid} <- lookup(host_id) do
+      Manager.complete_plugin_call(pid, call_id, payload)
+    else
+      _ -> {:error, :not_connected}
+    end
+  end
+
   @doc "Return one base64 encoded skill archive chunk for an assigned skill."
   @spec skill_bundle_chunk(Ecto.UUID.t(), String.t(), non_neg_integer(), pos_integer()) ::
           {:ok, map()} | {:error, term()}

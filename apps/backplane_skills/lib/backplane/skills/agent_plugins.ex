@@ -3,8 +3,11 @@ defmodule Backplane.Skills.AgentPlugins do
   Client helpers for host-agent packaged plugin management.
   """
 
+  alias Backplane.Skills.AgentManage
+
   @default_http_port 4222
   @receive_timeout 5_000
+  @plugin_call_timeout 30_000
 
   @doc "Supported packaged host-agent plugins known to the admin UI."
   def packaged_plugins do
@@ -52,7 +55,17 @@ defmodule Backplane.Skills.AgentPlugins do
     call_tool(entry, "host_agent::remove_plugin", plugin_args(params))
   end
 
-  defp call_tool(entry, tool_name, arguments) do
+  defp call_tool(%{status: :online, host: %{id: host_id}} = entry, tool_name, arguments)
+       when is_binary(host_id) do
+    case AgentManage.call_local_tool(host_id, tool_name, arguments, plugin_call_timeout()) do
+      {:error, :not_connected} -> call_tool_http(entry, tool_name, arguments)
+      result -> result
+    end
+  end
+
+  defp call_tool(entry, tool_name, arguments), do: call_tool_http(entry, tool_name, arguments)
+
+  defp call_tool_http(entry, tool_name, arguments) do
     with {:ok, url} <- endpoint(entry),
          {:ok, response} <- post_json_rpc(url, tool_name, arguments) do
       decode_json_rpc_response(response)
@@ -191,4 +204,8 @@ defmodule Backplane.Skills.AgentPlugins do
   end
 
   defp parse_port(_port), do: nil
+
+  defp plugin_call_timeout do
+    Application.get_env(:backplane_skills, :host_agent_plugin_call_timeout, @plugin_call_timeout)
+  end
 end

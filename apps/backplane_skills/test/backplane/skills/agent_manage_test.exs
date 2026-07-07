@@ -4,13 +4,15 @@ defmodule Backplane.Skills.AgentManageTest do
   import Backplane.SkillArchiveCase
 
   alias Backplane.Skills
-  alias Backplane.Skills.{AgentManage, Assignments, Hosts}
+  alias Backplane.Skills.{AgentManage, AgentPlugins, Assignments, Hosts}
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
 
   setup %{tmp_dir: tmp_dir} do
     previous_blob_root = Backplane.Settings.get(@blob_setting)
+    previous_push_module = Application.get_env(:backplane_skills, :host_agent_channel_push_module)
+    previous_timeout = Application.get_env(:backplane_skills, :host_agent_plugin_call_timeout)
     blob_root = Path.join(tmp_dir, "blobs")
 
     :ets.insert(:backplane_settings, {@blob_setting, blob_root})
@@ -18,8 +20,17 @@ defmodule Backplane.Skills.AgentManageTest do
 
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
+      restore_env(:host_agent_channel_push_module, previous_push_module)
+      restore_env(:host_agent_plugin_call_timeout, previous_timeout)
       AgentManage.clear()
     end)
+  end
+
+  defmodule FakePluginPush do
+    def push(channel, event, payload) do
+      send(channel, {:agent_push, event, payload})
+      :ok
+    end
   end
 
   test "starts a manager when an agent is created with its initial token" do
@@ -104,6 +115,45 @@ defmodule Backplane.Skills.AgentManageTest do
            end)
   end
 
+  test "plugin actions run through the connected host-agent channel" do
+    Application.put_env(:backplane_skills, :host_agent_channel_push_module, FakePluginPush)
+    Application.put_env(:backplane_skills, :host_agent_plugin_call_timeout, 250)
+
+    assert {:ok, host, auth_token, _token} = Hosts.create_agent_with_token(%{"name" => "t430"})
+    assert :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+
+    task =
+      Task.async(fn ->
+        AgentPlugins.install(entry, %{
+          "plugin" => "memory",
+          "runtime" => "hermes",
+          "force" => "true"
+        })
+      end)
+
+    assert_receive {:agent_push, "plugin_call",
+                    %{
+                      "call_id" => call_id,
+                      "name" => "host_agent::install_plugin",
+                      "arguments" => %{
+                        "plugin" => "memory",
+                        "runtime" => "hermes",
+                        "force" => true
+                      }
+                    }}
+
+    status = %{"plugin" => "memory", "runtime" => "hermes", "installed" => true}
+
+    assert :ok =
+             AgentManage.complete_plugin_call(host.id, call_id, %{
+               "ok" => true,
+               "result" => status
+             })
+
+    assert {:ok, ^status} = Task.await(task)
+  end
+
   test "refreshes cached token hashes when agent tokens change" do
     assert {:ok, host, first_token, first_plaintext} =
              Hosts.create_agent_with_token(%{"name" => "t430"})
@@ -165,4 +215,7 @@ defmodule Backplane.Skills.AgentManageTest do
   end
 
   defp eventually(_fun, 0), do: false
+
+  defp restore_env(key, nil), do: Application.delete_env(:backplane_skills, key)
+  defp restore_env(key, value), do: Application.put_env(:backplane_skills, key, value)
 end
