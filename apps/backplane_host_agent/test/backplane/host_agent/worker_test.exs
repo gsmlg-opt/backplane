@@ -313,6 +313,19 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert {:ok, updated} = Worker.run_once(state)
     assert %{last_sync: %DateTime{}, last_error: nil} = updated
 
+    assert_receive {:push, "config_report",
+                    %{
+                      "agent" => %{
+                        "host_id" => "host-1",
+                        "machine_name" => "t430",
+                        "token" => "REDACTED"
+                      },
+                      "memory" => %{"bound_scope" => "proj_local"},
+                      "telemetry" => %{"dir" => telemetry_dir},
+                      "targets" => [%{"name" => "agents", "path" => ^tmp_dir}]
+                    }}
+
+    assert telemetry_dir == Path.join(tmp_dir, "telemetry")
     assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
     refute_received {:push, "get_desired", %{}}
 
@@ -413,7 +426,7 @@ defmodule Backplane.HostAgent.WorkerTest do
              Worker.run_once(%{state(config) | channel_module: ExitingChannel})
 
     assert updated.last_error == {:channel_exit, :shutdown}
-    assert_receive {:push, "heartbeat", %{"machine_name" => "t430"}}
+    assert_receive {:push, "config_report", %{"agent" => %{"machine_name" => "t430"}}}
   end
 
   @tag :tmp_dir
@@ -611,8 +624,31 @@ defmodule Backplane.HostAgent.WorkerTest do
   defp config(tmp_dir) do
     %{
       host_id: "host-1",
+      hub_url: "http://localhost:4220",
+      interval_ms: 60_000,
       machine_name: "t430",
       manifest_path: Path.join(tmp_dir, "manifest.json"),
+      token: "host-token",
+      work_dir: tmp_dir,
+      http_bind: "127.0.0.1",
+      http_port: 4222,
+      memory: %{
+        enabled: true,
+        db_path: Path.join(tmp_dir, "memory/host_agent_memory.db"),
+        bound_scope: "proj_local",
+        local_ttl_days: 90,
+        sync_interval_ms: 5_000,
+        sync_batch_size: 50,
+        max_attempts: 5,
+        tombstone_relearn: "block"
+      },
+      telemetry: %{
+        enabled: true,
+        dir: Path.join(tmp_dir, "telemetry"),
+        sync_interval_ms: 10_000,
+        sync_batch_size: 100,
+        retention_days: 14
+      },
       targets: [%{name: "agents", runtime: "agent-skills", path: tmp_dir, enabled: true}]
     }
   end

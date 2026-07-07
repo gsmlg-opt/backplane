@@ -569,7 +569,10 @@ defmodule Backplane.Admin.HostAgentsLive do
           <p class="text-on-surface-variant">
             Use this host ID with an assigned token on the host agent.
           </p>
-          <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{agent_yaml(@entry)}</code></pre>
+          <pre
+            id="setup-example-yaml"
+            class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"
+          ><code class="language-yaml">{agent_yaml(@entry)}</code></pre>
         </div>
       </.dm_card>
 
@@ -580,41 +583,11 @@ defmodule Backplane.Admin.HostAgentsLive do
         </div>
 
         <div :if={@entry.config} class="space-y-4">
-          <div :if={config_targets(@entry.config) == []} class="text-sm text-on-surface-variant">
-            No targets reported.
-          </div>
-          <div :if={config_targets(@entry.config) != []} class="overflow-x-auto">
-            <table id="host-config-targets-table" class="min-w-full text-sm">
-              <thead class="bg-surface-container-high text-on-surface">
-                <tr>
-                  <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                  <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
-                  <th scope="col" class="px-3 py-2 text-left font-semibold">Path</th>
-                  <th scope="col" class="px-3 py-2 text-left font-semibold">Enabled</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-outline-variant">
-                <tr :for={target <- config_targets(@entry.config)}>
-                  <td class="px-3 py-2 align-top font-medium">{target["name"] || "-"}</td>
-                  <td class="px-3 py-2 align-top">{target["runtime"] || "-"}</td>
-                  <td class="px-3 py-2 align-top">
-                    <code class="text-xs break-all">{target["path"] || "-"}</code>
-                  </td>
-                  <td class="px-3 py-2 align-top">
-                    <.dm_badge variant={if target["enabled"] == false, do: "error", else: "success"} size="sm">
-                      {if target["enabled"] == false, do: "No", else: "Yes"}
-                    </.dm_badge>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <pre
+            id="reported-config-yaml"
+            class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"
+          ><code class="language-yaml">{yaml(@entry.config)}</code></pre>
         </div>
-      </.dm_card>
-
-      <.dm_card :if={@entry.config} variant="bordered">
-        <:title>Raw Config JSON</:title>
-        <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{json(@entry.config)}</code></pre>
       </.dm_card>
     </div>
     """
@@ -880,14 +853,38 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp agent_yaml(entry) do
     """
+    # Backplane host agent configuration
     agent:
+      host_id: #{entry.host.id}
       machine_name: #{entry.host.name}
       hub_url: #{hub_url_hint()}
-      host_id: #{entry.host.id}
-      token: PASTE_TOKEN_HERE
+      token: REPLACE_WITH_AUTH_TOKEN
       interval_ms: 60000
       manifest_path: ~/.local/share/backplane/host_agent/manifest.json
       work_dir: ~/.local/share/backplane/host_agent
+
+      # Local Memory HTTP API. Bind 127.0.0.1 and set http_port to expose
+      # /memory/:agent_id/mcp and /memory/:agent_id/call/:method to processes
+      # on this host. Set http_port to 0 to disable.
+      http_bind: 127.0.0.1
+      http_port: 4222
+
+    memory:
+      enabled: true
+      db_path: ~/.local/share/backplane/host_agent/memory/host_agent_memory.db
+      bound_scope: proj_local
+      local_ttl_days: 90
+      sync_interval_ms: 5000
+      sync_batch_size: 50
+      max_attempts: 5
+      tombstone_relearn: block
+
+    telemetry:
+      enabled: true
+      dir: ~/.local/share/backplane/host_agent/telemetry
+      sync_interval_ms: 10000
+      sync_batch_size: 100
+      retention_days: 14
 
     targets:
       - name: agents
@@ -920,9 +917,6 @@ defmodule Backplane.Admin.HostAgentsLive do
   end
 
   defp targets_summary(_entry), do: "0"
-
-  defp config_targets(%{"targets" => targets}) when is_list(targets), do: targets
-  defp config_targets(_config), do: []
 
   defp plugin_rows(statuses) when is_list(statuses) do
     status_by_key =
@@ -1039,6 +1033,92 @@ defmodule Backplane.Admin.HostAgentsLive do
   end
 
   defp json(value), do: Jason.encode!(value, pretty: true)
+
+  defp yaml(value) do
+    value
+    |> yaml_lines(0)
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
+  end
+
+  defp yaml_lines(map, indent) when is_map(map) do
+    map
+    |> ordered_yaml_entries()
+    |> Enum.flat_map(fn {key, value} ->
+      yaml_entry_lines(to_string(key), value, indent)
+    end)
+  end
+
+  defp yaml_lines(list, indent) when is_list(list) do
+    Enum.flat_map(list, fn
+      value when is_map(value) or is_list(value) ->
+        [yaml_indent(indent) <> "-"] ++ yaml_lines(value, indent + 2)
+
+      value ->
+        [yaml_indent(indent) <> "- " <> yaml_scalar(value)]
+    end)
+  end
+
+  defp yaml_lines(value, indent), do: [yaml_indent(indent) <> yaml_scalar(value)]
+
+  defp yaml_entry_lines(key, value, indent) when is_map(value) or is_list(value) do
+    [yaml_indent(indent) <> key <> ":"] ++ yaml_lines(value, indent + 2)
+  end
+
+  defp yaml_entry_lines(key, value, indent) do
+    [yaml_indent(indent) <> key <> ": " <> yaml_scalar(value)]
+  end
+
+  defp ordered_yaml_entries(map) do
+    Enum.sort_by(map, fn {key, _value} ->
+      key = to_string(key)
+      {yaml_key_rank(key), key}
+    end)
+  end
+
+  defp yaml_key_rank(key) do
+    [
+      "agent",
+      "host_id",
+      "machine_name",
+      "hub_url",
+      "token",
+      "interval_ms",
+      "manifest_path",
+      "work_dir",
+      "http_bind",
+      "http_port",
+      "memory",
+      "enabled",
+      "db_path",
+      "bound_scope",
+      "local_ttl_days",
+      "sync_interval_ms",
+      "sync_batch_size",
+      "max_attempts",
+      "tombstone_relearn",
+      "telemetry",
+      "dir",
+      "retention_days",
+      "targets",
+      "name",
+      "runtime",
+      "path"
+    ]
+    |> Enum.find_index(&(&1 == key))
+    |> case do
+      nil -> 10_000
+      rank -> rank
+    end
+  end
+
+  defp yaml_scalar(nil), do: "null"
+  defp yaml_scalar(value) when is_binary(value), do: value
+  defp yaml_scalar(value) when is_boolean(value), do: to_string(value)
+  defp yaml_scalar(value) when is_number(value), do: to_string(value)
+  defp yaml_scalar(value), do: inspect(value)
+
+  defp yaml_indent(indent), do: String.duplicate(" ", indent)
 
   defp desired_state(%{host: %Host{} = host}) do
     {:ok, desired} = DesiredState.for_host(host)

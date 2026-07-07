@@ -41,7 +41,9 @@ defmodule Backplane.HostAgent.Worker do
     channel_module = Map.get(state, :channel_module, Channel)
     started_at = DateTime.utc_now()
 
-    with {:ok, _reply} <- push(channel_module, channel, "heartbeat", Reporter.heartbeat(config)),
+    with {:ok, _reply} <-
+           push(channel_module, channel, "config_report", Reporter.config_report(config)),
+         {:ok, _reply} <- push(channel_module, channel, "heartbeat", Reporter.heartbeat(config)),
          {:ok, desired_state} <- desired_state(state),
          {:ok, manifest} <- read_manifest(config) do
       # Reconcile skills

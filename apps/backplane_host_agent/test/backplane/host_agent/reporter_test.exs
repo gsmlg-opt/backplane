@@ -33,6 +33,64 @@ defmodule Backplane.HostAgent.ReporterTest do
     assert otp_release == System.otp_release()
   end
 
+  test "formats loaded config report payload with token redacted" do
+    config = %{
+      host_id: "host-1",
+      machine_name: "t430",
+      hub_url: "http://localhost:4220",
+      token: "secret-token",
+      interval_ms: 60_000,
+      manifest_path: "/tmp/manifest.json",
+      work_dir: "/tmp/work",
+      http_bind: "127.0.0.1",
+      http_port: 4222,
+      memory: %{
+        enabled: true,
+        db_path: "/tmp/work/memory/host_agent_memory.db",
+        bound_scope: "proj_local",
+        local_ttl_days: 90,
+        sync_interval_ms: 5_000,
+        sync_batch_size: 50,
+        max_attempts: 5,
+        tombstone_relearn: "block"
+      },
+      telemetry: %{
+        enabled: true,
+        dir: "/tmp/work/telemetry",
+        sync_interval_ms: 10_000,
+        sync_batch_size: 100,
+        retention_days: 14
+      },
+      targets: [
+        %{name: "agents", runtime: "agent-skills", path: "/tmp/work/skills", enabled: true}
+      ]
+    }
+
+    assert %{
+             "agent" => %{
+               "host_id" => "host-1",
+               "machine_name" => "t430",
+               "hub_url" => "http://localhost:4220",
+               "token" => "REDACTED",
+               "interval_ms" => 60_000,
+               "manifest_path" => "/tmp/manifest.json",
+               "work_dir" => "/tmp/work",
+               "http_bind" => "127.0.0.1",
+               "http_port" => 4222
+             },
+             "memory" => %{"bound_scope" => "proj_local"},
+             "telemetry" => %{"dir" => "/tmp/work/telemetry"},
+             "targets" => [
+               %{
+                 "enabled" => true,
+                 "name" => "agents",
+                 "path" => "/tmp/work/skills",
+                 "runtime" => "agent-skills"
+               }
+             ]
+           } = Reporter.config_report(config)
+  end
+
   test "formats sync result payload" do
     payload =
       Reporter.sync_result(:synced, [

@@ -80,7 +80,15 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
 
     assert :ok =
              AgentManage.report_config(host.id, %{
-               "agent" => %{"machine_name" => "t430"},
+               "agent" => %{
+                 "host_id" => host.id,
+                 "machine_name" => "t430",
+                 "hub_url" => "http://10.100.10.28:4220",
+                 "token" => "REDACTED",
+                 "http_port" => 4222
+               },
+               "memory" => %{"enabled" => true, "bound_scope" => "proj_local"},
+               "telemetry" => %{"enabled" => true, "dir" => "/tmp/telemetry"},
                "targets" => [%{"name" => "agents", "path" => "/tmp/skills"}]
              })
 
@@ -119,9 +127,20 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
 
     assert html =~ "Setup Example"
     assert html =~ "host_id: #{host.id}"
-    assert html =~ "token: PASTE_TOKEN_HERE"
+    assert html =~ "token: REPLACE_WITH_AUTH_TOKEN"
+    assert html =~ "http_bind: 127.0.0.1"
+    assert html =~ "memory:"
+    assert html =~ "telemetry:"
+    assert html =~ "db_path: ~/.local/share/backplane/host_agent/memory/host_agent_memory.db"
+    assert has_element?(view, "#setup-example-yaml code.language-yaml")
     assert html =~ "Reported Config"
+    assert html =~ "hub_url: http://10.100.10.28:4220"
+    assert html =~ "token: REDACTED"
+    assert html =~ "bound_scope: proj_local"
     assert html =~ "/tmp/skills"
+    assert has_element?(view, "#reported-config-yaml code.language-yaml")
+    refute has_element?(view, "#host-config-targets-table")
+    refute html =~ "Raw Config JSON"
 
     html =
       view
