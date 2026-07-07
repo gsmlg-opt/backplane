@@ -1,6 +1,7 @@
 defmodule Backplane.Api.HostAgentChannelTest do
   use Backplane.Api.ChannelCase, async: false
 
+  import ExUnit.CaptureLog
   import Backplane.SkillArchiveCase
 
   alias Backplane.Repo
@@ -445,6 +446,13 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
   end
 
+  defmodule RaisingHostMemorySync do
+    def entitled_scopes(_host), do: raise("memory reconcile unavailable")
+    def facts_for_scope(_scope, _fact_set_hash), do: :unchanged
+    def active_wipes(_scope), do: []
+    def apply_sync_item(_host, _item), do: {:error, :transient, "unavailable"}
+  end
+
   describe "host memory sync" do
     setup %{host: host, socket: socket} do
       :persistent_term.put({StubHostMemorySync, :owner}, self())
@@ -487,6 +495,40 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_received {:host_memory_sync, {:active_wipes, "proj_local"}}
       refute_received {:host_memory_sync, {:facts_for_scope, "secret", "secret_hash"}}
       refute_received {:host_memory_sync, {:active_wipes, "secret"}}
+    end
+
+    test "join memory reconcile failures do not disconnect the host", %{
+      host: host,
+      socket: socket
+    } do
+      previous_flag = Process.flag(:trap_exit, true)
+      on_exit(fn -> Process.flag(:trap_exit, previous_flag) end)
+
+      Application.put_env(:backplane_api, :host_memory_sync_adapter, RaisingHostMemorySync)
+
+      payload = %{
+        "memory" => %{
+          "protocol" => "host_memory.v1",
+          "scopes" => [%{"scope" => "proj_local", "fact_set_hash" => "old_hash"}]
+        }
+      }
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _reply, socket} =
+                   subscribe_and_join(socket, "host_agent:#{host.id}", payload)
+
+          send(self(), {:joined_socket, socket})
+
+          refute_receive {:EXIT, _pid, _reason}, 100
+        end)
+
+      assert log =~ "Host-agent memory reconcile failed"
+      assert_receive {:joined_socket, socket}
+      assert {:ok, %{status: :online}} = AgentManage.get_agent(host.id)
+
+      ref = push(socket, "heartbeat", %{"agent_version" => "0.3.1"})
+      assert_reply(ref, :ok, %{"ok" => true})
     end
 
     test "memory_sync applies items and returns per-item acks", %{host: host, socket: socket} do

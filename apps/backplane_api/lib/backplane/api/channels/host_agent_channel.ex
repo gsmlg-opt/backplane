@@ -1,6 +1,8 @@
 defmodule Backplane.Api.HostAgentChannel do
   use Backplane.Api, :channel
 
+  require Logger
+
   alias Backplane.AgentTraces
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
@@ -219,7 +221,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   @impl true
   def handle_info({:memory_reconcile, payload}, socket) do
-    push_memory_reconcile(payload, socket)
+    safe_push_memory_reconcile(payload, socket)
     {:noreply, socket}
   end
 
@@ -281,6 +283,24 @@ defmodule Backplane.Api.HostAgentChannel do
           :ok
       end
     end)
+  end
+
+  defp safe_push_memory_reconcile(payload, socket) do
+    push_memory_reconcile(payload, socket)
+  rescue
+    error ->
+      Logger.warning(
+        "Host-agent memory reconcile failed for #{socket.assigns.host.id}: #{Exception.message(error)}"
+      )
+
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Host-agent memory reconcile failed for #{socket.assigns.host.id}: #{inspect({kind, reason})}"
+      )
+
+      :ok
   end
 
   defp announced_memory_scopes(%{
