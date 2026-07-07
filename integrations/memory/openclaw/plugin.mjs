@@ -2,7 +2,7 @@
  * Backplane Memory plugin for OpenClaw.
  *
  * Speaks to the local Backplane host agent's Memory HTTP API
- * (default http://127.0.0.1:4221/memory/<agent_id>/...), which proxies
+ * (default http://127.0.0.1:4222/memory/<agent_id>/...), which proxies
  * everything through the host agent's authenticated WebSocket channel
  * to the Backplane hub.
  *
@@ -13,7 +13,7 @@
  *   - agent_end — capture the completed conversation turn
  */
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:4221";
+const DEFAULT_BASE_URL = "http://127.0.0.1:4222";
 const DEFAULT_AGENT_ID = "openclaw";
 const DEFAULT_TIMEOUT_MS = 5000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);

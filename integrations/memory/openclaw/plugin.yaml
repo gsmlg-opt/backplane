@@ -18,7 +18,7 @@ hooks:
 
 config:
   enabled: true
-  base_url: http://127.0.0.1:4221
+  base_url: http://127.0.0.1:4222
   agent_id: openclaw
   token_budget: 2000
   min_confidence: 0.5

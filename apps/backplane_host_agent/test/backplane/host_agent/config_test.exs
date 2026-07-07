@@ -54,12 +54,12 @@ defmodule Backplane.HostAgent.ConfigTest do
       manifest_path: #{Path.join(tmp_dir, "manifest.json")}
       work_dir: #{Path.join(tmp_dir, "work")}
       http_bind: 0.0.0.0
-      http_port: 4221
+      http_port: 4321
     """)
 
     assert {:ok, config} = Config.load(config_path)
     assert config.http_bind == "0.0.0.0"
-    assert config.http_port == 4221
+    assert config.http_port == 4321
   end
 
   @tag :tmp_dir
@@ -80,7 +80,7 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert {:ok, config} = Config.load(config_path)
     assert config.http_bind == "127.0.0.1"
-    assert config.http_port == 4221
+    assert config.http_port == 4222
   end
 
   test "sample config includes the local memory API listen port" do
@@ -88,7 +88,7 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert sample =~ "http_bind: 127.0.0.1"
     assert sample =~ "host_id: REPLACE_WITH_AGENT_ID"
-    assert sample =~ "\n  http_port: 4221\n"
+    assert sample =~ "\n  http_port: 4222\n"
     assert sample =~ "\nmemory:\n"
     assert sample =~ "db_path:"
     assert sample =~ "local_ttl_days: 90"

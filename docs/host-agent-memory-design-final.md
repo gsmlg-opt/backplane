@@ -94,7 +94,7 @@ agent:
   token: REPLACE_WITH_AUTH_TOKEN
   work_dir: /home/me/.local/share/backplane/host_agent
   http_bind: 127.0.0.1
-  http_port: 4221
+  http_port: 4222
 
 memory:
   enabled: true

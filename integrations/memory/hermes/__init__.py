@@ -2,7 +2,7 @@
 Backplane Memory provider for Hermes Agent.
 
 Talks to the local Backplane host agent's Memory HTTP API
-(default `http://127.0.0.1:4221/memory/<agent_id>/...`), which proxies
+(default `http://127.0.0.1:4222/memory/<agent_id>/...`), which proxies
 every call through the host agent's authenticated WebSocket channel
 to the Backplane hub.
 
@@ -59,7 +59,7 @@ except ImportError:
         def shutdown(self, **kwargs: Any) -> None: pass
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:4221"
+DEFAULT_BASE_URL = "http://127.0.0.1:4222"
 DEFAULT_AGENT_ID = "hermes"
 TIMEOUT = 5
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}

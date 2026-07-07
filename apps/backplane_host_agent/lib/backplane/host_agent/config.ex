@@ -7,7 +7,7 @@ defmodule Backplane.HostAgent.Config do
   an explicit path to `load/1`.
   """
 
-  @default_http_port 4221
+  @default_http_port 4222
 
   defstruct [
     :host_id,
