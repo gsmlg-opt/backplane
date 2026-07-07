@@ -37,7 +37,14 @@ defmodule Backplane.HostAgent.ChannelTest do
     end
   end
 
-  defmodule FakeSocketChannel do
+  defmodule FakeAgentChannel do
+    use Phoenix.SocketClient.Channel
+
+    @impl true
+    def handle_message(_event, _payload, state), do: {:noreply, state}
+  end
+
+  defmodule FakeSocketChannelJoin do
     def join(socket, topic, payload) do
       owner = :persistent_term.get({__MODULE__, :owner})
       send(owner, {:join, socket, topic, payload})
@@ -48,12 +55,16 @@ defmodule Backplane.HostAgent.ChannelTest do
   setup do
     previous = Application.get_env(:backplane_host_agent, :socket_client_module)
     previous_channel = Application.get_env(:backplane_host_agent, :socket_channel_module)
+
+    previous_channel_join =
+      Application.get_env(:backplane_host_agent, :socket_channel_join_module)
+
     previous_store = Application.get_env(:backplane_host_agent, :memory_store)
     previous_memory_config = Application.get_env(:backplane_host_agent, :memory_config)
 
     :persistent_term.put({FakeSocketClient, :owner}, self())
     :persistent_term.put({AlreadyStartedSocketClient, :owner}, self())
-    :persistent_term.put({FakeSocketChannel, :owner}, self())
+    :persistent_term.put({FakeSocketChannelJoin, :owner}, self())
     Application.put_env(:backplane_host_agent, :socket_client_module, FakeSocketClient)
 
     on_exit(fn ->
@@ -64,12 +75,13 @@ defmodule Backplane.HostAgent.ChannelTest do
       end
 
       restore_env(:socket_channel_module, previous_channel)
+      restore_env(:socket_channel_join_module, previous_channel_join)
       restore_env(:memory_store, previous_store)
       restore_env(:memory_config, previous_memory_config)
 
       :persistent_term.erase({FakeSocketClient, :owner})
       :persistent_term.erase({AlreadyStartedSocketClient, :owner})
-      :persistent_term.erase({FakeSocketChannel, :owner})
+      :persistent_term.erase({FakeSocketChannelJoin, :owner})
     end)
   end
 
@@ -86,10 +98,27 @@ defmodule Backplane.HostAgent.ChannelTest do
     assert_receive {:start_link, opts}
     assert opts[:auto_connect] == false
     assert opts[:reconnect?] == true
+    assert opts[:default_channel_module] == Backplane.HostAgent.AgentChannel
     assert opts[:transport_opts] == [headers: [{"X-Backplane-Host-Token", "host-token"}]]
 
     assert_receive {:connect, ^socket}
     refute_receive {:connect, ^socket}
+  end
+
+  test "uses configured host-agent channel callback module for socket channels" do
+    Application.put_env(:backplane_host_agent, :socket_channel_module, FakeAgentChannel)
+
+    config = %{
+      interval_ms: 60_000,
+      socket_url: "ws://localhost:4220/host-agent/socket/websocket",
+      token: "host-token"
+    }
+
+    assert {:ok, socket} = Channel.start_socket(config)
+    assert socket == self()
+
+    assert_receive {:start_link, opts}
+    assert opts[:default_channel_module] == FakeAgentChannel
   end
 
   test "reuses an already started connected socket" do
@@ -115,7 +144,7 @@ defmodule Backplane.HostAgent.ChannelTest do
   end
 
   test "join announces active memory scopes with fact set hashes" do
-    Application.put_env(:backplane_host_agent, :socket_channel_module, FakeSocketChannel)
+    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
     Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
     Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
 

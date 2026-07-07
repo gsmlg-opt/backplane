@@ -12,11 +12,19 @@ defmodule Backplane.HostAgent.Channel do
     socket_client_module =
       Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
 
+    channel_module =
+      Application.get_env(
+        :backplane_host_agent,
+        :socket_channel_module,
+        Backplane.HostAgent.AgentChannel
+      )
+
     opts = [
       url: Map.fetch!(config, :socket_url),
       headers: headers,
       reconnect?: true,
       reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
+      default_channel_module: channel_module,
       # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
       auto_connect: false,
       # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
@@ -48,14 +56,14 @@ defmodule Backplane.HostAgent.Channel do
 
   @doc "Joins the host-agent channel for the authenticated host."
   def join(socket, host_id) do
-    channel_module =
+    channel_join_module =
       Application.get_env(
         :backplane_host_agent,
-        :socket_channel_module,
-        Backplane.HostAgent.AgentChannel
+        :socket_channel_join_module,
+        Phoenix.SocketClient.Channel
       )
 
-    channel_module.join(socket, "host_agent:#{host_id}", Syncer.join_payload())
+    channel_join_module.join(socket, "host_agent:#{host_id}", Syncer.join_payload())
   end
 
   @doc "Pushes an event through the joined host-agent channel."
