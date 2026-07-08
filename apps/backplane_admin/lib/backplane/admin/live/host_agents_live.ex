@@ -959,7 +959,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     url =
       case AgentPlugins.endpoint(entry) do
         {:ok, endpoint} -> endpoint
-        {:error, _reason} -> "http://127.0.0.1:4222/memory/#{entry.host.id}/mcp"
+        {:error, _reason} -> "http://127.0.0.1:4222/memory/backplane-admin/mcp"
       end
 
     body = %{

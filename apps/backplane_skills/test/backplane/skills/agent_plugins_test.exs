@@ -24,7 +24,7 @@ defmodule Backplane.Skills.AgentPluginsTest do
   test "builds endpoint from reported host-agent config" do
     entry = entry(%{"agent" => %{"http_bind" => "0.0.0.0", "http_port" => 4333}})
 
-    assert AgentPlugins.endpoint(entry) == {:ok, "http://198.51.100.9:4333/memory/host-1/mcp"}
+    assert AgentPlugins.endpoint(entry) == {:ok, "http://198.51.100.9:4333/memory/codex/mcp"}
   end
 
   test "lists plugin status through host-agent local MCP" do
@@ -54,7 +54,7 @@ defmodule Backplane.Skills.AgentPluginsTest do
 
   defp entry(config \\ %{}) do
     %{
-      host: %{id: "host-1"},
+      host: %{id: "host-1", name: "codex"},
       connect_ip: "198.51.100.9",
       config: config
     }

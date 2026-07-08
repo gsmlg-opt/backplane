@@ -152,6 +152,8 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert html =~ "Hermes"
     assert html =~ "OpenClaw"
     assert html =~ "host_agent::install_plugin"
+    assert html =~ "http://127.0.0.1:4222/memory/t430/mcp"
+    refute html =~ "/memory/#{host.id}/mcp"
     assert has_element?(view, "#install-plugin-hermes")
     assert has_element?(view, "#remove-plugin-hermes")
 

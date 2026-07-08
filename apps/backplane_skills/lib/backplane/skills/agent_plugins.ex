@@ -25,7 +25,7 @@ defmodule Backplane.Skills.AgentPlugins do
     case http_port(entry) do
       port when is_integer(port) and port > 0 ->
         with {:ok, host} <- http_host(entry) do
-          {:ok, "http://#{host}:#{port}/memory/#{entry.host.id}/mcp"}
+          {:ok, "http://#{host}:#{port}/memory/#{agent_name(entry)}/mcp"}
         end
 
       0 ->
@@ -187,6 +187,24 @@ defmodule Backplane.Skills.AgentPlugins do
   defp agent_config(%{config: %{"agent" => agent}}) when is_map(agent), do: agent
   defp agent_config(%{config: config}) when is_map(config), do: config
   defp agent_config(_entry), do: %{}
+
+  defp agent_name(%{host: host}) when is_map(host) do
+    host
+    |> get_value("name")
+    |> blank_to_nil()
+    |> case do
+      nil -> "backplane-admin"
+      name -> encode_path_segment(name)
+    end
+  end
+
+  defp agent_name(_entry), do: "backplane-admin"
+
+  defp encode_path_segment(segment) do
+    URI.encode(to_string(segment), fn char ->
+      char in ?a..?z or char in ?A..?Z or char in ?0..?9 or char in [?-, ?., ?_, ?~]
+    end)
+  end
 
   defp get_value(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, String.to_atom(key))
