@@ -7,7 +7,10 @@
 }: let
   pkgs-stable = import inputs.nixpkgs-stable {system = pkgs.stdenv.system;};
 in {
-  env.GREET = "Backdrop";
+  env.GREET = "Backplane";
+  # Disable the Erlang break menu so Ctrl+C stops service-like Mix tasks
+  # such as `mix agent.run` instead of leaving the BEAM at a BREAK prompt.
+  env.ELIXIR_ERL_OPTIONS = "+B";
   env.MIX_TAILWIND_PATH = "${pkgs-stable.tailwindcss_4}/bin/tailwindcss";
   env.MIX_BUN_PATH = "${pkgs-stable.bun}/bin/bun";
   env.NODE_PATH = "${config.git.root}/deps";
