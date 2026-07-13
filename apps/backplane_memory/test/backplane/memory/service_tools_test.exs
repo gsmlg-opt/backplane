@@ -3,16 +3,449 @@ defmodule Backplane.Memory.ServiceToolsTest do
 
   alias Backplane.Memory.{Audit, Memories, Service}
 
+  @extended_tool_names ~w(
+    memory::access_log
+    memory::consolidate
+    memory::enrich
+    memory::graph_query
+    memory::graph_stats
+    memory::slot_list
+    memory::slot_read
+    memory::slot_write
+    memory::verify
+  )
+
+  @full_tool_contracts Map.new([
+                         {"memory::access_log",
+                          %{
+                            "properties" => %{"memory_id" => %{"type" => "string"}},
+                            "required" => ["memory_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::action_create",
+                          %{
+                            "properties" => %{
+                              "created_by" => %{"type" => "string"},
+                              "description" => %{"type" => "string"},
+                              "edges" => %{
+                                "items" => %{
+                                  "properties" => %{
+                                    "edge_type" => %{"type" => "string"},
+                                    "source_id" => %{"type" => "string"},
+                                    "target_id" => %{"type" => "string"}
+                                  },
+                                  "required" => ["source_id", "target_id", "edge_type"],
+                                  "type" => "object"
+                                },
+                                "type" => "array"
+                              },
+                              "priority" => %{"default" => 0, "type" => "integer"},
+                              "project" => %{"type" => "string"},
+                              "tags" => %{
+                                "items" => %{"type" => "string"},
+                                "type" => "array"
+                              },
+                              "title" => %{"type" => "string"}
+                            },
+                            "required" => ["title"],
+                            "type" => "object"
+                          }},
+                         {"memory::action_update",
+                          %{
+                            "properties" => %{
+                              "action_id" => %{"type" => "string"},
+                              "status" => %{
+                                "enum" => [
+                                  "pending",
+                                  "in_progress",
+                                  "done",
+                                  "blocked",
+                                  "cancelled"
+                                ],
+                                "type" => "string"
+                              }
+                            },
+                            "required" => ["action_id", "status"],
+                            "type" => "object"
+                          }},
+                         {"memory::audit",
+                          %{
+                            "properties" => %{
+                              "actor" => %{"type" => "string"},
+                              "limit" => %{"default" => 50, "type" => "integer"},
+                              "offset" => %{"default" => 0, "type" => "integer"},
+                              "operation" => %{"type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::compress_file",
+                          %{
+                            "properties" => %{
+                              "agent_id" => %{"type" => "string"},
+                              "file_path" => %{"type" => "string"},
+                              "host_id" => %{"type" => "string"}
+                            },
+                            "required" => ["file_path", "agent_id", "host_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::consolidate",
+                          %{
+                            "properties" => %{"session_id" => %{"type" => "string"}},
+                            "required" => ["session_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::diagnose", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::enrich",
+                          %{
+                            "properties" => %{
+                              "memory_id" => %{"type" => "string"},
+                              "metadata" => %{"type" => "object"},
+                              "tags" => %{
+                                "items" => %{"type" => "string"},
+                                "type" => "array"
+                              }
+                            },
+                            "required" => ["memory_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::expand_query",
+                          %{
+                            "properties" => %{
+                              "query" => %{
+                                "description" => "Query to expand",
+                                "type" => "string"
+                              }
+                            },
+                            "required" => ["query"],
+                            "type" => "object"
+                          }},
+                         {"memory::export",
+                          %{
+                            "properties" => %{
+                              "scope" => %{"default" => "global", "type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::facet_query",
+                          %{
+                            "properties" => %{
+                              "facets" => %{
+                                "items" => %{
+                                  "properties" => %{
+                                    "dimension" => %{"type" => "string"},
+                                    "value" => %{"type" => "string"}
+                                  },
+                                  "type" => "object"
+                                },
+                                "type" => "array"
+                              },
+                              "limit" => %{"default" => 20, "type" => "integer"}
+                            },
+                            "required" => ["facets"],
+                            "type" => "object"
+                          }},
+                         {"memory::facet_tag",
+                          %{
+                            "properties" => %{
+                              "facets" => %{
+                                "items" => %{
+                                  "properties" => %{
+                                    "dimension" => %{"type" => "string"},
+                                    "value" => %{"type" => "string"}
+                                  },
+                                  "required" => ["dimension", "value"],
+                                  "type" => "object"
+                                },
+                                "type" => "array"
+                              },
+                              "memory_id" => %{"type" => "string"}
+                            },
+                            "required" => ["memory_id", "facets"],
+                            "type" => "object"
+                          }},
+                         {"memory::file_history",
+                          %{
+                            "properties" => %{
+                              "exclude_session" => %{"type" => "string"},
+                              "files" => %{
+                                "items" => %{"type" => "string"},
+                                "type" => "array"
+                              },
+                              "limit" => %{"default" => 50, "type" => "integer"}
+                            },
+                            "required" => ["files"],
+                            "type" => "object"
+                          }},
+                         {"memory::forget",
+                          %{
+                            "properties" => %{"id" => %{"type" => "string"}},
+                            "required" => ["id"],
+                            "type" => "object"
+                          }},
+                         {"memory::frontier",
+                          %{
+                            "properties" => %{"project" => %{"type" => "string"}},
+                            "type" => "object"
+                          }},
+                         {"memory::governance_delete",
+                          %{
+                            "properties" => %{
+                              "actor" => %{"type" => "string"},
+                              "memory_id" => %{"type" => "string"},
+                              "reason" => %{"type" => "string"}
+                            },
+                            "required" => ["memory_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::graph_query",
+                          %{
+                            "properties" => %{
+                              "depth" => %{"default" => 2, "type" => "integer"},
+                              "entity" => %{"type" => "string"},
+                              "relation" => %{"type" => "string"}
+                            },
+                            "required" => ["entity"],
+                            "type" => "object"
+                          }},
+                         {"memory::graph_stats", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::heal", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::lease",
+                          %{
+                            "properties" => %{
+                              "action_id" => %{"type" => "string"},
+                              "agent_id" => %{"type" => "string"},
+                              "ttl_seconds" => %{"default" => 300, "type" => "integer"}
+                            },
+                            "required" => ["action_id", "agent_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::list",
+                          %{
+                            "properties" => %{
+                              "agent_id" => %{"type" => "string"},
+                              "limit" => %{"default" => 50, "type" => "integer"},
+                              "offset" => %{"default" => 0, "type" => "integer"},
+                              "q" => %{
+                                "description" => "Substring match on content",
+                                "type" => "string"
+                              },
+                              "scope" => %{"type" => "string"},
+                              "tag" => %{"type" => "string"},
+                              "type" => %{"type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::next",
+                          %{
+                            "properties" => %{"project" => %{"type" => "string"}},
+                            "type" => "object"
+                          }},
+                         {"memory::patterns",
+                          %{
+                            "properties" => %{
+                              "limit" => %{"default" => 10, "type" => "integer"},
+                              "session_id" => %{"type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::profile",
+                          %{
+                            "properties" => %{
+                              "project" => %{
+                                "description" => "Project path / scope key",
+                                "type" => "string"
+                              }
+                            },
+                            "required" => ["project"],
+                            "type" => "object"
+                          }},
+                         {"memory::profile_refresh",
+                          %{
+                            "properties" => %{"project" => %{"type" => "string"}},
+                            "required" => ["project"],
+                            "type" => "object"
+                          }},
+                         {"memory::recall",
+                          %{
+                            "properties" => %{
+                              "agent_id" => %{"type" => "string"},
+                              "host_id" => %{"type" => "string"},
+                              "limit" => %{"default" => 10, "type" => "integer"},
+                              "query" => %{
+                                "description" => "Query text",
+                                "type" => "string"
+                              },
+                              "scope" => %{"type" => "string"},
+                              "tag" => %{"type" => "string"}
+                            },
+                            "required" => ["query"],
+                            "type" => "object"
+                          }},
+                         {"memory::relations",
+                          %{
+                            "properties" => %{
+                              "depth" => %{"default" => 1, "type" => "integer"},
+                              "entity" => %{"type" => "string"}
+                            },
+                            "required" => ["entity"],
+                            "type" => "object"
+                          }},
+                         {"memory::remember",
+                          %{
+                            "properties" => %{
+                              "agent_id" => %{"type" => "string"},
+                              "client_id" => %{"type" => "string"},
+                              "content" => %{
+                                "description" => "Memory text",
+                                "type" => "string"
+                              },
+                              "host_id" => %{"type" => "string"},
+                              "metadata" => %{"type" => "object"},
+                              "scope" => %{
+                                "default" => "global",
+                                "description" => "Scope key",
+                                "type" => "string"
+                              },
+                              "session_id" => %{"type" => "string"},
+                              "tags" => %{
+                                "items" => %{"type" => "string"},
+                                "type" => "array"
+                              },
+                              "type" => %{
+                                "default" => "semantic",
+                                "description" => "working | episodic | semantic | procedural",
+                                "type" => "string"
+                              }
+                            },
+                            "required" => ["content", "agent_id", "host_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::sessions",
+                          %{
+                            "properties" => %{
+                              "limit" => %{"default" => 20, "type" => "integer"},
+                              "project" => %{"type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::signal_read",
+                          %{
+                            "properties" => %{
+                              "agent_id" => %{"type" => "string"},
+                              "limit" => %{"default" => 20, "type" => "integer"},
+                              "topic" => %{"type" => "string"}
+                            },
+                            "required" => ["agent_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::signal_send",
+                          %{
+                            "properties" => %{
+                              "payload" => %{"type" => "object"},
+                              "recipient_agent_id" => %{"type" => "string"},
+                              "sender_agent_id" => %{"type" => "string"},
+                              "topic" => %{"type" => "string"}
+                            },
+                            "required" => [
+                              "sender_agent_id",
+                              "recipient_agent_id",
+                              "topic"
+                            ],
+                            "type" => "object"
+                          }},
+                         {"memory::slot_list", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::slot_read",
+                          %{
+                            "properties" => %{"name" => %{"type" => "string"}},
+                            "required" => ["name"],
+                            "type" => "object"
+                          }},
+                         {"memory::slot_write",
+                          %{
+                            "properties" => %{
+                              "content" => %{"type" => "string"},
+                              "name" => %{"type" => "string"},
+                              "updated_by" => %{"type" => "string"}
+                            },
+                            "required" => ["name", "content"],
+                            "type" => "object"
+                          }},
+                         {"memory::smart_search",
+                          %{
+                            "properties" => %{
+                              "limit" => %{"default" => 5, "type" => "integer"},
+                              "query" => %{"type" => "string"}
+                            },
+                            "required" => ["query"],
+                            "type" => "object"
+                          }},
+                         {"memory::stats", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::team_feed",
+                          %{
+                            "properties" => %{
+                              "limit" => %{"default" => 20, "type" => "integer"},
+                              "team_id" => %{"type" => "string"}
+                            },
+                            "required" => ["team_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::team_share",
+                          %{
+                            "properties" => %{
+                              "memory_id" => %{"type" => "string"},
+                              "team_id" => %{"type" => "string"}
+                            },
+                            "required" => ["memory_id", "team_id"],
+                            "type" => "object"
+                          }},
+                         {"memory::timeline",
+                          %{
+                            "properties" => %{
+                              "limit" => %{"default" => 50, "type" => "integer"},
+                              "session_id" => %{"type" => "string"}
+                            },
+                            "type" => "object"
+                          }},
+                         {"memory::verify",
+                          %{
+                            "properties" => %{"memory_id" => %{"type" => "string"}},
+                            "required" => ["memory_id"],
+                            "type" => "object"
+                          }}
+                       ])
+
+  @core_tool_contracts Map.drop(@full_tool_contracts, @extended_tool_names)
+
+  setup do
+    previous = :ets.lookup(:backplane_settings, "memory.tools")
+
+    on_exit(fn ->
+      case previous do
+        [] -> :ets.delete(:backplane_settings, "memory.tools")
+        rows -> :ets.insert(:backplane_settings, rows)
+      end
+    end)
+
+    :ok
+  end
+
+  defp set_tool_mode(mode), do: :ets.insert(:backplane_settings, {"memory.tools", mode})
+  defp contracts(tools), do: Map.new(tools, &{&1.name, &1.input_schema})
+
   # ──────────────────────────────────────────────
   # tools/0 gating
   # ──────────────────────────────────────────────
 
   describe "tools/0 — core tools (always available)" do
-    test "returns at least 15 tools when memory.tools is not 'all'" do
-      # Ensure the setting is NOT "all"
-      Backplane.Settings.set("memory.tools", "core")
+    test "returns the exact 31 core names and input schemas" do
+      set_tool_mode("core")
       tools = Service.tools()
-      assert length(tools) >= 15
+      names = Enum.map(tools, & &1.name)
+
+      assert length(tools) == 31
+      assert length(Enum.uniq(names)) == 31
+      assert contracts(tools) == @core_tool_contracts
+      assert map_size(@core_tool_contracts) == 31
     end
 
     test "all returned tools have required fields" do
@@ -26,37 +459,25 @@ defmodule Backplane.Memory.ServiceToolsTest do
       end
     end
 
-    test "core tools include smart_search, sessions, patterns, governance_delete, diagnose, heal" do
-      Backplane.Settings.set("memory.tools", "core")
-      names = Enum.map(Service.tools(), & &1.name)
-      assert "memory::smart_search" in names
-      assert "memory::sessions" in names
-      assert "memory::patterns" in names
-      assert "memory::governance_delete" in names
-      assert "memory::diagnose" in names
-      assert "memory::heal" in names
+    test "consolidate remains extended-only" do
+      set_tool_mode("core")
+      refute Enum.any?(Service.tools(), &(&1.name == "memory::consolidate"))
+
+      set_tool_mode("all")
+      assert Enum.any?(Service.tools(), &(&1.name == "memory::consolidate"))
     end
   end
 
   describe "tools/0 — extended tools (memory.tools = 'all')" do
-    test "returns at least 37 tools when memory.tools is 'all'" do
-      Backplane.Settings.set("memory.tools", "all")
+    test "returns the exact 40 full names and input schemas" do
+      set_tool_mode("all")
       tools = Service.tools()
-      assert length(tools) >= 37
-    end
+      names = Enum.map(tools, & &1.name)
 
-    test "extended tools include slot_read, slot_write, slot_list, graph_query, graph_stats, verify, enrich, access_log, consolidate" do
-      Backplane.Settings.set("memory.tools", "all")
-      names = Enum.map(Service.tools(), & &1.name)
-      assert "memory::slot_read" in names
-      assert "memory::slot_write" in names
-      assert "memory::slot_list" in names
-      assert "memory::graph_query" in names
-      assert "memory::graph_stats" in names
-      assert "memory::verify" in names
-      assert "memory::enrich" in names
-      assert "memory::access_log" in names
-      assert "memory::consolidate" in names
+      assert length(tools) == 40
+      assert length(Enum.uniq(names)) == 40
+      assert contracts(tools) == @full_tool_contracts
+      assert map_size(@full_tool_contracts) == 40
     end
   end
 
