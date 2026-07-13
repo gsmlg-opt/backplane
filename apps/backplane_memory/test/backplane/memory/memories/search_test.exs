@@ -134,21 +134,28 @@ defmodule Backplane.Memory.Memories.SearchTest do
   end
 
   describe "hybrid_recall/2" do
-    test "falls back to full-text search when vector search is unavailable" do
-      {:ok, mem} =
-        Memories.remember("fallback keyword memory",
+    test "ranks lexical-only rows through generated-column FTS when embedding fails" do
+      {:ok, strongest} =
+        Memories.remember("fallback keyword fallback keyword fallback keyword",
           agent_id: "agent-text",
           host_id: "host-text",
           scope: "text-scope"
         )
 
-      assert {:ok, [%{id: id}]} =
+      {:ok, weaker} =
+        Memories.remember("fallback keyword",
+          agent_id: "agent-text",
+          host_id: "host-text",
+          scope: "text-scope"
+        )
+
+      assert {:ok, [%{id: first_id}, %{id: second_id}]} =
                Search.hybrid_recall("fallback keyword",
                  scope: "text-scope",
                  embed_fn: embed_error(:embedding_model_not_configured)
                )
 
-      assert id == mem.id
+      assert [first_id, second_id] == [strongest.id, weaker.id]
     end
 
     test "uses vector results only when vector search is available" do
@@ -175,6 +182,45 @@ defmodule Backplane.Memory.Memories.SearchTest do
                )
 
       assert id == vector_mem.id
+    end
+  end
+
+  describe "generated search_tsv storage" do
+    test "the migrated column is generated and stored" do
+      result =
+        repo().query!("""
+        SELECT is_generated, generation_expression
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'bpm_memories'
+          AND column_name = 'search_tsv'
+        """)
+
+      assert [["ALWAYS", expression]] = result.rows
+      assert expression =~ "to_tsvector"
+      assert expression =~ "content"
+
+      assert [["s"]] =
+               repo().query!("""
+               SELECT attgenerated::text
+               FROM pg_attribute
+               WHERE attrelid = 'bpm_memories'::regclass
+                 AND attname = 'search_tsv'
+               """).rows
+    end
+
+    test "the generated column has the named GIN index" do
+      result =
+        repo().query!("""
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'bpm_memories'
+          AND indexname = 'bpm_memories_search_tsv_gin_idx'
+        """)
+
+      assert [[index_definition]] = result.rows
+      assert index_definition =~ "USING gin (search_tsv)"
     end
   end
 end
