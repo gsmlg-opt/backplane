@@ -1054,7 +1054,7 @@ defmodule Backplane.Api.HostAgentChannel do
 In that same file, replace adapter env keys:
 
 ```elixir
-Application.get_env(:backplane_api, :memory_service, BackplaneMemory.Service)
+Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
 Application.get_env(:backplane_api, :host_memory_sync_adapter, Backplane.Api.HostAgentMemorySync)
 ```
 

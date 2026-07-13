@@ -21,7 +21,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
       safe_call(
         fn ->
           repo = Application.fetch_env!(:backplane_memory, :repo)
-          alias BackplaneMemory.Coordination.Action
+          alias Backplane.Memory.Coordination.Action
 
           repo.all(from(a in Action, order_by: [desc: a.inserted_at], limit: 50))
         end,
@@ -30,7 +30,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
       safe_call(
         fn ->
           repo = Application.fetch_env!(:backplane_memory, :repo)
-          alias BackplaneMemory.Coordination.Lease
+          alias Backplane.Memory.Coordination.Lease
           now = DateTime.utc_now()
 
           repo.all(
@@ -52,8 +52,10 @@ defmodule Backplane.Admin.MemoryActionsLive do
   end
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

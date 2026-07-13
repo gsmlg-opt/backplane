@@ -28,7 +28,7 @@ HostAgent.MemoryRouter ──► HostAgent.Memory ──► ExTurso DB
                        HostAgent.Memory.Syncer
                               │ existing host-agent channel, sync events only
                               ▼
-                 BackplaneWeb.HostAgentChannel ──► BackplaneMemory
+                 BackplaneWeb.HostAgentChannel ──► Backplane.Memory
 ```
 
 ## 2. Non-Goals
@@ -80,7 +80,7 @@ This design replaces that for memory tools:
 - `Backplane.HostAgent.Channel` remains the low-level socket wrapper.
 - New `Backplane.HostAgent.Memory.Syncer` owns memory sync pushes over the channel.
 - `BackplaneWeb.HostAgentChannel` keeps existing skill-sync events and adds `memory_sync`, `memory_facts`, and `memory_wipe`.
-- Hub managed MCP tools remain in `BackplaneMemory.Service`; host sync should use a hub-side adapter module instead of round-tripping through the MCP service surface.
+- Hub managed MCP tools remain in `Backplane.Memory.Service`; host sync should use a hub-side adapter module instead of round-tripping through the MCP service surface.
 
 ## 5. Runtime Configuration
 
@@ -233,7 +233,7 @@ CREATE TABLE slots (
 );
 ```
 
-JSON columns are stored as text and validated/encoded by `Reducer`. `content_hash` is lowercase SHA-256 hex of `content`. Hub-side `BackplaneMemory` may store binary hashes; channel payloads use hex strings and adapters convert as needed.
+JSON columns are stored as text and validated/encoded by `Reducer`. `content_hash` is lowercase SHA-256 hex of `content`. Hub-side `Backplane.Memory` may store binary hashes; channel payloads use hex strings and adapters convert as needed.
 
 ## 9. Search Baseline
 
@@ -531,7 +531,7 @@ active_wipes(scope) :: [wipe_item()]
 entitled_scopes(host) :: MapSet.t(String.t())
 ```
 
-The adapter may delegate to current `BackplaneMemory.Memory` and `BackplaneMemory.Service` internals, but host sync is not a public managed MCP tool call. This keeps MCP authorization, tool schemas, and sync idempotency separate.
+The adapter may delegate to current `Backplane.Memory.Memories` and `Backplane.Memory.Service` internals, but host sync is not a public managed MCP tool call. This keeps MCP authorization, tool schemas, and sync idempotency separate.
 
 Hub requirements:
 

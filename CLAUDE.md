@@ -107,7 +107,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.WebSearch` — `web_search::search` (Ollama/MiniMax/Z.ai/BigModel backends)
 - `Backplane.Services.Math` — `math::evaluate` via native math engine
 - `Backplane.Skills.*` — `skills::*` tools (in `backplane_skills`)
-- `BackplaneMemory.Service` — `memory::*` tools (in `backplane_memory`)
+- `Backplane.Memory.Service` — `memory::*` tools (in `backplane_memory`)
 
 **LLM Proxy (backplane_llama)**
 - `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector, and routing modules
@@ -122,8 +122,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Metrics` — ETS-based metrics collector
 
 **Memory (backplane_memory)**
-- `BackplaneMemory.Observations` / `Graph` / `Memories` / `Facets` / `Profiles` — storage contexts
-- `BackplaneMemory.Coordination` — leases, signals, actions for multi-agent coordination
+- `Backplane.Memory.Observations` / `Graph` / `Memories` / `Facets` / `Profiles` — storage contexts
+- `Backplane.Memory.Coordination` — leases, signals, actions for multi-agent coordination
 
 **Monitor (backplane_monitor)**
 - `Backplane.Monitor` / `PlanServer` — subscription plan polling and snapshot storage
@@ -165,7 +165,7 @@ BackplaneSkills.Supervisor (apps/backplane_skills)
 ├── DynamicSupervisor (Backplane.Skills.AgentManage.DynamicSupervisor)
 └── Backplane.Skills.AgentManage.Bootstrap
 
-BackplaneMemory.Supervisor (apps/backplane_memory) — registers memory::* tools
+Backplane.Memory.Supervisor (apps/backplane_memory) — registers memory::* tools
 BackplaneTelemetry.Supervisor (apps/backplane_telemetry)
 └── BackplaneTelemetry.TelemetryLogger
 

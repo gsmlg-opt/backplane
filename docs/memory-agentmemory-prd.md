@@ -443,14 +443,14 @@ The memory module uses a left-side menu (matching the existing admin navigation 
 - **Oban for all async work** — embed, consolidate, evict, graph extract, profile build, lease cleanup, access write-back. Queue isolation per concern.
 - **PubSub for live viewer** — capture path broadcasts `{:memory_event, observation}` on `Backplane.PubSub`; LiveView subscribes. No polling.
 - **ETS for hot state** — circuit breaker state. Not per-entity.
-- **Behaviours for providers** — `BackplaneMemory.Embedding.Provider` behaviour; implementations: `VLLMProvider`, `NoopProvider`. Swap via config at boot.
+- **Behaviours for providers** — `Backplane.Memory.Embedding.Provider` behaviour; implementations: `VLLMProvider`, `NoopProvider`. Swap via config at boot.
 - **Single Postgres** — no mesh, no federation. One DB, cluster-safe through Postgres advisory locks for consolidation.
 
 ### Module layout (existing + additions)
 
 ```
 apps/backplane_memory/
-├── lib/backplane_memory/
+├── lib/backplane/memory/
 │   ├── application.ex
 │   ├── memories/
 │   │   ├── memory.ex              # existing schema

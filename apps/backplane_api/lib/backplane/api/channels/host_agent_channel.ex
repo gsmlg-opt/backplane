@@ -241,7 +241,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp dispatch_memory(method, args, host_id) do
     args = Map.put(args, "host_id", host_id)
-    service = Application.get_env(:backplane_api, :memory_service, BackplaneMemory.Service)
+    service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
 
     case method do
       "remember" -> service.handle_remember(args)

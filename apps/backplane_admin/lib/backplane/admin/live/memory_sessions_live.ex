@@ -34,7 +34,7 @@ defmodule Backplane.Admin.MemorySessionsLive do
     safe_call(
       fn ->
         repo = Application.fetch_env!(:backplane_memory, :repo)
-        alias BackplaneMemory.Observations.Session
+        alias Backplane.Memory.Observations.Session
         offset = (page - 1) * @page_size
 
         repo.all(
@@ -56,8 +56,10 @@ defmodule Backplane.Admin.MemorySessionsLive do
   end
 
   defp format_dt(nil), do: "active"
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

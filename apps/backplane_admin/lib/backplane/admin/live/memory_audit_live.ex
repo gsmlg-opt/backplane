@@ -26,7 +26,7 @@ defmodule Backplane.Admin.MemoryAuditLive do
 
     entries =
       safe_call(
-        fn -> BackplaneMemory.Audit.list(limit: @page_size, offset: (page - 1) * @page_size) end,
+        fn -> Backplane.Memory.Audit.list(limit: @page_size, offset: (page - 1) * @page_size) end,
         []
       )
 
@@ -40,8 +40,10 @@ defmodule Backplane.Admin.MemoryAuditLive do
   end
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

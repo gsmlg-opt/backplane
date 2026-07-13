@@ -3,7 +3,7 @@ defmodule Backplane.Admin.MemoryStatsLive do
 
   use Backplane.Admin, :live_view
 
-  alias BackplaneMemory.Memory
+  alias Backplane.Memory.Memories
 
   @memory_types ~w(working episodic semantic procedural)
 
@@ -26,10 +26,10 @@ defmodule Backplane.Admin.MemoryStatsLive do
   end
 
   defp load_stats(socket) do
-    type_counts = safe_call(fn -> Memory.stats() end, [])
-    scope_counts = safe_call(fn -> Memory.scope_stats() end, [])
-    total_active = safe_call(fn -> Memory.count([]) end, 0)
-    total_all = safe_call(fn -> Memory.count(include_deleted: true) end, 0)
+    type_counts = safe_call(fn -> Memories.stats() end, [])
+    scope_counts = safe_call(fn -> Memories.scope_stats() end, [])
+    total_active = safe_call(fn -> Memories.count([]) end, 0)
+    total_all = safe_call(fn -> Memories.count(include_deleted: true) end, 0)
 
     assign(socket,
       loading: false,

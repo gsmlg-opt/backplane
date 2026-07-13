@@ -1,4 +1,4 @@
-defmodule BackplaneMemory.DataCase do
+defmodule Backplane.Memory.DataCase do
   use ExUnit.CaseTemplate
 
   using do
@@ -6,7 +6,7 @@ defmodule BackplaneMemory.DataCase do
       import Ecto
       import Ecto.Changeset
       import Ecto.Query
-      import BackplaneMemory.DataCase
+      import Backplane.Memory.DataCase
     end
   end
 

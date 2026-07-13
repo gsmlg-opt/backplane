@@ -71,10 +71,10 @@ embeddings:  backplane  ──►  local vLLM (OpenAI-compatible /v1/embeddings,
 
 Indexes: `HNSW(embedding halfvec_cosine_ops)`, `GIN(search_tsv)`, `GIN(tags)`, `btree(scope, memory_type)`, `btree(session_id)`, partial on `deleted_at IS NULL`.
 
-## Module layout — `apps/backplane_memory/lib/backplane_memory/`
+## Module layout — `apps/backplane_memory/lib/backplane/memory/`
 
 ```
-memory.ex                  context API: remember/recall/forget/flush/get/stats
+memories.ex                context API: remember/recall/forget/flush/get/stats
 memories/memory.ex         schema (Backplane.Repo)
 retrieval/{vector,keyword,fusion,ranker}.ex   RRF · decay×strength
 embedding/client.ex        calls vLLM via the LLM proxy; query|document mode

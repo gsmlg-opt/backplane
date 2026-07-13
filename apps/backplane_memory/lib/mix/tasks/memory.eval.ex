@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Memory.Eval do
 
         # Run recall
         recalled_rows =
-          case BackplaneMemory.Memories.Search.recall(query_text, limit: 5) do
+          case Backplane.Memory.Memories.Search.recall(query_text, limit: 5) do
             {:ok, rows} -> rows
             {:error, _} -> []
           end
@@ -133,7 +133,7 @@ defmodule Mix.Tasks.Memory.Eval do
       Enum.map(memories, fn mem ->
         snippet = String.slice(mem["content"], 0, 60)
 
-        case BackplaneMemory.Memory.list(q: snippet, limit: 1) do
+        case Backplane.Memory.Memories.list(q: snippet, limit: 1) do
           [%{id: id} = m] -> %{id: id, content: m.content}
           _ -> nil
         end

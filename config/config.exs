@@ -26,9 +26,9 @@ config :backplane, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        # Procedural extraction: nightly at 02:00
-       {"0 2 * * *", BackplaneMemory.Workers.ProceduralWorker},
+       {"0 2 * * *", Backplane.Memory.Workers.ProceduralWorker},
        # Fallback sweep: every 4 hours
-       {"0 */4 * * *", BackplaneMemory.Workers.FallbackSweepWorker},
+       {"0 */4 * * *", Backplane.Memory.Workers.FallbackSweepWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker}
      ]}

@@ -21,10 +21,10 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   end
 
   defp load_stats(socket) do
-    memory_stats = safe_call(fn -> BackplaneMemory.Memory.stats() end, [])
-    total_active = safe_call(fn -> BackplaneMemory.Memory.count([]) end, 0)
-    total_all = safe_call(fn -> BackplaneMemory.Memory.count(include_deleted: true) end, 0)
-    graph_stats = safe_call(fn -> BackplaneMemory.Graph.stats() end, %{nodes: 0, edges: 0})
+    memory_stats = safe_call(fn -> Backplane.Memory.Memories.stats() end, [])
+    total_active = safe_call(fn -> Backplane.Memory.Memories.count([]) end, 0)
+    total_all = safe_call(fn -> Backplane.Memory.Memories.count(include_deleted: true) end, 0)
+    graph_stats = safe_call(fn -> Backplane.Memory.Graph.stats() end, %{nodes: 0, edges: 0})
 
     assign(socket,
       memory_stats: memory_stats,

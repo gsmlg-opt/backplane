@@ -6,7 +6,7 @@ defmodule Backplane.Admin.MemoryLive do
 
   use Backplane.Admin, :live_view
 
-  alias BackplaneMemory.Memory
+  alias Backplane.Memory.Memories
 
   @page_size 25
   @memory_types ~w(working episodic semantic procedural)
@@ -51,7 +51,7 @@ defmodule Backplane.Admin.MemoryLive do
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    case Memory.forget(id) do
+    case Memories.forget(id) do
       :ok ->
         {:noreply,
          socket
@@ -92,8 +92,8 @@ defmodule Backplane.Admin.MemoryLive do
       Keyword.drop(opts, [:limit, :offset]) ++
         [limit: @page_size, offset: (page - 1) * @page_size]
 
-    memories = safe_call(fn -> Memory.list(list_opts) end, [])
-    total = safe_call(fn -> Memory.count(Keyword.drop(opts, [:limit, :offset])) end, 0)
+    memories = safe_call(fn -> Memories.list(list_opts) end, [])
+    total = safe_call(fn -> Memories.count(Keyword.drop(opts, [:limit, :offset])) end, 0)
 
     assign(socket,
       loading: false,
@@ -151,8 +151,10 @@ defmodule Backplane.Admin.MemoryLive do
   defp type_badge_variant(_), do: "ghost"
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

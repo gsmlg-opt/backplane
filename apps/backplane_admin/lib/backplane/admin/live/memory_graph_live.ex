@@ -5,7 +5,7 @@ defmodule Backplane.Admin.MemoryGraphLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    graph_stats = safe_call(fn -> BackplaneMemory.Graph.stats() end, %{nodes: 0, edges: 0})
+    graph_stats = safe_call(fn -> Backplane.Memory.Graph.stats() end, %{nodes: 0, edges: 0})
 
     {:ok,
      assign(socket,
@@ -31,7 +31,7 @@ defmodule Backplane.Admin.MemoryGraphLive do
     safe_call(
       fn ->
         repo = Application.fetch_env!(:backplane_memory, :repo)
-        BackplaneMemory.Graph.BFS.query(name, repo, [])
+        Backplane.Memory.Graph.BFS.query(name, repo, [])
       end,
       []
     )

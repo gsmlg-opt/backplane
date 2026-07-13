@@ -1,0 +1,34 @@
+defmodule Backplane.Memory.Workers.FallbackSweepWorker do
+  @moduledoc "Oban cron worker: picks up orphaned sessions that closed without triggering SessionEnd consolidation."
+
+  use Oban.Worker, queue: :memory, max_attempts: 2
+
+  import Ecto.Query
+  alias Backplane.Memory.Observations.Session
+  alias Backplane.Memory.Workers.SummaryWorker
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
+
+  @impl Oban.Worker
+  def perform(%Oban.Job{}) do
+    one_hour_ago = DateTime.add(DateTime.utc_now(), -3600, :second)
+
+    orphaned =
+      repo().all(
+        from(s in Session,
+          where:
+            not is_nil(s.ended_at) and
+              is_nil(s.consolidated_at) and
+              s.ended_at < ^one_hour_ago
+        )
+      )
+
+    results = Enum.map(orphaned, fn session -> SummaryWorker.enqueue(session.session_id) end)
+    errors = Enum.filter(results, &match?({:error, _}, &1))
+
+    case errors do
+      [] -> {:ok, %{swept: length(orphaned)}}
+      [{:error, reason} | _] -> {:error, reason}
+    end
+  end
+end

@@ -33,7 +33,7 @@ defmodule Backplane.Admin.MemoryObservationsLive do
     safe_call(
       fn ->
         repo = Application.fetch_env!(:backplane_memory, :repo)
-        alias BackplaneMemory.Observations.Observation
+        alias Backplane.Memory.Observations.Observation
 
         repo.all(from(o in Observation, order_by: [desc: o.created_at], limit: 50))
       end,
@@ -54,8 +54,10 @@ defmodule Backplane.Admin.MemoryObservationsLive do
   end
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

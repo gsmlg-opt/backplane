@@ -4,7 +4,7 @@
 
 **Goal:** Bootstrap `apps/backplane_memory` with the `bpm_memories` table (pgvector `halfvec(2560)`), explicit write/read API (`remember`, `get`, `forget`, `stats`), content dedup by sha256 hash, provenance recording, privacy filtering, and async embedding via an Oban worker that calls vLLM through the LLM proxy.
 
-**Architecture:** New umbrella app `:backplane_memory` depending on `:backplane` for `Backplane.Repo`. Synchronous writes (insert + sha256 dedup + privacy filter); async embedding via `BackplaneMemory.Workers.EmbedWorker` (Oban, `memory` queue) that POSTs to the LLM proxy at `/api/llm/v1/embeddings` using `Req`. If embedding fails, the memory row stays unembedded (recall degrades to keyword-only; no write failure). Recall, consolidation, MCP server, REST, and admin UI are M2–M6.
+**Architecture:** New umbrella app `:backplane_memory` depending on `:backplane` for `Backplane.Repo`. Synchronous writes (insert + sha256 dedup + privacy filter); async embedding via `Backplane.Memory.Workers.EmbedWorker` (Oban, `memory` queue) that POSTs to the LLM proxy at `/api/llm/v1/embeddings` using `Req`. If embedding fails, the memory row stays unembedded (recall degrades to keyword-only; no write failure). Recall, consolidation, MCP server, REST, and admin UI are M2–M6.
 
 **Tech Stack:** Elixir/OTP 28, Ecto 3.12, Postgrex, pgvector ≥ 0.7 (`Pgvector.Ecto.HalfVector`, `halfvec` column), Oban 2.18 (`memory` queue), Req 0.5
 
@@ -23,20 +23,20 @@ The PRD has 6 milestones. Each depends on the previous. Plan covers M1 = FR-1, F
 | Path | Responsibility |
 |------|----------------|
 | `apps/backplane_memory/mix.exs` | App definition; depends on `:backplane`, `:req`, `:oban`, `:jason` |
-| `apps/backplane_memory/lib/backplane_memory.ex` | Module entry-point |
-| `apps/backplane_memory/lib/backplane_memory/application.ex` | OTP Application (minimal, no GenServers in M1) |
-| `apps/backplane_memory/lib/backplane_memory/memories/memory.ex` | Ecto schema `bpm_memories` + changeset |
-| `apps/backplane_memory/lib/backplane_memory/privacy/filter.ex` | Strip secrets and `<private>` tags before write |
-| `apps/backplane_memory/lib/backplane_memory/memory.ex` | Context API: `remember/2`, `get/1`, `forget/1`, `stats/0` |
-| `apps/backplane_memory/lib/backplane_memory/embedding/client.ex` | POST to LLM proxy `/api/llm/v1/embeddings` |
-| `apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex` | Oban worker: embed one `bpm_memories` row |
+| `apps/backplane_memory/lib/backplane/memory.ex` | Module entry-point |
+| `apps/backplane_memory/lib/backplane/memory/application.ex` | OTP Application (minimal, no GenServers in M1) |
+| `apps/backplane_memory/lib/backplane/memory/memories/memory.ex` | Ecto schema `bpm_memories` + changeset |
+| `apps/backplane_memory/lib/backplane/memory/privacy/filter.ex` | Strip secrets and `<private>` tags before write |
+| `apps/backplane_memory/lib/backplane/memory/memories.ex` | Context API: `remember/2`, `get/1`, `forget/1`, `stats/0` |
+| `apps/backplane_memory/lib/backplane/memory/embedding/client.ex` | POST to LLM proxy `/api/llm/v1/embeddings` |
+| `apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex` | Oban worker: embed one `bpm_memories` row |
 | `apps/backplane_memory/test/test_helper.exs` | ExUnit + Ecto sandbox setup |
 | `apps/backplane_memory/test/support/data_case.ex` | Ecto sandbox test helper |
-| `apps/backplane_memory/test/backplane_memory/memories/memory_test.exs` | Schema + changeset tests |
-| `apps/backplane_memory/test/backplane_memory/privacy/filter_test.exs` | Privacy filter tests |
-| `apps/backplane_memory/test/backplane_memory/memory_test.exs` | Context API tests |
-| `apps/backplane_memory/test/backplane_memory/embedding/client_test.exs` | Embedding client tests (mock HTTP) |
-| `apps/backplane_memory/test/backplane_memory/workers/embed_worker_test.exs` | Embed worker tests |
+| `apps/backplane_memory/test/backplane/memory/memories/memory_test.exs` | Schema + changeset tests |
+| `apps/backplane_memory/test/backplane/memory/privacy/filter_test.exs` | Privacy filter tests |
+| `apps/backplane_memory/test/backplane/memory/memory_test.exs` | Context API tests |
+| `apps/backplane_memory/test/backplane/memory/embedding/client_test.exs` | Embedding client tests (mock HTTP) |
+| `apps/backplane_memory/test/backplane/memory/workers/embed_worker_test.exs` | Embed worker tests |
 
 ### Modified files
 
@@ -58,8 +58,8 @@ The PRD has 6 milestones. Each depends on the previous. Plan covers M1 = FR-1, F
 
 **Files:**
 - Create: `apps/backplane_memory/mix.exs`
-- Create: `apps/backplane_memory/lib/backplane_memory.ex`
-- Create: `apps/backplane_memory/lib/backplane_memory/application.ex`
+- Create: `apps/backplane_memory/lib/backplane/memory.ex`
+- Create: `apps/backplane_memory/lib/backplane/memory/application.ex`
 - Create: `apps/backplane_memory/test/test_helper.exs`
 - Create: `apps/backplane_memory/test/support/data_case.ex`
 - Modify: `config/config.exs`
@@ -67,7 +67,7 @@ The PRD has 6 milestones. Each depends on the previous. Plan covers M1 = FR-1, F
 - [ ] **Step 1: Create `apps/backplane_memory/mix.exs`**
 
 ```elixir
-defmodule BackplaneMemory.MixProject do
+defmodule Backplane.Memory.MixProject do
   use Mix.Project
 
   def project do
@@ -88,7 +88,7 @@ defmodule BackplaneMemory.MixProject do
   def application do
     [
       extra_applications: [:logger, :crypto],
-      mod: {BackplaneMemory.Application, []}
+      mod: {Backplane.Memory.Application, []}
     ]
   end
 
@@ -106,20 +106,20 @@ defmodule BackplaneMemory.MixProject do
 end
 ```
 
-- [ ] **Step 2: Create `apps/backplane_memory/lib/backplane_memory.ex`**
+- [ ] **Step 2: Create `apps/backplane_memory/lib/backplane/memory.ex`**
 
 ```elixir
-defmodule BackplaneMemory do
+defmodule Backplane.Memory do
   @moduledoc "Self-hosted agent memory for Backplane."
 
   def version, do: "0.1.0"
 end
 ```
 
-- [ ] **Step 3: Create `apps/backplane_memory/lib/backplane_memory/application.ex`**
+- [ ] **Step 3: Create `apps/backplane_memory/lib/backplane/memory/application.ex`**
 
 ```elixir
-defmodule BackplaneMemory.Application do
+defmodule Backplane.Memory.Application do
   @moduledoc false
 
   use Application
@@ -127,7 +127,7 @@ defmodule BackplaneMemory.Application do
   @impl true
   def start(_type, _args) do
     children = []
-    opts = [strategy: :one_for_one, name: BackplaneMemory.Supervisor]
+    opts = [strategy: :one_for_one, name: Backplane.Memory.Supervisor]
     Supervisor.start_link(children, opts)
   end
 end
@@ -143,7 +143,7 @@ ExUnit.start()
 - [ ] **Step 5: Create `apps/backplane_memory/test/support/data_case.ex`**
 
 ```elixir
-defmodule BackplaneMemory.DataCase do
+defmodule Backplane.Memory.DataCase do
   use ExUnit.CaseTemplate
 
   using do
@@ -279,17 +279,17 @@ git commit -m "feat(memory): add bpm_memories migration with halfvec(2560) and g
 ## Task 3: Ecto Schema
 
 **Files:**
-- Create: `apps/backplane_memory/lib/backplane_memory/memories/memory.ex`
-- Create: `apps/backplane_memory/test/backplane_memory/memories/memory_test.exs`
+- Create: `apps/backplane_memory/lib/backplane/memory/memories/memory.ex`
+- Create: `apps/backplane_memory/test/backplane/memory/memories/memory_test.exs`
 
 - [ ] **Step 1: Write the failing test**
 
 ```elixir
-# apps/backplane_memory/test/backplane_memory/memories/memory_test.exs
-defmodule BackplaneMemory.Memories.MemoryTest do
-  use BackplaneMemory.DataCase, async: true
+# apps/backplane_memory/test/backplane/memory/memories/memory_test.exs
+defmodule Backplane.Memory.Memories.MemoryTest do
+  use Backplane.Memory.DataCase, async: true
 
-  alias BackplaneMemory.Memories.Memory
+  alias Backplane.Memory.Memories.Memory
 
   describe "changeset/2" do
     test "valid attrs produce a valid changeset" do
@@ -350,14 +350,14 @@ end
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/memories/memory_test.exs`
-Expected: compile error `BackplaneMemory.Memories.Memory is undefined`
+Run: `mix test apps/backplane_memory/test/backplane/memory/memories/memory_test.exs`
+Expected: compile error `Backplane.Memory.Memories.Memory is undefined`
 
 - [ ] **Step 3: Implement the schema**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/memories/memory.ex
-defmodule BackplaneMemory.Memories.Memory do
+# apps/backplane_memory/lib/backplane/memory/memories/memory.ex
+defmodule Backplane.Memory.Memories.Memory do
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -419,13 +419,13 @@ end
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/memories/memory_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/memories/memory_test.exs`
 Expected: all tests pass
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backplane_memory/lib/backplane_memory/memories/ apps/backplane_memory/test/backplane_memory/memories/
+git add apps/backplane_memory/lib/backplane/memory/memories/ apps/backplane_memory/test/backplane/memory/memories/
 git commit -m "feat(memory): add Memory Ecto schema with changeset and sha256 content_hash"
 ```
 
@@ -434,17 +434,17 @@ git commit -m "feat(memory): add Memory Ecto schema with changeset and sha256 co
 ## Task 4: Privacy Filter
 
 **Files:**
-- Create: `apps/backplane_memory/lib/backplane_memory/privacy/filter.ex`
-- Create: `apps/backplane_memory/test/backplane_memory/privacy/filter_test.exs`
+- Create: `apps/backplane_memory/lib/backplane/memory/privacy/filter.ex`
+- Create: `apps/backplane_memory/test/backplane/memory/privacy/filter_test.exs`
 
 - [ ] **Step 1: Write the failing test**
 
 ```elixir
-# apps/backplane_memory/test/backplane_memory/privacy/filter_test.exs
-defmodule BackplaneMemory.Privacy.FilterTest do
+# apps/backplane_memory/test/backplane/memory/privacy/filter_test.exs
+defmodule Backplane.Memory.Privacy.FilterTest do
   use ExUnit.Case, async: true
 
-  alias BackplaneMemory.Privacy.Filter
+  alias Backplane.Memory.Privacy.Filter
 
   describe "apply/1" do
     test "passes through normal content unchanged" do
@@ -482,14 +482,14 @@ end
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/privacy/filter_test.exs`
-Expected: compile error `BackplaneMemory.Privacy.Filter is undefined`
+Run: `mix test apps/backplane_memory/test/backplane/memory/privacy/filter_test.exs`
+Expected: compile error `Backplane.Memory.Privacy.Filter is undefined`
 
 - [ ] **Step 3: Implement the privacy filter**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/privacy/filter.ex
-defmodule BackplaneMemory.Privacy.Filter do
+# apps/backplane_memory/lib/backplane/memory/privacy/filter.ex
+defmodule Backplane.Memory.Privacy.Filter do
   @moduledoc "Strips secrets and <private>-tagged content before memory storage."
 
   @secret_patterns [
@@ -525,13 +525,13 @@ end
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/privacy/filter_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/privacy/filter_test.exs`
 Expected: all tests pass
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backplane_memory/lib/backplane_memory/privacy/ apps/backplane_memory/test/backplane_memory/privacy/
+git add apps/backplane_memory/lib/backplane/memory/privacy/ apps/backplane_memory/test/backplane/memory/privacy/
 git commit -m "feat(memory): add privacy filter for secrets and <private> content"
 ```
 
@@ -540,15 +540,15 @@ git commit -m "feat(memory): add privacy filter for secrets and <private> conten
 ## Task 5: Context API
 
 **Files:**
-- Create: `apps/backplane_memory/lib/backplane_memory/memory.ex`
-- Create a stub `apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex` (replaced in Task 7)
-- Create: `apps/backplane_memory/test/backplane_memory/memory_test.exs`
+- Create: `apps/backplane_memory/lib/backplane/memory/memories.ex`
+- Create a stub `apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex` (replaced in Task 7)
+- Create: `apps/backplane_memory/test/backplane/memory/memory_test.exs`
 
 - [ ] **Step 1: Create the EmbedWorker stub so Memory context compiles**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex
-defmodule BackplaneMemory.Workers.EmbedWorker do
+# apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex
+defmodule Backplane.Memory.Workers.EmbedWorker do
   @doc "Stub: replaced in Task 7 with full Oban worker."
   def enqueue(_id), do: {:ok, nil}
 end
@@ -557,79 +557,79 @@ end
 - [ ] **Step 2: Write the failing test**
 
 ```elixir
-# apps/backplane_memory/test/backplane_memory/memory_test.exs
-defmodule BackplaneMemory.MemoryTest do
-  use BackplaneMemory.DataCase, async: true
+# apps/backplane_memory/test/backplane/memory/memory_test.exs
+defmodule Backplane.Memory.MemoriesTest do
+  use Backplane.Memory.DataCase, async: true
 
-  alias BackplaneMemory.Memory
+  alias Backplane.Memory.Memories
 
   describe "remember/2" do
     test "stores a memory with defaults" do
-      assert {:ok, mem} = Memory.remember("Paris is the capital of France.", agent_id: "a", host_id: "h")
+      assert {:ok, mem} = Memories.remember("Paris is the capital of France.", agent_id: "a", host_id: "h")
       assert mem.content == "Paris is the capital of France."
       assert mem.memory_type == "semantic"
       assert mem.scope == "global"
     end
 
     test "respects explicit type and scope options" do
-      assert {:ok, mem} = Memory.remember("turn content", type: "working", scope: "proj-x", agent_id: "a", host_id: "h")
+      assert {:ok, mem} = Memories.remember("turn content", type: "working", scope: "proj-x", agent_id: "a", host_id: "h")
       assert mem.memory_type == "working"
       assert mem.scope == "proj-x"
     end
 
     test "deduplicates identical content within same scope (returns existing id)" do
       opts = [agent_id: "a", host_id: "h", scope: "proj-1"]
-      {:ok, first} = Memory.remember("Unique fact.", opts)
-      {:ok, second} = Memory.remember("Unique fact.", opts)
+      {:ok, first} = Memories.remember("Unique fact.", opts)
+      {:ok, second} = Memories.remember("Unique fact.", opts)
       assert first.id == second.id
     end
 
     test "does not deduplicate across different scopes" do
-      {:ok, first} = Memory.remember("Fact.", agent_id: "a", host_id: "h", scope: "scope-1")
-      {:ok, second} = Memory.remember("Fact.", agent_id: "a", host_id: "h", scope: "scope-2")
+      {:ok, first} = Memories.remember("Fact.", agent_id: "a", host_id: "h", scope: "scope-1")
+      {:ok, second} = Memories.remember("Fact.", agent_id: "a", host_id: "h", scope: "scope-2")
       assert first.id != second.id
     end
 
     test "strips secrets via privacy filter before storing" do
-      {:ok, mem} = Memory.remember("Key: sk-abcdef1234567890abcdef1234567890abcdef12", agent_id: "a", host_id: "h")
+      {:ok, mem} = Memories.remember("Key: sk-abcdef1234567890abcdef1234567890abcdef12", agent_id: "a", host_id: "h")
       refute mem.content =~ "sk-abcdef"
       assert mem.content =~ "[REDACTED]"
     end
 
     test "returns error when agent_id is missing" do
-      assert {:error, _changeset} = Memory.remember("x", host_id: "h")
+      assert {:error, _changeset} = Memories.remember("x", host_id: "h")
     end
   end
 
   describe "get/1" do
     test "retrieves a non-deleted memory by id" do
-      {:ok, mem} = Memory.remember("Berlin is in Germany.", agent_id: "a", host_id: "h")
-      assert {:ok, fetched} = Memory.get(mem.id)
+      {:ok, mem} = Memories.remember("Berlin is in Germany.", agent_id: "a", host_id: "h")
+      assert {:ok, fetched} = Memories.get(mem.id)
       assert fetched.id == mem.id
     end
 
     test "returns not_found for unknown id" do
-      assert {:error, :not_found} = Memory.get(Ecto.UUID.generate())
+      assert {:error, :not_found} = Memories.get(Ecto.UUID.generate())
     end
   end
 
   describe "forget/1" do
     test "tombstones a memory — get/1 returns not_found afterwards" do
-      {:ok, mem} = Memory.remember("Tokyo is in Japan.", agent_id: "a", host_id: "h")
-      assert :ok = Memory.forget(mem.id)
-      assert {:error, :not_found} = Memory.get(mem.id)
+      {:ok, mem} = Memories.remember("Tokyo is in Japan.", agent_id: "a", host_id: "h")
+      assert :ok = Memories.forget(mem.id)
+      assert {:error, :not_found} = Memories.get(mem.id)
     end
 
     test "returns not_found for unknown id" do
-      assert {:error, :not_found} = Memory.forget(Ecto.UUID.generate())
+      assert {:error, :not_found} = Memories.forget(Ecto.UUID.generate())
     end
   end
 
   describe "stats/0" do
     test "returns a list with memory_type and count keys" do
-      Memory.remember("s1", agent_id: "a", host_id: "h", type: "semantic")
-      Memory.remember("s2", agent_id: "a", host_id: "h", type: "working")
-      stats = Memory.stats()
+      Memories.remember("s1", agent_id: "a", host_id: "h", type: "semantic")
+      Memories.remember("s2", agent_id: "a", host_id: "h", type: "working")
+      stats = Memories.stats()
       assert is_list(stats)
       assert Enum.any?(stats, fn s -> Map.has_key?(s, :memory_type) and Map.has_key?(s, :count) end)
     end
@@ -639,22 +639,22 @@ end
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/memory_test.exs`
-Expected: compile error `BackplaneMemory.Memory is undefined`
+Run: `mix test apps/backplane_memory/test/backplane/memory/memory_test.exs`
+Expected: compile error `Backplane.Memory.Memories is undefined`
 
 - [ ] **Step 4: Implement the context API**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/memory.ex
-defmodule BackplaneMemory.Memory do
+# apps/backplane_memory/lib/backplane/memory/memories.ex
+defmodule Backplane.Memory.Memories do
   @moduledoc "Context API: remember, get, forget, stats."
 
   import Ecto.Query
 
   alias Backplane.Repo
-  alias BackplaneMemory.Memories.Memory, as: MemorySchema
-  alias BackplaneMemory.Privacy.Filter
-  alias BackplaneMemory.Workers.EmbedWorker
+  alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.Memory.Privacy.Filter
+  alias Backplane.Memory.Workers.EmbedWorker
 
   @dedup_window_seconds 86_400
 
@@ -754,13 +754,13 @@ end
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/memory_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/memory_test.exs`
 Expected: all tests pass
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/backplane_memory/lib/backplane_memory/memory.ex apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex apps/backplane_memory/test/backplane_memory/memory_test.exs
+git add apps/backplane_memory/lib/backplane/memory/memories.ex apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex apps/backplane_memory/test/backplane/memory/memory_test.exs
 git commit -m "feat(memory): add Memory context API (remember/get/forget/stats)"
 ```
 
@@ -769,17 +769,17 @@ git commit -m "feat(memory): add Memory context API (remember/get/forget/stats)"
 ## Task 6: Embedding Client
 
 **Files:**
-- Create: `apps/backplane_memory/lib/backplane_memory/embedding/client.ex`
-- Create: `apps/backplane_memory/test/backplane_memory/embedding/client_test.exs`
+- Create: `apps/backplane_memory/lib/backplane/memory/embedding/client.ex`
+- Create: `apps/backplane_memory/test/backplane/memory/embedding/client_test.exs`
 
 - [ ] **Step 1: Write the failing test**
 
 ```elixir
-# apps/backplane_memory/test/backplane_memory/embedding/client_test.exs
-defmodule BackplaneMemory.Embedding.ClientTest do
+# apps/backplane_memory/test/backplane/memory/embedding/client_test.exs
+defmodule Backplane.Memory.Embedding.ClientTest do
   use ExUnit.Case, async: true
 
-  alias BackplaneMemory.Embedding.Client
+  alias Backplane.Memory.Embedding.Client
 
   describe "query_instruction/0" do
     test "returns non-empty string starting with 'Instruct:'" do
@@ -851,14 +851,14 @@ end
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/embedding/client_test.exs`
-Expected: compile error `BackplaneMemory.Embedding.Client is undefined`
+Run: `mix test apps/backplane_memory/test/backplane/memory/embedding/client_test.exs`
+Expected: compile error `Backplane.Memory.Embedding.Client is undefined`
 
 - [ ] **Step 3: Implement the embedding client**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/embedding/client.ex
-defmodule BackplaneMemory.Embedding.Client do
+# apps/backplane_memory/lib/backplane/memory/embedding/client.ex
+defmodule Backplane.Memory.Embedding.Client do
   @moduledoc """
   Embeds text via vLLM (Qwen3-Embedding-4B) through the Backplane LLM proxy.
 
@@ -911,13 +911,13 @@ end
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/embedding/client_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/embedding/client_test.exs`
 Expected: all tests pass
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backplane_memory/lib/backplane_memory/embedding/ apps/backplane_memory/test/backplane_memory/embedding/
+git add apps/backplane_memory/lib/backplane/memory/embedding/ apps/backplane_memory/test/backplane/memory/embedding/
 git commit -m "feat(memory): add embedding client for vLLM via LLM proxy"
 ```
 
@@ -926,23 +926,23 @@ git commit -m "feat(memory): add embedding client for vLLM via LLM proxy"
 ## Task 7: Embed Worker
 
 **Files:**
-- Modify: `apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex` (replace stub from Task 5)
-- Create: `apps/backplane_memory/test/backplane_memory/workers/embed_worker_test.exs`
+- Modify: `apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex` (replace stub from Task 5)
+- Create: `apps/backplane_memory/test/backplane/memory/workers/embed_worker_test.exs`
 
 - [ ] **Step 1: Write the failing test**
 
 ```elixir
-# apps/backplane_memory/test/backplane_memory/workers/embed_worker_test.exs
-defmodule BackplaneMemory.Workers.EmbedWorkerTest do
-  use BackplaneMemory.DataCase, async: false
+# apps/backplane_memory/test/backplane/memory/workers/embed_worker_test.exs
+defmodule Backplane.Memory.Workers.EmbedWorkerTest do
+  use Backplane.Memory.DataCase, async: false
 
-  alias BackplaneMemory.Memory
-  alias BackplaneMemory.Workers.EmbedWorker
-  alias BackplaneMemory.Memories.Memory, as: MemorySchema
+  alias Backplane.Memory.Memories
+  alias Backplane.Memory.Workers.EmbedWorker
+  alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
   describe "perform_with_client/2" do
     test "updates the embedding field of a memory row" do
-      {:ok, mem} = Memory.remember("London is in the UK.", agent_id: "a", host_id: "h")
+      {:ok, mem} = Memories.remember("London is in the UK.", agent_id: "a", host_id: "h")
       assert is_nil(Backplane.Repo.get!(MemorySchema, mem.id).embedding)
 
       vector = Enum.map(1..2560, fn _ -> 0.001 end)
@@ -955,7 +955,7 @@ defmodule BackplaneMemory.Workers.EmbedWorkerTest do
     end
 
     test "returns :ok and leaves embedding nil when embed client fails" do
-      {:ok, mem} = Memory.remember("Madrid is in Spain.", agent_id: "a", host_id: "h")
+      {:ok, mem} = Memories.remember("Madrid is in Spain.", agent_id: "a", host_id: "h")
       failing_embed = fn _texts, _mode, _opts -> {:error, "vLLM unavailable"} end
 
       assert :ok = EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, failing_embed)
@@ -975,21 +975,21 @@ end
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/workers/embed_worker_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/workers/embed_worker_test.exs`
 Expected: errors because `EmbedWorker` is a stub without `perform_with_client/2`
 
 - [ ] **Step 3: Replace the stub with the full Oban worker**
 
 ```elixir
-# apps/backplane_memory/lib/backplane_memory/workers/embed_worker.ex
-defmodule BackplaneMemory.Workers.EmbedWorker do
+# apps/backplane_memory/lib/backplane/memory/workers/embed_worker.ex
+defmodule Backplane.Memory.Workers.EmbedWorker do
   @moduledoc "Oban worker: embed a bpm_memories row via the LLM proxy. Fails gracefully — memory stays unembedded on error."
 
   use Oban.Worker, queue: :memory, max_attempts: 5
 
   alias Backplane.Repo
-  alias BackplaneMemory.Embedding.Client
-  alias BackplaneMemory.Memories.Memory
+  alias Backplane.Memory.Embedding.Client
+  alias Backplane.Memory.Memories.Memory
 
   @impl Oban.Worker
   def perform(%Oban.Job{} = job) do
@@ -1027,13 +1027,13 @@ end
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `mix test apps/backplane_memory/test/backplane_memory/workers/embed_worker_test.exs`
+Run: `mix test apps/backplane_memory/test/backplane/memory/workers/embed_worker_test.exs`
 Expected: all tests pass
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backplane_memory/lib/backplane_memory/workers/ apps/backplane_memory/test/backplane_memory/workers/
+git add apps/backplane_memory/lib/backplane/memory/workers/ apps/backplane_memory/test/backplane/memory/workers/
 git commit -m "feat(memory): add EmbedWorker Oban job for async vLLM embedding"
 ```
 
@@ -1065,7 +1065,7 @@ git commit -m "test(memory): M1 full suite green"
 
 | FR | Requirement | Covered? |
 |----|-------------|---------|
-| FR-1 | Explicit write (`remember`) | ✅ `BackplaneMemory.Memory.remember/2` |
+| FR-1 | Explicit write (`remember`) | ✅ `Backplane.Memory.Memories.remember/2` |
 | FR-3 | Dedup by content hash | ✅ `find_duplicate/2` — sha256 + scope + 24h window |
 | FR-4 | Provenance (`agent_id` + `host_id`) | ✅ Required fields in schema changeset |
 | FR-5 | Scope field (opaque, default `global`) | ✅ `scope` field with default |
@@ -1081,8 +1081,8 @@ git commit -m "test(memory): M1 full suite green"
 
 ### Type Consistency
 
-- `Memory.remember/2` → `MemorySchema.changeset/2` (same alias `MemorySchema`) ✅
-- `EmbedWorker.enqueue/1` → called in `Memory.tap_enqueue_embed/1` ✅
+- `Memories.remember/2` → `MemorySchema.changeset/2` (same alias `MemorySchema`) ✅
+- `EmbedWorker.enqueue/1` → called in `Memories.tap_enqueue_embed/1` ✅
 - `EmbedWorker.perform_with_client/2` → uses `Memory.embed_changeset/2` (same `Memory` alias) ✅
 - `Memory.embed_changeset/2` → calls `Pgvector.HalfVector.new(vector)` ✅
 

@@ -6,7 +6,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   alias Backplane.Repo
   alias Backplane.Skills.Hosts
   alias Backplane.Api.HostAgentMemorySync
-  alias BackplaneMemory.Memories.Memory, as: MemorySchema
+  alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
   setup do
     Application.delete_env(:backplane_api, :host_memory_sync_adapter)

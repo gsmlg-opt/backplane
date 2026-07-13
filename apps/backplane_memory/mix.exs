@@ -1,4 +1,4 @@
-defmodule BackplaneMemory.MixProject do
+defmodule Backplane.Memory.MixProject do
   use Mix.Project
 
   def project do
@@ -19,7 +19,7 @@ defmodule BackplaneMemory.MixProject do
   def application do
     [
       extra_applications: [:logger, :crypto, :tzdata],
-      mod: {BackplaneMemory.Application, []}
+      mod: {Backplane.Memory.Application, []}
     ]
   end
 

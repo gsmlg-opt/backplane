@@ -5,7 +5,7 @@ defmodule Backplane.Admin.MemoryLiveTest do
   alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
-  alias BackplaneMemory.Memory
+  alias Backplane.Memory.Memories
 
   describe "GET /memory/browse" do
     test "renders empty state when no memories exist", %{conn: conn} do
@@ -20,7 +20,7 @@ defmodule Backplane.Admin.MemoryLiveTest do
 
     test "lists existing memories in a table", %{conn: conn} do
       {:ok, _} =
-        Memory.remember("Paris is in France.",
+        Memories.remember("Paris is in France.",
           agent_id: "a",
           host_id: "h",
           type: "semantic",
@@ -38,8 +38,8 @@ defmodule Backplane.Admin.MemoryLiveTest do
     end
 
     test "filters by type via URL params", %{conn: conn} do
-      {:ok, _} = Memory.remember("alpha", agent_id: "a", host_id: "h", type: "working")
-      {:ok, _} = Memory.remember("beta", agent_id: "a", host_id: "h", type: "semantic")
+      {:ok, _} = Memories.remember("alpha", agent_id: "a", host_id: "h", type: "working")
+      {:ok, _} = Memories.remember("beta", agent_id: "a", host_id: "h", type: "semantic")
 
       {:ok, _view, html} = live(conn, "/memory/browse?type=working")
       assert html =~ "alpha"
@@ -47,7 +47,7 @@ defmodule Backplane.Admin.MemoryLiveTest do
     end
 
     test "soft-deletes a memory via the Forget button", %{conn: conn} do
-      {:ok, mem} = Memory.remember("forget me", agent_id: "a", host_id: "h")
+      {:ok, mem} = Memories.remember("forget me", agent_id: "a", host_id: "h")
       {:ok, view, _html} = live(conn, "/memory/browse")
 
       assert render(view) =~ "forget me"
@@ -57,14 +57,14 @@ defmodule Backplane.Admin.MemoryLiveTest do
       |> render_click()
 
       refute render(view) =~ "forget me"
-      assert {:error, :not_found} = Memory.get(mem.id)
+      assert {:error, :not_found} = Memories.get(mem.id)
     end
   end
 
   describe "GET /memory/stats" do
     test "renders type and scope counts", %{conn: conn} do
-      Memory.remember("s1", agent_id: "a", host_id: "h", type: "semantic", scope: "alpha")
-      Memory.remember("w1", agent_id: "a", host_id: "h", type: "working", scope: "alpha")
+      Memories.remember("s1", agent_id: "a", host_id: "h", type: "semantic", scope: "alpha")
+      Memories.remember("w1", agent_id: "a", host_id: "h", type: "working", scope: "alpha")
 
       {:ok, _view, html} = live(conn, "/memory/stats")
       assert html =~ "Memory Stats"

@@ -6,8 +6,8 @@ defmodule Backplane.Api.HostAgentMemorySync do
   import Ecto.Query
 
   alias Backplane.Repo
-  alias BackplaneMemory.Memory
-  alias BackplaneMemory.Memories.Memory, as: MemorySchema
+  alias Backplane.Memory.Memories
+  alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
   @fact_memory_types ~w(semantic procedural)
   @host_memory_metadata_key "host_memory"
@@ -31,7 +31,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   def apply_sync_item(host, %{"op" => "forget"} = item) do
     with {:ok, memory} <- resolve_forget_memory(host, item),
-         :ok <- Memory.forget(memory.id) do
+         :ok <- Memories.forget(memory.id) do
       {:ok, %{status: :ok, canonical_id: memory.id}}
     else
       {:error, reason} -> {:error, :validation, reason}
@@ -117,7 +117,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
       metadata: put_host_metadata(metadata, local_id, host_content_hash)
     ]
 
-    case Memory.remember(content, opts) do
+    case Memories.remember(content, opts) do
       {:ok, %MemorySchema{} = memory} ->
         memory = ensure_local_mapping(memory, host.id, local_id, host_content_hash)
         status = if duplicate?, do: :duplicate, else: :ok

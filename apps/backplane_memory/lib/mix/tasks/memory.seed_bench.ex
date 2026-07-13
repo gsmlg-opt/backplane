@@ -28,7 +28,7 @@ defmodule Mix.Tasks.Memory.SeedBench do
 
     results =
       Enum.map(memories, fn mem ->
-        BackplaneMemory.Memory.remember(mem["content"],
+        Backplane.Memory.Memories.remember(mem["content"],
           type: mem["type"] || "semantic",
           scope: mem["scope"] || "global",
           agent_id: mem["agent_id"] || "bench-agent",
