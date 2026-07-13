@@ -70,6 +70,47 @@ defmodule Backplane.Settings do
       value: true,
       type: "boolean",
       desc: "Enable web fetch service"
+    },
+    # Memory V2 rollout controls
+    "memory.pipeline.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable the Memory V2 pipeline master gate"
+    },
+    "memory.events.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable authoritative Memory V2 event ingestion"
+    },
+    "memory.events.dual_write" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable atomic Memory V2 event and observation dual-write"
+    },
+    "memory.window_summaries.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable Memory V2 window summaries"
+    },
+    "memory.session_summary_v2.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable Memory V2 session summary generation"
+    },
+    "memory.fact_extraction_v2.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable Memory V2 fact extraction"
+    },
+    "memory.procedure_extraction_v2.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable Memory V2 procedure extraction"
+    },
+    "memory.recall_v2.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable Memory V2 recall"
     }
   }
 
