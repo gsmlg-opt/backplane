@@ -77,13 +77,18 @@ defmodule Backplane.Memory.Events.Store do
         case ensure_open(stream) do
           :ok ->
             event = %{event | sequence: stream.next_sequence}
-            {:ok, inserted} = repo.insert(Event.changeset(event, Map.from_struct(event)))
 
-            repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
-              set: [next_sequence: event.sequence + 1, last_event_at: event.occurred_at]
-            )
+            case repo.insert(Event.changeset(event, Map.from_struct(event))) do
+              {:ok, inserted} ->
+                repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
+                  set: [next_sequence: event.sequence + 1, last_event_at: event.occurred_at]
+                )
 
-            {:inserted, inserted}
+                {:inserted, inserted}
+
+              {:error, changeset} ->
+                repo.rollback(changeset)
+            end
 
           error ->
             error

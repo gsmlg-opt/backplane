@@ -29,16 +29,22 @@ defmodule Backplane.Memory.Observations do
         Ecto.Multi.new()
         |> Ecto.Multi.insert(:observation, Observation.changeset(%Observation{}, attrs))
         |> Ecto.Multi.run(:event, fn repo, %{observation: observation} ->
-          case Events.Store.append(event_attrs(observation), repo: repo) do
+          case Events.Store.append(event_attrs(observation), repo: repo, telemetry: false) do
             {:ok, _event} = result -> result
             {:error, reason} -> {:error, reason}
           end
         end)
 
       case repo().transaction(multi) do
-        {:ok, %{observation: observation}} -> {:ok, observation}
-        {:error, :observation, changeset, _changes} -> {:error, changeset}
-        {:error, :event, reason, _changes} -> {:error, reason}
+        {:ok, %{observation: observation, event: event_result}} ->
+          Events.Store.emit_result({:ok, event_result})
+          {:ok, observation}
+
+        {:error, :observation, changeset, _changes} ->
+          {:error, changeset}
+
+        {:error, :event, reason, _changes} ->
+          {:error, reason}
       end
     else
       %Observation{} |> Observation.changeset(attrs) |> repo().insert()
