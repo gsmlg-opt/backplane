@@ -19,7 +19,9 @@ defmodule Backplane.Repo.Migrations.CreateMemoryEventStream do
 
     create table(:bpm_events, primary_key: false) do
       add :id, :binary_id, primary_key: true, default: fragment("gen_random_uuid()")
-      add :stream_id, references(:bpm_streams, type: :text, on_delete: :restrict), null: false
+      add :stream_id,
+          references(:bpm_streams, column: :stream_id, type: :text, on_delete: :restrict),
+          null: false
       add :sequence, :bigint, null: false
       add :project, :text
       add :namespace, :text, null: false, default: "private"
@@ -47,8 +49,15 @@ defmodule Backplane.Repo.Migrations.CreateMemoryEventStream do
     create unique_index(:bpm_events, [:idempotency_key], name: :bpm_events_idempotency_key_uniq, where: "idempotency_key IS NOT NULL")
     create index(:bpm_events, [:session_id, :sequence])
     create index(:bpm_events, [:run_id, :sequence])
-    create index(:bpm_events, [:project, :occurred_at], order: [asc: :project, desc: :occurred_at])
-    create index(:bpm_events, [:event_type, :occurred_at], order: [asc: :event_type, desc: :occurred_at])
+    execute(
+      "CREATE INDEX bpm_events_project_occurred_at_idx ON bpm_events (project ASC, occurred_at DESC)",
+      "DROP INDEX bpm_events_project_occurred_at_idx"
+    )
+
+    execute(
+      "CREATE INDEX bpm_events_event_type_occurred_at_idx ON bpm_events (event_type ASC, occurred_at DESC)",
+      "DROP INDEX bpm_events_event_type_occurred_at_idx"
+    )
   end
 
   def down do
