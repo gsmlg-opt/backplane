@@ -46,7 +46,10 @@ defmodule Backplane.Repo.Migrations.CreateMemoryEventStream do
     end
 
     create unique_index(:bpm_events, [:stream_id, :sequence], name: :bpm_events_stream_sequence_uniq)
-    create unique_index(:bpm_events, [:idempotency_key], name: :bpm_events_idempotency_key_uniq, where: "idempotency_key IS NOT NULL")
+    create unique_index(:bpm_events, [:stream_id, :idempotency_key],
+             name: :bpm_events_idempotency_key_uniq,
+             where: "idempotency_key IS NOT NULL"
+           )
     create index(:bpm_events, [:session_id, :sequence])
     create index(:bpm_events, [:run_id, :sequence])
     execute(

@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Observations do
   import Ecto.Query
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Privacy.Filter
+  alias Backplane.Memory.{Config, Events}
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -18,8 +19,46 @@ defmodule Backplane.Memory.Observations do
         files: %{"paths" => files}
       }
 
+      persist(attrs)
+    end
+  end
+
+  defp persist(attrs) do
+    if Config.dual_write?() do
+      multi =
+        Ecto.Multi.new()
+        |> Ecto.Multi.insert(:observation, Observation.changeset(%Observation{}, attrs))
+        |> Ecto.Multi.run(:event, fn repo, %{observation: observation} ->
+          case Events.Store.append(event_attrs(observation), repo: repo) do
+            {:ok, _event} = result -> result
+            {:error, reason} -> {:error, reason}
+          end
+        end)
+
+      case repo().transaction(multi) do
+        {:ok, %{observation: observation}} -> {:ok, observation}
+        {:error, :observation, changeset, _changes} -> {:error, changeset}
+        {:error, :event, reason, _changes} -> {:error, reason}
+      end
+    else
       %Observation{} |> Observation.changeset(attrs) |> repo().insert()
     end
+  end
+
+  defp event_attrs(%Observation{} = observation) do
+    %{
+      id: observation.id,
+      stream_id: "session:" <> observation.session_id,
+      session_id: observation.session_id,
+      event_type: "legacy.observation",
+      actor_type: "system",
+      role: "system",
+      status: if(observation.is_error, do: "error", else: "ok"),
+      tool_name: observation.tool_name,
+      content: observation.content,
+      payload: observation.files,
+      idempotency_key: "legacy-observation:" <> observation.id
+    }
   end
 
   @doc "Register/upsert a session."

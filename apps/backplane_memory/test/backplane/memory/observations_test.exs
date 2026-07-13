@@ -1,8 +1,26 @@
 defmodule Backplane.Memory.ObservationsTest do
-  use Backplane.Memory.DataCase, async: true
+  use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Observations
   alias Backplane.Memory.Observations.Session
+  alias Backplane.Memory.Events.Event
+
+  @settings_table :backplane_settings
+
+  setup do
+    snapshot =
+      for key <- ["memory.pipeline.enabled", "memory.events.enabled", "memory.events.dual_write"],
+          into: %{}, do: {key, :ets.lookup(@settings_table, key)}
+
+    on_exit(fn ->
+      Enum.each(snapshot, fn {key, rows} ->
+        :ets.delete(@settings_table, key)
+        if rows != [], do: :ets.insert(@settings_table, rows)
+      end)
+    end)
+
+    :ok
+  end
 
   # ---------------------------------------------------------------------------
   # record/3
@@ -43,6 +61,25 @@ defmodule Backplane.Memory.ObservationsTest do
       # Either filtered or changeset error — it must not be :ok
       assert result != {:ok, %{}}
       assert match?({:error, _}, result)
+    end
+
+    test "dual-write records the legacy observation and ordered event atomically" do
+      :ets.insert(@settings_table, {"memory.pipeline.enabled", true})
+      :ets.insert(@settings_table, {"memory.events.enabled", true})
+      :ets.insert(@settings_table, {"memory.events.dual_write", true})
+
+      assert {:ok, observation} = Observations.record("dual-write-session", "recorded safely")
+
+      assert [event] = repo().all(from(e in Event, where: e.id == ^observation.id))
+      assert event.stream_id == "session:dual-write-session"
+      assert event.event_type == "legacy.observation"
+      assert event.content == observation.content
+      assert event.sequence == 1
+    end
+
+    test "legacy path remains event-free when dual-write is disabled" do
+      assert {:ok, observation} = Observations.record("legacy-session", "legacy only")
+      assert repo().get(Event, observation.id) == nil
     end
   end
 
