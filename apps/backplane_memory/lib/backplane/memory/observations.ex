@@ -63,22 +63,67 @@ defmodule Backplane.Memory.Observations do
 
   @doc "Register/upsert a session."
   def register_session(session_id, project) do
-    %Session{}
-    |> Session.changeset(%{
-      session_id: session_id,
-      project: project,
-      started_at: DateTime.utc_now()
-    })
-    |> repo().insert(on_conflict: :nothing, conflict_target: [:session_id])
+    result =
+      repo().transaction(fn ->
+        changeset =
+          Session.changeset(%Session{}, %{
+            session_id: session_id,
+            project: project,
+            started_at: DateTime.utc_now()
+          })
+
+        with {:ok, session} <-
+               repo().insert(changeset, on_conflict: :nothing, conflict_target: [:session_id]),
+             {:ok, event_result} <- lifecycle_event("session.started", session, repo()) do
+          {session, event_result}
+        else
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, {session, event_result}} ->
+        Backplane.Memory.Events.Store.emit_result({:ok, event_result})
+        {:ok, session}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc "Mark a session as ended and enqueue consolidation."
   def end_session(session_id) do
     result =
-      repo().update_all(
-        from(s in Session, where: s.session_id == ^session_id and is_nil(s.ended_at)),
-        set: [ended_at: DateTime.utc_now()]
-      )
+      repo().transaction(fn ->
+        {count, _} =
+          repo().update_all(
+            from(s in Session, where: s.session_id == ^session_id and is_nil(s.ended_at)),
+            set: [ended_at: DateTime.utc_now()]
+          )
+
+        if count > 0 do
+          project =
+            repo().one(from(s in Session, where: s.session_id == ^session_id, select: s.project))
+
+          case lifecycle_event(
+                 "session.ended",
+                 %{session_id: session_id, project: project},
+                 repo()
+               ) do
+            {:ok, event_result} -> {count, event_result}
+            {:error, reason} -> repo().rollback(reason)
+          end
+        else
+          {count, []}
+        end
+      end)
+
+    {_count, event_result} = result = unwrap_transaction(result)
+
+    if event_result != [] and
+         (match?({:inserted, _}, event_result) or match?({:duplicate, _}, event_result)) do
+      Backplane.Memory.Events.Store.emit_result({:ok, event_result})
+    end
 
     case result do
       {n, _} when n > 0 -> Backplane.Memory.Workers.SummaryWorker.enqueue(session_id)
@@ -86,6 +131,30 @@ defmodule Backplane.Memory.Observations do
     end
 
     result
+  end
+
+  defp unwrap_transaction({:ok, value}), do: value
+  defp unwrap_transaction({:error, reason}), do: {0, reason}
+
+  defp lifecycle_event(type, session, repo) do
+    if Config.dual_write?() do
+      Events.Store.append(
+        %{
+          stream_id: "session:" <> session.session_id,
+          session_id: session.session_id,
+          project: session.project,
+          event_type: type,
+          actor_type: "system",
+          role: "system",
+          status: "ok",
+          idempotency_key: type <> ":" <> session.session_id
+        },
+        repo: repo,
+        telemetry: false
+      )
+    else
+      {:ok, :disabled}
+    end
   end
 
   @doc "Return observations referencing any of the listed file paths, newest first."

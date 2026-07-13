@@ -10,7 +10,8 @@ defmodule Backplane.Memory.ObservationsTest do
   setup do
     snapshot =
       for key <- ["memory.pipeline.enabled", "memory.events.enabled", "memory.events.dual_write"],
-          into: %{}, do: {key, :ets.lookup(@settings_table, key)}
+          into: %{},
+          do: {key, :ets.lookup(@settings_table, key)}
 
     on_exit(fn ->
       Enum.each(snapshot, fn {key, rows} ->
@@ -80,6 +81,26 @@ defmodule Backplane.Memory.ObservationsTest do
     test "legacy path remains event-free when dual-write is disabled" do
       assert {:ok, observation} = Observations.record("legacy-session", "legacy only")
       assert repo().get(Event, observation.id) == nil
+    end
+
+    test "session lifecycle transitions dual-write ordered events" do
+      :ets.insert(@settings_table, {"memory.pipeline.enabled", true})
+      :ets.insert(@settings_table, {"memory.events.enabled", true})
+      :ets.insert(@settings_table, {"memory.events.dual_write", true})
+
+      assert {:ok, _session} = Observations.register_session("lifecycle-session", "project")
+      assert {1, _} = Observations.end_session("lifecycle-session")
+
+      assert Enum.map(
+               repo().all(
+                 from(e in Event,
+                   where: e.session_id == "lifecycle-session",
+                   order_by: e.sequence
+                 )
+               ),
+               & &1.event_type
+             ) ==
+               ["session.started", "session.ended"]
     end
   end
 

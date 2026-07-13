@@ -6,20 +6,32 @@ defmodule Backplane.Memory.Events.Store do
 
   def append(attrs, opts \\ []) do
     repo = Keyword.get(opts, :repo, repo())
+    telemetry? = Keyword.get(opts, :telemetry, true)
 
-    with {:ok, event} <- Backplane.Memory.Events.append(attrs),
-         {:ok, result} <- repo.transaction(fn -> append_locked(repo, event) end) do
-      unwrap(result)
-    end
+    result =
+      with {:ok, event} <- Backplane.Memory.Events.append(attrs),
+           {:ok, result} <- repo.transaction(fn -> append_locked(repo, event) end) do
+        unwrap(result)
+      end
+
+    if telemetry?, do: emit_telemetry(result)
+    result
   end
 
-  def append_batch(attrs_list, opts \\ []) when is_list(attrs_list) do
-    repo = Keyword.get(opts, :repo, repo())
+  def append_batch(attrs_list, opts \\ [])
 
-    with {:ok, events} <- Backplane.Memory.Events.append_batch(attrs_list),
-         {:ok, result} <- repo.transaction(fn -> batch_locked(repo, events) end) do
-      unwrap(result)
-    end
+  def append_batch(attrs_list, opts) when is_list(attrs_list) do
+    repo = Keyword.get(opts, :repo, repo())
+    telemetry? = Keyword.get(opts, :telemetry, true)
+
+    result =
+      with {:ok, events} <- Backplane.Memory.Events.append_batch(attrs_list),
+           {:ok, result} <- repo.transaction(fn -> batch_locked(repo, events) end) do
+        unwrap(result)
+      end
+
+    if telemetry?, do: emit_batch_telemetry(result)
+    result
   end
 
   def append_batch(_, _), do: {:error, :invalid_attributes}
@@ -27,6 +39,9 @@ defmodule Backplane.Memory.Events.Store do
   def get(id, opts \\ []) do
     Keyword.get(opts, :repo, repo()).get(Event, id)
   end
+
+  @doc false
+  def emit_result(result), do: emit_telemetry(result)
 
   def list(stream_id, opts \\ []) do
     repo = Keyword.get(opts, :repo, repo())
@@ -95,7 +110,7 @@ defmodule Backplane.Memory.Events.Store do
     |> Enum.reverse()
   end
 
-  defp duplicate(repo, %{idempotency_key: nil}), do: nil
+  defp duplicate(_repo, %{idempotency_key: nil}), do: nil
 
   defp duplicate(repo, event),
     do:
@@ -124,4 +139,36 @@ defmodule Backplane.Memory.Events.Store do
   defp unwrap(result), do: {:ok, result}
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
+
+  defp emit_telemetry({:ok, {:inserted, event}}),
+    do:
+      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
+        status: :inserted,
+        event_type: event.event_type,
+        stream_id: event.stream_id
+      })
+
+  defp emit_telemetry({:ok, {:duplicate, event}}),
+    do:
+      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
+        status: :duplicate,
+        event_type: event.event_type,
+        stream_id: event.stream_id
+      })
+
+  defp emit_telemetry({:error, reason}),
+    do:
+      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 0}, %{
+        status: :error,
+        error: reason
+      })
+
+  defp emit_telemetry(_), do: :ok
+
+  defp emit_batch_telemetry({:ok, results}) when is_list(results) do
+    Enum.each(results, &emit_telemetry({:ok, &1}))
+  end
+
+  defp emit_batch_telemetry({:error, reason}), do: emit_telemetry({:error, reason})
+  defp emit_batch_telemetry(_), do: :ok
 end
