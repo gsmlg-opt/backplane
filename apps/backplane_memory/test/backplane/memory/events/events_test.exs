@@ -21,6 +21,23 @@ defmodule Backplane.Memory.EventsTest do
 
     assert {:error, :invalid_payload} =
              Events.append(%{stream_id: "s", event_type: "legacy.observation", payload: []})
+
+    assert {:error, :missing_identity} =
+             Events.append(%{
+               stream_id: nil,
+               session_id: "session",
+               event_type: "legacy.observation"
+             })
+
+    assert {:error, :invalid_uuid} =
+             Events.append(%{stream_id: "s", event_type: "legacy.observation", id: "bad"})
+
+    assert {:error, :invalid_uuid} =
+             Events.append(%{
+               stream_id: "s",
+               event_type: "legacy.observation",
+               causation_id: "bad"
+             })
   end
 
   test "append_batch preserves order and stops at the first invalid item" do

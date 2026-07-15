@@ -1,4 +1,6 @@
 defmodule Backplane.Memory.Events.Types do
+  @min_importance -2_147_483_648
+  @max_importance 2_147_483_647
   @types ~w(session.started session.ended conversation.user_message conversation.agent_message agent.run.started agent.run.completed agent.run.failed tool.call.started tool.call.completed tool.call.failed task.created task.updated task.completed memory.recalled heartbeat.triggered dream.started dream.completed schedule.triggered legacy.observation)
   @aliases %{
     "type" => :event_type,
@@ -62,18 +64,29 @@ defmodule Backplane.Memory.Events.Types do
   defp normalize_key(k) when is_binary(k), do: Map.get(@aliases, String.downcase(k), k)
   defp normalize_key(k), do: {:invalid_key, k}
   defp identity(%{stream_id: s}) when is_binary(s) and byte_size(s) > 0, do: :ok
+  defp identity(%{stream_id: _}), do: {:error, :missing_identity}
   defp identity(%{session_id: s}) when is_binary(s) and byte_size(s) > 0, do: :ok
   defp identity(_), do: {:error, :missing_identity}
+
   defp payload(%{payload: p}) when is_map(p) and not is_struct(p) do
     if json_safe?(p), do: :ok, else: {:error, :invalid_payload}
   end
+
   defp payload(%{payload: _}), do: {:error, :invalid_payload}
   defp payload(_), do: :ok
 
   defp json_safe?(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: true
-  defp json_safe?(v) when is_list(v), do: Enum.all?(v, &json_safe?/1)
-  defp json_safe?(v) when is_map(v), do: Enum.all?(v, fn {k, value} -> is_binary(k) and json_safe?(value) end)
+  defp json_safe?(v) when is_list(v), do: json_safe_list?(v)
+  defp json_safe?(v) when is_struct(v), do: false
+
+  defp json_safe?(v) when is_map(v),
+    do: Enum.all?(v, fn {k, value} -> is_binary(k) and json_safe?(value) end)
+
   defp json_safe?(_), do: false
+
+  defp json_safe_list?([]), do: true
+  defp json_safe_list?([head | tail]), do: json_safe?(head) and json_safe_list?(tail)
+  defp json_safe_list?(_), do: false
 
   defp defaults(m) do
     m =
@@ -94,8 +107,9 @@ defmodule Backplane.Memory.Events.Types do
       )
 
     with {:ok, id} <- Ecto.UUID.cast(m.id),
+         {:ok, m} <- causation_uuid(m),
          {:ok, dt} <- datetime(m.occurred_at),
-         true <- is_integer(m.importance) do
+         true <- valid_importance?(m.importance) do
       {:ok, %{m | id: id, occurred_at: dt}}
     else
       {:error, :invalid_time} -> {:error, :invalid_time}
@@ -104,6 +118,22 @@ defmodule Backplane.Memory.Events.Types do
       false -> {:error, :invalid_importance}
     end
   end
+
+  defp causation_uuid(%{causation_id: nil} = m), do: {:ok, m}
+
+  defp causation_uuid(%{causation_id: causation_id} = m) do
+    case Ecto.UUID.cast(causation_id) do
+      {:ok, causation_id} -> {:ok, %{m | causation_id: causation_id}}
+      :error -> :error
+    end
+  end
+
+  defp causation_uuid(m), do: {:ok, m}
+
+  defp valid_importance?(importance) when is_integer(importance),
+    do: importance >= @min_importance and importance <= @max_importance
+
+  defp valid_importance?(_), do: false
 
   defp datetime(%DateTime{} = d), do: {:ok, DateTime.shift_zone!(d, "Etc/UTC")}
 

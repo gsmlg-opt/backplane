@@ -2,6 +2,8 @@ defmodule Backplane.Memory.Events.Event do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Backplane.Memory.Events.Types
+
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_events" do
     field :stream_id, :string
@@ -41,6 +43,7 @@ defmodule Backplane.Memory.Events.Event do
       :payload,
       :occurred_at
     ])
+    |> validate_inclusion(:event_type, Types.accepted_types())
     |> foreign_key_constraint(:stream_id, name: :bpm_events_stream_id_fkey)
     |> unique_constraint(:sequence, name: :bpm_events_stream_sequence_uniq)
     |> unique_constraint(:idempotency_key, name: :bpm_events_idempotency_key_uniq)
