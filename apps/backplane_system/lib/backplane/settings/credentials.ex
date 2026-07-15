@@ -4,6 +4,7 @@ defmodule Backplane.Settings.Credentials do
   referenced by name everywhere else.
 
   - `store/4` — encrypt and upsert a credential
+  - `store_oauth_token/5` — encrypt and upsert an OAuth token set with an explicit kind
   - `import_cli_auth/2` — import Claude Code / Codex OAuth JSON file
   - `fetch/1` — decrypt and return plaintext (or exchange/refresh OAuth token)
   - `fetch_with_meta/1` — like fetch/1 but also returns auth_type and extra headers
@@ -24,7 +25,8 @@ defmodule Backplane.Settings.Credentials do
     "anthropic_oauth" => :anthropic_oauth,
     "openai_oauth" => :openai_oauth,
     "google_oauth" => :google_oauth,
-    "xai_oauth" => :xai_oauth
+    "xai_oauth" => :xai_oauth,
+    "figma_oauth" => :figma_oauth
   }
   @default_oauth_refresh_window_ms 10 * 60 * 1000
   @default_oauth_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
@@ -89,9 +91,24 @@ defmodule Backplane.Settings.Credentials do
   @spec store_device_token(String.t(), String.t(), map(), map()) ::
           {:ok, Credential.t()} | {:error, term()}
   def store_device_token(name, auth_type, tokens, hints \\ %{}) do
+    store_oauth_token(name, auth_type, tokens, "llm", hints)
+  end
+
+  @doc "Store an OAuth token set under an explicit credential kind."
+  @spec store_oauth_token(String.t(), String.t(), map(), String.t(), map()) ::
+          {:ok, Credential.t()} | {:error, term()}
+  def store_oauth_token(name, auth_type, tokens, kind, hints) do
     blob = Jason.encode!(tokens)
     metadata = Map.merge(%{"auth_type" => auth_type}, hints)
-    store(name, blob, "llm", metadata)
+
+    case store(name, blob, kind, metadata) do
+      {:ok, _credential} = result ->
+        Backplane.Settings.TokenCache.invalidate(name)
+        result
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @doc "Fetch and decrypt a credential by name. For OAuth credentials, exchanges or returns a cached token."
@@ -116,6 +133,9 @@ defmodule Backplane.Settings.Credentials do
 
       %Credential{metadata: %{"auth_type" => "xai_oauth"}} = cred ->
         fetch_device_oauth(cred, :xai_oauth)
+
+      %Credential{metadata: %{"auth_type" => "figma_oauth"}} = cred ->
+        fetch_device_oauth(cred, :figma_oauth)
 
       %Credential{encrypted_value: encrypted} ->
         Encryption.decrypt(encrypted)
@@ -630,6 +650,7 @@ defmodule Backplane.Settings.Credentials do
   defp validate_oauth_metadata(%{"auth_type" => "openai_oauth"}), do: :ok
   defp validate_oauth_metadata(%{"auth_type" => "google_oauth"}), do: :ok
   defp validate_oauth_metadata(%{"auth_type" => "xai_oauth"}), do: :ok
+  defp validate_oauth_metadata(%{"auth_type" => "figma_oauth"}), do: :ok
 
   defp validate_oauth_metadata(%{"auth_type" => "oauth2_client_credentials"} = meta) do
     cond do
