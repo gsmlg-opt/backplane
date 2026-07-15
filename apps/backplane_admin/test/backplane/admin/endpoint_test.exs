@@ -7,6 +7,19 @@ defmodule Backplane.Admin.EndpointTest do
     assert Keyword.fetch!(endpoint_config, :check_origin) == false
   end
 
+  test "dev code reloader does not reload the standalone host agent app" do
+    reloadable_apps =
+      Path.expand("../../../../../config/dev.exs", __DIR__)
+      |> Config.Reader.read!(env: :dev)
+      |> Keyword.fetch!(:backplane_admin)
+      |> Keyword.fetch!(Backplane.Admin.Endpoint)
+      |> Keyword.fetch!(:reloadable_apps)
+
+    assert :backplane_admin in reloadable_apps
+    assert :backplane in reloadable_apps
+    refute :backplane_host_agent in reloadable_apps
+  end
+
   test "live socket only enables the websocket transport" do
     assert {"/live", Phoenix.LiveView.Socket, opts} =
              Enum.find(Backplane.Admin.Endpoint.__sockets__(), fn {path, _socket, _opts} ->

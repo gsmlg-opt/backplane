@@ -20,11 +20,30 @@ config :backplane,
   api_url: "http://localhost:4220",
   admin_url: "http://localhost:4221"
 
+web_reloadable_apps = [
+  :backplane,
+  :backplane_admin,
+  :backplane_api,
+  :backplane_auth,
+  :backplane_llama,
+  :backplane_mcp,
+  :backplane_mcp_protocol,
+  :backplane_memory,
+  :backplane_monitor,
+  :backplane_skills,
+  :backplane_system,
+  :backplane_telemetry,
+  :day_ex,
+  :math_ex,
+  :relayixir
+]
+
 config :backplane_api, Backplane.Api.Endpoint,
   http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4220],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
+  reloadable_apps: web_reloadable_apps,
   secret_key_base: secret_key_base,
   watchers: [
     tailwind_api: {Tailwind, :install_and_run, [:backplane_api, ~w(--watch)]},
@@ -36,6 +55,7 @@ config :backplane_admin, Backplane.Admin.Endpoint,
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
+  reloadable_apps: web_reloadable_apps,
   secret_key_base: secret_key_base,
   watchers: [
     tailwind_admin: {Tailwind, :install_and_run, [:backplane_admin, ~w(--watch)]},
