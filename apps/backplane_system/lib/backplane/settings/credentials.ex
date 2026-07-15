@@ -30,6 +30,7 @@ defmodule Backplane.Settings.Credentials do
   }
   @default_oauth_refresh_window_ms 10 * 60 * 1000
   @default_oauth_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
+  @figma_max_refresh_window_ms 10 * 60 * 1000
 
   @doc "Store (upsert) a credential. Encrypts the plaintext value."
   @spec store(String.t(), String.t(), String.t(), map()) ::
@@ -577,6 +578,18 @@ defmodule Backplane.Settings.Credentials do
        )
        when is_integer(expires_at_ms) do
     expires_at_ms <= now_ms + refresh_window_ms
+  end
+
+  defp oauth_refresh_due?(
+         :figma_oauth,
+         %{"expires_at" => expires_at_ms},
+         now_ms,
+         refresh_window_ms,
+         _refresh_interval_ms
+       )
+       when is_integer(expires_at_ms) do
+    capped_window_ms = min(refresh_window_ms, @figma_max_refresh_window_ms)
+    expires_at_ms <= now_ms + capped_window_ms
   end
 
   defp oauth_refresh_due?(

@@ -18,7 +18,7 @@ defmodule Backplane.Settings.OAuthTokenRefreshWorker do
 
   @default_refresh_window_ms 2 * 60 * 60 * 1000
   @default_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
-  @default_auth_types ["openai_oauth", "anthropic_oauth"]
+  @default_auth_types ["openai_oauth", "anthropic_oauth", "figma_oauth"]
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"credential_name" => name} = args}) when is_binary(name) do
