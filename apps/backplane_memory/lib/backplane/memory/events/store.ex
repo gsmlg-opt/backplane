@@ -10,6 +10,7 @@ defmodule Backplane.Memory.Events.Store do
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
+    started_at = System.monotonic_time()
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
 
@@ -18,7 +19,7 @@ defmodule Backplane.Memory.Events.Store do
       |> append_multi(:event, attrs)
       |> transact_append(repo, :event)
 
-    if telemetry?, do: emit_telemetry(tagged_result)
+    if telemetry?, do: emit_telemetry(tagged_result, started_at)
     unwrap_public(tagged_result)
   end
 
@@ -36,6 +37,7 @@ defmodule Backplane.Memory.Events.Store do
   def append_batch(attrs_list, opts \\ [])
 
   def append_batch(attrs_list, opts) when is_list(attrs_list) do
+    started_at = System.monotonic_time()
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
 
@@ -44,18 +46,26 @@ defmodule Backplane.Memory.Events.Store do
         transact_batch(repo, events, idempotency_count(events) + 1)
       end
 
-    if telemetry?, do: emit_batch_telemetry(tagged_result)
+    if telemetry?, do: emit_batch_telemetry(tagged_result, started_at)
     unwrap_public(tagged_result)
   end
 
-  def append_batch(_, _), do: {:error, :invalid_attributes}
+  def append_batch(_, opts) do
+    started_at = System.monotonic_time()
+    result = {:error, :invalid_attributes}
+    if Keyword.get(opts, :telemetry, true), do: emit_telemetry(result, started_at)
+    result
+  end
 
   def get(id, opts \\ []) do
     Keyword.get(opts, :repo, repo()).get(Event, id)
   end
 
   @doc false
-  def emit_result(result), do: emit_telemetry(result)
+  def emit_result(result), do: emit_telemetry(result, System.monotonic_time())
+
+  @doc false
+  def emit_result(result, started_at), do: emit_telemetry(result, started_at)
 
   @doc false
   def resolve_idempotency_race({:idempotency_race, marker}, opts \\ []) do
@@ -343,31 +353,87 @@ defmodule Backplane.Memory.Events.Store do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  defp emit_telemetry({:ok, {:inserted, event}}), do: emit_status(:inserted, event)
-  defp emit_telemetry({:ok, {:duplicate, event}}), do: emit_status(:duplicate, event)
-  defp emit_telemetry({:ok, %Event{} = event}), do: emit_status(:inserted, event)
+  defp emit_telemetry({:ok, {:inserted, event}}, started_at),
+    do: emit_status(:inserted, event, started_at)
 
-  defp emit_telemetry({:error, _reason}) do
+  defp emit_telemetry({:ok, {:duplicate, event}}, started_at),
+    do: emit_status(:duplicate, event, started_at)
+
+  defp emit_telemetry({:ok, %Event{} = event}, started_at),
+    do: emit_status(:inserted, event, started_at)
+
+  defp emit_telemetry({:error, _reason}, started_at) do
     :telemetry.execute(
-      [:backplane, :memory, :event, :ingest],
-      %{count: 0},
-      %{status: :error}
+      [:backplane, :memory, :event, :error],
+      measurements(nil, started_at),
+      telemetry_metadata(:error, nil)
     )
   end
 
-  defp emit_telemetry(_), do: :ok
+  defp emit_telemetry(_, _started_at), do: :ok
 
-  defp emit_status(status, event) do
-    :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
-      status: status,
-      event_type: bounded_metadata(event.event_type),
-      stream_id: bounded_metadata(event.stream_id)
-    })
+  defp emit_status(status, event, started_at) do
+    outcome = if status == :inserted, do: :append, else: :duplicate
+
+    :telemetry.execute(
+      [:backplane, :memory, :event, outcome],
+      measurements(event, started_at),
+      telemetry_metadata(status, event)
+    )
   end
 
-  defp bounded_metadata(value) when byte_size(value) <= 256, do: value
+  defp measurements(event, started_at) do
+    %{
+      duration: elapsed(started_at),
+      content_bytes: content_bytes(event),
+      payload_bytes: payload_bytes(event)
+    }
+  end
 
-  defp bounded_metadata(value) do
+  defp elapsed(started_at) when is_integer(started_at),
+    do: max(System.monotonic_time() - started_at, 0)
+
+  defp elapsed(_started_at), do: 0
+
+  defp content_bytes(%Event{content: content}) when is_binary(content), do: byte_size(content)
+  defp content_bytes(_event), do: 0
+
+  defp payload_bytes(%Event{payload: payload}) do
+    case Jason.encode(payload || %{}) do
+      {:ok, encoded} -> byte_size(encoded)
+      {:error, _reason} -> 0
+    end
+  end
+
+  defp payload_bytes(_event), do: 0
+
+  defp telemetry_metadata(status, event) do
+    %{
+      stream_id: metadata_value(event, :stream_id),
+      event_type: metadata_value(event, :event_type),
+      project: metadata_value(event, :project),
+      agent_id: metadata_value(event, :agent_id),
+      session_id: metadata_value(event, :session_id),
+      run_id: metadata_value(event, :run_id),
+      status: status
+    }
+  end
+
+  defp metadata_value(%Event{} = event, field),
+    do: event |> Map.get(field) |> bounded_metadata()
+
+  defp metadata_value(_event, _field), do: nil
+
+  defp bounded_metadata(value) when is_binary(value) and byte_size(value) <= 256,
+    do: if(String.valid?(value), do: value, else: nil)
+
+  defp bounded_metadata(value) when is_binary(value) do
+    if String.valid?(value), do: truncate_metadata(value), else: nil
+  end
+
+  defp bounded_metadata(_value), do: nil
+
+  defp truncate_metadata(value) do
     value
     |> String.graphemes()
     |> Enum.reduce_while({[], 0}, fn grapheme, {acc, bytes} ->
@@ -382,10 +448,12 @@ defmodule Backplane.Memory.Events.Store do
     |> IO.iodata_to_binary()
   end
 
-  defp emit_batch_telemetry({:ok, results}) when is_list(results) do
-    Enum.each(results, &emit_telemetry({:ok, &1}))
+  defp emit_batch_telemetry({:ok, results}, started_at) when is_list(results) do
+    Enum.each(results, &emit_telemetry({:ok, &1}, started_at))
   end
 
-  defp emit_batch_telemetry({:error, reason}), do: emit_telemetry({:error, reason})
-  defp emit_batch_telemetry(_), do: :ok
+  defp emit_batch_telemetry({:error, reason}, started_at),
+    do: emit_telemetry({:error, reason}, started_at)
+
+  defp emit_batch_telemetry(_, _started_at), do: :ok
 end

@@ -9,11 +9,11 @@ defmodule BackplaneTelemetryTest do
     log_file = Path.join(temp_dir, "telemetry_test_#{System.unique_integer([:positive])}.jsonl")
 
     # Override application configuration
-    Application.put_env(:backplane_telemetry, TelemetryLogger, [
+    Application.put_env(:backplane_telemetry, TelemetryLogger,
       log_to_logger: false,
       log_to_console: false,
       log_to_file: log_file
-    ])
+    )
 
     # Restart TelemetryLogger to pick up the test config
     if Process.whereis(TelemetryLogger) do
@@ -95,5 +95,43 @@ defmodule BackplaneTelemetryTest do
     assert decoded["metadata"]["pid"] == inspect(pid)
     assert decoded["metadata"]["uri"]["host"] == "localhost"
     assert decoded["metadata"]["uri"]["path"] == "/test"
+  end
+
+  test "captures all memory event ingestion outcomes in JSONL", %{log_file: log_file} do
+    measurements = %{duration: 17, content_bytes: 4, payload_bytes: 2}
+
+    metadata = %{
+      stream_id: "stream",
+      event_type: "task.created",
+      project: nil,
+      agent_id: nil,
+      session_id: "session",
+      run_id: nil,
+      status: :inserted
+    }
+
+    for {outcome, status} <- [append: :inserted, duplicate: :duplicate, error: :error] do
+      :telemetry.execute(
+        [:backplane, :memory, :event, outcome],
+        measurements,
+        %{metadata | status: status}
+      )
+    end
+
+    :sys.get_state(TelemetryLogger)
+
+    events =
+      log_file
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!/1)
+
+    assert Enum.map(events, & &1["event"]) == [
+             "backplane.memory.event.append",
+             "backplane.memory.event.duplicate",
+             "backplane.memory.event.error"
+           ]
+
+    assert Enum.map(events, & &1["metadata"]["status"]) == ["inserted", "duplicate", "error"]
   end
 end

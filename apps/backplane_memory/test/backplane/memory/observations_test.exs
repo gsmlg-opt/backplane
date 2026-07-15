@@ -292,6 +292,40 @@ defmodule Backplane.Memory.ObservationsTest do
                from(o in Observation, where: o.session_id == "invalid-event-session")
              )
     end
+
+    test "outer transaction emits exactly once after resolution and reports rollback as error" do
+      enable_dual_write()
+      attach_event_telemetry()
+
+      opts = [tool_name: "Bash", idempotency_key: "outer-telemetry-success"]
+
+      assert {:ok, original} = Observations.record("outer-telemetry", "persisted", opts)
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :append],
+                      %{duration: duration}, %{status: :inserted}}
+
+      assert duration >= 0
+      refute_receive {:event_telemetry, _, _, _}
+
+      assert {:ok, duplicate} = Observations.record("outer-telemetry", "persisted", opts)
+      assert duplicate.id == original.id
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :duplicate], _,
+                      %{status: :duplicate}}
+
+      refute_receive {:event_telemetry, _, _, _}
+
+      assert {:error, %Ecto.Changeset{}} =
+               Observations.record("outer-telemetry-rollback", "",
+                 idempotency_key: "outer-telemetry-rollback"
+               )
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :error],
+                      %{content_bytes: 0, payload_bytes: 0}, %{status: :error}}
+
+      refute_receive {:event_telemetry, [:backplane, :memory, :event, :append], _, _}
+      refute repo().get(Stream, "session:outer-telemetry-rollback")
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -364,6 +398,50 @@ defmodule Backplane.Memory.ObservationsTest do
 
       refute repo().get(Session, session_id)
     end
+
+    test "lifecycle telemetry emits only for attempted committed or failed events" do
+      enable_dual_write()
+      attach_event_telemetry()
+
+      session_id = "lifecycle-telemetry"
+      assert {:ok, %Session{}} = Observations.register_session(session_id, "project")
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _,
+                      %{status: :inserted, event_type: "session.started"}}
+
+      assert {:ok, %Session{}} = Observations.register_session(session_id, "ignored")
+      refute_receive {:event_telemetry, _, _, _}
+
+      assert {1, nil} = Observations.end_session(session_id)
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _,
+                      %{status: :inserted, event_type: "session.ended"}}
+
+      assert {0, nil} = Observations.end_session(session_id)
+      assert {0, nil} = Observations.end_session("unknown-lifecycle-telemetry")
+      refute_receive {:event_telemetry, _, _, _}
+
+      failed_session = "lifecycle-telemetry-failed"
+      key = "session.started:" <> failed_session
+
+      assert {:ok, _} =
+               Store.append(
+                 %{
+                   stream_id: "conflicting-lifecycle-telemetry",
+                   event_type: "session.started",
+                   idempotency_key: key
+                 },
+                 telemetry: false
+               )
+
+      assert {:error, :idempotency_conflict} =
+               Observations.register_session(failed_session, "project")
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :error], _,
+                      %{status: :error}}
+
+      refute_receive {:event_telemetry, _, _, _}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -413,10 +491,14 @@ defmodule Backplane.Memory.ObservationsTest do
 
     test "end-event conflict rolls back ended_at and leaves the session stream open" do
       enable_dual_write()
+      attach_event_telemetry()
       session_id = "end-conflict"
       key = "session.ended:" <> session_id
 
       assert {:ok, _session} = Observations.register_session(session_id, "project")
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _,
+                      %{event_type: "session.started"}}
 
       assert {:ok, _event} =
                Store.append(
@@ -429,6 +511,11 @@ defmodule Backplane.Memory.ObservationsTest do
                )
 
       assert {:error, :idempotency_conflict} = Observations.end_session(session_id)
+
+      assert_receive {:event_telemetry, [:backplane, :memory, :event, :error], _,
+                      %{status: :error}}
+
+      refute_receive {:event_telemetry, [:backplane, :memory, :event, :append], _, _}
       assert repo().get!(Session, session_id).ended_at == nil
       assert repo().get!(Stream, "session:" <> session_id).closed_at == nil
     end
@@ -545,5 +632,25 @@ defmodule Backplane.Memory.ObservationsTest do
   defp enable_dual_write do
     enable_events_only()
     :ets.insert(@settings_table, {"memory.events.dual_write", true})
+  end
+
+  defp attach_event_telemetry do
+    handler_id = "observations-event-telemetry-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        for(
+          outcome <- [:append, :duplicate, :error],
+          do: [:backplane, :memory, :event, outcome]
+        ),
+        fn name, measurements, metadata, _config ->
+          send(parent, {:event_telemetry, name, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
   end
 end

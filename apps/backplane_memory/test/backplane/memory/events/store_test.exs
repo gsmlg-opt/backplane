@@ -331,76 +331,124 @@ defmodule Backplane.Memory.Events.StoreTest do
     assert repo().get!(Event, existing.id).content == "stable"
   end
 
-  test "error telemetry contains no attributes, content, payload, or raw reason" do
-    handler_id = "store-safe-error-#{System.unique_integer([:positive])}"
-    parent = self()
+  test "append telemetry has exact safe measurements and bounded metadata" do
+    attach_event_telemetry()
 
-    :ok =
-      :telemetry.attach(
-        handler_id,
-        [:backplane, :memory, :event, :ingest],
-        fn event, measurements, metadata, _ ->
-          send(parent, {:telemetry, event, measurements, metadata})
-        end,
-        nil
-      )
+    secret = "store-telemetry-secret"
+    stream_id = unique(String.duplicate("long-世界", 80))
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    assert {:ok, event} =
+             Store.append(%{
+               stream_id: stream_id,
+               event_type: "tool.call.completed",
+               project: String.duplicate("项目", 100),
+               agent_id: "agent",
+               session_id: "session",
+               run_id: "run",
+               content: "safe content",
+               payload: %{"result" => "ok"},
+               idempotency_key: secret
+             })
 
-    raw_secret = "store-telemetry-secret"
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], measurements,
+                    metadata}
+
+    assert Map.keys(measurements) |> Enum.sort() == [:content_bytes, :duration, :payload_bytes]
+    assert measurements.duration >= 0
+    assert measurements.content_bytes == byte_size(event.content)
+    assert measurements.payload_bytes == byte_size(Jason.encode!(event.payload))
+
+    assert Map.keys(metadata) |> Enum.sort() ==
+             [:agent_id, :event_type, :project, :run_id, :session_id, :status, :stream_id]
+
+    assert metadata.status == :inserted
+
+    for value <- Map.values(Map.delete(metadata, :status)), is_binary(value) do
+      assert byte_size(value) <= 256
+      assert String.valid?(value)
+    end
+
+    emitted = inspect({measurements, metadata})
+    refute emitted =~ secret
+    refute emitted =~ "safe content"
+    refute emitted =~ "result"
+    refute_receive {:event_telemetry, [:backplane, :memory, :event, :ingest], _, _}
+  end
+
+  test "duplicate and error telemetry use exact event names without leaking inputs or reasons" do
+    attach_event_telemetry()
+    stream_id = unique("telemetry-outcomes")
+    key = unique("telemetry-key")
+    attrs = event(stream_id, "stable", key)
+
+    assert {:ok, original} = Store.append(attrs)
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _, _}
+
+    assert {:ok, duplicate} = Store.append(attrs)
+    assert duplicate.id == original.id
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :duplicate], measurements,
+                    %{status: :duplicate}}
+
+    assert measurements.content_bytes == byte_size(duplicate.content)
+    assert measurements.payload_bytes == byte_size(Jason.encode!(duplicate.payload))
+    assert measurements.duration >= 0
+
+    raw_secret = "changed-secret"
+
+    assert {:error, :idempotency_conflict} =
+             Store.append(
+               Map.merge(attrs, %{content: raw_secret, payload: %{"headers" => raw_secret}})
+             )
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :error], error_measurements,
+                    error_metadata}
+
+    assert error_measurements == %{
+             duration: error_measurements.duration,
+             content_bytes: 0,
+             payload_bytes: 0
+           }
+
+    assert error_measurements.duration >= 0
+
+    assert error_metadata == %{
+             stream_id: nil,
+             event_type: nil,
+             project: nil,
+             agent_id: nil,
+             session_id: nil,
+             run_id: nil,
+             status: :error
+           }
+
+    emitted = inspect({error_measurements, error_metadata})
+    refute emitted =~ raw_secret
+    refute emitted =~ "headers"
+    refute emitted =~ "idempotency_conflict"
+  end
+
+  test "validation errors emit one safe error while telemetry false and append_multi stay silent" do
+    attach_event_telemetry()
 
     assert {:error, :missing_identity} =
              Store.append(%{
                event_type: "tool.call.failed",
-               content: raw_secret,
-               payload: %{"secret" => raw_secret}
+               content: "unpersisted secret",
+               payload: %{"secret" => "unpersisted secret"}
              })
 
-    assert_receive {:telemetry, _, %{count: 0}, metadata}
-    assert metadata == %{status: :error}
-    refute inspect(metadata) =~ raw_secret
-    refute inspect(metadata) =~ "missing_identity"
-  end
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :error],
+                    %{duration: duration, content_bytes: 0, payload_bytes: 0}, %{status: :error}}
 
-  test "success telemetry bounds stream metadata" do
-    handler_id = "store-bounded-success-#{System.unique_integer([:positive])}"
-    parent = self()
+    assert duration >= 0
+    refute_receive {:event_telemetry, _, _, _}
 
-    :ok =
-      :telemetry.attach(
-        handler_id,
-        [:backplane, :memory, :event, :ingest],
-        fn _event, _measurements, metadata, _ ->
-          send(parent, {:telemetry_metadata, metadata})
-        end,
-        nil
-      )
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    stream_id = unique(String.duplicate("long-stream", 100))
-    assert {:ok, _event} = Store.append(%{stream_id: stream_id, event_type: "task.created"})
-
-    assert_receive {:telemetry_metadata, metadata}
-    assert metadata.status == :inserted
-    assert byte_size(metadata.stream_id) <= 256
-  end
-
-  test "append_multi and telemetry false emit nothing while emit_result accepts a public event" do
-    handler_id = "store-telemetry-control-#{System.unique_integer([:positive])}"
-    parent = self()
-
-    :ok =
-      :telemetry.attach(
-        handler_id,
-        [:backplane, :memory, :event, :ingest],
-        fn _event, _measurements, metadata, _ ->
-          send(parent, {:telemetry_metadata, metadata})
-        end,
-        nil
-      )
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    assert {:ok, _event} =
+             Store.append(
+               %{stream_id: unique("disabled-telemetry"), event_type: "task.created"},
+               telemetry: false
+             )
 
     multi =
       Store.append_multi(Ecto.Multi.new(), :event, %{
@@ -408,19 +456,74 @@ defmodule Backplane.Memory.Events.StoreTest do
         event_type: "task.created"
       })
 
-    assert {:ok, %{event: {:inserted, _event}}} = repo().transaction(multi)
-    refute_receive {:telemetry_metadata, _}
+    assert {:ok, %{event: {:inserted, event}}} = repo().transaction(multi)
+    refute_receive {:event_telemetry, _, _, _}
 
-    assert {:ok, event} =
-             Store.append(
-               %{stream_id: unique("disabled-telemetry"), event_type: "task.created"},
-               telemetry: false
-             )
+    started_at = System.monotonic_time()
+    Store.emit_result({:ok, {:inserted, event}}, started_at)
 
-    refute_receive {:telemetry_metadata, _}
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :append],
+                    %{duration: duration}, %{status: :inserted}}
 
-    Store.emit_result({:ok, event})
-    assert_receive {:telemetry_metadata, %{status: :inserted}}
+    assert duration >= 0
+
+    unsafe_event = %Event{
+      stream_id: 123,
+      event_type: <<255>>,
+      project: %{secret: true},
+      agent_id: nil,
+      session_id: [:invalid],
+      run_id: self(),
+      payload: %{}
+    }
+
+    Store.emit_result({:ok, {:inserted, unsafe_event}}, started_at)
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _, metadata}
+    assert Map.drop(metadata, [:status]) |> Map.values() |> Enum.uniq() == [nil]
+  end
+
+  test "batch telemetry emits committed results and one error for a rolled-back batch" do
+    attach_event_telemetry()
+    stream_id = unique("batch-telemetry")
+    duplicate_key = unique("batch-duplicate")
+    duplicate_attrs = event(stream_id, "existing", duplicate_key)
+
+    assert {:ok, _} = Store.append(duplicate_attrs, telemetry: false)
+
+    assert {:ok, [_, duplicate]} =
+             Store.append_batch([
+               event(stream_id, "new"),
+               duplicate_attrs
+             ])
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :append], _,
+                    %{status: :inserted}}
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :duplicate], measurements,
+                    %{status: :duplicate}}
+
+    assert measurements.content_bytes == byte_size(duplicate.content)
+    refute_receive {:event_telemetry, _, _, _}
+
+    rollback_stream = unique("batch-telemetry-rollback")
+
+    assert {:error, :idempotency_conflict} =
+             Store.append_batch([
+               event(rollback_stream, "rolled back"),
+               %{duplicate_attrs | content: "conflict"}
+             ])
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :error],
+                    %{content_bytes: 0, payload_bytes: 0}, %{status: :error}}
+
+    refute_receive {:event_telemetry, [:backplane, :memory, :event, :append], _, _}
+    refute repo().get(Stream, rollback_stream)
+
+    assert {:ok, [_]} =
+             Store.append_batch([event(unique("batch-disabled"), "disabled")], telemetry: false)
+
+    refute_receive {:event_telemetry, _, _, _}
   end
 
   defp event(stream_id, content, idempotency_key \\ nil) do
@@ -434,4 +537,25 @@ defmodule Backplane.Memory.Events.StoreTest do
 
   defp unique(prefix),
     do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+
+  defp attach_event_telemetry do
+    handler_id = "store-event-telemetry-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    events =
+      for outcome <- [:append, :duplicate, :error, :ingest],
+          do: [:backplane, :memory, :event, outcome]
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        events,
+        fn name, measurements, metadata, _config ->
+          send(parent, {:event_telemetry, name, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
 end

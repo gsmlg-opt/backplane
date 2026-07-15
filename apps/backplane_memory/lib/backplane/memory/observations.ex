@@ -42,6 +42,7 @@ defmodule Backplane.Memory.Observations do
   end
 
   defp record_with_event(session_id, content, opts) do
+    started_at = System.monotonic_time()
     observation_id = Ecto.UUID.generate()
     event_attrs = event_attrs(session_id, observation_id, content, opts)
 
@@ -59,35 +60,48 @@ defmodule Backplane.Memory.Observations do
           load_linked_observation(repo, event)
       end
     end)
-    |> transact_record()
+    |> transact_record(started_at)
   end
 
-  defp transact_record(multi) do
+  defp transact_record(multi, started_at) do
     case repo().transaction(multi) do
       {:ok, %{event: event_result, observation: observation}} ->
-        Store.emit_result({:ok, event_result})
+        Store.emit_result({:ok, event_result}, started_at)
         {:ok, observation}
 
       {:error, :event, {:idempotency_race, _marker} = race, _changes} ->
-        resolve_record_race(race)
+        resolve_record_race(race, started_at)
 
       {:error, :event, reason, _changes} ->
+        Store.emit_result({:error, reason}, started_at)
         {:error, reason}
 
       {:error, :observation, %Ecto.Changeset{} = changeset, _changes} ->
+        Store.emit_result({:error, changeset}, started_at)
         {:error, changeset}
 
       {:error, :observation, reason, _changes} ->
+        Store.emit_result({:error, reason}, started_at)
         {:error, reason}
     end
   end
 
-  defp resolve_record_race(race) do
-    with {:ok, {:duplicate, event} = event_result} <-
-           Store.resolve_idempotency_race(race, repo: repo()),
-         {:ok, observation} <- load_linked_observation(repo(), event) do
-      Store.emit_result({:ok, event_result})
-      {:ok, observation}
+  defp resolve_record_race(race, started_at) do
+    result =
+      with {:ok, {:duplicate, event} = event_result} <-
+             Store.resolve_idempotency_race(race, repo: repo()),
+           {:ok, observation} <- load_linked_observation(repo(), event) do
+        {:ok, event_result, observation}
+      end
+
+    case result do
+      {:ok, event_result, observation} ->
+        Store.emit_result({:ok, event_result}, started_at)
+        {:ok, observation}
+
+      {:error, reason} ->
+        Store.emit_result({:error, reason}, started_at)
+        {:error, reason}
     end
   end
 
@@ -179,12 +193,15 @@ defmodule Backplane.Memory.Observations do
   @doc "Register/upsert a session."
   def register_session(session_id, project) do
     if Config.dual_write?() do
+      started_at = System.monotonic_time()
+
       case register_session_with_event(session_id, project, 1) do
         {:ok, session, event_result} ->
-          if event_result, do: Store.emit_result({:ok, event_result})
+          if event_result, do: Store.emit_result({:ok, event_result}, started_at)
           {:ok, session}
 
-        {:error, reason} ->
+        {:error, reason, event_attempted?} ->
+          if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
           {:error, reason}
       end
     else
@@ -226,15 +243,19 @@ defmodule Backplane.Memory.Observations do
 
       {:error, :event, {:idempotency_race, _marker} = race, _changes}
       when attempts_left > 0 ->
-        with {:ok, {:duplicate, _event} = resolved} <-
-               Store.resolve_idempotency_race(race, repo: repo()),
-             {:ok, session, retried} <-
-               register_session_with_event(session_id, project, attempts_left - 1) do
-          {:ok, session, retried || resolved}
+        case Store.resolve_idempotency_race(race, repo: repo()) do
+          {:ok, {:duplicate, _event} = resolved} ->
+            case register_session_with_event(session_id, project, attempts_left - 1) do
+              {:ok, session, retried} -> {:ok, session, retried || resolved}
+              {:error, reason, _event_attempted?} -> {:error, reason, true}
+            end
+
+          {:error, reason} ->
+            {:error, reason, true}
         end
 
-      {:error, _operation, reason, _changes} ->
-        {:error, reason}
+      {:error, operation, reason, _changes} ->
+        {:error, reason, operation == :event}
     end
   end
 
@@ -249,13 +270,16 @@ defmodule Backplane.Memory.Observations do
   @doc "Mark a session as ended and enqueue consolidation."
   def end_session(session_id) do
     if Config.dual_write?() do
+      started_at = System.monotonic_time()
+
       case end_session_with_event(session_id, 1) do
         {:ok, result, event_result} ->
-          if event_result, do: Store.emit_result({:ok, event_result})
+          if event_result, do: Store.emit_result({:ok, event_result}, started_at)
           maybe_enqueue_summary(result, session_id)
           result
 
-        {:error, reason} ->
+        {:error, reason, event_attempted?} ->
+          if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
           {:error, reason}
       end
     else
@@ -294,15 +318,19 @@ defmodule Backplane.Memory.Observations do
 
       {:error, :event, {:idempotency_race, _marker} = race, _changes}
       when attempts_left > 0 ->
-        with {:ok, {:duplicate, _event} = resolved} <-
-               Store.resolve_idempotency_race(race, repo: repo()),
-             {:ok, result, retried} <-
-               end_session_with_event(session_id, attempts_left - 1) do
-          {:ok, result, retried || resolved}
+        case Store.resolve_idempotency_race(race, repo: repo()) do
+          {:ok, {:duplicate, _event} = resolved} ->
+            case end_session_with_event(session_id, attempts_left - 1) do
+              {:ok, result, retried} -> {:ok, result, retried || resolved}
+              {:error, reason, _event_attempted?} -> {:error, reason, true}
+            end
+
+          {:error, reason} ->
+            {:error, reason, true}
         end
 
-      {:error, _operation, reason, _changes} ->
-        {:error, reason}
+      {:error, operation, reason, _changes} ->
+        {:error, reason, operation in [:event, :closed_stream]}
     end
   end
 

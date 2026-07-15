@@ -136,6 +136,9 @@ defmodule Backplane.Metrics do
         [:backplane, :tool_call, :exception],
         [:backplane, :sse_stream, :start],
         [:backplane, :sse_stream, :stop],
+        [:backplane, :memory, :event, :append],
+        [:backplane, :memory, :event, :duplicate],
+        [:backplane, :memory, :event, :error],
         [:oban, :job, :stop],
         [:oban, :job, :exception]
       ],
@@ -182,6 +185,38 @@ defmodule Backplane.Metrics do
     record_timing("sse_stream_duration", duration_us)
   end
 
+  def handle_event(
+        [:backplane, :memory, :event, :append],
+        measurements,
+        _metadata,
+        _config
+      ) do
+    inc("memory_events_appended")
+
+    record_timing(
+      "memory_event_append_duration",
+      native_to_microseconds(measurements[:duration])
+    )
+  end
+
+  def handle_event(
+        [:backplane, :memory, :event, :duplicate],
+        _measurements,
+        _metadata,
+        _config
+      ) do
+    inc("memory_events_duplicates")
+  end
+
+  def handle_event(
+        [:backplane, :memory, :event, :error],
+        _measurements,
+        _metadata,
+        _config
+      ) do
+    inc("memory_events_errors")
+  end
+
   def handle_event([:oban, :job, :stop], measurements, metadata, _config) do
     queue = to_string(metadata.queue)
     worker = to_string(metadata.worker)
@@ -197,4 +232,9 @@ defmodule Backplane.Metrics do
     inc("oban_jobs_failed")
     inc("oban_jobs_failed.#{queue}")
   end
+
+  defp native_to_microseconds(duration) when is_integer(duration) and duration >= 0,
+    do: System.convert_time_unit(duration, :native, :microsecond)
+
+  defp native_to_microseconds(_duration), do: 0
 end

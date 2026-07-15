@@ -90,6 +90,44 @@ defmodule Backplane.MetricsTest do
     assert snapshot.timings["tool_call_duration"].count >= 1
   end
 
+  test "memory event telemetry records exact outcome counters and append timing" do
+    before = Metrics.snapshot()
+    duration_us = 2_500
+    duration = System.convert_time_unit(duration_us, :microsecond, :native)
+
+    measurements = %{duration: duration, content_bytes: 4, payload_bytes: 2}
+    metadata = %{status: :inserted}
+
+    :telemetry.execute(
+      [:backplane, :memory, :event, :append],
+      measurements,
+      metadata
+    )
+
+    :telemetry.execute(
+      [:backplane, :memory, :event, :duplicate],
+      measurements,
+      %{metadata | status: :duplicate}
+    )
+
+    :telemetry.execute(
+      [:backplane, :memory, :event, :error],
+      %{measurements | content_bytes: 0, payload_bytes: 0},
+      %{metadata | status: :error}
+    )
+
+    after_snapshot = Metrics.snapshot()
+
+    assert counter_delta(before, after_snapshot, "memory_events_appended") == 1
+    assert counter_delta(before, after_snapshot, "memory_events_duplicates") == 1
+    assert counter_delta(before, after_snapshot, "memory_events_errors") == 1
+
+    before_timing = get_in(before, [:timings, "memory_event_append_duration"])
+    after_timing = get_in(after_snapshot, [:timings, "memory_event_append_duration"])
+    assert after_timing.count - timing_value(before_timing, :count) == 1
+    assert after_timing.total_us - timing_value(before_timing, :total_us) == duration_us
+  end
+
   test "tool_call error result increments error counter" do
     :telemetry.execute(
       [:backplane, :tool_call, :stop],
@@ -351,4 +389,12 @@ defmodule Backplane.MetricsTest do
     Enum.each(saved, &:ets.insert(table, &1))
     :ets.give_away(table, metrics_pid, :restored)
   end
+
+  defp counter_delta(before, after_snapshot, name) do
+    (get_in(after_snapshot, [:counters, name]) || 0) -
+      (get_in(before, [:counters, name]) || 0)
+  end
+
+  defp timing_value(nil, _field), do: 0
+  defp timing_value(timing, field), do: Map.fetch!(timing, field)
 end
