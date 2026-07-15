@@ -1,6 +1,6 @@
 defmodule Backplane.Admin.OAuthCallbackController do
   @moduledoc """
-  Handles the OAuth 2.0 authorization-code callback for Anthropic, OpenAI, and Google.
+  Handles the OAuth 2.0 authorization-code callback for Anthropic, OpenAI, Google, and Figma.
 
   After the user authenticates in their browser the provider redirects to
   GET /oauth/callback?code=…&state=… which this controller handles.
@@ -32,7 +32,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
         case exchange_code(vendor, code, code_verifier, redirect_uri, attrs) do
           {:ok, tokens, hints} ->
-            case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
+            case store_callback_tokens(cred_name, vendor, tokens, hints) do
               {:ok, _} ->
                 conn
                 |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
@@ -80,6 +80,14 @@ defmodule Backplane.Admin.OAuthCallbackController do
   end
 
   # ── Private helpers ─────────────────────────────────────────────────────────
+
+  defp store_callback_tokens(name, "figma_oauth", tokens, hints) do
+    Credentials.store_oauth_token(name, "figma_oauth", tokens, "upstream", hints)
+  end
+
+  defp store_callback_tokens(name, vendor, tokens, hints) do
+    Credentials.store_device_token(name, vendor, tokens, hints)
+  end
 
   defp exchange_code("anthropic_oauth", code, code_verifier, redirect_uri, attrs) do
     body = %{
@@ -174,9 +182,66 @@ defmodule Backplane.Admin.OAuthCallbackController do
     end
   end
 
+  defp exchange_code("figma_oauth", code, code_verifier, redirect_uri, _attrs) do
+    with {:ok, headers} <- OAuthRefresher.figma_mcp_client_auth_headers() do
+      token_url = OAuthRefresher.figma_token_url()
+
+      body = %{
+        "grant_type" => "authorization_code",
+        "code" => code,
+        "redirect_uri" => redirect_uri,
+        "code_verifier" => code_verifier,
+        "resource" => OAuthRefresher.figma_resource()
+      }
+
+      request_options =
+        token_url
+        |> OAuthRefresher.request_options()
+        |> Keyword.merge(form: body, headers: headers, receive_timeout: 15_000)
+
+      case Req.post(token_url, request_options) do
+        {:ok, %{status: 200, body: response}} ->
+          normalize_figma_tokens(response)
+
+        {:ok, %{status: status, body: response}} ->
+          {:error, {:http, status, sanitized_oauth_error(response)}}
+
+        {:error, reason} ->
+          {:error, {:transport, reason}}
+      end
+    end
+  end
+
   defp exchange_code(vendor, _code, _code_verifier, _redirect_uri, _attrs) do
     {:error, {:unsupported_vendor, vendor}}
   end
+
+  defp normalize_figma_tokens(%{
+         "access_token" => access_token,
+         "refresh_token" => refresh_token,
+         "expires_in" => expires_in
+       })
+       when is_binary(access_token) and is_binary(refresh_token) and
+              is_integer(expires_in) and expires_in > 0 do
+    if String.trim(access_token) == "" or String.trim(refresh_token) == "" do
+      {:error, :invalid_figma_token_response}
+    else
+      {:ok,
+       %{
+         access_token: access_token,
+         refresh_token: refresh_token,
+         expires_at: System.system_time(:millisecond) + expires_in * 1_000
+       }, %{}}
+    end
+  end
+
+  defp normalize_figma_tokens(_response), do: {:error, :invalid_figma_token_response}
+
+  defp sanitized_oauth_error(response) when is_map(response) do
+    Map.take(response, ["error", "error_description"])
+  end
+
+  defp sanitized_oauth_error(_response), do: %{}
 
   defp build_anthropic_hints(resp) do
     %{}
@@ -264,7 +329,17 @@ defmodule Backplane.Admin.OAuthCallbackController do
   defp vendor_label("anthropic_oauth"), do: "Claude Plan"
   defp vendor_label("openai_oauth"), do: "OpenAI Codex"
   defp vendor_label("google_oauth"), do: "Google Antigravity"
+  defp vendor_label("figma_oauth"), do: "Figma MCP"
   defp vendor_label(v), do: v
+
+  defp format_error(:missing_figma_mcp_client_id),
+    do: "FIGMA_MCP_CLIENT_ID is not configured"
+
+  defp format_error(:missing_figma_mcp_client_secret),
+    do: "FIGMA_MCP_CLIENT_SECRET is not configured"
+
+  defp format_error(:invalid_figma_token_response),
+    do: "Figma returned an incomplete token response"
 
   defp format_error({:http, status, %{"error_description" => desc}}), do: "#{desc} (#{status})"
 
