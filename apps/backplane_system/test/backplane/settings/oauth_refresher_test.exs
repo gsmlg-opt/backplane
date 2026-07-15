@@ -11,14 +11,17 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     prior_env =
       snapshot_env(
-        ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy]
+        ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET]
       )
 
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
       openai_token_url: "http://localhost:#{port}/openai/token",
       google_token_url: "http://localhost:#{port}/google/token",
-      xai_token_url: "http://localhost:#{port}/xai/token"
+      xai_token_url: "http://localhost:#{port}/xai/token",
+      figma_token_url: "http://localhost:#{port}/figma/token",
+      figma_mcp_client_id: "test-figma-client",
+      figma_mcp_client_secret: "test-figma-secret"
     )
 
     on_exit(fn ->
@@ -140,6 +143,47 @@ defmodule Backplane.Settings.OAuthRefresherTest do
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(401, Jason.encode!(%{"error" => "invalid_grant"}))
+      end
+    end
+
+    post "/figma/token" do
+      expected_auth = "Basic " <> Base.encode64("test-figma-client:test-figma-secret")
+
+      valid_request? =
+        conn.body_params["grant_type"] == "refresh_token" and
+          conn.body_params["resource"] == "https://mcp.figma.com/mcp" and
+          get_req_header(conn, "authorization") == [expected_auth]
+
+      case {valid_request?, conn.body_params["refresh_token"]} do
+        {true, "good-figma"} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "figma-new-access",
+              "refresh_token" => "figma-new-refresh",
+              "expires_in" => 3600,
+              "token_type" => "Bearer"
+            })
+          )
+
+        {true, "keep-figma-refresh"} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "figma-new-access",
+              "expires_in" => 3600,
+              "token_type" => "Bearer"
+            })
+          )
+
+        _ ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(401, Jason.encode!(%{"error" => "invalid_request"}))
       end
     end
 
@@ -273,6 +317,53 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do
       assert {:error, {:refresh_failed, 401}} =
                OAuthRefresher.refresh(:xai_oauth, "wrong")
+    end
+  end
+
+  describe "refresh/2 :figma_oauth" do
+    test "uses Basic client authentication and the MCP resource" do
+      assert {:ok,
+              %{
+                access_token: "figma-new-access",
+                refresh_token: "figma-new-refresh",
+                expires_at: expires_at
+              }} = OAuthRefresher.refresh(:figma_oauth, "good-figma")
+
+      now_ms = System.system_time(:millisecond)
+      assert_in_delta expires_at, now_ms + 3_600_000, 5_000
+    end
+
+    test "retains the previous refresh token when Figma does not rotate it" do
+      assert {:ok, %{refresh_token: "keep-figma-refresh"}} =
+               OAuthRefresher.refresh(:figma_oauth, "keep-figma-refresh")
+    end
+
+    test "requires both configured client credentials", %{port: port} do
+      configured = Application.get_env(:backplane, OAuthRefresher, [])
+      System.delete_env("FIGMA_MCP_CLIENT_ID")
+      System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+
+      Application.put_env(:backplane, OAuthRefresher,
+        figma_token_url: "http://localhost:#{port}/figma/token"
+      )
+
+      assert {:error, :missing_figma_mcp_client_id} =
+               OAuthRefresher.refresh(:figma_oauth, "good-figma")
+
+      Application.put_env(:backplane, OAuthRefresher,
+        figma_token_url: "http://localhost:#{port}/figma/token",
+        figma_mcp_client_id: "test-figma-client"
+      )
+
+      assert {:error, :missing_figma_mcp_client_secret} =
+               OAuthRefresher.refresh(:figma_oauth, "good-figma")
+
+      Application.put_env(:backplane, OAuthRefresher, configured)
+    end
+
+    test "returns a sanitized status error for a rejected refresh" do
+      assert {:error, {:refresh_failed, 401}} =
+               OAuthRefresher.refresh(:figma_oauth, "rejected-figma")
     end
   end
 

@@ -7,6 +7,7 @@ defmodule Backplane.Settings.OAuthRefresher do
   - `:openai_oauth`   — OpenAI Codex (auth.openai.com)
   - `:google_oauth`   — Google AI (oauth2.googleapis.com)
   - `:xai_oauth`      — xAI Grok (auth.x.ai)
+  - `:figma_oauth`    — Figma MCP (mcp.figma.com)
 
   Pure function. Does not touch the DB or cache. The caller (`Credentials`)
   persists rotated tokens.
@@ -32,8 +33,17 @@ defmodule Backplane.Settings.OAuthRefresher do
     "-K58FWR486LdLJ1mLB8sXC4z6qDAf"
   ]
   @xai_client_id "b1a00492-073a-47ea-816f-4c329264a828"
+  @figma_token_url "https://api.figma.com/v1/oauth/token"
+  @figma_authorize_url "https://www.figma.com/oauth/mcp"
+  @figma_resource "https://mcp.figma.com/mcp"
+  @figma_scope "mcp:connect"
 
-  @type vendor :: :anthropic_oauth | :openai_oauth | :google_oauth | :xai_oauth
+  @type vendor ::
+          :anthropic_oauth
+          | :openai_oauth
+          | :google_oauth
+          | :xai_oauth
+          | :figma_oauth
   @type refreshed :: %{
           required(:access_token) => String.t(),
           required(:refresh_token) => String.t(),
@@ -55,6 +65,44 @@ defmodule Backplane.Settings.OAuthRefresher do
       {"anthropic-client-platform", "claude_code_cli"}
     ]
   end
+
+  @spec figma_mcp_client_credentials(keyword()) ::
+          {:ok, String.t(), String.t()}
+          | {:error, :missing_figma_mcp_client_id | :missing_figma_mcp_client_secret}
+  def figma_mcp_client_credentials(opts \\ []) do
+    client_id = option_or_config(opts, :figma_mcp_client_id, "FIGMA_MCP_CLIENT_ID")
+    client_secret = option_or_config(opts, :figma_mcp_client_secret, "FIGMA_MCP_CLIENT_SECRET")
+
+    cond do
+      is_nil(client_id) -> {:error, :missing_figma_mcp_client_id}
+      is_nil(client_secret) -> {:error, :missing_figma_mcp_client_secret}
+      true -> {:ok, client_id, client_secret}
+    end
+  end
+
+  @spec figma_mcp_client_auth_headers(keyword()) ::
+          {:ok, [{String.t(), String.t()}]}
+          | {:error, :missing_figma_mcp_client_id | :missing_figma_mcp_client_secret}
+  def figma_mcp_client_auth_headers(opts \\ []) do
+    with {:ok, client_id, client_secret} <- figma_mcp_client_credentials(opts) do
+      encoded =
+        Base.encode64(URI.encode_www_form(client_id) <> ":" <> URI.encode_www_form(client_secret))
+
+      {:ok, [{"authorization", "Basic " <> encoded}]}
+    end
+  end
+
+  @spec figma_authorize_url() :: String.t()
+  def figma_authorize_url, do: @figma_authorize_url
+
+  @spec figma_token_url() :: String.t()
+  def figma_token_url, do: url(:figma_token_url)
+
+  @spec figma_resource() :: String.t()
+  def figma_resource, do: @figma_resource
+
+  @spec figma_scope() :: String.t()
+  def figma_scope, do: @figma_scope
 
   @spec request_options(String.t()) :: keyword()
   def request_options(url) do
@@ -112,6 +160,21 @@ defmodule Backplane.Settings.OAuthRefresher do
         "client_id" => xai_client_id(opts)
       }
     )
+  end
+
+  def refresh(:figma_oauth, refresh_token, opts) when is_binary(refresh_token) do
+    with {:ok, headers} <- figma_mcp_client_auth_headers(opts) do
+      do_refresh(
+        figma_token_url(),
+        :form,
+        %{
+          "grant_type" => "refresh_token",
+          "refresh_token" => refresh_token,
+          "resource" => @figma_resource
+        },
+        headers
+      )
+    end
   end
 
   defp do_refresh(url, encoding, body, headers \\ []) do
@@ -325,4 +388,5 @@ defmodule Backplane.Settings.OAuthRefresher do
   defp default_url(:openai_token_url), do: "https://auth.openai.com/oauth/token"
   defp default_url(:google_token_url), do: "https://oauth2.googleapis.com/token"
   defp default_url(:xai_token_url), do: "https://auth.x.ai/oauth2/token"
+  defp default_url(:figma_token_url), do: @figma_token_url
 end
