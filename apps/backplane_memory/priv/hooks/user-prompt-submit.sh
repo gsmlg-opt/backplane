@@ -1,25 +1,44 @@
 #!/usr/bin/env bash
-# install with: chmod +x user-prompt-submit.sh
 # Claude Code hook: UserPromptSubmit
-# Records user prompt as an observation.
 
 [ "${AGENTMEMORY_SDK_CHILD:-}" = "1" ] && exit 0
 
 MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
 
-INPUT="$(cat)"
+BODY="$(python3 -c '
+import json
+import sys
 
-SESSION_ID="$(python3 -c "import sys,json; d=json.loads(sys.argv[1]); print(d.get('session_id',''))" "$INPUT" 2>/dev/null || true)"
-PROMPT="$(python3 -c "import sys,json; d=json.loads(sys.argv[1]); print(d.get('prompt',''))" "$INPUT" 2>/dev/null || true)"
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+    sys.exit(0)
 
-if [ -n "$SESSION_ID" ] && [ -n "$PROMPT" ]; then
-  PAYLOAD="$(python3 -c "import sys,json; print(json.dumps({'session_id':sys.argv[1],'content':sys.argv[2],'tool_name':'user_prompt'}))" "$SESSION_ID" "$PROMPT" 2>/dev/null || true)"
-  if [ -n "$PAYLOAD" ]; then
-    curl -sf -m 2.0 -X POST "$MEMORY_URL/api/memory/observations" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD" \
-      >/dev/null 2>&1 || true
-  fi
-fi
+session_id = data.get("session_id")
+prompt = data.get("prompt")
+if not isinstance(session_id, str) or not session_id or not isinstance(prompt, str) or not prompt:
+    sys.exit(0)
+
+body = {
+    "session_id": session_id,
+    "project": data.get("cwd") or data.get("project") or "",
+    "content": prompt,
+    "tool_name": "user_prompt",
+    "event_type": "conversation.user_message",
+    "payload": {"prompt": prompt},
+}
+agent_id = data.get("agent_id")
+if isinstance(agent_id, str) and agent_id:
+    body["agent_id"] = agent_id
+
+sys.stdout.write(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+' 2>/dev/null || true)"
+
+[ -n "$BODY" ] || exit 0
+
+printf '%s' "$BODY" | curl -sf -m 2.0 -X POST "$MEMORY_URL/api/memory/observations" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  >/dev/null 2>&1 || true
 
 exit 0

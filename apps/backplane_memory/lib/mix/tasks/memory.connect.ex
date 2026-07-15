@@ -2,11 +2,10 @@ defmodule Mix.Tasks.Memory.Connect do
   @shortdoc "Install backplane-memory hooks into ~/.claude/settings.json"
 
   @moduledoc """
-  Merges the 10 backplane-memory hook scripts into `~/.claude/settings.json`.
+  Merges the backplane-memory hook scripts into `~/.claude/settings.json`.
 
-  Each hook entry points to the corresponding shell script in `priv/hooks/`.
-  Running the task multiple times is idempotent: existing entries are updated
-  in-place rather than duplicated.
+  The generated settings use Claude Code's event-keyed hook format. Running
+  the task multiple times is idempotent and preserves hooks it does not manage.
 
   ## Examples
 
@@ -17,17 +16,19 @@ defmodule Mix.Tasks.Memory.Connect do
   use Mix.Task
 
   @hooks [
-    {"PreToolUse", "session-start.sh"},
-    {"UserPromptSubmit", "user-prompt-submit.sh"},
-    {"PostToolUse", "post-tool-use.sh"},
-    {"PostToolUse", "post-tool-use-failure.sh"},
-    {"PreCompact", "pre-compact.sh"},
-    {"SubagentStart", "subagent-start.sh"},
-    {"SubagentStop", "subagent-stop.sh"},
-    {"Stop", "stop.sh"},
-    {"PostToolUse", "session-end.sh"},
-    {"PostToolUse", "post-commit.sh"}
+    {"SessionStart", nil, "session-start.sh", %{}},
+    {"SessionEnd", nil, "session-end.sh", %{"timeout" => 3}},
+    {"UserPromptSubmit", nil, "user-prompt-submit.sh", %{}},
+    {"PostToolUse", nil, "post-tool-use.sh", %{}},
+    {"PostToolUseFailure", nil, "post-tool-use-failure.sh", %{}},
+    {"PreCompact", nil, "pre-compact.sh", %{}},
+    {"SubagentStart", nil, "subagent-start.sh", %{}},
+    {"SubagentStop", nil, "subagent-stop.sh", %{}},
+    {"Stop", nil, "stop.sh", %{}},
+    {"PostToolUse", "Bash", "post-commit.sh", %{}}
   ]
+
+  @managed_scripts Enum.map(@hooks, &elem(&1, 2))
 
   @impl true
   def run(_args) do
@@ -36,19 +37,18 @@ defmodule Mix.Tasks.Memory.Connect do
 
     ensure_settings_file(settings_path)
 
-    current = read_settings(settings_path)
-    updated = merge_hooks(current, hooks_dir)
-
-    write_settings(settings_path, updated)
+    settings_path
+    |> read_settings()
+    |> merge_hooks(hooks_dir)
+    |> then(&write_settings(settings_path, &1))
 
     Mix.shell().info("backplane-memory: #{length(@hooks)} hook(s) written to #{settings_path}")
   end
 
   defp hooks_priv_dir do
-    # Prefer compiled priv dir, fall back to source tree for dev use
     case :code.priv_dir(:backplane_memory) do
       {:error, _} ->
-        Path.join([__DIR__, "..", "..", "..", "..", "priv", "hooks"]) |> Path.expand()
+        Path.join([__DIR__, "..", "..", "..", "priv", "hooks"]) |> Path.expand()
 
       dir ->
         Path.join(to_string(dir), "hooks")
@@ -56,15 +56,12 @@ defmodule Mix.Tasks.Memory.Connect do
   end
 
   defp settings_file_path do
-    Path.join([System.user_home!(), ".claude", "settings.json"])
+    home = System.get_env("HOME") || System.user_home!()
+    Path.join([home, ".claude", "settings.json"])
   end
 
   defp ensure_settings_file(path) do
-    dir = Path.dirname(path)
-
-    unless File.exists?(dir) do
-      File.mkdir_p!(dir)
-    end
+    File.mkdir_p!(Path.dirname(path))
 
     unless File.exists?(path) do
       File.write!(path, "{}\n")
@@ -75,43 +72,96 @@ defmodule Mix.Tasks.Memory.Connect do
     path
     |> File.read!()
     |> Jason.decode!()
-  rescue
-    _ -> %{}
   end
 
-  defp merge_hooks(settings, hooks_dir) do
-    existing_hooks = Map.get(settings, "hooks", [])
+  defp merge_hooks(settings, hooks_dir) when is_map(settings) do
+    existing_hooks =
+      settings
+      |> Map.get("hooks", %{})
+      |> normalize_hooks()
+      |> remove_managed_handlers()
 
-    updated_hooks = do_merge_hooks(existing_hooks, hooks_dir)
+    updated_hooks =
+      Enum.reduce(@hooks, existing_hooks, fn spec, hooks ->
+        {event, _matcher, _script, _handler_options} = spec
+        group = hook_group(spec, hooks_dir)
+        Map.update(hooks, event, [group], &(&1 ++ [group]))
+      end)
 
     Map.put(settings, "hooks", updated_hooks)
   end
 
-  defp do_merge_hooks(existing, hooks_dir) do
-    # Collect canonical entries for every hook script we manage.
-    new_entries =
-      @hooks
-      |> Enum.map(fn {event, script} ->
-        script_path = Path.join(hooks_dir, script)
-
-        %{
-          "event" => event,
-          "hooks" => [%{"type" => "command", "command" => script_path}]
-        }
-      end)
-
-    # Remove any existing entries whose command path matches one we are adding,
-    # then append our canonical set at the end.
-    our_paths = Enum.map(new_entries, fn e -> get_in(e, ["hooks", Access.at(0), "command"]) end)
-
-    kept =
-      Enum.reject(existing, fn entry ->
-        hooks = get_in(entry, ["hooks"]) || []
-        Enum.any?(hooks, fn h -> h["command"] in our_paths end)
-      end)
-
-    kept ++ new_entries
+  defp merge_hooks(_settings, _hooks_dir) do
+    Mix.raise("~/.claude/settings.json must contain a JSON object")
   end
+
+  defp normalize_hooks(hooks) when is_map(hooks) do
+    Enum.each(hooks, fn
+      {event, groups} when is_binary(event) and is_list(groups) -> :ok
+      _ -> Mix.raise("hooks must map event names to matcher groups")
+    end)
+
+    hooks
+  end
+
+  defp normalize_hooks(hooks) when is_list(hooks) do
+    Enum.reduce(hooks, %{}, fn
+      %{"event" => event} = entry, acc when is_binary(event) and event != "" ->
+        group = Map.delete(entry, "event")
+        Map.update(acc, event, [group], &(&1 ++ [group]))
+
+      _entry, _acc ->
+        Mix.raise("legacy hooks must contain an event name")
+    end)
+  end
+
+  defp normalize_hooks(_hooks) do
+    Mix.raise("hooks must be an event-keyed object or the legacy flat list")
+  end
+
+  defp remove_managed_handlers(hooks) do
+    Enum.reduce(hooks, %{}, fn {event, groups}, acc ->
+      case Enum.flat_map(groups, &remove_managed_from_group/1) do
+        [] -> acc
+        kept_groups -> Map.put(acc, event, kept_groups)
+      end
+    end)
+  end
+
+  defp remove_managed_from_group(%{"hooks" => handlers} = group) when is_list(handlers) do
+    kept = Enum.reject(handlers, &managed_handler?/1)
+
+    if kept == [] and handlers != [] do
+      []
+    else
+      [Map.put(group, "hooks", kept)]
+    end
+  end
+
+  defp remove_managed_from_group(group), do: [group]
+
+  defp managed_handler?(%{"type" => "command", "command" => command}) when is_binary(command) do
+    Path.basename(command) in @managed_scripts and
+      String.contains?(Path.expand(command), "backplane_memory/priv/hooks/")
+  end
+
+  defp managed_handler?(_handler), do: false
+
+  defp hook_group({_event, matcher, script, handler_options}, hooks_dir) do
+    handler =
+      %{
+        "type" => "command",
+        "command" => Path.join(hooks_dir, script),
+        "args" => []
+      }
+      |> Map.merge(handler_options)
+
+    %{"hooks" => [handler]}
+    |> maybe_put_matcher(matcher)
+  end
+
+  defp maybe_put_matcher(group, nil), do: group
+  defp maybe_put_matcher(group, matcher), do: Map.put(group, "matcher", matcher)
 
   defp write_settings(path, settings) do
     encoded = Jason.encode!(settings, pretty: true)

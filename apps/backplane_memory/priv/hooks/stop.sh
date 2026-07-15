@@ -1,25 +1,46 @@
 #!/usr/bin/env bash
-# install with: chmod +x stop.sh
-# Claude Code hook: Stop (agent stop / turn complete)
-# Records a stop observation for the session.
+# Claude Code hook: Stop
 
 [ "${AGENTMEMORY_SDK_CHILD:-}" = "1" ] && exit 0
 
 MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
 
-INPUT="$(cat)"
+BODY="$(python3 -c '
+import json
+import sys
 
-SESSION_ID="$(python3 -c "import sys,json; d=json.loads(sys.argv[1]); print(d.get('session_id',''))" "$INPUT" 2>/dev/null || true)"
-REASON="$(python3 -c "import sys,json; d=json.loads(sys.argv[1]); print(d.get('stop_reason','') or 'stop')" "$INPUT" 2>/dev/null || true)"
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+    sys.exit(0)
 
-if [ -n "$SESSION_ID" ]; then
-  PAYLOAD="$(python3 -c "import sys,json; print(json.dumps({'session_id':sys.argv[1],'content':sys.argv[2],'tool_name':'stop'}))" "$SESSION_ID" "$REASON" 2>/dev/null || true)"
-  if [ -n "$PAYLOAD" ]; then
-    curl -sf -m 2.0 -X POST "$MEMORY_URL/api/memory/observations" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD" \
-      >/dev/null 2>&1 || true
-  fi
-fi
+session_id = data.get("session_id")
+if not isinstance(session_id, str) or not session_id:
+    sys.exit(0)
+
+last_message = data.get("last_assistant_message")
+if not isinstance(last_message, str):
+    last_message = ""
+body = {
+    "session_id": session_id,
+    "project": data.get("cwd") or data.get("project") or "",
+    "content": last_message or "agent run completed",
+    "tool_name": "stop",
+    "event_type": "agent.run.completed",
+    "payload": {"last_assistant_message": last_message},
+}
+agent_id = data.get("agent_id")
+if isinstance(agent_id, str) and agent_id:
+    body["agent_id"] = agent_id
+
+sys.stdout.write(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+' 2>/dev/null || true)"
+
+[ -n "$BODY" ] || exit 0
+
+printf '%s' "$BODY" | curl -sf -m 2.0 -X POST "$MEMORY_URL/api/memory/observations" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  >/dev/null 2>&1 || true
 
 exit 0
