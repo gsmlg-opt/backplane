@@ -1,7 +1,7 @@
 # Shared Figma MCP OAuth Credential — Design
 
 **Date:** 2026-07-15
-**Status:** Approved (pending written-spec review)
+**Status:** Approved
 **Scope:** Add a Figma OAuth credential type to System → Credentials for use by
 the existing global upstream MCP model.
 
