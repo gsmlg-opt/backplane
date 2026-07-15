@@ -12,6 +12,7 @@ defmodule MathEx.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      elixirc_options: [ignore_module_conflict: true],
       aliases: aliases(),
       deps: deps()
     ]
