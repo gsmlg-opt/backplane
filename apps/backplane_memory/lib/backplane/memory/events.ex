@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Events do
-  alias Backplane.Memory.Events.{Types, Event}
+  alias Backplane.Memory.Events.{Event, Query, Store, Types}
 
   def append(attrs) do
     with {:ok, normalized} <- Types.normalize(attrs),
@@ -25,4 +25,8 @@ defmodule Backplane.Memory.Events do
   end
 
   def append_batch(_), do: {:error, :invalid_attributes}
+
+  def range(stream_id, range), do: Query.range(stream_id, range)
+  def timeline(filters), do: Query.timeline(filters)
+  def close_stream(stream_id), do: Store.close_stream(stream_id)
 end

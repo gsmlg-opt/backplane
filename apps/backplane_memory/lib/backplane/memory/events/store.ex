@@ -86,17 +86,19 @@ defmodule Backplane.Memory.Events.Store do
 
   def close_stream(stream_id, opts \\ []) do
     repo = Keyword.get(opts, :repo, repo())
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
-    repo.transaction(fn ->
-      stream = create_and_lock_stream(repo, stream_id)
-      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-
-      repo.update_all(from(s in Stream, where: s.stream_id == ^stream_id),
-        set: [closed_at: stream.closed_at || now]
+    query =
+      from(s in Stream,
+        where: s.stream_id == ^stream_id,
+        update: [set: [closed_at: fragment("COALESCE(?, ?)", s.closed_at, ^now)]],
+        select: s
       )
 
-      %{stream | closed_at: stream.closed_at || now}
-    end)
+    case repo.update_all(query, []) do
+      {1, [stream]} -> {:ok, stream}
+      {0, []} -> {:error, :not_found}
+    end
   end
 
   defp transact_append(multi, repo, name) do
@@ -234,7 +236,7 @@ defmodule Backplane.Memory.Events.Store do
     end)
   end
 
-  defp create_and_lock_stream(repo, stream_id, event \\ nil) do
+  defp create_and_lock_stream(repo, stream_id, event) do
     insert_missing_stream(repo, stream_id, event)
     lock_existing_stream(repo, stream_id)
   end
@@ -270,8 +272,6 @@ defmodule Backplane.Memory.Events.Store do
       Enum.reduce(updates, stream, fn {field, value}, stream -> Map.put(stream, field, value) end)
     end
   end
-
-  defp metadata(nil), do: %{}
 
   defp metadata(event),
     do: Map.take(event, @metadata_fields)
