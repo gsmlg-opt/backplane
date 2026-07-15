@@ -258,6 +258,36 @@ defmodule Backplane.Memory.Privacy.FilterTest do
       refute inspect(event.payload) =~ raw_secret
     end
 
+    test "preserves only bounded legacy linkage when replacing an oversized payload" do
+      legacy_observation_id = Ecto.UUID.generate()
+
+      assert {:ok, event} =
+               Filter.apply_event(%{
+                 stream_id: "s",
+                 event_type: "tool.call.completed",
+                 idempotency_key: "tool-use-linked-oversized",
+                 content: "linked observation",
+                 payload: %{
+                   "_backplane" => %{
+                     "legacy_observation_id" => legacy_observation_id,
+                     "caller_controlled" => String.duplicate("secret", 1_000)
+                   },
+                   "blob" => String.duplicate("x", 262_144)
+                 }
+               })
+
+      encoded = Jason.encode!(event.payload)
+      metadata = event.payload["_backplane"]
+
+      assert byte_size(encoded) <= 262_144
+      assert Map.keys(event.payload) == ["_backplane"]
+      assert metadata["legacy_observation_id"] == legacy_observation_id
+      refute Map.has_key?(metadata, "caller_controlled")
+      assert is_map(metadata["content"])
+      assert metadata["payload"]["truncated"]
+      assert is_binary(metadata["event_fingerprint"])
+    end
+
     test "keeps the final payload bounded when a single preview grapheme is enormous" do
       one_large_grapheme = "a" <> String.duplicate("\u0301", 140_000)
       assert String.length(one_large_grapheme) == 1

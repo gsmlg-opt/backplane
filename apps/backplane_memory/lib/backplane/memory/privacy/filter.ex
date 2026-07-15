@@ -99,7 +99,23 @@ defmodule Backplane.Memory.Privacy.Filter do
         "preview" => preview(encoded)
       }
 
-      %{"_backplane" => Map.put(backplane, "payload", payload_meta)}
+      metadata =
+        backplane
+        |> Map.merge(bounded_linkage(full_payload))
+        |> Map.put("payload", payload_meta)
+
+      %{"_backplane" => metadata}
+    end
+  end
+
+  defp bounded_linkage(payload) do
+    with metadata when is_map(metadata) <- get(payload, :_backplane, %{}),
+         id when is_binary(id) and byte_size(id) == 36 <-
+           get(metadata, :legacy_observation_id, nil),
+         {:ok, _uuid} <- Ecto.UUID.cast(id) do
+      %{"legacy_observation_id" => id}
+    else
+      _ -> %{}
     end
   end
 
