@@ -2,20 +2,35 @@ defmodule Backplane.Memory.Events.Store do
   @moduledoc "Persistent, ordered storage for normalized memory events."
 
   import Ecto.Query
+
+  alias Backplane.Memory.Events
   alias Backplane.Memory.Events.{Event, Stream}
+
+  @metadata_fields [:project, :agent_id, :host_id, :client_id, :session_id, :run_id]
+  @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
 
-    result =
-      with {:ok, event} <- Backplane.Memory.Events.append(attrs),
-           {:ok, result} <- repo.transaction(fn -> append_locked(repo, event) end) do
-        unwrap(result)
-      end
+    tagged_result =
+      Ecto.Multi.new()
+      |> append_multi(:event, attrs)
+      |> transact_append(repo, :event)
 
-    if telemetry?, do: emit_telemetry(result)
-    result
+    if telemetry?, do: emit_telemetry(tagged_result)
+    unwrap_public(tagged_result)
+  end
+
+  @doc false
+  def append_multi(%Ecto.Multi{} = multi, name, attrs) do
+    case Events.append(attrs) do
+      {:ok, event} ->
+        Ecto.Multi.run(multi, name, fn repo, _changes -> append_locked(repo, event) end)
+
+      {:error, reason} ->
+        Ecto.Multi.error(multi, name, reason)
+    end
   end
 
   def append_batch(attrs_list, opts \\ [])
@@ -24,14 +39,13 @@ defmodule Backplane.Memory.Events.Store do
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
 
-    result =
-      with {:ok, events} <- Backplane.Memory.Events.append_batch(attrs_list),
-           {:ok, result} <- repo.transaction(fn -> batch_locked(repo, events) end) do
-        unwrap(result)
+    tagged_result =
+      with {:ok, events} <- Events.append_batch(attrs_list) do
+        transact_batch(repo, events, idempotency_count(events) + 1)
       end
 
-    if telemetry?, do: emit_batch_telemetry(result)
-    result
+    if telemetry?, do: emit_batch_telemetry(tagged_result)
+    unwrap_public(tagged_result)
   end
 
   def append_batch(_, _), do: {:error, :invalid_attributes}
@@ -42,6 +56,22 @@ defmodule Backplane.Memory.Events.Store do
 
   @doc false
   def emit_result(result), do: emit_telemetry(result)
+
+  @doc false
+  def resolve_idempotency_race({:idempotency_race, marker}, opts \\ []) do
+    repo = Keyword.get(opts, :repo, repo())
+
+    case repo.get_by(Event, idempotency_key: marker.idempotency_key) do
+      nil ->
+        {:error, :idempotency_unique_violation}
+
+      existing ->
+        case validate_duplicate(existing, marker) do
+          {:duplicate, event} -> {:ok, {:duplicate, event}}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
 
   def list(stream_id, opts \\ []) do
     repo = Keyword.get(opts, :repo, repo())
@@ -58,7 +88,7 @@ defmodule Backplane.Memory.Events.Store do
     repo = Keyword.get(opts, :repo, repo())
 
     repo.transaction(fn ->
-      stream = lock_stream(repo, stream_id)
+      stream = create_and_lock_stream(repo, stream_id)
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
       repo.update_all(from(s in Stream, where: s.stream_id == ^stream_id),
@@ -69,106 +99,288 @@ defmodule Backplane.Memory.Events.Store do
     end)
   end
 
-  defp append_locked(repo, %Event{} = event) do
-    stream = lock_stream(repo, event.stream_id, event)
+  defp transact_append(multi, repo, name) do
+    case repo.transaction(multi) do
+      {:ok, %{^name => tagged}} ->
+        {:ok, tagged}
 
-    case duplicate(repo, event) do
-      nil ->
-        case ensure_open(stream) do
-          :ok ->
-            event = %{event | sequence: stream.next_sequence}
+      {:error, ^name, {:idempotency_race, _marker} = race, _changes} ->
+        resolve_idempotency_race(race, repo: repo)
 
-            case repo.insert(Event.changeset(event, Map.from_struct(event))) do
-              {:ok, inserted} ->
-                repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
-                  set: [next_sequence: event.sequence + 1, last_event_at: event.occurred_at]
-                )
-
-                {:inserted, inserted}
-
-              {:error, changeset} ->
-                repo.rollback(changeset)
-            end
-
-          error ->
-            error
-        end
-
-      existing ->
-        {:duplicate, existing}
+      {:error, ^name, reason, _changes} ->
+        {:error, reason}
     end
   end
 
-  defp batch_locked(repo, events) do
-    events
-    |> Enum.map(& &1.stream_id)
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.each(fn id -> lock_stream(repo, id) end)
+  defp transact_batch(_repo, _events, attempts_left) when attempts_left <= 0,
+    do: {:error, :idempotency_race_retry_exhausted}
 
-    Enum.reduce_while(events, [], fn event, acc ->
-      case append_locked(repo, event) do
-        {:error, reason} -> repo.rollback(reason)
-        result -> {:cont, [result | acc]}
-      end
-    end)
-    |> Enum.reverse()
+  defp transact_batch(repo, events, attempts_left) do
+    case repo.transaction(fn -> batch_locked(repo, events) end) do
+      {:ok, tagged} ->
+        {:ok, tagged}
+
+      {:error, {:idempotency_race, _marker} = race} ->
+        case resolve_idempotency_race(race, repo: repo) do
+          {:ok, {:duplicate, _event}} -> transact_batch(repo, events, attempts_left - 1)
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp duplicate(_repo, %{idempotency_key: nil}), do: nil
+  defp append_locked(repo, %Event{} = event) do
+    case find_duplicate(repo, event.idempotency_key) do
+      nil ->
+        stream = create_and_lock_stream(repo, event.stream_id, event)
 
-  defp duplicate(repo, event),
-    do:
-      repo.one(
-        from e in Event,
-          where: e.stream_id == ^event.stream_id and e.idempotency_key == ^event.idempotency_key
-      )
+        case find_duplicate(repo, event.idempotency_key) do
+          nil -> append_insert_result(insert_new_event(repo, stream, event))
+          existing -> append_duplicate_result(validate_duplicate(existing, event))
+        end
 
-  defp lock_stream(repo, stream_id, event \\ nil) do
+      existing ->
+        append_duplicate_result(validate_duplicate(existing, event))
+    end
+  end
+
+  defp append_insert_result({:inserted, event, _stream}), do: {:ok, {:inserted, event}}
+  defp append_insert_result({:error, reason}), do: {:error, reason}
+
+  defp append_duplicate_result({:duplicate, event}), do: {:ok, {:duplicate, event}}
+  defp append_duplicate_result({:error, reason}), do: {:error, reason}
+
+  defp batch_locked(repo, events) do
+    streams = create_and_lock_streams(repo, events)
+
+    events
+    |> Enum.reduce_while({[], streams}, fn event, {results, stream_by_id} ->
+      case append_with_locked_stream(repo, Map.fetch!(stream_by_id, event.stream_id), event) do
+        {:ok, tagged, stream} ->
+          {:cont, {[tagged | results], Map.put(stream_by_id, event.stream_id, stream)}}
+
+        {:error, reason} ->
+          repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {results, _streams} -> Enum.reverse(results)
+    end
+  end
+
+  defp append_with_locked_stream(repo, stream, event) do
+    case find_duplicate(repo, event.idempotency_key) do
+      nil ->
+        case insert_new_event(repo, stream, event) do
+          {:inserted, inserted, updated_stream} ->
+            {:ok, {:inserted, inserted}, updated_stream}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      existing ->
+        case validate_duplicate(existing, event) do
+          {:duplicate, duplicate} -> {:ok, {:duplicate, duplicate}, stream}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp insert_new_event(repo, stream, event) do
+    with :ok <- ensure_open(stream) do
+      stream = fill_null_metadata(repo, stream, event)
+      event = %{event | sequence: stream.next_sequence}
+
+      case repo.insert(Event.changeset(event, Map.from_struct(event))) do
+        {:ok, inserted} ->
+          last_event_at = greatest_datetime(stream.last_event_at, event.occurred_at)
+
+          repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
+            set: [next_sequence: event.sequence + 1, last_event_at: last_event_at]
+          )
+
+          updated_stream = %{
+            stream
+            | next_sequence: event.sequence + 1,
+              last_event_at: last_event_at
+          }
+
+          {:inserted, inserted, updated_stream}
+
+        {:error, changeset} ->
+          if idempotency_unique_violation?(changeset, event) do
+            {:error, race_marker(event)}
+          else
+            {:error, changeset}
+          end
+      end
+    end
+  end
+
+  defp create_and_lock_streams(repo, events) do
+    events_by_stream = Enum.group_by(events, & &1.stream_id)
+    stream_ids = events_by_stream |> Map.keys() |> Enum.sort()
+
+    Enum.each(stream_ids, fn stream_id ->
+      event = events_by_stream |> Map.fetch!(stream_id) |> hd()
+      insert_missing_stream(repo, stream_id, event)
+    end)
+
+    Map.new(stream_ids, fn stream_id ->
+      {stream_id, lock_existing_stream(repo, stream_id)}
+    end)
+  end
+
+  defp create_and_lock_stream(repo, stream_id, event \\ nil) do
+    insert_missing_stream(repo, stream_id, event)
+    lock_existing_stream(repo, stream_id)
+  end
+
+  defp insert_missing_stream(repo, stream_id, event) do
+    attrs = metadata(event)
+
     repo.insert(
-      %Stream{
-        stream_id: stream_id,
-        project: event && event.project,
-        agent_id: event && event.agent_id
-      },
-      on_conflict: :nothing
+      struct(Stream, Map.put(attrs, :stream_id, stream_id)),
+      on_conflict: :nothing,
+      conflict_target: [:stream_id]
     )
+  end
 
+  defp lock_existing_stream(repo, stream_id) do
     repo.one!(from s in Stream, where: s.stream_id == ^stream_id, lock: "FOR UPDATE")
+  end
+
+  defp fill_null_metadata(repo, stream, event) do
+    updates =
+      Enum.reduce(@metadata_fields, [], fn field, updates ->
+        if is_nil(Map.get(stream, field)) and not is_nil(Map.get(event, field)) do
+          [{field, Map.get(event, field)} | updates]
+        else
+          updates
+        end
+      end)
+
+    if updates == [] do
+      stream
+    else
+      repo.update_all(from(s in Stream, where: s.stream_id == ^stream.stream_id), set: updates)
+      Enum.reduce(updates, stream, fn {field, value}, stream -> Map.put(stream, field, value) end)
+    end
+  end
+
+  defp metadata(nil), do: %{}
+
+  defp metadata(event),
+    do: Map.take(event, @metadata_fields)
+
+  defp find_duplicate(_repo, nil), do: nil
+  defp find_duplicate(repo, key), do: repo.get_by(Event, idempotency_key: key)
+
+  defp validate_duplicate(existing, event_or_marker) do
+    fingerprint = fingerprint(event_or_marker)
+
+    if existing.stream_id == event_or_marker.stream_id and
+         existing.event_type == event_or_marker.event_type and
+         not is_nil(fingerprint(existing)) and
+         fingerprint(existing) == fingerprint do
+      {:duplicate, existing}
+    else
+      {:error, :idempotency_conflict}
+    end
+  end
+
+  defp fingerprint(%Event{payload: payload}),
+    do: get_in(payload || %{}, ["_backplane", "event_fingerprint"])
+
+  defp fingerprint(marker), do: Map.get(marker, :event_fingerprint)
+
+  defp race_marker(event) do
+    {:idempotency_race,
+     %{
+       idempotency_key: event.idempotency_key,
+       stream_id: event.stream_id,
+       event_type: event.event_type,
+       event_fingerprint: fingerprint(event)
+     }}
+  end
+
+  defp idempotency_unique_violation?(changeset, event) do
+    not is_nil(event.idempotency_key) and
+      Enum.any?(changeset.errors, fn
+        {:idempotency_key, {_message, opts}} ->
+          opts[:constraint] == :unique and
+            to_string(opts[:constraint_name]) == @idempotency_constraint
+
+        _ ->
+          false
+      end)
+  end
+
+  defp idempotency_count(events),
+    do: Enum.count(events, &(not is_nil(&1.idempotency_key)))
+
+  defp greatest_datetime(nil, occurred_at), do: occurred_at
+
+  defp greatest_datetime(last_event_at, occurred_at) do
+    case DateTime.compare(last_event_at, occurred_at) do
+      :lt -> occurred_at
+      _ -> last_event_at
+    end
   end
 
   defp ensure_open(%{closed_at: nil}), do: :ok
   defp ensure_open(_), do: {:error, :stream_closed}
 
-  defp unwrap({:error, reason}), do: {:error, reason}
-  defp unwrap(result), do: {:ok, result}
+  defp unwrap_public({:ok, {_status, %Event{} = event}}), do: {:ok, event}
+
+  defp unwrap_public({:ok, results}) when is_list(results),
+    do: {:ok, Enum.map(results, fn {_status, event} -> event end)}
+
+  defp unwrap_public({:error, reason}), do: {:error, reason}
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  defp emit_telemetry({:ok, {:inserted, event}}),
-    do:
-      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
-        status: :inserted,
-        event_type: event.event_type,
-        stream_id: event.stream_id
-      })
+  defp emit_telemetry({:ok, {:inserted, event}}), do: emit_status(:inserted, event)
+  defp emit_telemetry({:ok, {:duplicate, event}}), do: emit_status(:duplicate, event)
+  defp emit_telemetry({:ok, %Event{} = event}), do: emit_status(:inserted, event)
 
-  defp emit_telemetry({:ok, {:duplicate, event}}),
-    do:
-      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
-        status: :duplicate,
-        event_type: event.event_type,
-        stream_id: event.stream_id
-      })
-
-  defp emit_telemetry({:error, reason}),
-    do:
-      :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 0}, %{
-        status: :error,
-        error: reason
-      })
+  defp emit_telemetry({:error, _reason}) do
+    :telemetry.execute(
+      [:backplane, :memory, :event, :ingest],
+      %{count: 0},
+      %{status: :error}
+    )
+  end
 
   defp emit_telemetry(_), do: :ok
+
+  defp emit_status(status, event) do
+    :telemetry.execute([:backplane, :memory, :event, :ingest], %{count: 1}, %{
+      status: status,
+      event_type: bounded_metadata(event.event_type),
+      stream_id: bounded_metadata(event.stream_id)
+    })
+  end
+
+  defp bounded_metadata(value) when byte_size(value) <= 256, do: value
+
+  defp bounded_metadata(value) do
+    value
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn grapheme, {acc, bytes} ->
+      size = byte_size(grapheme)
+
+      if bytes + size <= 256,
+        do: {:cont, {[grapheme | acc], bytes + size}},
+        else: {:halt, {acc, bytes}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+  end
 
   defp emit_batch_telemetry({:ok, results}) when is_list(results) do
     Enum.each(results, &emit_telemetry({:ok, &1}))
