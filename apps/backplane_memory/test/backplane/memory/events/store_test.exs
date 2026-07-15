@@ -52,6 +52,17 @@ defmodule Backplane.Memory.Events.StoreTest do
     refute_received :db_operation_ran
   end
 
+  test "invalid batch attributes return an error even when options are not a keyword list" do
+    attach_event_telemetry()
+
+    assert {:error, :invalid_attributes} = Store.append_batch(:invalid, %{})
+
+    assert_receive {:event_telemetry, [:backplane, :memory, :event, :error],
+                    %{duration: duration, content_bytes: 0, payload_bytes: 0}, %{status: :error}}
+
+    assert duration >= 0
+  end
+
   test "exact global-key duplicate returns the original event without moving the cursor" do
     stream_id = unique("duplicate")
     key = unique("key")

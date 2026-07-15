@@ -53,7 +53,8 @@ defmodule Backplane.Memory.Events.Store do
   def append_batch(_, opts) do
     started_at = System.monotonic_time()
     result = {:error, :invalid_attributes}
-    if Keyword.get(opts, :telemetry, true), do: emit_telemetry(result, started_at)
+    telemetry? = if Keyword.keyword?(opts), do: Keyword.get(opts, :telemetry, true), else: true
+    if telemetry?, do: emit_telemetry(result, started_at)
     result
   end
 
