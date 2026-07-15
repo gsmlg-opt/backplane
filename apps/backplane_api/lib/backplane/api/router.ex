@@ -50,5 +50,7 @@ defmodule Backplane.Api.Router do
     forward("/skills", Backplane.Skills.ApiRouter)
   end
 
+  forward("/api/memory", Backplane.Memory.Router)
+
   match(:*, "/*path", Backplane.Api.NotFoundPlug, [])
 end

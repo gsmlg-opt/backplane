@@ -6,12 +6,27 @@ defmodule Backplane.Memory.Router do
   alias Backplane.Memory.Graph
   alias Backplane.Memory.Profiles
 
+  @event_params [
+    {"event_type", :event_type},
+    {"payload", :payload},
+    {"stream_id", :stream_id},
+    {"project", :project},
+    {"agent_id", :agent_id},
+    {"host_id", :host_id},
+    {"client_id", :client_id},
+    {"run_id", :run_id},
+    {"correlation_id", :correlation_id},
+    {"causation_id", :causation_id},
+    {"occurred_at", :occurred_at},
+    {"idempotency_key", :idempotency_key}
+  ]
+
   plug(:match)
   plug(:fetch_query_params)
   plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
   plug(:dispatch)
 
-  get "/api/memory/graph/stats" do
+  get "/graph/stats" do
     stats = Graph.stats()
 
     conn
@@ -19,7 +34,7 @@ defmodule Backplane.Memory.Router do
     |> send_resp(200, Jason.encode!(stats))
   end
 
-  get "/api/memory/profile" do
+  get "/profile" do
     project = conn.query_params["project"] || ""
 
     if project == "" do
@@ -58,7 +73,7 @@ defmodule Backplane.Memory.Router do
     end
   end
 
-  post "/api/memory/query/expand" do
+  post "/query/expand" do
     query = conn.body_params["query"]
 
     if is_binary(query) and query != "" do
@@ -84,18 +99,23 @@ defmodule Backplane.Memory.Router do
     end
   end
 
-  post "/api/memory/session/start" do
+  post "/session/start" do
     case conn.body_params do
       %{"session_id" => session_id, "project" => project}
       when is_binary(session_id) and is_binary(project) ->
-        Backplane.Memory.Observations.register_session(session_id, project)
-        context = Backplane.Memory.Context.build(project, session_id)
-        response = %{session_id: session_id}
-        response = if context, do: Map.put(response, :context, context), else: response
+        case Backplane.Memory.Observations.register_session(session_id, project) do
+          {:ok, _session} ->
+            context = Backplane.Memory.Context.build(project, session_id)
+            response = %{session_id: session_id}
+            response = if context, do: Map.put(response, :context, context), else: response
 
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(response))
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(200, Jason.encode!(response))
+
+          {:error, _reason} ->
+            persistence_unavailable(conn)
+        end
 
       _ ->
         conn
@@ -104,14 +124,18 @@ defmodule Backplane.Memory.Router do
     end
   end
 
-  post "/api/memory/session/end" do
+  post "/session/end" do
     case conn.body_params do
       %{"session_id" => session_id} when is_binary(session_id) ->
-        Backplane.Memory.Observations.end_session(session_id)
+        case Backplane.Memory.Observations.end_session(session_id) do
+          {count, nil} when count in [0, 1] ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(200, Jason.encode!(%{session_id: session_id, status: "ended"}))
 
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(200, Jason.encode!(%{session_id: session_id, status: "ended"}))
+          {:error, _reason} ->
+            persistence_unavailable(conn)
+        end
 
       _ ->
         conn
@@ -120,7 +144,7 @@ defmodule Backplane.Memory.Router do
     end
   end
 
-  post "/api/memory/observations" do
+  post "/observations" do
     session_id = Map.get(conn.body_params, "session_id", "")
     content = Map.get(conn.body_params, "content", "")
 
@@ -129,10 +153,7 @@ defmodule Backplane.Memory.Router do
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{error: "content is required"}))
     else
-      opts = [
-        tool_name: conn.body_params["tool_name"],
-        is_error: conn.body_params["is_error"] == true
-      ]
+      opts = observation_opts(conn.body_params)
 
       case Backplane.Memory.Observations.record(session_id, content, opts) do
         {:ok, obs} ->
@@ -153,7 +174,7 @@ defmodule Backplane.Memory.Router do
     end
   end
 
-  get "/api/memory/file-history" do
+  get "/file-history" do
     files = String.split(conn.query_params["files"] || "", ",", trim: true)
     exclude = conn.query_params["exclude_session"]
     opts = [exclude_session: exclude, limit: 50]
@@ -175,7 +196,7 @@ defmodule Backplane.Memory.Router do
     |> send_resp(200, Jason.encode!(%{results: result}))
   end
 
-  get "/api/memory/audit" do
+  get "/audit" do
     limit = parse_int(conn.query_params["limit"], 50)
     offset = parse_int(conn.query_params["offset"], 0)
     operation = conn.query_params["operation"]
@@ -185,14 +206,14 @@ defmodule Backplane.Memory.Router do
     opts = if operation && operation != "", do: opts ++ [operation: operation], else: opts
     opts = if actor && actor != "", do: opts ++ [actor: actor], else: opts
 
-    entries = Backplane.Memory.Audit.list(opts)
+    entries = Backplane.Memory.Audit.list(opts) |> Enum.map(&serialize_audit_entry/1)
 
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, Jason.encode!(%{results: entries}))
   end
 
-  get "/api/memory/diagnose" do
+  get "/diagnose" do
     alias Backplane.Memory.Embedding.CircuitBreaker
 
     stats = Backplane.Memory.Memories.stats()
@@ -214,7 +235,7 @@ defmodule Backplane.Memory.Router do
     )
   end
 
-  post "/api/memory/heal" do
+  post "/heal" do
     alias Backplane.Memory.Embedding.CircuitBreaker
     import Ecto.Query
 
@@ -251,5 +272,31 @@ defmodule Backplane.Memory.Router do
       {n, ""} when n >= 0 -> n
       _ -> default
     end
+  end
+
+  defp observation_opts(params) do
+    base = [tool_name: params["tool_name"], is_error: params["is_error"] == true]
+
+    Enum.reduce(@event_params, base, fn {param, option}, opts ->
+      case Map.fetch(params, param) do
+        {:ok, value} -> Keyword.put(opts, option, value)
+        :error -> opts
+      end
+    end)
+  end
+
+  defp serialize_audit_entry(%{id: id} = entry) when is_binary(id) and byte_size(id) == 16 do
+    case Ecto.UUID.load(id) do
+      {:ok, canonical_id} -> %{entry | id: canonical_id}
+      :error -> entry
+    end
+  end
+
+  defp serialize_audit_entry(entry), do: entry
+
+  defp persistence_unavailable(conn) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(503, Jason.encode!(%{error: "memory persistence unavailable"}))
   end
 end
