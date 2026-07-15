@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.ServiceTest do
-  use Backplane.Memory.DataCase, async: true
+  use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.{Memories, Observations, Service}
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
@@ -65,6 +65,59 @@ defmodule Backplane.Memory.ServiceTest do
   end
 
   describe "handle_recall/1" do
+    test "falls back to ranked lexical search when the configured embedder returns 503" do
+      scope = "service-embedding-503-fallback-#{System.unique_integer([:positive])}"
+
+      {:ok, strongest} =
+        Memories.remember(
+          "gateway fallback signal gateway fallback signal gateway fallback signal",
+          agent_id: "service-fallback-agent",
+          host_id: "service-fallback-host",
+          scope: scope
+        )
+
+      {:ok, weaker} =
+        Memories.remember("gateway fallback signal",
+          agent_id: "service-fallback-agent",
+          host_id: "service-fallback-host",
+          scope: scope
+        )
+
+      assert is_nil(strongest.embedding)
+      assert is_nil(weaker.embedding)
+
+      test_pid = self()
+      previous_req_options = Req.default_options()
+      previous_embed_model = Application.fetch_env(:backplane_memory, :embed_model)
+
+      adapter = fn request ->
+        send(test_pid, {:embedding_request, Jason.decode!(request.body)})
+        {request, Req.Response.new(status: 503, body: %{"error" => "unavailable"})}
+      end
+
+      Req.default_options(Keyword.put(previous_req_options, :adapter, adapter))
+      Application.put_env(:backplane_memory, :embed_model, "service-fallback-test-model")
+
+      on_exit(fn ->
+        Req.default_options(previous_req_options)
+
+        case previous_embed_model do
+          {:ok, model} -> Application.put_env(:backplane_memory, :embed_model, model)
+          :error -> Application.delete_env(:backplane_memory, :embed_model)
+        end
+      end)
+
+      assert {:ok, %{results: results}} =
+               Service.handle_recall(%{
+                 "query" => "gateway fallback signal",
+                 "limit" => 2,
+                 "scope" => scope
+               })
+
+      assert_receive {:embedding_request, %{"model" => "service-fallback-test-model"}}
+      assert Enum.map(results, & &1.id) == [strongest.id, weaker.id]
+    end
+
     test "falls back to text search when embedding is not configured" do
       {:ok, mem} =
         Memories.remember("service recall fallback",
