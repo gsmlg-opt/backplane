@@ -86,6 +86,7 @@ defmodule Backplane.Admin.SettingsLive do
         "openai_oauth" -> "openai-codex"
         "google_oauth" -> "google-antigravity"
         "xai_oauth" -> "xai-grok"
+        "figma_oauth" -> "figma-mcp"
         _ -> "oauth-cred"
       end
 
@@ -643,6 +644,31 @@ defmodule Backplane.Admin.SettingsLive do
              |> push_event("open_external_oauth", %{url: auth_url})}
         end
 
+      vendor == "figma_oauth" ->
+        case OAuthRefresher.figma_mcp_client_credentials() do
+          {:ok, _client_id, _client_secret} ->
+            redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
+            {verifier, challenge} = pkce_pair()
+
+            state =
+              OAuthStateStore.put(%{
+                "vendor" => vendor,
+                "cred_name" => name,
+                "code_verifier" => verifier,
+                "redirect_uri" => redirect_uri
+              })
+
+            auth_url = build_auth_url(vendor, state, challenge, redirect_uri)
+
+            {:noreply,
+             socket
+             |> push_event("open_external_oauth", %{url: auth_url})
+             |> push_patch(to: ~p"/system/credentials")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, format_figma_oauth_config_error(reason))}
+        end
+
       true ->
         redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
         {verifier, challenge} = pkce_pair()
@@ -881,7 +907,14 @@ defmodule Backplane.Admin.SettingsLive do
   end
 
   defp device_oauth_auth_type?(auth_type),
-    do: auth_type in ["anthropic_oauth", "openai_oauth", "google_oauth", "xai_oauth"]
+    do:
+      auth_type in [
+        "anthropic_oauth",
+        "openai_oauth",
+        "google_oauth",
+        "xai_oauth",
+        "figma_oauth"
+      ]
 
   defp maybe_oauth_status(name, auth_type) do
     if device_oauth_auth_type?(auth_type) do
@@ -1179,6 +1212,12 @@ defmodule Backplane.Admin.SettingsLive do
                   >
                     Connect xAI Grok
                   </.link>
+                  <.link
+                    patch={~p"/system/credentials/new/figma_oauth"}
+                    class="popover-menu-item"
+                  >
+                    Connect Figma MCP
+                  </.link>
                 </:content>
               </.dm_dropdown>
             </div>
@@ -1205,6 +1244,7 @@ defmodule Backplane.Admin.SettingsLive do
                           "openai_oauth",
                           "google_oauth",
                           "xai_oauth",
+                          "figma_oauth",
                           "oauth2_client_credentials"
                         ]
                       }
@@ -1547,6 +1587,13 @@ defmodule Backplane.Admin.SettingsLive do
         <p class="text-sm text-on-surface-variant mb-4">
           You will be redirected to the provider's login page to authorise.
         </p>
+        <p
+          :if={@device_flow_vendor == "figma_oauth"}
+          id="figma-shared-account-note"
+          class="text-sm text-on-surface-variant mb-4"
+        >
+          This credential authorizes one shared Figma account for every Backplane caller.
+        </p>
         <form phx-submit="start_device_auth" class="space-y-4">
           <.dm_input
             id="device-cred-name"
@@ -1673,6 +1720,7 @@ defmodule Backplane.Admin.SettingsLive do
   defp device_flow_label("openai_oauth"), do: "OpenAI Codex"
   defp device_flow_label("google_oauth"), do: "Google Antigravity"
   defp device_flow_label("xai_oauth"), do: "xAI Grok"
+  defp device_flow_label("figma_oauth"), do: "Figma MCP"
   defp device_flow_label(other), do: other || "OAuth"
 
   defp pkce_pair do
@@ -1755,6 +1803,29 @@ defmodule Backplane.Admin.SettingsLive do
 
     xai_authorize_url() <> "?" <> URI.encode_query(params)
   end
+
+  defp build_auth_url("figma_oauth", state, challenge, redirect_uri) do
+    {:ok, client_id, _client_secret} = OAuthRefresher.figma_mcp_client_credentials()
+
+    params = %{
+      "response_type" => "code",
+      "client_id" => client_id,
+      "redirect_uri" => redirect_uri,
+      "scope" => OAuthRefresher.figma_scope(),
+      "state" => state,
+      "code_challenge" => challenge,
+      "code_challenge_method" => "S256",
+      "resource" => OAuthRefresher.figma_resource()
+    }
+
+    OAuthRefresher.figma_authorize_url() <> "?" <> URI.encode_query(params)
+  end
+
+  defp format_figma_oauth_config_error(:missing_figma_mcp_client_id),
+    do: "Set FIGMA_MCP_CLIENT_ID before connecting Figma MCP"
+
+  defp format_figma_oauth_config_error(:missing_figma_mcp_client_secret),
+    do: "Set FIGMA_MCP_CLIENT_SECRET before connecting Figma MCP"
 
   defp google_client_id do
     value =

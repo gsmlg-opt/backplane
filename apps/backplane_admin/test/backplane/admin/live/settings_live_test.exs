@@ -13,7 +13,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
   }
 
   alias Backplane.Repo
-  alias Backplane.Settings.Credentials
+  alias Backplane.Settings.{Credentials, OAuthRefresher, OAuthStateStore}
 
   describe "settings tab" do
     setup do
@@ -223,6 +223,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
   describe "credentials tab" do
     setup do
+      OAuthStateStore.clear()
+
       {:ok, pid} =
         Bandit.start_link(
           plug: Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint,
@@ -250,11 +252,15 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           google_client_id: "test-google-client",
           google_client_secret: "test-google-secret",
           xai_token_url: "http://localhost:#{port}/xai/token",
-          xai_client_id: "test-xai-client"
+          xai_client_id: "test-xai-client",
+          figma_token_url: "http://localhost:#{port}/figma/token",
+          figma_mcp_client_id: "test-figma-client",
+          figma_mcp_client_secret: "test-figma-secret"
         )
       )
 
       on_exit(fn ->
+        OAuthStateStore.clear()
         Application.put_env(:backplane, Backplane.Settings.OpenAICodexAuth, prior)
         Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, prior_refresher)
 
@@ -522,6 +528,118 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
                ~s(a[href="/system/credentials/new/xai_oauth"]),
                "Connect xAI Grok"
              )
+    end
+
+    test "renders the Figma MCP shared-account OAuth action", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/system/credentials")
+
+      assert has_element?(
+               view,
+               ~s(a[href="/system/credentials/new/figma_oauth"]),
+               "Connect Figma MCP"
+             )
+
+      html =
+        view
+        |> element(~s(a[href="/system/credentials/new/figma_oauth"]))
+        |> render_click()
+
+      assert_patched(view, "/system/credentials/new/figma_oauth")
+      assert html =~ "Connect Figma MCP"
+      assert html =~ "one shared Figma account for every Backplane caller"
+      assert has_element?(view, ~s(#device-cred-name[value="figma-mcp"]))
+    end
+
+    test "starts Figma MCP authorization with PKCE and the MCP resource", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/system/credentials/new/figma_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      assert_patched(view, "/system/credentials")
+
+      uri = URI.parse(auth_url)
+      query = URI.decode_query(uri.query)
+
+      assert {uri.scheme, uri.host, uri.path} == {"https", "www.figma.com", "/oauth/mcp"}
+      assert query["response_type"] == "code"
+      assert query["client_id"] == "test-figma-client"
+      assert query["redirect_uri"] == Backplane.WebOrigins.admin_url("/oauth/callback")
+      assert query["scope"] == "mcp:connect"
+      assert query["resource"] == "https://mcp.figma.com/mcp"
+      assert query["code_challenge_method"] == "S256"
+
+      assert {:ok, attrs} = OAuthStateStore.pop(query["state"])
+      assert attrs["vendor"] == "figma_oauth"
+      assert attrs["cred_name"] == "shared-figma"
+      assert attrs["redirect_uri"] == query["redirect_uri"]
+
+      expected_challenge =
+        :crypto.hash(:sha256, attrs["code_verifier"])
+        |> Base.url_encode64(padding: false)
+
+      assert query["code_challenge"] == expected_challenge
+    end
+
+    test "keeps the Figma connect form open when the client ID is missing", %{conn: conn} do
+      configured = Application.get_env(:backplane, OAuthRefresher, [])
+      prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET])
+
+      Application.put_env(
+        :backplane,
+        OAuthRefresher,
+        Keyword.drop(configured, [:figma_mcp_client_id, :figma_mcp_client_secret])
+      )
+
+      System.delete_env("FIGMA_MCP_CLIENT_ID")
+      System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+
+      on_exit(fn ->
+        Application.put_env(:backplane, OAuthRefresher, configured)
+        restore_env(prior_env)
+      end)
+
+      {:ok, view, _html} = live(conn, "/system/credentials/new/figma_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
+        |> render_submit()
+
+      assert html =~ "Set FIGMA_MCP_CLIENT_ID before connecting Figma MCP"
+      assert has_element?(view, "form[phx-submit=start_device_auth]")
+    end
+
+    test "keeps the Figma connect form open when the client secret is missing", %{conn: conn} do
+      configured = Application.get_env(:backplane, OAuthRefresher, [])
+      prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_SECRET])
+
+      Application.put_env(
+        :backplane,
+        OAuthRefresher,
+        configured
+        |> Keyword.put(:figma_mcp_client_id, "test-figma-client")
+        |> Keyword.delete(:figma_mcp_client_secret)
+      )
+
+      System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+
+      on_exit(fn ->
+        Application.put_env(:backplane, OAuthRefresher, configured)
+        restore_env(prior_env)
+      end)
+
+      {:ok, view, _html} = live(conn, "/system/credentials/new/figma_oauth")
+
+      html =
+        view
+        |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
+        |> render_submit()
+
+      assert html =~ "Set FIGMA_MCP_CLIENT_SECRET before connecting Figma MCP"
+      assert has_element?(view, "form[phx-submit=start_device_auth]")
     end
 
     test "imports Claude Code auth JSON from the Claude Plan page", %{conn: conn} do
