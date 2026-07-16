@@ -321,6 +321,39 @@ defmodule Backplane.Memory.HookScriptsTest do
     end
   end
 
+  for {behavior, command, expect_curl?} <- [
+        {"ignores a command after a shell comment", "echo ok # comment; git commit -m fake",
+         false},
+        {"ignores a commit in a comment after a control operator",
+         "echo ok; # git commit -m fake", false},
+        {"recognizes a commit after a comment containing heredoc syntax",
+         "echo ok # <<EOF\ngit commit -m after-comment", true},
+        {"recognizes a commit after an unquoted hash inside a word",
+         "echo foo#bar; git commit -m hash-in-word", true}
+      ] do
+    @comment_behavior behavior
+    @comment_command command
+    @comment_expect_curl expect_curl?
+
+    test "post-commit #{@comment_behavior}", %{tmp_dir: tmp_dir} do
+      result =
+        run_hook(
+          "post-commit.sh",
+          %{
+            "session_id" => "session-shell-comment",
+            "tool_name" => "Bash",
+            "tool_use_id" => "tool-shell-comment",
+            "tool_input" => %{"command" => @comment_command},
+            "tool_response" => "ok"
+          },
+          tmp_dir
+        )
+
+      assert result.status == 0
+      assert result.called_curl? == @comment_expect_curl
+    end
+  end
+
   test "post-commit recognizes valid git invocations with shell and git options", %{
     tmp_dir: tmp_dir
   } do

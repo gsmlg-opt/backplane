@@ -56,6 +56,7 @@ def shell_segments(command):
     processed_command = []
     logical_line = []
     quote = None
+    word_start = True
     index = 0
     while index < len(command):
         char = command[index]
@@ -67,13 +68,22 @@ def shell_segments(command):
                 continue
             processed_command.extend((char, following))
             logical_line.extend((char, following))
+            word_start = False
             index += 2
+            continue
+
+        if char == "#" and quote is None and word_start:
+            line_end = command.find("\n", index)
+            if line_end == -1:
+                break
+            index = line_end
             continue
 
         if char == "\n" and quote is None:
             processed_command.extend((" ", newline_token, " "))
             pending_heredocs = heredoc_specs("".join(logical_line))
             logical_line = []
+            word_start = True
             index += 1
 
             for delimiter, strip_tabs in pending_heredocs:
@@ -105,8 +115,11 @@ def shell_segments(command):
             logical_line.append(char)
             if quote is None and char in (chr(39), chr(34)):
                 quote = char
+                word_start = False
             elif char == quote:
                 quote = None
+            elif quote is None:
+                word_start = char in " \t\r;&|()<>"
         index += 1
 
     lexer = shlex.shlex(
