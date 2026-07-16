@@ -30,6 +30,14 @@ def shell_segments(command):
     except ValueError:
         return []
 
+    normalized_tokens = []
+    for token in tokens:
+        if "\n" in token and all(char in ";&|()<>\n" for char in token):
+            normalized_tokens.extend(re.findall(r"[^\n]+|\n", token))
+        else:
+            normalized_tokens.append(token)
+    tokens = normalized_tokens
+
     segments = []
     current = []
     pending_heredocs = []

@@ -297,7 +297,9 @@ defmodule Backplane.Memory.HookScriptsTest do
           "echo git commit",
           "git commitment --help",
           ~s(printf "%s\\n" "nothing; git commit -m fake"),
-          "cat <<'EOF'\ngit commit -m fake\nEOF"
+          "printf '%s' 'nothing;\ngit commit -m fake'",
+          "cat <<'EOF'\ngit commit -m fake\nEOF",
+          "cat <<'EOF';\ngit commit -m fake\nEOF"
         ] do
       result =
         run_hook(
@@ -324,7 +326,10 @@ defmodule Backplane.Memory.HookScriptsTest do
           "FOO=bar git commit -m env",
           "env FOO=bar git commit -m env-command",
           "git -c user.name=agent commit -m config",
-          "cd /tmp && git -C /work -c user.name=agent commit -m chained"
+          "cd /tmp && git -C /work -c user.name=agent commit -m chained",
+          "git status;\ngit commit -m newline",
+          "git status &&\ngit commit -m continued",
+          "git status\n\ngit commit -m blank-line"
         ] do
       result =
         run_hook(
