@@ -352,6 +352,56 @@ defmodule Backplane.Memory.HookScriptsTest do
     end
   end
 
+  for {quote_name, heredoc_body} <- [{"single quote", "'"}, {"double quote", "\""}] do
+    @heredoc_body heredoc_body
+
+    test "post-commit recognizes a commit after a heredoc body with an unmatched #{quote_name}",
+         %{
+           tmp_dir: tmp_dir
+         } do
+      command = "cat <<'EOF'\n#{@heredoc_body}\nEOF\ngit commit -m after-heredoc"
+
+      result =
+        run_hook(
+          "post-commit.sh",
+          %{
+            "session_id" => "session-heredoc-commit",
+            "tool_name" => "Bash",
+            "tool_use_id" => "tool-heredoc-commit",
+            "tool_input" => %{"command" => command},
+            "tool_response" => "committed"
+          },
+          tmp_dir
+        )
+
+      assert result.status == 0
+      assert result.called_curl?, "missed commit after #{unquote(quote_name)} heredoc body"
+      assert Jason.decode!(result.body)["tool_name"] == "git_commit"
+    end
+  end
+
+  test "post-commit recognizes a commit after multiple quoted heredocs", %{tmp_dir: tmp_dir} do
+    command =
+      "cat <<'FIRST' <<-\"SECOND\"\n'\nFIRST\n\t\"\n\tSECOND\ngit commit -m after-heredocs"
+
+    result =
+      run_hook(
+        "post-commit.sh",
+        %{
+          "session_id" => "session-multiple-heredocs",
+          "tool_name" => "Bash",
+          "tool_use_id" => "tool-multiple-heredocs",
+          "tool_input" => %{"command" => command},
+          "tool_response" => "committed"
+        },
+        tmp_dir
+      )
+
+    assert result.status == 0
+    assert result.called_curl?
+    assert Jason.decode!(result.body)["tool_name"] == "git_commit"
+  end
+
   test "all scripts reject malformed or missing required input without calling curl", %{
     tmp_dir: tmp_dir
   } do

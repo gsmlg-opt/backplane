@@ -19,12 +19,42 @@ def display(value):
         return ""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
+def heredoc_specs(command_line):
+    lexer = shlex.shlex(
+        command_line, posix=True, punctuation_chars=";&|()<>-"
+    )
+    lexer.commenters = ""
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+
+    specs = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("<<", "<<-") and index + 1 < len(tokens):
+            specs.append((tokens[index + 1], token == "<<-"))
+            index += 2
+        else:
+            index += 1
+
+    return specs
+
 def shell_segments(command):
     newline_token = "__BACKPLANE_HOOK_NEWLINE__"
     while newline_token in command:
         newline_token += "_"
 
+    heredoc_token = "__BACKPLANE_HOOK_HEREDOC__"
+    while heredoc_token in command or heredoc_token == newline_token:
+        heredoc_token += "_"
+
     processed_command = []
+    logical_line = []
     quote = None
     index = 0
     while index < len(command):
@@ -36,13 +66,43 @@ def shell_segments(command):
                 index += 2
                 continue
             processed_command.extend((char, following))
+            logical_line.extend((char, following))
             index += 2
             continue
 
         if char == "\n" and quote is None:
             processed_command.extend((" ", newline_token, " "))
+            pending_heredocs = heredoc_specs("".join(logical_line))
+            logical_line = []
+            index += 1
+
+            for delimiter, strip_tabs in pending_heredocs:
+                terminator_found = False
+                while index < len(command):
+                    line_end = command.find("\n", index)
+                    if line_end == -1:
+                        line = command[index:]
+                        index = len(command)
+                    else:
+                        line = command[index:line_end]
+                        index = line_end + 1
+
+                    candidate = line.lstrip("\t") if strip_tabs else line
+                    if candidate == delimiter:
+                        processed_command.extend((" ", heredoc_token, " "))
+                        if line_end != -1:
+                            processed_command.extend((" ", newline_token, " "))
+                        terminator_found = True
+                        break
+
+                if not terminator_found:
+                    processed_command.extend((" ", heredoc_token, " "))
+                    break
+
+            continue
         else:
             processed_command.append(char)
+            logical_line.append(char)
             if quote is None and char in (chr(39), chr(34)):
                 quote = char
             elif char == quote:
@@ -63,23 +123,10 @@ def shell_segments(command):
 
     segments = []
     current = []
-    pending_heredocs = []
-    heredoc = None
-    heredoc_line = []
     expect_heredoc = False
 
     for token in tokens:
-        if heredoc is not None:
-            if token == newline_token:
-                if heredoc_line == [heredoc]:
-                    heredoc = pending_heredocs.pop(0) if pending_heredocs else None
-                heredoc_line = []
-            else:
-                heredoc_line.append(token)
-            continue
-
         if expect_heredoc:
-            pending_heredocs.append(token)
             expect_heredoc = False
             continue
 
@@ -91,8 +138,7 @@ def shell_segments(command):
             if current:
                 segments.append(current)
                 current = []
-            if pending_heredocs:
-                heredoc = pending_heredocs.pop(0)
+            expect_heredoc = False
             continue
 
         if token and all(char in ";&|()" for char in token):
