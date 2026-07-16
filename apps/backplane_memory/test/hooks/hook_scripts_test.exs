@@ -614,3 +614,647 @@ defmodule Backplane.Memory.HookScriptsTest do
     if File.exists?(path), do: path |> File.read!() |> String.to_integer(), else: 0
   end
 end
+
+defmodule Backplane.Memory.ActivationSessionTest do
+  use ExUnit.Case, async: false
+
+  @moduletag :tmp_dir
+
+  defp run_activation_session(tmp_dir, script, opts \\ []) do
+    hooks_path = Path.expand("../../priv/hooks", __DIR__)
+    runtime_dir = Keyword.get(opts, :runtime_dir, Path.join(tmp_dir, "runtime"))
+
+    if Keyword.get(opts, :create_runtime_dir?, true) do
+      File.mkdir_p!(runtime_dir)
+    end
+
+    env =
+      if Keyword.get(opts, :xdg_runtime?, true) do
+        [
+          {"PYTHONPATH", hooks_path},
+          {"XDG_RUNTIME_DIR", runtime_dir}
+        ]
+      else
+        [
+          {"PYTHONPATH", hooks_path},
+          {"XDG_RUNTIME_DIR", nil},
+          {"TMPDIR", runtime_dir}
+        ]
+      end
+
+    {output, status} = System.cmd("python3", ["-c", script], env: env, stderr_to_stdout: true)
+    assert status == 0, output
+    Jason.decode!(output)
+  end
+
+  test "activation identity follows startup, resume, and compact lifecycle", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      claude_id = "claude-session-1"
+      startup_id = establish(claude_id, "startup")
+      startup_resolved = resolve(claude_id)
+      resume_id = establish(claude_id, "resume")
+      resume_resolved = resolve(claude_id)
+      compact_id = establish(claude_id, "compact")
+
+      print(json.dumps({
+          "startup_id": startup_id,
+          "startup_resolved": startup_resolved,
+          "resume_id": resume_id,
+          "resume_resolved": resume_resolved,
+          "compact_id": compact_id,
+      }))
+      """)
+
+    assert result["startup_id"] == "claude-session-1"
+    assert result["startup_resolved"] == "claude-session-1"
+
+    assert result["resume_id"] =~
+             ~r/^claude-run-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+    refute result["resume_id"] == "claude-session-1"
+    assert result["resume_resolved"] == result["resume_id"]
+    assert result["compact_id"] == result["resume_id"]
+  end
+
+  test "clear establishes an identity mapping", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      claude_id = "claude-clear-session"
+      resumed_id = establish(claude_id, "resume")
+      clear_id = establish(claude_id, "clear")
+
+      print(json.dumps({
+          "resumed_id": resumed_id,
+          "clear_id": clear_id,
+          "resolved_id": resolve(claude_id),
+      }))
+      """)
+
+    refute result["resumed_id"] == "claude-clear-session"
+    assert result["clear_id"] == "claude-clear-session"
+    assert result["resolved_id"] == "claude-clear-session"
+  end
+
+  test "compact and resolve return no activation without state", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, prepare_end, resolve
+
+      claude_id = "claude-missing-session"
+
+      print(json.dumps({
+          "compact_id": establish(claude_id, "compact"),
+          "resolved_id": resolve(claude_id),
+          "end_token": prepare_end(claude_id),
+      }))
+      """)
+
+    assert result == %{
+             "compact_id" => nil,
+             "resolved_id" => nil,
+             "end_token" => nil
+           }
+  end
+
+  test "cleanup uses compare-and-swap semantics", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import cleanup, establish, prepare_end, resolve
+
+      claude_id = "claude-cas-session"
+      old_id = establish(claude_id, "startup")
+      old_digest, prepared_id = prepare_end(claude_id)
+      newer_id = establish(claude_id, "resume")
+      cleaned = cleanup(old_digest, prepared_id)
+
+      print(json.dumps({
+          "old_id": old_id,
+          "prepared_id": prepared_id,
+          "newer_id": newer_id,
+          "cleaned": cleaned,
+          "resolved_id": resolve(claude_id),
+      }))
+      """)
+
+    assert result["old_id"] == "claude-cas-session"
+    assert result["prepared_id"] == result["old_id"]
+    refute result["newer_id"] == result["old_id"]
+    refute result["cleaned"]
+    assert result["resolved_id"] == result["newer_id"]
+  end
+
+  test "cleanup removes the current mapping using the prepared digest", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import cleanup, establish, prepare_end, resolve
+
+      claude_id = "claude-current-cleanup"
+      memory_id = establish(claude_id, "startup")
+      digest, prepared_id = prepare_end(claude_id)
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      cleaned = cleanup(digest, prepared_id)
+
+      print(json.dumps({
+          "memory_id": memory_id,
+          "prepared_id": prepared_id,
+          "digest": digest,
+          "expected_digest": hashlib.sha256(claude_id.encode("utf-8")).hexdigest(),
+          "cleaned": cleaned,
+          "record_exists": record_path.exists(),
+          "resolved_id": resolve(claude_id),
+      }))
+      """)
+
+    assert result["prepared_id"] == result["memory_id"]
+    assert result["digest"] == result["expected_digest"]
+    assert result["cleaned"]
+    refute result["record_exists"]
+    assert result["resolved_id"] == nil
+  end
+
+  test "each resume establishes a fresh activation", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      claude_id = "claude-repeated-resume"
+      first_id = establish(claude_id, "resume")
+      second_id = establish(claude_id, "resume")
+
+      print(json.dumps({
+          "first_id": first_id,
+          "second_id": second_id,
+          "resolved_id": resolve(claude_id),
+      }))
+      """)
+
+    refute result["first_id"] == result["second_id"]
+    assert result["resolved_id"] == result["second_id"]
+  end
+
+  test "Claude session mappings remain independent", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      first_claude_id = "claude-independent-one"
+      second_claude_id = "claude-independent-two"
+      first_memory_id = establish(first_claude_id, "startup")
+      second_memory_id = establish(second_claude_id, "resume")
+
+      print(json.dumps({
+          "first_memory_id": first_memory_id,
+          "second_memory_id": second_memory_id,
+          "first_resolved": resolve(first_claude_id),
+          "second_resolved": resolve(second_claude_id),
+      }))
+      """)
+
+    assert result["first_memory_id"] == "claude-independent-one"
+    refute result["second_memory_id"] == "claude-independent-two"
+    assert result["first_resolved"] == result["first_memory_id"]
+    assert result["second_resolved"] == result["second_memory_id"]
+    refute result["first_resolved"] == result["second_resolved"]
+  end
+
+  test "activation state is private, hashed, and contains only mapping data", %{tmp_dir: tmp_dir} do
+    claude_id = "claude-private-session"
+    prompt = "sensitive prompt must not persist"
+
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish
+
+      claude_id = #{inspect(claude_id)}
+      prompt = #{inspect(prompt)}
+      establish(claude_id, "startup")
+
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      state_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks"
+      record_path = state_root / f"{digest}.json"
+      root_mode = state_root.stat().st_mode & 0o777
+      startup_record_mode = record_path.stat().st_mode & 0o777
+
+      establish(claude_id, "resume")
+      resumed_record = record_path.read_text(encoding="utf-8")
+
+      print(json.dumps({
+          "root_mode": root_mode,
+          "startup_record_mode": startup_record_mode,
+          "basename": record_path.name,
+          "record": json.loads(resumed_record),
+          "raw_record": resumed_record,
+          "prompt": prompt,
+      }))
+      """)
+
+    expected_digest =
+      :sha256
+      |> :crypto.hash(claude_id)
+      |> Base.encode16(case: :lower)
+
+    assert result["root_mode"] == 0o700
+    assert result["startup_record_mode"] == 0o600
+    assert result["basename"] == expected_digest <> ".json"
+
+    assert result["record"]
+           |> Map.keys()
+           |> Enum.sort() == ["claude_session_sha256", "memory_session_id", "version"]
+
+    refute result["raw_record"] =~ claude_id
+    refute result["raw_record"] =~ prompt
+  end
+
+  test "lock and replacement record files remain private", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish
+
+      claude_id = "claude-private-files"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      state_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks"
+      lock_path = state_root / f"{digest}.lock"
+      record_path = state_root / f"{digest}.json"
+      initial_record_mode = record_path.stat().st_mode & 0o777
+
+      establish(claude_id, "resume")
+
+      print(json.dumps({
+          "lock_mode": lock_path.stat().st_mode & 0o777,
+          "initial_record_mode": initial_record_mode,
+          "replacement_record_mode": record_path.stat().st_mode & 0o777,
+      }))
+      """)
+
+    assert result == %{
+             "lock_mode" => 0o600,
+             "initial_record_mode" => 0o600,
+             "replacement_record_mode" => 0o600
+           }
+  end
+
+  test "malformed activation state is ignored", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish, resolve
+
+      claude_id = "claude-malformed-state"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      record_path.write_text("{malformed", encoding="utf-8")
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "activation state with the wrong digest is ignored", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish, resolve
+
+      claude_id = "claude-wrong-digest"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      record_path.write_text(json.dumps({
+          "version": 1,
+          "claude_session_sha256": "0" * 64,
+          "memory_session_id": "forged-memory-session",
+      }), encoding="utf-8")
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "activation state with the wrong version is ignored", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish, resolve
+
+      claude_id = "claude-wrong-version"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      record_path.write_text(json.dumps({
+          "version": 2,
+          "claude_session_sha256": digest,
+          "memory_session_id": "forged-memory-session",
+      }), encoding="utf-8")
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "activation state with an invalid Memory session ID is ignored", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish, resolve
+
+      claude_id = "claude-invalid-memory-id"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      record_path.write_text(json.dumps({
+          "version": 1,
+          "claude_session_sha256": digest,
+          "memory_session_id": "",
+      }), encoding="utf-8")
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "oversized activation state is ignored", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish, resolve
+
+      claude_id = "claude-oversized-state"
+      establish(claude_id, "startup")
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
+      record_path.write_bytes(b"x" * 2049)
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "invalid Claude IDs return no activation without raising", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, prepare_end, resolve
+
+      nul_id = "claude" + chr(0) + "session"
+      oversized_id = "x" * 513
+
+      print(json.dumps({
+          "nul_establish": establish(nul_id, "startup"),
+          "nul_resolve": resolve(nul_id),
+          "nul_prepare": prepare_end(nul_id),
+          "oversized_establish": establish(oversized_id, "startup"),
+          "oversized_resolve": resolve(oversized_id),
+          "oversized_prepare": prepare_end(oversized_id),
+      }))
+      """)
+
+    assert Enum.all?(result, fn {_action, activation_id} -> is_nil(activation_id) end)
+  end
+
+  test "Claude ID bounds count UTF-8 bytes", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, prepare_end, resolve
+
+      valid_id = "界" * 170
+      oversized_id = "界" * 171
+
+      print(json.dumps({
+          "valid_establish": establish(valid_id, "startup"),
+          "valid_resolve": resolve(valid_id),
+          "oversized_establish": establish(oversized_id, "startup"),
+          "oversized_resolve": resolve(oversized_id),
+          "oversized_prepare": prepare_end(oversized_id),
+      }))
+      """)
+
+    assert result["valid_establish"] == String.duplicate("界", 170)
+    assert result["valid_resolve"] == result["valid_establish"]
+    assert result["oversized_establish"] == nil
+    assert result["oversized_resolve"] == nil
+    assert result["oversized_prepare"] == nil
+  end
+
+  test "missing and unsupported activation sources return no mapping", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      claude_id = "claude-invalid-source"
+
+      print(json.dumps({
+          "missing": establish(claude_id, None),
+          "unsupported": establish(claude_id, "reconnect"),
+          "non_string": establish(claude_id, []),
+          "resolved_id": resolve(claude_id),
+      }))
+      """)
+
+    assert Enum.all?(result, fn {_action, activation_id} -> is_nil(activation_id) end)
+  end
+
+  test "clear identity maps a new Claude ID without inheriting the old activation", %{
+    tmp_dir: tmp_dir
+  } do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      from activation_session import establish, resolve
+
+      old_claude_id = "claude-before-clear"
+      new_claude_id = "claude-after-clear"
+      old_memory_id = establish(old_claude_id, "resume")
+      clear_memory_id = establish(new_claude_id, "clear")
+
+      print(json.dumps({
+          "old_memory_id": old_memory_id,
+          "clear_memory_id": clear_memory_id,
+          "old_resolved_id": resolve(old_claude_id),
+          "new_resolved_id": resolve(new_claude_id),
+      }))
+      """)
+
+    assert result["clear_memory_id"] == "claude-after-clear"
+    assert result["new_resolved_id"] == "claude-after-clear"
+    assert result["old_resolved_id"] == result["old_memory_id"]
+    refute result["new_resolved_id"] == result["old_resolved_id"]
+  end
+
+  test "TMPDIR fallback uses a private UID-scoped state root", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(
+        tmp_dir,
+        """
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        from activation_session import establish, resolve
+
+        claude_id = "claude-tmpdir-fallback"
+        memory_id = establish(claude_id, "startup")
+        digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+        state_root = Path(os.environ["TMPDIR"]) / f"backplane-memory-hooks-{os.getuid()}"
+        record_path = state_root / f"{digest}.json"
+
+        print(json.dumps({
+            "memory_id": memory_id,
+            "resolved_id": resolve(claude_id),
+            "root_name": state_root.name,
+            "root_mode": state_root.stat().st_mode & 0o777,
+            "record_exists": record_path.is_file(),
+        }))
+        """,
+        xdg_runtime?: false
+      )
+
+    assert result["memory_id"] == "claude-tmpdir-fallback"
+    assert result["resolved_id"] == result["memory_id"]
+    assert result["root_name"] =~ ~r/^backplane-memory-hooks-\d+$/
+    assert result["root_mode"] == 0o700
+    assert result["record_exists"]
+  end
+
+  test "a symlink state root is rejected", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish
+
+      runtime_root = Path(os.environ["XDG_RUNTIME_DIR"])
+      target_root = runtime_root / "target-root"
+      target_root.mkdir(mode=0o700)
+      (runtime_root / "backplane-memory-hooks").symlink_to(target_root, target_is_directory=True)
+
+      print(json.dumps({"memory_id": establish("claude-symlink-root", "startup")}))
+      """)
+
+    assert result["memory_id"] == nil
+  end
+
+  test "a symlink activation record is rejected", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import resolve
+
+      claude_id = "claude-symlink-record"
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      state_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks"
+      state_root.mkdir(mode=0o700)
+      target_record = Path(os.environ["XDG_RUNTIME_DIR"]) / "target-record.json"
+      target_record.write_text(json.dumps({
+          "version": 1,
+          "claude_session_sha256": digest,
+          "memory_session_id": "forged-memory-session",
+      }), encoding="utf-8")
+      (state_root / f"{digest}.json").symlink_to(target_record)
+
+      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      """)
+
+    assert result["resolved_id"] == nil
+  end
+
+  test "a symlink activation lock is rejected", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      from activation_session import establish
+
+      claude_id = "claude-symlink-lock"
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      state_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks"
+      state_root.mkdir(mode=0o700)
+      target_lock = Path(os.environ["XDG_RUNTIME_DIR"]) / "target-lock"
+      target_lock.touch(mode=0o600)
+      (state_root / f"{digest}.lock").symlink_to(target_lock)
+
+      print(json.dumps({"memory_id": establish(claude_id, "startup")}))
+      """)
+
+    assert result["memory_id"] == nil
+  end
+
+  test "a regular-file runtime path returns no activation without raising", %{tmp_dir: tmp_dir} do
+    runtime_file = Path.join(tmp_dir, "runtime-file")
+    File.write!(runtime_file, "not a directory")
+
+    result =
+      run_activation_session(
+        tmp_dir,
+        """
+        import json
+        from activation_session import establish, prepare_end, resolve
+
+        claude_id = "claude-invalid-runtime"
+
+        print(json.dumps({
+            "startup_id": establish(claude_id, "startup"),
+            "compact_id": establish(claude_id, "compact"),
+            "resolved_id": resolve(claude_id),
+            "end_token": prepare_end(claude_id),
+        }))
+        """,
+        runtime_dir: runtime_file,
+        create_runtime_dir?: false
+      )
+
+    assert Enum.all?(result, fn {_action, activation_id} -> is_nil(activation_id) end)
+  end
+end
