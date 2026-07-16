@@ -84,12 +84,23 @@ def _record_path(root, claude_digest):
 
 def _read_record(root, claude_digest):
     try:
-        fd = _open_no_follow(_record_path(root, claude_digest), os.O_RDONLY)
+        fd = _open_no_follow(
+            _record_path(root, claude_digest),
+            os.O_RDONLY | getattr(os, "O_NONBLOCK", 0),
+        )
     except FileNotFoundError:
         return None
 
-    with os.fdopen(fd, "rb") as state_file:
-        raw = state_file.read(MAX_STATE_BYTES + 1)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+
+        with os.fdopen(fd, "rb") as state_file:
+            fd = None
+            raw = state_file.read(MAX_STATE_BYTES + 1)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
     if len(raw) > MAX_STATE_BYTES:
         return None
@@ -102,7 +113,7 @@ def _read_record(root, claude_digest):
     expected_keys = {"version", "claude_session_sha256", "memory_session_id"}
     if not isinstance(record, dict) or set(record) != expected_keys:
         return None
-    if record["version"] != STATE_VERSION:
+    if type(record["version"]) is not int or record["version"] != STATE_VERSION:
         return None
     if record["claude_session_sha256"] != claude_digest:
         return None

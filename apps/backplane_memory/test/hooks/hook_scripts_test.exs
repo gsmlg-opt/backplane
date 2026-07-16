@@ -963,7 +963,7 @@ defmodule Backplane.Memory.ActivationSessionTest do
     assert result["resolved_id"] == nil
   end
 
-  test "activation state with the wrong version is ignored", %{tmp_dir: tmp_dir} do
+  test "activation state with a non-integer or unknown version is ignored", %{tmp_dir: tmp_dir} do
     result =
       run_activation_session(tmp_dir, """
       import hashlib
@@ -976,16 +976,73 @@ defmodule Backplane.Memory.ActivationSessionTest do
       establish(claude_id, "startup")
       digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
       record_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks" / f"{digest}.json"
-      record_path.write_text(json.dumps({
-          "version": 2,
-          "claude_session_sha256": digest,
-          "memory_session_id": "forged-memory-session",
-      }), encoding="utf-8")
+      resolved_ids = {}
 
-      print(json.dumps({"resolved_id": resolve(claude_id)}))
+      for label, version in (("unknown", 2), ("boolean", True), ("float", 1.0)):
+          record_path.write_text(json.dumps({
+              "version": version,
+              "claude_session_sha256": digest,
+              "memory_session_id": "forged-memory-session",
+          }), encoding="utf-8")
+          resolved_ids[label] = resolve(claude_id)
+
+      print(json.dumps(resolved_ids))
       """)
 
-    assert result["resolved_id"] == nil
+    assert result == %{
+             "unknown" => nil,
+             "boolean" => nil,
+             "float" => nil
+           }
+  end
+
+  test "a FIFO activation record is rejected without blocking", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      import subprocess
+      import sys
+
+      claude_id = "claude-fifo-state"
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      state_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "backplane-memory-hooks"
+      state_root.mkdir(mode=0o700)
+      os.mkfifo(state_root / f"{digest}.json", 0o600)
+      child_script = (
+          'import json, os; '
+          'from activation_session import resolve; '
+          'before = len(os.listdir("/proc/self/fd")); '
+          'resolved_ids = [resolve("claude-fifo-state") for _ in range(32)]; '
+          'after = len(os.listdir("/proc/self/fd")); '
+          'print(json.dumps({"resolved_ids": resolved_ids, "fd_delta": after - before}))'
+      )
+
+      try:
+          child = subprocess.run(
+              [sys.executable, "-c", child_script],
+              capture_output=True,
+              check=False,
+              text=True,
+              timeout=1.0,
+          )
+          print(json.dumps({
+              "timed_out": False,
+              "status": child.returncode,
+              "stdout": child.stdout,
+          }))
+      except subprocess.TimeoutExpired:
+          print(json.dumps({"timed_out": True}))
+      """)
+
+    refute result["timed_out"]
+    assert result["status"] == 0
+
+    child_result = Jason.decode!(result["stdout"])
+    assert Enum.all?(child_result["resolved_ids"], &is_nil/1)
+    assert child_result["fd_delta"] == 0
   end
 
   test "activation state with an invalid Memory session ID is ignored", %{tmp_dir: tmp_dir} do
