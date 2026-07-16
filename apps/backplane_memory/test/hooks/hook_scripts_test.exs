@@ -15,6 +15,7 @@ defmodule Backplane.Memory.HookScriptsTest do
       endpoint: "/api/memory/session/start",
       input: %{
         "session_id" => @session,
+        "source" => "startup",
         "cwd" => @project,
         "agent_id" => @agent
       },
@@ -273,6 +274,337 @@ defmodule Backplane.Memory.HookScriptsTest do
     end
   end
 
+  for case_data <- @cases do
+    @resolved_case case_data
+
+    test "#{case_data.script} posts the resolved activation ID", %{tmp_dir: tmp_dir} do
+      case_data = @resolved_case
+      claude_id = "claude-translation-#{case_data.script}"
+      runtime_dir = Path.join(tmp_dir, "runtime")
+      memory_id = establish_activation!(claude_id, "resume", runtime_dir)
+
+      input =
+        case_data.input
+        |> Map.put("session_id", claude_id)
+        |> then(fn input ->
+          if case_data.script == "session-start.sh",
+            do: Map.put(input, "source", "compact"),
+            else: input
+        end)
+
+      result =
+        run_hook(case_data.script, input, tmp_dir,
+          runtime_dir: runtime_dir,
+          seed: false
+        )
+
+      assert result.status == 0
+      assert result.called_curl?
+      body = Jason.decode!(result.body)
+      assert body["session_id"] == memory_id
+
+      if idempotency_key = case_data.body["idempotency_key"] do
+        assert body["idempotency_key"] == String.replace(idempotency_key, @session, memory_id)
+      end
+    end
+  end
+
+  for case_data <- Enum.reject(@cases, &(&1.script == "session-start.sh")) do
+    @missing_state_case case_data
+
+    test "#{case_data.script} makes no request without activation state", %{tmp_dir: tmp_dir} do
+      case_data = @missing_state_case
+
+      result =
+        run_hook(
+          case_data.script,
+          Map.put(case_data.input, "session_id", "claude-missing-#{case_data.script}"),
+          tmp_dir,
+          seed: false
+        )
+
+      assert result.status == 0
+      refute result.called_curl?
+    end
+  end
+
+  for {label, source} <- [{"missing", nil}, {"unsupported", "reconnect"}] do
+    @source_label label
+    @activation_source source
+
+    test "session-start rejects #{@source_label} activation source", %{tmp_dir: tmp_dir} do
+      input = %{"session_id" => "claude-invalid-source", "cwd" => "/work"}
+
+      input =
+        if @activation_source,
+          do: Map.put(input, "source", @activation_source),
+          else: input
+
+      result = run_hook("session-start.sh", input, tmp_dir, seed: false)
+
+      assert result.status == 0
+      refute result.called_curl?
+    end
+  end
+
+  test "session-start compact makes no request without activation state", %{tmp_dir: tmp_dir} do
+    result =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => "claude-compact-without-state", "source" => "compact"},
+        tmp_dir,
+        seed: false
+      )
+
+    assert result.status == 0
+    refute result.called_curl?
+  end
+
+  test "startup, end, and resume use distinct activation sessions", %{tmp_dir: tmp_dir} do
+    claude_id = "claude-lifecycle"
+    runtime_dir = Path.join(tmp_dir, "runtime")
+
+    startup =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => claude_id, "source" => "startup", "cwd" => "/work"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    startup_id = body_session_id(startup)
+    assert startup_id == claude_id
+
+    startup_observation =
+      run_hook(
+        "user-prompt-submit.sh",
+        %{"session_id" => claude_id, "prompt" => "first activation"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    assert body_session_id(startup_observation) == startup_id
+
+    startup_end =
+      run_hook(
+        "session-end.sh",
+        %{"session_id" => claude_id, "cwd" => "/work"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    assert body_session_id(startup_end) == startup_id
+    assert resolve_activation(claude_id, runtime_dir) == nil
+
+    resume =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => claude_id, "source" => "resume", "cwd" => "/work"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    resume_id = body_session_id(resume)
+    assert resume_id =~ activation_id_pattern()
+    refute resume_id == startup_id
+
+    resume_observation =
+      run_hook(
+        "user-prompt-submit.sh",
+        %{"session_id" => claude_id, "prompt" => "second activation"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    assert body_session_id(resume_observation) == resume_id
+
+    resume_end =
+      run_hook(
+        "session-end.sh",
+        %{"session_id" => claude_id, "cwd" => "/work"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    assert body_session_id(resume_end) == resume_id
+    assert resolve_activation(claude_id, runtime_dir) == nil
+  end
+
+  test "compact reuses the active Memory session", %{tmp_dir: tmp_dir} do
+    claude_id = "claude-compact-lifecycle"
+    runtime_dir = Path.join(tmp_dir, "runtime")
+
+    resume =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => claude_id, "source" => "resume"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    compact =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => claude_id, "source" => "compact"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    resume_id = body_session_id(resume)
+    assert resume_id =~ activation_id_pattern()
+    assert body_session_id(compact) == resume_id
+    assert resolve_activation(claude_id, runtime_dir) == resume_id
+  end
+
+  test "clear identity maps the new Claude session", %{tmp_dir: tmp_dir} do
+    old_claude_id = "claude-before-clear-hook"
+    new_claude_id = "claude-after-clear-hook"
+    runtime_dir = Path.join(tmp_dir, "runtime")
+
+    old_resume =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => old_claude_id, "source" => "resume"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    clear =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => new_claude_id, "source" => "clear"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    old_memory_id = body_session_id(old_resume)
+    assert old_memory_id =~ activation_id_pattern()
+    assert body_session_id(clear) == new_claude_id
+    assert resolve_activation(new_claude_id, runtime_dir) == new_claude_id
+    assert resolve_activation(old_claude_id, runtime_dir) == old_memory_id
+  end
+
+  test "two Claude sessions remain isolated in one runtime directory", %{tmp_dir: tmp_dir} do
+    runtime_dir = Path.join(tmp_dir, "runtime")
+
+    first_start =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => "claude-isolated-a", "source" => "resume"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    second_start =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => "claude-isolated-b", "source" => "resume"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    first_id = body_session_id(first_start)
+    second_id = body_session_id(second_start)
+    assert first_id =~ activation_id_pattern()
+    assert second_id =~ activation_id_pattern()
+    refute first_id == second_id
+
+    first_observation =
+      run_hook(
+        "user-prompt-submit.sh",
+        %{"session_id" => "claude-isolated-a", "prompt" => "first"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    second_observation =
+      run_hook(
+        "user-prompt-submit.sh",
+        %{"session_id" => "claude-isolated-b", "prompt" => "second"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    assert body_session_id(first_observation) == first_id
+    assert body_session_id(second_observation) == second_id
+  end
+
+  test "failed SessionEnd curl still removes the captured mapping", %{tmp_dir: tmp_dir} do
+    claude_id = "claude-failed-end"
+    runtime_dir = Path.join(tmp_dir, "runtime")
+    memory_id = establish_activation!(claude_id, "resume", runtime_dir)
+
+    result =
+      run_hook(
+        "session-end.sh",
+        %{"session_id" => claude_id},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false,
+        curl_exit: 7
+      )
+
+    assert result.status == 0
+    assert result.called_curl?
+    assert resolve_activation(claude_id, runtime_dir) == nil
+    assert body_session_id(result) == memory_id
+  end
+
+  test "blocked SessionEnd cleanup preserves a newer resume mapping", %{tmp_dir: tmp_dir} do
+    claude_id = "claude-end-resume-race"
+    runtime_dir = Path.join(tmp_dir, "runtime")
+    started = Path.join(tmp_dir, "curl-started")
+    release = Path.join(tmp_dir, "curl-release")
+    old_memory_id = establish_activation!(claude_id, "resume", runtime_dir)
+
+    ending =
+      Task.async(fn ->
+        run_hook(
+          "session-end.sh",
+          %{"session_id" => claude_id},
+          tmp_dir,
+          runtime_dir: runtime_dir,
+          seed: false,
+          curl_started: started,
+          curl_release: release
+        )
+      end)
+
+    wait_for_file!(started)
+
+    resume =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => claude_id, "source" => "resume"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false
+      )
+
+    File.touch!(release)
+    ended = Task.await(ending, 5_000)
+    new_memory_id = body_session_id(resume)
+
+    assert body_session_id(ended) == old_memory_id
+    assert new_memory_id =~ activation_id_pattern()
+    refute new_memory_id == old_memory_id
+    assert resolve_activation(claude_id, runtime_dir) == new_memory_id
+  end
+
   test "tool hook omits idempotency_key when tool_use_id is absent", %{tmp_dir: tmp_dir} do
     result =
       run_hook(
@@ -526,14 +858,23 @@ defmodule Backplane.Memory.HookScriptsTest do
   end
 
   defp run_hook(script_name, input, tmp_dir, opts \\ []) do
-    capture_dir = Path.join(tmp_dir, "capture")
-    fake_bin = Path.join(tmp_dir, "bin")
+    invocation = Integer.to_string(System.unique_integer([:positive, :monotonic]))
+    capture_dir = Path.join(tmp_dir, "capture-#{invocation}")
+    fake_bin = Path.join(tmp_dir, "bin-#{invocation}")
+    runtime_dir = Keyword.get(opts, :runtime_dir, Path.join(tmp_dir, "runtime"))
+    tmp_root = Path.join(tmp_dir, "tmp")
     File.mkdir_p!(capture_dir)
     File.mkdir_p!(fake_bin)
+    File.mkdir_p!(runtime_dir)
+    File.mkdir_p!(tmp_root)
     install_fake_curl!(fake_bin)
     install_python_wrapper!(fake_bin)
 
-    input_path = Path.join(tmp_dir, "input.json")
+    if Keyword.get(opts, :seed, true) and is_map(input) and is_binary(input["session_id"]) do
+      establish_activation!(input["session_id"], "startup", runtime_dir)
+    end
+
+    input_path = Path.join(tmp_dir, "input-#{invocation}.json")
     encoded = if is_binary(input), do: input, else: Jason.encode!(input)
     File.write!(input_path, encoded)
 
@@ -542,8 +883,12 @@ defmodule Backplane.Memory.HookScriptsTest do
       {"BACKPLANE_MEMORY_URL", @memory_url},
       {"AGENTMEMORY_SDK_CHILD", ""},
       {"HOOK_CAPTURE_DIR", capture_dir},
+      {"XDG_RUNTIME_DIR", runtime_dir},
+      {"TMPDIR", tmp_root},
       {"HOOK_CURL_EXIT", Integer.to_string(Keyword.get(opts, :curl_exit, 0))},
-      {"HOOK_MAX_ARG_BYTES", Integer.to_string(Keyword.get(opts, :max_python_arg_bytes, 0))}
+      {"HOOK_MAX_ARG_BYTES", Integer.to_string(Keyword.get(opts, :max_python_arg_bytes, 0))},
+      {"HOOK_CURL_STARTED", Keyword.get(opts, :curl_started, "")},
+      {"HOOK_CURL_RELEASE", Keyword.get(opts, :curl_release, "")}
     ]
 
     {output, status} =
@@ -575,6 +920,10 @@ defmodule Backplane.Memory.HookScriptsTest do
     #!/usr/bin/env bash
     printf '%s\\0' "$@" > "$HOOK_CAPTURE_DIR/curl-args"
     cat > "$HOOK_CAPTURE_DIR/curl-stdin"
+    [ -n "${HOOK_CURL_STARTED:-}" ] && : > "$HOOK_CURL_STARTED"
+    while [ -n "${HOOK_CURL_RELEASE:-}" ] && [ ! -e "$HOOK_CURL_RELEASE" ]; do
+      sleep 0.01
+    done
     exit "${HOOK_CURL_EXIT:-0}"
     """)
 
@@ -603,6 +952,66 @@ defmodule Backplane.Memory.HookScriptsTest do
 
   defp hook_names, do: Enum.map(@cases, & &1.script)
   defp hook_path(name), do: Path.join(@hooks_dir, name)
+
+  defp body_session_id(result), do: result.body |> Jason.decode!() |> Map.fetch!("session_id")
+
+  defp activation_id_pattern do
+    ~r/^claude-run-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  end
+
+  defp establish_activation!(claude_id, source, runtime_dir) do
+    result = activation_call(claude_id, runtime_dir, "establish", source)
+    assert is_binary(result)
+    result
+  end
+
+  defp resolve_activation(claude_id, runtime_dir) do
+    activation_call(claude_id, runtime_dir, "resolve")
+  end
+
+  defp activation_call(claude_id, runtime_dir, operation, source \\ "") do
+    File.mkdir_p!(runtime_dir)
+    python = System.find_executable("python3") || raise "python3 is required"
+
+    script = """
+    import json
+    import sys
+    from activation_session import establish, resolve
+
+    if sys.argv[1] == "establish":
+        result = establish(sys.argv[2], sys.argv[3])
+    else:
+        result = resolve(sys.argv[2])
+
+    print(json.dumps(result))
+    """
+
+    {output, status} =
+      System.cmd(python, ["-c", script, operation, claude_id, source],
+        env: [
+          {"PYTHONPATH", @hooks_dir},
+          {"XDG_RUNTIME_DIR", runtime_dir}
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    Jason.decode!(output)
+  end
+
+  defp wait_for_file!(path, attempts \\ 500) do
+    cond do
+      File.exists?(path) ->
+        :ok
+
+      attempts == 0 ->
+        flunk("timed out waiting for fake curl")
+
+      true ->
+        Process.sleep(10)
+        wait_for_file!(path, attempts - 1)
+    end
+  end
 
   defp read_nul_args(path) do
     path

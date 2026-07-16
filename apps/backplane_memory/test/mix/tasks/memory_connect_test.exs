@@ -42,6 +42,12 @@ defmodule Mix.Tasks.Memory.ConnectTest do
     assert [%{"hooks" => [session_start]}] = hooks["SessionStart"]
     assert Path.basename(session_start["command"]) == "session-start.sh"
 
+    helper = Path.join(Path.dirname(session_start["command"]), "activation_session.py")
+    assert File.regular?(helper)
+    assert {:ok, %{access: access}} = File.stat(helper)
+    assert access in [:read, :read_write]
+    refute managed_command_present?(hooks, helper)
+
     assert [%{"hooks" => [session_end]}] = hooks["SessionEnd"]
     assert Path.basename(session_end["command"]) == "session-end.sh"
     assert session_end["timeout"] == 3

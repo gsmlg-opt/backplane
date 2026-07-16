@@ -4,10 +4,13 @@
 [ "${AGENTMEMORY_SDK_CHILD:-}" = "1" ] && exit 0
 
 MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
+HOOKS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-BODY="$(python3 -c '
+python3 -c '
 import json
 import sys
+sys.path.insert(0, sys.argv[1])
+from activation_session import resolve, send_json
 
 def display(value):
     if isinstance(value, str):
@@ -21,11 +24,11 @@ try:
 except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
     sys.exit(0)
 
-session_id = data.get("session_id")
+session_id = resolve(data.get("session_id"))
 tool_name = data.get("tool_name")
 tool_output = data.get("tool_response")
 content = display(tool_output)
-if not isinstance(session_id, str) or not session_id or not isinstance(tool_name, str) or not tool_name or not content:
+if session_id is None or not isinstance(tool_name, str) or not tool_name or not content:
     sys.exit(0)
 
 payload = {
@@ -55,14 +58,7 @@ if isinstance(agent_id, str) and agent_id:
 if isinstance(tool_use_id, str) and tool_use_id:
     body["idempotency_key"] = f"claude:tool:completed:{session_id}:{tool_use_id}"
 
-sys.stdout.write(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
-' 2>/dev/null || true)"
-
-[ -n "$BODY" ] || exit 0
-
-printf '%s' "$BODY" | curl -sf -m 2.0 -X POST "$MEMORY_URL/api/memory/observations" \
-  -H "Content-Type: application/json" \
-  --data-binary @- \
-  >/dev/null 2>&1 || true
+send_json(sys.argv[2], "/api/memory/observations", body)
+' "$HOOKS_DIR" "$MEMORY_URL" >/dev/null 2>&1 || true
 
 exit 0
