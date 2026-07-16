@@ -7,7 +7,9 @@ MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
 
 BODY="$(python3 -c '
 import json
+import os
 import re
+import shlex
 import sys
 
 def display(value):
@@ -17,6 +19,124 @@ def display(value):
         return ""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
+def shell_segments(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
+    lexer.commenters = ""
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+
+    segments = []
+    current = []
+    pending_heredocs = []
+    heredoc = None
+    heredoc_line = []
+    expect_heredoc = False
+
+    for token in tokens:
+        if heredoc is not None:
+            if token == "\n":
+                if heredoc_line == [heredoc]:
+                    heredoc = pending_heredocs.pop(0) if pending_heredocs else None
+                heredoc_line = []
+            else:
+                heredoc_line.append(token)
+            continue
+
+        if expect_heredoc:
+            pending_heredocs.append(token)
+            expect_heredoc = False
+            continue
+
+        if token in ("<<", "<<-"):
+            expect_heredoc = True
+            continue
+
+        if token == "\n":
+            if current:
+                segments.append(current)
+                current = []
+            if pending_heredocs:
+                heredoc = pending_heredocs.pop(0)
+            continue
+
+        if token and all(char in ";&|()" for char in token):
+            if current:
+                segments.append(current)
+                current = []
+            continue
+
+        current.append(token)
+
+    if current:
+        segments.append(current)
+
+    return segments
+
+def strip_command_prefix(tokens):
+    assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    index = 0
+
+    while index < len(tokens) and assignment.match(tokens[index]):
+        index += 1
+
+    while index < len(tokens):
+        command = os.path.basename(tokens[index])
+        if command == "env":
+            index += 1
+            while index < len(tokens) and (tokens[index].startswith("-") or assignment.match(tokens[index])):
+                index += 1
+            continue
+        if command in ("command", "sudo", "time"):
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            continue
+        break
+
+    return tokens[index:]
+
+def is_git_commit(tokens):
+    tokens = strip_command_prefix(tokens)
+    if not tokens or os.path.basename(tokens[0]) != "git":
+        return False
+
+    index = 1
+    options_with_values = {
+        "-C",
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "commit":
+            return True
+        if token in options_with_values:
+            index += 2
+            continue
+        if token.startswith("-c") and token != "-c":
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return False
+
+    return False
+
+def contains_git_commit(command):
+    return any(is_git_commit(segment) for segment in shell_segments(command))
+
 try:
     data = json.load(sys.stdin)
 except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
@@ -24,8 +144,7 @@ except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
 
 tool_input = data.get("tool_input")
 command = tool_input.get("command") if isinstance(tool_input, dict) else None
-commit_pattern = r"(?:^|(?:&&|\|\||;|\n)\s*)git(?:\s+-C(?:\s+|=)\S+)*\s+commit(?:\s|$)"
-if not isinstance(command, str) or re.search(commit_pattern, command.strip()) is None:
+if not isinstance(command, str) or not contains_git_commit(command):
     sys.exit(0)
 
 session_id = data.get("session_id")

@@ -292,7 +292,13 @@ defmodule Backplane.Memory.HookScriptsTest do
   end
 
   test "post-commit ignores non-commit Bash commands", %{tmp_dir: tmp_dir} do
-    for command <- ["git status", "echo git commit", "git commitment --help"] do
+    for command <- [
+          "git status",
+          "echo git commit",
+          "git commitment --help",
+          ~s(printf "%s\\n" "nothing; git commit -m fake"),
+          "cat <<'EOF'\ngit commit -m fake\nEOF"
+        ] do
       result =
         run_hook(
           "post-commit.sh",
@@ -308,6 +314,34 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       refute result.called_curl?
+    end
+  end
+
+  test "post-commit recognizes valid git invocations with shell and git options", %{
+    tmp_dir: tmp_dir
+  } do
+    for command <- [
+          "FOO=bar git commit -m env",
+          "env FOO=bar git commit -m env-command",
+          "git -c user.name=agent commit -m config",
+          "cd /tmp && git -C /work -c user.name=agent commit -m chained"
+        ] do
+      result =
+        run_hook(
+          "post-commit.sh",
+          %{
+            "session_id" => "session-valid-commit",
+            "tool_name" => "Bash",
+            "tool_use_id" => "tool-valid-commit",
+            "tool_input" => %{"command" => command},
+            "tool_response" => "committed"
+          },
+          Path.join(tmp_dir, Integer.to_string(System.unique_integer([:positive])))
+        )
+
+      assert result.status == 0
+      assert result.called_curl?, "missed valid commit command: #{command}"
+      assert Jason.decode!(result.body)["tool_name"] == "git_commit"
     end
   end
 
