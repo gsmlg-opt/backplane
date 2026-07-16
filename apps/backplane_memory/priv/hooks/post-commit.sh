@@ -20,8 +20,39 @@ def display(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 def heredoc_specs(command_line):
+    strip_token = "__BACKPLANE_HOOK_HEREDOC_STRIP__"
+    while strip_token in command_line:
+        strip_token += "_"
+
+    transformed_command = []
+    quote = None
+    index = 0
+    while index < len(command_line):
+        char = command_line[index]
+
+        if char == "\\" and quote != chr(39) and index + 1 < len(command_line):
+            transformed_command.extend((char, command_line[index + 1]))
+            index += 2
+            continue
+
+        if (
+            quote is None
+            and command_line.startswith("<<-", index)
+            and (index == 0 or command_line[index - 1] != "<")
+        ):
+            transformed_command.extend(("<< ", strip_token, " "))
+            index += 3
+            continue
+
+        transformed_command.append(char)
+        if quote is None and char in (chr(39), chr(34)):
+            quote = char
+        elif char == quote:
+            quote = None
+        index += 1
+
     lexer = shlex.shlex(
-        command_line, posix=True, punctuation_chars=";&|()<>-"
+        "".join(transformed_command), posix=True, punctuation_chars=";&|()<>"
     )
     lexer.commenters = ""
     lexer.whitespace = " \t\r"
@@ -36,9 +67,14 @@ def heredoc_specs(command_line):
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in ("<<", "<<-") and index + 1 < len(tokens):
-            specs.append((tokens[index + 1], token == "<<-"))
-            index += 2
+        if token == "<<" and index + 1 < len(tokens):
+            delimiter_index = index + 1
+            strip_tabs = tokens[delimiter_index] == strip_token
+            if strip_tabs:
+                delimiter_index += 1
+            if delimiter_index < len(tokens):
+                specs.append((tokens[delimiter_index], strip_tabs))
+            index = delimiter_index + 1
         else:
             index += 1
 

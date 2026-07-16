@@ -435,6 +435,39 @@ defmodule Backplane.Memory.HookScriptsTest do
     assert Jason.decode!(result.body)["tool_name"] == "git_commit"
   end
 
+  for {behavior, command, expect_curl?} <- [
+        {"keeps commits inside a hyphenated-delimiter heredoc opaque",
+         "cat <<END-MARK\nEND\ngit commit -m fake\nEND-MARK", false},
+        {"recognizes a commit after a hyphenated-delimiter heredoc",
+         "cat <<END-MARK\nbody\nEND-MARK\ngit commit -m real", true},
+        {"recognizes a commit after a tab-stripping hyphenated heredoc",
+         "cat <<-END-MARK\n\tbody\n\tEND-MARK\ngit commit -m real-strip-tabs", true},
+        {"recognizes a commit after a heredoc whose delimiter begins with a hyphen",
+         "cat << -END\nbody\n-END\ngit commit -m real-leading-hyphen", true}
+      ] do
+    @hyphenated_heredoc_behavior behavior
+    @hyphenated_heredoc_command command
+    @hyphenated_heredoc_expect_curl expect_curl?
+
+    test "post-commit #{@hyphenated_heredoc_behavior}", %{tmp_dir: tmp_dir} do
+      result =
+        run_hook(
+          "post-commit.sh",
+          %{
+            "session_id" => "session-hyphenated-heredoc",
+            "tool_name" => "Bash",
+            "tool_use_id" => "tool-hyphenated-heredoc",
+            "tool_input" => %{"command" => @hyphenated_heredoc_command},
+            "tool_response" => "ok"
+          },
+          tmp_dir
+        )
+
+      assert result.status == 0
+      assert result.called_curl? == @hyphenated_heredoc_expect_curl
+    end
+  end
+
   test "all scripts reject malformed or missing required input without calling curl", %{
     tmp_dir: tmp_dir
   } do
