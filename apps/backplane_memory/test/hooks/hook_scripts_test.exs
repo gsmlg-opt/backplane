@@ -298,6 +298,8 @@ defmodule Backplane.Memory.HookScriptsTest do
           "git commitment --help",
           ~s(printf "%s\\n" "nothing; git commit -m fake"),
           "printf '%s' 'nothing;\ngit commit -m fake'",
+          "printf ';\n' git commit -m fake",
+          "printf \";\n\" git commit -m fake",
           "cat <<'EOF'\ngit commit -m fake\nEOF",
           "cat <<'EOF';\ngit commit -m fake\nEOF"
         ] do

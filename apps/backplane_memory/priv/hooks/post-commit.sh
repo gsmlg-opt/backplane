@@ -20,7 +20,38 @@ def display(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 def shell_segments(command):
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
+    newline_token = "__BACKPLANE_HOOK_NEWLINE__"
+    while newline_token in command:
+        newline_token += "_"
+
+    processed_command = []
+    quote = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+
+        if char == "\\" and quote != chr(39) and index + 1 < len(command):
+            following = command[index + 1]
+            if following == "\n":
+                index += 2
+                continue
+            processed_command.extend((char, following))
+            index += 2
+            continue
+
+        if char == "\n" and quote is None:
+            processed_command.extend((" ", newline_token, " "))
+        else:
+            processed_command.append(char)
+            if quote is None and char in (chr(39), chr(34)):
+                quote = char
+            elif char == quote:
+                quote = None
+        index += 1
+
+    lexer = shlex.shlex(
+        "".join(processed_command), posix=True, punctuation_chars=";&|()<>"
+    )
     lexer.commenters = ""
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -29,14 +60,6 @@ def shell_segments(command):
         tokens = list(lexer)
     except ValueError:
         return []
-
-    normalized_tokens = []
-    for token in tokens:
-        if "\n" in token and all(char in ";&|()<>\n" for char in token):
-            normalized_tokens.extend(re.findall(r"[^\n]+|\n", token))
-        else:
-            normalized_tokens.append(token)
-    tokens = normalized_tokens
 
     segments = []
     current = []
@@ -47,7 +70,7 @@ def shell_segments(command):
 
     for token in tokens:
         if heredoc is not None:
-            if token == "\n":
+            if token == newline_token:
                 if heredoc_line == [heredoc]:
                     heredoc = pending_heredocs.pop(0) if pending_heredocs else None
                 heredoc_line = []
@@ -64,7 +87,7 @@ def shell_segments(command):
             expect_heredoc = True
             continue
 
-        if token == "\n":
+        if token == newline_token:
             if current:
                 segments.append(current)
                 current = []
