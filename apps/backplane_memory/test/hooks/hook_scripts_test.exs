@@ -647,6 +647,51 @@ defmodule Backplane.Memory.ActivationSessionTest do
     Jason.decode!(output)
   end
 
+  defp descriptor_fault_script(mode) do
+    """
+    import json
+    import os
+    import stat
+    import activation_session
+
+    mode = #{inspect(mode)}
+    real_fchmod = activation_session.os.fchmod
+    real_flock = activation_session.fcntl.flock
+    regular_fchmod_calls = 0
+
+    def fd_count():
+        root = next(path for path in ("/proc/self/fd", "/dev/fd") if os.path.isdir(path))
+        return len(os.listdir(root))
+
+    def injected_fchmod(fd, permissions):
+        global regular_fchmod_calls
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            return real_fchmod(fd, permissions)
+
+        regular_fchmod_calls += 1
+        if mode == "lock_fchmod" or (
+            mode == "temp_fchmod" and regular_fchmod_calls % 2 == 0
+        ):
+            raise OSError("injected fchmod failure")
+        return real_fchmod(fd, permissions)
+
+    def injected_flock(fd, operation):
+        if mode == "unlock" and operation == activation_session.fcntl.LOCK_UN:
+            raise OSError("injected unlock failure")
+        return real_flock(fd, operation)
+
+    activation_session.os.fchmod = injected_fchmod
+    activation_session.fcntl.flock = injected_flock
+    before = fd_count()
+    results = [
+        activation_session.establish(f"claude-descriptor-{index}", "startup")
+        for index in range(16)
+    ]
+    after = fd_count()
+    print(json.dumps({"results": results, "fd_delta": after - before}))
+    """
+  end
+
   test "activation identity follows startup, resume, and compact lifecycle", %{tmp_dir: tmp_dir} do
     result =
       run_activation_session(tmp_dir, """
@@ -1014,9 +1059,10 @@ defmodule Backplane.Memory.ActivationSessionTest do
       child_script = (
           'import json, os; '
           'from activation_session import resolve; '
-          'before = len(os.listdir("/proc/self/fd")); '
+          'fd_root = next(path for path in ("/proc/self/fd", "/dev/fd") if os.path.isdir(path)); '
+          'before = len(os.listdir(fd_root)); '
           'resolved_ids = [resolve("claude-fifo-state") for _ in range(32)]; '
-          'after = len(os.listdir("/proc/self/fd")); '
+          'after = len(os.listdir(fd_root)); '
           'print(json.dumps({"resolved_ids": resolved_ids, "fd_delta": after - before}))'
       )
 
@@ -1043,6 +1089,97 @@ defmodule Backplane.Memory.ActivationSessionTest do
     child_result = Jason.decode!(result["stdout"])
     assert Enum.all?(child_result["resolved_ids"], &is_nil/1)
     assert child_result["fd_delta"] == 0
+  end
+
+  test "activation state rejects a root owned by another user", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import json
+      import os
+      from types import SimpleNamespace
+      import activation_session
+
+      real_fstat = activation_session.os.fstat
+
+      def foreign_root(fd):
+          details = real_fstat(fd)
+          return SimpleNamespace(st_mode=details.st_mode, st_uid=os.getuid() + 1)
+
+      activation_session.os.fstat = foreign_root
+      memory_id = activation_session.establish("claude-foreign-root", "startup")
+      print(json.dumps({"memory_id": memory_id}))
+      """)
+
+    assert result["memory_id"] == nil
+  end
+
+  test "state operations remain anchored when the root path is replaced", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, """
+      import hashlib
+      import json
+      import os
+      from pathlib import Path
+      import stat
+      import activation_session
+
+      claude_id = "claude-root-swap"
+      digest = hashlib.sha256(claude_id.encode("utf-8")).hexdigest()
+      runtime_root = Path(os.environ["XDG_RUNTIME_DIR"])
+      state_root = runtime_root / "backplane-memory-hooks"
+      anchored_root = runtime_root / "anchored-root"
+      redirected_root = runtime_root / "redirected-root"
+      redirected_root.mkdir(mode=0o700)
+      real_fchmod = activation_session.os.fchmod
+      swapped = False
+
+      def swap_on_lock(fd, mode):
+          global swapped
+          real_fchmod(fd, mode)
+          if not swapped and stat.S_ISREG(os.fstat(fd).st_mode):
+              state_root.rename(anchored_root)
+              state_root.symlink_to(redirected_root, target_is_directory=True)
+              swapped = True
+
+      activation_session.os.fchmod = swap_on_lock
+      memory_id = activation_session.establish(claude_id, "startup")
+
+      print(json.dumps({
+          "memory_id": memory_id,
+          "anchored_record": (anchored_root / f"{digest}.json").is_file(),
+          "redirected_record": (redirected_root / f"{digest}.json").exists(),
+      }))
+      """)
+
+    assert result == %{
+             "memory_id" => "claude-root-swap",
+             "anchored_record" => true,
+             "redirected_record" => false
+           }
+  end
+
+  test "lock descriptor closes when permission setup fails", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, descriptor_fault_script("lock_fchmod"))
+
+    assert result["fd_delta"] == 0
+    assert Enum.all?(result["results"], &is_nil/1)
+  end
+
+  test "temporary descriptor closes when permission setup fails", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, descriptor_fault_script("temp_fchmod"))
+
+    assert result["fd_delta"] == 0
+    assert Enum.all?(result["results"], &is_nil/1)
+  end
+
+  test "lock descriptor closes when unlock fails", %{tmp_dir: tmp_dir} do
+    result =
+      run_activation_session(tmp_dir, descriptor_fault_script("unlock"))
+
+    assert result["fd_delta"] == 0
+    assert Enum.all?(result["results"], &is_nil/1)
   end
 
   test "activation state with an invalid Memory session ID is ignored", %{tmp_dir: tmp_dir} do
