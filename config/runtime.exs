@@ -54,6 +54,8 @@ if config_env() == :prod do
         host: bp.host,
         port: bp.port,
         auth_token: bp.auth_token,
+        admin_username: bp.admin_username,
+        admin_password: bp.admin_password,
         config_path: config_path
     end
 
@@ -84,6 +86,14 @@ if config_env() == :prod do
         log_to_console: telemetry.log_to_console,
         log_to_file: telemetry.log_to_file
     end
+  end
+
+  if username = System.get_env("BACKPLANE_ADMIN_USERNAME") do
+    config :backplane, admin_username: username
+  end
+
+  if password = System.get_env("BACKPLANE_ADMIN_PASSWORD") do
+    config :backplane, admin_password: password
   end
 
   # Phoenix Endpoint — production configuration

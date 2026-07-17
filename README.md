@@ -127,10 +127,23 @@ SECRET_KEY_BASE="$(mix phx.gen.secret)"
 PHX_HOST="your-host.example.com"
 BACKPLANE_API_PORT=4100
 BACKPLANE_ADMIN_PORT=4101
+BACKPLANE_ADMIN_USERNAME="admin"
+BACKPLANE_ADMIN_PASSWORD="replace-with-a-secret"
 ```
 
 Production public/API HTTP binding is controlled by `BACKPLANE_API_PORT`, `BACKPLANE_PORT`, or `PORT`; if none is set, it defaults to `4100`.
 Production admin HTTP binding is controlled by `BACKPLANE_ADMIN_PORT`; if it is not set, it defaults to `4101`.
+Production reads `admin_username` and `admin_password` from the TOML `[backplane]` section. `BACKPLANE_ADMIN_USERNAME` and `BACKPLANE_ADMIN_PASSWORD` override those values independently.
+
+Remote development binds the admin endpoint to `0.0.0.0:4221` and reads the same two credential environment variables:
+
+```bash
+BACKPLANE_ADMIN_USERNAME="admin" \
+BACKPLANE_ADMIN_PASSWORD="replace-with-a-secret" \
+mix phx.server
+```
+
+Restart Backplane after changing admin credentials. Memory V2 routes return `503 Service Unavailable` until both credentials are configured with non-empty values.
 
 Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through the admin endpoint, including:
 
@@ -196,7 +209,7 @@ The admin UI is available on the admin endpoint at `/` and includes:
 - Logs
 - Settings
 
-Admin basic auth is supported by `Backplane.Web.AdminAuthPlug` when `:admin_username` and `:admin_password` are present in application config. The example TOML includes placeholders for those fields, but the current runtime loader does not apply them yet.
+Admin basic auth is supported by `Backplane.Web.AdminAuthPlug` when `:admin_username` and `:admin_password` are present in application config. Memory V2 requires both credentials and fails closed when either is missing.
 
 ## Testing
 

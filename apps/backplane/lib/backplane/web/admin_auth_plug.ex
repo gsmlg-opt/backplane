@@ -1,10 +1,11 @@
 defmodule Backplane.Web.AdminAuthPlug do
   @moduledoc """
-  Optional HTTP Basic authentication plug for the admin web UI.
+  HTTP Basic authentication plug for the admin web UI.
 
   When `backplane.admin_username` and `backplane.admin_password` are configured,
-  requests to /admin/* require basic auth credentials. When not configured, all
-  requests pass through (useful for local development).
+  requests require basic auth credentials. Optional mode is the default and
+  passes requests through when credentials are not configured. Required mode
+  fails closed with 503 until both credentials are configured.
   """
 
   import Plug.Conn
@@ -13,13 +14,31 @@ defmodule Backplane.Web.AdminAuthPlug do
   @realm "Backplane Admin"
 
   @impl true
-  def init(opts), do: opts
+  def init(opts) do
+    opts = Keyword.validate!(opts, required: false)
+
+    unless is_boolean(opts[:required]) do
+      raise ArgumentError, ":required must be a boolean"
+    end
+
+    opts
+  end
 
   @impl true
-  def call(conn, _opts) do
+  def call(conn, opts) do
+    required? = Keyword.fetch!(opts, :required)
+
     case get_admin_credentials() do
-      nil -> conn
-      {username, password} -> verify_basic_auth(conn, username, password)
+      {:ok, {username, password}} ->
+        verify_basic_auth(conn, username, password)
+
+      :error when required? ->
+        conn
+        |> send_resp(503, "Admin authentication is not configured")
+        |> halt()
+
+      :error ->
+        conn
     end
   end
 
@@ -61,7 +80,9 @@ defmodule Backplane.Web.AdminAuthPlug do
     password = Application.get_env(:backplane, :admin_password)
 
     if is_binary(username) and is_binary(password) and username != "" and password != "" do
-      {username, password}
+      {:ok, {username, password}}
+    else
+      :error
     end
   end
 end

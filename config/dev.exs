@@ -18,7 +18,9 @@ secret_key_base =
 config :backplane,
   secret_key_base: secret_key_base,
   api_url: "http://localhost:4220",
-  admin_url: "http://localhost:4221"
+  admin_url: "http://localhost:4221",
+  admin_username: System.get_env("BACKPLANE_ADMIN_USERNAME"),
+  admin_password: System.get_env("BACKPLANE_ADMIN_PASSWORD")
 
 web_reloadable_apps = [
   :backplane,
@@ -51,7 +53,7 @@ config :backplane_api, Backplane.Api.Endpoint,
   ]
 
 config :backplane_admin, Backplane.Admin.Endpoint,
-  http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}, port: 4221],
+  http: [ip: {0, 0, 0, 0}, port: 4221],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
