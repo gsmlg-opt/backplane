@@ -36,6 +36,18 @@ defmodule AsyncDispatchTestServer do
       "inputSchema" => %{"type" => "object", "properties" => %{}}
     },
     %{
+      "name" => "assign_after_signal",
+      "description" => "assign a frame value after receiving a signal",
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "signal" => %{"type" => "string"},
+          "key" => %{"type" => "string"}
+        },
+        "required" => ["signal", "key"]
+      }
+    },
+    %{
       "name" => "crash",
       "description" => "raise an exception",
       "inputSchema" => %{"type" => "object", "properties" => %{}}
@@ -110,6 +122,24 @@ defmodule AsyncDispatchTestServer do
 
     Response.tool()
     |> Response.text("count=#{counter}")
+    |> Response.to_protocol()
+    |> then(&{:reply, &1, frame})
+  end
+
+  defp handle_tool("assign_after_signal", %{"signal" => sig_str, "key" => key}, frame) do
+    sig = String.to_existing_atom(sig_str)
+    if pid = frame.assigns[:test_pid], do: send(pid, {:tool_running, self(), sig})
+
+    receive do
+      {:proceed, ^sig} -> :ok
+    after
+      5_000 -> :ok
+    end
+
+    frame = assign(frame, String.to_existing_atom(key), true)
+
+    Response.tool()
+    |> Response.text("assigned #{key}")
     |> Response.to_protocol()
     |> then(&{:reply, &1, frame})
   end

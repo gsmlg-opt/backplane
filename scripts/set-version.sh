@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sets one unified version across the umbrella: the root mix.exs and every
-# apps/*/mix.exs, covering both `version: "x.y.z"` and `@version "x.y.z"` forms.
+# Sets one unified version across the Backplane release applications.
+# backplane_mcp_protocol is an independently versioned Hex package and is skipped.
 #
 # Usage: scripts/set-version.sh <version>   (leading "v" is stripped)
 set -euo pipefail
@@ -16,6 +16,10 @@ fi
 updated=0
 
 for file in mix.exs apps/*/mix.exs; do
+  if [[ "$file" == "apps/backplane_mcp_protocol/mix.exs" ]]; then
+    continue
+  fi
+
   sed -i.bak -E \
     -e "s/^([[:space:]]*version:[[:space:]]*)\"[^\"]+\"/\1\"$version\"/" \
     -e "s/^([[:space:]]*@version[[:space:]]+)\"[^\"]+\"/\1\"$version\"/" \

@@ -3,7 +3,7 @@ if Code.ensure_loaded?(Plug) do
     @moduledoc """
     A Plug implementation for the Streamable HTTP transport.
 
-    This plug handles the MCP Streamable HTTP protocol as specified in MCP 2025-03-26.
+    This plug handles the MCP Streamable HTTP protocol as specified in MCP 2025-11-25.
     It provides a single endpoint that supports both GET and POST methods:
 
     - GET: Opens an SSE stream for server-to-client communication
@@ -26,6 +26,7 @@ if Code.ensure_loaded?(Plug) do
     - `:server` - The server process name (required)
     - `:session_header` - Custom header name for session ID (default: "mcp-session-id")
     - `:request_timeout` - Request timeout in milliseconds (default: 30000)
+    - `:allowed_origins` - Origins accepted when the `Origin` header is present (default: [])
     """
 
     @behaviour Plug
@@ -50,6 +51,7 @@ if Code.ensure_loaded?(Plug) do
 
     @default_session_header "mcp-session-id"
     @default_timeout 30_000
+    @max_session_id_bytes 1024
 
     # Plug callbacks
 
@@ -58,11 +60,13 @@ if Code.ensure_loaded?(Plug) do
       server = Keyword.fetch!(opts, :server)
       session_header = Keyword.get(opts, :session_header, @default_session_header)
       request_timeout = Keyword.get(opts, :request_timeout, @default_timeout)
+      allowed_origins = Keyword.get(opts, :allowed_origins, [])
 
       %{
         server: server,
         session_header: session_header,
-        timeout: request_timeout
+        timeout: request_timeout,
+        allowed_origins: allowed_origins
       }
     end
 
@@ -70,18 +74,22 @@ if Code.ensure_loaded?(Plug) do
     def call(conn, opts) do
       opts = resolve_runtime_config(opts)
 
-      if conn.request_path == "/.well-known/oauth-protected-resource" do
-        handle_well_known(conn, opts)
-      else
-        case authorize(conn, opts) do
-          {:ok, conn, claims} ->
-            opts
-            |> Map.put(:auth_claims, claims)
-            |> then(&handle_request(conn, &1))
+      with :ok <- validate_origin(conn, opts.allowed_origins) do
+        if conn.request_path == "/.well-known/oauth-protected-resource" do
+          handle_well_known(conn, opts)
+        else
+          case authorize(conn, opts) do
+            {:ok, conn, claims} ->
+              opts
+              |> Map.put(:auth_claims, claims)
+              |> then(&handle_request(conn, &1))
 
-          {:halt, conn} ->
-            conn
+            {:halt, conn} ->
+              conn
+          end
         end
+      else
+        {:error, :invalid_origin} -> send_error(conn, 403, "Forbidden origin")
       end
     end
 
@@ -109,9 +117,12 @@ if Code.ensure_loaded?(Plug) do
     # GET request handler - establishes SSE connection
 
     defp handle_get(conn, %{transport: transport, session_header: session_header} = opts) do
-      if wants_sse?(conn) do
-        session_id = get_or_create_session_id(conn, session_header)
-
+      with true <- wants_sse?(conn),
+           :ok <- validate_protocol_version(conn, opts.server),
+           {:ok, session_id} <- require_session_id(conn, session_header),
+           {:ok, session_pid} <- find_session(opts, session_id),
+           :ok <- validate_session_protocol(conn, session_pid),
+           :ok <- require_initialized_session(session_pid) do
         case StreamableHTTP.register_sse_handler(transport, session_id) do
           :ok ->
             start_sse_streaming(conn, Map.put(opts, :session_id, session_id))
@@ -122,7 +133,26 @@ if Code.ensure_loaded?(Plug) do
             send_error(conn, 500, "Could not establish SSE connection")
         end
       else
-        send_error(conn, 406, "Accept header must include text/event-stream")
+        false ->
+          send_error(conn, 406, "Accept header must include text/event-stream")
+
+        {:error, :missing_session_id} ->
+          send_error(conn, 400, "Session ID required")
+
+        {:error, :invalid_session_id} ->
+          send_error(conn, 400, "Invalid session ID")
+
+        {:error, :unsupported_protocol_version} ->
+          send_error(conn, 400, "Unsupported MCP protocol version")
+
+        {:error, :protocol_version_mismatch} ->
+          send_error(conn, 400, "MCP protocol version does not match session")
+
+        {:error, :not_initialized} ->
+          send_error(conn, 400, "Session not initialized")
+
+        {:error, :not_found} ->
+          send_error(conn, 404, "Session not found")
       end
     end
 
@@ -130,9 +160,10 @@ if Code.ensure_loaded?(Plug) do
 
     defp handle_post(conn, %{session_header: session_header} = opts) do
       with :ok <- validate_accept_header(conn),
+           :ok <- validate_protocol_version(conn, opts.server),
            {:ok, body, conn} <- maybe_read_request_body(conn, opts),
-           {:ok, [message]} <- maybe_parse_messages(body) do
-        session_id = determine_session_id(conn, session_header, message)
+           {:ok, [message]} <- maybe_parse_messages(body),
+           {:ok, session_id} <- determine_session_id(conn, session_header, message) do
         context = build_request_context(conn, Map.get(opts, :auth_claims))
 
         Logging.transport_event("parsed_messages", %{
@@ -146,8 +177,17 @@ if Code.ensure_loaded?(Plug) do
           send_error(
             conn,
             406,
-            "Not Acceptable: Client must accept application/json"
+            "Not Acceptable: Client must accept application/json and text/event-stream"
           )
+
+        {:error, :unsupported_protocol_version} ->
+          send_error(conn, 400, "Unsupported MCP protocol version")
+
+        {:error, :missing_session_id} ->
+          send_error(conn, 400, "Session ID required")
+
+        {:error, :invalid_session_id} ->
+          send_error(conn, 400, "Invalid session ID")
 
         {:error, :invalid_json} ->
           send_jsonrpc_error(
@@ -168,22 +208,30 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp process_message(conn, message, session_id, context, opts) do
-      cond do
-        Message.is_notification(message) ->
-          handle_notification_message(conn, message, session_id, context, opts)
+      with :ok <- validate_negotiated_protocol(conn, message, session_id, opts) do
+        cond do
+          Message.is_notification(message) ->
+            handle_notification_message(conn, message, session_id, context, opts)
 
-        Message.is_response(message) or Message.is_error(message) ->
-          handle_response_message(conn, message, session_id, context, opts)
+          Message.is_response(message) or Message.is_error(message) ->
+            handle_response_message(conn, message, session_id, context, opts)
 
-        Message.is_request(message) ->
-          handle_request_message(conn, message, session_id, context, opts)
+          Message.is_request(message) ->
+            handle_request_message(conn, message, session_id, context, opts)
 
-        true ->
-          send_jsonrpc_error(
-            conn,
-            Error.protocol(:invalid_request, %{message: "Invalid message type"}),
-            nil
-          )
+          true ->
+            send_jsonrpc_error(
+              conn,
+              Error.protocol(:invalid_request, %{message: "Invalid message type"}),
+              nil
+            )
+        end
+      else
+        {:error, :not_found} ->
+          send_error(conn, 404, "Session not found")
+
+        {:error, :protocol_version_mismatch} ->
+          send_error(conn, 400, "MCP protocol version does not match session")
       end
     end
 
@@ -191,10 +239,7 @@ if Code.ensure_loaded?(Plug) do
       case find_session(opts, session_id) do
         {:ok, session_pid} ->
           GenServer.cast(session_pid, {:mcp_notification, message, context})
-
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(202, "{}")
+          send_resp(conn, 202, "")
 
         {:error, :not_found} ->
           send_error(conn, 404, "Session not found")
@@ -205,10 +250,7 @@ if Code.ensure_loaded?(Plug) do
       case find_session(opts, session_id) do
         {:ok, session_pid} ->
           GenServer.cast(session_pid, {:mcp_response, message, context})
-
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(202, "{}")
+          send_resp(conn, 202, "")
 
         {:error, :not_found} ->
           send_error(conn, 404, "Session not found")
@@ -224,6 +266,9 @@ if Code.ensure_loaded?(Plug) do
             handle_json_request(conn, session_pid, message, session_id, context, opts)
           end
 
+        {:error, :not_found} ->
+          send_error(conn, 404, "Session not found")
+
         {:error, reason} ->
           send_jsonrpc_error(
             conn,
@@ -233,7 +278,14 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp handle_json_request(conn, session_pid, message, session_id, context, %{session_header: session_header} = opts) do
+    defp handle_json_request(
+           conn,
+           session_pid,
+           message,
+           session_id,
+           context,
+           %{session_header: session_header} = opts
+         ) do
       case GenServer.call(session_pid, {:mcp_request, message, context}, opts.timeout) do
         {:ok, response} when is_binary(response) ->
           conn
@@ -312,18 +364,32 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp handle_delete(conn, %{transport: transport, session_header: session_header} = opts) do
-      case get_req_header(conn, session_header) do
-        [session_id] when is_binary(session_id) and session_id != "" ->
-          StreamableHTTP.unregister_sse_handler(transport, session_id)
-          delete_session_from_store(session_id)
-          stop_session_process(opts, session_id)
+      with :ok <- validate_protocol_version(conn, opts.server),
+           {:ok, session_id} <- require_session_id(conn, session_header),
+           {:ok, session_pid} <- find_session(opts, session_id),
+           :ok <- validate_session_protocol(conn, session_pid) do
+        StreamableHTTP.unregister_sse_handler(transport, session_id)
+        delete_session_from_store(session_id)
+        stop_session_process(opts, session_id)
 
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(200, "{}")
-
-        _ ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, "{}")
+      else
+        {:error, :missing_session_id} ->
           send_error(conn, 400, "Session ID required")
+
+        {:error, :invalid_session_id} ->
+          send_error(conn, 400, "Invalid session ID")
+
+        {:error, :unsupported_protocol_version} ->
+          send_error(conn, 400, "Unsupported MCP protocol version")
+
+        {:error, :protocol_version_mismatch} ->
+          send_error(conn, 400, "MCP protocol version does not match session")
+
+        {:error, :not_found} ->
+          send_error(conn, 404, "Session not found")
       end
     end
 
@@ -342,37 +408,14 @@ if Code.ensure_loaded?(Plug) do
           start_new_session(opts, session_id)
 
         {:error, :not_found} ->
-          start_and_auto_initialize_session(opts, session_id)
+          {:error, :not_found}
       end
     end
 
-    defp start_and_auto_initialize_session(opts, session_id) do
-      case start_new_session(opts, session_id) do
-        {:ok, pid} ->
-          case Session.auto_initialize(pid) do
-            :ok ->
-              Logging.transport_event("session_auto_reinitialized", %{
-                session_id: session_id
-              })
-
-              {:ok, pid}
-
-            {:error, reason} ->
-              Logging.transport_event("session_auto_reinitialize_failed", %{
-                session_id: session_id,
-                reason: inspect(reason)
-              })
-
-              stop_session_process(opts, session_id)
-              {:error, reason}
-          end
-
-        error ->
-          error
-      end
-    end
-
-    defp start_new_session(%{server: server, registry_mod: registry_mod, registry_name: registry_name} = opts, session_id) do
+    defp start_new_session(
+           %{server: server, registry_mod: registry_mod, registry_name: registry_name} = opts,
+           session_id
+         ) do
       session_config = ServerSupervisor.get_session_config(server)
       session_name = Registry.resolve_session_name(registry_mod, registry_name, session_id)
 
@@ -384,7 +427,8 @@ if Code.ensure_loaded?(Plug) do
         session_idle_timeout: session_config.session_idle_timeout || 1_800_000,
         timeout: opts.timeout,
         task_supervisor: session_config.task_supervisor,
-        task_store: Map.get(session_config, :task_store)
+        task_store: Map.get(session_config, :task_store),
+        max_concurrency: Map.get(session_config, :max_concurrency, 1)
       ]
 
       case ServerSupervisor.start_session(server, session_opts) do
@@ -405,8 +449,10 @@ if Code.ensure_loaded?(Plug) do
     defp wants_sse?(conn) do
       conn
       |> get_req_header("accept")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.map(&String.trim/1)
       |> List.first("")
-      |> String.contains?("text/event-stream")
+      |> String.starts_with?("text/event-stream")
     end
 
     defp validate_accept_header(conn) do
@@ -415,35 +461,96 @@ if Code.ensure_loaded?(Plug) do
         |> get_req_header("accept")
         |> List.first("")
 
-      if String.contains?(accept_header, "application/json") do
+      if String.contains?(accept_header, "application/json") and
+           String.contains?(accept_header, "text/event-stream") do
         :ok
       else
         {:error, :invalid_accept_header}
       end
     end
 
-    defp get_or_create_session_id(conn, session_header) do
+    defp require_session_id(conn, session_header) do
       case get_req_header(conn, session_header) do
-        [session_id] when is_binary(session_id) and session_id != "" ->
-          session_id
-
-        _ ->
-          ID.generate_session_id()
+        [session_id] -> validate_session_id(session_id)
+        _ -> {:error, :missing_session_id}
       end
     end
 
-    defp determine_session_id(conn, session_header, message) when Message.is_initialize(message) do
+    defp determine_session_id(conn, session_header, message)
+         when Message.is_initialize(message) do
       case get_req_header(conn, session_header) do
-        [session_id] when is_binary(session_id) and session_id != "" ->
-          session_id
-
-        _ ->
-          ID.generate_session_id()
+        [] -> {:ok, ID.generate_session_id()}
+        _ -> {:error, :invalid_session_id}
       end
     end
 
     defp determine_session_id(conn, session_header, _message) do
-      get_or_create_session_id(conn, session_header)
+      require_session_id(conn, session_header)
+    end
+
+    defp validate_session_id(session_id)
+         when is_binary(session_id) and byte_size(session_id) in 1..@max_session_id_bytes do
+      if Enum.all?(:binary.bin_to_list(session_id), &(&1 in 0x21..0x7E)) do
+        {:ok, session_id}
+      else
+        {:error, :invalid_session_id}
+      end
+    end
+
+    defp validate_session_id(_session_id), do: {:error, :invalid_session_id}
+
+    defp require_initialized_session(session_pid) do
+      if Session.initialized?(session_pid), do: :ok, else: {:error, :not_initialized}
+    end
+
+    defp validate_protocol_version(conn, server) do
+      case get_req_header(conn, "mcp-protocol-version") do
+        [] ->
+          :ok
+
+        [version] ->
+          if(version in server.supported_protocol_versions(),
+            do: :ok,
+            else: {:error, :unsupported_protocol_version}
+          )
+
+        _ ->
+          {:error, :unsupported_protocol_version}
+      end
+    end
+
+    defp validate_negotiated_protocol(_conn, message, _session_id, _opts)
+         when Message.is_initialize(message),
+         do: :ok
+
+    defp validate_negotiated_protocol(conn, _message, session_id, opts) do
+      with {:ok, session_pid} <- find_session(opts, session_id) do
+        validate_session_protocol(conn, session_pid)
+      end
+    end
+
+    defp validate_session_protocol(conn, session_pid) do
+      case get_req_header(conn, "mcp-protocol-version") do
+        [] ->
+          :ok
+
+        [version] ->
+          if(version == Session.protocol_version(session_pid),
+            do: :ok,
+            else: {:error, :protocol_version_mismatch}
+          )
+
+        _ ->
+          {:error, :protocol_version_mismatch}
+      end
+    end
+
+    defp validate_origin(conn, allowed_origins) do
+      case get_req_header(conn, "origin") do
+        [] -> :ok
+        [origin] -> if(origin in allowed_origins, do: :ok, else: {:error, :invalid_origin})
+        _ -> {:error, :invalid_origin}
+      end
     end
 
     defp maybe_parse_messages(body) when is_binary(body) do
@@ -477,7 +584,9 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp maybe_read_request_body(%{body_params: %Unfetched{aspect: :body_params}} = conn, %{timeout: timeout}) do
+    defp maybe_read_request_body(%{body_params: %Unfetched{aspect: :body_params}} = conn, %{
+           timeout: timeout
+         }) do
       case Plug.Conn.read_body(conn, read_timeout: timeout) do
         {:ok, body, conn} -> {:ok, body, conn}
         {:error, reason} -> {:error, reason}
@@ -494,6 +603,7 @@ if Code.ensure_loaded?(Plug) do
           404 -> Error.protocol(:invalid_request, data)
           405 -> Error.protocol(:method_not_found, data)
           406 -> Error.protocol(:invalid_request, data)
+          status when status in [400, 403] -> Error.protocol(:invalid_request, data)
           _ -> Error.protocol(:internal_error, data)
         end
 

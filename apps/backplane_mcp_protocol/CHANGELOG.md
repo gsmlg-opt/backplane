@@ -1,12 +1,19 @@
 # Changelog
 
-## 1.6.3
+## 0.3.1
 
-- Publishes Backplane.McpProtocol as the `backplane_mcp_protocol` Hex package during Backplane releases.
-- Adds package documentation files required by HexDocs generation.
+- Integrates `backplane_mcp_protocol` into the Backplane umbrella build.
+- Corrects package source and documentation links for the umbrella location.
 
-## 1.6.2
+## 0.3.0
 
 - Provides Backplane.McpProtocol client and server primitives for MCP clients, servers, components, transports, JSON-RPC messages, SSE parsing, task handling, and session storage.
 - Supports Streamable HTTP, SSE, stdio, and WebSocket-oriented MCP integration paths.
 - Includes ExDoc guides for building MCP clients, servers, and common recipes.
+
+## Retired releases
+
+### 1.6.3
+
+This release used the Backplane umbrella version by mistake and is retired.
+Use `0.3.1` instead.

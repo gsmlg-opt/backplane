@@ -23,7 +23,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       transport: [layer: StubTransport, name: transport_name],
       session_idle_timeout: nil,
       timeout: 30_000,
-      task_supervisor: task_sup
+      task_supervisor: task_sup,
+      max_concurrency: Keyword.get(opts, :max_concurrency, 1)
     }
 
     :persistent_term.put({ServerSupervisor, StubServer, :session_config}, session_config)
@@ -97,6 +98,14 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
                timeout: 30_000
              } = opts
     end
+
+    test "accepts an allowed origins list" do
+      assert %{allowed_origins: ["https://client.example"]} =
+               StreamableHTTPPlug.init(
+                 server: StubServer,
+                 allowed_origins: ["https://client.example"]
+               )
+    end
   end
 
   describe "GET endpoint" do
@@ -143,6 +152,27 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       {:ok, body} = Jason.decode(conn.resp_body)
       assert body["error"]["message"] == "Invalid Request"
     end
+
+    test "GET request without a session ID returns 400", %{opts: opts} do
+      conn =
+        :get
+        |> conn("/")
+        |> put_req_header("accept", "text/event-stream")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "GET request with an unknown session ID returns 404", %{opts: opts} do
+      conn =
+        :get
+        |> conn("/")
+        |> put_req_header("accept", "text/event-stream")
+        |> put_req_header("mcp-session-id", "unknown-session")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 404
+    end
   end
 
   describe "POST endpoint" do
@@ -165,7 +195,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       name = Registry.transport_name(StubServer, :streamable_http)
 
       {:ok, transport} =
-        start_supervised({StreamableHTTP, server: StubServer, name: name, task_supervisor: task_sup})
+        start_supervised(
+          {StreamableHTTP, server: StubServer, name: name, task_supervisor: task_sup}
+        )
 
       opts = StreamableHTTPPlug.init(server: StubServer)
 
@@ -183,7 +215,11 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
           task_supervisor: task_sup
         )
 
-      Registry.Local.register_session(registry_name, test_session_id, Process.whereis(session_name))
+      Registry.Local.register_session(
+        registry_name,
+        test_session_id,
+        Process.whereis(session_name)
+      )
 
       init_req = %{
         "jsonrpc" => "2.0",
@@ -221,15 +257,91 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "text/event-stream, application/json")
         |> put_req_header("mcp-session-id", session_id)
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 202
-      assert conn.resp_body == "{}"
+      assert conn.resp_body == ""
     end
 
-    test "POST request with valid request returns response", %{opts: opts, test_session_id: session_id} do
+    test "rejects an origin not in allowed_origins before dispatch", %{
+      test_session_id: session_id
+    } do
+      request = build_request("ping", %{})
+      {:ok, body} = Message.encode_request(request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("origin", "https://attacker.example")
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("mcp-session-id", session_id)
+        |> StreamableHTTPPlug.call(
+          StreamableHTTPPlug.init(
+            server: StubServer,
+            allowed_origins: ["https://client.example"]
+          )
+        )
+
+      assert conn.status == 403
+    end
+
+    test "accepts a configured origin", %{test_session_id: session_id} do
+      request = build_request("ping", %{})
+      {:ok, body} = Message.encode_request(request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("origin", "https://client.example")
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("mcp-session-id", session_id)
+        |> StreamableHTTPPlug.call(
+          StreamableHTTPPlug.init(
+            server: StubServer,
+            allowed_origins: ["https://client.example"]
+          )
+        )
+
+      assert conn.status == 200
+    end
+
+    test "POST requires both JSON and SSE response media types", %{opts: opts} do
+      request = build_request("ping", %{})
+      {:ok, body} = Message.encode_request(request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 406
+    end
+
+    test "rejects unsupported MCP protocol versions", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
+      request = build_request("ping", %{})
+      {:ok, body} = Message.encode_request(request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("mcp-protocol-version", "2099-01-01")
+        |> put_req_header("mcp-session-id", session_id)
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "POST request with valid request returns response", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
       request = build_request("ping", %{})
       {:ok, body} = Message.encode_request(request, 1)
 
@@ -237,7 +349,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> put_req_header("mcp-session-id", session_id)
         |> StreamableHTTPPlug.call(opts)
 
@@ -251,7 +363,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", "invalid json")
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 400
@@ -273,7 +385,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("accept", "text/event-stream, application/json")
         |> put_req_header("mcp-session-id", session_id)
       end
 
@@ -333,15 +445,24 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       %{opts: opts, transport: transport}
     end
 
-    test "DELETE request with session ID returns success", %{opts: opts} do
+    test "DELETE request with unknown session ID returns 404", %{opts: opts} do
       conn =
         :delete
         |> conn("/")
         |> put_req_header("mcp-session-id", "test-session")
         |> StreamableHTTPPlug.call(opts)
 
-      assert conn.status == 200
-      assert conn.resp_body == "{}"
+      assert conn.status == 404
+    end
+
+    test "DELETE request with invalid session ID returns 400", %{opts: opts} do
+      conn =
+        :delete
+        |> conn("/")
+        |> put_req_header("mcp-session-id", "invalid session")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
     end
 
     test "DELETE request without session ID returns error", %{opts: opts} do
@@ -352,7 +473,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
 
       assert conn.status == 400
       {:ok, body} = Jason.decode(conn.resp_body)
-      assert body["error"]["message"] == "Internal error"
+      assert body["error"]["message"] == "Invalid Request"
     end
   end
 
@@ -404,7 +525,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       name = Registry.transport_name(StubServer, :streamable_http)
 
       {:ok, transport} =
-        start_supervised({StreamableHTTP, server: StubServer, name: name, task_supervisor: task_sup})
+        start_supervised(
+          {StreamableHTTP, server: StubServer, name: name, task_supervisor: task_sup}
+        )
 
       opts = StreamableHTTPPlug.init(server: StubServer)
 
@@ -422,7 +545,11 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
           task_supervisor: task_sup
         )
 
-      Registry.Local.register_session(registry_name, test_session_id, Process.whereis(session_name))
+      Registry.Local.register_session(
+        registry_name,
+        test_session_id,
+        Process.whereis(session_name)
+      )
 
       init_req = %{
         "jsonrpc" => "2.0",
@@ -460,7 +587,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> put_req_header("mcp-session-id", session_id)
         |> StreamableHTTPPlug.call(opts)
 
@@ -480,14 +607,14 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> put_req_header("mcp-session-id", "unknown-session")
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 404
     end
 
-    test "request to unknown session auto-reinitializes", %{opts: opts} do
+    test "request to unknown session returns 404", %{opts: opts} do
       request = build_request("tools/list", %{})
       {:ok, body} = Message.encode_request(request, 42)
 
@@ -495,14 +622,114 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> put_req_header("mcp-session-id", "expired-session-id")
         |> StreamableHTTPPlug.call(opts)
 
-      assert conn.status == 200
-      {:ok, response} = Jason.decode(conn.resp_body)
-      assert is_map(response["result"])
-      assert Map.has_key?(response["result"], "tools")
+      assert conn.status == 404
+    end
+
+    test "request protocol version must match the negotiated session version", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
+      request = build_request("ping", %{})
+      {:ok, body} = Message.encode_request(request, 42)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("mcp-session-id", session_id)
+        |> put_req_header("mcp-protocol-version", "2025-11-25")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "GET protocol version must match the negotiated session version", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
+      conn =
+        :get
+        |> conn("/")
+        |> put_req_header("accept", "text/event-stream")
+        |> put_req_header("mcp-session-id", session_id)
+        |> put_req_header("mcp-protocol-version", "2025-11-25")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "DELETE protocol version must match the negotiated session version", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
+      conn =
+        :delete
+        |> conn("/")
+        |> put_req_header("mcp-session-id", session_id)
+        |> put_req_header("mcp-protocol-version", "2025-11-25")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "non-initialize request without a session ID returns 400", %{opts: opts} do
+      request = build_request("tools/list", %{})
+      {:ok, body} = Message.encode_request(request, 42)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
+    end
+
+    test "invalid session IDs return 400", %{opts: opts} do
+      request = build_request("tools/list", %{})
+      {:ok, body} = Message.encode_request(request, 42)
+
+      for session_id <- ["contains space", "contains\nnewline", String.duplicate("x", 1025)] do
+        conn =
+          :post
+          |> conn("/", body)
+          |> put_req_header("accept", "application/json, text/event-stream")
+          |> put_req_header("mcp-session-id", session_id)
+          |> StreamableHTTPPlug.call(opts)
+
+        assert conn.status == 400
+      end
+    end
+
+    test "initialize propagates configured max_concurrency to the session" do
+      setup_session_config(registry_mod: Registry.Local, max_concurrency: 4)
+      opts = StreamableHTTPPlug.init(server: StubServer)
+
+      init_request =
+        build_request("initialize", %{
+          "protocolVersion" => "2025-11-25",
+          "clientInfo" => %{"name" => "test", "version" => "1.0.0"},
+          "capabilities" => %{}
+        })
+
+      {:ok, body} = Message.encode_request(init_request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> StreamableHTTPPlug.call(opts)
+
+      [session_id] = get_resp_header(conn, "mcp-session-id")
+
+      {:ok, session} =
+        Registry.Local.lookup_session(Registry.registry_name(StubServer), session_id)
+
+      assert :sys.get_state(session).max_concurrency == 4
     end
 
     test "initialize request creates new session", %{opts: opts} do
@@ -519,12 +746,35 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
         :post
         |> conn("/", body)
         |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "application/json")
+        |> put_req_header("accept", "application/json, text/event-stream")
         |> StreamableHTTPPlug.call(opts)
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
       assert response["result"]["protocolVersion"]
+    end
+
+    test "initialize rejects a client-selected session ID", %{
+      opts: opts,
+      test_session_id: existing_session_id
+    } do
+      init_request =
+        build_request("initialize", %{
+          "protocolVersion" => "2025-03-26",
+          "clientInfo" => %{"name" => "test", "version" => "1.0.0"},
+          "capabilities" => %{}
+        })
+
+      {:ok, body} = Message.encode_request(init_request, 1)
+
+      conn =
+        :post
+        |> conn("/", body)
+        |> put_req_header("accept", "application/json, text/event-stream")
+        |> put_req_header("mcp-session-id", existing_session_id)
+        |> StreamableHTTPPlug.call(opts)
+
+      assert conn.status == 400
     end
   end
 end

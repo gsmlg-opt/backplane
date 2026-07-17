@@ -25,6 +25,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
           | {:task_store, {module(), keyword()}}
           | {:session_idle_timeout, pos_integer() | nil}
           | {:request_timeout, pos_integer() | nil}
+          | {:max_concurrency, pos_integer()}
           | {:authorization, keyword() | nil}
 
   @doc """
@@ -40,6 +41,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
       * `:supervisor` - `{module, opts}` for custom session supervisor (defaults to `{DynamicSupervisor, []}`)
       * `:session_idle_timeout` - Time in milliseconds before idle sessions expire (default: 30 minutes)
       * `:request_timeout` - Time limit in milliseconds for server requests (defaults to 30s)
+      * `:max_concurrency` - Maximum concurrent request tasks per session (default: 1)
   """
   @spec start_link(server :: module, list(start_option)) :: Supervisor.on_start()
   def start_link(server, opts) when is_atom(server) and is_list(opts) do
@@ -86,6 +88,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
     if should_start?(transport) do
       session_idle_timeout = Keyword.get(opts, :session_idle_timeout)
       request_timeout = Keyword.get(opts, :request_timeout, to_timeout(second: 30))
+      max_concurrency = Keyword.get(opts, :max_concurrency, 1)
       task_supervisor = Registry.task_supervisor_name(server)
 
       {registry_mod, registry_opts} = resolve_registry(opts, transport, server)
@@ -106,6 +109,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
         transport: [layer: layer, name: transport_name],
         session_idle_timeout: session_idle_timeout,
         timeout: request_timeout,
+        max_concurrency: max_concurrency,
         task_supervisor: task_supervisor,
         task_store: [adapter: task_store_mod, name: task_store_name]
       }
@@ -235,7 +239,14 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
   end
 
   # For STDIO: single session, no DynamicSupervisor, no registry
-  defp build_stdio_children(server, layer, transport_opts, task_supervisor, session_config, task_store_child) do
+  defp build_stdio_children(
+         server,
+         layer,
+         transport_opts,
+         task_supervisor,
+         session_config,
+         task_store_child
+       ) do
     session_name = Registry.stdio_session_name(server)
 
     session_opts = [
@@ -245,6 +256,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
       transport: session_config.transport,
       session_idle_timeout: session_config.session_idle_timeout || to_timeout(minute: 30),
       timeout: session_config.timeout,
+      max_concurrency: session_config.max_concurrency,
       task_supervisor: task_supervisor,
       task_store: session_config.task_store
     ]

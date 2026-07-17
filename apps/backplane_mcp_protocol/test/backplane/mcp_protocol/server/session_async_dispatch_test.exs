@@ -10,6 +10,101 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
 
   setup :start_async_session
 
+  test "reports whether the session initialized handshake completed", %{session: session} do
+    assert Session.initialized?(session)
+  end
+
+  describe "bounded concurrent dispatch" do
+    test "runs up to the configured limit and queues excess requests" do
+      %{session: session} = create_initialized_session(2)
+      caller = self()
+      ctx = with_test_pid()
+
+      for {signal, id} <- [
+            {:first, "concurrent-1"},
+            {:second, "concurrent-2"},
+            {:third, "concurrent-3"}
+          ] do
+        Task.start(fn ->
+          req = tool_call_request("wait_signal", %{"signal" => Atom.to_string(signal)}, id)
+          send(caller, {:reply, signal, GenServer.call(session, {:mcp_request, req, ctx}, 5_000)})
+        end)
+      end
+
+      assert_receive {:tool_running, first_pid, :first}, 1_000
+      assert_receive {:tool_running, second_pid, :second}, 1_000
+      refute_received {:tool_running, _, :third}
+
+      SyncHelpers.await_state(
+        session,
+        &(map_size(&1.in_flight) == 2 and :queue.len(&1.request_queue) == 1)
+      )
+
+      send(first_pid, {:proceed, :first})
+
+      assert_receive {:reply, :first, {:ok, _}}, 1_000
+      assert_receive {:tool_running, third_pid, :third}, 1_000
+
+      send(second_pid, {:proceed, :second})
+      send(third_pid, {:proceed, :third})
+      assert_receive {:reply, :second, {:ok, _}}, 1_000
+      assert_receive {:reply, :third, {:ok, _}}, 1_000
+    end
+
+    test "merges disjoint frame updates from concurrent requests" do
+      %{session: session} = create_initialized_session(2)
+      caller = self()
+      ctx = with_test_pid()
+
+      for {signal, key, id} <- [{:first, :alpha, "merge-1"}, {:second, :beta, "merge-2"}] do
+        Task.start(fn ->
+          request =
+            tool_call_request(
+              "assign_after_signal",
+              %{"signal" => Atom.to_string(signal), "key" => Atom.to_string(key)},
+              id
+            )
+
+          send(
+            caller,
+            {:reply, signal, GenServer.call(session, {:mcp_request, request, ctx}, 5_000)}
+          )
+        end)
+      end
+
+      assert_receive {:tool_running, first_pid, :first}, 1_000
+      assert_receive {:tool_running, second_pid, :second}, 1_000
+
+      send(first_pid, {:proceed, :first})
+      assert_receive {:reply, :first, {:ok, _}}, 1_000
+
+      send(second_pid, {:proceed, :second})
+      assert_receive {:reply, :second, {:ok, _}}, 1_000
+
+      state = :sys.get_state(session)
+      assert state.frame.assigns.alpha
+      assert state.frame.assigns.beta
+    end
+
+    test "rejects non-positive concurrency limits" do
+      session_id = "invalid-limit-#{System.unique_integer([:positive])}"
+
+      assert_raise Peri.InvalidSchema, fn ->
+        Session.start_link(
+          session_id: session_id,
+          server_module: AsyncDispatchTestServer,
+          name: Registry.session_name(AsyncDispatchTestServer, session_id),
+          transport: [
+            layer: StubTransport,
+            name: Registry.transport_name(AsyncDispatchTestServer, StubTransport)
+          ],
+          task_supervisor: Registry.task_supervisor_name(AsyncDispatchTestServer),
+          max_concurrency: 0
+        )
+      end
+    end
+  end
+
   describe "mailbox unblock" do
     test "cancellation aborts in-flight tool task and replies", %{session: session} do
       caller = self()
@@ -38,7 +133,9 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
   end
 
   describe "FIFO ordering of queued requests" do
-    test "queued requests reply in arrival order and observe accumulated frame state", %{session: session} do
+    test "queued requests reply in arrival order and observe accumulated frame state", %{
+      session: session
+    } do
       caller = self()
       ctx = with_test_pid()
 
@@ -184,7 +281,10 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
   end
 
   describe "session terminate" do
-    test "queued and in-flight requests get internal_error reply on shutdown", %{session: session, task_sup: task_sup} do
+    test "queued and in-flight requests get internal_error reply on shutdown", %{
+      session: session,
+      task_sup: task_sup
+    } do
       caller = self()
       ctx = with_test_pid()
 
@@ -218,10 +318,18 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
   end
 
   defp start_async_session(_ctx) do
+    create_initialized_session()
+  end
+
+  defp create_initialized_session(max_concurrency \\ nil) do
     session_id = "async-#{System.unique_integer([:positive])}"
     transport_name = Registry.transport_name(AsyncDispatchTestServer, StubTransport)
+
     # StubTransport (not MockTransport) — captures outbound frames and exposes clear/1 for isolation
-    transport = start_supervised!({StubTransport, name: transport_name}, id: {:transport, session_id})
+    transport =
+      Process.whereis(transport_name) ||
+        start_supervised!({StubTransport, name: transport_name}, id: {:transport, session_id})
+
     task_sup = Registry.task_supervisor_name(AsyncDispatchTestServer)
 
     if is_nil(Process.whereis(task_sup)) do
@@ -230,18 +338,31 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
 
     session_name = Registry.session_name(AsyncDispatchTestServer, session_id)
 
+    session_opts =
+      then(
+        [
+          session_id: session_id,
+          server_module: AsyncDispatchTestServer,
+          name: session_name,
+          transport: [layer: StubTransport, name: transport_name],
+          task_supervisor: task_sup
+        ],
+        fn opts ->
+          if max_concurrency, do: Keyword.put(opts, :max_concurrency, max_concurrency), else: opts
+        end
+      )
+
     session =
       start_supervised!(
-        {Session,
-         session_id: session_id,
-         server_module: AsyncDispatchTestServer,
-         name: session_name,
-         transport: [layer: StubTransport, name: transport_name],
-         task_supervisor: task_sup},
+        {Session, session_opts},
         id: {:session, session_id}
       )
 
-    request = init_request("2025-03-26", %{"name" => "TestClient", "version" => "1.0.0"}, %{"sampling" => %{}})
+    request =
+      init_request("2025-03-26", %{"name" => "TestClient", "version" => "1.0.0"}, %{
+        "sampling" => %{}
+      })
+
     {:ok, _} = GenServer.call(session, {:mcp_request, request, with_test_pid()})
 
     init_notif = build_notification("notifications/initialized", %{})
