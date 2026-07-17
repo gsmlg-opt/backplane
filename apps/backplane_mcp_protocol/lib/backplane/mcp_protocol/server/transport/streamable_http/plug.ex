@@ -238,7 +238,12 @@ if Code.ensure_loaded?(Plug) do
     defp handle_notification_message(conn, message, session_id, context, opts) do
       case find_session(opts, session_id) do
         {:ok, session_pid} ->
-          GenServer.cast(session_pid, {:mcp_notification, message, context})
+          if Message.is_initialize_lifecycle(message) do
+            :ok = Session.notify(session_pid, message, context, opts.timeout)
+          else
+            GenServer.cast(session_pid, {:mcp_notification, message, context})
+          end
+
           send_resp(conn, 202, "")
 
         {:error, :not_found} ->

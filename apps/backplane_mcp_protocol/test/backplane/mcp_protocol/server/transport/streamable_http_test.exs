@@ -5,6 +5,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTPTest do
 
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
 
   @moduletag capture_log: true
 
@@ -146,11 +147,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTPTest do
   end
 
   describe "supported_protocol_versions/0" do
-    test "returns supported versions" do
-      versions = StreamableHTTP.supported_protocol_versions()
-      assert is_list(versions)
-      assert "2025-03-26" in versions
-      assert "2025-11-25" in versions
+    test "matches the protocol registry" do
+      assert StreamableHTTP.supported_protocol_versions() ==
+               ProtocolRegistry.supported_versions()
     end
   end
 end
