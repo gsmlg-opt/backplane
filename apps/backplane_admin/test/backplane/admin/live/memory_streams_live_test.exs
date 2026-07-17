@@ -18,10 +18,18 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
       assert has_element?(view, "#memory-streams-table th", label)
     end
 
+    assert has_element?(view, "#memory-streams-table[phx-mounted]")
     assert html =~ "No streams match these filters"
     assert html =~ "Pipeline is disabled"
     assert html =~ "Events is disabled"
-    assert has_element?(view, ~s(a[href="/memory/pipeline"]), "Open Pipeline")
+
+    assert has_element?(
+             view,
+             ~s|a#memory-open-pipeline[href="/memory/pipeline"]|,
+             "Open Pipeline"
+           )
+
+    refute has_element?(view, "a el-dm-button")
   end
 
   test "applies every URL-backed inventory filter", %{conn: conn} do
@@ -102,6 +110,35 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     assert URI.decode_query(uri.query || "") == %{"project" => "filter-patch"}
   end
 
+  test "filter changes ignore LiveView unused-field metadata", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/streams")
+
+    render_change(view, "filter", %{
+      "filters" => %{
+        "_unused_project" => "",
+        "_unused_agent" => "",
+        "_unused_host" => "",
+        "_unused_session" => "",
+        "_unused_run" => "",
+        "_unused_state" => "",
+        "project" => "  metadata-project  ",
+        "agent" => "",
+        "host" => "",
+        "session" => "",
+        "run" => "",
+        "state" => ""
+      }
+    })
+
+    patched = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(patched).query || "") == %{
+             "project" => "metadata-project"
+           }
+
+    refute render(view) =~ "One invalid stream parameter was removed."
+  end
+
   test "successful and invalid loads replace-patch to canonical shareable URLs", %{conn: conn} do
     event = event_fixture(project: "canonical-project")
 
@@ -167,13 +204,19 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
 
     assert length(table_stream_ids(capped_html)) == 100
 
-    [next_link] =
-      capped_html
-      |> Floki.parse_fragment!()
-      |> Floki.find(~s(a[data-phx-link="patch"]))
-      |> Enum.filter(&(Floki.text(&1) |> String.trim() == "Next page"))
+    assert has_element?(
+             capped_view,
+             "a#stream-next-page[data-phx-link=patch][href]",
+             "Next page"
+           )
 
-    next_href = next_link |> Floki.attribute("href") |> List.first()
+    refute has_element?(capped_view, "a el-dm-button")
+
+    capped_view
+    |> element("#stream-next-page")
+    |> render_click()
+
+    next_href = assert_patch(capped_view)
     next_query = next_href |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
 
     assert next_query["project"] == project
@@ -206,9 +249,9 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
       )
 
     first = table_stream_ids(first_html)
-    second_html = traversal_view |> element("a", "Next page") |> render_click()
+    second_html = traversal_view |> element("#stream-next-page") |> render_click()
     second = table_stream_ids(second_html)
-    third_html = traversal_view |> element("a", "Next page") |> render_click()
+    third_html = traversal_view |> element("#stream-next-page") |> render_click()
     third = table_stream_ids(third_html)
 
     assert first ++ second ++ third == [
@@ -221,7 +264,7 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
            ]
 
     assert Enum.uniq(first ++ second ++ third) == first ++ second ++ third
-    refute has_element?(traversal_view, "a", "Next page")
+    refute has_element?(traversal_view, "#stream-next-page")
   end
 
   test "renders immutable stream identity and a directly shareable detail", %{conn: conn} do
@@ -241,11 +284,15 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     {:ok, view, html} = live(conn, "/memory/streams/#{stream_id}")
 
     assert has_element?(view, "#stream-identity", stream_id)
+    assert html =~ "grid-cols-1"
+    assert html =~ "sm:grid-cols-[max-content_minmax(0,1fr)]"
 
     assert has_element?(
              view,
-             ~s|#memory-streams-table a[href="/memory/streams/#{stream_id}"]:not([data-phx-link])|
+             ~s|#memory-streams-table a.text-on-surface.underline[href="/memory/streams/#{stream_id}"]:not([data-phx-link])|
            )
+
+    refute has_element?(view, "#memory-streams-table a.text-primary")
 
     for value <- [
           "detail-project",
@@ -294,15 +341,32 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
 
     {:ok, view, latest_html} = live(conn, "/memory/streams/#{stream_id}")
     assert sequence_numbers(latest_html) == Enum.to_list(151..250)
-    assert has_element?(view, "a", "Older events")
-    refute has_element?(view, "a", "Newer events")
 
-    older_html = view |> element("a", "Older events") |> render_click()
+    assert has_element?(
+             view,
+             "a#stream-older-events[data-phx-link=patch][href]",
+             "Older events"
+           )
+
+    refute has_element?(view, "#stream-newer-events")
+    refute has_element?(view, "a el-dm-button")
+
+    older_html = view |> element("#stream-older-events") |> render_click()
     assert sequence_numbers(older_html) == Enum.to_list(51..150)
-    assert has_element?(view, "a", "Older events")
-    assert has_element?(view, "a", "Newer events")
 
-    newest_again = view |> element("a", "Newer events") |> render_click()
+    assert has_element?(
+             view,
+             "a#stream-older-events[data-phx-link=patch][href]",
+             "Older events"
+           )
+
+    assert has_element?(
+             view,
+             "a#stream-newer-events[data-phx-link=patch][href]",
+             "Newer events"
+           )
+
+    newest_again = view |> element("#stream-newer-events") |> render_click()
     assert sequence_numbers(newest_again) == Enum.to_list(151..250)
     assert Enum.uniq(sequence_numbers(newest_again)) == Enum.to_list(151..250)
   end
@@ -338,7 +402,7 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     _events = append_events!(stream_id, 150)
 
     {:ok, view, _html} = live(conn, "/memory/streams/#{stream_id}")
-    historical_html = view |> element("a", "Older events") |> render_click()
+    historical_html = view |> element("#stream-older-events") |> render_click()
     historical_sequences = sequence_numbers(historical_html)
 
     [new_event] = append_events!(stream_id, 1, idempotency_key: unique("notify-event"))
@@ -347,8 +411,14 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     assert has_element?(view, ~s(#stream-new-events[title="New events available"]))
     assert sequence_numbers(render(view)) == historical_sequences
 
+    assert has_element?(
+             view,
+             "a#stream-refresh-newest[data-phx-link=patch][href]",
+             "Refresh newest"
+           )
+
     view
-    |> element("#stream-new-events a", "Refresh newest")
+    |> element("#stream-refresh-newest", "Refresh newest")
     |> render_click()
 
     assert List.last(sequence_numbers(render(view))) == 151

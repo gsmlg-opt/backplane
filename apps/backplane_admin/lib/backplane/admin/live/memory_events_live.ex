@@ -72,9 +72,13 @@ defmodule Backplane.Admin.MemoryEventsLive do
   end
 
   @impl true
-  def handle_event("filter", %{"filters" => raw}, socket) do
+  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
+
+  def handle_event("filter", %{"filters" => raw} = params, socket) do
     normalized =
       raw
+      |> merge_datetime_filter(params)
+      |> Map.reject(fn {key, _value} -> String.starts_with?(key, "_unused_") end)
       |> Map.drop(["cursor"])
       |> Operations.normalize_timeline_params()
 
@@ -134,6 +138,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
 
   @impl true
   def render(assigns) do
+    # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#90
     ~H"""
     <div id="memory-events">
       <.memory_page_header
@@ -159,7 +164,8 @@ defmodule Backplane.Admin.MemoryEventsLive do
         title="New events available"
         compact
       >
-        <.dm_btn
+        <.memory_link_button
+          id="event-refresh-newest"
           patch={
             events_path(
               @live_action,
@@ -171,7 +177,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
           size="sm"
         >
           Refresh newest
-        </.dm_btn>
+        </.memory_link_button>
       </.dm_alert>
 
       <.form
@@ -238,17 +244,19 @@ defmodule Backplane.Admin.MemoryEventsLive do
           label="Status"
           phx-debounce="300"
         />
+        <input type="hidden" name="filters[from]" value={@filters["from"]} />
         <.dm_input
           id="event-from"
-          name="filters[from]"
+          name="datetime_filters[from]"
           value={datetime_local_value(@filters["from"])}
           label="From (UTC)"
           type="datetime-local"
           step="any"
         />
+        <input type="hidden" name="filters[to]" value={@filters["to"]} />
         <.dm_input
           id="event-to"
-          name="filters[to]"
+          name="datetime_filters[to]"
           value={datetime_local_value(@filters["to"])}
           label="To (UTC)"
           type="datetime-local"
@@ -269,6 +277,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
       ]}>
         <section class="min-w-0">
           <div class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-events-table"
               data={@page.events}
@@ -276,11 +285,12 @@ defmodule Backplane.Admin.MemoryEventsLive do
               hover
               zebra
               class="min-w-[72rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-events-table")}
             >
               <:col :let={event} label="Event">
                 <.link
                   href={event_detail_path(event.id, @filters)}
-                  class="font-mono text-primary hover:underline"
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
                 >
                   {event.event_type}
                 </.link>
@@ -309,8 +319,9 @@ defmodule Backplane.Admin.MemoryEventsLive do
           </div>
 
           <div class="mt-3 flex justify-end">
-            <.dm_btn
+            <.memory_link_button
               :if={@page.next_cursor}
+              id="event-load-older"
               patch={
                 events_path(
                   @live_action,
@@ -320,7 +331,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
               }
             >
               Load older
-            </.dm_btn>
+            </.memory_link_button>
           </div>
         </section>
 
@@ -331,18 +342,19 @@ defmodule Backplane.Admin.MemoryEventsLive do
                 <.event_type_badge event_type={@selected_event.event_type} />
                 <.status_badge status={@selected_event.status} />
               </div>
-              <.dm_btn
+              <.memory_link_button
+                id="event-close-detail"
                 patch={events_path(:index, nil, @filters)}
                 size="sm"
                 variant="ghost"
               >
                 Close detail
-              </.dm_btn>
+              </.memory_link_button>
             </div>
 
             <dl
               id="event-identity"
-              class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2"
+              class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]"
             >
               <.identity_value label="Event ID" value={@selected_event.id} />
               <.identity_value label="Sequence" value={@selected_event.sequence} />
@@ -470,4 +482,22 @@ defmodule Backplane.Admin.MemoryEventsLive do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp merge_datetime_filter(raw, %{"datetime_filters" => displayed}) do
+    Enum.reduce(["from", "to"], raw, fn field, merged ->
+      case Map.fetch(displayed, field) do
+        {:ok, value} ->
+          if value == datetime_local_value(Map.get(raw, field)) do
+            merged
+          else
+            Map.put(merged, field, value)
+          end
+
+        :error ->
+          merged
+      end
+    end)
+  end
+
+  defp merge_datetime_filter(raw, _params), do: raw
 end

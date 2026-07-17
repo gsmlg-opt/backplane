@@ -40,6 +40,14 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     assert has_element?(view, "#events-gate[disabled]")
     assert has_element?(view, "#dual-write-gate[disabled]")
 
+    for form_id <- [
+          "pipeline-gate-form",
+          "events-gate-form",
+          "dual-write-gate-form"
+        ] do
+      assert has_element?(view, "##{form_id}[phx-auto-recover=ignore]")
+    end
+
     assert html =~
              "Master gate for Memory V2. Disable Events and Dual Write before turning it off."
 
@@ -196,8 +204,26 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     })
 
     assert has_element?(view, "#dual-write-confirmation")
+    assert has_element?(view, "#dual-write-confirmation[phx-mounted]")
+
+    assert has_element?(
+             view,
+             "#reset-dual-write-gate[type=reset][form=dual-write-gate-form][hidden]"
+           )
+
     assert has_element?(view, "#confirm-dual-write")
     assert has_element?(view, "#cancel-dual-write")
+
+    assert has_element?(
+             view,
+             "#confirm-dual-write[type=reset][form=dual-write-gate-form]"
+           )
+
+    assert has_element?(
+             view,
+             "#cancel-dual-write[type=reset][form=dual-write-gate-form]"
+           )
+
     refute has_element?(view, "#dual-write-gate[checked]")
     assert Settings.get(@dual_write) == false
 
@@ -224,6 +250,23 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     refute has_element?(view, "#dual-write-confirmation")
     refute has_element?(view, "#dual-write-gate[checked]")
     assert Settings.get(@dual_write) == false
+  end
+
+  test "rejects direct Dual Write confirmation without a pending request", %{conn: conn} do
+    set_configured!(true, true, false)
+    {:ok, view, _html} = live(conn, "/memory/pipeline")
+
+    render_click(view, "confirm-dual-write", %{})
+
+    assert Process.alive?(view.pid)
+    refute has_element?(view, "#dual-write-gate[checked]")
+    assert Settings.get(@dual_write) == false
+
+    assert has_element?(
+             view,
+             "#pipeline-mutation-error",
+             "The submitted gate value is invalid."
+           )
   end
 
   test "reloads persisted state for relevant setting messages and ignores unrelated settings", %{

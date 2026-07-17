@@ -77,9 +77,12 @@ defmodule Backplane.Admin.MemoryStreamsLive do
   end
 
   @impl true
+  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
+
   def handle_event("filter", %{"filters" => raw}, socket) do
     normalized =
       raw
+      |> Map.reject(fn {key, _value} -> String.starts_with?(key, "_unused_") end)
       |> Map.drop(["cursor", "before", "after"])
       |> Operations.normalize_stream_params()
 
@@ -156,6 +159,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
 
   @impl true
   def render(assigns) do
+    # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#90
     ~H"""
     <div id="memory-streams">
       <.memory_page_header
@@ -181,7 +185,8 @@ defmodule Backplane.Admin.MemoryStreamsLive do
         title="New events available"
         compact
       >
-        <.dm_btn
+        <.memory_link_button
+          id="stream-refresh-newest"
           patch={
             streams_path(
               @live_action,
@@ -193,7 +198,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
           size="sm"
         >
           Refresh newest
-        </.dm_btn>
+        </.memory_link_button>
       </.dm_alert>
 
       <.form
@@ -265,6 +270,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
       ]}>
         <section class="min-w-0">
           <div class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-streams-table"
               data={@page.streams}
@@ -272,11 +278,12 @@ defmodule Backplane.Admin.MemoryStreamsLive do
               hover
               zebra
               class="min-w-[64rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-streams-table")}
             >
               <:col :let={stream} label="Stream">
                 <.link
                   href={stream_detail_path(stream.stream_id, @filters)}
-                  class="font-mono text-primary hover:underline"
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
                 >
                   {stream.stream_id}
                 </.link>
@@ -308,8 +315,9 @@ defmodule Backplane.Admin.MemoryStreamsLive do
           </div>
 
           <div class="mt-3 flex justify-end">
-            <.dm_btn
+            <.memory_link_button
               :if={@page.next_cursor}
+              id="stream-next-page"
               patch={
                 streams_path(
                   @live_action,
@@ -321,7 +329,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
               }
             >
               Next page
-            </.dm_btn>
+            </.memory_link_button>
           </div>
         </section>
 
@@ -337,18 +345,19 @@ defmodule Backplane.Admin.MemoryStreamsLive do
               >
                 {if @selected_stream.closed_at, do: "Closed", else: "Open"}
               </.dm_badge>
-              <.dm_btn
+              <.memory_link_button
+                id="stream-close-detail"
                 patch={streams_path(:index, nil, @filters)}
                 size="sm"
                 variant="ghost"
               >
                 Close detail
-              </.dm_btn>
+              </.memory_link_button>
             </div>
 
             <dl
               id="stream-identity"
-              class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2"
+              class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]"
             >
               <.identity_value label="Stream ID" value={@selected_stream.stream_id} />
               <.identity_value label="Project" value={@selected_stream.project} />
@@ -387,8 +396,9 @@ defmodule Backplane.Admin.MemoryStreamsLive do
             </.dm_timeline>
 
             <div class="mt-4 flex flex-wrap gap-2">
-              <.dm_btn
+              <.memory_link_button
                 :if={@sequence_page.older_before}
+                id="stream-older-events"
                 patch={
                   streams_path(
                     :show,
@@ -400,9 +410,10 @@ defmodule Backplane.Admin.MemoryStreamsLive do
                 }
               >
                 Older events
-              </.dm_btn>
-              <.dm_btn
+              </.memory_link_button>
+              <.memory_link_button
                 :if={@sequence_page.newer_after}
+                id="stream-newer-events"
                 patch={
                   streams_path(
                     :show,
@@ -414,7 +425,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
                 }
               >
                 Newer events
-              </.dm_btn>
+              </.memory_link_button>
             </div>
           </.dm_card>
         </aside>

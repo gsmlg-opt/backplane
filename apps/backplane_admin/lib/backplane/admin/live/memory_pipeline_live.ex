@@ -31,6 +31,8 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   end
 
   @impl true
+  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
+
   def handle_event(
         "set-gate",
         %{"gate" => %{"name" => "dual_write", "value" => "true"}},
@@ -39,8 +41,16 @@ defmodule Backplane.Admin.MemoryPipelineLive do
     {:noreply, assign(socket, pending_dual_write: true, mutation_error: nil)}
   end
 
-  def handle_event("confirm-dual-write", _params, socket) do
+  def handle_event(
+        "confirm-dual-write",
+        _params,
+        %{assigns: %{pending_dual_write: true}} = socket
+      ) do
     mutate_gate(socket, :dual_write, true)
+  end
+
+  def handle_event("confirm-dual-write", _params, socket) do
+    {:noreply, assign(socket, mutation_error: "The submitted gate value is invalid.")}
   end
 
   def handle_event("cancel-dual-write", _params, socket) do
@@ -130,23 +140,43 @@ defmodule Backplane.Admin.MemoryPipelineLive do
         variant="warning"
         title="Enable Dual Write?"
         class="mt-4"
+        phx-mounted={JS.dispatch("click", to: "#reset-dual-write-gate")}
       >
+        <.dm_btn
+          id="reset-dual-write-gate"
+          type="reset"
+          form="dual-write-gate-form"
+          hidden
+          tabindex="-1"
+          aria-hidden="true"
+        >
+          Reset Dual Write switch
+        </.dm_btn>
+
         New writes will also enter the Memory V2 event pipeline.
 
         <div class="mt-3 flex flex-wrap gap-2">
           <.dm_btn
             id="confirm-dual-write"
             variant="warning"
-            phx-click="confirm-dual-write"
-            type="button"
+            phx-click={
+              JS.push("confirm-dual-write")
+              |> JS.focus(to: "#dual-write-gate")
+            }
+            type="reset"
+            form="dual-write-gate-form"
           >
             Confirm
           </.dm_btn>
           <.dm_btn
             id="cancel-dual-write"
             variant="ghost"
-            phx-click="cancel-dual-write"
-            type="button"
+            phx-click={
+              JS.push("cancel-dual-write")
+              |> JS.focus(to: "#dual-write-gate")
+            }
+            type="reset"
+            form="dual-write-gate-form"
           >
             Cancel
           </.dm_btn>
@@ -193,7 +223,12 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   defp gate_control(assigns) do
     ~H"""
     <.dm_card variant="bordered" padding="sm">
-      <.form id={@form_id} for={%{}} phx-change="set-gate">
+      <.form
+        id={@form_id}
+        for={%{}}
+        phx-change="set-gate"
+        phx-auto-recover="ignore"
+      >
         <input type="hidden" name="gate[name]" value={@name} />
         <.dm_switch
           id={@input_id}

@@ -42,6 +42,7 @@ defmodule Backplane.Admin.MemoryComponents do
   attr(:rollout, :map, required: true)
 
   def memory_empty_state(assigns) do
+    # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#90
     ~H"""
     <.dm_card variant="bordered" padding="lg" class="text-center">
       <h2 class="text-lg font-semibold">{@title}</h2>
@@ -50,9 +51,57 @@ defmodule Backplane.Admin.MemoryComponents do
         Events is {if @rollout.events.effective, do: "effective", else: "disabled"}.
       </p>
       <div class="mt-4">
-        <.dm_btn navigate={~p"/memory/pipeline"} variant="primary">Open Pipeline</.dm_btn>
+        <.memory_link_button
+          id="memory-open-pipeline"
+          navigate={~p"/memory/pipeline"}
+          variant="primary"
+        >
+          Open Pipeline
+        </.memory_link_button>
       </div>
     </.dm_card>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:navigate, :string, default: nil)
+  attr(:patch, :string, default: nil)
+  attr(:replace, :boolean, default: false)
+  attr(:variant, :string, default: nil, values: [nil, "primary", "ghost"])
+  attr(:size, :string, default: nil, values: [nil, "sm"])
+  attr(:class, :any, default: nil)
+  slot(:inner_block, required: true)
+
+  def memory_link_button(assigns) do
+    assigns =
+      assign(assigns,
+        button_class: [
+          "btn",
+          memory_link_variant_class(assigns.variant),
+          memory_link_size_class(assigns.size),
+          assigns.class
+        ]
+      )
+
+    ~H"""
+    <.link
+      :if={is_binary(@navigate)}
+      id={@id}
+      navigate={@navigate}
+      replace={@replace}
+      class={@button_class}
+    >
+      {render_slot(@inner_block)}
+    </.link>
+    <.link
+      :if={!is_binary(@navigate) && is_binary(@patch)}
+      id={@id}
+      patch={@patch}
+      replace={@replace}
+      class={@button_class}
+    >
+      {render_slot(@inner_block)}
+    </.link>
     """
   end
 
@@ -127,6 +176,7 @@ defmodule Backplane.Admin.MemoryComponents do
       {:ok, datetime, _offset} ->
         datetime
         |> DateTime.to_naive()
+        |> NaiveDateTime.truncate(:millisecond)
         |> NaiveDateTime.to_iso8601()
 
       _error ->
@@ -134,11 +184,25 @@ defmodule Backplane.Admin.MemoryComponents do
     end
   end
 
+  def datetime_local_value(_value), do: ""
+
+  def fix_dm_table_rowgroup_roles(table_id) do
+    JS.set_attribute({"role", "rowgroup"}, to: "##{table_id} thead")
+    |> JS.set_attribute({"role", "rowgroup"}, to: "##{table_id} tbody")
+  end
+
   def format_json(payload), do: Jason.encode!(payload || %{}, pretty: true)
 
   def event_color(%{status: status}) when status in ["failed", "error"], do: "error"
   def event_color(%{status: status}) when status in ["completed", "success"], do: "success"
   def event_color(_event), do: "primary"
+
+  defp memory_link_variant_class("primary"), do: "btn-primary"
+  defp memory_link_variant_class("ghost"), do: "btn-ghost"
+  defp memory_link_variant_class(nil), do: nil
+
+  defp memory_link_size_class("sm"), do: "btn-sm"
+  defp memory_link_size_class(nil), do: nil
 
   defp status_variant(status) when status in ["failed", "error"], do: "error"
   defp status_variant(status) when status in ["completed", "success"], do: "success"

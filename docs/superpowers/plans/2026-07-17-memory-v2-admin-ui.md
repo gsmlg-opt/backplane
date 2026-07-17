@@ -69,6 +69,7 @@
 - `apps/backplane_memory/test/backplane/memory/events/migration_test.exs`
 - `apps/backplane_admin/lib/backplane/admin/router.ex`
 - `apps/backplane_admin/lib/backplane/admin/components/layouts.ex`
+- `apps/backplane_admin/lib/backplane/admin/components/layouts/app.html.heex`
 - `apps/backplane_admin/lib/backplane/admin/live/memory_overview_live.ex`
 - `apps/backplane_admin/test/backplane/admin/route_boundary_test.exs`
 - `apps/backplane_admin/test/backplane/admin/endpoint_test.exs`

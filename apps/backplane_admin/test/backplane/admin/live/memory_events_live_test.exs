@@ -24,10 +24,18 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
       assert has_element?(view, "#memory-events-table th", label)
     end
 
+    assert has_element?(view, "#memory-events-table[phx-mounted]")
     assert html =~ "No events match these filters"
     assert html =~ "Pipeline is disabled"
     assert html =~ "Events is disabled"
-    assert has_element?(view, ~s(a[href="/memory/pipeline"]), "Open Pipeline")
+
+    assert has_element?(
+             view,
+             ~s|a#memory-open-pipeline[href="/memory/pipeline"]|,
+             "Open Pipeline"
+           )
+
+    refute has_element?(view, "a el-dm-button")
   end
 
   test "applies every URL-backed event filter", %{conn: conn} do
@@ -114,7 +122,7 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     refute late.id in table_event_ids(to_html)
   end
 
-  test "renders UTC bounds for datetime-local and preserves seconds and fractions on filter changes",
+  test "renders browser-valid UTC bounds and preserves canonical precision on filter changes",
        %{conn: conn} do
     from = "2026-07-17T04:05:06.123456Z"
     to = "2026-07-17T05:06:07.654321Z"
@@ -130,20 +138,35 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
 
     assert has_element?(
              view,
-             ~s|#event-from[value="2026-07-17T04:05:06.123456"]|
+             ~s|#event-from[value="2026-07-17T04:05:06.123"]|
            )
 
     assert has_element?(
              view,
-             ~s|#event-to[value="2026-07-17T05:06:07.654321"]|
+             ~s|#event-to[value="2026-07-17T05:06:07.654"]|
+           )
+
+    assert has_element?(
+             view,
+             ~s|input[type=hidden][name="filters[from]"][value="#{from}"]|
+           )
+
+    assert has_element?(
+             view,
+             ~s|input[type=hidden][name="filters[to]"][value="#{to}"]|
            )
 
     render_change(view, "filter", %{
+      "_target" => ["filters", "project"],
       "filters" => %{
         "project" => "  precision-project  ",
-        "from" => "2026-07-17T04:05:06.123456",
-        "to" => "2026-07-17T05:06:07.654321",
+        "from" => from,
+        "to" => to,
         "cursor" => "discard-me"
+      },
+      "datetime_filters" => %{
+        "from" => "2026-07-17T04:05:06.123",
+        "to" => "2026-07-17T05:06:07.654"
       }
     })
 
@@ -154,6 +177,117 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
              "project" => "precision-project",
              "to" => to
            }
+
+    render_change(view, "filter", %{
+      "_target" => ["datetime_filters", "from"],
+      "filters" => %{
+        "project" => "precision-project",
+        "from" => from,
+        "to" => to
+      },
+      "datetime_filters" => %{
+        "from" => "2026-07-17T04:05:06.999",
+        "to" => "2026-07-17T05:06:07.654"
+      }
+    })
+
+    edited = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(edited).query || "") == %{
+             "from" => "2026-07-17T04:05:06.999Z",
+             "project" => "precision-project",
+             "to" => to
+           }
+
+    render_change(view, "filter", %{
+      "_target" => ["datetime_filters", "to"],
+      "filters" => %{
+        "project" => "precision-project",
+        "from" => from,
+        "to" => to
+      },
+      "datetime_filters" => %{
+        "from" => "2026-07-17T04:05:06.111",
+        "to" => "2026-07-17T05:06:07.222"
+      }
+    })
+
+    rapid_edit = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(rapid_edit).query || "") == %{
+             "from" => "2026-07-17T04:05:06.111Z",
+             "project" => "precision-project",
+             "to" => "2026-07-17T05:06:07.222Z"
+           }
+
+    render_submit(view, "filter", %{
+      "filters" => %{
+        "project" => "precision-project",
+        "from" => from,
+        "to" => to
+      },
+      "datetime_filters" => %{
+        "from" => "2026-07-17T04:05:06.777",
+        "to" => "2026-07-17T05:06:07.888"
+      }
+    })
+
+    submitted = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(submitted).query || "") == %{
+             "from" => "2026-07-17T04:05:06.777Z",
+             "project" => "precision-project",
+             "to" => "2026-07-17T05:06:07.888Z"
+           }
+  end
+
+  test "rejects malformed non-string datetime filter values without crashing", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/events")
+
+    render_change(view, "filter", %{
+      "filters" => %{
+        "project" => "safe-project",
+        "from" => %{"unexpected" => "shape"},
+        "to" => ""
+      },
+      "datetime_filters" => %{
+        "from" => "",
+        "to" => ""
+      }
+    })
+
+    assert_patch(view, "/memory/events?project=safe-project")
+    assert render(view) =~ "One invalid event parameter was removed."
+    assert Process.alive?(view.pid)
+  end
+
+  test "filter changes ignore LiveView unused-field metadata", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/events")
+
+    render_change(view, "filter", %{
+      "filters" => %{
+        "_unused_project" => "",
+        "_unused_type" => "",
+        "_unused_status" => "",
+        "_unused_from" => "",
+        "_unused_to" => "",
+        "project" => "  metadata-project  ",
+        "type" => "",
+        "status" => "",
+        "from" => "2026-07-17T04:05:06.123456",
+        "to" => "2026-07-17T05:06:07.654321"
+      }
+    })
+
+    patched = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(patched).query || "") == %{
+             "from" => "2026-07-17T04:05:06.123456Z",
+             "project" => "metadata-project",
+             "to" => "2026-07-17T05:06:07.654321Z"
+           }
+
+    refute render(view) =~ "One invalid event parameter was removed."
   end
 
   test "successful and invalid loads replace-patch to canonical shareable URLs", %{conn: conn} do
@@ -225,13 +359,19 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
 
     assert length(table_event_ids(html)) == 100
 
-    [older_link] =
-      html
-      |> Floki.parse_fragment!()
-      |> Floki.find(~s(a[data-phx-link="patch"]))
-      |> Enum.filter(&(Floki.text(&1) |> String.trim() == "Load older"))
+    assert has_element?(
+             view,
+             "a#event-load-older[data-phx-link=patch][href]",
+             "Load older"
+           )
 
-    older_href = older_link |> Floki.attribute("href") |> List.first()
+    refute has_element?(view, "a el-dm-button")
+
+    view
+    |> element("#event-load-older")
+    |> render_click()
+
+    older_href = assert_patch(view)
     older_query = older_href |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
 
     assert older_query["project"] == project
@@ -282,11 +422,15 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     {:ok, view, html} = live(conn, path)
 
     assert has_element?(view, "#event-identity", event.id)
+    assert html =~ "grid-cols-1"
+    assert html =~ "sm:grid-cols-[max-content_minmax(0,1fr)]"
 
     assert has_element?(
              view,
-             ~s|#memory-events-table a[href="#{path}"]:not([data-phx-link])|
+             ~s|#memory-events-table a.text-on-surface.underline[href="#{path}"]:not([data-phx-link])|
            )
+
+    refute has_element?(view, "#memory-events-table a.text-primary")
 
     for label <- [
           "Event ID",
@@ -423,7 +567,7 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     {:ok, view, _html} =
       live(conn, query_path("/memory/events", %{"project" => project}))
 
-    historical_html = view |> element("a", "Load older") |> render_click()
+    historical_html = view |> element("#event-load-older") |> render_click()
     historical_ids = table_event_ids(historical_html)
     assert length(historical_ids) == 1
 
@@ -439,8 +583,14 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     assert has_element?(view, ~s(#event-new-events[title="New events available"]))
     assert table_event_ids(render(view)) == historical_ids
 
+    assert has_element?(
+             view,
+             "a#event-refresh-newest[data-phx-link=patch][href]",
+             "Refresh newest"
+           )
+
     view
-    |> element("#event-new-events a", "Refresh newest")
+    |> element("#event-refresh-newest", "Refresh newest")
     |> render_click()
 
     assert List.first(table_event_ids(render(view))) == new_event.id

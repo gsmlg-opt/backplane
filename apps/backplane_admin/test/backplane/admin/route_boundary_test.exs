@@ -176,6 +176,25 @@ defmodule Backplane.Admin.RouteBoundaryTest do
            ]
   end
 
+  test "Memory V2 pages accept client theme changes without disconnecting", %{conn: conn} do
+    put_memory_credentials("admin", "secret")
+
+    conn =
+      Plug.Conn.put_req_header(
+        conn,
+        "authorization",
+        basic_auth_header("admin", "secret")
+      )
+
+    for path <- @memory_v2_top_paths do
+      {:ok, view, _html} = live(recycle(conn), path)
+
+      refute has_element?(view, "#admin-theme-switcher[data-theme=moonlight]")
+      assert render_hook(view, "theme_changed", %{"theme" => "sunshine"}) =~ "Memory"
+      assert Process.alive?(view.pid)
+    end
+  end
+
   test "legacy Memory pages are literal not found without redirects", %{conn: conn} do
     put_memory_credentials("admin", "secret")
 
