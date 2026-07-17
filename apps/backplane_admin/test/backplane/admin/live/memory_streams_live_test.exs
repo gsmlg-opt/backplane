@@ -32,6 +32,15 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     refute has_element?(view, "a el-dm-button")
   end
 
+  test "initial repository failure does not masquerade as an empty stream result", %{conn: conn} do
+    :ok = fail_memory_reads!()
+
+    {:ok, view, html} = live(conn, "/memory/streams")
+
+    assert has_element?(view, "#stream-query-error")
+    refute html =~ "No streams match these filters"
+  end
+
   test "applies every URL-backed inventory filter", %{conn: conn} do
     marker = unique("stream-filters")
 
@@ -180,6 +189,38 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
            }
 
     assert render(view) =~ "One invalid stream parameter was removed."
+  end
+
+  test "compound-invalid URLs need one canonical correction and one concise flash", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/streams")
+
+    compound_path =
+      query_path("/memory/streams", %{
+        "project" => "compound-streams",
+        "state" => "all",
+        "cursor" => "@@@"
+      })
+
+    render_patch(view, compound_path)
+    assert_patch(view, compound_path)
+    corrected = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(corrected).query || "") == %{
+             "project" => "compound-streams"
+           }
+
+    flash =
+      view
+      |> render()
+      |> Floki.parse_fragment!()
+      |> Floki.find("#flash-error")
+
+    assert length(flash) == 1
+    assert Floki.text(flash) =~ "One invalid stream parameter was removed."
+
+    render_patch(view, corrected)
+    assert_patch(view, corrected)
+    refute_patched(view)
   end
 
   test "caps inventory pages and traverses tied and undated streams without gaps", %{conn: conn} do

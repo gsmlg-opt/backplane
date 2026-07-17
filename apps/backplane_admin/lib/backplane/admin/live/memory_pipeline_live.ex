@@ -73,7 +73,13 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   @impl true
   def handle_info({:setting_changed, key, _value}, socket)
       when key in @memory_setting_keys do
-    {:noreply, assign(socket, rollout: Operations.rollout_state())}
+    case Operations.get_rollout_state() do
+      rollout when is_map(rollout) ->
+        {:noreply, assign(socket, rollout: rollout)}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, mutation_error: "The rollout setting could not be saved.")}
+    end
   end
 
   def handle_info({:setting_changed, _key, _value}, socket) do
@@ -249,23 +255,25 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   end
 
   defp mutate_gate(socket, gate, value) do
-    result = Operations.set_gate(gate, value)
-    rollout = Operations.rollout_state()
+    mutation_error =
+      case Operations.set_gate(gate, value) do
+        :ok -> nil
+        {:error, reason} -> gate_error(reason)
+    end
 
-    case result do
-      :ok ->
+    case Operations.get_rollout_state() do
+      rollout when is_map(rollout) ->
         {:noreply,
          assign(socket,
            rollout: rollout,
-           mutation_error: nil,
+           mutation_error: mutation_error,
            pending_dual_write: false
          )}
 
-      {:error, reason} ->
+      {:error, _reason} ->
         {:noreply,
          assign(socket,
-           rollout: rollout,
-           mutation_error: gate_error(reason),
+           mutation_error: mutation_error || "The rollout setting could not be saved.",
            pending_dual_write: false
          )}
     end

@@ -38,6 +38,15 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     refute has_element?(view, "a el-dm-button")
   end
 
+  test "initial repository failure does not masquerade as an empty event result", %{conn: conn} do
+    :ok = fail_memory_reads!()
+
+    {:ok, view, html} = live(conn, "/memory/events")
+
+    assert has_element?(view, "#event-query-error")
+    refute html =~ "No events match these filters"
+  end
+
   test "applies every URL-backed event filter", %{conn: conn} do
     marker = unique("event-filters")
     occurred_at = ~U[2026-07-17 05:00:00.123456Z]
@@ -342,6 +351,38 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
            }
 
     assert render(view) =~ "One invalid event parameter was removed."
+  end
+
+  test "compound-invalid URLs need one canonical correction and one concise flash", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/events")
+
+    compound_path =
+      query_path("/memory/events", %{
+        "project" => "compound-events",
+        "from" => "not-a-time",
+        "cursor" => "@@@"
+      })
+
+    render_patch(view, compound_path)
+    assert_patch(view, compound_path)
+    corrected = assert_patch(view)
+
+    assert URI.decode_query(URI.parse(corrected).query || "") == %{
+             "project" => "compound-events"
+           }
+
+    flash =
+      view
+      |> render()
+      |> Floki.parse_fragment!()
+      |> Floki.find("#flash-error")
+
+    assert length(flash) == 1
+    assert Floki.text(flash) =~ "One invalid event parameter was removed."
+
+    render_patch(view, corrected)
+    assert_patch(view, corrected)
+    refute_patched(view)
   end
 
   test "caps event pages at 100 rows and emits an opaque older cursor", %{conn: conn} do

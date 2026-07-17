@@ -12,6 +12,14 @@ defmodule Backplane.Admin.MemoryFixtures.FailingSettings do
     do: {:error, :forced_setting_failure}
 end
 
+defmodule Backplane.Admin.MemoryFixtures.CrashingSettings do
+  def get_many(_keys), do: raise("forced settings read failure")
+  def subscribe, do: Backplane.Settings.subscribe()
+
+  def set_if(_key, _value, _expectations),
+    do: exit(:forced_settings_write_failure)
+end
+
 defmodule Backplane.Admin.MemoryFixtures do
   import Plug.Conn
 
@@ -121,6 +129,39 @@ defmodule Backplane.Admin.MemoryFixtures do
       :backplane_memory,
       :settings_adapter,
       Backplane.Admin.MemoryFixtures.FailingSettings
+    )
+
+    ExUnit.Callbacks.on_exit(fn ->
+      case previous do
+        {:ok, adapter} ->
+          Application.put_env(
+            :backplane_memory,
+            :settings_adapter,
+            adapter
+          )
+
+        :error ->
+          Application.delete_env(
+            :backplane_memory,
+            :settings_adapter
+          )
+      end
+    end)
+
+    :ok
+  end
+
+  def crash_memory_settings! do
+    previous =
+      Application.fetch_env(
+        :backplane_memory,
+        :settings_adapter
+      )
+
+    Application.put_env(
+      :backplane_memory,
+      :settings_adapter,
+      Backplane.Admin.MemoryFixtures.CrashingSettings
     )
 
     ExUnit.Callbacks.on_exit(fn ->

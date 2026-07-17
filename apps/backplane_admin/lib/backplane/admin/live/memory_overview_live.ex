@@ -175,6 +175,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
           :let={events}
         >
           <div class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-recent-events"
               data={events}
@@ -182,11 +183,12 @@ defmodule Backplane.Admin.MemoryOverviewLive do
               hover
               zebra
               class="min-w-[48rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-recent-events")}
             >
               <:col :let={event} label="Event">
                 <.link
                   href={~p"/memory/events/#{event.id}"}
-                  class="font-mono text-primary hover:underline"
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
                 >
                   {event.event_type}
                 </.link>
@@ -207,6 +209,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
           :let={streams}
         >
           <div class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-active-streams"
               data={streams}
@@ -214,11 +217,12 @@ defmodule Backplane.Admin.MemoryOverviewLive do
               hover
               zebra
               class="min-w-[48rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-active-streams")}
             >
               <:col :let={stream} label="Stream">
                 <.link
                   href={~p"/memory/streams/#{stream.stream_id}"}
-                  class="font-mono text-primary hover:underline"
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
                 >
                   {stream.stream_id}
                 </.link>

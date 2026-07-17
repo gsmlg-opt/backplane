@@ -3,7 +3,8 @@
 <% left_nav_heading = Backplane.Admin.Layouts.left_nav_heading(current_path) %>
 
 <div class="min-h-full bg-surface text-on-surface">
-  <header class="appbar appbar-sticky appbar-primary">
+  <%!-- WORKAROUND(upstream): duskmoon-dev/duskmoonui#47 --%>
+  <header class="appbar appbar-sticky appbar-surface-container">
     <a href={Backplane.WebOrigins.api_url("/")} class="appbar-brand no-underline">
       <img
         src={~p"/images/backplane-logo.png"}
@@ -18,7 +19,11 @@
       <.link
         :for={item <- Backplane.Admin.Layouts.top_nav_items()}
         navigate={item.path}
-        class="appbar-action w-auto rounded-md px-3 whitespace-nowrap no-underline"
+        class={[
+          "appbar-action w-auto rounded-md px-3 whitespace-nowrap no-underline",
+          Backplane.Admin.Layouts.active_top_nav?(current_path, item.section) &&
+            "bg-primary-container text-on-primary-container"
+        ]}
         aria-current={Backplane.Admin.Layouts.active_top_nav?(current_path, item.section) && "page"}
       >
         {item.label}

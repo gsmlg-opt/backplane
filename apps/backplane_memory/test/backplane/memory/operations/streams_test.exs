@@ -154,6 +154,37 @@ defmodule Backplane.Memory.Operations.StreamsTest do
                  })
       end
     end
+
+    test "removes a malformed cursor with another invalid inventory parameter" do
+      project = unique("stream-compound-cursor")
+
+      assert {:error, {:invalid_param, :state, canonical}} =
+               Operations.list_streams(%{
+                 "project" => project,
+                 "state" => "all",
+                 "cursor" => "@@@"
+               })
+
+      assert canonical == %{"project" => project}
+
+      valid_cursor =
+        encode_cursor(%{
+          "branch" => "undated",
+          "stream_id" => "valid-stream"
+        })
+
+      assert {:error, {:invalid_param, :state, valid_canonical}} =
+               Operations.list_streams(%{
+                 "project" => project,
+                 "state" => "all",
+                 "cursor" => valid_cursor
+               })
+
+      assert valid_canonical == %{
+               "project" => project,
+               "cursor" => valid_cursor
+             }
+    end
   end
 
   describe "stream detail and sequence windows" do

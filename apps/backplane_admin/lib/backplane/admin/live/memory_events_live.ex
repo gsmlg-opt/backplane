@@ -265,7 +265,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
       </.form>
 
       <.memory_empty_state
-        :if={@page.events == [] and is_nil(@selected_event)}
+        :if={is_nil(@query_error) and @page.events == [] and is_nil(@selected_event)}
         title="No events match these filters"
         rollout={@rollout}
       />

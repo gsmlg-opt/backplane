@@ -56,15 +56,20 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
 
     assert has_element?(
              view,
-             ~s(#memory-recent-events a[href="/memory/events/#{event.id}"]),
+             ~s(#memory-recent-events a.text-on-surface.underline[href="/memory/events/#{event.id}"]),
              event.event_type
            )
 
     assert has_element?(
              view,
-             ~s(#memory-active-streams a[href="/memory/streams/#{event.stream_id}"]),
+             ~s(#memory-active-streams a.text-on-surface.underline[href="/memory/streams/#{event.stream_id}"]),
              event.stream_id
            )
+
+    assert has_element?(view, "#memory-recent-events[phx-mounted]")
+    assert has_element?(view, "#memory-active-streams[phx-mounted]")
+    refute has_element?(view, "#memory-recent-events a.text-primary")
+    refute has_element?(view, "#memory-active-streams a.text-primary")
 
     assert length(Regex.scan(~r/Unavailable/, html)) == 5
 

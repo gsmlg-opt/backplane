@@ -85,6 +85,9 @@ defmodule Backplane.Memory.Events.Query do
     end
   end
 
+  @doc false
+  def valid_cursor?(cursor), do: match?({:ok, _decoded}, decode_cursor(cursor))
+
   defp normalize_filters(filters) when is_list(filters) do
     if Keyword.keyword?(filters),
       do: normalize_filter_pairs(filters),

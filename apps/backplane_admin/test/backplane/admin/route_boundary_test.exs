@@ -195,6 +195,28 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end
   end
 
+  test "Memory V2 uses the theme-safe DuskMoon appbar surface", %{conn: conn} do
+    put_memory_credentials("admin", "secret")
+
+    conn =
+      Plug.Conn.put_req_header(
+        conn,
+        "authorization",
+        basic_auth_header("admin", "secret")
+      )
+
+    {:ok, view, _html} = live(conn, "/memory")
+
+    assert has_element?(view, "header.appbar.appbar-surface-container")
+    refute has_element?(view, "header.appbar-primary")
+    assert has_element?(view, ~s(nav.admin-top-nav a[aria-current="page"].bg-primary-container))
+
+    assert has_element?(
+             view,
+             ~s(nav.admin-top-nav a[aria-current="page"].text-on-primary-container)
+           )
+  end
+
   test "legacy Memory pages are literal not found without redirects", %{conn: conn} do
     put_memory_credentials("admin", "secret")
 

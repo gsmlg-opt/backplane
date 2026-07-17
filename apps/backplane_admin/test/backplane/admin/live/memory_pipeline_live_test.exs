@@ -316,6 +316,38 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     assert Process.alive?(view.pid)
   end
 
+  test "Settings exits and read exceptions retain the last good gate state", %{conn: conn} do
+    set_configured!(true, false, false)
+    {:ok, view, _html} = live(conn, "/memory/pipeline")
+
+    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
+    refute has_element?(view, "#events-gate[checked]")
+
+    :ok = crash_memory_settings!()
+
+    render_change(view, "set-gate", %{
+      "gate" => %{"name" => "events", "value" => "true"}
+    })
+
+    assert Process.alive?(view.pid)
+
+    assert has_element?(
+             view,
+             "#pipeline-mutation-error",
+             "The rollout setting could not be saved."
+           )
+
+    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
+    refute has_element?(view, "#events-gate[checked]")
+    refute render(view) =~ "forced settings"
+
+    send(view.pid, {:setting_changed, @pipeline, true})
+
+    assert Process.alive?(view.pid)
+    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
+    refute has_element?(view, "#events-gate[checked]")
+  end
+
   defp set_configured!(pipeline, events, dual_write) do
     assert :ok = Settings.set(@pipeline, pipeline)
     assert :ok = Settings.set(@events, events)

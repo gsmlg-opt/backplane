@@ -88,6 +88,39 @@ defmodule Backplane.Memory.Operations.EventsTest do
              })
   end
 
+  test "a malformed cursor is removed with another invalid timeline parameter" do
+    project = unique("operations-compound-cursor")
+
+    assert {:error, {:invalid_param, :from, canonical}} =
+             Operations.timeline(%{
+               "project" => project,
+               "from" => "not-a-time",
+               "cursor" => "not-a-cursor"
+             })
+
+    assert canonical == %{"project" => project}
+
+    valid_cursor =
+      %{
+        "occurred_at" => "2026-07-17T10:00:00Z",
+        "id" => Ecto.UUID.generate()
+      }
+      |> Jason.encode!()
+      |> Base.url_encode64(padding: false)
+
+    assert {:error, {:invalid_param, :from, valid_canonical}} =
+             Operations.timeline(%{
+               "project" => project,
+               "from" => "not-a-time",
+               "cursor" => valid_cursor
+             })
+
+    assert valid_canonical == %{
+             "project" => project,
+             "cursor" => valid_cursor
+           }
+  end
+
   test "repository failures return errors instead of raising" do
     previous_repo = Application.fetch_env(:backplane_memory, :repo)
 

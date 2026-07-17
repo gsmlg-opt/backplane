@@ -29,7 +29,10 @@ defmodule Backplane.Memory.Operations do
   ]
 
   def timeline(raw_filters) do
-    with {:ok, normalized} <- Params.timeline(raw_filters),
+    with {:ok, normalized} <-
+           raw_filters
+           |> Params.timeline()
+           |> validate_cursor_result(&Backplane.Memory.Events.Query.valid_cursor?/1),
          {:ok, page} <- safe_read(fn -> Events.timeline(normalized.values) end) do
       {:ok, Map.merge(page, %{filters: normalized.query})}
     else
@@ -45,7 +48,8 @@ defmodule Backplane.Memory.Operations do
   def get_event(id), do: safe_read(fn -> Query.get_event(id) end)
   def subscribe_events, do: EventNotifier.subscribe()
   def rollout_state, do: Rollout.state()
-  def set_gate(gate, value), do: Rollout.set_gate(gate, value)
+  def get_rollout_state, do: safe_read(fn -> Rollout.state() end)
+  def set_gate(gate, value), do: safe_command(fn -> Rollout.set_gate(gate, value) end)
   def subscribe_rollout, do: Rollout.subscribe()
   def normalize_timeline_params(raw), do: Params.timeline(raw)
   def normalize_stream_params(raw), do: Params.streams(raw)
@@ -81,7 +85,10 @@ defmodule Backplane.Memory.Operations do
   end
 
   def list_streams(raw_filters) do
-    with {:ok, normalized} <- Params.streams(raw_filters),
+    with {:ok, normalized} <-
+           raw_filters
+           |> Params.streams()
+           |> validate_cursor_result(&Query.valid_stream_cursor?/1),
          {:ok, page} <- safe_read(fn -> Query.list_streams(normalized.values) end) do
       {:ok, Map.put(page, :filters, normalized.query)}
     else
@@ -167,6 +174,35 @@ defmodule Backplane.Memory.Operations do
     end
   end
 
+  defp validate_cursor_result(
+         {:ok, %{query: query}} = result,
+         validator
+       ) do
+    if invalid_query_cursor?(query, validator) do
+      {:error, {:invalid_param, :cursor, Map.delete(query, "cursor")}}
+    else
+      result
+    end
+  end
+
+  defp validate_cursor_result(
+         {:error, {:invalid_param, key, query}} = result,
+         validator
+       ) do
+    if invalid_query_cursor?(query, validator) do
+      {:error, {:invalid_param, key, Map.delete(query, "cursor")}}
+    else
+      result
+    end
+  end
+
+  defp invalid_query_cursor?(query, validator) do
+    case Map.fetch(query, "cursor") do
+      {:ok, cursor} -> not validator.(cursor)
+      :error -> false
+    end
+  end
+
   defp runtime_metrics do
     snapshot = Backplane.Metrics.snapshot()
     counters = Map.get(snapshot, :counters, %{})
@@ -182,6 +218,16 @@ defmodule Backplane.Memory.Operations do
   defp safe_read(loader) do
     try do
       loader.()
+    rescue
+      error -> {:error, error}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  defp safe_command(command) do
+    try do
+      command.()
     rescue
       error -> {:error, error}
     catch

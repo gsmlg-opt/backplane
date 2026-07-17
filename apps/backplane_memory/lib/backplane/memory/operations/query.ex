@@ -110,6 +110,10 @@ defmodule Backplane.Memory.Operations.Query do
     end
   end
 
+  @doc false
+  def valid_stream_cursor?(cursor),
+    do: match?({:ok, _decoded}, decode_stream_cursor(cursor))
+
   def get_event(id) do
     case Ecto.UUID.cast(id) do
       {:ok, uuid} ->

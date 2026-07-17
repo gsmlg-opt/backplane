@@ -147,11 +147,6 @@
   margin-left: auto;
 }
 
-.appbar-primary .admin-top-nav .appbar-action[aria-current="page"] {
-  background-color: var(--color-primary-container);
-  color: var(--color-on-primary-container);
-}
-
 /* Make LiveView content stretch to fill available vertical space.
    Cascade flex-column through classless wrapper divs (Phoenix LV container,
    render root, view root). Styled divs with classes are not affected. */

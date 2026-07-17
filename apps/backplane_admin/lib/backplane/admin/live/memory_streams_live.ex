@@ -258,7 +258,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
       </.form>
 
       <.memory_empty_state
-        :if={@page.streams == [] and is_nil(@selected_stream)}
+        :if={is_nil(@query_error) and @page.streams == [] and is_nil(@selected_stream)}
         title="No streams match these filters"
         rollout={@rollout}
       />
