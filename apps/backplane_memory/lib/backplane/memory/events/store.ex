@@ -3,8 +3,7 @@ defmodule Backplane.Memory.Events.Store do
 
   import Ecto.Query
 
-  alias Backplane.Memory.Events
-  alias Backplane.Memory.Events.{Event, Stream}
+  alias Backplane.Memory.Events.{Event, Preparation, Stream}
 
   @metadata_fields [:project, :agent_id, :host_id, :client_id, :session_id, :run_id]
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
@@ -25,7 +24,7 @@ defmodule Backplane.Memory.Events.Store do
 
   @doc false
   def append_multi(%Ecto.Multi{} = multi, name, attrs) do
-    case Events.append(attrs) do
+    case Preparation.prepare(attrs) do
       {:ok, event} ->
         Ecto.Multi.run(multi, name, fn repo, _changes -> append_locked(repo, event) end)
 
@@ -42,7 +41,7 @@ defmodule Backplane.Memory.Events.Store do
     telemetry? = Keyword.get(opts, :telemetry, true)
 
     tagged_result =
-      with {:ok, events} <- Events.append_batch(attrs_list) do
+      with {:ok, events} <- Preparation.prepare_batch(attrs_list) do
         transact_batch(repo, events, idempotency_count(events) + 1)
       end
 
