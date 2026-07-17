@@ -3,13 +3,20 @@ defmodule Backplane.Memory.Application do
 
   use Application
 
+  alias Backplane.Memory.{EventNotifier, Service}
   alias Backplane.Registry.ToolRegistry
-  alias Backplane.Memory.Service
 
   @impl true
   def start(_type, _args) do
-    children = []
-    opts = [strategy: :one_for_one, name: Backplane.Memory.Supervisor]
+    children = [
+      Supervisor.child_spec(
+        {Postgrex.Notifications, EventNotifier.connection_options()},
+        id: Backplane.Memory.EventNotifications
+      ),
+      EventNotifier
+    ]
+
+    opts = [strategy: :rest_for_one, name: Backplane.Memory.Supervisor]
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
       register_service()

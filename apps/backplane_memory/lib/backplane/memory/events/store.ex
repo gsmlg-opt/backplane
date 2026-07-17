@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Events.Store do
 
   import Ecto.Query
 
+  alias Backplane.Memory.EventNotifier
   alias Backplane.Memory.Events.{Event, Preparation, Stream}
 
   @metadata_fields [:project, :agent_id, :host_id, :client_id, :session_id, :run_id]
@@ -220,7 +221,10 @@ defmodule Backplane.Memory.Events.Store do
               last_event_at: last_event_at
           }
 
-          {:inserted, inserted, updated_stream}
+          case EventNotifier.enqueue(repo, inserted.id) do
+            :ok -> {:inserted, inserted, updated_stream}
+            {:error, reason} -> {:error, reason}
+          end
 
         {:error, changeset} ->
           if idempotency_unique_violation?(changeset, event) do

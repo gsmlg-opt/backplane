@@ -32,6 +32,8 @@ defmodule Backplane.Memory.MixProject do
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:pgvector, "~> 0.3"},
       {:jason, "~> 1.4"},
+      {:postgrex, "~> 0.19"},
+      {:phoenix_pubsub, "~> 2.1"},
       {:req, "~> 0.5", override: true},
       {:oban, "~> 2.18"},
       {:tzdata, "~> 1.1"}
