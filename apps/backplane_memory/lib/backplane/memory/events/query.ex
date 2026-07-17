@@ -8,7 +8,7 @@ defmodule Backplane.Memory.Events.Query do
   @default_limit 100
   @maximum_limit 500
   @maximum_sequence 9_223_372_036_854_775_807
-  @equality_filters [:stream, :project, :agent, :session, :run, :type, :tool]
+  @equality_filters [:stream, :project, :agent, :session, :run, :type, :tool, :status]
 
   @filter_aliases %{
     :stream => :stream,
@@ -25,6 +25,8 @@ defmodule Backplane.Memory.Events.Query do
     "type" => :type,
     :tool => :tool,
     "tool" => :tool,
+    :status => :status,
+    "status" => :status,
     :from => :from,
     "from" => :from,
     :to => :to,
@@ -177,6 +179,7 @@ defmodule Backplane.Memory.Events.Query do
       {:run, value}, query -> where(query, [e], e.run_id == ^value)
       {:type, value}, query -> where(query, [e], e.event_type == ^value)
       {:tool, value}, query -> where(query, [e], e.tool_name == ^value)
+      {:status, value}, query -> where(query, [e], e.status == ^value)
       {_option, _value}, query -> query
     end)
   end

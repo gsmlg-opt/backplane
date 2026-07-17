@@ -3,7 +3,7 @@ defmodule Backplane.Memory.EventNotifierTest do
 
   import Ecto.Query
 
-  alias Backplane.Memory.EventNotifier
+  alias Backplane.Memory.{EventNotifier, Events, Operations}
   alias Backplane.Memory.Events.{Event, Store, Stream}
   alias Ecto.Adapters.SQL.Sandbox
 
@@ -157,6 +157,30 @@ defmodule Backplane.Memory.EventNotifierTest do
     refute Map.has_key?(summary, :content)
     refute Map.has_key?(summary, :payload)
     refute inspect(summary) =~ secret
+  end
+
+  test "a commit between subscription and authoritative reload cannot be missed" do
+    prefix = unique("subscribe-reload")
+    project = "#{prefix}:project"
+    cleanup_on_exit(prefix)
+    :ok = EventNotifier.subscribe()
+
+    event =
+      unboxed(fn ->
+        assert {:ok, event} =
+                 Events.append(%{
+                   stream_id: "#{prefix}:stream",
+                   event_type: "task.created",
+                   project: project
+                 })
+
+        event
+      end)
+
+    assert {:ok, %{events: events}} = Operations.timeline(%{"project" => project})
+    assert Enum.any?(events, &(&1.id == event.id))
+    assert_receive {:memory_event_inserted, %{id: id}}, 1_000
+    assert id == event.id
   end
 
   defp unboxed(fun) do

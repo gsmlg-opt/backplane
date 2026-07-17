@@ -114,10 +114,36 @@ defmodule Backplane.Memory.Events.QueryTest do
 
         assert string_id == target.id
       end
+
+      status_project = marker <> ":status-project"
+
+      common_status_attrs = %{
+        stream_id: marker <> ":status-stream",
+        event_type: "agent.run.completed",
+        project: status_project,
+        agent_id: marker <> ":status-agent",
+        session_id: marker <> ":status-session",
+        run_id: marker <> ":status-run",
+        tool_name: marker <> ":status-tool",
+        occurred_at: occurred_at
+      }
+
+      append!(Map.put(common_status_attrs, :status, "completed"))
+      failed = append!(Map.put(common_status_attrs, :status, "failed"))
+
+      assert {:ok, %{events: [%Event{id: id}]}} =
+               Events.timeline(status: "failed", project: status_project)
+
+      assert id == failed.id
+
+      assert {:ok, %{events: [%Event{id: string_id}]}} =
+               Events.timeline(%{"status" => "failed", "project" => status_project})
+
+      assert string_id == failed.id
     end
 
     test "rejects non-string equality filters instead of raising query cast errors" do
-      for filter <- [:stream, :project, :agent, :session, :run, :type, :tool],
+      for filter <- [:stream, :project, :agent, :session, :run, :type, :tool, :status],
           invalid <- [%{}, ["value"], 123, <<255>>] do
         assert {:error, :invalid_filters} = Events.timeline([{filter, invalid}])
       end
