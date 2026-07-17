@@ -51,6 +51,35 @@ defmodule Backplane.Memory.Operations do
   def normalize_stream_params(raw), do: Params.streams(raw)
   def normalize_sequence_params(raw), do: Params.sequence(raw)
 
+  def overview do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    collect_regions(%{
+      pipeline: &rollout_state/0,
+      persisted_counts: fn -> Query.persisted_counts(now) end,
+      event_volume: fn -> Query.event_volume(now) end,
+      runtime_metrics: &runtime_metrics/0,
+      recent_events: fn -> Query.recent_events(8) end,
+      active_streams: fn -> Query.active_streams(8) end
+    })
+  end
+
+  @doc false
+  def collect_regions(region_functions) do
+    Map.new(region_functions, fn {region, loader} ->
+      result =
+        try do
+          {:ok, loader.()}
+        rescue
+          error -> {:error, error}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+
+      {region, result}
+    end)
+  end
+
   def list_streams(raw_filters) do
     with {:ok, normalized} <- Params.streams(raw_filters),
          {:ok, page} <- safe_read(fn -> Query.list_streams(normalized.values) end) do
@@ -136,6 +165,18 @@ defmodule Backplane.Memory.Operations do
       {:ok, %{query: query}} -> query
       {:error, {:invalid_param, _key, canonical_query}} -> canonical_query
     end
+  end
+
+  defp runtime_metrics do
+    snapshot = Backplane.Metrics.snapshot()
+    counters = Map.get(snapshot, :counters, %{})
+
+    %{
+      appended: Map.get(counters, "memory_events_appended", 0),
+      duplicates: Map.get(counters, "memory_events_duplicates", 0),
+      errors: Map.get(counters, "memory_events_errors", 0),
+      scope: :since_process_start
+    }
   end
 
   defp safe_read(loader) do

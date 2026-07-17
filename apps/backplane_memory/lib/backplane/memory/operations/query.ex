@@ -6,6 +6,82 @@ defmodule Backplane.Memory.Operations.Query do
   alias Backplane.Memory.Events
   alias Backplane.Memory.Events.{Event, Stream}
 
+  def persisted_counts(%DateTime{} = now) do
+    cutoff = DateTime.add(now, -24, :hour)
+
+    open_streams =
+      Stream
+      |> where([stream], is_nil(stream.closed_at))
+      |> repo().aggregate(:count, :stream_id)
+
+    events_last_24h =
+      Event
+      |> where([event], event.inserted_at >= ^cutoff)
+      |> repo().aggregate(:count, :id)
+
+    %{
+      open_streams: open_streams,
+      events_last_24h: events_last_24h
+    }
+  end
+
+  def event_volume(%DateTime{} = now) do
+    final_bucket = minute_floor(now)
+    first_bucket = DateTime.add(final_bucket, -59, :minute)
+    exclusive_end = DateTime.add(final_bucket, 1, :minute)
+
+    counts =
+      Event
+      |> where(
+        [event],
+        event.inserted_at >= ^first_bucket and
+          event.inserted_at < ^exclusive_end
+      )
+      |> group_by(
+        [event],
+        type(
+          fragment("date_trunc('minute', ?)", event.inserted_at),
+          :utc_datetime_usec
+        )
+      )
+      |> select(
+        [event],
+        {
+          type(
+            fragment("date_trunc('minute', ?)", event.inserted_at),
+            :utc_datetime_usec
+          ),
+          count(event.id)
+        }
+      )
+      |> repo().all()
+      |> Map.new()
+
+    for offset <- 0..59 do
+      at = DateTime.add(first_bucket, offset, :minute)
+      %{at: at, count: Map.get(counts, at, 0)}
+    end
+  end
+
+  def recent_events(limit) when is_integer(limit) and limit > 0 do
+    Event
+    |> order_by([event], desc: event.occurred_at, desc: event.id)
+    |> limit(^limit)
+    |> repo().all()
+  end
+
+  def active_streams(limit) when is_integer(limit) and limit > 0 do
+    Stream
+    |> where([stream], is_nil(stream.closed_at))
+    |> order_by(
+      [stream],
+      desc_nulls_last: stream.last_event_at,
+      desc: stream.stream_id
+    )
+    |> limit(^limit)
+    |> repo().all()
+  end
+
   def list_streams(filters) do
     with {:ok, cursor} <- decode_stream_cursor(Map.get(filters, :cursor)) do
       limit = Map.fetch!(filters, :limit)
@@ -198,6 +274,13 @@ defmodule Backplane.Memory.Operations.Query do
   defp sequence_window(%{before: _sequence}), do: :before
   defp sequence_window(%{after: _sequence}), do: :after
   defp sequence_window(_options), do: :latest
+
+  defp minute_floor(datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> Map.put(:second, 0)
+    |> Map.put(:microsecond, {0, 6})
+  end
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end
