@@ -10,6 +10,24 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     "/memory/events/00000000-0000-0000-0000-000000000000"
   ]
 
+  @memory_v2_top_paths [
+    "/memory",
+    "/memory/streams",
+    "/memory/events",
+    "/memory/pipeline"
+  ]
+
+  @legacy_memory_paths ~w(
+    /memory/browse
+    /memory/stats
+    /memory/observations
+    /memory/sessions
+    /memory/graph
+    /memory/actions
+    /memory/audit
+    /memory/config
+  )
+
   setup do
     previous_username = Application.get_env(:backplane, :admin_username)
     previous_password = Application.get_env(:backplane, :admin_password)
@@ -119,11 +137,63 @@ defmodule Backplane.Admin.RouteBoundaryTest do
         basic_auth_header("admin", "secret")
       )
 
-    for path <- ["/memory/streams", "/memory/events", "/memory/pipeline"] do
+    for path <- @memory_v2_top_paths do
       assert conn
              |> recycle()
              |> get(path)
              |> html_response(200) =~ "Memory"
+    end
+  end
+
+  test "Memory sidebar contains only the four V2 destinations", %{conn: conn} do
+    put_memory_credentials("admin", "secret")
+
+    conn =
+      Plug.Conn.put_req_header(
+        conn,
+        "authorization",
+        basic_auth_header("admin", "secret")
+      )
+
+    {:ok, _view, html} = live(conn, "/memory")
+
+    items =
+      html
+      |> Floki.parse_fragment!()
+      |> Floki.find(~s(nav[aria-label="Memory navigation"] a.admin-sidebar-link))
+      |> Enum.map(fn link ->
+        {
+          link |> Floki.text() |> String.trim(),
+          link |> Floki.attribute("href") |> List.first()
+        }
+      end)
+
+    assert items == [
+             {"Overview", "/memory"},
+             {"Streams", "/memory/streams"},
+             {"Events", "/memory/events"},
+             {"Pipeline", "/memory/pipeline"}
+           ]
+  end
+
+  test "legacy Memory pages are literal not found without redirects", %{conn: conn} do
+    put_memory_credentials("admin", "secret")
+
+    conn =
+      Plug.Conn.put_req_header(
+        conn,
+        "authorization",
+        basic_auth_header("admin", "secret")
+      )
+
+    for path <- @legacy_memory_paths do
+      response_conn =
+        conn
+        |> recycle()
+        |> get(path)
+
+      assert response(response_conn, 404) == "not found"
+      assert Plug.Conn.get_resp_header(response_conn, "location") == []
     end
   end
 

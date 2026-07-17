@@ -47,14 +47,9 @@ defmodule Backplane.Admin.Layouts do
       :memory ->
         [
           %{label: "Overview", path: "/memory", match: :exact, icon: "brain"},
-          %{label: "Browse", path: "/memory/browse", icon: "database-search"},
-          %{label: "Stats", path: "/memory/stats", icon: "chart-bar"},
-          %{label: "Observations", path: "/memory/observations", icon: "text-box-search"},
-          %{label: "Sessions", path: "/memory/sessions", icon: "history"},
-          %{label: "Graph", path: "/memory/graph", icon: "graph"},
-          %{label: "Actions", path: "/memory/actions", icon: "application-braces"},
-          %{label: "Audit", path: "/memory/audit", icon: "shield-key"},
-          %{label: "Config", path: "/memory/config", icon: "cog"}
+          %{label: "Streams", path: "/memory/streams", icon: "source-branch"},
+          %{label: "Events", path: "/memory/events", icon: "timeline-text-outline"},
+          %{label: "Pipeline", path: "/memory/pipeline", icon: "pipe"}
         ]
 
       :skill ->
