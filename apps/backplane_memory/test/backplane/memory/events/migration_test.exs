@@ -116,6 +116,37 @@ defmodule Backplane.Memory.Events.MigrationTest do
     assert index_definition =~ "WHERE (idempotency_key IS NOT NULL)"
   end
 
+  test "memory v2 admin keyset indexes are ready with exact ordering" do
+    result =
+      repo().query!("""
+      SELECT indexes.indexname, indexes.indexdef, index_state.indisvalid, index_state.indisready
+      FROM pg_indexes AS indexes
+      JOIN pg_namespace AS namespace
+        ON namespace.nspname = indexes.schemaname
+      JOIN pg_class AS index_class
+        ON index_class.relnamespace = namespace.oid
+       AND index_class.relname = indexes.indexname
+      JOIN pg_index AS index_state
+        ON index_state.indexrelid = index_class.oid
+      WHERE indexes.schemaname = current_schema()
+        AND indexes.indexname IN (
+          'bpm_streams_last_event_stream_idx',
+          'bpm_events_occurred_id_idx'
+        )
+      ORDER BY indexes.indexname
+      """)
+
+    assert [
+             ["bpm_events_occurred_id_idx", event_definition, true, true],
+             ["bpm_streams_last_event_stream_idx", stream_definition, true, true]
+           ] = result.rows
+
+    assert event_definition =~ "USING btree (occurred_at DESC, id DESC)"
+
+    assert stream_definition =~
+             "USING btree (last_event_at DESC NULLS LAST, stream_id DESC)"
+  end
+
   defp event_changeset(stream_id, idempotency_key) do
     Event.changeset(%Event{}, %{
       id: Ecto.UUID.generate(),
