@@ -82,8 +82,6 @@ defmodule Backplane.Memory.Privacy.Filter do
          }}
   end
 
-  defp content_meta(_), do: content_meta("")
-
   defp bound_payload(full_payload, backplane) do
     candidate = put_backplane(full_payload, backplane)
 

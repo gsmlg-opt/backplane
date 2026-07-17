@@ -113,7 +113,6 @@ defmodule Backplane.Memory.Events.Types do
       {:ok, %{m | id: id, occurred_at: dt}}
     else
       {:error, :invalid_time} -> {:error, :invalid_time}
-      {:error, :invalid_uuid} -> {:error, :invalid_uuid}
       :error -> {:error, :invalid_uuid}
       false -> {:error, :invalid_importance}
     end
