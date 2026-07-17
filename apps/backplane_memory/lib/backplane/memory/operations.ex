@@ -45,6 +45,41 @@ defmodule Backplane.Memory.Operations do
   def get_event(id), do: safe_read(fn -> Query.get_event(id) end)
   def subscribe_events, do: EventNotifier.subscribe()
   def normalize_timeline_params(raw), do: Params.timeline(raw)
+  def normalize_stream_params(raw), do: Params.streams(raw)
+  def normalize_sequence_params(raw), do: Params.sequence(raw)
+
+  def list_streams(raw_filters) do
+    with {:ok, normalized} <- Params.streams(raw_filters),
+         {:ok, page} <- safe_read(fn -> Query.list_streams(normalized.values) end) do
+      {:ok, Map.put(page, :filters, normalized.query)}
+    else
+      {:error, :invalid_cursor} ->
+        canonical = raw_filters |> canonical_stream_query() |> Map.delete("cursor")
+        {:error, {:invalid_param, :cursor, canonical}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def get_stream(stream_id) when is_binary(stream_id) do
+    if String.trim(stream_id) == "" do
+      {:error, :not_found}
+    else
+      safe_read(fn -> Query.get_stream(stream_id) end)
+    end
+  end
+
+  def get_stream(_stream_id), do: {:error, :not_found}
+
+  def stream_events(stream_id, raw_options) do
+    with {:ok, normalized} <- Params.sequence(raw_options),
+         {:ok, stream} <- get_stream(stream_id),
+         {:ok, page} <-
+           safe_read(fn -> Query.stream_events(stream, normalized.values) end) do
+      {:ok, Map.put(page, :params, normalized.query)}
+    end
+  end
 
   def notification_matches?(summary, raw_filters) when is_map(summary) do
     with true <- valid_notification_summary?(summary),
@@ -88,6 +123,13 @@ defmodule Backplane.Memory.Operations do
 
   defp canonical_timeline_query(raw_filters) do
     case Params.timeline(raw_filters) do
+      {:ok, %{query: query}} -> query
+      {:error, {:invalid_param, _key, canonical_query}} -> canonical_query
+    end
+  end
+
+  defp canonical_stream_query(raw_filters) do
+    case Params.streams(raw_filters) do
       {:ok, %{query: query}} -> query
       {:error, {:invalid_param, _key, canonical_query}} -> canonical_query
     end
