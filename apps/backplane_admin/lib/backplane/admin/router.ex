@@ -11,6 +11,11 @@ defmodule Backplane.Admin.Router do
     plug(Backplane.Web.AdminAuthPlug)
   end
 
+  pipeline :memory_admin do
+    plug(Backplane.Web.AdminAuthPlug, required: true)
+    plug(Backplane.Admin.MemoryDetailPlug)
+  end
+
   scope "/", Backplane.Admin do
     pipe_through(:browser)
 
@@ -47,7 +52,6 @@ defmodule Backplane.Admin.Router do
     live("/auth/rbac/roles", AuthRbacLive, :roles)
     live("/auth/rbac/assignments", AuthRbacLive, :assignments)
     live("/auth/audit", AuthAuditLive, :index)
-    live("/memory", MemoryOverviewLive, :index)
     live("/memory/observations", MemoryObservationsLive, :index)
     live("/memory/sessions", MemorySessionsLive, :index)
     live("/memory/graph", MemoryGraphLive, :index)
@@ -83,6 +87,19 @@ defmodule Backplane.Admin.Router do
     live("/system/host-agents/:id/:tab", HostAgentsLive, :show)
     live("/dashboard/usage/plans", DashboardPlanUsageLive, :index)
     get("/oauth/callback", OAuthCallbackController, :callback)
+  end
+
+  scope "/", Backplane.Admin do
+    pipe_through([:browser, :memory_admin])
+
+    live_session :memory_v2 do
+      live("/memory", MemoryOverviewLive, :index)
+      live("/memory/streams", MemoryStreamsLive, :index)
+      live("/memory/streams/:stream_id", MemoryStreamsLive, :show)
+      live("/memory/events", MemoryEventsLive, :index)
+      live("/memory/events/:event_id", MemoryEventsLive, :show)
+      live("/memory/pipeline", MemoryPipelineLive, :index)
+    end
   end
 
   if Application.compile_env(:backplane_admin, :dev_routes) do
