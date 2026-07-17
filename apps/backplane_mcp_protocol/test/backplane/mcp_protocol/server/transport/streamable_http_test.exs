@@ -150,6 +150,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTPTest do
       versions = StreamableHTTP.supported_protocol_versions()
       assert is_list(versions)
       assert "2025-03-26" in versions
+      assert "2025-11-25" in versions
     end
   end
 end

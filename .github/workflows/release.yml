@@ -239,93 +239,9 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
 
-  hex-package:
-    name: Publish backplane_mcp_protocol to Hex
-    needs: publish
-    runs-on: ubuntu-24.04
-
-    permissions:
-      contents: read
-
-    env:
-      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-      MIX_ENV: dev
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.publish.outputs.commitish }}
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          version="${{ inputs.version }}"
-          version="${version#v}"
-
-          if [[ -z "$version" ]]; then
-            echo "Release version is required" >&2
-            exit 1
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Unify app versions
-        run: bash scripts/set-version.sh "${{ steps.version.outputs.version }}"
-
-      - name: Set up BEAM
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-
-      - name: Restore Mix cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            deps
-            _build/dev
-          key: hex-backplane-mcp-protocol-${{ hashFiles('mix.lock', 'apps/backplane_mcp_protocol/mix.exs') }}
-          restore-keys: |
-            hex-backplane-mcp-protocol-
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Validate package version
-        working-directory: apps/backplane_mcp_protocol
-        shell: bash
-        run: |
-          package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
-
-          if [[ -z "$package_version" ]]; then
-            echo "Could not read backplane_mcp_protocol version from mix.exs" >&2
-            exit 1
-          fi
-
-          if [[ "$package_version" != "${{ steps.version.outputs.version }}" ]]; then
-            echo "Release version ${{ steps.version.outputs.version }} does not match backplane_mcp_protocol version $package_version" >&2
-            exit 1
-          fi
-
-      - name: Require Hex API key
-        shell: bash
-        run: |
-          if [[ -z "${HEX_API_KEY:-}" ]]; then
-            echo "HEX_API_KEY secret is required to publish backplane_mcp_protocol to Hex" >&2
-            exit 1
-          fi
-
-      - name: Publish package
-        working-directory: apps/backplane_mcp_protocol
-        run: mix hex.publish --yes
-
   docker-image:
     name: Publish Docker Image
-    needs:
-      - publish
-      - hex-package
+    needs: publish
     uses: ./.github/workflows/docker-image.yml
     permissions:
       contents: read

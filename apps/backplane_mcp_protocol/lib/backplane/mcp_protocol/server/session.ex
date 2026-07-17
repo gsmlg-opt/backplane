@@ -75,19 +75,21 @@ defmodule Backplane.McpProtocol.Server.Session do
           },
           timeout: pos_integer(),
           task_supervisor: GenServer.name(),
+          max_concurrency: pos_integer(),
           task_store: %{adapter: module(), name: term()} | nil,
           tasks: %{String.t() => task_runtime()},
           task_refs: %{reference() => String.t()},
-          in_flight:
-            nil
-            | %{
-                ref: reference(),
-                pid: pid(),
-                request_id: String.t(),
-                from: GenServer.from(),
-                started_at: integer(),
-                method: String.t()
-              },
+          in_flight: %{
+            reference() => %{
+              ref: reference(),
+              pid: pid(),
+              request_id: String.t(),
+              from: GenServer.from(),
+              started_at: integer(),
+              method: String.t(),
+              base_frame: Frame.t()
+            }
+          },
           request_queue: :queue.queue({map(), map(), GenServer.from()}),
           deferred_callbacks: :queue.queue({:cast | :info, term()})
         }
@@ -101,8 +103,12 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:session_idle_timeout, {{:integer, {:gte, 1}}, {:default, @default_session_idle_timeout}}},
     {:timeout, {:integer, {:default, to_timeout(second: 30)}}},
     {:task_supervisor, {:required, {:custom, &Backplane.McpProtocol.genserver_name/1}}},
+    {:max_concurrency, {{:integer, {:gte, 1}}, {:default, 1}}},
     {:task_store,
-     {[adapter: {:required, :atom}, name: {:required, {:custom, &Backplane.McpProtocol.genserver_name/1}}], {:default, nil}}}
+     {[
+        adapter: {:required, :atom},
+        name: {:required, {:custom, &Backplane.McpProtocol.genserver_name/1}}
+      ], {:default, nil}}}
   ])
 
   @doc """
@@ -115,6 +121,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     * `:name` — GenServer registration name (required)
     * `:transport` — transport configuration `[layer: module, name: name]` (required)
     * `:task_supervisor` — name of the `Task.Supervisor` for async work (required)
+    * `:max_concurrency` — maximum concurrent request tasks per session (default: 1)
     * `:registry` — session registry module (default: `Backplane.McpProtocol.Server.Registry`)
     * `:session_idle_timeout` — idle timeout in ms before session expires (default: 30 min)
     * `:timeout` — request timeout in ms (default: 30s)
@@ -144,6 +151,14 @@ defmodule Backplane.McpProtocol.Server.Session do
   catch
     :exit, reason -> {:error, {:session_unavailable, reason}}
   end
+
+  @doc "Returns whether the MCP initialization handshake has completed."
+  @spec initialized?(GenServer.server()) :: boolean()
+  def initialized?(session), do: GenServer.call(session, :initialized?)
+
+  @doc "Returns the protocol version negotiated for the session."
+  @spec protocol_version(GenServer.server()) :: String.t() | nil
+  def protocol_version(session), do: GenServer.call(session, :protocol_version)
 
   # Lifecycle
 
@@ -177,10 +192,11 @@ defmodule Backplane.McpProtocol.Server.Session do
       server_requests: %{},
       timeout: opts.timeout,
       task_supervisor: opts.task_supervisor,
+      max_concurrency: opts.max_concurrency,
       task_store: build_task_store(opts[:task_store]),
       tasks: %{},
       task_refs: %{},
-      in_flight: nil,
+      in_flight: %{},
       request_queue: :queue.new(),
       deferred_callbacks: :queue.new()
     }
@@ -221,17 +237,24 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:reply, :ok, state}
   end
 
+  def handle_call(:initialized?, _from, state), do: {:reply, state.initialized, state}
+  def handle_call(:protocol_version, _from, state), do: {:reply, state.protocol_version, state}
+
   def handle_call(:auto_initialize, _from, %{server_module: module} = state) do
     with [latest_version | _] <- state.supported_versions,
          {:ok, protocol_version, protocol_module} <-
-           Backplane.McpProtocol.Protocol.Registry.negotiate(latest_version, state.supported_versions) do
+           Backplane.McpProtocol.Protocol.Registry.negotiate(
+             latest_version,
+             state.supported_versions
+           ) do
       {restored_client_info, restored_frame} = maybe_restore_from_store(state.session_id)
 
       auto_state = %{
         state
         | protocol_version: protocol_version,
           protocol_module: protocol_module,
-          client_info: restored_client_info || %{"name" => "auto-recovered", "version" => "unknown"},
+          client_info:
+            restored_client_info || %{"name" => "auto-recovered", "version" => "unknown"},
           client_capabilities: %{},
           initialized: true,
           frame: restored_frame || state.frame
@@ -294,8 +317,8 @@ defmodule Backplane.McpProtocol.Server.Session do
   # Notification dispatch
 
   @impl GenServer
-  def handle_cast({:mcp_notification, decoded, _ctx} = msg, %{in_flight: f} = state)
-      when not is_nil(f) and is_map(decoded) do
+  def handle_cast({:mcp_notification, decoded, _ctx} = msg, %{in_flight: in_flight} = state)
+      when map_size(in_flight) > 0 and is_map(decoded) do
     if cancellation_notification?(decoded) do
       process_mcp_notification(msg, state)
     else
@@ -309,7 +332,8 @@ defmodule Backplane.McpProtocol.Server.Session do
 
   # Server-initiated request responses (sampling/roots)
 
-  def handle_cast({:mcp_response, decoded, _ctx} = msg, %{in_flight: f} = state) when not is_nil(f) and is_map(decoded) do
+  def handle_cast({:mcp_response, decoded, _ctx} = msg, %{in_flight: in_flight} = state)
+      when map_size(in_flight) > 0 and is_map(decoded) do
     {:noreply, defer_callback(state, {:cast, msg})}
   end
 
@@ -317,7 +341,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     process_mcp_response(decoded, state)
   end
 
-  def handle_cast(request, %{in_flight: f} = state) when not is_nil(f) do
+  def handle_cast(request, %{in_flight: in_flight} = state) when map_size(in_flight) > 0 do
     {:noreply, defer_callback(state, {:cast, request})}
   end
 
@@ -361,7 +385,8 @@ defmodule Backplane.McpProtocol.Server.Session do
     end
   end
 
-  defp cancellation_notification?(%{"method" => "notifications/cancelled"} = msg), do: Message.is_notification(msg)
+  defp cancellation_notification?(%{"method" => "notifications/cancelled"} = msg),
+    do: Message.is_notification(msg)
 
   defp cancellation_notification?(_), do: false
 
@@ -402,7 +427,9 @@ defmodule Backplane.McpProtocol.Server.Session do
       {:noreply, state}
     else
       {:error, err} ->
-        Logging.server_event("failed_send_notification", %{method: method, error: err}, level: :error)
+        Logging.server_event("failed_send_notification", %{method: method, error: err},
+          level: :error
+        )
 
         {:noreply, state}
     end
@@ -450,10 +477,15 @@ defmodule Backplane.McpProtocol.Server.Session do
     handle_elicitation_timeout(request_id, state)
   end
 
-  def handle_info({ref, callback_result}, %{in_flight: %{ref: ref} = inflight} = state) do
+  def handle_info({ref, callback_result}, %{in_flight: in_flight} = state)
+      when is_reference(ref) and is_map_key(in_flight, ref) do
+    inflight = Map.fetch!(in_flight, ref)
     Process.demonitor(ref, [:flush])
     {reply, state} = decode_task_result(callback_result, inflight, state)
-    state = complete_request(%{state | in_flight: nil}, inflight.request_id)
+
+    state =
+      complete_request(%{state | in_flight: Map.delete(in_flight, ref)}, inflight.request_id)
+
     GenServer.reply(inflight.from, reply)
 
     finalize_after_task(state)
@@ -475,8 +507,8 @@ defmodule Backplane.McpProtocol.Server.Session do
       task_id = task_id_for_ref(state, ref) ->
         handle_task_worker_down(task_id, reason, state)
 
-      state.in_flight && state.in_flight.ref == ref ->
-        handle_in_flight_down(reason, state)
+      Map.has_key?(state.in_flight, ref) ->
+        handle_in_flight_down(ref, reason, state)
 
       true ->
         {:noreply, state}
@@ -492,7 +524,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:noreply, state}
   end
 
-  def handle_info(event, %{in_flight: f} = state) when not is_nil(f) do
+  def handle_info(event, %{in_flight: in_flight} = state) when map_size(in_flight) > 0 do
     {:noreply, defer_callback(state, {:info, event})}
   end
 
@@ -500,7 +532,9 @@ defmodule Backplane.McpProtocol.Server.Session do
     process_user_info(event, state)
   end
 
-  defp handle_in_flight_down(reason, %{in_flight: inflight} = state) do
+  defp handle_in_flight_down(ref, reason, %{in_flight: in_flight} = state) do
+    inflight = Map.fetch!(in_flight, ref)
+
     Logging.server_event(
       "request_task_crashed",
       %{request_id: inflight.request_id, method: inflight.method, reason: inspect(reason)},
@@ -516,7 +550,9 @@ defmodule Backplane.McpProtocol.Server.Session do
     error = Error.protocol(:internal_error, %{message: "Tool execution crashed"})
     reply = {:ok, encode_reply(Error.build_json_rpc(error, inflight.request_id))}
 
-    state = complete_request(%{state | in_flight: nil}, inflight.request_id)
+    state =
+      complete_request(%{state | in_flight: Map.delete(in_flight, ref)}, inflight.request_id)
+
     GenServer.reply(inflight.from, reply)
 
     finalize_after_task(state)
@@ -548,7 +584,12 @@ defmodule Backplane.McpProtocol.Server.Session do
   end
 
   defp reply_to_pending_callers(
-         %{in_flight: in_flight, request_queue: q, task_supervisor: task_supervisor, tasks: tasks},
+         %{
+           in_flight: in_flight,
+           request_queue: q,
+           task_supervisor: task_supervisor,
+           tasks: tasks
+         },
          reason
        ) do
     error =
@@ -557,14 +598,14 @@ defmodule Backplane.McpProtocol.Server.Session do
         reason: inspect(reason)
       })
 
-    if in_flight do
-      Task.Supervisor.terminate_child(task_supervisor, in_flight.pid)
-      Process.demonitor(in_flight.ref, [:flush])
-      flush_task_reply(in_flight.ref)
+    Enum.each(in_flight, fn {ref, request} ->
+      Task.Supervisor.terminate_child(task_supervisor, request.pid)
+      Process.demonitor(ref, [:flush])
+      flush_task_reply(ref)
 
-      reply = {:ok, encode_reply(Error.build_json_rpc(error, in_flight.request_id))}
-      GenServer.reply(in_flight.from, reply)
-    end
+      reply = {:ok, encode_reply(Error.build_json_rpc(error, request.request_id))}
+      GenServer.reply(request.from, reply)
+    end)
 
     Enum.each(:queue.to_list(q), fn {%{"id" => request_id}, _ctx, from} ->
       reply = {:ok, encode_reply(Error.build_json_rpc(error, request_id))}
@@ -664,7 +705,10 @@ defmodule Backplane.McpProtocol.Server.Session do
     } = params
 
     {:ok, protocol_version, protocol_module} =
-      Backplane.McpProtocol.Protocol.Registry.negotiate(requested_version, state.supported_versions)
+      Backplane.McpProtocol.Protocol.Registry.negotiate(
+        requested_version,
+        state.supported_versions
+      )
 
     state = %{
       state
@@ -678,7 +722,11 @@ defmodule Backplane.McpProtocol.Server.Session do
 
     result =
       maybe_put_instructions(
-        %{"protocolVersion" => protocol_version, "serverInfo" => state.server_info, "capabilities" => state.capabilities},
+        %{
+          "protocolVersion" => protocol_version,
+          "serverInfo" => state.server_info,
+          "capabilities" => state.capabilities
+        },
         state.instructions
       )
 
@@ -698,7 +746,12 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:reply, {:ok, encode_reply(Message.build_response(result, request["id"]))}, state}
   end
 
-  defp handle_request(%{"id" => request_id, "method" => "logging/setLevel"} = request, _transport_context, _from, state)
+  defp handle_request(
+         %{"id" => request_id, "method" => "logging/setLevel"} = request,
+         _transport_context,
+         _from,
+         state
+       )
        when Server.is_supported_capability(state.capabilities, "logging") do
     level = request["params"]["level"]
     state = %{state | log_level: level}
@@ -721,7 +774,8 @@ defmodule Backplane.McpProtocol.Server.Session do
     enqueue_or_dispatch(request, transport_context, from, state)
   end
 
-  defp enqueue_or_dispatch(request, ctx, from, %{in_flight: nil} = state) do
+  defp enqueue_or_dispatch(request, ctx, from, state)
+       when map_size(state.in_flight) < state.max_concurrency do
     {:noreply, dispatch_request(request, ctx, from, state)}
   end
 
@@ -729,7 +783,12 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:noreply, %{state | request_queue: :queue.in({request, ctx, from}, state.request_queue)}}
   end
 
-  defp dispatch_request(%{"id" => request_id, "method" => method} = request, transport_context, from, state) do
+  defp dispatch_request(
+         %{"id" => request_id, "method" => method} = request,
+         transport_context,
+         from,
+         state
+       ) do
     Logging.server_event("handling_request", %{
       id: request_id,
       method: method,
@@ -752,17 +811,17 @@ defmodule Backplane.McpProtocol.Server.Session do
         do_handle_request(module, request, frame, method)
       end)
 
-    %{
-      state
-      | in_flight: %{
-          ref: task.ref,
-          pid: task.pid,
-          request_id: request_id,
-          from: from,
-          started_at: System.monotonic_time(:millisecond),
-          method: method
-        }
+    inflight = %{
+      ref: task.ref,
+      pid: task.pid,
+      request_id: request_id,
+      from: from,
+      started_at: System.monotonic_time(:millisecond),
+      method: method,
+      base_frame: frame
     }
+
+    %{state | in_flight: Map.put(state.in_flight, task.ref, inflight)}
   end
 
   defp flush_task_reply(ref) do
@@ -797,7 +856,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     )
 
     reply = {:ok, encode_reply(Message.build_response(response, inflight.request_id))}
-    {reply, %{state | frame: frame}}
+    {reply, %{state | frame: merge_frame(state.frame, inflight.base_frame, frame)}}
   end
 
   defp decode_task_result({:noreply, %Frame{} = frame}, inflight, state) do
@@ -807,7 +866,7 @@ defmodule Backplane.McpProtocol.Server.Session do
       %{id: inflight.request_id, method: inflight.method, status: :noreply}
     )
 
-    {{:ok, nil}, %{state | frame: frame}}
+    {{:ok, nil}, %{state | frame: merge_frame(state.frame, inflight.base_frame, frame)}}
   end
 
   defp decode_task_result({:error, %Error{} = error, %Frame{} = frame}, inflight, state) do
@@ -824,7 +883,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     )
 
     reply = {:ok, encode_reply(Error.build_json_rpc(error, inflight.request_id))}
-    {reply, %{state | frame: frame}}
+    {reply, %{state | frame: merge_frame(state.frame, inflight.base_frame, frame)}}
   end
 
   defp decode_task_result(other, inflight, state) do
@@ -845,6 +904,51 @@ defmodule Backplane.McpProtocol.Server.Session do
     {reply, state}
   end
 
+  defp merge_frame(%Frame{} = current, %Frame{} = base, %Frame{} = returned) do
+    Frame
+    |> struct()
+    |> Map.from_struct()
+    |> Map.keys()
+    |> Enum.reduce(current, fn field, merged ->
+      current_value = Map.fetch!(current, field)
+      base_value = Map.fetch!(base, field)
+      returned_value = Map.fetch!(returned, field)
+
+      Map.put(
+        merged,
+        field,
+        merge_frame_field(current_value, base_value, returned_value)
+      )
+    end)
+  end
+
+  defp merge_frame_field(%MapSet{} = current, %MapSet{} = base, %MapSet{} = returned) do
+    current
+    |> MapSet.difference(MapSet.difference(base, returned))
+    |> MapSet.union(MapSet.difference(returned, base))
+  end
+
+  defp merge_frame_field(current, base, returned)
+       when is_map(current) and is_map(base) and is_map(returned) do
+    changed_keys =
+      base
+      |> Map.keys()
+      |> Kernel.++(Map.keys(returned))
+      |> Enum.uniq()
+      |> Enum.filter(&(Map.get(base, &1, :__missing__) != Map.get(returned, &1, :__missing__)))
+
+    Enum.reduce(changed_keys, current, fn key, merged ->
+      case Map.fetch(returned, key) do
+        {:ok, value} -> Map.put(merged, key, value)
+        :error -> Map.delete(merged, key)
+      end
+    end)
+  end
+
+  defp merge_frame_field(current, base, returned) do
+    if returned == base, do: current, else: returned
+  end
+
   defp defer_callback(state, item) do
     %{state | deferred_callbacks: :queue.in(item, state.deferred_callbacks)}
   end
@@ -861,25 +965,40 @@ defmodule Backplane.McpProtocol.Server.Session do
     end)
   end
 
-  defp apply_deferred({:cast, {:mcp_notification, _, _} = msg}, state), do: process_mcp_notification(msg, state)
-  defp apply_deferred({:cast, {:mcp_response, decoded, _ctx}}, state), do: process_mcp_response(decoded, state)
+  defp apply_deferred({:cast, {:mcp_notification, _, _} = msg}, state),
+    do: process_mcp_notification(msg, state)
+
+  defp apply_deferred({:cast, {:mcp_response, decoded, _ctx}}, state),
+    do: process_mcp_response(decoded, state)
+
   defp apply_deferred({:cast, msg}, state), do: process_user_cast(msg, state)
   defp apply_deferred({:info, msg}, state), do: process_user_info(msg, state)
 
   defp finalize_after_task(state) do
-    case drain_deferred_callbacks(state) do
+    state =
+      if map_size(state.in_flight) == 0,
+        do: drain_deferred_callbacks(state),
+        else: state
+
+    case state do
       {:stop, _reason, _new_state} = stop -> stop
-      new_state -> new_state |> dispatch_next_queued() |> noreply()
+      new_state -> new_state |> dispatch_queued_to_capacity() |> noreply()
     end
   end
 
-  defp dispatch_next_queued(%{request_queue: q} = state) do
+  defp dispatch_queued_to_capacity(state) when map_size(state.in_flight) >= state.max_concurrency,
+    do: state
+
+  defp dispatch_queued_to_capacity(%{request_queue: q} = state) do
     case :queue.out(q) do
       {:empty, _} ->
         state
 
       {{:value, {request, ctx, from}}, rest} ->
-        dispatch_request(request, ctx, from, %{state | request_queue: rest})
+        state
+        |> Map.put(:request_queue, rest)
+        |> then(&dispatch_request(request, ctx, from, &1))
+        |> dispatch_queued_to_capacity()
     end
   end
 
@@ -913,7 +1032,11 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:noreply, %{state | frame: frame}}
   end
 
-  defp handle_notification(%{"method" => "notifications/cancelled"} = notification, _transport_context, state) do
+  defp handle_notification(
+         %{"method" => "notifications/cancelled"} = notification,
+         _transport_context,
+         state
+       ) do
     params = notification["params"] || %{}
     request_id = params["requestId"]
     reason = Map.get(params, "reason", "cancelled")
@@ -951,17 +1074,21 @@ defmodule Backplane.McpProtocol.Server.Session do
     server_notification(notification, %{state | frame: frame})
   end
 
-  defp in_flight?(%{in_flight: %{request_id: rid}}, rid), do: true
-  defp in_flight?(_, _), do: false
+  defp in_flight?(%{in_flight: in_flight}, rid) do
+    Enum.any?(in_flight, fn {_ref, request} -> request.request_id == rid end)
+  end
 
   defp queued?(%{request_queue: q}, rid) do
     Enum.any?(:queue.to_list(q), fn {%{"id" => id}, _ctx, _from} -> id == rid end)
   end
 
-  defp cancel_in_flight(%{in_flight: inflight} = state, request_id, reason) do
+  defp cancel_in_flight(%{in_flight: in_flight} = state, request_id, reason) do
+    {ref, inflight} =
+      Enum.find(in_flight, fn {_ref, request} -> request.request_id == request_id end)
+
     Task.Supervisor.terminate_child(state.task_supervisor, inflight.pid)
-    Process.demonitor(inflight.ref, [:flush])
-    flush_task_reply(inflight.ref)
+    Process.demonitor(ref, [:flush])
+    flush_task_reply(ref)
 
     Logging.server_event("request_cancelled", %{
       session_id: state.session_id,
@@ -977,7 +1104,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     reply = {:ok, encode_reply(Error.build_json_rpc(error, request_id))}
     GenServer.reply(inflight.from, reply)
 
-    state = complete_request(%{state | in_flight: nil}, request_id)
+    state = complete_request(%{state | in_flight: Map.delete(in_flight, ref)}, request_id)
     finalize_after_task(state)
   end
 
@@ -1189,7 +1316,9 @@ defmodule Backplane.McpProtocol.Server.Session do
         {:noreply, state}
 
       {_request_info, updated_requests} ->
-        Logging.server_event("sampling_request_timeout", %{request_id: request_id}, level: :warning)
+        Logging.server_event("sampling_request_timeout", %{request_id: request_id},
+          level: :warning
+        )
 
         {:noreply, %{state | server_requests: updated_requests}}
     end
@@ -1435,7 +1564,9 @@ defmodule Backplane.McpProtocol.Server.Session do
     end
   end
 
-  defp sanitize_elicitation_result(%{"action" => "accept", "content" => content} = result, %{requested_schema: schema})
+  defp sanitize_elicitation_result(%{"action" => "accept", "content" => content} = result, %{
+         requested_schema: schema
+       })
        when is_map(content) do
     case ElicitationSchema.validate_content(content, schema) do
       :ok -> {:ok, result}
@@ -1447,7 +1578,8 @@ defmodule Backplane.McpProtocol.Server.Session do
     {:error, "accept action missing content"}
   end
 
-  defp sanitize_elicitation_result(%{"action" => action} = result, _info) when action in ~w(decline cancel) do
+  defp sanitize_elicitation_result(%{"action" => action} = result, _info)
+       when action in ~w(decline cancel) do
     {:ok, result}
   end
 
@@ -1661,10 +1793,17 @@ defmodule Backplane.McpProtocol.Server.Session do
     |> Enum.find(&(&1.name == tool_name))
   end
 
-  defp task_augmented_tools_call?(%{"method" => "tools/call", "params" => %{"task" => _}}), do: true
+  defp task_augmented_tools_call?(%{"method" => "tools/call", "params" => %{"task" => _}}),
+    do: true
+
   defp task_augmented_tools_call?(_), do: false
 
-  defp dispatch_tasks_request(%{"method" => "tasks/get", "id" => req_id} = request, _ctx, _from, state) do
+  defp dispatch_tasks_request(
+         %{"method" => "tasks/get", "id" => req_id} = request,
+         _ctx,
+         _from,
+         state
+       ) do
     if is_nil(state.task_store) do
       tasks_unsupported_reply(req_id, "tasks/get", state)
     else
@@ -1696,7 +1835,12 @@ defmodule Backplane.McpProtocol.Server.Session do
     end
   end
 
-  defp dispatch_tasks_request(%{"method" => "tasks/cancel", "id" => req_id} = request, _ctx, _from, state) do
+  defp dispatch_tasks_request(
+         %{"method" => "tasks/cancel", "id" => req_id} = request,
+         _ctx,
+         _from,
+         state
+       ) do
     if tasks_cancel_supported?(state) do
       handle_tasks_cancel(request, state)
     else
@@ -1711,7 +1855,9 @@ defmodule Backplane.McpProtocol.Server.Session do
   end
 
   defp tasks_unsupported_reply(req_id, method, state) do
-    error = Error.protocol(:method_not_found, %{message: "#{method} not supported by this server"})
+    error =
+      Error.protocol(:method_not_found, %{message: "#{method} not supported by this server"})
+
     {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))}, state}
   end
 
@@ -1738,11 +1884,15 @@ defmodule Backplane.McpProtocol.Server.Session do
     case cancel_task(state, task_id) do
       {:ok, %McpTask{} = task, new_state} ->
         payload = McpTask.to_protocol(task)
-        {:reply, {:ok, encode_reply(Message.build_response(payload, req_id))}, %{new_state | frame: frame}}
+
+        {:reply, {:ok, encode_reply(Message.build_response(payload, req_id))},
+         %{new_state | frame: frame}}
 
       {:error, :not_found} ->
         error = TasksHandler.task_not_found(task_id)
-        {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))}, %{state | frame: frame}}
+
+        {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))},
+         %{state | frame: frame}}
 
       {:error, {:already_terminal, status}} ->
         error =
@@ -1750,7 +1900,8 @@ defmodule Backplane.McpProtocol.Server.Session do
             message: "Cannot cancel task: already in terminal status '#{status}'"
           })
 
-        {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))}, %{state | frame: frame}}
+        {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))},
+         %{state | frame: frame}}
     end
   end
 
@@ -1765,7 +1916,10 @@ defmodule Backplane.McpProtocol.Server.Session do
   defp register_result_waiter(state, task_id, from, req_id) do
     case Map.fetch(state.tasks, task_id) do
       {:ok, %{waiters: waiters} = runtime} ->
-        %{state | tasks: Map.put(state.tasks, task_id, %{runtime | waiters: [{from, req_id} | waiters]})}
+        %{
+          state
+          | tasks: Map.put(state.tasks, task_id, %{runtime | waiters: [{from, req_id} | waiters]})
+        }
 
       :error ->
         error = TasksHandler.task_not_found(task_id)
@@ -1774,7 +1928,8 @@ defmodule Backplane.McpProtocol.Server.Session do
     end
   end
 
-  defp build_tasks_result_payload(%McpTask{result: result, error: nil} = task, req_id) when not is_nil(result) do
+  defp build_tasks_result_payload(%McpTask{result: result, error: nil} = task, req_id)
+       when not is_nil(result) do
     Message.build_response(inject_related_task(result, task.id), req_id)
   end
 
@@ -1812,28 +1967,50 @@ defmodule Backplane.McpProtocol.Server.Session do
 
   defp task_store_get(%{task_store: nil}, _id), do: {:error, :not_found}
 
-  defp task_store_get(%{task_store: %{adapter: adapter, name: name}, session_id: session_id}, task_id) do
+  defp task_store_get(
+         %{task_store: %{adapter: adapter, name: name}, session_id: session_id},
+         task_id
+       ) do
     adapter.get(name, session_id, task_id)
   end
 
-  defp task_store_put(%{task_store: %{adapter: adapter, name: name}, session_id: session_id} = state, %McpTask{} = task) do
+  defp task_store_put(
+         %{task_store: %{adapter: adapter, name: name}, session_id: session_id} = state,
+         %McpTask{} = task
+       ) do
     :ok = adapter.put(name, session_id, task)
     state
   end
 
-  defp task_store_update(%{task_store: %{adapter: adapter, name: name}, session_id: session_id}, task_id, fun) do
+  defp task_store_update(
+         %{task_store: %{adapter: adapter, name: name}, session_id: session_id},
+         task_id,
+         fun
+       ) do
     adapter.update(name, session_id, task_id, fun)
   end
 
-  defp task_store_delete(%{task_store: %{adapter: adapter, name: name}, session_id: session_id}, task_id) do
+  defp task_store_delete(
+         %{task_store: %{adapter: adapter, name: name}, session_id: session_id},
+         task_id
+       ) do
     adapter.delete(name, session_id, task_id)
   end
 
-  defp create_task_for_tools_call(%{"id" => req_id, "params" => params} = request, _ctx, from, state) do
+  defp create_task_for_tools_call(
+         %{"id" => req_id, "params" => params} = request,
+         _ctx,
+         from,
+         state
+       ) do
     if tasks_supported_for_tools_call?(state) do
       do_create_task_for_tools_call(request, params, req_id, from, state)
     else
-      error = Error.protocol(:method_not_found, %{message: "Server does not support task-augmented tools/call"})
+      error =
+        Error.protocol(:method_not_found, %{
+          message: "Server does not support task-augmented tools/call"
+        })
+
       {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))}, state}
     end
   end
@@ -1851,7 +2028,8 @@ defmodule Backplane.McpProtocol.Server.Session do
       tool.task_support == :forbidden ->
         error =
           Error.protocol(:method_not_found, %{
-            message: "Tool does not support task augmentation (execution.taskSupport == \"forbidden\")"
+            message:
+              "Tool does not support task augmentation (execution.taskSupport == \"forbidden\")"
           })
 
         {:reply, {:ok, encode_reply(Error.build_json_rpc(error, req_id))}, state}
@@ -1917,8 +2095,17 @@ defmodule Backplane.McpProtocol.Server.Session do
   end
 
   defp handle_task_worker_down(task_id, reason, state) do
-    error = Error.protocol(:internal_error, %{message: "Task worker crashed", reason: inspect(reason)})
-    {_task, state} = finalize_task_runtime(task_id, :failed, [error: error, status_message: error.message], state)
+    error =
+      Error.protocol(:internal_error, %{message: "Task worker crashed", reason: inspect(reason)})
+
+    {_task, state} =
+      finalize_task_runtime(
+        task_id,
+        :failed,
+        [error: error, status_message: error.message],
+        state
+      )
+
     {:noreply, state}
   end
 
@@ -1979,7 +2166,12 @@ defmodule Backplane.McpProtocol.Server.Session do
   end
 
   defp derive_finalize_attrs(other) do
-    err = Error.protocol(:internal_error, %{message: "Invalid task worker return", returned: inspect(other)})
+    err =
+      Error.protocol(:internal_error, %{
+        message: "Invalid task worker return",
+        returned: inspect(other)
+      })
+
     {:failed, [error: err, status_message: err.message]}
   end
 
@@ -2060,7 +2252,10 @@ defmodule Backplane.McpProtocol.Server.Session do
     error = Error.execution("The task was cancelled by request.", %{taskId: task_id})
 
     case task_store_update(state, task_id, fn task ->
-           McpTask.transition(task, :cancelled, error: error, status_message: "The task was cancelled by request.")
+           McpTask.transition(task, :cancelled,
+             error: error,
+             status_message: "The task was cancelled by request."
+           )
          end) do
       {:ok, cancelled} ->
         release_waiters(runtime, cancelled)

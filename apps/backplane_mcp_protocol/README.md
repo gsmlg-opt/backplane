@@ -4,21 +4,27 @@
 [![docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/backplane_mcp_protocol)
 [![Hex Downloads](https://img.shields.io/hexpm/dt/backplane_mcp_protocol)](https://hex.pm/packages/backplane_mcp_protocol)
 
-Backplane-local Model Context Protocol (MCP) implementation in Elixir.
+Model Context Protocol (MCP) implementation in Elixir.
 
 ## Overview
 
-Backplane.McpProtocol is the umbrella-local MCP protocol app used by Backplane. It provides client and server implementations for the [Model Context Protocol](https://spec.modelcontextprotocol.io/) under the `Backplane.McpProtocol` namespace.
+Backplane.McpProtocol is the MCP protocol app used by Backplane and is also
+published on Hex. It provides client and server implementations for the
+[Model Context Protocol](https://spec.modelcontextprotocol.io/) under the
+`Backplane.McpProtocol` namespace.
 
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:backplane_mcp_protocol, in_umbrella: true}
+    {:backplane_mcp_protocol, "~> 0.3.1"}
   ]
 end
 ```
+
+Inside the Backplane umbrella, use `{:backplane_mcp_protocol, in_umbrella: true}`
+instead.
 
 ## Quick Start
 

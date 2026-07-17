@@ -266,7 +266,8 @@ defmodule Backplane.McpProtocol.Server.Transport.SSE do
   end
 
   @impl GenServer
-  def handle_call({:handle_message, session_id, message, context}, _from, state) when is_map(message) do
+  def handle_call({:handle_message, session_id, message, context}, _from, state)
+      when is_map(message) do
     case dispatch_session_message(session_id, message, context, state) do
       {:ok, response} ->
         maybe_send_through_sse(response, session_id, state)
@@ -355,7 +356,9 @@ defmodule Backplane.McpProtocol.Server.Transport.SSE do
 
   defp start_new_session(session_id, state) do
     session_config = ServerSupervisor.get_session_config(state.server)
-    session_name = Registry.resolve_session_name(state.registry_mod, state.registry_name, session_id)
+
+    session_name =
+      Registry.resolve_session_name(state.registry_mod, state.registry_name, session_id)
 
     session_opts = [
       session_id: session_id,
@@ -365,7 +368,8 @@ defmodule Backplane.McpProtocol.Server.Transport.SSE do
       session_idle_timeout: session_config.session_idle_timeout || 1_800_000,
       timeout: state.request_timeout,
       task_supervisor: session_config.task_supervisor,
-      task_store: Map.get(session_config, :task_store)
+      task_store: Map.get(session_config, :task_store),
+      max_concurrency: Map.get(session_config, :max_concurrency, 1)
     ]
 
     case ServerSupervisor.start_session(state.server, session_opts) do

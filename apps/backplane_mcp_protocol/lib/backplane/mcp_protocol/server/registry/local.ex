@@ -28,7 +28,7 @@ defmodule Backplane.McpProtocol.Server.Registry.Local do
   end
 
   @impl Backplane.McpProtocol.Server.Registry
-  def session_name(registry_name, session_id), do: :"#{registry_name}.session.#{session_id}"
+  def session_name(registry_name, session_id), do: {:via, __MODULE__, {registry_name, session_id}}
 
   @impl Backplane.McpProtocol.Server.Registry
   def register_session(name, session_id, pid) do
@@ -55,6 +55,33 @@ defmodule Backplane.McpProtocol.Server.Registry.Local do
     GenServer.call(name, {:unregister, session_id})
   end
 
+  # :via registry callbacks
+
+  def register_name({name, session_id}, pid) do
+    case register_session(name, session_id, pid) do
+      :ok -> :yes
+      {:error, :already_registered} -> :no
+    end
+  end
+
+  def unregister_name({name, session_id}) do
+    unregister_session(name, session_id)
+  end
+
+  def whereis_name({name, session_id}) do
+    case lookup_session(name, session_id) do
+      {:ok, pid} -> pid
+      {:error, :not_found} -> :undefined
+    end
+  end
+
+  def send(name, message) do
+    case whereis_name(name) do
+      pid when is_pid(pid) -> Kernel.send(pid, message)
+      :undefined -> exit({:badarg, {name, message}})
+    end
+  end
+
   # GenServer callbacks
 
   @impl GenServer
@@ -68,21 +95,30 @@ defmodule Backplane.McpProtocol.Server.Registry.Local do
 
   @impl GenServer
   def handle_call({:register, session_id, pid}, _from, state) do
-    :ets.insert(state.table, {session_id, pid})
-    ref = Process.monitor(pid)
-    monitors = Map.put(state.monitors, ref, session_id)
-    {:reply, :ok, %{state | monitors: monitors}}
+    case :ets.lookup(state.table, session_id) do
+      [{^session_id, ^pid}] ->
+        {:reply, :ok, state}
+
+      [{^session_id, _other_pid}] ->
+        {:reply, {:error, :already_registered}, state}
+
+      [] ->
+        :ets.insert(state.table, {session_id, pid})
+        ref = Process.monitor(pid)
+        monitors = Map.put(state.monitors, ref, session_id)
+        {:reply, :ok, %{state | monitors: monitors}}
+    end
   end
 
   def handle_call({:unregister, session_id}, _from, state) do
     :ets.delete(state.table, session_id)
 
-    monitors =
-      state.monitors
-      |> Enum.reject(fn {_ref, sid} -> sid == session_id end)
-      |> Map.new()
+    {removed, remaining} =
+      Enum.split_with(state.monitors, fn {_ref, sid} -> sid == session_id end)
 
-    {:reply, :ok, %{state | monitors: monitors}}
+    Enum.each(removed, fn {ref, _sid} -> Process.demonitor(ref, [:flush]) end)
+
+    {:reply, :ok, %{state | monitors: Map.new(remaining)}}
   end
 
   @impl GenServer

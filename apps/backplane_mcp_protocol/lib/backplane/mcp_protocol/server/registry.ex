@@ -36,7 +36,7 @@ defmodule Backplane.McpProtocol.Server.Registry do
   @doc """
   Resolves the session GenServer name via the registry adapter.
 
-  Falls back to the default atom-based naming if the adapter does not implement
+  Falls back to a non-atom global name if the adapter does not implement
   the optional `session_name/2` callback.
   """
   @spec resolve_session_name(module(), term(), session_id()) :: GenServer.name()
@@ -44,16 +44,8 @@ defmodule Backplane.McpProtocol.Server.Registry do
     if function_exported?(registry_mod, :session_name, 2) do
       registry_mod.session_name(registry_name, session_id)
     else
-      session_name_from_registry_name(registry_name, session_id)
+      {:global, {__MODULE__, registry_name, session_id}}
     end
-  end
-
-  defp session_name_from_registry_name(registry_name, session_id) when is_atom(registry_name) do
-    :"#{registry_name}.session.#{session_id}"
-  end
-
-  defp session_name_from_registry_name(_registry_name, session_id) do
-    :"Backplane.McpProtocol.session.#{session_id}"
   end
 
   # Deterministic atom naming for internal processes
@@ -79,7 +71,8 @@ defmodule Backplane.McpProtocol.Server.Registry do
   def supervisor_name(server), do: :"Backplane.McpProtocol.#{server}.supervisor"
 
   @spec session_name(module(), String.t()) :: atom()
-  def session_name(server, session_id), do: :"Backplane.McpProtocol.#{server}.session.#{session_id}"
+  def session_name(server, session_id),
+    do: :"Backplane.McpProtocol.#{server}.session.#{session_id}"
 
   @spec stdio_session_name(module()) :: atom()
   def stdio_session_name(server), do: :"Backplane.McpProtocol.#{server}.session.stdio"
