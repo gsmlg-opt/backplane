@@ -2,7 +2,7 @@ defmodule Backplane.Memory.Operations do
   @moduledoc false
 
   alias Backplane.Memory.{EventNotifier, Events}
-  alias Backplane.Memory.Operations.{Params, Query}
+  alias Backplane.Memory.Operations.{Params, Query, Rollout}
 
   @notification_fields %{
     stream: :stream_id,
@@ -44,6 +44,9 @@ defmodule Backplane.Memory.Operations do
 
   def get_event(id), do: safe_read(fn -> Query.get_event(id) end)
   def subscribe_events, do: EventNotifier.subscribe()
+  def rollout_state, do: Rollout.state()
+  def set_gate(gate, value), do: Rollout.set_gate(gate, value)
+  def subscribe_rollout, do: Rollout.subscribe()
   def normalize_timeline_params(raw), do: Params.timeline(raw)
   def normalize_stream_params(raw), do: Params.streams(raw)
   def normalize_sequence_params(raw), do: Params.sequence(raw)

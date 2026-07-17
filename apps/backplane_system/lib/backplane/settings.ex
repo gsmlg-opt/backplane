@@ -135,6 +135,22 @@ defmodule Backplane.Settings do
     GenServer.call(__MODULE__, {:set, key, value})
   end
 
+  @type expectation :: {String.t(), term()}
+
+  @doc "Get several setting values from one serialized snapshot."
+  @spec get_many([String.t()]) :: %{String.t() => term()}
+  def get_many(keys) when is_list(keys) do
+    GenServer.call(__MODULE__, {:get_many, keys})
+  end
+
+  @doc "Set a value only when all expected settings still match."
+  @spec set_if(String.t(), term(), [expectation()]) ::
+          :ok | {:error, {:condition_failed, String.t()}} | {:error, term()}
+  def set_if(key, value, expectations)
+      when is_binary(key) and is_list(expectations) do
+    GenServer.call(__MODULE__, {:set_if, key, value, expectations})
+  end
+
   @doc "Get all settings as a map."
   @spec all() :: map()
   def all do
@@ -174,7 +190,36 @@ defmodule Backplane.Settings do
   def handle_info(_, state), do: {:noreply, state}
 
   @impl true
+  def handle_call({:get_many, keys}, _from, state) do
+    values = Map.new(keys, fn key -> {key, get(key)} end)
+    {:reply, values, state}
+  end
+
   def handle_call({:set, key, value}, _from, state) do
+    persist_setting(key, value, state)
+  end
+
+  def handle_call({:set_if, key, value, expectations}, _from, state) do
+    case get(key) do
+      current when current === value ->
+        {:reply, :ok, state}
+
+      _current ->
+        case Enum.find(expectations, fn {expected_key, expected_value} ->
+               get(expected_key) !== expected_value
+             end) do
+          nil ->
+            persist_setting(key, value, state)
+
+          {failed_key, _expected_value} ->
+            {:reply, {:error, {:condition_failed, failed_key}}, state}
+        end
+    end
+  end
+
+  # --- Private ---
+
+  defp persist_setting(key, value, state) do
     wrapped = %{"v" => value}
     now = DateTime.utc_now()
     type = get_in(@defaults, [key, :type]) || "string"
@@ -204,8 +249,6 @@ defmodule Backplane.Settings do
         {:reply, {:error, changeset}, state}
     end
   end
-
-  # --- Private ---
 
   defp seed_defaults do
     for {key, meta} <- @defaults do

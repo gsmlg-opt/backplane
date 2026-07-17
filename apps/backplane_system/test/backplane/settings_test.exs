@@ -23,4 +23,87 @@ defmodule Backplane.SettingsTest do
       assert Settings.get(key) == []
     end
   end
+
+  describe "serialized settings operations" do
+    test "get_many/1 returns the requested values from one snapshot" do
+      first = unique_key("snapshot-first")
+      second = unique_key("snapshot-second")
+      on_exit(fn -> delete_cached([first, second]) end)
+
+      assert :ok = Settings.set(first, "one")
+      assert :ok = Settings.set(second, %{"two" => 2})
+
+      assert Settings.get_many([first, second, "missing-setting"]) == %{
+               first => "one",
+               second => %{"two" => 2},
+               "missing-setting" => nil
+             }
+    end
+
+    test "set_if/3 persists and broadcasts exactly once when expectations match" do
+      target = unique_key("conditional-target")
+      dependency = unique_key("conditional-dependency")
+      on_exit(fn -> delete_cached([target, dependency]) end)
+
+      assert :ok = Settings.set(target, false)
+      assert :ok = Settings.set(dependency, :ready)
+      assert :ok = Settings.subscribe()
+      flush_setting_messages()
+
+      assert :ok = Settings.set_if(target, true, [{dependency, :ready}])
+      assert Settings.get(target) == true
+      assert Repo.get!(Setting, target).value == %{"v" => true}
+      assert_receive {:setting_changed, ^target, true}
+      refute_receive {:setting_changed, ^target, true}
+    end
+
+    test "set_if/3 neither writes nor broadcasts when an expectation fails" do
+      target = unique_key("condition-failure-target")
+      dependency = unique_key("condition-failure-dependency")
+      on_exit(fn -> delete_cached([target, dependency]) end)
+
+      assert :ok = Settings.set(target, false)
+      assert :ok = Settings.set(dependency, :blocked)
+      assert :ok = Settings.subscribe()
+      flush_setting_messages()
+
+      assert {:error, {:condition_failed, ^dependency}} =
+               Settings.set_if(target, true, [{dependency, :ready}])
+
+      assert Settings.get(target) == false
+      assert Repo.get!(Setting, target).value == %{"v" => false}
+      refute_receive {:setting_changed, ^target, true}
+    end
+
+    test "set_if/3 treats the current target value as a no-op without broadcasting" do
+      target = unique_key("conditional-noop-target")
+      dependency = unique_key("conditional-noop-dependency")
+      on_exit(fn -> delete_cached([target, dependency]) end)
+
+      assert :ok = Settings.set(target, true)
+      assert :ok = Settings.set(dependency, :blocked)
+      assert :ok = Settings.subscribe()
+      flush_setting_messages()
+
+      assert :ok = Settings.set_if(target, true, [{dependency, :ready}])
+      assert Settings.get(target) == true
+      refute_receive {:setting_changed, ^target, true}
+    end
+  end
+
+  defp unique_key(prefix) do
+    "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+  end
+
+  defp delete_cached(keys) do
+    Enum.each(keys, &:ets.delete(:backplane_settings, &1))
+  end
+
+  defp flush_setting_messages do
+    receive do
+      {:setting_changed, _key, _value} -> flush_setting_messages()
+    after
+      0 -> :ok
+    end
+  end
 end
