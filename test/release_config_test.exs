@@ -65,14 +65,15 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "umbrella releases do not version or publish the Hex package" do
+  test "umbrella releases version and publish the Hex package" do
     version_script = File.read!("scripts/set-version.sh")
     release_workflow = File.read!(".github/workflows/release.yml")
 
-    assert version_script =~
+    refute version_script =~
              ~r/if \[\[ "\$file" == "apps\/backplane_mcp_protocol\/mix\.exs" \]\]; then\s+continue/
 
-    refute release_workflow =~ "Publish backplane_mcp_protocol to Hex"
-    refute release_workflow =~ "mix hex.publish"
+    assert release_workflow =~ "Publish backplane_mcp_protocol to Hex"
+    assert release_workflow =~ "mix hex.publish --yes"
+    assert release_workflow =~ ~r/docker-image:.*needs:.*hex-package/s
   end
 end
