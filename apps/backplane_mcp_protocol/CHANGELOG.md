@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- Keeps the Hex package version synchronized with Backplane releases.
+- Restores required Hex publication to the Backplane release workflow.
+
 ## 0.3.1
 
 - Integrates `backplane_mcp_protocol` into the Backplane umbrella build.
