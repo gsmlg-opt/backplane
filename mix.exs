@@ -59,7 +59,7 @@ defmodule Backplane.Umbrella.MixProject do
       host_agent: [
         include_executables_for: [:unix],
         runtime_config_path: "config/host_agent_runtime.exs",
-        overlays: host_agent_overlays(),
+        steps: [:assemble, &copy_host_agent_integrations/1],
         applications: [
           backplane_host_agent: :permanent,
           runtime_tools: :permanent
@@ -68,11 +68,22 @@ defmodule Backplane.Umbrella.MixProject do
     ]
   end
 
-  defp host_agent_overlays do
-    [
-      {:copy, "integrations/memory",
-       "lib/backplane_host_agent-#{@version}/priv/integrations/memory"}
-    ]
+  defp copy_host_agent_integrations(release) do
+    destination =
+      Path.join([
+        release.path,
+        "lib",
+        "backplane_host_agent-#{release.version}",
+        "priv",
+        "integrations",
+        "memory"
+      ])
+
+    File.rm_rf!(destination)
+    File.mkdir_p!(Path.dirname(destination))
+    File.cp_r!("integrations/memory", destination)
+
+    release
   end
 
   defp release(args) do

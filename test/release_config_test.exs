@@ -37,6 +37,17 @@ defmodule Backplane.ReleaseConfigTest do
     assert is_function(aliases[:release], 1)
   end
 
+  test "host agent copies integrations with a post-assembly release step" do
+    host_agent =
+      Mix.Project.config()
+      |> Keyword.fetch!(:releases)
+      |> Keyword.fetch!(:host_agent)
+
+    refute Keyword.has_key?(host_agent, :overlays)
+    assert [:assemble, copy_integrations] = host_agent[:steps]
+    assert is_function(copy_integrations, 1)
+  end
+
   test "published backplane_mcp_protocol install examples use the package version" do
     package_mix = File.read!("apps/backplane_mcp_protocol/mix.exs")
     [_, version] = Regex.run(~r/@version "([^"]+)"/, package_mix)
