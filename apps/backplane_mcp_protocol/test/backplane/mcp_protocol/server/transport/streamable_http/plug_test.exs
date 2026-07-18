@@ -265,6 +265,36 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.PlugTest do
       assert conn.resp_body == ""
     end
 
+    test "initialized notification is processed before returning 202", %{
+      opts: opts,
+      test_session_id: session_id
+    } do
+      session = Registry.session_name(StubServer, session_id)
+      :ok = :sys.suspend(session)
+
+      on_exit(fn ->
+        if pid = Process.whereis(session), do: :sys.resume(pid)
+      end)
+
+      notification = build_notification("notifications/initialized", %{})
+      {:ok, body} = Message.encode_notification(notification)
+
+      request =
+        Task.async(fn ->
+          :post
+          |> conn("/", body)
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("accept", "text/event-stream, application/json")
+          |> put_req_header("mcp-session-id", session_id)
+          |> StreamableHTTPPlug.call(opts)
+        end)
+
+      refute Task.yield(request, 50)
+      :ok = :sys.resume(session)
+
+      assert %{status: 202, resp_body: ""} = Task.await(request)
+    end
+
     test "rejects an origin not in allowed_origins before dispatch", %{
       test_session_id: session_id
     } do

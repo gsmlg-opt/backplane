@@ -160,6 +160,12 @@ defmodule Backplane.McpProtocol.Server.Session do
   @spec protocol_version(GenServer.server()) :: String.t() | nil
   def protocol_version(session), do: GenServer.call(session, :protocol_version)
 
+  @doc "Processes an MCP notification before acknowledging the caller."
+  @spec notify(GenServer.server(), map(), map(), timeout()) :: :ok
+  def notify(session, notification, transport_context, timeout \\ 5_000) do
+    GenServer.call(session, {:mcp_notification, notification, transport_context}, timeout)
+  end
+
   # Lifecycle
 
   @impl GenServer
@@ -231,6 +237,14 @@ defmodule Backplane.McpProtocol.Server.Session do
     state = reset_session_expiry(state)
 
     handle_single_request(decoded, transport_context, from, state)
+  end
+
+  def handle_call({:mcp_notification, decoded, transport_context}, _from, state)
+      when is_map(decoded) do
+    case process_mcp_notification({:mcp_notification, decoded, transport_context}, state) do
+      {:noreply, state} -> {:reply, :ok, state}
+      {:stop, reason, state} -> {:stop, reason, :ok, state}
+    end
   end
 
   def handle_call(:auto_initialize, _from, %{initialized: true} = state) do

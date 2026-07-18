@@ -91,7 +91,7 @@ defmodule Backplane.McpProtocol.MCP.ID do
   """
   @spec generate_session_id() :: String.t()
   def generate_session_id do
-    "session_" <> generate()
+    "session_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
   end
 
   @doc """

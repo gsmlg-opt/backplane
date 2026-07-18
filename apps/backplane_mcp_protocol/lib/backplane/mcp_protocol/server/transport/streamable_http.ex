@@ -38,6 +38,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP do
 
   alias Backplane.McpProtocol.Telemetry
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
 
   @type t :: GenServer.server()
 
@@ -82,7 +83,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP do
   end
 
   @impl Transport
-  def supported_protocol_versions, do: ["2025-03-26", "2025-06-18", "2025-11-25"]
+  defdelegate supported_protocol_versions(), to: ProtocolRegistry, as: :supported_versions
 
   @doc """
   Registers the calling process as the SSE handler for a session.

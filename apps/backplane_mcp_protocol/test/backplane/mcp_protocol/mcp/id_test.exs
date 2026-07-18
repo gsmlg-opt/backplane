@@ -74,6 +74,17 @@ defmodule Backplane.McpProtocol.MCP.IDTest do
     end
   end
 
+  describe "generate_session_id/0" do
+    test "contains 256 bits of URL-safe random data" do
+      session_id = ID.generate_session_id()
+
+      assert "session_" <> encoded = session_id
+      assert {:ok, random_bytes} = Base.url_decode64(encoded, padding: false)
+      assert byte_size(random_bytes) == 32
+      assert session_id =~ ~r/\Asession_[A-Za-z0-9_-]{43}\z/
+    end
+  end
+
   describe "timestamp_from_id/1" do
     test "extracts timestamp from a valid ID" do
       id = ID.generate()
