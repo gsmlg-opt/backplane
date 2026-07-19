@@ -128,12 +128,15 @@ defmodule Mix.Interactive.UI do
 
   defp print_property(name, schema, required) do
     req_marker = if required, do: " (required)", else: ""
-    type = Map.get(schema, "type", "any")
+    type = schema |> Map.get("type", "any") |> format_schema_type()
     description = Map.get(schema, "description", "")
 
     IO.puts("      #{@colors.command}#{name}#{@colors.reset}#{req_marker}: #{type}")
     if description != "", do: IO.puts("        #{description}")
   end
+
+  defp format_schema_type(types) when is_list(types), do: Enum.join(types, " | ")
+  defp format_schema_type(type), do: type
 
   defp print_prompt_arguments(arguments) when is_list(arguments) do
     IO.puts("    #{@colors.info}Arguments:#{@colors.reset}")
