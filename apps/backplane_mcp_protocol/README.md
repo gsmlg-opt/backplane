@@ -18,7 +18,7 @@ published on Hex. It provides client and server implementations for the
 ```elixir
 def deps do
   [
-    {:backplane_mcp_protocol, "~> 0.4.0"}
+    {:backplane_mcp_protocol, "~> 0.4.1"}
   ]
 end
 ```
