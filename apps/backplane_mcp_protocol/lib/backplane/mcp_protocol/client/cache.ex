@@ -3,7 +3,7 @@ defmodule Backplane.McpProtocol.Client.Cache do
 
   alias Backplane.McpProtocol.Client.JSONSchemaConverter
 
-  @tool_validators_suffix "_tool_validators"
+  @tool_validators_key {__MODULE__, :tool_validators}
 
   # Public API
 
@@ -13,15 +13,13 @@ defmodule Backplane.McpProtocol.Client.Cache do
   """
   @spec put_tool_validators(client_name :: String.t(), tools :: list(map())) :: :ok
   def put_tool_validators(client, tools) when is_binary(client) and is_list(tools) do
-    table_name = tool_validators_table(client)
-    ensure_table(table_name)
-
-    :ets.delete_all_objects(table_name)
+    table = ensure_table(client)
+    :ets.delete_all_objects(table)
 
     tools
     |> Enum.filter(& &1["outputSchema"])
     |> Enum.flat_map(&fetch_tool_validator/1)
-    |> then(&:ets.insert(table_name, &1))
+    |> then(&:ets.insert(table, &1))
 
     :ok
   end
@@ -39,10 +37,9 @@ defmodule Backplane.McpProtocol.Client.Cache do
   @spec get_tool_validator(client_name :: String.t(), tool_name :: String.t()) ::
           JSONSchemaConverter.validator() | nil
   def get_tool_validator(client, tool_name) when is_binary(client) and is_binary(tool_name) do
-    table_name = tool_validators_table(client)
-    ensure_table(table_name)
+    table = ensure_table(client)
 
-    case :ets.lookup(table_name, tool_name) do
+    case :ets.lookup(table, tool_name) do
       [{^tool_name, validator}] -> validator
       [] -> nil
     end
@@ -53,16 +50,12 @@ defmodule Backplane.McpProtocol.Client.Cache do
   """
   @spec clear_tool_validators(client_name :: String.t()) :: :ok
   def clear_tool_validators(client) when is_binary(client) do
-    table_name = tool_validators_table(client)
-
-    case :ets.whereis(table_name) do
-      :undefined ->
-        :ok
-
-      _ ->
-        :ets.delete_all_objects(table_name)
-        :ok
+    case table(client) do
+      nil -> :ok
+      table -> :ets.delete_all_objects(table)
     end
+
+    :ok
   end
 
   @doc """
@@ -71,33 +64,30 @@ defmodule Backplane.McpProtocol.Client.Cache do
   """
   @spec cleanup(client_name :: String.t()) :: :ok
   def cleanup(client) when is_binary(client) do
-    table_name = tool_validators_table(client)
-
-    case :ets.whereis(table_name) do
-      :undefined ->
-        :ok
-
-      _ ->
-        :ets.delete(table_name)
-        :ok
+    case Process.delete(tool_validators_key(client)) do
+      nil -> :ok
+      table -> :ets.delete(table)
     end
+
+    :ok
   end
 
   # Private helpers
 
-  @spec ensure_table(table :: atom) :: :ok
-  defp ensure_table(table) when is_atom(table) do
-    case :ets.whereis(table) do
-      :undefined ->
-        :ets.new(table, [:named_table, :private, :set, read_concurrency: true])
-        :ok
+  @spec ensure_table(client_name :: String.t()) :: :ets.tid()
+  defp ensure_table(client) do
+    case table(client) do
+      nil ->
+        table = :ets.new(:tool_validators, [:private, :set, read_concurrency: true])
+        Process.put(tool_validators_key(client), table)
+        table
 
-      _ ->
-        :ok
+      table ->
+        table
     end
   end
 
-  defp tool_validators_table(client) do
-    String.to_atom("backplane_mcp_protocol_client_#{client}#{@tool_validators_suffix}")
-  end
+  defp table(client), do: Process.get(tool_validators_key(client))
+
+  defp tool_validators_key(client), do: {@tool_validators_key, client}
 end
