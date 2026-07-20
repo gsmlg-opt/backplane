@@ -9,7 +9,6 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
   @events "memory.events.enabled"
   @dual_write "memory.events.dual_write"
 
-  setup :setup_memory_auth
   setup :setup_memory_gates
 
   test "renders only the three implemented accessible switches and five inert later stages",

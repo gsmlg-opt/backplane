@@ -21,8 +21,6 @@ defmodule Backplane.Admin.MemoryFixtures.CrashingSettings do
 end
 
 defmodule Backplane.Admin.MemoryFixtures do
-  import Plug.Conn
-
   alias Backplane.Memory.Events
   alias Backplane.Settings
 
@@ -31,31 +29,6 @@ defmodule Backplane.Admin.MemoryFixtures do
     "memory.events.enabled",
     "memory.events.dual_write"
   ]
-
-  def setup_memory_auth(%{conn: conn}) do
-    previous = %{
-      username: Application.fetch_env(:backplane, :admin_username),
-      password: Application.fetch_env(:backplane, :admin_password)
-    }
-
-    Application.put_env(:backplane, :admin_username, "memory-admin")
-    Application.put_env(:backplane, :admin_password, "memory-secret")
-
-    ExUnit.Callbacks.on_exit(fn ->
-      restore_application_env(:admin_username, previous.username)
-      restore_application_env(:admin_password, previous.password)
-    end)
-
-    encoded = Base.encode64("memory-admin:memory-secret")
-
-    {:ok,
-     conn:
-       put_req_header(
-         conn,
-         "authorization",
-         "Basic #{encoded}"
-       )}
-  end
 
   def setup_memory_gates(_context) do
     previous = Map.new(@gate_keys, &{&1, Settings.get(&1)})
@@ -182,14 +155,6 @@ defmodule Backplane.Admin.MemoryFixtures do
     end)
 
     :ok
-  end
-
-  defp restore_application_env(key, {:ok, value}) do
-    Application.put_env(:backplane, key, value)
-  end
-
-  defp restore_application_env(key, :error) do
-    Application.delete_env(:backplane, key)
   end
 
   defp assert_ok(:ok), do: :ok

@@ -35,7 +35,7 @@ defmodule Backplane.Admin.EndpointTest do
     refute :backplane_host_agent in reloadable_apps
   end
 
-  test "dev admin endpoint accepts remote connections and reads credentials from env" do
+  test "dev admin endpoint accepts remote connections without credential configuration" do
     System.put_env("BACKPLANE_ADMIN_USERNAME", "dev-admin")
     System.put_env("BACKPLANE_ADMIN_PASSWORD", "dev-secret")
 
@@ -52,8 +52,8 @@ defmodule Backplane.Admin.EndpointTest do
 
     assert endpoint_config[:http][:ip] == {0, 0, 0, 0}
     assert endpoint_config[:http][:port] == 4221
-    assert backplane_config[:admin_username] == "dev-admin"
-    assert backplane_config[:admin_password] == "dev-secret"
+    refute Keyword.has_key?(backplane_config, :admin_username)
+    refute Keyword.has_key?(backplane_config, :admin_password)
   end
 
   test "live socket only enables the websocket transport" do

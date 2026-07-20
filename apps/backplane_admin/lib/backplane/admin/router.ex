@@ -8,11 +8,9 @@ defmodule Backplane.Admin.Router do
     plug(:put_root_layout, html: {Backplane.Admin.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
-    plug(Backplane.Web.AdminAuthPlug)
   end
 
-  pipeline :memory_admin do
-    plug(Backplane.Web.AdminAuthPlug, required: true)
+  pipeline :memory do
     plug(Backplane.Admin.MemoryDetailPlug)
   end
 
@@ -82,7 +80,7 @@ defmodule Backplane.Admin.Router do
   end
 
   scope "/", Backplane.Admin do
-    pipe_through([:browser, :memory_admin])
+    pipe_through([:browser, :memory])
 
     live_session :memory_v2 do
       live("/memory", MemoryOverviewLive, :index)

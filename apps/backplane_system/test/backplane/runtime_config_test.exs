@@ -24,7 +24,7 @@ defmodule Backplane.RuntimeConfigTest do
   end
 
   @tag :tmp_dir
-  test "admin credential environment variables override TOML", %{tmp_dir: tmp_dir} do
+  test "legacy admin credential settings are ignored", %{tmp_dir: tmp_dir} do
     config_path = write_runtime_toml(tmp_dir)
 
     System.put_env("BACKPLANE_CONFIG", config_path)
@@ -33,35 +33,10 @@ defmodule Backplane.RuntimeConfigTest do
     System.put_env("BACKPLANE_ADMIN_PASSWORD", "env-secret")
 
     config = read_runtime_config()
+    backplane_config = Keyword.fetch!(config, :backplane)
 
-    assert config[:backplane][:admin_username] == "env-admin"
-    assert config[:backplane][:admin_password] == "env-secret"
-  end
-
-  @tag :tmp_dir
-  test "admin credentials fall back to TOML", %{tmp_dir: tmp_dir} do
-    config_path = write_runtime_toml(tmp_dir)
-
-    System.put_env("BACKPLANE_CONFIG", config_path)
-    System.put_env("SECRET_KEY_BASE", secret_key_base())
-
-    config = read_runtime_config()
-
-    assert config[:backplane][:admin_username] == "toml-admin"
-    assert config[:backplane][:admin_password] == "toml-secret"
-  end
-
-  @tag :tmp_dir
-  test "admin credentials can be configured from env without a TOML file", %{tmp_dir: tmp_dir} do
-    System.put_env("BACKPLANE_CONFIG", Path.join(tmp_dir, "missing.toml"))
-    System.put_env("SECRET_KEY_BASE", secret_key_base())
-    System.put_env("BACKPLANE_ADMIN_USERNAME", "env-admin")
-    System.put_env("BACKPLANE_ADMIN_PASSWORD", "env-secret")
-
-    config = read_runtime_config()
-
-    assert config[:backplane][:admin_username] == "env-admin"
-    assert config[:backplane][:admin_password] == "env-secret"
+    refute Keyword.has_key?(backplane_config, :admin_username)
+    refute Keyword.has_key?(backplane_config, :admin_password)
   end
 
   defp read_runtime_config do

@@ -5,7 +5,6 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
 
   alias Backplane.Memory.Operations
 
-  setup :setup_memory_auth
   setup :setup_memory_gates
 
   test "renders the authoritative V2 operations instrument panel", %{conn: conn} do

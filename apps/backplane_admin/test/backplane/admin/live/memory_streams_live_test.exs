@@ -6,7 +6,6 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
   alias Backplane.Memory.Events
   alias Backplane.Memory.Events.Stream
 
-  setup :setup_memory_auth
   setup :setup_memory_gates
 
   test "renders the bounded inventory and intentional empty state", %{conn: conn} do

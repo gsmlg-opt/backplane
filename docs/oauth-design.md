@@ -84,8 +84,8 @@ Layering:
   login, boruta resource-owner provider) and boruta's Ecto adapter.
 - **MCP compliance → `backplane_mcp`**: PRM document endpoint, 401 challenge, and the
   `AuthPlug` introspection branch.
-- **Shared web plugs → root `backplane` app** (`Backplane.Web.*`, beside the existing
-  `AdminAuthPlug`): current-user fetch, require-authenticated, require-permission.
+- **Shared web plugs → root `backplane` app** (`Backplane.Web.*`): current-user fetch,
+  require-authenticated, require-permission.
 - **AS HTTP surface → `backplane_api` endpoint**: the two `.well-known` documents and
   `/authorize` `/token` `/register` controllers (same origin as `/mcp`).
 - **Config UI → `backplane_admin`**: providers, roles+scopes, users+assignments, registered
@@ -150,8 +150,7 @@ The upstream IdP is the only outward dependency and authenticates the human at `
 - **JIT provisioning** links on `(provider_id, subject)`, never email. New subjects create a
   `users` row; existing subjects resolve to their user.
 - **Bootstrap admin.** An env-listed set of admin emails receives the admin role on first
-  login, so the system is administrable before any role assignment exists. The existing
-  `AdminAuthPlug` (HTTP Basic) remains as break-glass.
+  login, so the system is administrable before any role assignment exists.
 - **Resource-owner provider.** `Backplane.Accounts.ResourceOwners` implements boruta's
   resource-owner behaviour: `get_by` resolves the session user; `authorized_scopes` returns
   the user's RBAC scope set; `claims` exposes identity claims if needed. This is the single

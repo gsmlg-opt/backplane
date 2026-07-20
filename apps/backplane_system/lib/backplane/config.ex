@@ -51,9 +51,7 @@ defmodule Backplane.Config do
       host: section["host"] || @default_host,
       port: section["port"] || @default_port,
       auth_token: section["auth_token"],
-      auth_tokens: section["auth_tokens"],
-      admin_username: section["admin_username"],
-      admin_password: section["admin_password"]
+      auth_tokens: section["auth_tokens"]
     }
   end
 
