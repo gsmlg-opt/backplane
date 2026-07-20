@@ -1,5 +1,9 @@
 # Backplane
 
+[![GitHub Release](https://img.shields.io/github/v/release/gsmlg-opt/backplane?logo=github)](https://github.com/gsmlg-opt/backplane/releases/latest)
+[![Docker Image](https://img.shields.io/github/v/release/gsmlg-opt/backplane?label=docker&logo=docker)](https://github.com/orgs/gsmlg-dev/packages/container/package/backplane)
+[![Hex.pm](https://img.shields.io/github/v/release/gsmlg-opt/backplane?label=hex.pm&logo=elixir&color=purple)](https://hex.pm/packages/backplane_mcp_protocol)
+
 Backplane is a private, self-hosted gateway for agent infrastructure.
 
 It provides two main surfaces:
