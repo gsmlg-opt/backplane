@@ -16,11 +16,8 @@ defmodule Backplane.Services.WebSearch do
   def handle_search(%{"query" => query} = params) when is_binary(query) do
     with :ok <- ensure_enabled(),
          {:ok, query} <- validate_query(query),
-         {:ok, backend} <- resolve_backend(params),
-         {:ok, credential_name} <- resolve_credential(params, backend),
-         {:ok, api_key} <- fetch_credential(credential_name),
-         {:ok, response} <- request_search(backend, query, params, api_key) do
-      {:ok, normalize_response(backend, query, response, max_results(params))}
+         {:ok, result} <- search(query, params) do
+      {:ok, result}
     else
       {:error, %{code: _, message: _} = error} -> {:error, error}
       {:error, reason} -> error(reason)
@@ -60,6 +57,37 @@ defmodule Backplane.Services.WebSearch do
   end
 
   defp normalize_backend(other), do: other
+
+  defp search(query, params) do
+    if Map.has_key?(params, "backend") or Map.has_key?(params, "credential") do
+      search_backend(query, params)
+    else
+      search_with_fallback(query, params)
+    end
+  end
+
+  defp search_with_fallback(query, params) do
+    with {:ok, default_backend} <- resolve_backend(params) do
+      [default_backend | Enum.reject(@backends, &(&1 == default_backend))]
+      |> Enum.reduce_while(nil, fn backend, first_error ->
+        case search_backend(query, Map.put(params, "backend", backend)) do
+          {:ok, _result} = success -> {:halt, success}
+          {:error, _reason} = error -> {:cont, first_error || error}
+        end
+      end)
+    end
+  end
+
+  defp search_backend(query, params) do
+    with {:ok, backend} <- resolve_backend(params),
+         {:ok, credential_name} <- resolve_credential(params, backend),
+         {:ok, api_key} <- fetch_credential(credential_name),
+         {:ok, response} <- request_search(backend, query, params, api_key) do
+      {:ok, normalize_response(backend, query, response, max_results(params))}
+    end
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  end
 
   defp resolve_credential(params, backend) do
     credential_name =

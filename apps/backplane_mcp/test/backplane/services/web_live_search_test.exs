@@ -307,6 +307,96 @@ defmodule Backplane.Services.WebLiveSearchTest do
            ] = result["usage"]
   end
 
+  test "web::live_search returns successful providers when another request fails" do
+    create_openai_model("openai-live", "gpt-5.5", preset_key: "openai")
+
+    create_openai_model("xai-live", "grok-4.3",
+      preset_key: "x-ai",
+      base_url: "https://api.x.ai/v1"
+    )
+
+    Settings.set("services.web_live_search.models", ["xai-live/grok-4.3", "openai-live/gpt-5.5"])
+    test_pid = self()
+
+    Req.Test.stub(WebLiveSearch, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      model = Jason.decode!(body)["model"]
+      send(test_pid, {:searched, model})
+
+      case model do
+        "grok-4.3" ->
+          Plug.Conn.send_resp(conn, 401, "invalid api key")
+
+        "gpt-5.5" ->
+          Req.Test.json(conn, %{
+            "id" => "resp_live_openai",
+            "model" => "gpt-5.5",
+            "output_text" => "Successful OpenAI result",
+            "usage" => %{"input_tokens" => 21, "output_tokens" => 22}
+          })
+      end
+    end)
+
+    assert {:ok, result} =
+             live_search_tool().handler.(%{
+               "query" => "current search result"
+             })
+
+    assert_receive {:searched, first_model}
+    assert first_model == "grok-4.3"
+
+    assert_receive {:searched, second_model}
+    assert second_model == "gpt-5.5"
+
+    assert [
+             %{
+               "provider" => "openai-live",
+               "model" => "gpt-5.5",
+               "snippet" => "Successful OpenAI result"
+             }
+           ] = result["results"]
+
+    assert [
+             %{
+               "provider" => "openai-live",
+               "model" => "gpt-5.5",
+               "input_tokens" => 21,
+               "output_tokens" => 22
+             }
+           ] = result["usage"]
+  end
+
+  test "web::live_search ignores unresolved models when another target is available" do
+    create_openai_model("xai-live", "grok-4.3",
+      preset_key: "x-ai",
+      base_url: "https://api.x.ai/v1"
+    )
+
+    Settings.set("services.web_live_search.models", ["missing/gpt-5.5", "xai-live/grok-4.3"])
+
+    Req.Test.stub(WebLiveSearch, fn conn ->
+      Req.Test.json(conn, %{
+        "id" => "resp_live_xai",
+        "model" => "grok-4.3",
+        "output_text" => "Successful xAI result",
+        "usage" => %{}
+      })
+    end)
+
+    assert {:ok, result} =
+             live_search_tool().handler.(%{
+               "query" => "current search result"
+             })
+
+    assert [
+             %{
+               "provider" => "xai-live",
+               "model" => "grok-4.3",
+               "snippet" => "Successful xAI result"
+             }
+           ] = result["results"]
+  end
+
   test "web::live_search resolves configured fallback models without discovered model rows" do
     create_openai_provider("xai-live",
       preset_key: "x-ai",

@@ -8,7 +8,13 @@ defmodule Backplane.Services.WebSearchTest do
   setup do
     previous = Application.get_env(:backplane, :web_search_req_options)
     Application.put_env(:backplane, :web_search_req_options, plug: {Req.Test, WebSearch})
+    Settings.set("services.web.enabled", true)
+    Settings.set("services.web_search.default_backend", "ollama")
     Settings.set("services.web_search.minimax.base_url", nil)
+
+    for backend <- ~w(ollama minimax) do
+      Settings.set("services.web_search.#{backend}.credential", nil)
+    end
 
     on_exit(fn ->
       if previous do
@@ -178,6 +184,61 @@ defmodule Backplane.Services.WebSearchTest do
              })
 
     assert message == "MiniMax API error 2049: invalid api key"
+  end
+
+  test "handle_search/1 falls back to another configured backend when the default fails" do
+    {:ok, _} = Credentials.store("ollama-search", "ollama-secret", "service")
+    {:ok, _} = Credentials.store("minimax-search", "minimax-secret", "service")
+
+    Settings.set("services.web_search.default_backend", "minimax")
+    Settings.set("services.web_search.ollama.credential", "ollama-search")
+    Settings.set("services.web_search.minimax.credential", "minimax-search")
+
+    test_pid = self()
+
+    Req.Test.stub(WebSearch, fn conn ->
+      send(test_pid, {:searched, conn.request_path})
+      {:ok, _body, conn} = Plug.Conn.read_body(conn)
+
+      case conn.request_path do
+        "/v1/coding_plan/search" ->
+          Req.Test.json(conn, %{
+            "base_resp" => %{
+              "status_code" => 2049,
+              "status_msg" => "invalid api key"
+            }
+          })
+
+        "/api/web_search" ->
+          Req.Test.json(conn, %{
+            "results" => [
+              %{
+                "title" => "Ollama result",
+                "url" => "https://example.test/ollama",
+                "content" => "Successful Ollama search"
+              }
+            ]
+          })
+      end
+    end)
+
+    assert {:ok, result} = WebSearch.handle_search(%{"query" => "elixir mcp"})
+
+    assert_receive {:searched, first_path}
+    assert first_path == "/v1/coding_plan/search"
+
+    assert_receive {:searched, second_path}
+    assert second_path == "/api/web_search"
+
+    assert result["backend"] == "ollama"
+
+    assert [
+             %{
+               "title" => "Ollama result",
+               "url" => "https://example.test/ollama",
+               "snippet" => "Successful Ollama search"
+             }
+           ] = result["results"]
   end
 
   test "handle_search/1 rejects removed web search backends" do

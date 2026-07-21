@@ -134,28 +134,35 @@ defmodule Backplane.Services.WebLiveSearch do
   end
 
   defp resolve_search_targets(models) do
-    models
-    |> Enum.reduce_while({:ok, []}, fn model, {:ok, targets} ->
+    collect_successes(models, fn model ->
       with {:ok, provider, raw_model} <- resolve_llm_model(model),
            {:ok, provider_api} <- fetch_provider_api(provider),
            :ok <- ensure_hosted_web_search_supported(provider, provider_api, raw_model),
            :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
            {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, :openai) do
-        target = %{
-          provider: provider,
-          provider_api: provider_api,
-          raw_model: raw_model,
-          auth_headers: auth_headers
-        }
-
-        {:cont, {:ok, [target | targets]}}
-      else
-        error -> {:halt, error}
+        {:ok,
+         %{
+           provider: provider,
+           provider_api: provider_api,
+           raw_model: raw_model,
+           auth_headers: auth_headers
+         }}
       end
     end)
-    |> case do
-      {:ok, targets} -> {:ok, Enum.reverse(targets)}
-      error -> error
+  end
+
+  defp collect_successes(items, operation) do
+    {successes, first_error} =
+      Enum.reduce(items, {[], nil}, fn item, {successes, first_error} ->
+        case operation.(item) do
+          {:ok, result} -> {[result | successes], first_error}
+          error -> {successes, first_error || error}
+        end
+      end)
+
+    case Enum.reverse(successes) do
+      [] -> first_error || {:error, :no_provider}
+      successes -> {:ok, successes}
     end
   end
 
@@ -216,8 +223,7 @@ defmodule Backplane.Services.WebLiveSearch do
   end
 
   defp request_live_searches(targets, query) do
-    targets
-    |> Enum.reduce_while({:ok, []}, fn target, {:ok, responses} ->
+    collect_successes(targets, fn target ->
       with {:ok, response} <-
              request_live_search(
                target.provider,
@@ -226,21 +232,14 @@ defmodule Backplane.Services.WebLiveSearch do
                query,
                target.auth_headers
              ) do
-        item = %{
-          provider: target.provider.name,
-          model: target.raw_model,
-          response: response
-        }
-
-        {:cont, {:ok, [item | responses]}}
-      else
-        error -> {:halt, error}
+        {:ok,
+         %{
+           provider: target.provider.name,
+           model: target.raw_model,
+           response: response
+         }}
       end
     end)
-    |> case do
-      {:ok, responses} -> {:ok, Enum.reverse(responses)}
-      error -> error
-    end
   end
 
   defp request_live_search(
