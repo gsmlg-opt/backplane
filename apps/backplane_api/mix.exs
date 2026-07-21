@@ -4,7 +4,7 @@ defmodule BackplaneApi.MixProject do
   def project do
     [
       app: :backplane_api,
-      version: "0.4.1",
+      version: "0.4.2",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",

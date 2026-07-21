@@ -4,7 +4,7 @@ defmodule BackplaneDataCase.MixProject do
   def project do
     [
       app: :backplane_data_case,
-      version: "0.4.1",
+      version: "0.4.2",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
