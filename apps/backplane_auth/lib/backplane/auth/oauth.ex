@@ -180,20 +180,34 @@ defmodule Backplane.Auth.OAuth do
     normalize_client_resources(attrs, resources)
   end
 
-  defp normalize_client_resources(attrs, :error), do: {:ok, attrs}
+  defp normalize_client_resources(%{metadata: metadata} = attrs, :error) do
+    {:ok, %{attrs | metadata: without_resource_metadata(metadata)}}
+  end
 
   defp normalize_client_resources(%{metadata: metadata} = attrs, {:ok, values})
        when is_list(values) do
     with {:ok, resources} <- Resources.normalize_keys(values),
          :ok <- Resources.validate_origin(resources) do
       metadata =
-        Map.put(metadata || %{}, "backplane_resources", Enum.map(resources, &to_string/1))
+        metadata
+        |> without_resource_metadata()
+        |> Map.put("backplane_resources", Enum.map(resources, &to_string/1))
 
       {:ok, %{attrs | metadata: metadata}}
     end
   end
 
   defp normalize_client_resources(_attrs, {:ok, _values}), do: {:error, :invalid_resource}
+
+  defp without_resource_metadata(nil), do: %{}
+
+  defp without_resource_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Map.delete("backplane_resources")
+    |> Map.delete(:backplane_resources)
+  end
+
+  defp without_resource_metadata(metadata), do: metadata
 
   defp validate_client_attrs(%{confidential: false, pkce: false}) do
     {:error, client_error(:pkce, "must be enabled for public clients")}

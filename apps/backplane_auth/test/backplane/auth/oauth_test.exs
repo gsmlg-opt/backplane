@@ -4,6 +4,7 @@ defmodule Backplane.Auth.OAuthTest do
   alias Backplane.Auth
   alias Backplane.Repo
   alias Boruta.Ecto.{Client, Scope}
+  alias Boruta.Ecto.ClientStore
   alias Boruta.Ecto.Clients, as: BorutaClients
 
   setup do
@@ -325,7 +326,8 @@ defmodule Backplane.Auth.OAuthTest do
         )
 
       persisted_before = Auth.OAuth.get_client(client.id)
-      cached_before = BorutaClients.get_client(client.id)
+      _cached_before = BorutaClients.get_client(client.id)
+      assert {:ok, cached_before} = ClientStore.get_client(client.id)
 
       Application.put_env(:backplane, :api_url, "http://localhost:4220")
 
@@ -334,7 +336,28 @@ defmodule Backplane.Auth.OAuthTest do
       persisted_after = Auth.OAuth.get_client(client.id)
       assert persisted_after.metadata == persisted_before.metadata
       assert scope_names(persisted_after.authorized_scopes) == ["github::*", "openid"]
-      assert BorutaClients.get_client(client.id) == cached_before
+      assert ClientStore.get_client(client.id) == {:ok, cached_before}
+    end
+
+    test "invalid resource updates leave metadata, scopes, and the Boruta cache unchanged" do
+      client =
+        oauth_client!(
+          scopes: ["openid", "github::*"],
+          resources: [:mcp],
+          metadata: %{"tenant" => "alpha"}
+        )
+
+      persisted_before = Auth.OAuth.get_client(client.id)
+      _cached_before = BorutaClients.get_client(client.id)
+      assert {:ok, cached_before} = ClientStore.get_client(client.id)
+
+      assert {:error, :invalid_resource} =
+               Auth.OAuth.update_client_resources(client, [:mcp, :invalid])
+
+      persisted_after = Auth.OAuth.get_client(client.id)
+      assert persisted_after.metadata == persisted_before.metadata
+      assert scope_names(persisted_after.authorized_scopes) == ["github::*", "openid"]
+      assert ClientStore.get_client(client.id) == {:ok, cached_before}
     end
 
     test "an empty resource update removes assignments while preserving unrelated state" do
@@ -377,6 +400,37 @@ defmodule Backplane.Auth.OAuthTest do
       refute Auth.OAuth.enabled_client_for_resource?(:mcp)
       refute Auth.OAuth.enabled_client_for_resource?(:v1)
     end
+
+    test "ignores string resource assignments injected through metadata" do
+      assert_reserved_metadata_is_identity_only(%{
+        "backplane_resources" => ["mcp"],
+        "tenant" => "alpha"
+      })
+    end
+
+    test "ignores atom resource assignments injected through metadata" do
+      assert_reserved_metadata_is_identity_only(%{
+        :backplane_resources => [:v1],
+        "tenant" => "alpha"
+      })
+    end
+
+    test "top-level resource assignments replace both reserved metadata forms" do
+      client =
+        oauth_client!(
+          resources: [:v1],
+          metadata: %{
+            :backplane_resources => [:mcp],
+            "backplane_resources" => ["mcp"],
+            "tenant" => "alpha"
+          }
+        )
+
+      assert client.metadata["backplane_resources"] == ["v1"]
+      refute Map.has_key?(client.metadata, :backplane_resources)
+      assert client.metadata["tenant"] == "alpha"
+      assert Auth.OAuth.client_resources(client) == [:v1]
+    end
   end
 
   defp scope!(name) do
@@ -406,6 +460,22 @@ defmodule Backplane.Auth.OAuthTest do
   end
 
   defp scope_names(scopes), do: scopes |> Enum.map(& &1.name) |> Enum.sort()
+
+  defp assert_reserved_metadata_is_identity_only(metadata) do
+    Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")
+    Application.put_env(:backplane_auth, :allow_insecure_resource_origins, false)
+
+    client = oauth_client!(metadata: metadata)
+
+    refute Map.has_key?(client.metadata, "backplane_resources")
+    refute Map.has_key?(client.metadata, :backplane_resources)
+    assert client.metadata["tenant"] == "alpha"
+    assert Auth.OAuth.client_resources(client) == []
+    refute Auth.OAuth.client_allows_resource?(client, :mcp)
+    refute Auth.OAuth.client_allows_resource?(client, :v1)
+    refute Auth.OAuth.enabled_client_for_resource?(:mcp)
+    refute Auth.OAuth.enabled_client_for_resource?(:v1)
+  end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
