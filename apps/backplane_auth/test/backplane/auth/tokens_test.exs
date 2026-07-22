@@ -59,6 +59,83 @@ defmodule Backplane.Auth.TokensTest do
     end
   end
 
+  test "signs the canonical audience through access-token lineage" do
+    {user, client, previous_token} = resource_token_fixture!(:mcp, "github::*")
+
+    oauth_client =
+      client
+      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+
+    assert {:ok, oauth_token} =
+             Boruta.Ecto.AccessTokens.create(
+               %{
+                 client: oauth_client,
+                 sub: user.id,
+                 scope: "github::*",
+                 previous_token: previous_token.value
+               },
+               refresh_token: true
+             )
+
+    token = Repo.get_by!(Token, type: "access_token", value: oauth_token.value)
+
+    assert {:ok, _binding} =
+             Auth.TokenResources.bind_issued("access_token", client.id, token.value, :mcp)
+
+    assert %{"aud" => audience, "client_id" => client_id} =
+             verify_with_jwks!(token.value, Auth.Tokens.jwks())
+
+    assert audience == Resources.uri(:mcp)
+    assert client_id == client.id
+    assert {:ok, _auth} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+  end
+
+  test "fails closed when named code or access-token lineage is missing" do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: [:mcp], scopes: ["github::*"])
+    client = Auth.OAuth.get_client(client.id)
+    oauth_client = Boruta.Ecto.OauthMapper.to_oauth_schema(client)
+    missing_code = "missing-code-#{System.unique_integer([:positive])}"
+    missing_token = "missing-token-#{System.unique_integer([:positive])}"
+    message = "OAuth token resource lineage could not be resolved"
+
+    assert_raise Auth.TokenResources.LineageError, message, fn ->
+      Boruta.Ecto.AccessTokens.create(
+        %{
+          client: oauth_client,
+          sub: user.id,
+          scope: "github::*",
+          previous_code: missing_code
+        },
+        refresh_token: true
+      )
+    end
+
+    assert_raise Auth.TokenResources.LineageError, message, fn ->
+      Boruta.Ecto.AccessTokens.create(
+        %{
+          client: oauth_client,
+          sub: user.id,
+          scope: "github::*",
+          previous_token: missing_token
+        },
+        refresh_token: true
+      )
+    end
+
+    refute Repo.get_by(Token,
+             type: "access_token",
+             client_id: client.id,
+             previous_code: missing_code
+           )
+
+    refute Repo.get_by(Token,
+             type: "access_token",
+             client_id: client.id,
+             previous_token: missing_token
+           )
+  end
+
   test "rejects a resource token requested for another resource" do
     {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
 
@@ -172,6 +249,15 @@ defmodule Backplane.Auth.TokensTest do
 
     assert {:error, :invalid_token} =
              Auth.Tokens.verify_resource_access_token(unassigned_token.value, :mcp)
+  end
+
+  test "rejects a resource token after its OAuth client is deleted" do
+    {_user, client, token} = resource_token_fixture!(:mcp, "github::*")
+
+    Repo.delete!(client)
+
+    assert Auth.OAuth.get_client(client.id) == nil
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
   end
 
   test "rejects disabled and missing resource owners" do
