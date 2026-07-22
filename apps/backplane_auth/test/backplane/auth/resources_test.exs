@@ -188,15 +188,33 @@ defmodule Backplane.Auth.ResourcesTest do
     assert Resources.validate_origin([]) == :ok
   end
 
-  test "requires a hierarchical HTTPS origin with a host" do
+  test "requires a canonical HTTPS origin" do
     for invalid <- [
           "https:opaque",
           "https:///missing-host",
           "https://backplane.example.test:bad",
           "https://backplane example.test",
-          "ftp://localhost:4220"
+          "https://user@backplane.example.test",
+          "https://backplane.example.test/api",
+          "https://backplane.example.test?tenant=one",
+          "https://backplane.example.test#fragment"
         ] do
       Application.put_env(:backplane, :api_url, invalid)
+      assert Resources.validate_origin([:mcp]) == {:error, :https_required}
+    end
+  end
+
+  test "accepts canonical HTTPS origins with valid ports" do
+    Application.put_env(:backplane, :api_url, "https://backplane.example.test:8443")
+    assert Resources.validate_origin([:mcp, :v1]) == :ok
+  end
+
+  test "never permits other schemes through the insecure local override" do
+    Application.put_env(:backplane_auth, :allow_insecure_resource_origins, true)
+    Application.put_env(:backplane, :api_url, "ftp://localhost:4220")
+
+    for env <- [:dev, :test] do
+      Application.put_env(:backplane, :env, env)
       assert Resources.validate_origin([:mcp]) == {:error, :https_required}
     end
   end

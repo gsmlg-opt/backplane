@@ -55,15 +55,11 @@ defmodule Backplane.Auth.Resources do
   def validate_origin([]), do: :ok
 
   def validate_origin(resources) when is_list(resources) do
-    case URI.new(WebOrigins.api_base_url()) do
-      {:ok, %URI{scheme: "https", host: host}} when is_binary(host) and host != "" ->
-        :ok
-
-      {:ok, %URI{scheme: "http", host: host}} when is_binary(host) and host != "" ->
-        if insecure_local_origin_allowed?(host), do: :ok, else: {:error, :https_required}
-
-      _result ->
-        {:error, :https_required}
+    with {:ok, uri} <- URI.new(WebOrigins.api_base_url()),
+         true <- allowed_origin?(uri) do
+      :ok
+    else
+      _result -> {:error, :https_required}
     end
   end
 
@@ -109,6 +105,25 @@ defmodule Backplane.Auth.Resources do
   defp normalize_key("mcp"), do: {:ok, :mcp}
   defp normalize_key("v1"), do: {:ok, :v1}
   defp normalize_key(_value), do: :error
+
+  defp allowed_origin?(%URI{scheme: "https"} = uri), do: structural_origin?(uri)
+
+  defp allowed_origin?(%URI{scheme: "http", host: host} = uri),
+    do: structural_origin?(uri) and insecure_local_origin_allowed?(host)
+
+  defp allowed_origin?(_uri), do: false
+
+  defp structural_origin?(%URI{
+         host: host,
+         userinfo: nil,
+         path: path,
+         query: nil,
+         fragment: nil
+       })
+       when is_binary(host) and host != "" and path in [nil, "", "/"],
+       do: true
+
+  defp structural_origin?(_uri), do: false
 
   defp insecure_local_origin_allowed?(host) do
     Application.get_env(:backplane_auth, :allow_insecure_resource_origins, false) and
