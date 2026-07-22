@@ -38,8 +38,19 @@ defmodule Backplane.Auth.ResourcesTest do
 
     assert Resources.from_uri(Resources.uri(:mcp)) == {:ok, :mcp}
     assert Resources.from_uri(Resources.uri(:v1)) == {:ok, :v1}
-    assert Resources.from_uri("https://backplane.example.test/v1/") == :error
-    assert Resources.from_uri("https://other.example.test/mcp") == :error
+
+    for invalid <- [
+          "https://backplane.example.test/v1/",
+          "https://other.example.test/mcp",
+          "https://backplane.example.test/mcp?operation=list",
+          "https://backplane.example.test/v1#models",
+          "https://backplane.example.test:444/v1",
+          "https://user@backplane.example.test/mcp",
+          "https://backplane.example.test/%6Dcp",
+          "https://backplane.example.test/v1/../v1"
+        ] do
+      assert Resources.from_uri(invalid) == :error
+    end
   end
 
   test "normalizes and deduplicates resource keys" do
@@ -84,8 +95,30 @@ defmodule Backplane.Auth.ResourcesTest do
     end
   end
 
+  test "rejects malformed protected operation scopes" do
+    for invalid <- [
+          "github::search*",
+          "github::**",
+          "*::search",
+          "github ::search",
+          "github::search issues",
+          "github::search/issues",
+          "github::search\n",
+          "github::search::issues"
+        ] do
+      refute Resources.valid_scope?(:mcp, invalid)
+      refute Resources.operation_scope?(:mcp, invalid)
+      refute Resources.protected_operation_scope?(invalid)
+    end
+
+    for invalid <- ["llm::admin", "llm::models::extra"] do
+      refute Resources.valid_scope?(:v1, invalid)
+      refute Resources.operation_scope?(:v1, invalid)
+    end
+  end
+
   test "rejects system scopes from protected resource operations" do
-    for key <- Resources.keys(), scope <- ["system::*", "system::admin"] do
+    for key <- Resources.keys(), scope <- ["system::*", "system::admin", "system::future"] do
       refute Resources.valid_scope?(key, scope)
       refute Resources.operation_scope?(key, scope)
     end
@@ -96,6 +129,7 @@ defmodule Backplane.Auth.ResourcesTest do
     refute Resources.protected_operation_scope?("openid")
     refute Resources.protected_operation_scope?("system::*")
     refute Resources.protected_operation_scope?("system::admin")
+    refute Resources.protected_operation_scope?("system::future")
   end
 
   test "defaults omitted scopes to the resource-operation intersection only" do
@@ -116,6 +150,23 @@ defmodule Backplane.Auth.ResourcesTest do
              {:error, :invalid_scope}
   end
 
+  test "keeps wildcard defaults as exact intersections" do
+    assert Resources.default_scopes(:mcp, ["*", "github::*"], ["*", "github::*"]) ==
+             {:ok, ["*", "github::*"]}
+
+    assert Resources.default_scopes(:mcp, ["*"], ["github::*"]) ==
+             {:error, :invalid_scope}
+
+    assert Resources.default_scopes(:v1, ["*", "llm::*"], ["*", "llm::*"]) ==
+             {:ok, ["*", "llm::*"]}
+
+    assert Resources.default_scopes(:v1, ["llm::*"], ["llm::invoke"]) ==
+             {:error, :invalid_scope}
+
+    assert Resources.default_scopes(:v1, ["llm::invoke"], ["llm::*"]) ==
+             {:error, :invalid_scope}
+  end
+
   test "requires HTTPS for non-empty resource requests" do
     assert Resources.validate_origin([:mcp, :v1]) == :ok
 
@@ -129,11 +180,45 @@ defmodule Backplane.Auth.ResourcesTest do
       assert Resources.validate_origin([:mcp]) == :ok
     end
 
-    Application.put_env(:backplane, :env, :prod)
-    assert Resources.validate_origin([:mcp]) == {:error, :https_required}
+    for env <- [:prod, :staging, nil] do
+      Application.put_env(:backplane, :env, env)
+      assert Resources.validate_origin([:mcp]) == {:error, :https_required}
+    end
+
     assert Resources.validate_origin([]) == :ok
+  end
+
+  test "requires a hierarchical HTTPS origin with a host" do
+    for invalid <- [
+          "https:opaque",
+          "https:///missing-host",
+          "https://backplane.example.test:bad",
+          "https://backplane example.test",
+          "ftp://localhost:4220"
+        ] do
+      Application.put_env(:backplane, :api_url, invalid)
+      assert Resources.validate_origin([:mcp]) == {:error, :https_required}
+    end
+  end
+
+  test "permits insecure origins only for local hosts in dev and test" do
+    Application.put_env(:backplane_auth, :allow_insecure_resource_origins, true)
+
+    for env <- [:dev, :test], origin <- local_http_origins() do
+      Application.put_env(:backplane, :env, env)
+      Application.put_env(:backplane, :api_url, origin)
+      assert Resources.validate_origin([:mcp]) == :ok
+    end
+
+    Application.put_env(:backplane, :env, :test)
+    Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")
+    assert Resources.validate_origin([:mcp]) == {:error, :https_required}
   end
 
   defp restore(app, key, nil), do: Application.delete_env(app, key)
   defp restore(app, key, value), do: Application.put_env(app, key, value)
+
+  defp local_http_origins do
+    ["http://localhost:4220", "http://127.0.0.1:4220", "http://[::1]:4220"]
+  end
 end
