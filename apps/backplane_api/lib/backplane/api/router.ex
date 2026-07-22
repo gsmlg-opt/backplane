@@ -35,7 +35,24 @@ defmodule Backplane.Api.Router do
   scope "/", Backplane.Api do
     pipe_through(:oauth_api)
 
-    get("/.well-known/openid-configuration", Auth.DiscoveryController, :show)
+    get(
+      "/.well-known/openid-configuration",
+      Auth.DiscoveryController,
+      :openid_configuration
+    )
+
+    get(
+      "/.well-known/oauth-authorization-server",
+      Auth.DiscoveryController,
+      :authorization_server
+    )
+
+    get(
+      "/.well-known/oauth-protected-resource/:resource",
+      Auth.DiscoveryController,
+      :protected_resource
+    )
+
     get("/oauth/jwks", Auth.JwksController, :index)
     get("/oauth/userinfo", Auth.UserinfoController, :show)
     post("/oauth/token", Auth.TokenController, :token)
