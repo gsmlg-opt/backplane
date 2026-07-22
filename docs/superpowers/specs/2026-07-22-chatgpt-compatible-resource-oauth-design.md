@@ -1,6 +1,6 @@
 # ChatGPT-Compatible OAuth Resources Design
 
-**Status:** Written specification pending final user review
+**Status:** Approved
 
 **Date:** 2026-07-22
 **Scope:** OAuth discovery and resource-server authorization for `/mcp` and `/v1`
