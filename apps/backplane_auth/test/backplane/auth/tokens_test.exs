@@ -4,7 +4,8 @@ defmodule Backplane.Auth.TokensTest do
   import Backplane.Auth.Fixtures
 
   alias Backplane.Auth
-  alias Backplane.Auth.Schemas.SigningKey
+  alias Backplane.Auth.Resources
+  alias Backplane.Auth.Schemas.{OAuthTokenResource, SigningKey}
   alias Backplane.Repo
   alias Boruta.Ecto.Token
 
@@ -41,6 +42,163 @@ defmodule Backplane.Auth.TokensTest do
     assert claims["exp"] > System.system_time(:second)
 
     assert verify_with_jwks!(token.value, Auth.Tokens.jwks())
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+  end
+
+  test "resource fixtures sign canonical audiences through code lineage" do
+    for {resource, scope} <- [mcp: "github::*", v1: "llm::invoke"] do
+      {_user, client, token} = resource_token_fixture!(resource, scope)
+
+      assert {:ok, auth} = Auth.Tokens.verify_resource_access_token(token.value, resource)
+      assert auth.claims["iss"] == Boruta.Config.issuer()
+      assert auth.claims["aud"] == Resources.uri(resource)
+      assert auth.claims["client_id"] == client.id
+      assert auth.claims["sub"] == token.sub
+      assert auth.claims["exp"] > System.system_time(:second)
+      assert auth.scopes == [scope]
+    end
+  end
+
+  test "rejects a resource token requested for another resource" do
+    {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :v1)
+  end
+
+  test "rejects a resource token with an invalid issuer" do
+    {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+    token = replace_claims!(token, &Map.put(&1, "iss", "https://other.example.test"))
+
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+  end
+
+  test "rejects expired and not-yet-valid resource-token claims" do
+    {_user, _client, expired} = resource_token_fixture!(:mcp, "github::*")
+    expired = replace_claims!(expired, &Map.put(&1, "exp", System.system_time(:second) - 1))
+
+    {_user, _client, future} = resource_token_fixture!(:mcp, "github::*")
+    future = replace_claims!(future, &Map.put(&1, "nbf", System.system_time(:second) + 60))
+
+    {_user, _client, malformed} = resource_token_fixture!(:mcp, "github::*")
+    malformed = replace_claims!(malformed, &Map.put(&1, "nbf", "tomorrow"))
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(expired.value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(future.value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(malformed.value, :mcp)
+  end
+
+  test "rejects revoked, missing, and non-access-token rows" do
+    {_user, _client, revoked} = resource_token_fixture!(:mcp, "github::*")
+
+    revoked =
+      revoked
+      |> Ecto.Changeset.change(revoked_at: DateTime.utc_now())
+      |> Repo.update!()
+
+    {_user, _client, missing} = resource_token_fixture!(:mcp, "github::*")
+    missing_value = missing.value
+    Repo.delete!(missing)
+
+    {_user, _client, code} = resource_token_fixture!(:mcp, "github::*")
+    code_value = code.value
+
+    code
+    |> Ecto.Changeset.change(type: "code")
+    |> Repo.update!()
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(revoked.value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(missing_value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(code_value, :mcp)
+  end
+
+  test "rejects missing and wrong resource mappings" do
+    {_user, _client, missing} = resource_token_fixture!(:mcp, "github::*")
+    Repo.delete_all(OAuthTokenResource)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(missing.value, :mcp)
+
+    {_user, _client, wrong} = resource_token_fixture!(:mcp, "github::*")
+    binding = Repo.get_by!(OAuthTokenResource, oauth_token_id: wrong.id)
+
+    binding
+    |> Ecto.Changeset.change(resource: "v1")
+    |> Repo.update!()
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(wrong.value, :mcp)
+  end
+
+  test "rejects signed audience, client, subject, and scope mismatches" do
+    mismatches = [
+      {"aud", Resources.uri(:v1)},
+      {"client_id", Ecto.UUID.generate()},
+      {"sub", Ecto.UUID.generate()},
+      {"scope", "docs::read"}
+    ]
+
+    Enum.each(mismatches, fn {claim, value} ->
+      {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+      token = replace_claims!(token, &Map.put(&1, claim, value))
+
+      assert {:error, :invalid_token} =
+               Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+    end)
+  end
+
+  test "rejects disabled and resource-unassigned clients" do
+    {_user, disabled_client, disabled_token} =
+      resource_token_fixture!(:mcp, "github::*")
+
+    assert {:ok, _client} = Auth.OAuth.disable_client(disabled_client)
+
+    {_user, unassigned_client, unassigned_token} =
+      resource_token_fixture!(:mcp, "github::*")
+
+    assert {:ok, _client} = Auth.OAuth.update_client_resources(unassigned_client, [:v1])
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(disabled_token.value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(unassigned_token.value, :mcp)
+  end
+
+  test "rejects disabled and missing resource owners" do
+    {disabled_user, _client, disabled_token} =
+      resource_token_fixture!(:mcp, "github::*")
+
+    assert {:ok, _user} = Auth.Accounts.disable_user(disabled_user)
+
+    {missing_user, _client, missing_token} =
+      resource_token_fixture!(:mcp, "github::*")
+
+    Repo.delete!(missing_user)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(disabled_token.value, :mcp)
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(missing_token.value, :mcp)
+  end
+
+  test "a non-Backplane signature is the only not-oauth result" do
+    assert :not_oauth = Auth.Tokens.verify_resource_access_token("opaque-pat", :mcp)
+
+    {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+    Repo.delete_all(OAuthTokenResource)
+
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
   end
 
   test "lists token metadata and revokes a token by id" do
@@ -126,6 +284,34 @@ defmodule Backplane.Auth.TokensTest do
              })
 
     client
+  end
+
+  defp resource_token_fixture!(resource, scope) do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: [resource], scopes: [scope])
+    client = Auth.OAuth.get_client(client.id)
+    token = resource_access_token_fixture!(user, client, [scope], resource)
+
+    {user, client, token}
+  end
+
+  defp replace_claims!(token, update) do
+    claims = verify_with_jwks!(token.value, Auth.Tokens.jwks()) |> update.()
+    {:ok, key} = Auth.Tokens.ensure_active_signing_key()
+    {:ok, raw_jwk} = Backplane.Settings.Encryption.decrypt(key.encrypted_private_jwk)
+    signer = JOSE.JWS.from_map(%{"alg" => "RS256", "kid" => key.kid})
+
+    value =
+      raw_jwk
+      |> Jason.decode!()
+      |> JOSE.JWK.from_map()
+      |> JOSE.JWT.sign(signer, claims)
+      |> JOSE.JWS.compact()
+      |> elem(1)
+
+    token
+    |> Ecto.Changeset.change(value: value)
+    |> Repo.update!()
   end
 
   defp scope!(name) do
