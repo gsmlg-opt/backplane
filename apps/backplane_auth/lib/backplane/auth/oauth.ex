@@ -4,6 +4,7 @@ defmodule Backplane.Auth.OAuth do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias Backplane.Auth.Resources
   alias Backplane.Repo
   alias Boruta.Ecto.Admin
   alias Boruta.Ecto.{Client, Scope}
@@ -27,9 +28,8 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def create_client(attrs) when is_map(attrs) do
-    attrs = normalize_client_attrs(attrs)
-
-    with :ok <- validate_client_attrs(attrs),
+    with {:ok, attrs} <- normalize_client_attrs(attrs),
+         :ok <- validate_client_attrs(attrs),
          {:ok, scopes} <- ensure_scopes(attrs.scopes),
          {:ok, client} <- Admin.create_client(to_boruta_client_attrs(attrs, scopes)) do
       client = Repo.preload(client, :authorized_scopes)
@@ -49,11 +49,10 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def disable_client(%Client{} = client) do
+    client = Repo.preload(client, :authorized_scopes)
     metadata = Map.put(client.metadata || %{}, "disabled", true)
 
-    client
-    |> change(metadata: metadata)
-    |> Repo.update()
+    update_client_metadata(client, metadata)
   end
 
   def client_disabled?(%Client{metadata: metadata}) when is_map(metadata) do
@@ -63,6 +62,45 @@ defmodule Backplane.Auth.OAuth do
   def client_disabled?(%Client{}), do: false
 
   def client_enabled?(%Client{} = client), do: not client_disabled?(client)
+
+  def client_resources(%Client{metadata: metadata}) do
+    values =
+      case metadata || %{} do
+        %{"backplane_resources" => values} when is_list(values) -> values
+        %{backplane_resources: values} when is_list(values) -> values
+        _metadata -> []
+      end
+
+    case Resources.normalize_keys(values) do
+      {:ok, resources} -> resources
+      {:error, :invalid_resource} -> []
+    end
+  end
+
+  def client_allows_resource?(%Client{} = client, resource),
+    do: resource in client_resources(client)
+
+  def enabled_client_for_resource?(resource) do
+    Enum.any?(list_clients(), fn client ->
+      client_enabled?(client) and client_allows_resource?(client, resource)
+    end)
+  end
+
+  def update_client_resources(%Client{} = client, values) do
+    client = Repo.preload(client, :authorized_scopes)
+
+    with {:ok, resources} <- Resources.normalize_keys(values),
+         :ok <- Resources.validate_origin(resources) do
+      metadata =
+        Map.put(
+          client.metadata || %{},
+          "backplane_resources",
+          Enum.map(resources, &to_string/1)
+        )
+
+      update_client_metadata(client, metadata)
+    end
+  end
 
   def get_enabled_client(id) when is_binary(id) do
     case get_client(id) do
@@ -118,25 +156,44 @@ defmodule Backplane.Auth.OAuth do
 
   defp normalize_client_attrs(attrs) do
     attrs = atomize_keys(attrs)
+    resources = Map.fetch(attrs, :resources)
     public? = Map.get(attrs, :public, false)
     confidential? = Map.get(attrs, :confidential, not public?)
 
-    %{
-      id: Map.get(attrs, :id),
-      name: Map.get(attrs, :name),
-      redirect_uris: Map.get(attrs, :redirect_uris, []),
-      scopes: Map.get(attrs, :scopes, Map.get(attrs, :allowed_scopes, [])),
-      confidential: confidential?,
-      # PKCE is required for every client (Boruta only verifies code
-      # challenges when the client has pkce enabled).
-      pkce: Map.get(attrs, :pkce, true),
-      access_token_ttl: Map.get(attrs, :access_token_ttl, 3_600),
-      authorization_code_ttl: Map.get(attrs, :authorization_code_ttl, 60),
-      refresh_token_ttl: Map.get(attrs, :refresh_token_ttl, 2_592_000),
-      id_token_ttl: Map.get(attrs, :id_token_ttl, 3_600),
-      metadata: Map.get(attrs, :metadata, %{})
-    }
+    attrs =
+      %{
+        id: Map.get(attrs, :id),
+        name: Map.get(attrs, :name),
+        redirect_uris: Map.get(attrs, :redirect_uris, []),
+        scopes: Map.get(attrs, :scopes, Map.get(attrs, :allowed_scopes, [])),
+        confidential: confidential?,
+        # PKCE is required for every client (Boruta only verifies code
+        # challenges when the client has pkce enabled).
+        pkce: Map.get(attrs, :pkce, true),
+        access_token_ttl: Map.get(attrs, :access_token_ttl, 3_600),
+        authorization_code_ttl: Map.get(attrs, :authorization_code_ttl, 60),
+        refresh_token_ttl: Map.get(attrs, :refresh_token_ttl, 2_592_000),
+        id_token_ttl: Map.get(attrs, :id_token_ttl, 3_600),
+        metadata: Map.get(attrs, :metadata, %{})
+      }
+
+    normalize_client_resources(attrs, resources)
   end
+
+  defp normalize_client_resources(attrs, :error), do: {:ok, attrs}
+
+  defp normalize_client_resources(%{metadata: metadata} = attrs, {:ok, values})
+       when is_list(values) do
+    with {:ok, resources} <- Resources.normalize_keys(values),
+         :ok <- Resources.validate_origin(resources) do
+      metadata =
+        Map.put(metadata || %{}, "backplane_resources", Enum.map(resources, &to_string/1))
+
+      {:ok, %{attrs | metadata: metadata}}
+    end
+  end
+
+  defp normalize_client_resources(_attrs, {:ok, _values}), do: {:error, :invalid_resource}
 
   defp validate_client_attrs(%{confidential: false, pkce: false}) do
     {:error, client_error(:pkce, "must be enabled for public clients")}
@@ -175,6 +232,13 @@ defmodule Backplane.Auth.OAuth do
       token_endpoint_auth_methods: ["client_secret_basic", "client_secret_post"],
       id_token_signature_alg: "RS256",
       authorized_scopes: Enum.map(scopes, &%{id: &1.id})
+    })
+  end
+
+  defp update_client_metadata(%Client{} = client, metadata) do
+    Admin.update_client(client, %{
+      metadata: metadata,
+      authorized_scopes: Enum.map(client.authorized_scopes, &%{id: &1.id})
     })
   end
 

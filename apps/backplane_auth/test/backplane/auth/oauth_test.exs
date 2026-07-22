@@ -2,7 +2,25 @@ defmodule Backplane.Auth.OAuthTest do
   use Backplane.Auth.DataCase, async: false
 
   alias Backplane.Auth
+  alias Backplane.Repo
   alias Boruta.Ecto.{Client, Scope}
+  alias Boruta.Ecto.Clients, as: BorutaClients
+
+  setup do
+    old_url = Application.get_env(:backplane, :api_url)
+    old_env = Application.get_env(:backplane, :env)
+    old_override = Application.get_env(:backplane_auth, :allow_insecure_resource_origins)
+
+    Application.put_env(:backplane, :api_url, "https://backplane.example.test")
+    Application.put_env(:backplane, :env, :test)
+    Application.put_env(:backplane_auth, :allow_insecure_resource_origins, false)
+
+    on_exit(fn ->
+      restore_env(:backplane, :api_url, old_url)
+      restore_env(:backplane, :env, old_env)
+      restore_env(:backplane_auth, :allow_insecure_resource_origins, old_override)
+    end)
+  end
 
   describe "scopes" do
     test "creates and lists OAuth scopes" do
@@ -164,6 +182,201 @@ defmodule Backplane.Auth.OAuthTest do
       assert Auth.OAuth.client_disabled?(disabled)
       assert is_nil(Auth.OAuth.get_enabled_client(disabled.id))
     end
+
+    test "normalizes resource assignments on create while preserving metadata" do
+      assert {:ok, %Client{} = client} =
+               Auth.OAuth.create_client(
+                 client_attrs(
+                   resources: [:v1, "mcp", :mcp, "v1"],
+                   metadata: %{"tenant" => "alpha", "feature_flags" => ["beta"]}
+                 )
+               )
+
+      assert client.metadata["backplane_resources"] == ["mcp", "v1"]
+      assert client.metadata["tenant"] == "alpha"
+      assert client.metadata["feature_flags"] == ["beta"]
+      assert Auth.OAuth.client_resources(client) == [:mcp, :v1]
+    end
+
+    test "rejects invalid resource assignments before creating a client" do
+      count_before = Repo.aggregate(Client, :count)
+
+      assert {:error, :invalid_resource} =
+               Auth.OAuth.create_client(client_attrs(resources: [:mcp, "invalid"]))
+
+      assert Repo.aggregate(Client, :count) == count_before
+    end
+
+    test "requires HTTPS for resource assignments unless the local override permits them" do
+      Application.put_env(:backplane, :api_url, "http://localhost:4220")
+
+      count_before = Repo.aggregate(Client, :count)
+
+      assert {:error, :https_required} =
+               Auth.OAuth.create_client(client_attrs(resources: [:mcp]))
+
+      assert Repo.aggregate(Client, :count) == count_before
+
+      identity_client = oauth_client!()
+
+      assert {:error, :https_required} =
+               Auth.OAuth.update_client_resources(identity_client, [:v1])
+
+      Application.put_env(:backplane_auth, :allow_insecure_resource_origins, true)
+
+      assigned = oauth_client!(resources: [:mcp])
+      assert Auth.OAuth.client_resources(assigned) == [:mcp]
+
+      assert {:ok, updated} = Auth.OAuth.update_client_resources(assigned, [:mcp, :v1])
+      assert Auth.OAuth.client_resources(updated) == [:mcp, :v1]
+    end
+
+    test "reads normalized resource keys and safely ignores invalid legacy metadata" do
+      assert Auth.OAuth.client_resources(%Client{metadata: %{backplane_resources: [:v1, "mcp"]}}) ==
+               [:mcp, :v1]
+
+      for metadata <- [
+            nil,
+            %{},
+            %{"backplane_resources" => "mcp"},
+            %{"backplane_resources" => ["mcp", "invalid"]},
+            %{backplane_resources: nil}
+          ] do
+        assert Auth.OAuth.client_resources(%Client{metadata: metadata}) == []
+      end
+    end
+
+    test "checks whether a client allows a resource" do
+      client = %Client{metadata: %{"backplane_resources" => ["mcp"]}}
+
+      assert Auth.OAuth.client_allows_resource?(client, :mcp)
+      refute Auth.OAuth.client_allows_resource?(client, :v1)
+    end
+
+    test "activates a resource only when an enabled client is assigned" do
+      _identity_client = oauth_client!()
+      refute Auth.OAuth.enabled_client_for_resource?(:mcp)
+
+      assigned = oauth_client!(resources: [:mcp])
+      assert {:ok, disabled} = Auth.OAuth.disable_client(assigned)
+      assert Auth.OAuth.client_disabled?(disabled)
+      refute Auth.OAuth.enabled_client_for_resource?(:mcp)
+
+      _enabled_assignment = oauth_client!(resources: ["mcp"])
+      assert Auth.OAuth.enabled_client_for_resource?(:mcp)
+      refute Auth.OAuth.enabled_client_for_resource?(:v1)
+    end
+
+    test "updates resources while preserving metadata, disabled state, scopes, and cache coherence" do
+      created =
+        oauth_client!(
+          scopes: ["openid", "github::*"],
+          resources: ["mcp"],
+          metadata: %{"tenant" => "alpha", "disabled" => true}
+        )
+
+      assert BorutaClients.get_client(created.id).metadata["backplane_resources"] == ["mcp"]
+
+      client = Auth.OAuth.get_client(created.id)
+      assert {:ok, updated} = Auth.OAuth.update_client_resources(client, [:v1, :mcp])
+
+      assert Auth.OAuth.client_resources(updated) == [:mcp, :v1]
+      assert updated.metadata["tenant"] == "alpha"
+      assert Auth.OAuth.client_disabled?(updated)
+      assert scope_names(updated.authorized_scopes) == ["github::*", "openid"]
+
+      cached = BorutaClients.get_client(updated.id)
+      assert cached.metadata["backplane_resources"] == ["mcp", "v1"]
+      assert cached.metadata["tenant"] == "alpha"
+      assert cached.metadata["disabled"]
+      assert scope_names(cached.authorized_scopes) == ["github::*", "openid"]
+    end
+
+    test "disabling a client preserves resources, metadata, scopes, and cache coherence" do
+      client =
+        oauth_client!(
+          scopes: ["openid", "github::*"],
+          resources: [:mcp, :v1],
+          metadata: %{"tenant" => "alpha"}
+        )
+
+      cached_before = BorutaClients.get_client(client.id)
+      refute cached_before.metadata["disabled"]
+
+      assert {:ok, disabled} = Auth.OAuth.disable_client(client)
+      assert Auth.OAuth.client_disabled?(disabled)
+      assert Auth.OAuth.client_resources(disabled) == [:mcp, :v1]
+      assert disabled.metadata["tenant"] == "alpha"
+      assert scope_names(disabled.authorized_scopes) == ["github::*", "openid"]
+
+      cached = BorutaClients.get_client(disabled.id)
+      assert cached.metadata["disabled"]
+      assert cached.metadata["backplane_resources"] == ["mcp", "v1"]
+      assert cached.metadata["tenant"] == "alpha"
+      assert scope_names(cached.authorized_scopes) == ["github::*", "openid"]
+    end
+
+    test "HTTPS rejection leaves metadata, scopes, and the Boruta cache unchanged" do
+      client =
+        oauth_client!(
+          scopes: ["openid", "github::*"],
+          resources: [:mcp],
+          metadata: %{"tenant" => "alpha"}
+        )
+
+      persisted_before = Auth.OAuth.get_client(client.id)
+      cached_before = BorutaClients.get_client(client.id)
+
+      Application.put_env(:backplane, :api_url, "http://localhost:4220")
+
+      assert {:error, :https_required} = Auth.OAuth.update_client_resources(client, [:v1])
+
+      persisted_after = Auth.OAuth.get_client(client.id)
+      assert persisted_after.metadata == persisted_before.metadata
+      assert scope_names(persisted_after.authorized_scopes) == ["github::*", "openid"]
+      assert BorutaClients.get_client(client.id) == cached_before
+    end
+
+    test "an empty resource update removes assignments while preserving unrelated state" do
+      client =
+        oauth_client!(
+          scopes: ["openid", "github::*"],
+          resources: [:mcp, :v1],
+          metadata: %{"tenant" => "alpha"}
+        )
+
+      _cached_before = BorutaClients.get_client(client.id)
+
+      assert {:ok, updated} = Auth.OAuth.update_client_resources(client, [])
+      assert updated.metadata["backplane_resources"] == []
+      assert Auth.OAuth.client_resources(updated) == []
+      refute Auth.OAuth.client_allows_resource?(updated, :mcp)
+      refute Auth.OAuth.client_allows_resource?(updated, :v1)
+      assert updated.metadata["tenant"] == "alpha"
+      assert scope_names(updated.authorized_scopes) == ["github::*", "openid"]
+
+      cached = BorutaClients.get_client(updated.id)
+      assert cached.metadata["backplane_resources"] == []
+      assert cached.metadata["tenant"] == "alpha"
+      assert scope_names(cached.authorized_scopes) == ["github::*", "openid"]
+      refute Auth.OAuth.enabled_client_for_resource?(:mcp)
+      refute Auth.OAuth.enabled_client_for_resource?(:v1)
+    end
+
+    test "clients without resource metadata remain identity-only clients" do
+      Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")
+
+      client = oauth_client!(scopes: ["openid"], metadata: %{"tenant" => "alpha"})
+
+      refute Map.has_key?(client.metadata, "backplane_resources")
+      assert client.metadata["tenant"] == "alpha"
+      assert Auth.OAuth.client_resources(client) == []
+      refute Auth.OAuth.client_allows_resource?(client, :mcp)
+      assert %Client{id: id} = Auth.OAuth.get_enabled_client(client.id)
+      assert id == client.id
+      refute Auth.OAuth.enabled_client_for_resource?(:mcp)
+      refute Auth.OAuth.enabled_client_for_resource?(:v1)
+    end
   end
 
   defp scope!(name) do
@@ -171,5 +384,29 @@ defmodule Backplane.Auth.OAuthTest do
     scope
   end
 
+  defp oauth_client!(attrs \\ []) do
+    case Auth.OAuth.create_client(client_attrs(attrs)) do
+      {:ok, %{client: %Client{} = client}} -> client
+      {:ok, %Client{} = client} -> client
+      other -> flunk("expected OAuth client creation to succeed, got: #{inspect(other)}")
+    end
+  end
+
+  defp client_attrs(attrs) do
+    Map.merge(
+      %{
+        name: "Resource Client #{System.unique_integer([:positive])}",
+        redirect_uris: ["https://app.example.test/auth/callback"],
+        scopes: [],
+        confidential: false,
+        pkce: true
+      },
+      Map.new(attrs)
+    )
+  end
+
   defp scope_names(scopes), do: scopes |> Enum.map(& &1.name) |> Enum.sort()
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end
