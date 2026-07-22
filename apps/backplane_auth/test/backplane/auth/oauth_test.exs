@@ -3,7 +3,7 @@ defmodule Backplane.Auth.OAuthTest do
 
   alias Backplane.Auth
   alias Backplane.Repo
-  alias Boruta.Ecto.{Client, Scope}
+  alias Boruta.Ecto.{Admin, Client, Scope}
   alias Boruta.Ecto.ClientStore
   alias Boruta.Ecto.Clients, as: BorutaClients
 
@@ -201,22 +201,46 @@ defmodule Backplane.Auth.OAuthTest do
 
     test "rejects invalid resource assignments before creating a client" do
       count_before = Repo.aggregate(Client, :count)
+      scope_name = unique_scope_name("invalid-resource")
 
       assert {:error, :invalid_resource} =
-               Auth.OAuth.create_client(client_attrs(resources: [:mcp, "invalid"]))
+               Auth.OAuth.create_client(
+                 client_attrs(resources: [:mcp, "invalid"], scopes: [scope_name])
+               )
 
       assert Repo.aggregate(Client, :count) == count_before
+      assert is_nil(Auth.OAuth.get_scope(scope_name))
+    end
+
+    test "rejects non-map metadata without creating a client or its scopes" do
+      count_before = Repo.aggregate(Client, :count)
+      scope_name = unique_scope_name("invalid-metadata")
+
+      assert {:error, changeset} =
+               Auth.OAuth.create_client(
+                 client_attrs(
+                   resources: [:mcp],
+                   metadata: "not-a-map",
+                   scopes: [scope_name]
+                 )
+               )
+
+      assert %{metadata: [_message]} = errors_on(changeset)
+      assert Repo.aggregate(Client, :count) == count_before
+      assert is_nil(Auth.OAuth.get_scope(scope_name))
     end
 
     test "requires HTTPS for resource assignments unless the local override permits them" do
       Application.put_env(:backplane, :api_url, "http://localhost:4220")
 
       count_before = Repo.aggregate(Client, :count)
+      scope_name = unique_scope_name("invalid-origin")
 
       assert {:error, :https_required} =
-               Auth.OAuth.create_client(client_attrs(resources: [:mcp]))
+               Auth.OAuth.create_client(client_attrs(resources: [:mcp], scopes: [scope_name]))
 
       assert Repo.aggregate(Client, :count) == count_before
+      assert is_nil(Auth.OAuth.get_scope(scope_name))
 
       identity_client = oauth_client!()
 
@@ -276,7 +300,7 @@ defmodule Backplane.Auth.OAuthTest do
           metadata: %{"tenant" => "alpha", "disabled" => true}
         )
 
-      assert BorutaClients.get_client(created.id).metadata["backplane_resources"] == ["mcp"]
+      assert prime_client_cache(created.id).metadata["backplane_resources"] == ["mcp"]
 
       client = Auth.OAuth.get_client(created.id)
       assert {:ok, updated} = Auth.OAuth.update_client_resources(client, [:v1, :mcp])
@@ -301,7 +325,7 @@ defmodule Backplane.Auth.OAuthTest do
           metadata: %{"tenant" => "alpha"}
         )
 
-      cached_before = BorutaClients.get_client(client.id)
+      cached_before = prime_client_cache(client.id)
       refute cached_before.metadata["disabled"]
 
       assert {:ok, disabled} = Auth.OAuth.disable_client(client)
@@ -317,6 +341,85 @@ defmodule Backplane.Auth.OAuthTest do
       assert scope_names(cached.authorized_scopes) == ["github::*", "openid"]
     end
 
+    test "resource updates preserve state changed after the caller snapshot" do
+      stale =
+        oauth_client!(
+          scopes: ["openid"],
+          resources: [:mcp],
+          metadata: %{"tenant" => "stale"}
+        )
+        |> then(&Auth.OAuth.get_client(&1.id))
+
+      _cached_stale = prime_client_cache(stale.id)
+      concurrent_scope = scope!("github::*")
+      current = Auth.OAuth.get_client(stale.id)
+
+      assert {:ok, _current} =
+               Admin.update_client(current, %{
+                 metadata: %{
+                   "backplane_resources" => ["mcp"],
+                   "tenant" => "current",
+                   "concurrent" => "kept",
+                   "disabled" => true
+                 },
+                 authorized_scopes: [%{id: concurrent_scope.id}]
+               })
+
+      assert {:ok, updated} = Auth.OAuth.update_client_resources(stale, [:v1])
+      assert Auth.OAuth.client_resources(updated) == [:v1]
+      assert updated.metadata["tenant"] == "current"
+      assert updated.metadata["concurrent"] == "kept"
+      assert Auth.OAuth.client_disabled?(updated)
+      assert scope_names(updated.authorized_scopes) == ["github::*"]
+
+      _cached = BorutaClients.get_client(updated.id)
+      assert {:ok, cached} = ClientStore.get_client(updated.id)
+      assert cached.metadata["backplane_resources"] == ["v1"]
+      assert cached.metadata["tenant"] == "current"
+      assert cached.metadata["concurrent"] == "kept"
+      assert cached.metadata["disabled"]
+      assert scope_names(cached.authorized_scopes) == ["github::*"]
+    end
+
+    test "disabling preserves state changed after the caller snapshot" do
+      stale =
+        oauth_client!(
+          scopes: ["openid"],
+          resources: [:mcp],
+          metadata: %{"tenant" => "stale"}
+        )
+        |> then(&Auth.OAuth.get_client(&1.id))
+
+      _cached_stale = prime_client_cache(stale.id)
+      concurrent_scope = scope!("github::*")
+      current = Auth.OAuth.get_client(stale.id)
+
+      assert {:ok, _current} =
+               Admin.update_client(current, %{
+                 metadata: %{
+                   "backplane_resources" => ["v1"],
+                   "tenant" => "current",
+                   "concurrent" => "kept"
+                 },
+                 authorized_scopes: [%{id: concurrent_scope.id}]
+               })
+
+      assert {:ok, disabled} = Auth.OAuth.disable_client(stale)
+      assert Auth.OAuth.client_disabled?(disabled)
+      assert Auth.OAuth.client_resources(disabled) == [:v1]
+      assert disabled.metadata["tenant"] == "current"
+      assert disabled.metadata["concurrent"] == "kept"
+      assert scope_names(disabled.authorized_scopes) == ["github::*"]
+
+      _cached = BorutaClients.get_client(disabled.id)
+      assert {:ok, cached} = ClientStore.get_client(disabled.id)
+      assert cached.metadata["disabled"]
+      assert cached.metadata["backplane_resources"] == ["v1"]
+      assert cached.metadata["tenant"] == "current"
+      assert cached.metadata["concurrent"] == "kept"
+      assert scope_names(cached.authorized_scopes) == ["github::*"]
+    end
+
     test "HTTPS rejection leaves metadata, scopes, and the Boruta cache unchanged" do
       client =
         oauth_client!(
@@ -326,7 +429,7 @@ defmodule Backplane.Auth.OAuthTest do
         )
 
       persisted_before = Auth.OAuth.get_client(client.id)
-      _cached_before = BorutaClients.get_client(client.id)
+      _cached_before = prime_client_cache(client.id)
       assert {:ok, cached_before} = ClientStore.get_client(client.id)
 
       Application.put_env(:backplane, :api_url, "http://localhost:4220")
@@ -348,7 +451,7 @@ defmodule Backplane.Auth.OAuthTest do
         )
 
       persisted_before = Auth.OAuth.get_client(client.id)
-      _cached_before = BorutaClients.get_client(client.id)
+      _cached_before = prime_client_cache(client.id)
       assert {:ok, cached_before} = ClientStore.get_client(client.id)
 
       assert {:error, :invalid_resource} =
@@ -360,6 +463,41 @@ defmodule Backplane.Auth.OAuthTest do
       assert ClientStore.get_client(client.id) == {:ok, cached_before}
     end
 
+    test "rejects non-list resource updates without crashing" do
+      client = oauth_client!(scopes: ["openid"], resources: [:mcp])
+      persisted_before = Auth.OAuth.get_client(client.id)
+
+      assert {:error, :invalid_resource} =
+               Auth.OAuth.update_client_resources(client, "mcp")
+
+      persisted_after = Auth.OAuth.get_client(client.id)
+      assert persisted_after.metadata == persisted_before.metadata
+      assert scope_names(persisted_after.authorized_scopes) == ["openid"]
+    end
+
+    test "resource updates return not found when the client was deleted" do
+      client = oauth_client!(resources: [:mcp])
+      assert {:ok, _deleted} = Repo.delete(client)
+
+      assert {:error, :not_found} = Auth.OAuth.update_client_resources(client, [:v1])
+    end
+
+    test "resource updates return not found for invalid client IDs" do
+      assert {:error, :not_found} =
+               Auth.OAuth.update_client_resources(%Client{id: "not-a-uuid"}, [:v1])
+    end
+
+    test "disabling returns not found when the client was deleted" do
+      client = oauth_client!(resources: [:mcp])
+      assert {:ok, _deleted} = Repo.delete(client)
+
+      assert {:error, :not_found} = Auth.OAuth.disable_client(client)
+    end
+
+    test "disabling returns not found for invalid client IDs" do
+      assert {:error, :not_found} = Auth.OAuth.disable_client(%Client{id: "not-a-uuid"})
+    end
+
     test "an empty resource update removes assignments while preserving unrelated state" do
       client =
         oauth_client!(
@@ -368,7 +506,7 @@ defmodule Backplane.Auth.OAuthTest do
           metadata: %{"tenant" => "alpha"}
         )
 
-      _cached_before = BorutaClients.get_client(client.id)
+      _cached_before = prime_client_cache(client.id)
 
       assert {:ok, updated} = Auth.OAuth.update_client_resources(client, [])
       assert updated.metadata["backplane_resources"] == []
@@ -460,6 +598,17 @@ defmodule Backplane.Auth.OAuthTest do
   end
 
   defp scope_names(scopes), do: scopes |> Enum.map(& &1.name) |> Enum.sort()
+
+  defp prime_client_cache(client_id) do
+    on_exit(fn ->
+      ClientStore.invalidate(%Boruta.Oauth.Client{id: client_id})
+    end)
+
+    BorutaClients.get_client(client_id)
+  end
+
+  defp unique_scope_name(prefix),
+    do: "#{prefix}::#{System.unique_integer([:positive])}"
 
   defp assert_reserved_metadata_is_identity_only(metadata) do
     Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")

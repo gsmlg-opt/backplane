@@ -49,10 +49,10 @@ defmodule Backplane.Auth.OAuth do
   end
 
   def disable_client(%Client{} = client) do
-    client = Repo.preload(client, :authorized_scopes)
-    metadata = Map.put(client.metadata || %{}, "disabled", true)
-
-    update_client_metadata(client, metadata)
+    with {:ok, client} <- reload_client(client) do
+      metadata = Map.put(client.metadata || %{}, "disabled", true)
+      update_client_metadata(client, metadata)
+    end
   end
 
   def client_disabled?(%Client{metadata: metadata}) when is_map(metadata) do
@@ -63,6 +63,7 @@ defmodule Backplane.Auth.OAuth do
 
   def client_enabled?(%Client{} = client), do: not client_disabled?(client)
 
+  @spec client_resources(Client.t()) :: list(Resources.key())
   def client_resources(%Client{metadata: metadata}) do
     values =
       case metadata || %{} do
@@ -77,20 +78,24 @@ defmodule Backplane.Auth.OAuth do
     end
   end
 
+  @spec client_allows_resource?(Client.t(), Resources.key()) :: boolean()
   def client_allows_resource?(%Client{} = client, resource),
     do: resource in client_resources(client)
 
+  @spec enabled_client_for_resource?(Resources.key()) :: boolean()
   def enabled_client_for_resource?(resource) do
     Enum.any?(list_clients(), fn client ->
       client_enabled?(client) and client_allows_resource?(client, resource)
     end)
   end
 
+  @spec update_client_resources(Client.t(), list(Resources.key() | String.t())) ::
+          {:ok, Client.t()}
+          | {:error, :invalid_resource | :https_required | :not_found | Ecto.Changeset.t()}
   def update_client_resources(%Client{} = client, values) do
-    client = Repo.preload(client, :authorized_scopes)
-
-    with {:ok, resources} <- Resources.normalize_keys(values),
-         :ok <- Resources.validate_origin(resources) do
+    with {:ok, resources} <- normalize_resource_keys(values),
+         :ok <- Resources.validate_origin(resources),
+         {:ok, client} <- reload_client(client) do
       metadata =
         Map.put(
           client.metadata || %{},
@@ -181,33 +186,38 @@ defmodule Backplane.Auth.OAuth do
   end
 
   defp normalize_client_resources(%{metadata: metadata} = attrs, :error) do
-    {:ok, %{attrs | metadata: without_resource_metadata(metadata)}}
+    with {:ok, metadata} <- sanitize_resource_metadata(metadata) do
+      {:ok, %{attrs | metadata: metadata}}
+    end
   end
 
-  defp normalize_client_resources(%{metadata: metadata} = attrs, {:ok, values})
-       when is_list(values) do
-    with {:ok, resources} <- Resources.normalize_keys(values),
-         :ok <- Resources.validate_origin(resources) do
+  defp normalize_client_resources(%{metadata: metadata} = attrs, {:ok, values}) do
+    with {:ok, resources} <- normalize_resource_keys(values),
+         :ok <- Resources.validate_origin(resources),
+         {:ok, metadata} <- sanitize_resource_metadata(metadata) do
       metadata =
-        metadata
-        |> without_resource_metadata()
-        |> Map.put("backplane_resources", Enum.map(resources, &to_string/1))
+        Map.put(metadata, "backplane_resources", Enum.map(resources, &to_string/1))
 
       {:ok, %{attrs | metadata: metadata}}
     end
   end
 
-  defp normalize_client_resources(_attrs, {:ok, _values}), do: {:error, :invalid_resource}
+  defp normalize_resource_keys(values) when is_list(values), do: Resources.normalize_keys(values)
+  defp normalize_resource_keys(_values), do: {:error, :invalid_resource}
 
-  defp without_resource_metadata(nil), do: %{}
+  defp sanitize_resource_metadata(nil), do: {:ok, %{}}
 
-  defp without_resource_metadata(metadata) when is_map(metadata) do
-    metadata
-    |> Map.delete("backplane_resources")
-    |> Map.delete(:backplane_resources)
+  defp sanitize_resource_metadata(metadata) when is_map(metadata) do
+    metadata =
+      metadata
+      |> Map.delete("backplane_resources")
+      |> Map.delete(:backplane_resources)
+
+    {:ok, metadata}
   end
 
-  defp without_resource_metadata(metadata), do: metadata
+  defp sanitize_resource_metadata(_metadata),
+    do: {:error, client_error(:metadata, "must be a map")}
 
   defp validate_client_attrs(%{confidential: false, pkce: false}) do
     {:error, client_error(:pkce, "must be enabled for public clients")}
@@ -254,7 +264,19 @@ defmodule Backplane.Auth.OAuth do
       metadata: metadata,
       authorized_scopes: Enum.map(client.authorized_scopes, &%{id: &1.id})
     })
+  rescue
+    Ecto.StaleEntryError -> {:error, :not_found}
   end
+
+  @spec reload_client(Client.t()) :: {:ok, Client.t()} | {:error, :not_found}
+  defp reload_client(%Client{id: id}) when is_binary(id) do
+    case get_client(id) do
+      %Client{} = client -> {:ok, client}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp reload_client(%Client{}), do: {:error, :not_found}
 
   defp ensure_scopes(scope_names) do
     scope_names
