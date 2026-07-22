@@ -71,4 +71,26 @@ defmodule Backplane.Admin.EndpointTest do
 
     refute app_js =~ "longPollFallbackMs"
   end
+
+  test "admin theme state is owned by the DuskMoon hook" do
+    app_js = File.read!(Path.expand("../../../assets/js/app.js", __DIR__))
+
+    assert app_js =~ "hooks: DuskmoonHooks"
+    refute app_js =~ ".theme-controller-dropdown"
+    refute app_js =~ ~s|removeAttribute("data-theme")|
+    assert app_js =~ "new MutationObserver(syncThemeColor)"
+    assert app_js =~ ~s|attributeFilter: ["data-theme"]|
+  end
+
+  test "sunshine primary appbar uses a contrast-safe content token" do
+    app_css = File.read!(Path.expand("../../../assets/css/app.css", __DIR__))
+
+    assert app_css =~ """
+           [data-theme="sunshine"] .appbar-primary,
+           [data-theme="sunshine"] .appbar-primary .appbar-brand,
+           [data-theme="sunshine"] .appbar-primary .appbar-action:not([aria-current="page"]) {
+             color: var(--color-on-primary-container);
+           }
+           """
+  end
 end

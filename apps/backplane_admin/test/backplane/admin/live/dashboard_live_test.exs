@@ -30,6 +30,18 @@ defmodule Backplane.Admin.DashboardLiveTest do
     assert has_element?(view, "dt", "Skills")
   end
 
+  test "accepts theme changes from the shared theme switcher", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/dashboard/overview")
+
+    assert render_hook(view, "theme_changed", %{"theme" => "sunshine"}) =~ "Dashboard"
+    assert Process.alive?(view.pid)
+
+    assert render_hook(view, "reconnect_degraded", %{}) =~
+             "Reconnect triggered for 0 degraded/disconnected upstreams"
+
+    assert Process.alive?(view.pid)
+  end
+
   test "shows quick action buttons", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/dashboard/overview")
 

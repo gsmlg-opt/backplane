@@ -3,8 +3,7 @@
 <% left_nav_heading = Backplane.Admin.Layouts.left_nav_heading(current_path) %>
 
 <div class="min-h-full bg-surface text-on-surface">
-  <%!-- WORKAROUND(upstream): duskmoon-dev/duskmoonui#47 --%>
-  <header class="appbar appbar-sticky appbar-surface-container">
+  <header class="appbar appbar-sticky appbar-primary">
     <a href={Backplane.WebOrigins.api_url("/")} class="appbar-brand no-underline">
       <img
         src={~p"/images/backplane-logo.png"}

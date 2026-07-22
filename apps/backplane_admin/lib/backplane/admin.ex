@@ -32,6 +32,8 @@ defmodule Backplane.Admin do
       use Phoenix.LiveView,
         layout: {Backplane.Admin.Layouts, :app}
 
+      on_mount(Backplane.Admin.ThemeHook)
+
       unquote(html_helpers())
     end
   end

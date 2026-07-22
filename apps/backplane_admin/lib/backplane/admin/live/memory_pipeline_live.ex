@@ -31,8 +31,6 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   end
 
   @impl true
-  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
-
   def handle_event(
         "set-gate",
         %{"gate" => %{"name" => "dual_write", "value" => "true"}},

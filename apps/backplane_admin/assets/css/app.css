@@ -147,6 +147,13 @@
   margin-left: auto;
 }
 
+/* WORKAROUND(upstream): duskmoon-dev/duskmoonui#47 */
+[data-theme="sunshine"] .appbar-primary,
+[data-theme="sunshine"] .appbar-primary .appbar-brand,
+[data-theme="sunshine"] .appbar-primary .appbar-action:not([aria-current="page"]) {
+  color: var(--color-on-primary-container);
+}
+
 /* Make LiveView content stretch to fill available vertical space.
    Cascade flex-column through classless wrapper divs (Phoenix LV container,
    render root, view root). Styled divs with classes are not affected. */

@@ -72,8 +72,6 @@ defmodule Backplane.Admin.MemoryEventsLive do
   end
 
   @impl true
-  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
-
   def handle_event("filter", %{"filters" => raw} = params, socket) do
     normalized =
       raw

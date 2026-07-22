@@ -88,11 +88,11 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end
   end
 
-  test "Memory V2 uses the theme-safe DuskMoon appbar surface", %{conn: conn} do
+  test "Memory V2 uses the DuskMoon primary appbar background", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/memory")
 
-    assert has_element?(view, "header.appbar.appbar-surface-container")
-    refute has_element?(view, "header.appbar-primary")
+    assert has_element?(view, "header.appbar.appbar-primary")
+    refute has_element?(view, "header.appbar-surface-container")
     assert has_element?(view, ~s(nav.admin-top-nav a[aria-current="page"].bg-primary-container))
 
     assert has_element?(

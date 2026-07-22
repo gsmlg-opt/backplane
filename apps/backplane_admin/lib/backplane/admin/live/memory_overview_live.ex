@@ -33,9 +33,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   end
 
   @impl true
-  def handle_event("theme_changed", _params, socket), do: {:noreply, socket}
-
-  @impl true
   def handle_info({:memory_event_inserted, _summary}, socket) do
     {:noreply, assign(socket, regions: Operations.overview())}
   end
