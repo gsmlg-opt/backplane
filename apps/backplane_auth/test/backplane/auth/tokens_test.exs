@@ -198,6 +198,17 @@ defmodule Backplane.Auth.TokensTest do
              Auth.Tokens.verify_resource_access_token(code_value, :mcp)
   end
 
+  test "rejects an access-token row without a persisted expiration" do
+    {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+
+    token =
+      token
+      |> Ecto.Changeset.change(expires_at: nil)
+      |> Repo.update!()
+
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+  end
+
   test "rejects missing and wrong resource mappings" do
     {_user, _client, missing} = resource_token_fixture!(:mcp, "github::*")
     Repo.delete_all(OAuthTokenResource)
@@ -231,6 +242,19 @@ defmodule Backplane.Auth.TokensTest do
       assert {:error, :invalid_token} =
                Auth.Tokens.verify_resource_access_token(token.value, :mcp)
     end)
+  end
+
+  test "rejects a matching malformed persisted and signed subject" do
+    {_user, _client, token} = resource_token_fixture!(:mcp, "github::*")
+    malformed_sub = "not-a-uuid"
+
+    token =
+      token
+      |> Ecto.Changeset.change(sub: malformed_sub)
+      |> Repo.update!()
+      |> replace_claims!(&Map.put(&1, "sub", malformed_sub))
+
+    assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
   end
 
   test "rejects disabled and resource-unassigned clients" do
@@ -285,6 +309,24 @@ defmodule Backplane.Auth.TokensTest do
     Repo.delete_all(OAuthTokenResource)
 
     assert {:error, :invalid_token} = Auth.Tokens.verify_resource_access_token(token.value, :mcp)
+  end
+
+  test "an external RS256 signature is not OAuth" do
+    external_key = JOSE.JWK.generate_key({:rsa, 2048, 65_537})
+    signer = JOSE.JWS.from_map(%{"alg" => "RS256", "kid" => "external"})
+
+    token =
+      external_key
+      |> JOSE.JWT.sign(signer, %{
+        "iss" => Boruta.Config.issuer(),
+        "sub" => Ecto.UUID.generate(),
+        "aud" => Resources.uri(:mcp),
+        "exp" => System.system_time(:second) + 60
+      })
+      |> JOSE.JWS.compact()
+      |> elem(1)
+
+    assert :not_oauth = Auth.Tokens.verify_resource_access_token(token, :mcp)
   end
 
   test "lists token metadata and revokes a token by id" do

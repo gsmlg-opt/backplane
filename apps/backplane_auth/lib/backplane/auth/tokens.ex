@@ -104,7 +104,7 @@ defmodule Backplane.Auth.Tokens do
              true <- claims["sub"] == token.sub,
              true <- claims["scope"] == token.scope,
              true <- is_binary(claims["scope"]),
-             true <- is_binary(token.sub),
+             {:ok, _sub} <- Ecto.UUID.cast(token.sub),
              %User{active: true} = user <- Accounts.get_user(token.sub),
              true <- is_binary(token.client_id),
              %Client{} = client <- OAuth.get_client(token.client_id),
@@ -266,9 +266,11 @@ defmodule Backplane.Auth.Tokens do
 
   defp validate_active_client(_client), do: {:error, :invalid_client}
 
-  defp active_token?(%Token{} = token) do
-    token.expires_at > System.system_time(:second) and is_nil(token.revoked_at)
+  defp active_token?(%Token{expires_at: expires_at} = token) when is_integer(expires_at) do
+    expires_at > System.system_time(:second) and is_nil(token.revoked_at)
   end
+
+  defp active_token?(%Token{}), do: false
 
   defp get_reused_refresh_token(refresh_token, client_id) do
     Token
