@@ -370,6 +370,20 @@ defmodule Backplane.Auth.TokenResourcesTest do
     refute Exception.message(error) =~ secret_token
   end
 
+  test "LineageError ignores attacker-provided message data" do
+    secret_code = unique("secret-code")
+    secret_refresh_token = unique("secret-refresh-token")
+
+    error =
+      TokenResources.LineageError.exception(
+        message: "code=#{secret_code} refresh_token=#{secret_refresh_token}"
+      )
+
+    assert Exception.message(error) == "OAuth token resource lineage could not be resolved"
+    refute Exception.message(error) =~ secret_code
+    refute Exception.message(error) =~ secret_refresh_token
+  end
+
   defp insert_binding(token_id, resource) do
     OAuthTokenResource
     |> struct()

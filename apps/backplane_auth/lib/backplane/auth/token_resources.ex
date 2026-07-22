@@ -20,6 +20,9 @@ defmodule Backplane.Auth.TokenResources do
   defmodule LineageError do
     @moduledoc false
     defexception message: "OAuth token resource lineage could not be resolved"
+
+    @impl Exception
+    def exception(_options), do: %__MODULE__{}
   end
 
   @type resource :: :mcp | :v1
