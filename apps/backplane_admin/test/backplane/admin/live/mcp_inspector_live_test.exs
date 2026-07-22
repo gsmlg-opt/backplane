@@ -39,6 +39,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
   end
 
   test "stdio connect reports timeout when process never replies", %{conn: conn} do
+    sleep = System.find_executable("sleep") || raise "sleep executable not found"
     previous_timeout = Application.get_env(:backplane_admin, :mcp_inspector_stdio_timeout_ms)
     Application.put_env(:backplane_admin, :mcp_inspector_stdio_timeout_ms, 20)
 
@@ -54,7 +55,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
 
     render_change(view, "update_config", %{
       "transport" => "stdio",
-      "command" => "/bin/sleep",
+      "command" => sleep,
       "args" => "2",
       "env" => ""
     })
