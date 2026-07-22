@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.Memory.Facts do
   """
 
   alias Backplane.HostAgent.Memory.{Reducer, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @doc "Applies a full or incremental fact reconcile payload."
   def apply_facts(payload, opts \\ []) when is_map(payload) do

@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
 
   alias Backplane.HostAgent.Memory
   alias Backplane.HostAgent.Memory.{Migrator, Reducer, Store, Syncer}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 

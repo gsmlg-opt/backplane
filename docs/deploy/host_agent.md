@@ -13,6 +13,8 @@ Grab the tarball for your platform from this release page:
 - `host_agent-<version>-macos-x64.tar.gz`
 - `host_agent-<version>-macos-arm64.tar.gz`
 
+Linux tarballs are built on Ubuntu 22.04 and require glibc 2.35 or newer.
+
 Verify the matching `.sha256`, then extract:
 
 ```sh

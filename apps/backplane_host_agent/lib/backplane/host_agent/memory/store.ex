@@ -1,6 +1,6 @@
 defmodule Backplane.HostAgent.Memory.Store do
   @moduledoc """
-  Thin wrapper around the ExTurso DBConnection pool used by host-agent memory.
+  Thin wrapper around the Turso DBConnection pool used by host-agent memory.
   """
 
   @default_busy_timeout_ms 5_000
@@ -14,7 +14,7 @@ defmodule Backplane.HostAgent.Memory.Store do
   end
 
   @doc """
-  Starts the ExTurso pool and applies connection pragmas required by PR1.
+  Starts the Turso pool and applies connection pragmas required by PR1.
   """
   def start_link(opts) do
     busy_timeout_ms = Keyword.get(opts, :busy_timeout_ms, @default_busy_timeout_ms)
@@ -25,14 +25,14 @@ defmodule Backplane.HostAgent.Memory.Store do
     end
   end
 
-  @doc "Runs a read query through ExTurso."
+  @doc "Runs a read query through Turso."
   def query(store, sql, params \\ [], opts \\ []) do
-    ExTurso.query(store, sql, params, opts)
+    Turso.query(store, sql, params, opts)
   end
 
-  @doc "Runs a write statement through ExTurso."
+  @doc "Runs a write statement through Turso."
   def execute(store, sql, params \\ [], opts \\ []) do
-    ExTurso.execute(store, sql, params, opts)
+    Turso.execute(store, sql, params, opts)
   end
 
   @doc "Runs a DBConnection transaction."
@@ -64,7 +64,7 @@ defmodule Backplane.HostAgent.Memory.Store do
   end
 
   defp start_configured_pool(db_opts, busy_timeout_ms) do
-    case ExTurso.start_link(db_opts) do
+    case Turso.start_link(db_opts) do
       {:ok, pid} ->
         case configure(Keyword.get(db_opts, :name, pid), busy_timeout_ms) do
           :ok ->

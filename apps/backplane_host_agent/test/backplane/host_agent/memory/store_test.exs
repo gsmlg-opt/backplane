@@ -2,11 +2,11 @@ defmodule Backplane.HostAgent.Memory.StoreTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.Store
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 
-  test "starts an ExTurso pool with WAL and busy timeout", %{tmp_dir: tmp_dir} do
+  test "starts a Turso pool with WAL and busy timeout", %{tmp_dir: tmp_dir} do
     store = start_store!(tmp_dir)
 
     assert {:ok, %Result{rows: [%{"journal_mode" => mode}]}} =

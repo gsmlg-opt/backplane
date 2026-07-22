@@ -38,7 +38,8 @@ defmodule Backplane.HostAgent.MixProject do
       {:telemetry, "~> 1.2"},
       {:day_ex, in_umbrella: true},
       {:math_ex, in_umbrella: true},
-      {:ex_turso, "~> 0.2"}
+      # TODO(upstream): gsmlg-dev/concord#53
+      {:ex_turso, "~> 3.0"}
     ]
   end
 end

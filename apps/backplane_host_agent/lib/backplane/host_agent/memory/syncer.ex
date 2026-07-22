@@ -7,7 +7,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   alias Backplane.HostAgent.{Channel, MemoryProxy}
   alias Backplane.HostAgent.Memory.{Reducer, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @protocol "host_memory.v1"
   @default_batch_size 50

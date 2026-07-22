@@ -6,7 +6,7 @@ defmodule Backplane.HostAgent.Memory do
   """
 
   alias Backplane.HostAgent.Memory.{Reducer, Store, UUID7}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @default_agent_id "local"
   @default_scope "proj_local"

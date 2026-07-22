@@ -2,7 +2,7 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Pruner, Reducer, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 

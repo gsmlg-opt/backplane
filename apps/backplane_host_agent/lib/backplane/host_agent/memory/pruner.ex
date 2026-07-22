@@ -6,7 +6,7 @@ defmodule Backplane.HostAgent.Memory.Pruner do
   use GenServer
 
   alias Backplane.HostAgent.Memory.Store
-  alias ExTurso.Result
+  alias Turso.Result
 
   @default_ttl_days 90
   @default_interval_ms :timer.hours(1)

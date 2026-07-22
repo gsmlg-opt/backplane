@@ -2,7 +2,7 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Diagnostics, Migrator, Reducer, Store, Syncer}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 

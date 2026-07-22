@@ -7,7 +7,7 @@ defmodule Backplane.HostAgent.ServicesTest do
   alias Backplane.HostAgent.Services.Math, as: MathService
   alias Backplane.HostAgent.Services.Memory, as: MemoryService
   alias Backplane.HostAgent.Services.Plugins, as: PluginsService
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 

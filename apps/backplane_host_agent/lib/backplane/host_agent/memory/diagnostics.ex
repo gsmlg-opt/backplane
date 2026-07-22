@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   """
 
   alias Backplane.HostAgent.Memory.{Store, Syncer}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @doc "Returns a JSON-compatible diagnostic snapshot of the local memory store."
   def snapshot(opts \\ []) do

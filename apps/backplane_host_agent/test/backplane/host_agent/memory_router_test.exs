@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.MemoryRouter
   alias Backplane.HostAgent.Trace
-  alias ExTurso.Result
+  alias Turso.Result
 
   import Plug.Conn
   import Plug.Test

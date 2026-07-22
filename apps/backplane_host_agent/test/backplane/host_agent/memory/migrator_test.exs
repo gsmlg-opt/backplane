@@ -2,7 +2,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 
@@ -110,7 +110,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
                now
              ])
 
-    assert {:error, %ExTurso.Error{}} =
+    assert {:error, %Turso.Error{}} =
              Store.execute(
                store,
                """

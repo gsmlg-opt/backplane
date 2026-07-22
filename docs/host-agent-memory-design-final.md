@@ -2,8 +2,8 @@
 
 **Status:** Accepted, implementation-ready after PR0 verification on 2026-06-17.
 **Repo path:** `docs/host-agent-memory-design-final.md`
-**Engine:** `gsmlg-dev/ex_turso` 0.1.1, a Rustler NIF over the `turso` crate with a `DBConnection` pool. No Ecto in `apps/backplane_host_agent`.
-**PR0 baseline:** FTS5 is unavailable in the bundled Turso engine (`no such module: fts5`), so v1 local recall uses `LIKE` and tags local keyword results as degraded. Upstream request: `gsmlg-dev/ex_turso#2`.
+**Engine:** `gsmlg-dev/concord/apps/ex_turso` 3.0.0, a Rustler NIF over the `turso` crate with a `DBConnection` pool. No Ecto in `apps/backplane_host_agent`.
+**PR0 baseline:** SQLite FTS5 virtual tables are unavailable in the bundled Turso engine (`no such module: fts5`), so v1 local recall uses `LIKE` and tags local keyword results as degraded. `ex_turso` 3.0.0 exposes Turso-native FTS indexes, but adopting them is deferred to a separate schema and query migration.
 
 ---
 
@@ -17,7 +17,7 @@ The host agent is not a memory intelligence engine. It persists local observatio
 local caller
   │
   ▼
-HostAgent.MemoryRouter ──► HostAgent.Memory ──► ExTurso DB
+HostAgent.MemoryRouter ──► HostAgent.Memory ──► Turso DB
                               │                    ├─ memories
                               │                    ├─ facts
                               │                    ├─ memory_outbox
@@ -52,7 +52,7 @@ HostAgent.MemoryRouter ──► HostAgent.Memory ──► ExTurso DB
 | D3 | Sync up supports outbox ops `remember` and `forget` only. FIFO by `seq`, at-least-once. Hub idempotency uses local `id` and `(content_hash, scope)`. Ack returns `canonical_id`, stored locally as `remote_id`. Local UUIDv7 remains canonical on the originating host. |
 | D4 | Sync down is narrow: hub-curated facts plus wipe directives. There is no general replication. |
 | D5 | Host engine is `ex_turso`; SQL is raw; migrations use `PRAGMA user_version`; row mapping belongs in functional core modules. |
-| D6 | Recall baseline is `LIKE` with `quality: :degraded`. FTS5 remains preferred when `ex_turso` exposes it. Vector recall is deferred until `ex_turso` exposes Turso native vector. |
+| D6 | Recall baseline is `LIKE` with `quality: :degraded`. `ex_turso` 3.0.0 exposes Turso-native FTS indexes and vector functions, but adopting them requires separate product migrations; vector recall also requires local embeddings. |
 | D7 | Local memories expire after `memory.local_ttl_days` (default 90), but only after they are synced. Facts never prune locally. |
 | D8 | `forget` and `wipe` are different. `forget` soft-deletes locally and syncs an originating-host op. `wipe` hard-deletes locally, records a tombstone by `content_hash`, and blocks exact re-remember by default. |
 | D9 | Downstream targeting is scope subscription. The host announces active scopes on join. The hub pushes facts for `entitled ∩ announced`. Join performs reconcile, then incremental updates. |
@@ -126,7 +126,7 @@ When memory is enabled, host-agent supervision adds:
 Backplane.HostAgent.Application
 ├─ Backplane.HostAgent.McpManager
 ├─ Backplane.HostAgent.Worker
-├─ Backplane.HostAgent.Memory.Store          # ExTurso DBConnection pool
+├─ Backplane.HostAgent.Memory.Store          # Turso DBConnection pool
 ├─ Backplane.HostAgent.Memory.Migrator       # runs before router accepts traffic
 ├─ Backplane.HostAgent.Memory.Syncer         # outbox up, facts/wipes down hooks
 ├─ Backplane.HostAgent.Memory.Pruner         # periodic retention
@@ -135,7 +135,7 @@ Backplane.HostAgent.Application
 
 Startup rules:
 
-1. Start the ExTurso pool with WAL and `busy_timeout`.
+1. Start the Turso pool with WAL and `busy_timeout`.
 2. Run migrations synchronously before HTTP starts.
 3. Start Syncer even if disconnected; it remains idle until a channel exists.
 4. HTTP routes must work without a channel.
@@ -146,7 +146,7 @@ Startup rules:
 | Module | Responsibility |
 |---|---|
 | `Backplane.HostAgent.Memory` | Public local API used by router and tests. Owns transactions, calls pure reducer functions, and returns stable result maps. |
-| `Backplane.HostAgent.Memory.Store` | Thin wrapper over `ExTurso.execute/3`, `ExTurso.query/3`, and `DBConnection.transaction/3`. No domain logic. |
+| `Backplane.HostAgent.Memory.Store` | Thin wrapper over `Turso.execute/3`, `Turso.query/3`, and `DBConnection.transaction/3`. No domain logic. |
 | `Backplane.HostAgent.Memory.Migrator` | `PRAGMA user_version` migrations, idempotent boot apply, and schema version checks. |
 | `Backplane.HostAgent.Memory.Migrations.V*` | Numbered SQL strings only. |
 | `Backplane.HostAgent.Memory.Reducer` | Pure functions: validation, scope resolution, hash, LIKE query construction, tag/facet normalization, rank merge. No Store calls. |
@@ -237,14 +237,14 @@ JSON columns are stored as text and validated/encoded by `Reducer`. `content_has
 
 ## 9. Search Baseline
 
-PR0 proved this `ex_turso` build does not expose FTS5:
+PR0 proved the bundled Turso engine does not expose SQLite FTS5 virtual tables:
 
 ```sql
 CREATE VIRTUAL TABLE memories_fts USING fts5(content);
 -- Parse error: no such module: fts5
 ```
 
-Therefore v1 local recall uses escaped `LIKE` over `memories.content` and `facts.content`:
+The v1 implementation intentionally retains escaped `LIKE` over `memories.content` and `facts.content`:
 
 ```sql
 SELECT id, content, scope, tags, metadata, confidence, inserted_at, 'local' AS source
@@ -270,7 +270,7 @@ Every local `LIKE` hit includes `quality: :degraded`. Rank merge is deterministi
 4. Newer `inserted_at`/`updated_at` before older rows.
 5. Stable tie-break by id.
 
-When `ex_turso` supports FTS5, a new migration may add FTS tables/triggers and D6 can be revised without changing the MCP surface.
+`ex_turso` 3.0.0 supports Turso-native FTS indexes. A future migration may adopt its index and query syntax and revise D6 without changing the MCP surface.
 
 ## 10. Local API Semantics
 
@@ -626,7 +626,7 @@ Each PR must preserve:
 
 Required retained tests:
 
-- Turso contract: WAL, busy behavior, transaction rollback, JSON round-trip, dedup upsert, and current D6 fallback.
+- Turso contract: WAL, busy behavior, transaction rollback, JSON round-trip, dedup upsert, and current D6 `LIKE` baseline.
 - Fresh boot migrates DB; second boot no-ops.
 - Concurrent identical `remember` inserts one row and one outbox item.
 - Forced transaction failure leaves no orphan outbox row.
@@ -645,7 +645,7 @@ Required retained tests:
 ## 19. Out of Scope, Tracked
 
 - `update` op for post-sync edit/tag propagation.
-- FTS5 until `ex_turso` exposes it.
+- Turso-native FTS indexes for local recall.
 - Turso native vector recall.
 - Local embeddings.
 - Slot sync.

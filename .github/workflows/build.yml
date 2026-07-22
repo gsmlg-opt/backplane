@@ -42,11 +42,11 @@ jobs:
           - release: host_agent
             target:
               name: linux-x64
-              runner: ubuntu-24.04
+              runner: ubuntu-22.04
           - release: host_agent
             target:
               name: linux-arm64
-              runner: ubuntu-24.04-arm
+              runner: ubuntu-22.04-arm
           - release: host_agent
             target:
               name: macos-x64
@@ -104,10 +104,10 @@ jobs:
           path: |
             deps
             _build/prod
-          key: build-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: build-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
           restore-keys: |
-            build-${{ matrix.target.name }}-${{ matrix.release }}-
-            build-${{ matrix.target.name }}-
+            build-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-
+            build-${{ matrix.target.runner }}-${{ matrix.target.name }}-
 
       - name: Install dependencies
         run: mix deps.get --only prod
@@ -122,6 +122,17 @@ jobs:
 
       - name: Build OTP release
         run: mix release "${{ matrix.release }}" --overwrite
+
+      - name: Smoke test host-agent native database
+        if: matrix.release == 'host_agent'
+        run: |
+          _build/prod/rel/host_agent/bin/host_agent eval '
+            {:ok, _} = Application.ensure_all_started(:ex_turso)
+            {:ok, pid} = Turso.start_link(database: ":memory:")
+            {:ok, %Turso.Result{rows: [%{"value" => 1}]}} =
+              Turso.query(pid, "SELECT 1 AS value")
+            GenServer.stop(pid)
+          '
 
       - name: Archive OTP release
         shell: bash

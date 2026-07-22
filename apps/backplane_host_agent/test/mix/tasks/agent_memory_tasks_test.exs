@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Agent.MemoryTasksTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Reducer, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @moduletag :tmp_dir
 

@@ -46,11 +46,11 @@ jobs:
           - release: host_agent
             target:
               name: linux-x64
-              runner: ubuntu-24.04
+              runner: ubuntu-22.04
           - release: host_agent
             target:
               name: linux-arm64
-              runner: ubuntu-24.04-arm
+              runner: ubuntu-22.04-arm
           - release: host_agent
             target:
               name: macos-x64
@@ -109,10 +109,10 @@ jobs:
           path: |
             deps
             _build/prod
-          key: release-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
           restore-keys: |
-            release-${{ matrix.target.name }}-${{ matrix.release }}-
-            release-${{ matrix.target.name }}-
+            release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-
+            release-${{ matrix.target.runner }}-${{ matrix.target.name }}-
 
       - name: Unify app versions
         run: bash scripts/set-version.sh "${{ steps.version.outputs.version }}"
@@ -130,6 +130,17 @@ jobs:
 
       - name: Build OTP release
         run: mix release "${{ matrix.release }}" --overwrite --version "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test host-agent native database
+        if: matrix.release == 'host_agent'
+        run: |
+          _build/prod/rel/host_agent/bin/host_agent eval '
+            {:ok, _} = Application.ensure_all_started(:ex_turso)
+            {:ok, pid} = Turso.start_link(database: ":memory:")
+            {:ok, %Turso.Result{rows: [%{"value" => 1}]}} =
+              Turso.query(pid, "SELECT 1 AS value")
+            GenServer.stop(pid)
+          '
 
       - name: Archive OTP release
         shell: bash

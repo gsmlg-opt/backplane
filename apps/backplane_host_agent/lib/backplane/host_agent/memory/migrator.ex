@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.Memory.Migrator do
   """
 
   alias Backplane.HostAgent.Memory.{Migrations, Store}
-  alias ExTurso.Result
+  alias Turso.Result
 
   @migrations [Migrations.V1]
 
