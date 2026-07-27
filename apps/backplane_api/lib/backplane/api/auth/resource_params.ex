@@ -13,6 +13,9 @@ defmodule Backplane.Api.Auth.ResourceParams do
     ArgumentError -> {:error, :invalid_target}
   end
 
+  @spec saved(map()) :: {:ok, nil | Resources.key()} | {:error, :invalid_target}
+  def saved(params) when is_map(params), do: normalize([], params["resource"])
+
   @spec structured_query_parameter?(Plug.Conn.t(), String.t()) :: boolean()
   def structured_query_parameter?(conn, name) do
     Enum.any?(URI.query_decoder(conn.query_string), fn {key, _value} ->

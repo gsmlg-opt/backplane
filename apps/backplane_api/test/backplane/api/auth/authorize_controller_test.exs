@@ -3,7 +3,7 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
 
   import Backplane.Auth.Fixtures
 
-  alias Backplane.Api.Auth.{AuthorizeController, ResourceParams}
+  alias Backplane.Api.Auth.{AuthorizeController, RawBodyReader, ResourceParams}
   alias Backplane.Auth
   alias Backplane.Auth.Resources
   alias Backplane.Auth.Schemas.OAuthTokenResource
@@ -255,6 +255,65 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
       refute Map.has_key?(params, "state")
       refute Map.has_key?(params, "code")
     end
+  end
+
+  test "trusted errors remove registered redirect state when request state is absent", %{
+    conn: conn
+  } do
+    redirect_uri = @redirect_uri <> "?tenant=acme&state=registered"
+
+    client =
+      oauth_client_fixture!(
+        name: "Registered Redirect State Client",
+        redirect_uris: [redirect_uri],
+        scopes: ["openid"],
+        confidential: false,
+        pkce: true
+      )
+
+    params =
+      client
+      |> authorize_params(%{
+        "redirect_uri" => redirect_uri,
+        "response_type" => "token",
+        "scope" => "openid"
+      })
+      |> Map.delete("state")
+
+    response = get(conn, "/oauth/authorize", params)
+    redirect_params = redirect_params(response)
+
+    assert redirect_params["error"] == "unsupported_response_type"
+    assert redirect_params["tenant"] == "acme"
+    refute Map.has_key?(redirect_params, "state")
+  end
+
+  test "trusted errors remove registered redirect state when request state is rejected", %{
+    conn: conn
+  } do
+    redirect_uri = @redirect_uri <> "?tenant=acme&state=registered"
+
+    client =
+      oauth_client_fixture!(
+        name: "Rejected Request State Client",
+        redirect_uris: [redirect_uri],
+        scopes: ["openid"],
+        confidential: false,
+        pkce: true
+      )
+
+    query =
+      client
+      |> authorize_params(%{"redirect_uri" => redirect_uri, "scope" => "openid"})
+      |> Map.delete("state")
+      |> URI.encode_query()
+
+    response = get(conn, "/oauth/authorize?#{query}&state[]=attacker")
+    redirect_params = redirect_params(response)
+
+    assert redirect_params["error"] == "invalid_request"
+    assert redirect_params["tenant"] == "acme"
+    refute Map.has_key?(redirect_params, "state")
   end
 
   test "requires a resource for protected operation scopes on assigned clients", %{conn: conn} do
@@ -519,6 +578,55 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
     assert params == %{"error" => "invalid_scope", "state" => "state-123"}
     refute redirect =~ "secret"
     refute redirect =~ "error_description"
+  end
+
+  test "chunked raw body parsing clears its completed accumulator" do
+    body =
+      URI.encode_query([
+        {"grant_type", "authorization_code"},
+        {"code", "secret-code"},
+        {"resource", Resources.uri(:mcp)}
+      ])
+
+    conn =
+      :post
+      |> Plug.Test.conn("/oauth/token", body)
+      |> put_req_header("content-type", "application/x-www-form-urlencoded")
+
+    assert {:more, first, conn} =
+             RawBodyReader.read_body(conn, length: byte_size(body) - 1)
+
+    assert conn.private[:oauth_raw_form_body] == first
+
+    assert {:ok, last, conn} = RawBodyReader.read_body(conn, length: byte_size(body))
+    assert first <> last == body
+    refute Map.has_key?(conn.private, :oauth_raw_form_body)
+  end
+
+  test "raw body parsing retains only resource parameter pairs" do
+    resource = Resources.uri(:mcp)
+
+    body =
+      URI.encode_query([
+        {"grant_type", "authorization_code"},
+        {"code", "secret-code"},
+        {"refresh_token", "secret-refresh"},
+        {"client_secret", "secret-client"},
+        {"resource", resource},
+        {"resource[]", "structured"}
+      ])
+
+    conn =
+      :post
+      |> Plug.Test.conn("/oauth/token", body)
+      |> put_req_header("content-type", "application/x-www-form-urlencoded")
+
+    assert {:ok, ^body, conn} = RawBodyReader.read_body(conn, [])
+
+    assert conn.private[:oauth_form_pairs] == [
+             {"resource", resource},
+             {"resource[]", "structured"}
+           ]
   end
 
   test "token form resource parsing preserves zero and exact canonical values", %{conn: conn} do

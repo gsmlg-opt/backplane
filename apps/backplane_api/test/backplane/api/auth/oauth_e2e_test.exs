@@ -255,7 +255,10 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     callback_conn =
       login_conn
       |> recycle()
-      |> post("/oauth/login", login_params)
+      |> post(
+        "/oauth/login?resource=#{URI.encode_www_form(Resources.uri(:v1))}",
+        login_params
+      )
 
     callback_params =
       callback_conn
@@ -268,6 +271,74 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert callback_params["state"] == "state-resource-resume"
 
     assert {:ok, %Boruta.Ecto.Token{value: ^code}, :mcp} =
+             Auth.TokenResources.lookup_code(client.id, code)
+  end
+
+  test "login resume ignores an injected resource for a saved no-resource request", %{
+    conn: conn
+  } do
+    user =
+      auth_user_fixture!(
+        email: "no-resource-login-resume@example.com",
+        name: "No Resource Login",
+        password: @password
+      )
+
+    client =
+      oauth_client_fixture!(
+        name: "No Resource Login Client",
+        redirect_uris: [@redirect_uri],
+        scopes: ["openid"],
+        resources: [:mcp],
+        confidential: false,
+        pkce: true
+      )
+
+    grant_scopes!(user, ["openid"])
+    {_verifier, challenge} = pkce_pair()
+
+    authorize_conn =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "openid",
+        "state" => "state-no-resource-resume",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      })
+
+    login_location = redirected_to(authorize_conn, 302)
+
+    login_conn =
+      authorize_conn
+      |> recycle()
+      |> get(path_with_query(login_location))
+
+    login_params =
+      login_conn
+      |> html_response(200)
+      |> form_inputs("#oauth-login-form")
+      |> Map.merge(%{"email" => user.email, "password" => @password})
+
+    callback_params =
+      login_conn
+      |> recycle()
+      |> post(
+        "/oauth/login?resource=#{URI.encode_www_form(Resources.uri(:mcp))}",
+        login_params
+      )
+      |> redirected_to(302)
+      |> URI.parse()
+      |> Map.get(:query)
+      |> URI.decode_query()
+
+    code = Map.fetch!(callback_params, "code")
+    assert callback_params["state"] == "state-no-resource-resume"
+
+    assert {:ok, %Boruta.Ecto.Token{value: ^code}, nil} =
              Auth.TokenResources.lookup_code(client.id, code)
   end
 

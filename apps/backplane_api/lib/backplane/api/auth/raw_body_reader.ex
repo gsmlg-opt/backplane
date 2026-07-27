@@ -5,6 +5,7 @@ defmodule Backplane.Api.Auth.RawBodyReader do
     case Plug.Conn.read_body(conn, opts) do
       {:ok, body, conn} ->
         raw = (conn.private[:oauth_raw_form_body] || "") <> body
+        conn = %{conn | private: Map.delete(conn.private, :oauth_raw_form_body)}
         {:ok, body, maybe_store_pairs(conn, raw)}
 
       {:more, body, conn} ->
@@ -18,7 +19,14 @@ defmodule Backplane.Api.Auth.RawBodyReader do
 
   defp maybe_store_pairs(%Plug.Conn{request_path: "/oauth/token"} = conn, body) do
     if form_urlencoded?(conn) do
-      Plug.Conn.put_private(conn, :oauth_form_pairs, Enum.to_list(URI.query_decoder(body)))
+      pairs =
+        body
+        |> URI.query_decoder()
+        |> Enum.filter(fn {key, _value} ->
+          key == "resource" or String.starts_with?(key, "resource[")
+        end)
+
+      Plug.Conn.put_private(conn, :oauth_form_pairs, pairs)
     else
       conn
     end

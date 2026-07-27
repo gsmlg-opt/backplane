@@ -31,7 +31,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
   authorized for every resource owner.
   """
   def authorize_for_user(conn, params, %User{} = user, %Client{} = client) do
-    with {:ok, resource} <- ResourceParams.query(conn, params),
+    with {:ok, resource} <- ResourceParams.saved(params),
          {:ok, params} <- AuthorizationRequest.preflight(client, params, resource),
          {:ok, normalized_params} <-
            AuthorizationRequest.for_user(client, user, params, resource) do
@@ -157,7 +157,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
     query =
       (uri.query || "")
       |> URI.decode_query()
-      |> Map.drop(["code", "error_description"])
+      |> Map.drop(["code", "error_description", "state"])
       |> Map.put("error", to_string(error))
       |> maybe_put_state(state)
 
