@@ -1,5 +1,5 @@
 defmodule Backplane.ClientsTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
   import Backplane.Fixtures
 
@@ -22,6 +22,18 @@ defmodule Backplane.ClientsTest do
     test "returns :error for inactive client token" do
       {_client, token} = insert_client(active: false, token: "inactive-token")
 
+      assert :error = Clients.verify_token(token)
+    end
+
+    test "refresh_cache marks inactive-only client rows as configured" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      on_exit(fn -> :persistent_term.put(:backplane_clients_exist, old_flag) end)
+
+      {_client, token} = insert_client(active: false, token: "inactive-token")
+      :persistent_term.put(:backplane_clients_exist, false)
+
+      assert :ok = Clients.refresh_cache()
+      assert :persistent_term.get(:backplane_clients_exist) == true
       assert :error = Clients.verify_token(token)
     end
 

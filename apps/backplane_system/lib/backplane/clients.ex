@@ -36,11 +36,12 @@ defmodule Backplane.Clients do
 
   @doc "Refresh the ETS cache from the database."
   def refresh_cache do
-    clients =
+    {clients, any_client_rows?} =
       try do
-        Client |> where(active: true) |> Repo.all()
+        active_clients = Client |> where(active: true) |> Repo.all()
+        {active_clients, Repo.exists?(Client)}
       rescue
-        _ -> []
+        _ -> {[], false}
       end
 
     rows = Enum.map(clients, fn c -> {c.id, c} end)
@@ -54,8 +55,8 @@ defmodule Backplane.Clients do
       unless MapSet.member?(new_ids, id), do: :ets.delete(@cache_table, id)
     end)
 
-    # Update the persistent_term flag
-    :persistent_term.put(:backplane_clients_exist, length(clients) > 0)
+    # Any row activates authentication, while only active rows can authenticate.
+    :persistent_term.put(:backplane_clients_exist, any_client_rows?)
 
     :ok
   rescue
