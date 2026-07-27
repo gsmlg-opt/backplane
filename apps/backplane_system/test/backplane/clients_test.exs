@@ -75,6 +75,78 @@ defmodule Backplane.ClientsTest do
       assert :persistent_term.get(:backplane_clients_exist) == true
     end
 
+    test "concurrent refreshes cannot publish an older client snapshot last" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      {client, _token} = insert_client(token: "racing-token")
+      assert :ok = Clients.refresh_cache()
+
+      handler_id = "clients-refresh-race-#{System.unique_integer([:positive])}"
+      parent = self()
+      {:ok, gate} = Agent.start_link(fn -> false end)
+
+      first_refresh =
+        Task.async(fn ->
+          receive do
+            :start_refresh -> Clients.refresh_cache()
+          end
+        end)
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:backplane, :repo, :query],
+          fn _event, _measurements, metadata, {target, test_pid, gate} ->
+            first_client_query? =
+              self() == target and
+                metadata[:source] == "clients" and
+                Agent.get_and_update(gate, fn
+                  false -> {true, true}
+                  true -> {false, true}
+                end)
+
+            if first_client_query? do
+              send(test_pid, :older_snapshot_loaded)
+
+              receive do
+                :publish_older_snapshot -> :ok
+              end
+            end
+          end,
+          {first_refresh.pid, parent, gate}
+        )
+
+      on_exit(fn ->
+        send(first_refresh.pid, :publish_older_snapshot)
+        :telemetry.detach(handler_id)
+        :persistent_term.put(:backplane_clients_exist, old_flag)
+        :ets.delete(:backplane_clients_cache, client.id)
+      end)
+
+      send(first_refresh.pid, :start_refresh)
+      assert_receive :older_snapshot_loaded, 1_000
+      Backplane.Repo.delete!(client)
+
+      second_refresh =
+        Task.async(fn ->
+          send(parent, :newer_refresh_started)
+          Clients.refresh_cache()
+        end)
+
+      assert_receive :newer_refresh_started, 1_000
+      second_result = Task.yield(second_refresh, 500)
+
+      send(first_refresh.pid, :publish_older_snapshot)
+      assert Task.await(first_refresh, 1_000) == :ok
+
+      case second_result do
+        {:ok, :ok} -> :ok
+        nil -> assert Task.await(second_refresh, 1_000) == :ok
+      end
+
+      assert :ets.lookup(:backplane_clients_cache, client.id) == []
+      assert :persistent_term.get(:backplane_clients_exist) == false
+    end
+
     test "updates last_seen_at on successful verify" do
       {client, token} = insert_client(token: "my-secret-token")
       assert is_nil(client.last_seen_at)

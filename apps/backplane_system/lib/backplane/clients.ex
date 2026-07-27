@@ -36,10 +36,16 @@ defmodule Backplane.Clients do
 
   @doc "Refresh the ETS cache from the database."
   def refresh_cache do
+    case :global.trans({@cache_table, self()}, &do_refresh_cache/0) do
+      :aborted -> fail_closed()
+      result -> result
+    end
+  end
+
+  defp do_refresh_cache do
     case load_client_state() do
       {:ok, clients, any_client_rows?} ->
-        replace_cached_clients(clients)
-        :persistent_term.put(:backplane_clients_exist, any_client_rows?)
+        publish_client_state(clients, any_client_rows?)
 
       :error ->
         fail_closed()
@@ -49,10 +55,25 @@ defmodule Backplane.Clients do
   end
 
   defp load_client_state do
-    active_clients = Client |> where(active: true) |> Repo.all()
-    {:ok, active_clients, Repo.exists?(Client)}
+    clients = Repo.all(Client)
+    active_clients = Enum.filter(clients, & &1.active)
+    {:ok, active_clients, clients != []}
   rescue
     _error -> :error
+  end
+
+  defp publish_client_state(clients, any_client_rows?) do
+    if any_client_rows? do
+      :persistent_term.put(:backplane_clients_exist, true)
+    end
+
+    replace_cached_clients(clients)
+
+    unless any_client_rows? do
+      :persistent_term.put(:backplane_clients_exist, false)
+    end
+
+    :ok
   end
 
   defp replace_cached_clients(clients) do
