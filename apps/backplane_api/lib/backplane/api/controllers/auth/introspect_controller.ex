@@ -16,7 +16,7 @@ defmodule Backplane.Api.Auth.IntrospectController do
 
   @impl Boruta.Oauth.IntrospectApplication
   def introspect_success(conn, %IntrospectResponse{active: true} = response) do
-    json(conn, %{
+    body = %{
       active: true,
       client_id: response.client_id,
       username: response.username,
@@ -25,7 +25,9 @@ defmodule Backplane.Api.Auth.IntrospectController do
       iss: response.iss,
       exp: response.exp,
       iat: response.iat
-    })
+    }
+
+    json(conn, maybe_put_resource_audience(body, response.client_id, conn.params["token"]))
   end
 
   def introspect_success(conn, %IntrospectResponse{}) do
@@ -39,5 +41,15 @@ defmodule Backplane.Api.Auth.IntrospectController do
 
   def introspect_error(conn, %Error{}) do
     json(conn, %{active: false})
+  end
+
+  defp maybe_put_resource_audience(body, client_id, token) do
+    case Backplane.Auth.TokenResources.lookup_access_token(client_id, token) do
+      {:ok, _token, resource} when resource in [:mcp, :v1] ->
+        Map.put(body, :aud, Backplane.Auth.Resources.uri(resource))
+
+      _unmapped ->
+        body
+    end
   end
 end

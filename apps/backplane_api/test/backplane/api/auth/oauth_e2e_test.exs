@@ -374,6 +374,53 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert bad_secret_body["error"] == "invalid_client"
   end
 
+  test "introspection exposes canonical audience only for active resource-bound tokens", %{
+    conn: conn
+  } do
+    user = auth_user_fixture!(email: "resource-introspect@example.com", password: @password)
+
+    client =
+      oauth_client_fixture!(
+        resources: [:mcp],
+        scopes: ["openid", "github::*"],
+        confidential: true
+      )
+
+    resource_token = resource_access_token_fixture!(user, client, ["github::*"], :mcp)
+    identity_token = access_token_fixture!(user, client, ["openid"])
+
+    resource_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/introspect", %{"token" => resource_token.value})
+      |> json_response(200)
+
+    assert resource_body["active"] == true
+    assert resource_body["aud"] == Resources.uri(:mcp)
+
+    identity_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/introspect", %{"token" => identity_token.value})
+      |> json_response(200)
+
+    assert identity_body["active"] == true
+    refute Map.has_key?(identity_body, "aud")
+
+    assert {:ok, _revoked} = Auth.Tokens.revoke_token_by_id(resource_token.id)
+
+    inactive_body =
+      conn
+      |> recycle()
+      |> put_basic_auth(client.id, client.plaintext_secret)
+      |> post("/oauth/introspect", %{"token" => resource_token.value})
+      |> json_response(200)
+
+    assert inactive_body == %{"active" => false}
+  end
+
   test "reused authorization code is rejected", %{conn: conn} do
     user = auth_user_fixture!(email: "reuse-code@example.com", password: @password)
     client = oauth_client_fixture!(scopes: ["openid", "profile", "email"])
