@@ -6,7 +6,7 @@ defmodule Backplane.Api.Auth.TokenController do
   alias Backplane.Api.Auth.{Helpers, ResourceParams}
   alias Backplane.Auth
   alias Backplane.Auth.{Resources, TokenResources}
-  alias Boruta.Oauth.Authorization.Client
+  alias Boruta.Oauth.Authorization.{Client, Code}
   alias Boruta.Oauth.{AuthorizationCodeRequest, RefreshTokenRequest}
   alias Boruta.Oauth.Error
   alias Boruta.Oauth.Request
@@ -81,8 +81,9 @@ defmodule Backplane.Api.Auth.TokenController do
   defp preflight_token(conn, params) do
     case Request.token_request(conn) do
       {:ok, request} ->
-        with {:ok, client_id} <- authenticate_grant_client(request),
-             {:ok, conn} <- resolve_grant_resource(conn, params, request, client_id) do
+        with {:ok, client} <- authenticate_grant_client(request),
+             :ok <- validate_grant_credential(request, client),
+             {:ok, conn} <- resolve_grant_resource(conn, params, request, client.id) do
           issue_token(conn)
         else
           {:error, :invalid_target} ->
@@ -120,7 +121,7 @@ defmodule Backplane.Api.Auth.TokenController do
 
     with {:ok, _uuid} <- Ecto.UUID.cast(client_id),
          {:ok, client} <- Client.authorize(options) do
-      {:ok, client.id}
+      {:ok, client}
     else
       :error ->
         {:error, invalid_client_error()}
@@ -129,6 +130,20 @@ defmodule Backplane.Api.Auth.TokenController do
         {:error, error}
     end
   end
+
+  defp validate_grant_credential(%AuthorizationCodeRequest{} = request, client) do
+    case Code.authorize(%{
+           value: request.code,
+           redirect_uri: request.redirect_uri,
+           client: client,
+           code_verifier: request.code_verifier
+         }) do
+      {:ok, _code} -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp validate_grant_credential(%RefreshTokenRequest{}, _client), do: :ok
 
   defp resolve_grant_resource(
          conn,

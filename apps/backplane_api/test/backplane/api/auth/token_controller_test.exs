@@ -138,6 +138,50 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
     end
   end
 
+  test "wrong code verifier returns invalid_grant before every resource classification", %{
+    conn: conn
+  } do
+    {user, client} = resource_subject!(:mcp)
+    {code, correct_verifier} = authorization_code!(user, client, :mcp)
+    wrong_verifier = verifier()
+
+    for resources <- [
+          [],
+          [{"resource", Resources.uri(:mcp)}],
+          [{"resource", Resources.uri(:v1)}],
+          [
+            {"resource", Resources.uri(:mcp)},
+            {"resource", Resources.uri(:mcp)}
+          ]
+        ] do
+      grant_conn =
+        conn
+        |> recycle()
+        |> exchange_code(client, code, wrong_verifier, resources)
+
+      raw_body = response(grant_conn, 400)
+      body = Jason.decode!(raw_body)
+
+      assert body["error"] == "invalid_grant"
+      refute raw_body =~ code
+      refute raw_body =~ Resources.uri(:mcp)
+      refute raw_body =~ Resources.uri(:v1)
+    end
+
+    assert {:ok, %Token{revoked_at: nil}, :mcp} =
+             Auth.TokenResources.lookup_code(client.id, code)
+
+    accepted =
+      conn
+      |> recycle()
+      |> exchange_code(client, code, correct_verifier, [
+        {"resource", Resources.uri(:mcp)}
+      ])
+      |> json_response(200)
+
+    assert accepted["access_token"]
+  end
+
   test "known unmapped authorization code accepts omission and rejects a supplied resource", %{
     conn: conn
   } do
