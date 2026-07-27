@@ -69,6 +69,20 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
     assert_trusted_error(map_conn, "invalid_target")
   end
 
+  test "rejects mixed exact and structured resource query pollution in either order", %{
+    conn: conn
+  } do
+    client = oauth_client!(resources: [:mcp], scopes: ["github::*"])
+    base = URI.encode_query(authorize_params(client, %{"scope" => "github::*"}))
+    exact = {"resource", Resources.uri(:mcp)}
+
+    for structured_key <- ["resource[]", "resource[key]"],
+        pairs <- [[exact, {structured_key, "evil"}], [{structured_key, "evil"}, exact]] do
+      response = get(conn, "/oauth/authorize?#{base}&#{URI.encode_query(pairs)}")
+      assert_trusted_error(response, "invalid_target")
+    end
+  end
+
   test "rejects unsupported noncanonical resource URIs", %{conn: conn} do
     client = oauth_client!(resources: [:mcp], scopes: ["github::*"])
 
@@ -163,6 +177,84 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
       )
 
     assert_trusted_error(missing_challenge, "invalid_request")
+  end
+
+  test "structured scope values redirect invalid_scope instead of crashing", %{conn: conn} do
+    client = oauth_client!(resources: [:mcp], scopes: ["github::*"])
+
+    base =
+      client
+      |> authorize_params(%{"resource" => Resources.uri(:mcp)})
+      |> Map.delete("scope")
+      |> URI.encode_query()
+
+    exact = {"scope", "github::*"}
+
+    for structured_key <- ["scope[]", "scope[key]"],
+        pairs <-
+          [
+            [{structured_key, "github::*"}],
+            [exact, {structured_key, "evil"}],
+            [{structured_key, "evil"}, exact]
+          ] do
+      response = get(conn, "/oauth/authorize?#{base}&#{URI.encode_query(pairs)}")
+      assert_trusted_error(response, "invalid_scope")
+    end
+  end
+
+  test "structured client and redirect parameters fail directly before trust", %{conn: conn} do
+    client = oauth_client!(scopes: ["openid"])
+
+    for {name, value} <- [
+          {"client_id", client.id},
+          {"redirect_uri", @redirect_uri}
+        ],
+        structured_key <- ["#{name}[]", "#{name}[key]"],
+        pairs <-
+          [
+            [{structured_key, value}],
+            [{name, value}, {structured_key, "evil"}],
+            [{structured_key, "evil"}, {name, value}]
+          ] do
+      base =
+        client
+        |> authorize_params(%{"scope" => "openid"})
+        |> Map.delete(name)
+        |> URI.encode_query()
+
+      response = get(conn, "/oauth/authorize?#{base}&#{URI.encode_query(pairs)}")
+      assert response(response, 400) == "invalid_request"
+      assert get_resp_header(response, "location") == []
+    end
+  end
+
+  test "structured state redirects invalid_request without serializing attacker data", %{
+    conn: conn
+  } do
+    client = oauth_client!(scopes: ["openid"])
+
+    base =
+      client
+      |> authorize_params(%{"scope" => "openid"})
+      |> Map.delete("state")
+      |> URI.encode_query()
+
+    exact = {"state", "state-123"}
+
+    for structured_key <- ["state[]", "state[key]"],
+        pairs <-
+          [
+            [{structured_key, "attacker"}],
+            [exact, {structured_key, "attacker"}],
+            [{structured_key, "attacker"}, exact]
+          ] do
+      response = get(conn, "/oauth/authorize?#{base}&#{URI.encode_query(pairs)}")
+      assert redirected_to(response, 302)
+      params = redirect_params(response)
+      assert params["error"] == "invalid_request"
+      refute Map.has_key?(params, "state")
+      refute Map.has_key?(params, "code")
+    end
   end
 
   test "requires a resource for protected operation scopes on assigned clients", %{conn: conn} do
@@ -472,6 +564,16 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
     assert ResourceParams.form(different, different.params) == {:error, :invalid_target}
   end
 
+  test "token form parsing rejects mixed exact and structured resource pollution", %{conn: conn} do
+    exact = {"resource", Resources.uri(:mcp)}
+
+    for structured_key <- ["resource[]", "resource[key]"],
+        pairs <- [[exact, {structured_key, "evil"}], [{structured_key, "evil"}, exact]] do
+      response = token_form(conn, [{"grant_type", "unsupported"} | pairs])
+      assert ResourceParams.form(response, response.params) == {:error, :invalid_target}
+    end
+  end
+
   test "token form resource parsing rejects malformed structured and unsupported values", %{
     conn: conn
   } do
@@ -589,6 +691,7 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
     assert params["error"] == expected_error
     assert params["state"] == "state-123"
     refute Map.has_key?(params, "code")
+    params
   end
 
   defp authorization_code_from_redirect(conn) do

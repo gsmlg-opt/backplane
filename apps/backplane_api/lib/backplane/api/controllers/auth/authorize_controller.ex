@@ -11,8 +11,9 @@ defmodule Backplane.Api.Auth.AuthorizeController do
   alias Boruta.Oauth.Error
 
   def authorize(conn, params) do
-    with {:ok, client} <- enabled_client(params),
-         :ok <- Auth.OAuth.validate_redirect_uri(client, params["redirect_uri"]) do
+    with :ok <- validate_untrusted_parameter_shapes(conn, params),
+         {:ok, client} <- enabled_client(params),
+         :ok <- validate_redirect_uri(client, params) do
       case prepare_before_login(conn, client, params) do
         {:ok, normalized_params} -> continue_authorize(conn, client, normalized_params)
         {:error, error} -> redirect_authorize_error(conn, params, error)
@@ -68,7 +69,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
     redirect_authorize_error(conn, conn.query_params, error)
   end
 
-  defp enabled_client(%{"client_id" => client_id}) do
+  defp enabled_client(%{"client_id" => client_id}) when is_binary(client_id) do
     case Auth.OAuth.get_enabled_client(client_id) do
       %Client{} = client -> {:ok, client}
       nil -> {:error, :invalid_client}
@@ -77,12 +78,41 @@ defmodule Backplane.Api.Auth.AuthorizeController do
 
   defp enabled_client(_params), do: {:error, :invalid_request}
 
+  defp validate_redirect_uri(client, %{"redirect_uri" => redirect_uri})
+       when is_binary(redirect_uri),
+       do: Auth.OAuth.validate_redirect_uri(client, redirect_uri)
+
+  defp validate_redirect_uri(_client, _params), do: {:error, :invalid_request}
+
+  defp validate_untrusted_parameter_shapes(conn, params) do
+    if structured_query_parameter?(conn, "client_id") or
+         structured_query_parameter?(conn, "redirect_uri") or
+         not is_binary(params["client_id"]) or
+         not is_binary(params["redirect_uri"]) do
+      {:error, :invalid_request}
+    else
+      :ok
+    end
+  end
+
   defp prepare_before_login(conn, client, params) do
-    with {:ok, resource} <- ResourceParams.query(conn, params),
+    with :ok <- validate_trusted_parameter_shapes(conn),
+         {:ok, resource} <- ResourceParams.query(conn, params),
          {:ok, normalized_params} <- AuthorizationRequest.preflight(client, params, resource) do
       {:ok, normalized_params}
     end
   end
+
+  defp validate_trusted_parameter_shapes(conn) do
+    cond do
+      structured_query_parameter?(conn, "state") -> {:error, :invalid_request}
+      structured_query_parameter?(conn, "scope") -> {:error, :invalid_scope}
+      true -> :ok
+    end
+  end
+
+  defp structured_query_parameter?(conn, name),
+    do: ResourceParams.structured_query_parameter?(conn, name)
 
   defp continue_authorize(conn, client, params) do
     case current_user(conn) do
@@ -122,17 +152,18 @@ defmodule Backplane.Api.Auth.AuthorizeController do
 
   defp redirect_authorize_error(conn, params, error) do
     uri = URI.parse(params["redirect_uri"])
+    state = if structured_query_parameter?(conn, "state"), do: nil, else: params["state"]
 
     query =
       (uri.query || "")
       |> URI.decode_query()
       |> Map.drop(["code", "error_description"])
       |> Map.put("error", to_string(error))
-      |> maybe_put_state(params["state"])
+      |> maybe_put_state(state)
 
     redirect(conn, external: URI.to_string(%{uri | query: URI.encode_query(query)}))
   end
 
-  defp maybe_put_state(query, nil), do: query
-  defp maybe_put_state(query, state), do: Map.put(query, "state", state)
+  defp maybe_put_state(query, state) when is_binary(state), do: Map.put(query, "state", state)
+  defp maybe_put_state(query, _state), do: query
 end

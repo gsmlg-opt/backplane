@@ -8,10 +8,11 @@ defmodule Backplane.Api.Auth.AuthorizationRequest do
   @spec preflight(Client.t(), map(), nil | Resources.key()) ::
           {:ok, map()} | {:error, atom()}
   def preflight(client, params, resource) do
-    requested = scopes(params)
     client_scopes = Enum.map(client.authorized_scopes, & &1.name)
 
-    with :ok <- validate_response_type(params),
+    with :ok <- validate_state(params),
+         {:ok, requested} <- scopes(params),
+         :ok <- validate_response_type(params),
          :ok <- validate_pkce(params),
          :ok <- validate_resource_assignment(client, resource),
          :ok <- validate_client_scopes(requested, client_scopes),
@@ -24,29 +25,45 @@ defmodule Backplane.Api.Auth.AuthorizationRequest do
   @spec for_user(Client.t(), User.t(), map(), nil | Resources.key()) ::
           {:ok, map()} | {:error, :invalid_scope}
   def for_user(client, user, params, resource) do
-    requested = scopes(params)
     client_scopes = Enum.map(client.authorized_scopes, & &1.name)
     user_scopes = RBAC.effective_scope_names(user)
 
-    effective =
-      cond do
-        resource && requested == [] ->
-          Resources.default_scopes(resource, client_scopes, user_scopes)
+    with {:ok, requested} <- scopes(params) do
+      effective =
+        cond do
+          resource && requested == [] ->
+            Resources.default_scopes(resource, client_scopes, user_scopes)
 
-        Enum.all?(requested, &(&1 in user_scopes)) ->
-          {:ok, requested}
+          Enum.all?(requested, &(&1 in user_scopes)) ->
+            {:ok, requested}
 
-        true ->
-          {:error, :invalid_scope}
+          true ->
+            {:error, :invalid_scope}
+        end
+
+      case effective do
+        {:ok, scopes} -> {:ok, Map.put(params, "scope", Enum.join(scopes, " "))}
+        {:error, :invalid_scope} -> {:error, :invalid_scope}
       end
-
-    case effective do
-      {:ok, scopes} -> {:ok, Map.put(params, "scope", Enum.join(scopes, " "))}
-      {:error, :invalid_scope} -> {:error, :invalid_scope}
     end
   end
 
-  defp scopes(params), do: String.split(params["scope"] || "", " ", trim: true)
+  defp scopes(%{"scope" => scope}) when is_binary(scope),
+    do: {:ok, String.split(scope, " ", trim: true)}
+
+  defp scopes(params) when is_map(params) do
+    if Map.has_key?(params, "scope"),
+      do: {:error, :invalid_scope},
+      else: {:ok, []}
+  end
+
+  defp validate_state(%{"state" => state}) when is_binary(state), do: :ok
+
+  defp validate_state(params) when is_map(params) do
+    if Map.has_key?(params, "state"),
+      do: {:error, :invalid_request},
+      else: :ok
+  end
 
   defp validate_response_type(%{"response_type" => "code"}), do: :ok
   defp validate_response_type(_params), do: {:error, :unsupported_response_type}
