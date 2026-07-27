@@ -36,14 +36,26 @@ defmodule Backplane.Clients do
 
   @doc "Refresh the ETS cache from the database."
   def refresh_cache do
-    {clients, any_client_rows?} =
-      try do
-        active_clients = Client |> where(active: true) |> Repo.all()
-        {active_clients, Repo.exists?(Client)}
-      rescue
-        _ -> {[], false}
-      end
+    case load_client_state() do
+      {:ok, clients, any_client_rows?} ->
+        replace_cached_clients(clients)
+        :persistent_term.put(:backplane_clients_exist, any_client_rows?)
 
+      :error ->
+        fail_closed()
+    end
+  rescue
+    ArgumentError -> fail_closed()
+  end
+
+  defp load_client_state do
+    active_clients = Client |> where(active: true) |> Repo.all()
+    {:ok, active_clients, Repo.exists?(Client)}
+  rescue
+    _error -> :error
+  end
+
+  defp replace_cached_clients(clients) do
     rows = Enum.map(clients, fn c -> {c.id, c} end)
 
     new_ids = MapSet.new(rows, fn {id, _} -> id end)
@@ -54,13 +66,11 @@ defmodule Backplane.Clients do
     |> Enum.each(fn {id, _} ->
       unless MapSet.member?(new_ids, id), do: :ets.delete(@cache_table, id)
     end)
+  end
 
-    # Any row activates authentication, while only active rows can authenticate.
-    :persistent_term.put(:backplane_clients_exist, any_client_rows?)
-
+  defp fail_closed do
+    :persistent_term.put(:backplane_clients_exist, true)
     :ok
-  rescue
-    ArgumentError -> :ok
   end
 
   defp cached_active_clients do

@@ -37,6 +37,44 @@ defmodule Backplane.ClientsTest do
       assert :error = Clients.verify_token(token)
     end
 
+    test "refresh_cache preserves the last known state when the database query fails" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      {client, _token} = insert_client(token: "cached-token")
+      assert :ok = Clients.refresh_cache()
+
+      on_exit(fn ->
+        :persistent_term.put(:backplane_clients_exist, old_flag)
+        :ets.delete(:backplane_clients_cache, client.id)
+      end)
+
+      assert [{client_id, _cached}] = :ets.lookup(:backplane_clients_cache, client.id)
+      assert client_id == client.id
+      assert :persistent_term.get(:backplane_clients_exist) == true
+
+      Ecto.Adapters.SQL.query!(Backplane.Repo, "SET LOCAL search_path TO pg_catalog")
+
+      assert :ok = Clients.refresh_cache()
+      assert [{^client_id, _cached}] = :ets.lookup(:backplane_clients_cache, client.id)
+      assert :persistent_term.get(:backplane_clients_exist) == true
+    end
+
+    test "refresh_cache fails closed without a protected last-known state" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, :missing)
+
+      on_exit(fn ->
+        case old_flag do
+          :missing -> :persistent_term.erase(:backplane_clients_exist)
+          value -> :persistent_term.put(:backplane_clients_exist, value)
+        end
+      end)
+
+      :persistent_term.put(:backplane_clients_exist, false)
+      Ecto.Adapters.SQL.query!(Backplane.Repo, "SET LOCAL search_path TO pg_catalog")
+
+      assert :ok = Clients.refresh_cache()
+      assert :persistent_term.get(:backplane_clients_exist) == true
+    end
+
     test "updates last_seen_at on successful verify" do
       {client, token} = insert_client(token: "my-secret-token")
       assert is_nil(client.last_seen_at)
