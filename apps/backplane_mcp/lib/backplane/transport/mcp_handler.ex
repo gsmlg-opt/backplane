@@ -432,7 +432,27 @@ defmodule Backplane.Transport.McpHandler do
         {:error, reason} -> json_rpc_error(conn, id, -32_602, "Invalid params: #{reason}")
       end
     else
-      json_rpc_error(conn, id, -32_001, "Tool '#{name}' is not in scope for this client")
+      out_of_scope_tool(conn, id, name)
+    end
+  end
+
+  defp out_of_scope_tool(conn, id, name) do
+    case conn.assigns[:resource_auth] do
+      %{kind: :oauth} ->
+        conn
+        |> Backplane.Auth.BearerChallenge.put(:mcp,
+          error: "insufficient_scope",
+          scope: name
+        )
+        |> json_rpc_error(
+          id,
+          -32_001,
+          "Tool '#{name}' is not in scope for this client",
+          403
+        )
+
+      _ ->
+        json_rpc_error(conn, id, -32_001, "Tool '#{name}' is not in scope for this client")
     end
   end
 
@@ -888,11 +908,11 @@ defmodule Backplane.Transport.McpHandler do
     |> send_resp(200, body)
   end
 
-  defp json_rpc_error(conn, id, code, message) do
+  defp json_rpc_error(conn, id, code, message, status \\ 200) do
     body = Jason.encode!(JsonRpc.error(id, code, message))
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, body)
+    |> send_resp(status, body)
   end
 end
