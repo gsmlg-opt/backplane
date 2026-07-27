@@ -280,6 +280,23 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
     assert accepted["access_token"]
   end
 
+  test "reused mapped refresh with mismatched resource revokes the active token family", %{
+    conn: conn
+  } do
+    assert_reused_mapped_refresh_revokes_family(conn, [
+      {"resource", Resources.uri(:v1)}
+    ])
+  end
+
+  test "reused mapped refresh with repeated resource revokes the active token family", %{
+    conn: conn
+  } do
+    assert_reused_mapped_refresh_revokes_family(conn, [
+      {"resource", Resources.uri(:mcp)},
+      {"resource", Resources.uri(:mcp)}
+    ])
+  end
+
   test "unmapped refresh rejects a supplied resource", %{conn: conn} do
     user = auth_user_fixture!()
     client = oauth_client_fixture!(resources: [:mcp], scopes: ["openid"])
@@ -603,6 +620,38 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
         {"refresh_token", refresh_token}
       ] ++ resource_pairs
     )
+  end
+
+  defp assert_reused_mapped_refresh_revokes_family(conn, resource_pairs) do
+    {user, client} = resource_subject!(:mcp)
+    original = issue_resource_token(conn, user, client, :mcp)
+
+    active =
+      conn
+      |> recycle()
+      |> refresh(client, original["refresh_token"], [])
+      |> json_response(200)
+
+    active_token =
+      Repo.get_by!(Token,
+        type: "access_token",
+        client_id: client.id,
+        value: active["access_token"]
+      )
+
+    reuse_conn =
+      conn
+      |> recycle()
+      |> refresh(client, original["refresh_token"], resource_pairs)
+
+    raw_body = response(reuse_conn, 400)
+    assert Jason.decode!(raw_body)["error"] == "invalid_grant"
+    refute raw_body =~ original["refresh_token"]
+
+    revoked = Repo.reload!(active_token)
+    assert %DateTime{} = revoked.revoked_at
+    assert %DateTime{} = revoked.refresh_token_revoked_at
+    assert {:error, :invalid_token} = Auth.Tokens.verify_access_token(active["access_token"])
   end
 
   defp post_form(conn, pairs) do

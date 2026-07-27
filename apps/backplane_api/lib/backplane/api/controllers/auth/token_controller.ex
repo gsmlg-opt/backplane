@@ -6,7 +6,7 @@ defmodule Backplane.Api.Auth.TokenController do
   alias Backplane.Api.Auth.{Helpers, ResourceParams}
   alias Backplane.Auth
   alias Backplane.Auth.{Resources, TokenResources}
-  alias Boruta.Oauth.Authorization.{Client, Code}
+  alias Boruta.Oauth.Authorization.{AccessToken, Client, Code}
   alias Boruta.Oauth.{AuthorizationCodeRequest, RefreshTokenRequest}
   alias Boruta.Oauth.Error
   alias Boruta.Oauth.Request
@@ -143,7 +143,16 @@ defmodule Backplane.Api.Auth.TokenController do
     end
   end
 
-  defp validate_grant_credential(%RefreshTokenRequest{}, _client), do: :ok
+  defp validate_grant_credential(
+         %RefreshTokenRequest{refresh_token: refresh_token},
+         client
+       ) do
+    case AccessToken.authorize(refresh_token: refresh_token) do
+      {:ok, %Boruta.Oauth.Token{client: ^client}} -> :ok
+      {:ok, %Boruta.Oauth.Token{}} -> {:error, invalid_refresh_grant_error()}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
 
   defp resolve_grant_resource(
          conn,
@@ -240,6 +249,14 @@ defmodule Backplane.Api.Auth.TokenController do
       status: :unauthorized,
       error: :invalid_client,
       error_description: "Invalid client_id or client_secret."
+    }
+  end
+
+  defp invalid_refresh_grant_error do
+    %Error{
+      status: :bad_request,
+      error: :invalid_grant,
+      error_description: "Given refresh token is invalid, revoked, or expired."
     }
   end
 
