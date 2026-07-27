@@ -4,6 +4,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
   import Backplane.Auth.Fixtures
 
   alias Backplane.Auth
+  alias Backplane.Auth.Resources
 
   @redirect_uri "https://gsmlg-app-backend.example.test/auth/callback"
   @issuer "http://localhost:4002"
@@ -201,6 +202,75 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert scope_includes?(token_response["scope"], "app:read")
   end
 
+  test "resource authorization survives login resume and binds the code before redirect",
+       %{conn: conn} do
+    user =
+      auth_user_fixture!(
+        email: "resource-login-resume@example.com",
+        name: "Resource Login",
+        password: @password
+      )
+
+    client =
+      oauth_client_fixture!(
+        name: "Resource Login Client",
+        redirect_uris: [@redirect_uri],
+        scopes: ["github::*"],
+        resources: [:mcp],
+        confidential: false,
+        pkce: true
+      )
+
+    grant_scopes!(user, ["github::*"])
+    {_verifier, challenge} = pkce_pair()
+
+    authorize_conn =
+      conn
+      |> recycle()
+      |> get("/oauth/authorize", %{
+        "client_id" => client.id,
+        "redirect_uri" => @redirect_uri,
+        "response_type" => "code",
+        "scope" => "github::*",
+        "resource" => Resources.uri(:mcp),
+        "state" => "state-resource-resume",
+        "code_challenge" => challenge,
+        "code_challenge_method" => "S256"
+      })
+
+    login_location = redirected_to(authorize_conn, 302)
+    assert URI.parse(login_location).path == "/oauth/login"
+
+    login_conn =
+      authorize_conn
+      |> recycle()
+      |> get(path_with_query(login_location))
+
+    login_params =
+      login_conn
+      |> html_response(200)
+      |> form_inputs("#oauth-login-form")
+      |> Map.merge(%{"email" => user.email, "password" => @password})
+
+    callback_conn =
+      login_conn
+      |> recycle()
+      |> post("/oauth/login", login_params)
+
+    callback_params =
+      callback_conn
+      |> redirected_to(302)
+      |> URI.parse()
+      |> Map.get(:query)
+      |> URI.decode_query()
+
+    code = Map.fetch!(callback_params, "code")
+    assert callback_params["state"] == "state-resource-resume"
+
+    assert {:ok, %Boruta.Ecto.Token{value: ^code}, :mcp} =
+             Auth.TokenResources.lookup_code(client.id, code)
+  end
+
   test "confidential client introspection rejects a bad client secret", %{conn: conn} do
     user = auth_user_fixture!(email: "introspect@example.com", password: @password)
     client = oauth_client_fixture!(scopes: ["openid", "profile", "email", "app:read"])
@@ -308,13 +378,21 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
       |> form_inputs("#oauth-login-form")
       |> Map.merge(%{"email" => user.email, "password" => @password})
 
-    body =
+    callback_conn =
       login_conn
       |> recycle()
       |> post("/oauth/login", login_params)
-      |> response(400)
 
-    assert body == "invalid_scope"
+    callback_params =
+      callback_conn
+      |> redirected_to(302)
+      |> URI.parse()
+      |> Map.get(:query)
+      |> URI.decode_query()
+
+    assert callback_params["error"] == "invalid_scope"
+    assert callback_params["state"] == "state-missing-rbac"
+    refute callback_params["code"]
     assert is_binary(verifier)
   end
 
@@ -336,7 +414,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
       })
       |> response(400)
 
-    assert authorize_body == "invalid_client"
+    assert authorize_body == "invalid_request"
 
     token_body =
       conn
@@ -553,7 +631,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
   test "unsupported implicit response type is rejected", %{conn: conn} do
     client = oauth_client_fixture!(redirect_uris: [@redirect_uri])
 
-    body =
+    callback_params =
       conn
       |> get("/oauth/authorize", %{
         "client_id" => client.id,
@@ -564,9 +642,14 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
         "code_challenge" => pkce_challenge("implicit-verifier"),
         "code_challenge_method" => "S256"
       })
-      |> response(400)
+      |> redirected_to(302)
+      |> URI.parse()
+      |> Map.get(:query)
+      |> URI.decode_query()
 
-    assert body == "unsupported_response_type"
+    assert callback_params["error"] == "unsupported_response_type"
+    assert callback_params["state"] == "state-implicit"
+    refute callback_params["code"]
   end
 
   defp pkce_challenge(verifier) do
