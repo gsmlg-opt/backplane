@@ -66,6 +66,134 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
     assert render(view) =~ "Timed out waiting for stdio initialize response"
   end
 
+  test "HTTP connect preserves the negotiated session for follow-up requests", %{conn: conn} do
+    bypass = Bypass.open()
+    test_pid = self()
+
+    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      method = request["method"]
+
+      send(test_pid, {
+        :mcp_request,
+        method,
+        request,
+        Plug.Conn.get_req_header(conn, "mcp-session-id"),
+        Plug.Conn.get_req_header(conn, "mcp-protocol-version")
+      })
+
+      case method do
+        "initialize" ->
+          conn
+          |> Plug.Conn.put_resp_header("mcp-session-id", "session-123")
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(
+            200,
+            Jason.encode!(%{
+              "jsonrpc" => "2.0",
+              "id" => request["id"],
+              "result" => %{
+                "protocolVersion" => "2025-11-25",
+                "capabilities" => %{},
+                "serverInfo" => %{"name" => "stateful-test", "version" => "1.0"}
+              }
+            })
+          )
+
+        "notifications/initialized" ->
+          Plug.Conn.resp(conn, 202, "")
+
+        "tools/list" ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(
+            200,
+            Jason.encode!(%{
+              "jsonrpc" => "2.0",
+              "id" => request["id"],
+              "result" => %{
+                "tools" => [
+                  %{
+                    "name" => "echo",
+                    "description" => "Echo input",
+                    "inputSchema" => %{"type" => "object"}
+                  }
+                ]
+              }
+            })
+          )
+
+        "tools/call" ->
+          json_response(conn, request, %{"content" => []})
+
+        "ping" ->
+          json_response(conn, request, %{})
+      end
+    end)
+
+    {:ok, view, _html} = live(conn, "/mcp/inspector")
+
+    render_change(view, "update_config", %{
+      "transport" => "http",
+      "url" => "http://localhost:#{bypass.port}/mcp",
+      "auth_scheme" => "none",
+      "credential" => ""
+    })
+
+    render_click(view, "connect")
+
+    assert_receive {:mcp_request, "initialize", _request, [], []}
+
+    assert_receive {:mcp_request, "notifications/initialized", notification, ["session-123"],
+                    ["2025-11-25"]}
+
+    refute Map.has_key?(notification, "id")
+
+    render_click(view, "list_tools")
+
+    assert_receive {:mcp_request, "tools/list", _request, ["session-123"], ["2025-11-25"]}
+
+    render_click(view, "ping")
+
+    assert_receive {:mcp_request, "ping", _request, ["session-123"], ["2025-11-25"]}
+
+    render_change(view, "update_tool_args", %{"tool_name" => "echo", "tool_args" => "{}"})
+    render_click(view, "call_tool", %{"tool_name" => "echo"})
+
+    assert_receive {:mcp_request, "tools/call", _request, ["session-123"], ["2025-11-25"]}
+
+    render_click(view, "disconnect")
+    render_click(view, "connect")
+
+    assert_receive {:mcp_request, "initialize", _request, [], []}
+
+    assert_receive {:mcp_request, "notifications/initialized", _request, ["session-123"],
+                    _version}
+
+    render_change(view, "update_config", %{
+      "transport" => "http",
+      "url" => "http://localhost:#{bypass.port}/mcp?changed=true"
+    })
+
+    render_click(view, "connect")
+
+    assert_receive {:mcp_request, "initialize", _request, [], []}
+  end
+
+  defp json_response(conn, request, result) do
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.resp(
+      200,
+      Jason.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => request["id"],
+        "result" => result
+      })
+    )
+  end
+
   defp insert_tool(%Tool{} = tool) do
     :ets.insert(:backplane_tools, {tool.name, tool})
   end
