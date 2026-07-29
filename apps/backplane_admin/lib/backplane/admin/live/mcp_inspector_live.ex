@@ -28,6 +28,8 @@ defmodule Backplane.Admin.McpInspectorLive do
        credential: "",
        auth_scheme: "none",
        credential_options: load_credential_options(),
+       http_session_id: nil,
+       http_protocol_version: nil,
        # Stdio fields
        command: "",
        args: "",
@@ -77,10 +79,10 @@ defmodule Backplane.Admin.McpInspectorLive do
   @impl true
   def handle_event("update_config", params, socket) do
     transport = params["transport"] || socket.assigns.transport
-    transport_changed = transport != socket.assigns.transport
+    config_changed = connection_config_changed?(socket.assigns, params, transport)
 
     socket =
-      if transport_changed do
+      if config_changed do
         socket = maybe_close_port(socket)
 
         assign(socket,
@@ -417,6 +419,8 @@ defmodule Backplane.Admin.McpInspectorLive do
   # ── HTTP transport ─────────────────────────────────────────────────────────
 
   defp handle_http_connect(socket) do
+    socket = clear_http_session(socket)
+
     request =
       jsonrpc_request("initialize", %{
         "protocolVersion" => Backplane.MCP.Info.protocol_version(),
@@ -428,8 +432,16 @@ defmodule Backplane.Admin.McpInspectorLive do
       send_http_request(socket, request, fn response ->
         server_info = get_in(response, ["result", "serverInfo"])
         capabilities = get_in(response, ["result", "capabilities"])
-        %{server_info: %{info: server_info, capabilities: capabilities}, connected: true}
+        %{server_info: %{info: server_info, capabilities: capabilities}}
       end)
+
+    socket =
+      if is_nil(socket.assigns.error) do
+        notification = jsonrpc_notification("notifications/initialized", %{})
+        send_http_request(socket, notification, fn _response -> %{connected: true} end)
+      else
+        socket
+      end
 
     {:noreply, socket}
   end
@@ -480,7 +492,8 @@ defmodule Backplane.Admin.McpInspectorLive do
       request_json = Jason.encode!(request, pretty: true)
 
       case do_http_post(url, request, headers) do
-        {:ok, response} ->
+        {:ok, response, response_headers} ->
+          socket = capture_http_session(socket, response, response_headers)
           response_json = Jason.encode!(response, pretty: true)
 
           log_entry =
@@ -517,6 +530,11 @@ defmodule Backplane.Admin.McpInspectorLive do
       {"accept", "application/json, text/event-stream"}
     ]
 
+    base =
+      base
+      |> maybe_add_header("mcp-protocol-version", assigns.http_protocol_version)
+      |> maybe_add_header("mcp-session-id", assigns.http_session_id)
+
     case {assigns.auth_scheme, assigns.credential} do
       {_, ""} ->
         base
@@ -545,8 +563,12 @@ defmodule Backplane.Admin.McpInspectorLive do
     req_headers = Map.new(headers)
 
     case Req.post(url, json: body, headers: req_headers, receive_timeout: 30_000) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        parse_mcp_response(body)
+      {:ok, %Req.Response{status: status, body: body, headers: response_headers}}
+      when status in 200..299 ->
+        case parse_mcp_response(body) do
+          {:ok, response} -> {:ok, response, response_headers}
+          {:error, reason} -> {:error, reason}
+        end
 
       {:ok, %Req.Response{status: status, body: body}} ->
         {:error, "HTTP #{status}: #{inspect(body)}"}
@@ -557,6 +579,8 @@ defmodule Backplane.Admin.McpInspectorLive do
   rescue
     e -> {:error, Exception.message(e)}
   end
+
+  defp parse_mcp_response(""), do: {:ok, %{}}
 
   # Response is already decoded JSON (Req auto-decodes application/json)
   defp parse_mcp_response(%{} = map), do: {:ok, map}
@@ -927,7 +951,9 @@ defmodule Backplane.Admin.McpInspectorLive do
       buffer: "",
       pending_requests: %{},
       pending_timers: %{},
-      connected: false
+      connected: false,
+      http_session_id: nil,
+      http_protocol_version: nil
     )
   end
 
@@ -961,6 +987,59 @@ defmodule Backplane.Admin.McpInspectorLive do
       "method" => method,
       "params" => params
     }
+  end
+
+  defp jsonrpc_notification(method, params) do
+    %{
+      "jsonrpc" => @json_rpc_version,
+      "method" => method,
+      "params" => params
+    }
+  end
+
+  defp connection_config_changed?(assigns, params, transport) do
+    transport != assigns.transport or
+      Enum.any?(
+        [
+          {"url", assigns.url},
+          {"auth_scheme", assigns.auth_scheme},
+          {"credential", assigns.credential},
+          {"command", assigns.command},
+          {"args", assigns.args},
+          {"env", assigns.env}
+        ],
+        fn {key, current} -> Map.has_key?(params, key) and params[key] != current end
+      )
+  end
+
+  defp capture_http_session(socket, response, response_headers) do
+    session_id = response_header(response_headers, "mcp-session-id")
+    protocol_version = get_in(response, ["result", "protocolVersion"])
+
+    assign(socket,
+      http_session_id: session_id || socket.assigns.http_session_id,
+      http_protocol_version: protocol_version || socket.assigns.http_protocol_version
+    )
+  end
+
+  defp response_header(headers, expected_name) do
+    Enum.find_value(headers, fn {name, value} ->
+      if String.downcase(to_string(name)) == expected_name do
+        case value do
+          [first | _] -> first
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+      end
+    end)
+  end
+
+  defp maybe_add_header(headers, _name, nil), do: headers
+  defp maybe_add_header(headers, _name, ""), do: headers
+  defp maybe_add_header(headers, name, value), do: headers ++ [{name, value}]
+
+  defp clear_http_session(socket) do
+    assign(socket, http_session_id: nil, http_protocol_version: nil)
   end
 
   defp next_request_id(socket) do
