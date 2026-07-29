@@ -494,7 +494,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
   defp decode_grpc_frames(<<compressed, size::unsigned-big-integer-size(32), rest::binary>>, acc)
        when byte_size(rest) >= size do
-    <<message::binary-size(size), next::binary>> = rest
+    <<message::binary-size(^size), next::binary>> = rest
 
     if compressed == 0 do
       decode_grpc_frames(next, [message | acc])
@@ -625,7 +625,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   defp decode_protobuf_value(2, binary) do
     with {:ok, size, rest} <- decode_varint(binary),
          true <- byte_size(rest) >= size do
-      <<value::binary-size(size), next::binary>> = rest
+      <<value::binary-size(^size), next::binary>> = rest
       {:ok, value, next}
     else
       _ -> {:error, :invalid_protobuf}

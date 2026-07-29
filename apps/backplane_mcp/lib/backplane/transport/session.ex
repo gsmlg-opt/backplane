@@ -11,8 +11,6 @@ defmodule Backplane.Transport.Session do
 
   use GenServer
 
-  require Logger
-
   @table :backplane_mcp_sessions
   @cleanup_interval_ms 300_000
   @max_age_seconds 3600

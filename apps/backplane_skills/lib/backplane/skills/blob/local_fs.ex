@@ -155,10 +155,8 @@ defmodule Backplane.Skills.Blob.LocalFS do
         {:error, reason}
 
       chunk ->
-        case IO.binwrite(target, chunk) do
-          :ok -> copy_chunks(source, target, :crypto.hash_update(hash_state, chunk))
-          {:error, reason} -> {:error, reason}
-        end
+        :ok = IO.binwrite(target, chunk)
+        copy_chunks(source, target, :crypto.hash_update(hash_state, chunk))
     end
   end
 

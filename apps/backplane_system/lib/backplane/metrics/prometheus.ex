@@ -7,8 +7,6 @@ defmodule Backplane.Metrics.Prometheus do
   alias Backplane.Metrics
   alias Backplane.Registry.ToolRegistry
 
-  require Logger
-
   @upstream_pool Backplane.Proxy.Pool
   @cache Backplane.Cache
   @skills_registry Backplane.Skills.Registry

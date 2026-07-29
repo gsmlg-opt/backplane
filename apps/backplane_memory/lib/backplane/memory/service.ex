@@ -682,14 +682,9 @@ defmodule Backplane.Memory.Service do
   end
 
   def get_prompt("recall_context", %{"query" => query}) do
-    case Search.hybrid_recall(query, limit: 5) do
-      {:ok, results} ->
-        content = Enum.map_join(results, "\n", fn r -> "- #{r.content}" end)
-        {:ok, [%{role: "user", content: "Relevant memories:\n#{content}"}]}
-
-      _ ->
-        {:ok, [%{role: "user", content: "No relevant memories found."}]}
-    end
+    {:ok, results} = Search.hybrid_recall(query, limit: 5)
+    content = Enum.map_join(results, "\n", fn r -> "- #{r.content}" end)
+    {:ok, [%{role: "user", content: "Relevant memories:\n#{content}"}]}
   end
 
   def get_prompt("session_handoff", args) do

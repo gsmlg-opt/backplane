@@ -206,8 +206,6 @@ defmodule Backplane.Auth.Tokens do
     if OAuth.client_enabled?(client), do: :ok, else: {:error, :invalid_client}
   end
 
-  defp validate_active_client(_client), do: {:error, :invalid_client}
-
   defp active_token?(%Token{} = token) do
     token.expires_at > System.system_time(:second) and is_nil(token.revoked_at)
   end

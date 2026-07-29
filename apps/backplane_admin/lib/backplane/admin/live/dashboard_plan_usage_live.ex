@@ -959,23 +959,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
   defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
   defp format_error(other), do: inspect(other)
 
-  defp format_time_range(nil, nil), do: ""
-
   defp format_time_range(start_time, end_time) do
-    case {start_time, end_time} do
-      {s, e} when not is_nil(s) and not is_nil(e) ->
-        assigns = %{s: s, e: e}
+    assigns = %{s: start_time, e: end_time}
 
-        ~H"""
-        <.local_time datetime={@s} format="short" /> - <.local_time datetime={@e} format="short" />
-        """
-
-      _ ->
-        ""
-    end
+    ~H"""
+    <.local_time datetime={@s} format="short" /> - <.local_time datetime={@e} format="short" />
+    """
   end
-
-  defp format_duration(nil), do: ""
 
   defp format_duration(ms) when is_integer(ms) do
     total_seconds = div(ms, 1000)

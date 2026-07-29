@@ -8,8 +8,6 @@ defmodule Backplane.Skills.SkillSources do
   alias Backplane.Repo
   alias Backplane.Skills.SkillSource
 
-  require Logger
-
   @doc "List all configured sources."
   @spec list() :: [SkillSource.t()]
   def list do

@@ -384,7 +384,6 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp normalize_optional_string(_), do: nil
 
-  defp default_url(:anthropic_token_url), do: @anthropic_token_url
   defp default_url(:openai_token_url), do: "https://auth.openai.com/oauth/token"
   defp default_url(:google_token_url), do: "https://oauth2.googleapis.com/token"
   defp default_url(:xai_token_url), do: "https://auth.x.ai/oauth2/token"

@@ -151,8 +151,8 @@ defmodule Backplane.Skills.AgentManage do
          {:ok, pid} <- lookup(host_id) do
       Manager.update_runtime(pid, runtime)
     else
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :not_connected}
+      {:error, :invalid_payload} = error -> error
+      {:error, :not_found} -> {:error, :not_connected}
     end
   end
 
@@ -347,7 +347,7 @@ defmodule Backplane.Skills.AgentManage do
 
   defp chunk_binary(binary, chunk_size, chunks) do
     size = min(byte_size(binary), chunk_size)
-    <<chunk::binary-size(size), rest::binary>> = binary
+    <<chunk::binary-size(^size), rest::binary>> = binary
     chunk_binary(rest, chunk_size, [chunk | chunks])
   end
 

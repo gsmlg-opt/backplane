@@ -98,7 +98,6 @@ defmodule Backplane.Memory.Memories do
         case result do
           {:ok, _} -> %{status: :ok}
           {:error, :not_found} -> %{status: :not_found}
-          _ -> %{status: :error}
         end
 
       {result, Map.merge(metadata, status)}
@@ -140,7 +139,6 @@ defmodule Backplane.Memory.Memories do
         case result do
           :ok -> %{status: :ok}
           {:error, :not_found} -> %{status: :not_found}
-          _ -> %{status: :error}
         end
 
       {result, Map.merge(metadata, status)}

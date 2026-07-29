@@ -242,10 +242,8 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("resources/list", _id, params) do
     cursor = if is_map(params), do: params["cursor"]
-    {resources, next_cursor} = list_resources(cursor)
-    result = %{resources: resources}
-    result = if next_cursor, do: Map.put(result, :nextCursor, next_cursor), else: result
-    {:result, result}
+    {resources, _next_cursor} = list_resources(cursor)
+    {:result, %{resources: resources}}
   end
 
   defp compute_result("resources/read", _id, %{"uri" => uri}) when is_binary(uri) do

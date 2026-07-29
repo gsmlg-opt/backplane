@@ -1462,7 +1462,7 @@ defmodule Backplane.Admin.McpInspectorLive do
           <div :if={@server_info.capabilities}>
             <dt class="font-medium text-on-surface-variant">Capabilities</dt>
             <dd class="font-mono text-xs break-all">
-              {Map.keys(@server_info.capabilities || %{}) |> Enum.join(", ")}
+              {Map.keys(@server_info.capabilities) |> Enum.join(", ")}
             </dd>
           </div>
         </dl>
