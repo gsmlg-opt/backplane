@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ProxyPlugTest do
-  use ExUnit.Case, async: true
+  use Backplane.DataCase, async: true
 
   import Plug.Test
 
@@ -47,6 +47,17 @@ defmodule Backplane.LLM.ProxyPlugTest do
       assert result.path_info == ["api", "v1", "responses"]
       assert result.request_path == "/api/v1/responses"
       refute result.halted
+    end
+
+    test "preserves the original request path while routing /v1 variants" do
+      result =
+        :get
+        |> conn("/v1/")
+        |> ProxyPlug.call(ProxyPlug.init([]))
+
+      assert result.path_info == ["v1"]
+      assert result.request_path == "/v1/"
+      assert result.halted
     end
   end
 end

@@ -13,7 +13,7 @@ defmodule Backplane.Auth.Tokens do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.Auth.{Accounts, Audit, OAuth}
+  alias Backplane.Auth.{Accounts, Audit, OAuth, Resources, TokenResources}
   alias Backplane.Auth.Schemas.{SigningKey, User}
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
@@ -59,10 +59,17 @@ defmodule Backplane.Auth.Tokens do
     now = System.system_time(:second)
     ttl = token.access_token_ttl || @access_token_ttl
 
+    audience =
+      case TokenResources.resource_for_lineage(token) do
+        {:ok, resource} -> Resources.uri(resource)
+        :unbound -> client_id
+        {:error, :lineage_not_found} -> raise TokenResources.LineageError
+      end
+
     sign_jwt!(key, %{
       "iss" => Boruta.Config.issuer(),
       "sub" => sub,
-      "aud" => client_id,
+      "aud" => audience,
       "client_id" => client_id,
       "scope" => scope || "",
       "iat" => now,
@@ -79,6 +86,44 @@ defmodule Backplane.Auth.Tokens do
          {:ok, token_record} <- active_access_token(token),
          :ok <- validate_token_principals(token_record) do
       {:ok, claims}
+    end
+  end
+
+  @spec verify_resource_access_token(String.t(), Resources.key()) ::
+          {:ok, map()} | {:error, :invalid_token} | :not_oauth
+  def verify_resource_access_token(encoded, resource) do
+    case verify_jwt(encoded) do
+      {:ok, claims} ->
+        with :ok <- validate_issuer(claims),
+             :ok <- validate_expiration(claims),
+             :ok <- validate_not_before(claims),
+             {:ok, token} <- active_access_token(encoded),
+             {:ok, ^resource} <- TokenResources.resource_for_token(token),
+             true <- claims["aud"] == Resources.uri(resource),
+             true <- claims["client_id"] == token.client_id,
+             true <- claims["sub"] == token.sub,
+             true <- claims["scope"] == token.scope,
+             true <- is_binary(claims["scope"]),
+             {:ok, _sub} <- Ecto.UUID.cast(token.sub),
+             %User{active: true} = user <- Accounts.get_user(token.sub),
+             true <- is_binary(token.client_id),
+             %Client{} = client <- OAuth.get_client(token.client_id),
+             true <- OAuth.client_enabled?(client),
+             true <- OAuth.client_allows_resource?(client, resource) do
+          {:ok,
+           %{
+             claims: claims,
+             token: token,
+             user: user,
+             client: client,
+             scopes: String.split(claims["scope"], " ", trim: true)
+           }}
+        else
+          _failure -> {:error, :invalid_token}
+        end
+
+      {:error, :invalid_token} ->
+        :not_oauth
     end
   end
 
@@ -177,8 +222,21 @@ defmodule Backplane.Auth.Tokens do
 
   defp validate_expiration(_claims), do: {:error, :invalid_token}
 
+  defp validate_issuer(%{"iss" => issuer}) do
+    if issuer == Boruta.Config.issuer(), do: :ok, else: {:error, :invalid_token}
+  end
+
+  defp validate_issuer(_claims), do: {:error, :invalid_token}
+
+  defp validate_not_before(%{"nbf" => nbf}) when is_integer(nbf) do
+    if nbf <= System.system_time(:second), do: :ok, else: {:error, :invalid_token}
+  end
+
+  defp validate_not_before(%{"nbf" => _invalid}), do: {:error, :invalid_token}
+  defp validate_not_before(_claims), do: :ok
+
   defp active_access_token(token) do
-    case Repo.get_by(Token, value: token) do
+    case Repo.get_by(Token, type: "access_token", value: token) do
       %Token{} = token ->
         if active_token?(token), do: {:ok, token}, else: {:error, :invalid_token}
 
@@ -206,9 +264,11 @@ defmodule Backplane.Auth.Tokens do
     if OAuth.client_enabled?(client), do: :ok, else: {:error, :invalid_client}
   end
 
-  defp active_token?(%Token{} = token) do
-    token.expires_at > System.system_time(:second) and is_nil(token.revoked_at)
+  defp active_token?(%Token{expires_at: expires_at} = token) when is_integer(expires_at) do
+    expires_at > System.system_time(:second) and is_nil(token.revoked_at)
   end
+
+  defp active_token?(%Token{}), do: false
 
   defp get_reused_refresh_token(refresh_token, client_id) do
     Token

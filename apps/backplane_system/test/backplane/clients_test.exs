@@ -1,5 +1,5 @@
 defmodule Backplane.ClientsTest do
-  use Backplane.DataCase, async: true
+  use Backplane.DataCase, async: false
 
   import Backplane.Fixtures
 
@@ -23,6 +23,128 @@ defmodule Backplane.ClientsTest do
       {_client, token} = insert_client(active: false, token: "inactive-token")
 
       assert :error = Clients.verify_token(token)
+    end
+
+    test "refresh_cache marks inactive-only client rows as configured" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      on_exit(fn -> :persistent_term.put(:backplane_clients_exist, old_flag) end)
+
+      {_client, token} = insert_client(active: false, token: "inactive-token")
+      :persistent_term.put(:backplane_clients_exist, false)
+
+      assert :ok = Clients.refresh_cache()
+      assert :persistent_term.get(:backplane_clients_exist) == true
+      assert :error = Clients.verify_token(token)
+    end
+
+    test "refresh_cache preserves the last known state when the database query fails" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      {client, _token} = insert_client(token: "cached-token")
+      assert :ok = Clients.refresh_cache()
+
+      on_exit(fn ->
+        :persistent_term.put(:backplane_clients_exist, old_flag)
+        :ets.delete(:backplane_clients_cache, client.id)
+      end)
+
+      assert [{client_id, _cached}] = :ets.lookup(:backplane_clients_cache, client.id)
+      assert client_id == client.id
+      assert :persistent_term.get(:backplane_clients_exist) == true
+
+      Ecto.Adapters.SQL.query!(Backplane.Repo, "SET LOCAL search_path TO pg_catalog")
+
+      assert :ok = Clients.refresh_cache()
+      assert [{^client_id, _cached}] = :ets.lookup(:backplane_clients_cache, client.id)
+      assert :persistent_term.get(:backplane_clients_exist) == true
+    end
+
+    test "refresh_cache fails closed without a protected last-known state" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, :missing)
+
+      on_exit(fn ->
+        case old_flag do
+          :missing -> :persistent_term.erase(:backplane_clients_exist)
+          value -> :persistent_term.put(:backplane_clients_exist, value)
+        end
+      end)
+
+      :persistent_term.put(:backplane_clients_exist, false)
+      Ecto.Adapters.SQL.query!(Backplane.Repo, "SET LOCAL search_path TO pg_catalog")
+
+      assert :ok = Clients.refresh_cache()
+      assert :persistent_term.get(:backplane_clients_exist) == true
+    end
+
+    test "concurrent refreshes cannot publish an older client snapshot last" do
+      old_flag = :persistent_term.get(:backplane_clients_exist, false)
+      {client, _token} = insert_client(token: "racing-token")
+      assert :ok = Clients.refresh_cache()
+
+      handler_id = "clients-refresh-race-#{System.unique_integer([:positive])}"
+      parent = self()
+      {:ok, gate} = Agent.start_link(fn -> false end)
+
+      first_refresh =
+        Task.async(fn ->
+          receive do
+            :start_refresh -> Clients.refresh_cache()
+          end
+        end)
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:backplane, :repo, :query],
+          fn _event, _measurements, metadata, {target, test_pid, gate} ->
+            first_client_query? =
+              self() == target and
+                metadata[:source] == "clients" and
+                Agent.get_and_update(gate, fn
+                  false -> {true, true}
+                  true -> {false, true}
+                end)
+
+            if first_client_query? do
+              send(test_pid, :older_snapshot_loaded)
+
+              receive do
+                :publish_older_snapshot -> :ok
+              end
+            end
+          end,
+          {first_refresh.pid, parent, gate}
+        )
+
+      on_exit(fn ->
+        send(first_refresh.pid, :publish_older_snapshot)
+        :telemetry.detach(handler_id)
+        :persistent_term.put(:backplane_clients_exist, old_flag)
+        :ets.delete(:backplane_clients_cache, client.id)
+      end)
+
+      send(first_refresh.pid, :start_refresh)
+      assert_receive :older_snapshot_loaded, 1_000
+      Backplane.Repo.delete!(client)
+
+      second_refresh =
+        Task.async(fn ->
+          send(parent, :newer_refresh_started)
+          Clients.refresh_cache()
+        end)
+
+      assert_receive :newer_refresh_started, 1_000
+      second_result = Task.yield(second_refresh, 500)
+
+      send(first_refresh.pid, :publish_older_snapshot)
+      assert Task.await(first_refresh, 1_000) == :ok
+
+      case second_result do
+        {:ok, :ok} -> :ok
+        nil -> assert Task.await(second_refresh, 1_000) == :ok
+      end
+
+      assert :ets.lookup(:backplane_clients_cache, client.id) == []
+      assert :persistent_term.get(:backplane_clients_exist) == false
     end
 
     test "updates last_seen_at on successful verify" do

@@ -1,5 +1,8 @@
 import Config
 
+config :backplane, env: :dev
+config :backplane_auth, allow_insecure_resource_origins: true
+
 config :backplane_system, Backplane.Repo,
   username: System.get_env("PGUSER", System.get_env("USER", "postgres")),
   password: System.get_env("PGPASSWORD", "postgres"),

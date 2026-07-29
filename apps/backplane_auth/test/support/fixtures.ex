@@ -61,6 +61,59 @@ defmodule Backplane.Auth.Fixtures do
     Backplane.Repo.get_by!(Boruta.Ecto.Token, value: token.value)
   end
 
+  @doc """
+  Issues a resource-bound access token through authorization-code lineage.
+
+  The code is bound before Boruta generates the access-token JWT so the signer
+  can resolve the canonical resource audience from `previous_code`.
+  """
+  def resource_access_token_fixture!(user, client, scopes, resource) when is_list(scopes) do
+    code_value = "fixture-code-#{unique()}"
+
+    code =
+      Backplane.Repo.insert!(%Boruta.Ecto.Token{
+        type: "code",
+        value: code_value,
+        client_id: client.id,
+        sub: user.id,
+        scope: Enum.join(scopes, " "),
+        expires_at: System.system_time(:second) + 60
+      })
+
+    {:ok, _binding} =
+      Auth.TokenResources.bind_issued("code", client.id, code.value, resource)
+
+    oauth_client =
+      client.id
+      |> Auth.OAuth.get_client()
+      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+
+    {:ok, oauth_token} =
+      Boruta.Ecto.AccessTokens.create(
+        %{
+          client: oauth_client,
+          sub: user.id,
+          scope: Enum.join(scopes, " "),
+          previous_code: code.value
+        },
+        refresh_token: true
+      )
+
+    {:ok, _binding} =
+      Auth.TokenResources.bind_issued(
+        "access_token",
+        client.id,
+        oauth_token.value,
+        resource
+      )
+
+    Backplane.Repo.get_by!(Boruta.Ecto.Token,
+      type: "access_token",
+      client_id: client.id,
+      value: oauth_token.value
+    )
+  end
+
   defp client_with_secret(client, secret) when is_map(client) do
     client
     |> struct_to_map()

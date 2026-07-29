@@ -36,7 +36,8 @@ defmodule BackplaneAuth.MixProject do
       {:boruta, "~> 2.3"},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:plug, "~> 1.16"}
     ]
   end
 

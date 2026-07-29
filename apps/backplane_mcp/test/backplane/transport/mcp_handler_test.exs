@@ -1,8 +1,10 @@
 defmodule Backplane.Transport.McpHandlerTest do
   use Backplane.ConnCase, async: false
 
+  import Backplane.Auth.Fixtures
   import Backplane.SkillArchiveCase
 
+  alias Backplane.Auth.Resources
   alias Backplane.Audit.SkillLoadLog
   alias Backplane.Fixtures
   alias Backplane.Repo
@@ -1484,6 +1486,22 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["result"]["tools"] == []
     end
+
+    test "OAuth exact scope returns only the named tool" do
+      token = oauth_token!(["public::echo"])
+      resp = mcp_request("tools/list", nil, auth_token: token.value)
+
+      assert Enum.map(resp["result"]["tools"], & &1["name"]) == ["public::echo"]
+    end
+
+    test "OAuth namespace wildcard returns only matching tools" do
+      token = oauth_token!(["public::*"])
+      resp = mcp_request("tools/list", nil, auth_token: token.value)
+
+      names = Enum.map(resp["result"]["tools"], & &1["name"])
+      assert names == ["public::echo"]
+      assert Enum.all?(names, &String.starts_with?(&1, "public::"))
+    end
   end
 
   describe "scoped tools/call" do
@@ -1530,6 +1548,107 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       assert resp["error"]["message"] =~ "git::repo-tree"
     end
+
+    test "allows an exact in-scope OAuth tool call" do
+      token = oauth_token!(["skill::list"])
+
+      resp =
+        mcp_request(
+          "tools/call",
+          %{"name" => "skill::list", "arguments" => %{}},
+          auth_token: token.value
+        )
+
+      refute resp["error"]
+    end
+
+    test "single OAuth tool denial keeps JSON-RPC body and adds a 403 challenge" do
+      token = oauth_token!(["public::echo"])
+
+      conn =
+        endpoint_mcp_conn(
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "id" => 1,
+            "params" => %{"name" => "skill::search", "arguments" => %{"query" => "test"}}
+          },
+          token.value
+        )
+
+      assert conn.status == 403
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
+
+      assert [challenge] = get_resp_header(conn, "www-authenticate")
+      assert challenge =~ ~s(error="insufficient_scope")
+      assert challenge =~ ~s(scope="skill::search")
+      assert challenge =~ Resources.metadata_uri(:mcp)
+    end
+
+    test "single PAT tool denial remains HTTP 200 without an OAuth challenge" do
+      {_client, token} =
+        Backplane.Fixtures.insert_client(name: "pat-denial", scopes: ["public::echo"])
+
+      conn =
+        mcp_request_conn(
+          "tools/call",
+          %{"name" => "skill::search", "arguments" => %{"query" => "test"}},
+          auth_token: token
+        )
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
+      assert get_resp_header(conn, "www-authenticate") == []
+    end
+
+    test "OAuth batch denials remain HTTP 200 without a batch-wide challenge" do
+      token = oauth_token!(["public::echo"])
+
+      conn =
+        direct_mcp_conn(
+          [
+            %{
+              "jsonrpc" => "2.0",
+              "method" => "tools/call",
+              "id" => 1,
+              "params" => %{
+                "name" => "skill::search",
+                "arguments" => %{"query" => "test"}
+              }
+            },
+            %{"jsonrpc" => "2.0", "method" => "ping", "id" => 2}
+          ],
+          token.value
+        )
+
+      assert conn.status == 200
+      [denial, ping] = Jason.decode!(conn.resp_body)
+      assert denial["error"]["code"] == -32_001
+      assert ping["result"] == %{}
+      assert get_resp_header(conn, "www-authenticate") == []
+    end
+  end
+
+  defp oauth_token!(scopes) do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: [:mcp], scopes: scopes)
+    resource_access_token_fixture!(user, client, scopes, :mcp)
+  end
+
+  defp endpoint_mcp_conn(body, token) do
+    conn =
+      conn(:post, "/mcp", Jason.encode!(body))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+
+    Backplane.Api.Endpoint.call(conn, Backplane.Api.Endpoint.init([]))
+  end
+
+  defp direct_mcp_conn(body, token) do
+    conn(:post, "/", Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> McpPlug.call(McpPlug.init([]))
   end
 
   defp ingest_archive!(tmp_dir, slug, attrs) do

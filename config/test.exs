@@ -10,6 +10,7 @@ config :backplane_system, Backplane.Repo,
   types: Backplane.PostgrexTypes
 
 config :backplane, env: :test
+config :backplane_auth, allow_insecure_resource_origins: true
 config :backplane, llm_route_loader_enabled: false
 config :backplane, Oban, testing: :inline
 

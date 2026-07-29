@@ -36,13 +36,47 @@ defmodule Backplane.Clients do
 
   @doc "Refresh the ETS cache from the database."
   def refresh_cache do
-    clients =
-      try do
-        Client |> where(active: true) |> Repo.all()
-      rescue
-        _ -> []
-      end
+    case :global.trans({@cache_table, self()}, &do_refresh_cache/0) do
+      :aborted -> fail_closed()
+      result -> result
+    end
+  end
 
+  defp do_refresh_cache do
+    case load_client_state() do
+      {:ok, clients, any_client_rows?} ->
+        publish_client_state(clients, any_client_rows?)
+
+      :error ->
+        fail_closed()
+    end
+  rescue
+    ArgumentError -> fail_closed()
+  end
+
+  defp load_client_state do
+    clients = Repo.all(Client)
+    active_clients = Enum.filter(clients, & &1.active)
+    {:ok, active_clients, clients != []}
+  rescue
+    _error -> :error
+  end
+
+  defp publish_client_state(clients, any_client_rows?) do
+    if any_client_rows? do
+      :persistent_term.put(:backplane_clients_exist, true)
+    end
+
+    replace_cached_clients(clients)
+
+    unless any_client_rows? do
+      :persistent_term.put(:backplane_clients_exist, false)
+    end
+
+    :ok
+  end
+
+  defp replace_cached_clients(clients) do
     rows = Enum.map(clients, fn c -> {c.id, c} end)
 
     new_ids = MapSet.new(rows, fn {id, _} -> id end)
@@ -53,13 +87,11 @@ defmodule Backplane.Clients do
     |> Enum.each(fn {id, _} ->
       unless MapSet.member?(new_ids, id), do: :ets.delete(@cache_table, id)
     end)
+  end
 
-    # Update the persistent_term flag
-    :persistent_term.put(:backplane_clients_exist, length(clients) > 0)
-
+  defp fail_closed do
+    :persistent_term.put(:backplane_clients_exist, true)
     :ok
-  rescue
-    ArgumentError -> :ok
   end
 
   defp cached_active_clients do

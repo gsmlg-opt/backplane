@@ -18,7 +18,7 @@ defmodule Backplane.Transport.McpPlug do
   plug Backplane.Transport.Compression
   plug Backplane.Transport.RequestLogger
   plug Backplane.Transport.RateLimiter
-  plug Backplane.Transport.AuthPlug
+  plug Backplane.Auth.ResourceAuthPlug, resource: :mcp
   plug Backplane.Transport.Idempotency
 
   plug Plug.Parsers,

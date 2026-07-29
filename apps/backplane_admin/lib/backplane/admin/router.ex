@@ -41,6 +41,7 @@ defmodule Backplane.Admin.Router do
     live("/auth/oauth", AuthOAuthLive, :providers)
     live("/auth/oauth/providers", AuthOAuthLive, :providers)
     live("/auth/oauth/clients", AuthOAuthLive, :clients)
+    live("/auth/oauth/clients/:id/edit", AuthOAuthLive, :client_edit)
     live("/auth/oauth/client-policies", AuthOAuthLive, :client_policies)
     live("/auth/oauth/tokens", AuthOAuthLive, :tokens)
     live("/auth/oauth/scopes", AuthOAuthLive, :scopes)
