@@ -23,6 +23,8 @@ defmodule Backplane.Auth.Schemas.User do
     timestamps()
   end
 
+  @type t :: %__MODULE__{}
+
   def changeset(user, attrs) do
     user
     |> cast(attrs, [:email, :name, :active, :last_login_at, :metadata])

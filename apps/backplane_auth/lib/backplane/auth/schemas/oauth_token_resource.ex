@@ -18,6 +18,8 @@ defmodule Backplane.Auth.Schemas.OAuthTokenResource do
     timestamps()
   end
 
+  @type t :: %__MODULE__{}
+
   @doc false
   def changeset(binding, attrs) do
     binding

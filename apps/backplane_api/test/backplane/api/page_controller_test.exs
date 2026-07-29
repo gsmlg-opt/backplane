@@ -391,8 +391,6 @@ defmodule Backplane.Api.PageControllerTest do
 
       offset + index + byte_size(marker)
     end)
-
-    :ok
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)

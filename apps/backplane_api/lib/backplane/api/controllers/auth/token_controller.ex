@@ -79,7 +79,7 @@ defmodule Backplane.Api.Auth.TokenController do
   end
 
   defp preflight_token(conn, params) do
-    case Request.token_request(conn) do
+    case boruta_call(Request, :token_request, [conn]) do
       {:ok, request} ->
         with {:ok, client} <- authenticate_grant_client(request),
              :ok <- validate_grant_credential(request, client),
@@ -132,12 +132,14 @@ defmodule Backplane.Api.Auth.TokenController do
   end
 
   defp validate_grant_credential(%AuthorizationCodeRequest{} = request, client) do
-    case Code.authorize(%{
-           value: request.code,
-           redirect_uri: request.redirect_uri,
-           client: client,
-           code_verifier: request.code_verifier
-         }) do
+    case boruta_call(Code, :authorize, [
+           %{
+             value: request.code,
+             redirect_uri: request.redirect_uri,
+             client: client,
+             code_verifier: request.code_verifier
+           }
+         ]) do
       {:ok, _code} -> :ok
       {:error, %Error{} = error} -> {:error, error}
     end
@@ -147,7 +149,7 @@ defmodule Backplane.Api.Auth.TokenController do
          %RefreshTokenRequest{refresh_token: refresh_token},
          client
        ) do
-    case AccessToken.authorize(refresh_token: refresh_token) do
+    case boruta_call(AccessToken, :authorize, [[refresh_token: refresh_token]]) do
       {:ok, %Boruta.Oauth.Token{client: ^client}} -> :ok
       {:ok, %Boruta.Oauth.Token{}} -> {:error, invalid_refresh_grant_error()}
       {:error, %Error{} = error} -> {:error, error}
@@ -259,6 +261,12 @@ defmodule Backplane.Api.Auth.TokenController do
       error_description: "Given refresh token is invalid, revoked, or expired."
     }
   end
+
+  # Boruta 2.3.6 omits refresh-token returns and valid error variants from
+  # these functions' specs. Keep the calls behind one compatibility boundary
+  # so Dialyzer does not eliminate runtime branches that Boruta can produce.
+  @spec boruta_call(module(), atom(), [term()]) :: term()
+  defp boruta_call(module, function, arguments), do: apply(module, function, arguments)
 
   defp normalize_error(%Error{error: :invalid_client}), do: {401, "invalid_client"}
 

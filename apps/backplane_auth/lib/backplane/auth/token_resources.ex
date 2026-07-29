@@ -30,7 +30,7 @@ defmodule Backplane.Auth.TokenResources do
   @type binding_result :: :unbound | {:ok, resource()}
 
   @spec bind_issued(String.t(), String.t(), String.t(), resource()) ::
-          {:ok, %OAuthTokenResource{}} | {:error, :not_found | :binding_failed}
+          {:ok, OAuthTokenResource.t()} | {:error, :not_found | :binding_failed}
   def bind_issued(type, client_id, value, resource)
       when type in ["code", "access_token"] and resource in [:mcp, :v1] do
     case Repo.get_by(Token, type: type, client_id: client_id, value: value) do

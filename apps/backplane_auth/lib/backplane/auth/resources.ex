@@ -8,10 +8,10 @@ defmodule Backplane.Auth.Resources do
   @type key :: :mcp | :v1
 
   @keys [:mcp, :v1]
-  @identity_scopes MapSet.new(["openid", "profile", "email"])
-  @local_http_hosts MapSet.new(["localhost", "127.0.0.1", "::1"])
+  @identity_scopes ["openid", "profile", "email"]
+  @local_http_hosts ["localhost", "127.0.0.1", "::1"]
   @operation_scope_pattern ~r/\A(?:\*|[\w-]+::(?:\*|[\w-]+))\z/
-  @v1_scopes MapSet.new(["llm::models", "llm::invoke", "llm::*", "*"])
+  @v1_scopes ["llm::models", "llm::invoke", "llm::*", "*"]
 
   @spec keys() :: [key()]
   def keys, do: @keys
@@ -67,11 +67,11 @@ defmodule Backplane.Auth.Resources do
   def valid_scope?(_key, "system::" <> _rest), do: false
   def valid_scope?(_key, scope) when scope in ["openid", "profile", "email"], do: true
   def valid_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
-  def valid_scope?(:v1, scope), do: MapSet.member?(@v1_scopes, scope)
+  def valid_scope?(:v1, scope), do: scope in @v1_scopes
 
   @spec operation_scope?(key(), String.t()) :: boolean()
   def operation_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
-  def operation_scope?(:v1, scope), do: MapSet.member?(@v1_scopes, scope)
+  def operation_scope?(:v1, scope), do: scope in @v1_scopes
 
   @spec protected_operation_scope?(String.t()) :: boolean()
   def protected_operation_scope?("system::" <> _rest), do: false
@@ -84,9 +84,8 @@ defmodule Backplane.Auth.Resources do
 
     scopes =
       client_scopes
-      |> Enum.filter(&MapSet.member?(user_set, &1))
-      |> Enum.filter(&operation_scope?(key, &1))
-      |> Enum.reject(&MapSet.member?(@identity_scopes, &1))
+      |> Enum.filter(&(MapSet.member?(user_set, &1) and operation_scope?(key, &1)))
+      |> Enum.reject(&(&1 in @identity_scopes))
       |> Enum.uniq()
       |> Enum.sort()
 
@@ -128,6 +127,6 @@ defmodule Backplane.Auth.Resources do
   defp insecure_local_origin_allowed?(host) do
     Application.get_env(:backplane_auth, :allow_insecure_resource_origins, false) and
       Application.get_env(:backplane, :env) in [:dev, :test] and
-      MapSet.member?(@local_http_hosts, String.downcase(host))
+      String.downcase(host) in @local_http_hosts
   end
 end
