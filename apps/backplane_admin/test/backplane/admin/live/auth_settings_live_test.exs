@@ -2,6 +2,11 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Auth
+  alias Backplane.Repo
+  alias Boruta.Ecto.ClientStore
+  alias Boruta.Ecto.Clients, as: BorutaClients
+
+  @https_required_message "OAuth protected resources require an HTTPS API origin."
 
   test "renders Auth as a top-level section with OAuth, RBAC, and Audit groups", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/auth/overview")
@@ -106,9 +111,12 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
         name: "GSMLG App Backend",
         redirect_uris: ["https://backend.gsmlg.test/auth/callback"],
         scopes: ["openid", "profile", "app:read"],
+        resources: [:mcp, :v1],
         confidential: true,
         pkce: true
       )
+
+    identity_client = oauth_client!(name: "Identity Only Client", resources: [])
 
     {:ok, view, html} = live(conn, "/auth/oauth/clients")
 
@@ -119,6 +127,22 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     assert html =~ "PKCE"
     assert html =~ "app:read"
     assert html =~ "https://backend.gsmlg.test/auth/callback"
+    assert has_element?(view, "#oauth-client-table", "MCP")
+    assert has_element?(view, "#oauth-client-table", "LLM API")
+    assert has_element?(view, "#oauth-client-table", "Identity only")
+
+    assert has_element?(
+             view,
+             ~s(#oauth-client-table a[href="/auth/oauth/clients/#{client.id}/edit"]),
+             "Edit"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#oauth-client-table a[href="/auth/oauth/clients/#{identity_client.id}/edit"]),
+             "Edit"
+           )
+
     refute html =~ "List DCR-created clients"
 
     html =
@@ -128,6 +152,12 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     assert html =~ "Disabled"
     assert %{"disabled" => true} = Auth.OAuth.get_client(client.id).metadata
+
+    assert has_element?(
+             view,
+             ~s(#oauth-client-table a[href="/auth/oauth/clients/#{client.id}/edit"]),
+             "Edit"
+           )
   end
 
   test "OAuth clients page creates clients and rotates confidential secrets", %{conn: conn} do
@@ -154,6 +184,8 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     created = Enum.find(Auth.OAuth.list_clients(), &(&1.name == "Created Backend"))
     assert created.confidential
+    assert Auth.OAuth.client_resources(created) == []
+    assert html =~ created.secret
 
     old_secret = created.secret
 
@@ -163,7 +195,221 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
       |> render_click()
 
     assert html =~ "Client secret"
-    assert Auth.OAuth.get_client(created.id).secret != old_secret
+    rotated = Auth.OAuth.get_client(created.id)
+    assert rotated.secret != old_secret
+    assert html =~ rotated.secret
+  end
+
+  test "OAuth clients page creates clients with selected resource assignments", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/auth/oauth/clients")
+
+    assert has_element?(
+             view,
+             ~s(#oauth-client-resource-mcp[name="client[resources][mcp]"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(#oauth-client-resource-v1[name="client[resources][v1]"])
+           )
+
+    refute has_element?(view, "#oauth-client-resource-mcp[checked]")
+    refute has_element?(view, "#oauth-client-resource-v1[checked]")
+
+    html =
+      view
+      |> form("#oauth-client-form", %{
+        "client" => %{
+          "name" => "Resource Client",
+          "redirect_uris" => "https://resource-client.example.test/auth/callback",
+          "scopes" => "",
+          "confidential" => "true",
+          "resources" => %{"mcp" => "true", "v1" => "true"}
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Resource Client"
+
+    client = Enum.find(Auth.OAuth.list_clients(), &(&1.name == "Resource Client"))
+    assert Auth.OAuth.client_resources(client) == [:mcp, :v1]
+  end
+
+  test "OAuth client edit route preselects assigned resources", %{conn: conn} do
+    client =
+      oauth_client!(
+        name: "Editable Resource Client",
+        resources: [:mcp],
+        metadata: %{"tenant" => "alpha"}
+      )
+
+    {:ok, view, html} = live(conn, "/auth/oauth/clients/#{client.id}/edit")
+
+    assert html =~ "Editable Resource Client"
+    assert has_element?(view, "#oauth-client-resource-form")
+    assert has_element?(view, "#oauth-client-resource-mcp[checked]")
+    refute has_element?(view, "#oauth-client-resource-v1[checked]")
+  end
+
+  test "OAuth client resource updates preserve client state and record an audit event", %{
+    conn: conn
+  } do
+    scope!("openid")
+    scope!("app:read")
+
+    client =
+      oauth_client!(
+        name: "Preserved Resource Client",
+        scopes: ["openid", "app:read"],
+        resources: [:mcp, :v1],
+        metadata: %{"tenant" => "alpha"},
+        confidential: true
+      )
+
+    original_secret = client.secret
+    {:ok, disabled} = Auth.OAuth.disable_client(client)
+
+    {:ok, view, _html} = live(conn, "/auth/oauth/clients/#{disabled.id}/edit")
+
+    html =
+      view
+      |> form("#oauth-client-resource-form", %{
+        "client" => %{"resources" => %{"mcp" => "false", "v1" => "true"}}
+      })
+      |> render_submit()
+
+    assert html =~ "OAuth client resources updated."
+
+    updated = Auth.OAuth.get_client(client.id)
+    assert Auth.OAuth.client_resources(updated) == [:v1]
+    assert updated.metadata["tenant"] == "alpha"
+    assert Auth.OAuth.client_disabled?(updated)
+    assert scope_names(updated.authorized_scopes) == ["app:read", "openid"]
+    assert updated.secret == original_secret
+
+    assert [event] = Auth.Audit.list_events(event_type: "client.resources_updated")
+    assert event.target_type == "oauth_client"
+    assert event.target_id == client.id
+
+    assert event.metadata == %{"resources" => ["v1"]}
+  end
+
+  test "OAuth client resource updates refresh the Boruta client cache immediately", %{conn: conn} do
+    client = oauth_client!(name: "Cached Resource Client", resources: [])
+
+    cached_before = prime_client_cache(client.id)
+    assert (cached_before.metadata || %{})["backplane_resources"] == []
+
+    {:ok, view, _html} = live(conn, "/auth/oauth/clients/#{client.id}/edit")
+
+    view
+    |> form("#oauth-client-resource-form", %{
+      "client" => %{"resources" => %{"mcp" => "true", "v1" => "false"}}
+    })
+    |> render_submit()
+
+    cached_after = BorutaClients.get_client(client.id)
+    assert cached_after.metadata["backplane_resources"] == ["mcp"]
+  end
+
+  test "OAuth client edit redirects missing and malformed client IDs with an error", %{conn: conn} do
+    for id <- [Ecto.UUID.generate(), "not-a-uuid"] do
+      assert {:error,
+              {:live_redirect,
+               %{to: "/auth/oauth/clients", flash: %{"error" => "OAuth client was not found."}}}} =
+               live(conn, "/auth/oauth/clients/#{id}/edit")
+    end
+  end
+
+  test "OAuth client resource updates show a generic error when the client disappears", %{
+    conn: conn
+  } do
+    client = oauth_client!(name: "Deleted Resource Client", resources: [:mcp])
+    {:ok, view, _html} = live(conn, "/auth/oauth/clients/#{client.id}/edit")
+    Repo.delete!(client)
+
+    html =
+      view
+      |> form("#oauth-client-resource-form", %{
+        "client" => %{"resources" => %{"mcp" => "false", "v1" => "true"}}
+      })
+      |> render_submit()
+
+    assert html =~ "OAuth client resources could not be updated."
+    assert Auth.Audit.list_events(event_type: "client.resources_updated") == []
+  end
+
+  test "OAuth resource create and edit HTTPS errors are visible and atomic", %{conn: conn} do
+    scope!("openid")
+    scope!("app:read")
+
+    client =
+      oauth_client!(
+        name: "HTTPS Existing Client",
+        scopes: ["openid", "app:read"],
+        resources: [:mcp],
+        metadata: %{"tenant" => "alpha"},
+        confidential: true
+      )
+
+    persisted_before = Auth.OAuth.get_client(client.id)
+    cached_before = prime_client_cache(client.id)
+    require_https_resource_origins()
+
+    {:ok, create_view, _html} = live(conn, "/auth/oauth/clients")
+
+    create_html =
+      create_view
+      |> form("#oauth-client-form", %{
+        "client" => %{
+          "name" => "Rejected HTTP Client",
+          "redirect_uris" => "https://rejected.example.test/auth/callback",
+          "scopes" => "https:atomic",
+          "confidential" => "true",
+          "resources" => %{"mcp" => "true", "v1" => "false"}
+        }
+      })
+      |> render_submit()
+
+    assert create_html =~ @https_required_message
+    refute Enum.any?(Auth.OAuth.list_clients(), &(&1.name == "Rejected HTTP Client"))
+    refute Auth.OAuth.get_scope("https:atomic")
+
+    {:ok, edit_view, _html} = live(conn, "/auth/oauth/clients/#{client.id}/edit")
+
+    edit_html =
+      edit_view
+      |> form("#oauth-client-resource-form", %{
+        "client" => %{"resources" => %{"mcp" => "false", "v1" => "true"}}
+      })
+      |> render_submit()
+
+    assert edit_html =~ @https_required_message
+
+    persisted_after = Auth.OAuth.get_client(client.id)
+    assert persisted_after.metadata == persisted_before.metadata
+    assert scope_names(persisted_after.authorized_scopes) == ["app:read", "openid"]
+    assert persisted_after.secret == persisted_before.secret
+    assert BorutaClients.get_client(client.id) == cached_before
+  end
+
+  test "OAuth client list and edit pages never render stored secrets", %{conn: conn} do
+    client =
+      oauth_client!(
+        name: "Secret Safe Client",
+        resources: [:mcp],
+        confidential: true
+      )
+
+    stored_secret = client.secret
+
+    {:ok, _list_view, list_html} = live(conn, "/auth/oauth/clients")
+    refute list_html =~ stored_secret
+    refute list_html =~ "Client secret"
+
+    {:ok, _edit_view, edit_html} = live(conn, "/auth/oauth/clients/#{client.id}/edit")
+    refute edit_html =~ stored_secret
+    refute edit_html =~ "Client secret"
   end
 
   test "OAuth scopes page lists the real scope catalog", %{conn: conn} do
@@ -413,6 +659,39 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     {:ok, scope} = Auth.OAuth.create_scope(attrs)
     scope
   end
+
+  defp require_https_resource_origins do
+    previous_api_url = Application.get_env(:backplane, :api_url)
+
+    previous_override =
+      Application.get_env(:backplane_auth, :allow_insecure_resource_origins)
+
+    on_exit(fn ->
+      restore_env(:backplane, :api_url, previous_api_url)
+
+      restore_env(
+        :backplane_auth,
+        :allow_insecure_resource_origins,
+        previous_override
+      )
+    end)
+
+    Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")
+    Application.put_env(:backplane_auth, :allow_insecure_resource_origins, false)
+  end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp prime_client_cache(client_id) do
+    on_exit(fn ->
+      ClientStore.invalidate(%Boruta.Oauth.Client{id: client_id})
+    end)
+
+    BorutaClients.get_client(client_id)
+  end
+
+  defp scope_names(scopes), do: scopes |> Enum.map(& &1.name) |> Enum.sort()
 
   defp unique, do: System.unique_integer([:positive])
 end

@@ -3,6 +3,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   alias Backplane.Auth
 
+  @https_required_message "OAuth protected resources require an HTTPS API origin."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -10,6 +12,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
        client_secret: nil,
        clients: [],
        current_path: "/auth/overview",
+       editing_client: nil,
        issuer: nil,
        overview_stats: [],
        page: page(:overview),
@@ -22,13 +25,28 @@ defmodule Backplane.Admin.AuthOAuthLive do
   end
 
   @impl true
-  def handle_params(_params, uri, socket) do
+  def handle_params(params, uri, socket) do
     action = socket.assigns.live_action
 
-    {:noreply,
-     socket
-     |> assign(current_path: URI.parse(uri).path, issuer: oauth_issuer(), page: page(action))
-     |> assign_action_data(action)}
+    socket =
+      socket
+      |> assign(current_path: URI.parse(uri).path, issuer: oauth_issuer(), page: page(action))
+      |> assign_action_data(action)
+
+    case editing_client(action, params) do
+      {:ok, editing_client} ->
+        {:noreply,
+         assign(socket,
+           client_secret: if(action == :client_edit, do: nil, else: socket.assigns.client_secret),
+           editing_client: editing_client
+         )}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "OAuth client was not found.")
+         |> push_navigate(to: ~p"/auth/oauth/clients")}
+    end
   end
 
   @impl true
@@ -58,8 +76,46 @@ defmodule Backplane.Admin.AuthOAuthLive do
          |> assign(:client_secret, nil)
          |> assign_action_data(socket.assigns.live_action)}
 
+      {:error, :https_required} ->
+        {:noreply, put_flash(socket, :error, @https_required_message)}
+
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "OAuth client could not be created.")}
+    end
+  end
+
+  def handle_event(
+        "update-client-resources",
+        %{"client" => params},
+        %{assigns: %{editing_client: client}} = socket
+      )
+      when not is_nil(client) do
+    resources = selected_resources(Map.get(params, "resources"))
+
+    case Auth.OAuth.update_client_resources(client, resources) do
+      {:ok, updated} ->
+        Auth.Audit.record(
+          "client.resources_updated",
+          admin_actor(),
+          %{
+            target_type: "oauth_client",
+            target_id: updated.id,
+            metadata: %{
+              "resources" => Enum.map(Auth.OAuth.client_resources(updated), &to_string/1)
+            }
+          }
+        )
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "OAuth client resources updated.")
+         |> assign(:editing_client, updated)}
+
+      {:error, :https_required} ->
+        {:noreply, put_flash(socket, :error, @https_required_message)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "OAuth client resources could not be updated.")}
     end
   end
 
@@ -255,6 +311,22 @@ defmodule Backplane.Admin.AuthOAuthLive do
             <input type="checkbox" name="client[confidential]" value="true" checked />
             Confidential
           </label>
+          <div class="flex flex-wrap gap-4 lg:col-span-5">
+            <.dm_checkbox
+              id="oauth-client-resource-mcp"
+              name="client[resources][mcp]"
+              label="MCP (/mcp)"
+              value="true"
+              checked={false}
+            />
+            <.dm_checkbox
+              id="oauth-client-resource-v1"
+              name="client[resources][v1]"
+              label="LLM API (/v1)"
+              value="true"
+              checked={false}
+            />
+          </div>
           <div class="lg:col-span-5">
             <.dm_btn type="submit" variant="primary" size="sm">Create Client</.dm_btn>
           </div>
@@ -307,8 +379,32 @@ defmodule Backplane.Admin.AuthOAuthLive do
               </.dm_badge>
             </div>
           </:col>
+          <:col :let={client} label="Resources">
+            <div class="flex flex-wrap gap-1">
+              <.dm_badge
+                :for={resource <- Auth.OAuth.client_resources(client)}
+                variant={resource_variant(resource)}
+                size="sm"
+              >
+                {resource_label(resource)}
+              </.dm_badge>
+              <.dm_badge
+                :if={Auth.OAuth.client_resources(client) == []}
+                variant="neutral"
+                size="sm"
+              >
+                Identity only
+              </.dm_badge>
+            </div>
+          </:col>
           <:col :let={client} label="Actions">
             <div class="flex flex-wrap gap-2">
+              <.link
+                navigate={~p"/auth/oauth/clients/#{client.id}/edit"}
+                class="no-underline"
+              >
+                <.dm_btn type="button" variant="outline" size="xs">Edit</.dm_btn>
+              </.link>
               <.dm_btn
                 :if={client.confidential}
                 type="button"
@@ -337,6 +433,35 @@ defmodule Backplane.Admin.AuthOAuthLive do
             </span>
           </:col>
         </.dm_table>
+      </.dm_card>
+
+      <.dm_card :if={@live_action == :client_edit && @editing_client} variant="bordered">
+        <:title>Edit OAuth Client Resources</:title>
+        <div class="mb-4">
+          <div class="font-medium">{@editing_client.name}</div>
+          <code class="text-xs text-on-surface-variant">{@editing_client.id}</code>
+        </div>
+        <form id="oauth-client-resource-form" phx-submit="update-client-resources">
+          <div class="flex flex-wrap gap-4">
+            <.dm_checkbox
+              id="oauth-client-resource-mcp"
+              name="client[resources][mcp]"
+              label="MCP (/mcp)"
+              value="true"
+              checked={client_resource?(@editing_client, :mcp)}
+            />
+            <.dm_checkbox
+              id="oauth-client-resource-v1"
+              name="client[resources][v1]"
+              label="LLM API (/v1)"
+              value="true"
+              checked={client_resource?(@editing_client, :v1)}
+            />
+          </div>
+          <div class="mt-4">
+            <.dm_btn type="submit" variant="primary" size="sm">Save Resources</.dm_btn>
+          </div>
+        </form>
       </.dm_card>
 
       <.dm_card :if={@live_action == :client_policies} variant="bordered">
@@ -506,8 +631,19 @@ defmodule Backplane.Admin.AuthOAuthLive do
     )
   end
 
-  defp clients(action) when action in [:overview, :clients], do: Auth.OAuth.list_clients()
+  defp clients(action) when action in [:overview, :clients, :client_edit],
+    do: Auth.OAuth.list_clients()
+
   defp clients(_action), do: []
+
+  defp editing_client(:client_edit, %{"id" => id}) do
+    case Auth.OAuth.get_client(id) do
+      nil -> {:error, :not_found}
+      client -> {:ok, client}
+    end
+  end
+
+  defp editing_client(_action, _params), do: {:ok, nil}
 
   defp scopes(action) when action in [:overview, :scopes], do: Auth.OAuth.list_scopes()
   defp scopes(_action), do: []
@@ -656,6 +792,13 @@ defmodule Backplane.Admin.AuthOAuthLive do
     }
   end
 
+  defp page(:client_edit) do
+    %{
+      title: "Edit OAuth Client",
+      description: "Choose which Backplane protected resources this OAuth client may access."
+    }
+  end
+
   defp page(:providers) do
     %{
       title: "OAuth Providers",
@@ -713,10 +856,20 @@ defmodule Backplane.Admin.AuthOAuthLive do
       name: Map.get(params, "name"),
       redirect_uris: split_values(Map.get(params, "redirect_uris")),
       scopes: split_values(Map.get(params, "scopes")),
+      resources: selected_resources(Map.get(params, "resources")),
       confidential: truthy?(Map.get(params, "confidential")),
       pkce: true
     }
   end
+
+  defp selected_resources(resources) when is_map(resources) do
+    [:mcp, :v1]
+    |> Enum.filter(fn resource ->
+      truthy?(Map.get(resources, Atom.to_string(resource)))
+    end)
+  end
+
+  defp selected_resources(_resources), do: []
 
   defp scope_attrs(params) do
     %{
@@ -742,6 +895,15 @@ defmodule Backplane.Admin.AuthOAuthLive do
     metadata = client.metadata || %{}
     Map.get(metadata, "disabled") || Map.get(metadata, :disabled) || false
   end
+
+  defp client_resource?(client, resource),
+    do: resource in Auth.OAuth.client_resources(client)
+
+  defp resource_label(:mcp), do: "MCP"
+  defp resource_label(:v1), do: "LLM API"
+
+  defp resource_variant(:mcp), do: "info"
+  defp resource_variant(:v1), do: "secondary"
 
   defp client_name(%{client: %{name: name}}) when is_binary(name) and name != "", do: name
   defp client_name(%{client_id: client_id}) when is_binary(client_id), do: client_id
