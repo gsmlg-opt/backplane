@@ -436,6 +436,14 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
+  # All remaining methods delegate to compute_result to avoid duplication
+  defp dispatch(conn, method, id, params) do
+    case compute_result(method, id, params) do
+      {:result, result} -> json_rpc_result(conn, id, result)
+      {:error, code, message} -> json_rpc_error(conn, id, code, message)
+    end
+  end
+
   defp out_of_scope_tool(conn, id, name) do
     case conn.assigns[:resource_auth] do
       %{kind: :oauth} ->
@@ -453,14 +461,6 @@ defmodule Backplane.Transport.McpHandler do
 
       _ ->
         json_rpc_error(conn, id, -32_001, "Tool '#{name}' is not in scope for this client")
-    end
-  end
-
-  # All remaining methods delegate to compute_result to avoid duplication
-  defp dispatch(conn, method, id, params) do
-    case compute_result(method, id, params) do
-      {:result, result} -> json_rpc_result(conn, id, result)
-      {:error, code, message} -> json_rpc_error(conn, id, code, message)
     end
   end
 
