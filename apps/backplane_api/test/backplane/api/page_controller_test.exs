@@ -1,9 +1,29 @@
 defmodule Backplane.Api.PageControllerTest do
   use Backplane.Api.ConnCase, async: false
 
-  test "GET / renders the public gateway overview with docs links", %{conn: conn} do
-    conn = get(conn, "/")
-    html = html_response(conn, 200)
+  alias Backplane.Auth
+  alias Boruta.Ecto.Admin
+
+  @base_url "https://gateway.example.test"
+  @stored_oauth_secret "docs-regression-secret-must-never-render"
+  @canonical_guides [
+    {"/docs/mcp", "MCP hub"},
+    {"/docs/llm", "LLM proxy"},
+    {"/docs/agents", "Agent setup"},
+    {"/docs/authentication", "Authentication"}
+  ]
+
+  setup do
+    old_url = Application.get_env(:backplane, :api_url)
+    Application.put_env(:backplane, :api_url, @base_url <> "/")
+
+    on_exit(fn -> restore_env(:api_url, old_url) end)
+
+    :ok
+  end
+
+  test "GET / renders the public gateway overview with canonical docs links", %{conn: conn} do
+    html = conn |> get("/") |> html_response(200)
 
     assert html =~ "Backplane"
     assert html =~ "Gateway overview"
@@ -12,15 +32,13 @@ defmodule Backplane.Api.PageControllerTest do
     assert html =~ "Routed centrally"
     assert html =~ "Namespaced access"
 
-    for docs_path <- [
-          "/docs/llama",
-          "/docs/mcp",
-          "/docs/skills",
-          "/docs/agents",
-          "/docs/auth"
-        ] do
+    for {docs_path, _label} <- @canonical_guides do
       assert html =~ ~s(href="#{docs_path}")
     end
+
+    assert html =~ ~s(href="/docs/skills")
+    refute html =~ ~s(href="/docs/llama")
+    refute html =~ ~s(href="/docs/auth")
 
     assert html =~ ~s(src="/images/backplane-icon.png")
     assert html =~ "appbar"
@@ -78,94 +96,210 @@ defmodule Backplane.Api.PageControllerTest do
     refute html =~ "w-auto px-3 rounded-md whitespace-nowrap"
   end
 
-  test "GET /docs renders the public docs index", %{conn: conn} do
-    conn = get(conn, "/docs")
-    html = html_response(conn, 200)
+  test "GET /docs renders the concise canonical guide overview", %{conn: conn} do
+    html = conn |> get("/docs") |> html_response(200)
 
     assert html =~ "Backplane Docs"
     assert html =~ "Choose a guide"
     assert html =~ ~s(aria-label="Docs")
 
-    for {path, label} <- [
-          {"/docs/llama", "LLM proxy"},
-          {"/docs/mcp", "MCP hub"},
-          {"/docs/skills", "Skills library"},
-          {"/docs/agents", "Agent setup"},
-          {"/docs/auth", "Authentication"}
-        ] do
+    for {path, label} <- @canonical_guides do
       assert html =~ ~s(href="#{path}")
       assert html =~ label
     end
 
-    for marker <- [
-          "OpenAI-compatible endpoint",
-          "GET /v1/models",
-          "JSON-RPC requests: initialize, tools/list, tools/call, ping.",
-          "POST /mcp",
-          "Skill archive routes",
-          "GET /skills/export",
-          "Claude Code",
-          "ANTHROPIC_BASE_URL",
-          "Bearer token",
-          "Authorization: Bearer"
-        ] do
-      assert html =~ marker
-    end
+    assert html =~ ~s(href="/docs/skills")
+    assert html =~ "Skills library"
+    refute html =~ ~s(href="/docs/llama")
+    refute html =~ ~s(href="/docs/auth")
+    refute html =~ "<ol"
+    refute html =~ "<pre"
+    refute html =~ "curl "
+    refute html =~ "$CLIENT_SECRET"
   end
 
-  test "GET /docs/:section renders public docs sections", %{conn: conn} do
-    for {path, heading, markers} <- [
-          {"/docs/llama", "LLM proxy",
-           [
-             "OpenAI-format list of exposed models and aliases",
-             "POST /v1/chat/completions",
-             "POST /v1/responses",
-             "POST /v1/embeddings"
-           ]},
-          {"/docs/mcp", "MCP hub",
-           [
-             "JSON-RPC requests: initialize, tools/list, tools/call, ping.",
-             "Server-sent event stream for MCP notifications.",
-             "DELETE /mcp"
-           ]},
-          {"/docs/skills", "Skills library",
-           [
-             "GET /skills/export",
-             "POST /skills/import",
-             "GET /skills/:slug/archive",
-             "DELETE /skills/:slug"
-           ]},
-          {"/docs/agents", "Agent setup",
-           [
-             "Claude Code",
-             "ANTHROPIC_BASE_URL",
-             "claude mcp add --transport http",
-             "~/.codex/config.toml",
-             "openai_base_url",
-             "mcp_servers.backplane"
-           ]},
-          {"/docs/auth", "Authentication",
-           [
-             "Bearer token",
-             "Authorization: Bearer",
-             "GET /oauth/authorize",
-             "POST /oauth/token"
-           ]}
+  test "canonical guides and legacy aliases render canonical content", %{conn: conn} do
+    for {canonical_path, alias_path, heading, marker} <- [
+          {"/docs/llm", "/docs/llama", "LLM proxy",
+           @base_url <> "/.well-known/oauth-protected-resource/v1"},
+          {"/docs/authentication", "/docs/auth", "Authentication", "separate OAuth audiences"}
         ] do
-      html =
-        conn
-        |> recycle()
-        |> get(path)
-        |> html_response(200)
+      canonical_html = conn |> recycle() |> get(canonical_path) |> html_response(200)
+      alias_html = conn |> recycle() |> get(alias_path) |> html_response(200)
+
+      assert canonical_html =~ heading
+      assert canonical_html =~ marker
+      assert alias_html =~ heading
+      assert alias_html =~ marker
+    end
+
+    for {path, heading} <- @canonical_guides do
+      html = conn |> recycle() |> get(path) |> html_response(200)
 
       assert html =~ "Backplane Docs"
       assert html =~ heading
       assert html =~ ~s(href="/docs")
-
-      for marker <- markers do
-        assert html =~ marker
-      end
+      refute html =~ ~s(href="/docs/llama")
+      refute html =~ ~s(href="/docs/auth")
     end
+  end
+
+  test "skills guide remains available without OAuth setup blocks", %{conn: conn} do
+    html = conn |> get("/docs/skills") |> html_response(200)
+
+    assert html =~ "Skills library"
+    assert html =~ "GET /skills/export"
+    assert html =~ "POST /skills/import"
+    assert html =~ "GET /skills/:slug/archive"
+    refute html =~ "<ol"
+    refute html =~ "<pre"
+  end
+
+  test "every canonical guide uses the configured origin without exposing stored secrets", %{
+    conn: conn
+  } do
+    seed_known_oauth_secret!()
+
+    for {path, _heading} <- @canonical_guides do
+      html = conn |> recycle() |> get(path) |> html_response(200)
+
+      assert html =~ @base_url
+      refute html =~ @base_url <> "//"
+      refute html =~ @stored_oauth_secret
+    end
+  end
+
+  test "selected guides render ordered steps and safe copyable examples", %{conn: conn} do
+    for {path, _heading} <- @canonical_guides do
+      html = conn |> recycle() |> get(path) |> html_response(200)
+
+      assert html =~ "<ol"
+      assert html =~ "<pre"
+      assert html =~ "<code"
+      assert html =~ "overflow-x-auto"
+      assert html =~ "select-all"
+    end
+
+    mcp = conn |> recycle() |> get("/docs/mcp") |> html_response(200)
+
+    assert mcp =~ "https://chatgpt.com/connector/oauth/&lt;callback_id&gt;"
+    refute mcp =~ "https://chatgpt.com/connector/oauth/<callback_id>"
+
+    assert_in_order(mcp, [
+      "Copy the exact callback",
+      "Create a predefined confidential Backplane OAuth client",
+      "Enable MCP (/mcp)",
+      "Configure ChatGPT"
+    ])
+  end
+
+  test "MCP guide documents the current ChatGPT OAuth app flow", %{conn: conn} do
+    html = conn |> get("/docs/mcp") |> html_response(200)
+
+    for marker <- [
+          "ChatGPT",
+          "https://chatgpt.com/connector/oauth/&lt;callback_id&gt;",
+          "Do not change the callback ID or add a trailing slash",
+          "predefined confidential Backplane OAuth client",
+          "PKCE S256",
+          "one-time client secret",
+          "Enable MCP (/mcp)",
+          "matching tool scopes",
+          "matching scopes to the signing-in user",
+          @base_url <> "/mcp",
+          "WWW-Authenticate",
+          @base_url <> "/.well-known/oauth-protected-resource/mcp",
+          "$CLIENT_ID",
+          "$CLIENT_SECRET"
+        ] do
+      assert html =~ marker
+    end
+
+    refute html =~ "offline_access"
+  end
+
+  test "LLM guide documents resource-bound discovery authorization and bearer use", %{conn: conn} do
+    html = conn |> get("/docs/llm") |> html_response(200)
+
+    for marker <- [
+          @base_url <> "/.well-known/oauth-protected-resource/v1",
+          "GET " <> @base_url <> "/v1",
+          "resource=" <> @base_url <> "/v1",
+          "llm::models",
+          "llm::invoke",
+          "Authorization: Bearer $ACCESS_TOKEN",
+          "$CLIENT_ID",
+          "$CLIENT_SECRET",
+          "$CODE",
+          "PAT",
+          "legacy bearer",
+          "additive compatibility"
+        ] do
+      assert html =~ marker
+    end
+
+    authorize_example =
+      html
+      |> String.split("Authorize with PKCE", parts: 2)
+      |> List.last()
+      |> String.split("</pre>", parts: 2)
+      |> hd()
+
+    refute authorize_example =~ "client_secret"
+    refute authorize_example =~ "$CLIENT_SECRET"
+  end
+
+  test "agents guide has distinct ChatGPT Claude Code and Codex configurations", %{conn: conn} do
+    html = conn |> get("/docs/agents") |> html_response(200)
+
+    for marker <- [
+          "ChatGPT",
+          "Claude Code",
+          "Codex",
+          "ChatGPT MCP configuration",
+          "Claude Code configuration",
+          "Codex configuration",
+          @base_url <> "/mcp",
+          @base_url <> "/v1",
+          "claude mcp add --transport http",
+          "ANTHROPIC_BASE_URL",
+          "[model_providers.backplane]",
+          "[mcp_servers.backplane]",
+          "$MCP_ACCESS_TOKEN",
+          "$LLM_ACCESS_TOKEN"
+        ] do
+      assert html =~ marker
+    end
+
+    refute html =~ ~s(ANTHROPIC_API_KEY="$ACCESS_TOKEN")
+    refute html =~ ~s(bearer_token_env_var = "BACKPLANE_ACCESS_TOKEN")
+  end
+
+  test "authentication guide explains resource lifecycle security and troubleshooting", %{
+    conn: conn
+  } do
+    html = conn |> get("/docs/authentication") |> html_response(200)
+
+    for marker <- [
+          @base_url <> "/mcp",
+          @base_url <> "/v1",
+          "separate OAuth audiences",
+          "predefined OAuth clients",
+          "confidential client",
+          "PKCE S256",
+          "refresh token",
+          "inherits its original resource",
+          "durable ChatGPT connectivity",
+          @base_url <> "/oauth/revoke",
+          "HTTPS",
+          "invalid_target",
+          "invalid_token",
+          "insufficient_scope"
+        ] do
+      assert html =~ marker
+    end
+
+    refute html =~ "offline_access"
   end
 
   test "GET /docs/:section returns not found for unknown docs sections", %{conn: conn} do
@@ -173,4 +307,33 @@ defmodule Backplane.Api.PageControllerTest do
 
     assert response(conn, 404)
   end
+
+  defp seed_known_oauth_secret! do
+    assert {:ok, %{client: client}} =
+             Auth.OAuth.create_client(%{
+               name: "Docs Secret Regression",
+               redirect_uris: ["https://client.example.test/callback"],
+               scopes: ["openid"],
+               confidential: true,
+               pkce: true
+             })
+
+    assert {:ok, _client} = Admin.regenerate_client_secret(client, @stored_oauth_secret)
+  end
+
+  defp assert_in_order(text, markers) do
+    Enum.reduce(markers, 0, fn marker, offset ->
+      {index, _length} =
+        text
+        |> binary_part(offset, byte_size(text) - offset)
+        |> :binary.match(marker)
+
+      offset + index + byte_size(marker)
+    end)
+
+    :ok
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
+  defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 end
