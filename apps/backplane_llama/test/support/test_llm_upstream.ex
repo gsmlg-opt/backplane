@@ -33,13 +33,10 @@ defmodule Backplane.Test.TestLLMUpstream do
   end
 
   defp store_auth(conn) do
-    auth = %{
-      "x-api-key" => Plug.Conn.get_req_header(conn, "x-api-key") |> List.first(),
-      "authorization" => Plug.Conn.get_req_header(conn, "authorization") |> List.first()
-    }
+    capture = %{headers: conn.req_headers}
 
     if Process.whereis(@agent) do
-      Agent.update(@agent, fn _ -> auth end)
+      Agent.update(@agent, fn _ -> capture end)
     end
 
     conn
@@ -190,7 +187,11 @@ defmodule Backplane.Test.TestLLMUpstream do
         "object" => "chat.completion.chunk",
         "model" => model,
         "choices" => [
-          %{"index" => 0, "delta" => %{"role" => "assistant", "content" => ""}, "finish_reason" => nil}
+          %{
+            "index" => 0,
+            "delta" => %{"role" => "assistant", "content" => ""},
+            "finish_reason" => nil
+          }
         ]
       },
       %{

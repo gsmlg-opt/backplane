@@ -116,6 +116,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     assert access_claims["iss"] == @issuer
     assert access_claims["sub"] == user.id
     assert access_claims["client_id"] == client.id
+    assert access_claims["aud"] == client.id
     assert scope_includes?(access_claims["scope"], "gsmlg:read")
 
     id_claims = verify_jwt_with_jwks!(id_token, jwks_response)

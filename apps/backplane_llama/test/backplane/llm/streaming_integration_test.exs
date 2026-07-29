@@ -3,6 +3,9 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
   import Plug.Test
   import Plug.Conn
+  import Backplane.Auth.Fixtures
+
+  alias Backplane.Clients
 
   alias Backplane.LLM.{
     ModelResolver,
@@ -17,6 +20,12 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   alias Backplane.Settings.Credentials
 
   setup do
+    auth_token = Application.get_env(:backplane, :auth_token)
+    auth_tokens = Application.get_env(:backplane, :auth_tokens)
+
+    Application.delete_env(:backplane, :auth_token)
+    Application.delete_env(:backplane, :auth_tokens)
+
     # Start test LLM upstream
     {:ok, auth_store} =
       Agent.start_link(fn -> %{} end, name: Backplane.Test.TestLLMUpstream.AuthStore)
@@ -72,9 +81,12 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       catch
         :exit, _ -> :ok
       end
+
+      restore_env(:auth_token, auth_token)
+      restore_env(:auth_tokens, auth_tokens)
     end)
 
-    %{port: port, provider: provider}
+    %{auth_store: auth_store, port: port, provider: provider}
   end
 
   defp llm_request(method, path, body) do
@@ -83,6 +95,15 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     conn(method, path, conn_body)
     |> put_req_header("content-type", "application/json")
     |> Router.call(Router.init([]))
+  end
+
+  defp public_llm_request(method, path, body, bearer) do
+    method
+    |> conn(path, Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{bearer}")
+    |> put_req_header("x-api-key", "inbound-key-must-not-leak")
+    |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
   end
 
   describe "non-streaming proxy" do
@@ -163,6 +184,79 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
       assert repeated_v1_conn.status == 200
     end
+
+    test "replaces OAuth, PAT, and legacy credentials before forwarding to an OpenAI provider",
+         %{auth_store: auth_store, port: port, provider: provider} do
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "http://localhost:#{port}/v1"
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "gpt-credential-isolation",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      ModelResolver.clear_cache()
+
+      user = auth_user_fixture!()
+
+      oauth_client =
+        oauth_client_fixture!(resources: [:v1], scopes: ["llm::invoke"])
+
+      oauth_token =
+        resource_access_token_fixture!(user, oauth_client, ["llm::invoke"], :v1)
+
+      pat = "pat-provider-isolation"
+
+      assert {:ok, _client} =
+               Clients.create_client(%{
+                 name: "Provider isolation PAT",
+                 token: pat,
+                 scopes: ["unrelated::scope"],
+                 active: true
+               })
+
+      legacy = "legacy-provider-isolation"
+      Application.put_env(:backplane, :auth_token, legacy)
+
+      for inbound_bearer <- [oauth_token.value, pat, legacy] do
+        conn =
+          public_llm_request(
+            :post,
+            "/v1/chat/completions",
+            %{
+              "model" => "test-integration/gpt-credential-isolation",
+              "messages" => [%{"role" => "user", "content" => "hi"}]
+            },
+            inbound_bearer
+          )
+
+        assert conn.status == 200
+        captured = Agent.get(auth_store, & &1)
+
+        authorization_values =
+          for {"authorization", value} <- captured.headers, do: value
+
+        x_api_key_values =
+          for {"x-api-key", value} <- captured.headers, do: value
+
+        assert authorization_values == ["Bearer sk-test-integration"]
+        assert x_api_key_values == []
+        refute "Bearer #{inbound_bearer}" in authorization_values
+      end
+    end
   end
 
   describe "streaming proxy" do
@@ -210,4 +304,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       assert conn.status == 400
     end
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
+  defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 end

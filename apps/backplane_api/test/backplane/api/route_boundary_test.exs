@@ -48,7 +48,7 @@ defmodule Backplane.Api.RouteBoundaryTest do
     assert get(conn, "/api/host-agent/skills/repo-review/download") |> response(404)
   end
 
-  test "Backplane Auth tokens do not change existing service route auth behavior", %{conn: conn} do
+  test "identity-only Auth tokens are rejected only by protected resource routes", %{conn: conn} do
     access_token = issue_auth_access_token!()
 
     mcp_conn =
@@ -58,9 +58,12 @@ defmodule Backplane.Api.RouteBoundaryTest do
       |> put_req_header("content-type", "application/json")
       |> post("/mcp", Jason.encode!(%{"jsonrpc" => "2.0", "method" => "initialize", "id" => 1}))
 
-    assert json_response(mcp_conn, 200)["result"]["serverInfo"]["name"] == "backplane"
+    assert json_response(mcp_conn, 401)["error"] == "invalid_token"
     assert get_resp_header(mcp_conn, "location") == []
-    assert get_resp_header(mcp_conn, "www-authenticate") == []
+
+    assert [mcp_challenge] = get_resp_header(mcp_conn, "www-authenticate")
+    assert mcp_challenge =~ ~s(error="invalid_token")
+    refute mcp_challenge =~ "resource_metadata"
 
     models_conn =
       conn
@@ -68,9 +71,13 @@ defmodule Backplane.Api.RouteBoundaryTest do
       |> put_req_header("authorization", "Bearer #{access_token}")
       |> get("/v1/models")
 
-    assert json_response(models_conn, 200)["object"] == "list"
+    assert json_response(models_conn, 401)["error"] == "invalid_token"
     assert get_resp_header(models_conn, "location") == []
-    assert get_resp_header(models_conn, "www-authenticate") == []
+
+    assert [models_challenge] = get_resp_header(models_conn, "www-authenticate")
+    assert models_challenge =~ ~s(error="invalid_token")
+    assert models_challenge =~ ~s(scope="llm::models")
+    refute models_challenge =~ "resource_metadata"
 
     skills_conn =
       conn
