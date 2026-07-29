@@ -18,7 +18,6 @@ defmodule Backplane.LLM.ProxyPlug do
   defp forward_to_llm_router(conn, path_info) do
     conn
     |> Map.put(:path_info, path_info)
-    |> Map.put(:request_path, "/" <> Enum.join(path_info, "/"))
     |> Backplane.LLM.Router.call(Backplane.LLM.Router.init([]))
     |> Plug.Conn.halt()
   end

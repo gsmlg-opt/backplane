@@ -3,7 +3,9 @@ defmodule Backplane.LLM.RouterTest do
 
   import Plug.Conn
   import Plug.Test
+  import Backplane.Auth.Fixtures
 
+  alias Backplane.Auth.Resources
   alias Backplane.Embedding
 
   alias Backplane.LLM.{
@@ -126,6 +128,17 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   setup do
+    auth_token = Application.get_env(:backplane, :auth_token)
+    auth_tokens = Application.get_env(:backplane, :auth_tokens)
+
+    Application.delete_env(:backplane, :auth_token)
+    Application.delete_env(:backplane, :auth_tokens)
+
+    on_exit(fn ->
+      restore_env(:auth_token, auth_token)
+      restore_env(:auth_tokens, auth_tokens)
+    end)
+
     Credentials.store("router-anthropic-cred", "sk-ant-test-key-abcd", "llm")
     Credentials.store("router-openai-cred", "sk-openai-test-key", "llm")
     Credentials.store("router-anthropic-rl-cred", "sk-ant-test-rl-abcd", "llm")
@@ -157,10 +170,198 @@ defmodule Backplane.LLM.RouterTest do
     |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
   end
 
+  defp public_authenticated_llm_request(method, path, token, body \\ nil) do
+    conn_body = if body, do: Jason.encode!(body), else: ""
+
+    method
+    |> conn(path, conn_body)
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
+  end
+
   defp json_body(conn), do: Jason.decode!(conn.resp_body)
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
   defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
+
+  describe "protected /v1 resource" do
+    test "returns the canonical resource descriptor in open mode" do
+      conn = public_llm_request(:get, "/v1")
+
+      assert conn.status == 200
+
+      assert json_body(conn) == %{
+               "resource" => Resources.uri(:v1),
+               "resource_documentation" => Resources.documentation_uri(:v1)
+             }
+    end
+
+    test "returns the canonical resource descriptor to an authenticated client" do
+      token = resource_token!(:v1, ["llm::models"], [:v1])
+
+      conn = public_authenticated_llm_request(:get, "/v1", token.value)
+
+      assert conn.status == 200
+      assert json_body(conn)["resource"] == Resources.uri(:v1)
+    end
+
+    test "challenges the protected canonical descriptor with resource metadata" do
+      oauth_client_fixture!(resources: [:v1], scopes: ["llm::models"])
+
+      conn = public_llm_request(:get, "/v1")
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+
+      assert get_resp_header(conn, "www-authenticate") == [
+               ~s(Bearer resource_metadata="#{Resources.metadata_uri(:v1)}")
+             ]
+    end
+
+    test "query-bearing and trailing-slash descriptor challenges omit resource metadata" do
+      oauth_client_fixture!(resources: [:v1], scopes: ["llm::models"])
+
+      for path <- ["/v1?x=1", "/v1/"] do
+        conn = public_llm_request(:get, path)
+
+        assert conn.status == 401
+        assert get_resp_header(conn, "www-authenticate") == ["Bearer"]
+      end
+    end
+
+    test "nested missing and invalid token challenges include the least scope" do
+      oauth_client_fixture!(resources: [:v1], scopes: ["llm::models", "llm::invoke"])
+
+      for {method, path, scope} <- [
+            {:get, "/v1/models", "llm::models"},
+            {:post, "/v1/responses", "llm::invoke"}
+          ] do
+        missing = public_llm_request(method, path)
+        invalid = public_authenticated_llm_request(method, path, "invalid-token")
+
+        assert missing.status == 401
+        assert get_resp_header(missing, "www-authenticate") == [~s(Bearer scope="#{scope}")]
+
+        assert invalid.status == 401
+
+        assert get_resp_header(invalid, "www-authenticate") == [
+                 ~s(Bearer error="invalid_token", scope="#{scope}")
+               ]
+      end
+    end
+
+    test "keeps model discovery and invocation grants separate" do
+      models = resource_token!(:v1, ["llm::models"], [:v1])
+      invoke = resource_token!(:v1, ["llm::invoke"], [:v1])
+
+      assert public_authenticated_llm_request(:get, "/v1/models", models.value).status == 200
+
+      denied_invoke =
+        public_authenticated_llm_request(
+          :post,
+          "/v1/responses",
+          models.value,
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert denied_invoke.status == 403
+      assert Jason.decode!(denied_invoke.resp_body) == %{"error" => "insufficient_scope"}
+
+      allowed_invoke =
+        public_authenticated_llm_request(
+          :post,
+          "/v1/responses",
+          invoke.value,
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert allowed_invoke.status == 404
+
+      denied_models =
+        public_authenticated_llm_request(:get, "/v1/models", invoke.value)
+
+      assert denied_models.status == 403
+      assert Jason.decode!(denied_models.resp_body) == %{"error" => "insufficient_scope"}
+    end
+
+    test "accepts both v1 and global wildcard grants" do
+      for scopes <- [["llm::*"], ["*"]] do
+        token = resource_token!(:v1, scopes, [:v1])
+
+        assert public_authenticated_llm_request(:get, "/v1/models", token.value).status == 200
+
+        conn =
+          public_authenticated_llm_request(
+            :post,
+            "/v1/responses",
+            token.value,
+            %{"model" => "unknown/model", "input" => "hi"}
+          )
+
+        assert conn.status == 404
+      end
+    end
+
+    test "PAT, legacy, and open modes retain full LLM access" do
+      {_client, pat} = pat_fixture!(scopes: ["unrelated::scope"])
+
+      assert public_authenticated_llm_request(:get, "/v1/models", pat).status == 200
+
+      pat_invoke =
+        public_authenticated_llm_request(
+          :post,
+          "/v1/responses",
+          pat,
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert pat_invoke.status == 404
+
+      Application.put_env(:backplane, :auth_token, "legacy-secret")
+
+      assert public_authenticated_llm_request(:get, "/v1/models", "legacy-secret").status == 200
+
+      legacy_invoke =
+        public_authenticated_llm_request(
+          :post,
+          "/v1/responses",
+          "legacy-secret",
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert legacy_invoke.status == 404
+
+      Application.delete_env(:backplane, :auth_token)
+      Backplane.Repo.delete_all(Backplane.Clients.Client)
+      Backplane.Clients.refresh_cache()
+
+      assert public_llm_request(:get, "/v1/models").status == 200
+
+      open_invoke =
+        public_llm_request(
+          :post,
+          "/v1/responses",
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert open_invoke.status == 404
+    end
+
+    test "rejects an MCP-audience token without opaque fallback" do
+      token = resource_token!(:mcp, ["llm::models"], [:mcp, :v1])
+      Application.put_env(:backplane, :auth_token, token.value)
+
+      conn = public_authenticated_llm_request(:get, "/v1/models", token.value)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
+
+      assert get_resp_header(conn, "www-authenticate") == [
+               ~s(Bearer error="invalid_token", scope="llm::models")
+             ]
+    end
+  end
 
   describe "public GET /v1/models via ProxyPlug" do
     test "returns exposed models on the root model list" do
@@ -556,13 +757,20 @@ defmodule Backplane.LLM.RouterTest do
           enabled: true
         })
 
+      resource_token = resource_token!(:v1, ["llm::invoke"], [:v1])
+
       conn =
-        llm_request(:post, "/v1/chat/completions", %{
-          "model" => "openai-codex-router/gpt-5.5",
-          "stream" => true,
-          "max_tokens" => 100,
-          "messages" => [%{"role" => "user", "content" => "hi"}]
-        })
+        public_authenticated_llm_request(
+          :post,
+          "/v1/chat/completions",
+          resource_token.value,
+          %{
+            "model" => "openai-codex-router/gpt-5.5",
+            "stream" => true,
+            "max_tokens" => 100,
+            "messages" => [%{"role" => "user", "content" => "hi"}]
+          }
+        )
 
       assert conn.status == 200
       assert conn.resp_body =~ "chat.completion.chunk"
@@ -573,6 +781,7 @@ defmodule Backplane.LLM.RouterTest do
       request = Agent.get(store, & &1)
       assert request.path == "/backend-api/codex/responses"
       assert {"authorization", "Bearer chatgpt-access-token"} in request.headers
+      refute {"authorization", "Bearer #{resource_token.value}"} in request.headers
       assert {"chatgpt-account-id", "acc-123"} in request.headers
       assert {"originator", "codex_cli_rs"} in request.headers
       assert request.body["model"] == "gpt-5.5"
@@ -776,5 +985,25 @@ defmodule Backplane.LLM.RouterTest do
         "model_enabled" => "true",
         "metadata" => "{}"
       })
+  end
+
+  defp resource_token!(resource, scopes, resources) do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: resources, scopes: scopes)
+    resource_access_token_fixture!(user, client, scopes, resource)
+  end
+
+  defp pat_fixture!(attrs) do
+    token = Keyword.get(attrs, :token, "pat-#{System.unique_integer([:positive])}")
+
+    {:ok, client} =
+      Backplane.Clients.create_client(%{
+        name: "PAT #{System.unique_integer([:positive])}",
+        token: token,
+        scopes: Keyword.fetch!(attrs, :scopes),
+        active: true
+      })
+
+    {client, token}
   end
 end

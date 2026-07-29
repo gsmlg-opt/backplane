@@ -4,6 +4,7 @@ defmodule Backplane.LLM.Router do
 
   Aggregates LLM providers behind a single OpenAI/Anthropic-compatible endpoint.
   Routes:
+  - GET  /v1                           — protected-resource descriptor
   - GET  /v1/models                    — aggregated model listing
   - POST /v1/messages                  — Anthropic Messages API
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
@@ -38,7 +39,13 @@ defmodule Backplane.LLM.Router do
 
   plug(Backplane.Transport.CORS)
   plug(:match)
-  plug(Backplane.Transport.AuthPlug)
+
+  plug(Backplane.Auth.ResourceAuthPlug,
+    resource: :v1,
+    required_scope: {Backplane.LLM.ResourceAuthorization, :required_scope, []}
+  )
+
+  plug(Backplane.LLM.ResourceAuthorization)
 
   plug(Plug.Parsers,
     parsers: [:json],
@@ -51,6 +58,13 @@ defmodule Backplane.LLM.Router do
   plug(:dispatch)
 
   # ── Routes ────────────────────────────────────────────────────────────────────
+
+  get "/v1" do
+    send_json(conn, 200, %{
+      "resource" => Backplane.Auth.Resources.uri(:v1),
+      "resource_documentation" => Backplane.Auth.Resources.documentation_uri(:v1)
+    })
+  end
 
   get "/v1/models" do
     models = build_model_list()

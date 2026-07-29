@@ -89,6 +89,49 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     refute Map.has_key?(conn.assigns, :client)
   end
 
+  test "accepts case-insensitive Bearer schemes" do
+    Application.put_env(:backplane, :auth_token, "legacy-secret")
+
+    for scheme <- ["bearer", "BEARER"] do
+      conn =
+        :post
+        |> conn("/mcp")
+        |> put_req_header("authorization", "#{scheme} legacy-secret")
+        |> authenticate(:mcp)
+
+      assert conn.assigns.resource_auth.kind == :legacy
+      refute conn.halted
+    end
+  end
+
+  test "trims whitespace around Bearer credentials" do
+    Application.put_env(:backplane, :auth_token, "legacy-secret")
+
+    conn =
+      :post
+      |> conn("/mcp")
+      |> put_req_header("authorization", "Bearer  legacy-secret ")
+      |> authenticate(:mcp)
+
+    assert conn.assigns.resource_auth.kind == :legacy
+    refute conn.halted
+  end
+
+  test "falls back to the legacy token after a PAT miss" do
+    pat_fixture!()
+    Application.put_env(:backplane, :auth_token, "legacy-secret")
+
+    conn =
+      :post
+      |> conn("/mcp")
+      |> bearer("legacy-secret")
+      |> authenticate(:mcp)
+
+    assert conn.assigns.resource_auth.kind == :legacy
+    assert conn.assigns.resource_auth.scopes == ["*"]
+    refute Map.has_key?(conn.assigns, :client)
+  end
+
   test "uses open mode only when no authentication method is configured" do
     conn = conn(:post, "/mcp") |> authenticate(:mcp)
 
