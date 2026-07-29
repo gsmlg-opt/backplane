@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.MixProject do
   def project do
     [
       app: :backplane_host_agent,
-      version: "0.4.3",
+      version: "0.4.4",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
