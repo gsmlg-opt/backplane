@@ -1514,6 +1514,7 @@ git commit -m "feat(mcp): enforce resource OAuth scopes"
 
 - Create: `apps/backplane_llama/lib/backplane/llm/resource_authorization.ex`
 - Create: `apps/backplane_llama/test/backplane/llm/resource_authorization_test.exs`
+- Modify: `apps/backplane_llama/lib/backplane/llm/proxy_plug.ex`
 - Modify: `apps/backplane_llama/lib/backplane/llm/router.ex`
 - Modify: `apps/backplane_llama/test/backplane/llm/router_test.exs`
 - Modify: `apps/backplane_llama/test/backplane/llm/proxy_plug_test.exs`
@@ -1626,6 +1627,7 @@ Expected: descriptor/scope tests pass and no code references `Backplane.Transpor
 
 ```bash
 git add apps/backplane_llama/lib/backplane/llm/resource_authorization.ex \
+  apps/backplane_llama/lib/backplane/llm/proxy_plug.ex \
   apps/backplane_llama/lib/backplane/llm/router.ex \
   apps/backplane_llama/test/backplane/llm/resource_authorization_test.exs \
   apps/backplane_llama/test/backplane/llm/router_test.exs \
