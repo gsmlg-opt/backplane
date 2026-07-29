@@ -193,6 +193,17 @@ defmodule Backplane.Api.PageControllerTest do
     ])
   end
 
+  test "selected guides constrain long examples to the content column", %{conn: conn} do
+    html = conn |> get("/docs/llm") |> html_response(200)
+
+    assert html =~ "lg:grid-cols-[16rem_minmax(0,1fr)]"
+    assert html =~ ~s(<section class="min-w-0">)
+    assert html =~ "grid-cols-[minmax(0,1fr)]"
+    assert html =~ ~s(class="min-w-0 overflow-hidden")
+    assert html =~ "max-w-full overflow-x-auto"
+    assert html =~ "break-words"
+  end
+
   test "MCP guide documents the current ChatGPT OAuth app flow", %{conn: conn} do
     html = conn |> get("/docs/mcp") |> html_response(200)
 
