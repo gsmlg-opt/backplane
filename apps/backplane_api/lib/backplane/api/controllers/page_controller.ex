@@ -195,7 +195,7 @@ defmodule Backplane.Api.PageController do
           %{
             title: "Keep endpoints distinct",
             body:
-              "MCP clients connect to #{mcp_url}; model clients use #{v1_url}. Use separate $MCP_ACCESS_TOKEN and $LLM_ACCESS_TOKEN values because a token for one audience never works on the other."
+              "MCP clients connect to #{mcp_url}; model clients use #{v1_url}. Resource-bound OAuth access tokens are audience-specific, so use separate $MCP_ACCESS_TOKEN and $LLM_ACCESS_TOKEN values. PAT and legacy credentials follow the configured compatibility policy."
           }
         ],
         steps: [
@@ -212,12 +212,12 @@ defmodule Backplane.Api.PageController do
           %{
             title: "Claude Code configuration",
             code:
-              "export ANTHROPIC_BASE_URL=\"#{base_url}\"\nexport ANTHROPIC_API_KEY=\"$LLM_ACCESS_TOKEN\"\nclaude mcp add --transport http --header \"Authorization: Bearer $MCP_ACCESS_TOKEN\" backplane \"#{mcp_url}\""
+              "export ANTHROPIC_BASE_URL=\"#{base_url}\"\nexport ANTHROPIC_AUTH_TOKEN=\"$LLM_ACCESS_TOKEN\"\nclaude mcp add --transport http --header \"Authorization: Bearer $MCP_ACCESS_TOKEN\" backplane \"#{mcp_url}\""
           },
           %{
             title: "Codex configuration",
             code:
-              "export BACKPLANE_LLM_ACCESS_TOKEN=\"$LLM_ACCESS_TOKEN\"\nexport BACKPLANE_MCP_ACCESS_TOKEN=\"$MCP_ACCESS_TOKEN\"\n\n[model_providers.backplane]\nname = \"Backplane\"\nbase_url = \"#{v1_url}\"\nenv_key = \"BACKPLANE_LLM_ACCESS_TOKEN\"\n\n[mcp_servers.backplane]\nurl = \"#{mcp_url}\"\nbearer_token_env_var = \"BACKPLANE_MCP_ACCESS_TOKEN\""
+              "# Shell\nexport BACKPLANE_LLM_ACCESS_TOKEN=\"$LLM_ACCESS_TOKEN\"\nexport BACKPLANE_MCP_ACCESS_TOKEN=\"$MCP_ACCESS_TOKEN\"\n\n# ~/.codex/config.toml\n# Replace this placeholder with a model alias exposed by Backplane.\nmodel = \"your-backplane-model-alias\"\nmodel_provider = \"backplane\"\n\n[model_providers.backplane]\nname = \"Backplane\"\nbase_url = \"#{v1_url}\"\nenv_key = \"BACKPLANE_LLM_ACCESS_TOKEN\"\n\n[mcp_servers.backplane]\nurl = \"#{mcp_url}\"\nbearer_token_env_var = \"BACKPLANE_MCP_ACCESS_TOKEN\""
           }
         ],
         routes: ["ChatGPT", "Claude Code", "Codex", "MCP /mcp", "LLM API /v1"]
@@ -232,7 +232,7 @@ defmodule Backplane.Api.PageController do
           %{
             title: "Separate resource audiences",
             body:
-              "#{mcp_url} and #{v1_url} are separate OAuth audiences. A token issued for one resource is not valid for the other."
+              "#{mcp_url} and #{v1_url} are separate OAuth audiences. Resource-bound OAuth access tokens are audience-specific: a token issued for one resource is not valid for the other. PAT and legacy credentials follow the configured compatibility policy."
           },
           %{
             title: "Predefined clients and PKCE",

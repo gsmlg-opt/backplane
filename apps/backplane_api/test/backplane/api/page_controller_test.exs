@@ -279,6 +279,52 @@ defmodule Backplane.Api.PageControllerTest do
     refute example_text =~ ~s(ANTHROPIC_BASE_URL="#{@base_url}/v1")
   end
 
+  test "Claude Code uses the Anthropic auth token at the API origin", %{conn: conn} do
+    example_text =
+      conn
+      |> get("/docs/agents")
+      |> html_response(200)
+      |> String.replace("&quot;", "\"")
+
+    assert example_text =~ ~s(ANTHROPIC_BASE_URL="#{@base_url}")
+    refute example_text =~ ~s(ANTHROPIC_BASE_URL="#{@base_url}/v1")
+    assert example_text =~ ~s(ANTHROPIC_AUTH_TOKEN="$LLM_ACCESS_TOKEN")
+    refute example_text =~ "ANTHROPIC_API_KEY"
+  end
+
+  test "Codex configuration selects the Backplane provider and model alias", %{conn: conn} do
+    example_text =
+      conn
+      |> get("/docs/agents")
+      |> html_response(200)
+      |> String.replace("&quot;", "\"")
+
+    for marker <- [
+          "# Replace this placeholder with a model alias exposed by Backplane.",
+          ~s(model = "your-backplane-model-alias"),
+          ~s(model_provider = "backplane"),
+          "[model_providers.backplane]"
+        ] do
+      assert example_text =~ marker
+    end
+
+    assert_in_order(example_text, [
+      "# Replace this placeholder with a model alias exposed by Backplane.",
+      ~s(model = "your-backplane-model-alias"),
+      ~s(model_provider = "backplane"),
+      "[model_providers.backplane]"
+    ])
+  end
+
+  test "resource OAuth audience isolation preserves PAT and legacy compatibility", %{conn: conn} do
+    for path <- ["/docs/agents", "/docs/authentication"] do
+      html = conn |> recycle() |> get(path) |> html_response(200)
+
+      assert html =~ "Resource-bound OAuth access tokens are audience-specific"
+      assert html =~ "PAT and legacy credentials follow the configured compatibility policy"
+    end
+  end
+
   test "authentication guide explains resource lifecycle security and troubleshooting", %{
     conn: conn
   } do
