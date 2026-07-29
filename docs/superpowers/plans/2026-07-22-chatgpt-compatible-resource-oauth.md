@@ -1641,6 +1641,7 @@ git commit -m "feat(llm): authorize the v1 OAuth resource"
 
 **Files:**
 
+- Modify: `apps/backplane_admin/assets/js/app.js`
 - Modify: `apps/backplane_admin/lib/backplane/admin/router.ex`
 - Modify: `apps/backplane_admin/lib/backplane/admin/live/auth_oauth_live.ex`
 - Modify: `apps/backplane_admin/test/backplane/admin/live/auth_settings_live_test.exs`
@@ -1759,6 +1760,8 @@ end
 
 Add a Resources column with `MCP`/`LLM API` badges and an Edit action. Define `selected_resources(nil)`, returning `[]`, and `selected_resources(client)`, delegating to `Auth.OAuth.client_resources/1`. Add an explicit `{:error, :https_required}` branch to the existing create event so create and edit show the same actionable HTTPS message. Do not render client secrets on edit; retain only the current one-time secret display immediately after create/rotation.
 
+Keep the admin theme initializer aligned with DuskMoon's `ThemeSwitcher` hook: resolve `default` from the OS color scheme and retain a concrete `data-theme` value on the document root. Removing the attribute leaves DuskMoon checkbox variables undefined and makes the resource controls invisible.
+
 - [ ] **Step 5: Run the admin tests**
 
 Run: `devenv shell -- mix test apps/backplane_admin/test/backplane/admin/live/auth_settings_live_test.exs`
@@ -1768,7 +1771,8 @@ Expected: create, edit, metadata preservation, HTTPS, and existing client manage
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/backplane_admin/lib/backplane/admin/router.ex \
+git add apps/backplane_admin/assets/js/app.js \
+  apps/backplane_admin/lib/backplane/admin/router.ex \
   apps/backplane_admin/lib/backplane/admin/live/auth_oauth_live.ex \
   apps/backplane_admin/test/backplane/admin/live/auth_settings_live_test.exs
 git commit -m "feat(admin): manage OAuth resource assignments"

@@ -87,15 +87,15 @@ const themeColors = {
 }
 
 function applyTheme(theme) {
-  if (theme && theme !== "default") {
-    document.documentElement.setAttribute("data-theme", theme)
-  } else {
-    document.documentElement.removeAttribute("data-theme")
-  }
+  const resolvedTheme = theme && theme !== "default"
+    ? theme
+    : window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "moonlight"
+      : "sunshine"
 
+  document.documentElement.setAttribute("data-theme", resolvedTheme)
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) {
-    const resolvedTheme = theme === "default" ? "moonlight" : theme
     const color = themeColors[resolvedTheme] || "#d6d6d6"
     meta.setAttribute("content", color)
   }
