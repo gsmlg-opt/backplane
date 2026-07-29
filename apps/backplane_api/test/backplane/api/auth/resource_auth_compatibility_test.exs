@@ -42,24 +42,32 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   end
 
   test "PAT scopes still filter MCP tools without restricting v1" do
-    {_client, pat} = pat_fixture!(scopes: ["compat::allowed"])
+    {client, pat} = pat_fixture!(scopes: ["compat::allowed"])
 
     tools =
-      pat
-      |> post_mcp("tools/list", %{})
+      client
+      |> pat_request(fn -> post_mcp(pat, "tools/list", %{}) end)
       |> json_response(200)
       |> get_in(["result", "tools"])
 
     assert Enum.map(tools, & &1["name"]) == ["compat::allowed"]
-    assert v1_request(:get, "/v1/models", pat).status == 200
+
+    models =
+      pat_request(client, fn ->
+        v1_request(:get, "/v1/models", pat)
+      end)
+
+    assert models.status == 200
 
     invoke =
-      v1_request(
-        :post,
-        "/v1/responses",
-        pat,
-        %{"model" => "unknown/model", "input" => "hi"}
-      )
+      pat_request(client, fn ->
+        v1_request(
+          :post,
+          "/v1/responses",
+          pat,
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+      end)
 
     assert invoke.status == 404
   end
@@ -128,7 +136,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   end
 
   test "removing the last assignment restores PAT policy without OAuth metadata" do
-    {_pat_client, pat} = pat_fixture!(scopes: ["compat::allowed"])
+    {pat_client, pat} = pat_fixture!(scopes: ["compat::allowed"])
     oauth_client = oauth_client_fixture!(resources: [:mcp], scopes: ["compat::allowed"])
 
     assert_oauth_challenge(post_mcp(nil, "initialize", %{}), :mcp)
@@ -136,8 +144,16 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
 
     assert_compatibility_challenge(post_mcp(nil, "initialize", %{}))
     assert_compatibility_challenge(v1_request(:get, "/v1"))
-    assert post_mcp(pat, "initialize", %{}).status == 200
-    assert v1_request(:get, "/v1/models", pat).status == 200
+
+    mcp = pat_request(pat_client, fn -> post_mcp(pat, "initialize", %{}) end)
+    assert mcp.status == 200
+
+    models =
+      pat_request(pat_client, fn ->
+        v1_request(:get, "/v1/models", pat)
+      end)
+
+    assert models.status == 200
   end
 
   test "removing the last assignment restores legacy policy without OAuth metadata" do
@@ -181,6 +197,34 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     current = Auth.OAuth.get_client(client.id)
     assert {:ok, updated} = Auth.OAuth.update_client_resources(current, resources)
     updated
+  end
+
+  defp pat_request(client, request) when is_function(request, 0) do
+    previous_last_seen = Clients.get_client(client.id).last_seen_at
+    result = request.()
+    await_pat_touch!(client.id, previous_last_seen)
+    result
+  end
+
+  defp await_pat_touch!(client_id, previous_last_seen) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    do_await_pat_touch!(client_id, previous_last_seen, deadline)
+  end
+
+  defp do_await_pat_touch!(client_id, previous_last_seen, deadline) do
+    current_last_seen = Clients.get_client(client_id).last_seen_at
+
+    cond do
+      current_last_seen != previous_last_seen ->
+        current_last_seen
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(5)
+        do_await_pat_touch!(client_id, previous_last_seen, deadline)
+
+      true ->
+        flunk("PAT last_seen_at did not change within 1000ms for client #{client_id}")
+    end
   end
 
   defp post_mcp(token, method, params) do

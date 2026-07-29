@@ -220,7 +220,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
       pat = "pat-provider-isolation"
 
-      assert {:ok, _client} =
+      assert {:ok, pat_client} =
                Clients.create_client(%{
                  name: "Provider isolation PAT",
                  token: pat,
@@ -232,7 +232,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       Application.put_env(:backplane, :auth_token, legacy)
 
       for inbound_bearer <- [oauth_token.value, pat, legacy] do
-        conn =
+        request = fn ->
           public_llm_request(
             :post,
             "/v1/chat/completions",
@@ -242,6 +242,14 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
             },
             inbound_bearer
           )
+        end
+
+        conn =
+          if inbound_bearer == pat do
+            pat_request(pat_client, request)
+          else
+            request.()
+          end
 
         assert conn.status == 200
         captured = Agent.get(auth_store, & &1)
@@ -302,6 +310,34 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         })
 
       assert conn.status == 400
+    end
+  end
+
+  defp pat_request(client, request) when is_function(request, 0) do
+    previous_last_seen = Clients.get_client(client.id).last_seen_at
+    result = request.()
+    await_pat_touch!(client.id, previous_last_seen)
+    result
+  end
+
+  defp await_pat_touch!(client_id, previous_last_seen) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    do_await_pat_touch!(client_id, previous_last_seen, deadline)
+  end
+
+  defp do_await_pat_touch!(client_id, previous_last_seen, deadline) do
+    current_last_seen = Clients.get_client(client_id).last_seen_at
+
+    cond do
+      current_last_seen != previous_last_seen ->
+        current_last_seen
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(5)
+        do_await_pat_touch!(client_id, previous_last_seen, deadline)
+
+      true ->
+        flunk("PAT last_seen_at did not change within 1000ms for client #{client_id}")
     end
   end
 
