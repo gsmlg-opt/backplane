@@ -212,7 +212,7 @@ defmodule Backplane.Api.PageController do
           %{
             title: "Claude Code configuration",
             code:
-              "export ANTHROPIC_BASE_URL=\"#{v1_url}\"\nexport ANTHROPIC_API_KEY=\"$LLM_ACCESS_TOKEN\"\nclaude mcp add --transport http --header \"Authorization: Bearer $MCP_ACCESS_TOKEN\" backplane \"#{mcp_url}\""
+              "export ANTHROPIC_BASE_URL=\"#{base_url}\"\nexport ANTHROPIC_API_KEY=\"$LLM_ACCESS_TOKEN\"\nclaude mcp add --transport http --header \"Authorization: Bearer $MCP_ACCESS_TOKEN\" backplane \"#{mcp_url}\""
           },
           %{
             title: "Codex configuration",

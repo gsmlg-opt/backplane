@@ -273,6 +273,10 @@ defmodule Backplane.Api.PageControllerTest do
 
     refute html =~ ~s(ANTHROPIC_API_KEY="$ACCESS_TOKEN")
     refute html =~ ~s(bearer_token_env_var = "BACKPLANE_ACCESS_TOKEN")
+
+    example_text = String.replace(html, "&quot;", "\"")
+    assert example_text =~ ~s(ANTHROPIC_BASE_URL="#{@base_url}")
+    refute example_text =~ ~s(ANTHROPIC_BASE_URL="#{@base_url}/v1")
   end
 
   test "authentication guide explains resource lifecycle security and troubleshooting", %{
