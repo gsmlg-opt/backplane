@@ -121,7 +121,8 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
       transport_opts =
         Keyword.merge(transport_opts,
           request_timeout: request_timeout,
-          task_supervisor: task_supervisor
+          task_supervisor: task_supervisor,
+          subscriptions: subscriptions
         )
 
       task_store_child = task_store_child_spec(task_store_mod, task_store_opts, task_store_name)
@@ -135,7 +136,6 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
               layer,
               transport_opts,
               task_supervisor,
-              subscriptions,
               session_config,
               task_store_child
             )
@@ -149,7 +149,6 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
               layer,
               transport_opts,
               task_supervisor,
-              subscriptions,
               task_store_child
             )
         end
@@ -244,22 +243,13 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
   end
 
   # For STDIO: one lazy legacy session under a DynamicSupervisor, no registry
-  defp build_stdio_children(
-         server,
-         sup_mod,
-         layer,
-         transport_opts,
-         task_supervisor,
-         subscriptions,
-         session_config,
-         task_store_child
-       ) do
+  defp build_stdio_children(server, sup_mod, layer, transport_opts, task_supervisor, session_config, task_store_child) do
     session_sup_name = Registry.session_supervisor_name(server)
+    subscriptions = Keyword.fetch!(transport_opts, :subscriptions)
 
     transport_opts =
       Keyword.merge(transport_opts,
         session_supervisor: session_sup_name,
-        subscriptions: subscriptions,
         session_config: session_config
       )
 
@@ -282,10 +272,10 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
          layer,
          transport_opts,
          task_supervisor,
-         subscriptions,
          task_store_child
        ) do
     session_sup_name = Registry.session_supervisor_name(server)
+    subscriptions = Keyword.fetch!(transport_opts, :subscriptions)
 
     registry_child =
       case registry_mod.child_spec(registry_opts) do

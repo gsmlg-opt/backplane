@@ -69,6 +69,13 @@ defmodule Backplane.McpProtocol.Client.State do
   @spec new(map()) :: t()
   def new(opts) do
     protocol_preference = opts.protocol_version
+    latest_version = Registry.latest_version()
+
+    # Keep MapSet's :sets storage opaque to Dialyzer while constructing an empty version set.
+    unsupported_version_retries =
+      [latest_version]
+      |> MapSet.new()
+      |> MapSet.delete(latest_version)
 
     %__MODULE__{
       client_info: opts.client_info,
@@ -81,7 +88,7 @@ defmodule Backplane.McpProtocol.Client.State do
       peer_versions: [],
       discovery: nil,
       negotiation_error: nil,
-      unsupported_version_retries: MapSet.new(),
+      unsupported_version_retries: unsupported_version_retries,
       protocol_version: effective_protocol_version(protocol_preference),
       transport: opts.transport,
       timeout: opts.timeout,

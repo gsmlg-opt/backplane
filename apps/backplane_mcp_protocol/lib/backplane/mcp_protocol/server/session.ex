@@ -19,6 +19,7 @@ defmodule Backplane.McpProtocol.Server.Session do
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
   alias Backplane.McpProtocol.Server
   alias Backplane.McpProtocol.Server.Context
   alias Backplane.McpProtocol.Server.Frame
@@ -173,7 +174,7 @@ defmodule Backplane.McpProtocol.Server.Session do
     module = opts.server_module
     server_info = module.server_info()
     capabilities = module.server_capabilities()
-    protocol_versions = module.supported_protocol_versions()
+    protocol_versions = legacy_protocol_versions(module.supported_protocol_versions())
     instructions = module.server_instructions()
 
     state = %{
@@ -227,6 +228,12 @@ defmodule Backplane.McpProtocol.Server.Session do
     )
 
     {:ok, state, :hibernate}
+  end
+
+  defp legacy_protocol_versions(versions) do
+    Enum.filter(versions, fn version ->
+      match?({:ok, %{era: :legacy}}, ProtocolRegistry.profile(version))
+    end)
   end
 
   # Request/Response handling
@@ -709,6 +716,23 @@ defmodule Backplane.McpProtocol.Server.Session do
   end
 
   # Initialize handling
+
+  defp handle_request(
+         %{"params" => %{"protocolVersion" => requested_version}} = request,
+         _transport_context,
+         _from,
+         %{supported_versions: []} = state
+       )
+       when Message.is_initialize(request) do
+    error =
+      Error.protocol(:invalid_request, %{
+        "message" => "Server does not support a legacy protocol version",
+        "requestedProtocolVersion" => requested_version,
+        "supportedProtocolVersions" => []
+      })
+
+    {:reply, {:ok, encode_reply(Error.build_json_rpc(error, request["id"]))}, state}
+  end
 
   defp handle_request(%{"params" => params} = request, _transport_context, _from, state)
        when Message.is_initialize(request) do

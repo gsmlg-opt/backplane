@@ -22,6 +22,7 @@ defmodule Backplane.McpProtocol.MixProject do
       aliases: aliases(),
       dialyzer: [
         plt_local_path: "priv/plts",
+        no_umbrella: true,
         ignore_warnings: ".dialyzerignore.exs",
         plt_add_apps: [:mix, :ex_unit]
       ],
@@ -102,7 +103,7 @@ defmodule Backplane.McpProtocol.MixProject do
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/backplane_mcp_protocol"
       },
-      files: ~w[lib mix.exs README.md CHANGELOG.md LICENSE .formatter.exs]
+      files: ~w[lib pages priv/static mix.exs README.md CHANGELOG.md CONTRIBUTING.md LICENSE .formatter.exs]
     }
   end
 
@@ -125,6 +126,7 @@ defmodule Backplane.McpProtocol.MixProject do
         "pages/building-a-server.md",
         "pages/recipes.md",
         "pages/reference.md",
+        "pages/authorization.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
@@ -140,7 +142,8 @@ defmodule Backplane.McpProtocol.MixProject do
         ],
         "Patterns & Reference": [
           "pages/recipes.md",
-          "pages/reference.md"
+          "pages/reference.md",
+          "pages/authorization.md"
         ],
         "Project Info": [
           "CHANGELOG.md",

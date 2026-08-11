@@ -587,11 +587,13 @@ defmodule Backplane.McpProtocol.Server.Response do
       ...> ])
   """
   @spec completion_values(t, list(completion)) :: t
-        when completion: %{
-               required(:value) => binary,
-               optional(:description) => String.t() | nil,
-               optional(:label) => String.t() | nil
-             }
+        when completion:
+               String.t()
+               | %{
+                   required(:value) => binary,
+                   optional(:description) => String.t() | nil,
+                   optional(:label) => String.t() | nil
+                 }
   def completion_values(%{type: :completion} = r, values) when is_list(values) do
     normalized_values =
       Enum.map(values, fn

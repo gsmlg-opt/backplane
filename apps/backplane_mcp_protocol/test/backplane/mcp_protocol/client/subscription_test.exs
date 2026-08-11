@@ -4,6 +4,7 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
   alias Backplane.McpProtocol.Client
   alias Backplane.McpProtocol.Client.Subscription
   alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Transport.STDIO
 
   @subscription_id_key "io.modelcontextprotocol/subscriptionId"
@@ -250,6 +251,7 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     {:ok, transport} = start_supervised({CapturePort, self()})
     client = start_modern_stdio_client(transport)
     owner = self()
+    enable_tools(client)
 
     first_task =
       Task.async(fn ->
@@ -269,10 +271,10 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     send_ack(client, second_request["id"], %{})
     assert {:ok, second} = Task.await(second_task)
 
-    ping_task = Task.async(fn -> Client.ping(client, timeout: 500) end)
-    assert_receive {:stdio_send, encoded_ping}
-    ping_request = JSON.decode!(encoded_ping)
-    assert ping_request["method"] == "ping"
+    ordinary_task = Task.async(fn -> Client.list_tools(client, timeout: 500) end)
+    assert_receive {:stdio_send, encoded_request}
+    ordinary_request = JSON.decode!(encoded_request)
+    assert ordinary_request["method"] == "tools/list"
 
     first_pid = first.pid
     first_monitor = Process.monitor(first.pid)
@@ -284,27 +286,27 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     assert id == first.id
     assert_receive {:DOWN, ^first_monitor, :process, ^first_pid, :normal}
     assert Process.alive?(second.pid)
-    refute Task.yield(ping_task, 20)
+    refute Task.yield(ordinary_task, 20)
 
     send_cancelled(client, "unknown-subscription", "ignore me")
     assert Process.alive?(second.pid)
-    refute Task.yield(ping_task, 20)
+    refute Task.yield(ordinary_task, 20)
 
-    send_cancelled(client, ping_request["id"], "cancel the ordinary request")
+    send_cancelled(client, ordinary_request["id"], "cancel the ordinary request")
     assert Process.alive?(second.pid)
-    refute Task.yield(ping_task, 20)
+    refute Task.yield(ordinary_task, 20)
 
     GenServer.cast(
       client,
       {:response,
        JSON.encode!(%{
          "jsonrpc" => "2.0",
-         "id" => ping_request["id"],
-         "result" => %{"resultType" => "complete"}
+         "id" => ordinary_request["id"],
+         "result" => %{"resultType" => "complete", "tools" => []}
        }) <> "\n"}
     )
 
-    assert :pong = Task.await(ping_task)
+    assert {:ok, %Response{}} = Task.await(ordinary_task)
     assert :ok = Client.close_subscription(client, second)
     assert_receive {:stdio_send, _cancelled}
   end
@@ -510,6 +512,7 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     {:ok, transport} = start_supervised({CapturePort, self()})
     client = start_modern_stdio_client(transport)
     owner = self()
+    enable_tools(client)
 
     listen_task =
       Task.async(fn ->
@@ -520,24 +523,25 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     send_ack(client, request["id"], %{})
     assert {:ok, subscription} = Task.await(listen_task)
 
-    ping_task = Task.async(fn -> Client.ping(client, timeout: 500) end)
-    assert_receive {:stdio_send, encoded_ping}
-    ping = JSON.decode!(encoded_ping)
+    ordinary_task = Task.async(fn -> Client.list_tools(client, timeout: 500) end)
+    assert_receive {:stdio_send, encoded_request}
+    ordinary_request = JSON.decode!(encoded_request)
 
     GenServer.cast(
       client,
       {:response,
        JSON.encode!(%{
          "jsonrpc" => "2.0",
-         "id" => ping["id"],
+         "id" => ordinary_request["id"],
          "result" => %{
            "resultType" => "complete",
+           "tools" => [],
            "_meta" => %{@subscription_id_key => subscription.id}
          }
        }) <> "\n"}
     )
 
-    assert :pong = Task.await(ping_task)
+    assert {:ok, %Response{}} = Task.await(ordinary_task)
     assert Process.alive?(subscription.pid)
     assert :ok = Client.close_subscription(client, subscription)
     assert_receive {:stdio_send, _cancelled}
@@ -610,6 +614,12 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
 
   defp start_modern_stdio_client(transport) do
     start_modern_client(STDIO, transport)
+  end
+
+  defp enable_tools(client) do
+    :sys.replace_state(client, fn state ->
+      %{state | server_capabilities: Map.put(state.server_capabilities, "tools", %{})}
+    end)
   end
 
   defp start_modern_client(layer, transport) do

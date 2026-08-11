@@ -13,7 +13,7 @@ Add `Backplane.McpProtocol.Client` directly to your supervision tree:
  name: MyApp.MCPClient,
  transport: {:stdio, command: "cmd", args: ["arg1"]},
  client_info: %{"name" => "MyApp", "version" => "1.0.0"},
- protocol_version: "2025-06-18"}
+ protocol_version: :auto}
 ```
 
 **Required Options:**
@@ -25,7 +25,7 @@ Add `Backplane.McpProtocol.Client` directly to your supervision tree:
 **Optional Options:**
 
 - `capabilities` - Capabilities map (default: `%{}`)
-- `protocol_version` - MCP protocol version (default: latest)
+- `protocol_version` - `:auto` (default) or an explicitly pinned MCP version
 
 **Transport Options:**
 
@@ -34,49 +34,74 @@ Add `Backplane.McpProtocol.Client` directly to your supervision tree:
 - `{:websocket, base_url: "ws://localhost:8000"}`
 - `{:sse, base_url: "http://localhost:8000"}` _(deprecated — use `:streamable_http` instead)_
 
+`2026-07-28` is supported over stdio and Streamable HTTP. Pin a legacy version
+for WebSocket or SSE.
+
 ### Client Functions
 
 All functions take a client process name or PID as the first argument:
 
 ```elixir
-Backplane.McpProtocol.Client.ping(MyApp.MCPClient)
 Backplane.McpProtocol.Client.list_tools(MyApp.MCPClient)
 ```
 
 **Connection Management:**
 
-- `ping/0,1` - Check if server is responsive
-- `close/0,1` - Close the connection gracefully
+- `ping/1,2` - Check responsiveness on legacy peers; unsupported by `2026-07-28`
+- `close/1` - Close the connection gracefully
+- `await_ready/1,2` - Wait for modern discovery or legacy initialization
+- `get_protocol_info/1,2` - Inspect the selected era, version, and peer metadata
+- `set_log_level/2` - Set a legacy peer's logging threshold; unsupported by `2026-07-28`
 
 **Discovery:**
 
-- `get_server_info/0,1` - Get server information
-- `get_server_capabilities/0,1` - Get server capabilities
+- `get_server_info/1,2` - Get server information
+- `get_server_capabilities/1,2` - Get server capabilities
 
 **Tools:**
 
-- `list_tools/0,1` - List available tools
+- `list_tools/1,2` - List available tools
 - `call_tool/2,3,4` - Call a tool with arguments
 
 **Resources:**
 
-- `list_resources/0,1,2` - List available resources (supports pagination)
-- `read_resource/1,2` - Read a specific resource
+- `list_resources/1,2` - List available resources (supports pagination)
+- `read_resource/2,3` - Read a specific resource
 
 **Prompts:**
 
-- `list_prompts/0,1,2` - List available prompts (supports pagination)
-- `get_prompt/2,3` - Get a prompt with arguments
+- `list_prompts/1,2` - List available prompts (supports pagination)
+- `get_prompt/2,3,4` - Get a prompt with arguments
 
 **Autocompletion:**
 
-- `complete/2,3` - Get completion suggestions
+- `complete/3,4` - Get completion suggestions
+
+**Modern Subscriptions:**
+
+- `listen_subscriptions/2,3` - Open and acknowledge a `subscriptions/listen` stream
+- `close_subscription/2,3` - Cancel a subscription using its transport-specific mechanism
+
+Subscription owners receive `{:mcp_subscription, handle, notification}` and
+`{:mcp_subscription_closed, handle, reason}` messages. Connection loss closes
+the handle; callers must listen again after reconnecting if they still want
+events.
 
 ### Options
 
 Functions that make requests accept options:
 
 - `timeout: milliseconds` - Request timeout (default: 30_000)
+- `meta: map` - Application request metadata; modern protocol-reserved metadata is merged by the client
+- `progress: keyword` - Progress token and optional callback
+
+### Protocol Selection
+
+`:auto` starts with modern `server/discover`, negotiates `2026-07-28`, and uses
+legacy initialization only after a protocol-defined legacy signal. Explicit
+version strings are pins and never fall back across eras. Modern Streamable
+HTTP sends `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, and safe
+schema-declared `Mcp-Param-*` mirrors.
 
 ## Server API
 
@@ -111,6 +136,11 @@ use Backplane.McpProtocol.Server, options
 
 # Optional initialization
 def init(arg, frame) do
+  {:ok, frame}
+end
+
+# Optional initialization for one stateless 2026-07-28 request
+def init_request(request_context, frame) do
   {:ok, frame}
 end
 
@@ -194,6 +224,13 @@ end
 ```
 
 ## Schema DSL
+
+The DSL covers the common Peri-compatible subset. Modern tools also preserve
+raw JSON Schema 2020-12 maps on the wire, including unknown keywords, `$defs`,
+composition, and references. A client that cannot compile a received schema
+retains the tool but disables local validation for it. External network `$ref`
+resolution is disabled by default. Modern `structuredContent` accepts every
+JSON value, including explicit `null`.
 
 Available field types and validations:
 
@@ -286,6 +323,9 @@ Errors are automatically formatted according to MCP protocol. You can return:
 - `mix compile --force` - Recompile all components
 - `mix test` - Run tests
 
+The modern `io.modelcontextprotocol/tasks` extension is not enabled in this
+release. Legacy Tasks remain supported for `2025-11-25` peers.
+
 ## Need More?
 
 This reference covers the essential API. For detailed examples and patterns:
@@ -293,5 +333,6 @@ This reference covers the essential API. For detailed examples and patterns:
 - [Building a Client](building-a-client.md)
 - [Building a Server](building-a-server.md)
 - [Recipes](recipes.md)
+- [Authorization](authorization.md)
 
 Remember: the protocol complexity is handled for you. Focus on what your application does best.

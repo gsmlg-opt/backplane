@@ -15,16 +15,16 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
   @default_max_depth 64
   @default_max_nodes 1_000
 
-  @annotation_keywords MapSet.new(~w(
+  @annotation_keywords ~w(
     $schema title description default examples deprecated readOnly writeOnly
-  ))
+  )
 
-  @assertion_keywords MapSet.new(~w(
+  @assertion_keywords ~w(
     type properties required items additionalProperties
     enum const
     minLength maxLength pattern format
     minimum maximum exclusiveMinimum exclusiveMaximum
-  ))
+  )
 
   @assertion_keyword_order ~w(
     enum const properties required items additionalProperties
@@ -84,10 +84,10 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
          :ok <- validate_keyword_compatibility(schema) do
       Enum.reduce_while(schema, :ok, fn {keyword, value}, :ok ->
         cond do
-          MapSet.member?(@annotation_keywords, keyword) ->
+          keyword in @annotation_keywords ->
             {:cont, :ok}
 
-          MapSet.member?(@assertion_keywords, keyword) ->
+          keyword in @assertion_keywords ->
             case preflight_keyword(keyword, value, depth, path) do
               :ok -> {:cont, :ok}
               other -> {:halt, other}

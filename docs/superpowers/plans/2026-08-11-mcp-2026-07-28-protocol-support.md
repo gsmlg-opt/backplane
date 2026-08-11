@@ -668,13 +668,31 @@ git commit -m "test(mcp): add 2026 dual-era conformance"
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/protocol/registry.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/supervisor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/protocol/cache_hint.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/schema_validator/peri.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/supervisor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/response.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/session.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/modern_subscription.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/transport/streamable_http/stream.ex`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol/registry_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/state_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/subscription_test.exs`
+- Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/roots_notification_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol/v2026_07_28_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/session_expiry_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/session_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/transport/streamable_http_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/support/mcp/setup.ex`
-- Modify: `apps/backplane_mcp_protocol/mix.exs` only to register `pages/authorization.md` with ExDoc.
+- Modify: `apps/backplane_mcp_protocol/mix.exs` to register
+  `pages/authorization.md` with ExDoc and opt the package-local Dialyzer gate
+  out of umbrella PLT reuse. Include the package guides and generated
+  `priv/static/llms*` assets in the Hex artifact.
 - Modify: `apps/backplane_mcp_protocol/README.md`
 - Modify: `apps/backplane_mcp_protocol/pages/introduction.md`
 - Modify: `apps/backplane_mcp_protocol/pages/building-a-client.md`
@@ -684,7 +702,7 @@ git commit -m "test(mcp): add 2026 dual-era conformance"
 - Modify: `apps/backplane_mcp_protocol/CHANGELOG.md`
 - Modify: package-local generated files under `apps/backplane_mcp_protocol/priv/static/`
 
-- [ ] **Step 1: Add final activation tests**
+- [x] **Step 1: Add final activation tests**
 
 ```elixir
 assert Registry.latest_version() == "2026-07-28"
@@ -692,15 +710,21 @@ assert hd(Registry.supported_versions()) == "2026-07-28"
 assert Client.default_protocol_preference() == :auto
 ```
 
-- [ ] **Step 2: Activate only after Task 11 is green**
+- [x] **Step 2: Activate only after Task 11 is green**
 
-Register `2026-07-28` as latest and make new clients default to `:auto`. Preserve explicit legacy pinning.
+Register `2026-07-28` as latest and make new clients default to `:auto`.
+Preserve explicit legacy pinning, and return local version-aware
+`unsupported_operation` errors for removed modern methods such as `ping` and
+`logging/setLevel` without sending them to the peer. Ensure the public client
+supervisor preserves `:auto`, legacy sessions filter out stateless modern
+profiles, and modern roots mutations remain local without emitting the removed
+legacy list-changed notification.
 
-- [ ] **Step 3: Update package documentation and generated LLM docs**
+- [x] **Step 3: Update package documentation and generated LLM docs**
 
 Register the authorization guide with ExDoc. Document modern/legacy selection, per-request metadata, server discovery, modern HTTP headers, MRTR, subscriptions, JSON Schema behavior, authorization, and migration from legacy initialization. State that explicit subscription handles close on connection loss and callers re-listen if they still want events. State that the modern Tasks extension is deferred.
 
-- [ ] **Step 4: Run the complete package gate**
+- [x] **Step 4: Run the complete package gate**
 
 ```sh
 cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix test
@@ -713,12 +737,15 @@ cd apps/backplane_mcp_protocol && MIX_ENV=dev MIX_DEPS_PATH=/home/gao/Workspace/
 ```
 
 Re-run both official conformance commands from Task 11 after the full package suite.
+Keep the narrow Dialyzer-driven type and opaque-flow corrections in Task 12;
+they are required for the exact package gate and must retain their focused
+behavior regressions.
 
-- [ ] **Step 5: Run GitNexus change detection and commit final activation**
+- [x] **Step 5: Run GitNexus change detection and commit final activation**
 
 Verify only `apps/backplane_mcp_protocol` and the scoped design/plan documents changed.
 
 ```sh
 git add apps/backplane_mcp_protocol docs/superpowers/specs/2026-08-11-mcp-2026-07-28-protocol-support-design.md docs/superpowers/plans/2026-08-11-mcp-2026-07-28-protocol-support.md
-git commit -m "docs(mcp): document 2026 protocol support"
+git commit -m "feat(mcp): activate 2026 protocol support"
 ```

@@ -16,7 +16,7 @@ defmodule Backplane.McpProtocol.Client do
          transport: {:stdio, command: "uvx", args: ["mcp-server-anthropic"]},
          client_info: %{"name" => "MyApp", "version" => "1.0.0"},
          capabilities: %{"roots" => %{}},
-         protocol_version: "2025-06-18"}
+         protocol_version: :auto}
       ]
 
   Use the client by passing the registered name:
@@ -76,7 +76,7 @@ defmodule Backplane.McpProtocol.Client do
          transport: {:streamable_http, base_url: url},
          client_info: %{"name" => "MyApp", "version" => "1.0.0"},
          capabilities: %{},
-         protocol_version: "2025-06-18"}
+         protocol_version: :auto}
       )
   """
 
@@ -114,7 +114,7 @@ defmodule Backplane.McpProtocol.Client do
 
   @client_capabilities ~w(roots sampling elicitation)a
 
-  @default_protocol_version Protocol.latest_version()
+  @default_protocol_version :auto
   @default_operation_timeout to_timeout(second: 30)
   @cancellation_worker_timeout to_timeout(second: 1)
   @subscription_call_buffer to_timeout(second: 1)
@@ -225,7 +225,7 @@ defmodule Backplane.McpProtocol.Client do
   - `:transport` - The MCP transport options
   - `:client_info` - Information about the client
   - `:capabilities` - Client capabilities to advertise to the MCP server
-  - `:protocol_version` - Protocol version to use (defaults to "2024-11-05")
+  - `:protocol_version` - Protocol preference (`:auto` by default, or an explicit version string)
 
   Any other option support by `GenServer`.
   """
@@ -245,6 +245,10 @@ defmodule Backplane.McpProtocol.Client do
     {:protocol_version, {{:oneof, [:string, {:enum, [:auto]}]}, {:default, @default_protocol_version}}},
     {:timeout, {:integer, {:default, @default_operation_timeout}}}
   ])
+
+  @doc "Returns the protocol preference used when a client does not explicitly pin a version."
+  @spec default_protocol_preference() :: :auto
+  def default_protocol_preference, do: @default_protocol_version
 
   @doc """
   Guard to check if an atom is a valid client capability.
@@ -331,7 +335,10 @@ defmodule Backplane.McpProtocol.Client do
   # Public API
 
   @doc """
-  Sends a ping request to the server to check connection health. Returns `:pong` if successful.
+  Sends a legacy ping request to the server to check connection health.
+
+  Returns `:pong` if successful. Modern `2026-07-28` peers return a local
+  `:unsupported_operation` error because that revision removed `ping`.
 
   ## Options
 
@@ -721,7 +728,10 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   @doc """
-  Sets the minimum log level for the server to send log messages.
+  Sets the minimum log level for a legacy server to send log messages.
+
+  Modern `2026-07-28` peers return a local `:unsupported_operation` error
+  because that revision removed `logging/setLevel`.
 
   ## Parameters
 
@@ -1138,6 +1148,16 @@ defmodule Backplane.McpProtocol.Client do
 
   @impl true
   def handle_call({:operation, %Operation{method: method}}, _from, %{era: :modern} = state)
+      when method in ["ping", "logging/setLevel"] do
+    {:reply,
+     {:error,
+      Error.transport(:unsupported_operation, %{
+        method: method,
+        era: :modern
+      })}, state}
+  end
+
+  def handle_call({:operation, %Operation{method: method}}, _from, %{era: :modern} = state)
       when method in ["resources/subscribe", "resources/unsubscribe"] do
     {:reply,
      {:error,
@@ -1358,7 +1378,10 @@ defmodule Backplane.McpProtocol.Client do
 
   @impl true
   def handle_continue(:roots_list_changed, state) do
-    Task.start(fn -> send_roots_list_changed_notification(state) end)
+    if roots_list_changed_supported?(state) do
+      Task.start(fn -> send_roots_list_changed_notification(state) end)
+    end
+
     {:noreply, state}
   end
 
@@ -1988,7 +2011,7 @@ defmodule Backplane.McpProtocol.Client do
                errors: errors,
                tool: tool,
                request_id: request.id,
-               request_params: Map.drop(request.base_params || request.params, ["inputResponses", "requestState"]),
+               request_params: Map.drop(request.base_params, ["inputResponses", "requestState"]),
                request_method: request.method
              })}
           )
@@ -2113,7 +2136,6 @@ defmodule Backplane.McpProtocol.Client do
       else
         {:error, %Error{} = error} -> {:reply, {:error, error}, state}
         {:error, reason} -> {:reply, {:error, normalize_subscription_stream_error(reason)}, state}
-        nil -> {:reply, {:error, Error.transport(:subscription_transport_down)}, state}
       end
     else
       false -> {:reply, {:error, Error.protocol(:invalid_params, %{field: "timeout"})}, state}
@@ -2239,17 +2261,12 @@ defmodule Backplane.McpProtocol.Client do
     :exit, reason -> {:error, Error.transport(:send_failure, %{original_reason: reason})}
   end
 
-  defp safe_send_notification(state, method, params \\ %{}) do
+  defp safe_send_notification(%{era: :legacy} = state, method, params \\ %{}) do
     with {:ok, notification_data} <- encode_notification(method, params) do
-      opts =
-        if state.era == :legacy do
-          [
-            timeout: state.timeout,
-            request_context: RequestContext.new(method, params, state)
-          ]
-        else
-          [timeout: state.timeout]
-        end
+      opts = [
+        timeout: state.timeout,
+        request_context: RequestContext.new(method, params, state)
+      ]
 
       safe_send_to_transport(state.transport, notification_data, opts)
     end
@@ -2328,8 +2345,6 @@ defmodule Backplane.McpProtocol.Client do
   defp catalog_key(state), do: state.client_info["name"]
 
   defp progress_metadata(extra_meta, progress_opts) do
-    extra_meta = if is_map(extra_meta), do: extra_meta, else: %{}
-
     case progress_opts && Keyword.get(progress_opts, :token) do
       token when is_binary(token) or is_integer(token) ->
         Map.put(extra_meta, "progressToken", token)
@@ -2402,13 +2417,8 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp best_effort_cancellation(state, request_id, reason) do
-    case Task.start(fn -> run_cancellation_worker(state, request_id, reason) end) do
-      {:ok, _pid} ->
-        :ok
-
-      {:error, _reason} ->
-        record_cancellation_failure(request_id, :worker_start_failed)
-    end
+    _ = Task.start(fn -> run_cancellation_worker(state, request_id, reason) end)
+    :ok
   rescue
     _error -> record_cancellation_failure(request_id, :worker_start_failed)
   catch
@@ -2443,10 +2453,6 @@ defmodule Backplane.McpProtocol.Client do
     record_cancellation_failure(request_id, failure)
   end
 
-  defp record_cancellation_result(request_id, _unexpected) do
-    record_cancellation_failure(request_id, :send_failure)
-  end
-
   defp record_cancellation_failure(request_id, failure) do
     Logging.client_event(
       "cancellation_notification_failed",
@@ -2473,6 +2479,19 @@ defmodule Backplane.McpProtocol.Client do
     Logging.client_event("sending_roots_list_changed", nil)
     send_notification(state, "notifications/roots/list_changed")
   end
+
+  defp roots_list_changed_supported?(%{era: era, negotiated_version: version})
+       when era in [:legacy, :modern] and is_binary(version) do
+    case Registry.profile(version) do
+      {:ok, %Profile{era: ^era, notification_methods: methods}} ->
+        "notifications/roots/list_changed" in methods
+
+      _unsupported_profile ->
+        false
+    end
+  end
+
+  defp roots_list_changed_supported?(_state), do: false
 
   defp retain_operation(state, request_id, operation) do
     request =

@@ -28,7 +28,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
       versions = Registry.supported_versions()
       assert is_list(versions)
       assert length(versions) == 5
-      assert hd(versions) == "2025-11-25"
+      assert hd(versions) == "2026-07-28"
       assert "2026-07-28" in versions
       assert "2025-11-25" in versions
       assert "2025-06-18" in versions
@@ -53,7 +53,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
 
   describe "latest_version/0" do
     test "returns the latest version" do
-      assert "2025-11-25" = Registry.latest_version()
+      assert "2026-07-28" = Registry.latest_version()
     end
   end
 
@@ -65,7 +65,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
 
   describe "latest_module/0" do
     test "returns the module for the latest version" do
-      assert V2025_11_25 = Registry.latest_module()
+      assert V2026_07_28 = Registry.latest_module()
     end
   end
 

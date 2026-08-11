@@ -176,9 +176,6 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
         {:error, reason, %{error: nil}} -> {:error, reason}
         {:error, _finch_reason, %{error: reason}} -> {:error, reason}
       end
-    else
-      {:error, reason} -> {:error, reason}
-      _invalid_request -> {:error, :invalid_stream_request}
     end
   rescue
     exception -> {:error, {:stream_exception, Exception.message(exception)}}

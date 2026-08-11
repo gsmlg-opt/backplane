@@ -163,4 +163,55 @@ forward "/.well-known/oauth-protected-resource",
 | RFC 7662 | Token Introspection |
 | RFC 7519 + 7517 | JWT + JWKS verification |
 
-Client-side OAuth flows (PKCE, discovery, token store, refresh) are out of scope — use a dedicated OAuth client library for those.
+## Modern Client Authorization
+
+`2026-07-28` client integrations can use
+`Backplane.McpProtocol.Client.Authorization` to apply the protocol's
+authorization-server binding and registration rules. The application still
+owns browser redirects, PKCE, authorization-code exchange, and token refresh.
+
+Validate the RFC 9207 `iss` value exactly. Do not URI-normalize or case-fold it:
+
+```elixir
+alias Backplane.McpProtocol.Client.Authorization
+
+:ok = Authorization.validate_issuer(expected_issuer, returned_issuer, authorization_server_metadata)
+```
+
+Choose registration in protocol priority order: pre-registered credentials,
+Client ID Metadata Documents, then deprecated Dynamic Client Registration when
+explicitly enabled:
+
+```elixir
+{:ok, selection} =
+  Authorization.select_registration(authorization_server_metadata,
+    pre_registered: configured_client,
+    client_id_metadata_document: "https://client.example/.well-known/oauth-client",
+    dynamic_client_registration: false
+  )
+```
+
+When DCR is used, include the correct OIDC `application_type`:
+
+```elixir
+metadata = Authorization.registration_metadata(metadata, :native)
+```
+
+Persist client credentials with a secure adapter implementing
+`Backplane.McpProtocol.Client.Authorization.CredentialStore`. Keys are the
+exact validated `{issuer, client_id}` pair; adapter configuration must not
+contain the credential values themselves.
+
+```elixir
+config :backplane_mcp_protocol, :authorization_credential_store,
+  adapter: MyApp.OAuthCredentialStore
+
+alias Backplane.McpProtocol.Client.Authorization.CredentialStore
+
+:ok = CredentialStore.put(validated_issuer, client_id, credentials)
+{:ok, credentials} = CredentialStore.fetch(validated_issuer, client_id)
+```
+
+Bearer tokens, client credentials, authorization codes, mirrored sensitive
+parameters, and MRTR `requestState` values must not be added to application
+logs or telemetry.

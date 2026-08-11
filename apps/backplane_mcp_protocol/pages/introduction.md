@@ -43,7 +43,7 @@ children = [
    transport: {:stdio, command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
    capabilities: %{},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 Supervisor.start_link(children, strategy: :one_for_one)
@@ -64,6 +64,33 @@ Now watch the magic:
 ```
 
 Your Elixir application now has AI-powered web search, file operations, and more. All fault-tolerant, all supervised, all feeling like native Elixir.
+
+## Modern and Legacy Peers
+
+New clients default to `protocol_version: :auto`. They begin with the modern
+`server/discover` exchange and select `2026-07-28` when the peer supports it.
+They retry a mutually supported modern version when the peer reports one, and
+fall back to legacy `initialize` only for the protocol-defined HTTP or stdio
+signals that prove the peer is legacy. Transport failures, server errors, and
+malformed modern replies do not silently downgrade the connection.
+
+Use an explicit version string to pin either era. An explicit modern pin never
+downgrades, and an explicit legacy pin starts directly with the legacy
+initialization lifecycle.
+
+After readiness, inspect the selected era and version:
+
+```elixir
+:ok = Backplane.McpProtocol.Client.await_ready(MyApp.MCPClient)
+%{era: era, protocol_version: version} =
+  Backplane.McpProtocol.Client.get_protocol_info(MyApp.MCPClient)
+```
+
+Modern requests carry protocol version, client capabilities, and client
+identity in per-request `_meta`. Modern Streamable HTTP also projects the
+standard MCP headers. The client supplies protocol-reserved metadata itself;
+application metadata passed with `meta: %{...}` is merged without replacing
+those reserved values.
 
 ## Exposing Your App to AI
 

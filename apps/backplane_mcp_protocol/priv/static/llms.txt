@@ -6,7 +6,7 @@ Backplane.McpProtocol MCP is a comprehensive Elixir framework for building Model
 
 The Model Context Protocol (MCP) is an open standard that enables language models to securely access tools and data sources. Backplane.McpProtocol brings this capability to the Elixir ecosystem with:
 
-- **Full MCP Specification Support**: Implements the complete MCP protocol including tools, resources, prompts, and sampling
+- **Dual-Era Protocol Support**: Implements MCP `2026-07-28` plus every supported legacy protocol version
 - **Multiple Transport Layers**: STDIO, Server-Sent Events (SSE), WebSocket, and HTTP streaming
 - **OTP Architecture**: Built on GenServer with proper supervision trees for fault tolerance
 - **Declarative APIs**: Simple DSL for defining servers and clients without boilerplate
@@ -33,7 +33,7 @@ The Model Context Protocol (MCP) is an open standard that enables language model
    - Declarative server definition
    - Component registration (tools, prompts, resources)
    - Request/notification handling
-   - Session isolation
+   - Stateless modern execution and isolated legacy sessions
 
 4. **Client Framework** (`Backplane.McpProtocol.Client`)
    - Direct client usage (no macro needed)
@@ -81,7 +81,7 @@ children = [
    name: MyApp.MCPClient,
    transport: {:stdio, command: "uvx", args: ["mcp-server-anthropic"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 # Use the client
@@ -109,12 +109,27 @@ Offer reusable templates that can be customized with arguments. Prompts help sta
 
 ## Advanced Features
 
+- **Automatic Negotiation**: `server/discover` first, with evidence-based legacy fallback
+- **Modern Request Metadata**: Required protocol version, capabilities, and identity on every request
+- **Modern HTTP Headers**: Standard headers plus safe `x-mcp-header` argument projection
+- **Multi-Round-Trip Requests**: Roots, sampling, and elicitation continuations for supported methods
+- **Modern Subscriptions**: Request-owned HTTP streams and multiplexed stdio notifications
+- **JSON Schema 2020-12**: Raw schema preservation with safe local-validation fallback
 - **Batch Operations**: Send multiple requests in a single message
 - **Progress Tracking**: Monitor long-running operations
 - **Sampling Support**: Servers can request LLM completions from clients
 - **Dynamic Registration**: Register/unregister components at runtime
 - **Session Management**: Isolated sessions with configurable timeouts
 - **Graceful Shutdown**: Proper cleanup of resources and connections
+
+New clients default to `protocol_version: :auto`. Explicit version strings pin
+one era and never downgrade across eras. Modern Streamable HTTP is stateless
+and POST-only; legacy initialization, sessions, GET notification streams, and
+DELETE cleanup remain available to legacy peers. Explicit subscription handles
+close on connection loss, and callers must listen again after reconnecting.
+
+The optional modern `io.modelcontextprotocol/tasks` extension is deferred.
+Existing Tasks support remains available on the legacy `2025-11-25` path.
 
 ## Best Practices
 

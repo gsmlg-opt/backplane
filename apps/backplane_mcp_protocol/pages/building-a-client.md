@@ -13,7 +13,7 @@ children = [
    name: MyApp.WeatherClient,
    transport: {:stdio, command: "weather-server", args: []},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 Supervisor.start_link(children, strategy: :one_for_one)
@@ -25,6 +25,21 @@ The client automatically:
 - Negotiates capabilities
 - Maintains the connection
 - Handles all the protocol details
+
+`:auto` is the default. The client probes `server/discover`, negotiates the
+modern `2026-07-28` profile when available, and falls back to legacy
+initialization only when the peer gives a protocol-defined legacy signal.
+Malformed replies, transport failures, and arbitrary server errors do not
+trigger a downgrade. Pin a version string when you require one era.
+
+Wait for negotiation and inspect what was selected when startup ordering
+matters:
+
+```elixir
+:ok = Backplane.McpProtocol.Client.await_ready(MyApp.WeatherClient)
+%{era: era, protocol_version: version} =
+  Backplane.McpProtocol.Client.get_protocol_info(MyApp.WeatherClient)
+```
 
 All client functions take a process name (or PID) as the first argument:
 
@@ -142,8 +157,11 @@ Which transport should you choose?
 
 - **STDIO**: Perfect for local tools and subprocess isolation
 - **HTTP**: Great for remote services and web APIs
-- **WebSocket**: When you need bidirectional real-time communication
-- **SSE**: For servers that push updates to clients (deprecated)
+- **WebSocket**: Legacy client interoperability when explicitly pinned
+- **SSE**: Deprecated legacy interoperability when explicitly pinned
+
+The modern `2026-07-28` profile is supported over stdio and Streamable HTTP.
+Pin an appropriate legacy version when using WebSocket or SSE.
 
 ## Advanced Patterns
 
@@ -157,13 +175,13 @@ children = [
    name: MyApp.WeatherUS,
    transport: {:stdio, command: "weather-server", args: ["--region", "US"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"},
+   protocol_version: :auto},
 
   {Backplane.McpProtocol.Client,
    name: MyApp.WeatherEU,
    transport: {:stdio, command: "weather-server", args: ["--region", "EU"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 # Use specific instances by name
@@ -189,7 +207,7 @@ def connect_to_server(user_id, server_url) do
     name: name,
     transport: {:streamable_http, base_url: server_url},
     client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-    protocol_version: "2025-06-18"
+    protocol_version: :auto
   ]
 
   DynamicSupervisor.start_child(MyApp.MCPSupervisor, {Backplane.McpProtocol.Client, opts})
@@ -221,7 +239,7 @@ Enable features your client supports using the `capabilities` option:
  transport: {:stdio, command: "server"},
  client_info: %{"name" => "MyApp", "version" => "1.0.0"},
  capabilities: %{"roots" => %{}, "sampling" => %{}},
- protocol_version: "2025-06-18"}
+ protocol_version: :auto}
 ```
 
 You can also use the `Backplane.McpProtocol.Client.parse_capability/2` helper to build capability maps from atom shorthand:
@@ -270,6 +288,86 @@ Backplane.McpProtocol.Client.call_tool(MyApp.WeatherClient, "analyze_data", para
 ```
 
 The server sends progress notifications that your callback receives automatically.
+
+### Modern Request Metadata and HTTP Headers
+
+For `2026-07-28`, the client adds the negotiated protocol version, client
+capabilities, and client identity to every request's `_meta`. Supply your own
+non-reserved metadata with the existing `meta:` option:
+
+```elixir
+Backplane.McpProtocol.Client.call_tool(MyApp.WeatherClient, "get_weather", params,
+  meta: %{"com.example/traceId" => trace_id}
+)
+```
+
+Streamable HTTP requests also include `MCP-Protocol-Version`, `Mcp-Method`, and
+`Mcp-Name` where applicable. After `tools/list`, primitive tool arguments marked
+with `x-mcp-header` in the raw JSON Schema are projected to validated HTTP
+headers. Unsafe mirrored strings, including values containing CR or LF, use
+the protocol's base64 sentinel encoding; raw configured header values with CR
+or LF are rejected.
+
+### Multi-Round-Trip Requests
+
+A modern `tools/call`, `prompts/get`, or `resources/read` result may be
+`input_required`. The client invokes the configured roots, sampling, or
+elicitation handler, then retries the original operation with `inputResponses`
+and the server's opaque `requestState`. The original caller and deadline remain
+attached to the operation. Treat `requestState` as sensitive and never log or
+interpret it in application code.
+
+### Modern Subscriptions
+
+Use `subscriptions/listen` for modern long-lived notifications:
+
+```elixir
+{:ok, subscription} =
+  Backplane.McpProtocol.Client.listen_subscriptions(MyApp.WeatherClient, [
+    "notifications/tools/list_changed"
+  ])
+
+receive do
+  {:mcp_subscription, ^subscription, notification} ->
+    handle_notification(notification)
+end
+
+:ok = Backplane.McpProtocol.Client.close_subscription(MyApp.WeatherClient, subscription)
+```
+
+The returned handle is acknowledged before notifications are delivered. HTTP
+uses an independent request-owned POST/SSE stream so normal calls remain
+concurrent; stdio multiplexes notifications on the existing connection. A
+connection loss closes explicit subscription handles. The client does not
+silently recreate them, so callers must call `listen_subscriptions/3` again if
+they still want events after reconnecting.
+
+Legacy `resources/subscribe` and `resources/unsubscribe` remain available only
+for legacy peers and return an unsupported-operation error against a modern
+peer.
+
+### JSON Schema and Structured Results
+
+Modern catalog entries retain raw JSON Schema 2020-12 maps, including `$defs`,
+composition keywords, references, and unknown extension keywords. The local
+Peri adapter validates only its supported subset. If a received schema cannot
+be compiled safely, the tool remains available with its raw schema and local
+validation is disabled for that tool. External network `$ref` resolution is
+disabled by default. `structuredContent` may be any JSON value, including an
+array, primitive, boolean, or explicit `null`.
+
+### Migrating from Legacy Initialization
+
+For a new connection, remove an old `protocol_version: "2025-..."` pin or set
+`:auto`, then use `await_ready/2` rather than assuming `initialize` ran. Modern
+peers expose identity and capabilities through `server/discover`; requests are
+independent and carry their own metadata. Keep an explicit legacy pin when your
+application depends on session state, the GET notification stream, replay, or
+session deletion.
+
+The optional modern `io.modelcontextprotocol/tasks` extension is deferred in
+this release. Existing Tasks APIs continue to work on the legacy `2025-11-25`
+path.
 
 ## Graceful Shutdown
 

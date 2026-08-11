@@ -79,7 +79,7 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
         """
 
     capabilities = Keyword.get(opts, :capabilities, %{})
-    protocol_version = Keyword.get(opts, :protocol_version, Backplane.McpProtocol.Protocol.latest_version())
+    protocol_version = Keyword.get(opts, :protocol_version, Client.default_protocol_preference())
 
     client_name = opts[:name] || Client
     transport_name = derive_transport_name(opts[:transport_name], client_name)

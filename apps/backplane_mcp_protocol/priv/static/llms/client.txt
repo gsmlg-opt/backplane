@@ -12,7 +12,7 @@ children = [
    name: MyApp.MCPClient,
    transport: {:stdio, command: "uvx", args: ["mcp-server-name"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 Supervisor.start_link(children, strategy: :one_for_one)
@@ -42,8 +42,26 @@ Supervisor.start_link(children, strategy: :one_for_one)
 **Optional:**
 
 - `capabilities` - Capabilities map (default: `%{}`)
-- `protocol_version` - MCP protocol version string (default: latest supported)
+- `protocol_version` - `:auto` (default) or an explicitly pinned version string
 - `transport_name` - Custom transport process name (required when using non-atom `name`)
+
+## Protocol Negotiation
+
+New clients default to `:auto`. They send a modern `server/discover` probe,
+select `2026-07-28` when supported, and fall back to legacy `initialize` only
+after an official era-detection signal. Transport failures, 5xx responses,
+malformed results, and arbitrary application errors do not trigger fallback.
+Explicit version strings pin one era and never downgrade.
+
+```elixir
+:ok = Backplane.McpProtocol.Client.await_ready(MyApp.MCPClient)
+info = Backplane.McpProtocol.Client.get_protocol_info(MyApp.MCPClient)
+```
+
+Every modern request carries the negotiated version, client capabilities, and
+client identity in `_meta`. Application `meta:` is merged without replacing
+reserved keys. Streamable HTTP also sends `MCP-Protocol-Version`, `Mcp-Method`,
+`Mcp-Name`, and validated `x-mcp-header` argument mirrors.
 
 ## Transport Configuration
 
@@ -93,6 +111,9 @@ transport: {:sse,
 
 > SSE transport is deprecated as of MCP specification 2025-03-26. Use `:streamable_http` instead.
 
+The modern `2026-07-28` profile is supported over stdio and Streamable HTTP.
+Pin a legacy version when using WebSocket or SSE.
+
 ## Client API
 
 All functions take a client process name or PID as the first argument.
@@ -101,7 +122,7 @@ All functions take a client process name or PID as the first argument.
 
 ```elixir
 # Connection
-:pong = Backplane.McpProtocol.Client.ping(MyApp.MCPClient)
+:ok = Backplane.McpProtocol.Client.await_ready(MyApp.MCPClient)
 Backplane.McpProtocol.Client.close(MyApp.MCPClient)
 
 # Server info
@@ -123,6 +144,10 @@ caps = Backplane.McpProtocol.Client.get_server_capabilities(MyApp.MCPClient)
 # Autocompletion
 {:ok, suggestions} = Backplane.McpProtocol.Client.complete(MyApp.MCPClient, ref, argument)
 ```
+
+`ping/1` and `set_log_level/2` are legacy-only operations and return a local
+unsupported-operation error for a modern `2026-07-28` peer without sending the
+removed methods.
 
 ### Advanced Options
 
@@ -159,7 +184,7 @@ capabilities =
  transport: {:stdio, command: "server"},
  client_info: %{"name" => "MyApp", "version" => "1.0.0"},
  capabilities: capabilities,
- protocol_version: "2025-06-18"}
+ protocol_version: :auto}
 ```
 
 ## Multiple Client Instances
@@ -172,13 +197,13 @@ children = [
    name: MyApp.WeatherUS,
    transport: {:stdio, command: "weather-server", args: ["--region", "US"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"},
+   protocol_version: :auto},
 
   {Backplane.McpProtocol.Client,
    name: MyApp.WeatherEU,
    transport: {:stdio, command: "weather-server", args: ["--region", "EU"]},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 ```
 
@@ -198,7 +223,7 @@ def connect_to_server(user_id, server_url) do
     name: name,
     transport: {:streamable_http, base_url: server_url},
     client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-    protocol_version: "2025-06-18"
+    protocol_version: :auto
   ]
 
   DynamicSupervisor.start_child(MyApp.MCPSupervisor, {Backplane.McpProtocol.Client, opts})
@@ -237,6 +262,36 @@ case Backplane.McpProtocol.Client.call_tool(MyApp.MCPClient, "risky_operation", 
     Logger.error("Unexpected error: #{inspect(reason)}")
 end
 ```
+
+## Modern MRTR and Subscriptions
+
+An `input_required` result from `tools/call`, `prompts/get`, or
+`resources/read` invokes the configured roots, sampling, or elicitation handler
+and retries the original operation with `inputResponses` plus the opaque
+`requestState`. Do not log or interpret that state.
+
+```elixir
+{:ok, subscription} =
+  Backplane.McpProtocol.Client.listen_subscriptions(MyApp.MCPClient, [
+    "notifications/tools/list_changed"
+  ])
+
+receive do
+  {:mcp_subscription, ^subscription, notification} -> handle(notification)
+end
+
+:ok = Backplane.McpProtocol.Client.close_subscription(MyApp.MCPClient, subscription)
+```
+
+Explicit subscription handles close on connection loss. Callers must listen
+again after reconnecting if they still want events. Legacy resource
+subscriptions remain available only for legacy peers.
+
+Modern catalog entries retain arbitrary JSON Schema 2020-12 maps. Unsupported
+local schemas keep their tools and disable only local validation; external
+network `$ref` resolution is disabled by default. `structuredContent` accepts
+all JSON values. The optional modern Tasks extension is deferred, while legacy
+`2025-11-25` Tasks remain supported.
 
 ## Monitoring & Telemetry
 

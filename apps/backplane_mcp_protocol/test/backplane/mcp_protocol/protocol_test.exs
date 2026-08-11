@@ -15,7 +15,7 @@ defmodule Backplane.McpProtocol.ProtocolTest do
     end
 
     test "latest_version/0 returns latest" do
-      assert "2025-11-25" = Protocol.latest_version()
+      assert "2026-07-28" = Protocol.latest_version()
     end
 
     test "fallback_version/0 returns fallback" do
@@ -63,8 +63,8 @@ defmodule Backplane.McpProtocol.ProtocolTest do
   end
 
   describe "protocol profiles" do
-    test "keeps the legacy default while exposing the modern profile" do
-      assert Protocol.latest_version() == "2025-11-25"
+    test "uses the modern latest version while preserving legacy profiles" do
+      assert Protocol.latest_version() == "2026-07-28"
       assert Protocol.legacy?("2025-11-25")
       assert Protocol.modern?("2026-07-28")
       refute Protocol.modern?("unknown")

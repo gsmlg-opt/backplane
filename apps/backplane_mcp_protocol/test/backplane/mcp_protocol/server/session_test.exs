@@ -29,6 +29,13 @@ defmodule Backplane.McpProtocol.Server.SessionTest do
                )
 
       assert Process.alive?(pid)
+
+      assert :sys.get_state(pid).supported_versions == [
+               "2025-11-25",
+               "2025-06-18",
+               "2025-03-26",
+               "2024-11-05"
+             ]
     end
   end
 
@@ -80,6 +87,76 @@ defmodule Backplane.McpProtocol.Server.SessionTest do
 
       request = build_request("ping", 123)
       assert {:ok, _} = GenServer.call(session, {:mcp_request, request, %{}})
+    end
+
+    test "unsupported initialization falls back to the latest legacy profile" do
+      transport_name = Registry.transport_name(StubServer, StubTransport)
+      task_sup = Registry.task_supervisor_name(StubServer)
+      session_name = Registry.session_name(StubServer, "legacy-negotiation")
+
+      session =
+        start_supervised!(
+          {Session,
+           session_id: "legacy-negotiation",
+           server_module: StubServer,
+           name: session_name,
+           transport: [layer: StubTransport, name: transport_name],
+           task_supervisor: task_sup},
+          id: :legacy_negotiation_session
+        )
+
+      request =
+        build_request(
+          "initialize",
+          %{
+            "protocolVersion" => "2099-01-01",
+            "capabilities" => %{},
+            "clientInfo" => %{"name" => "legacy-client", "version" => "1.0.0"}
+          },
+          123
+        )
+
+      assert {:ok, encoded} = GenServer.call(session, {:mcp_request, request, %{}})
+      assert {:ok, [decoded]} = Message.decode(encoded)
+      assert decoded["result"]["protocolVersion"] == "2025-11-25"
+      assert Session.protocol_version(session) == "2025-11-25"
+    end
+
+    test "modern-only servers reject legacy initialization without crashing" do
+      transport_name = Registry.transport_name(ModernMockServer, StubTransport)
+      task_sup = Registry.task_supervisor_name(ModernMockServer)
+      session_name = Registry.session_name(ModernMockServer, "modern-only")
+
+      start_supervised!({StubTransport, name: transport_name}, id: :modern_only_transport)
+      start_supervised!({Task.Supervisor, name: task_sup}, id: :modern_only_task_supervisor)
+
+      session =
+        start_supervised!(
+          {Session,
+           session_id: "modern-only",
+           server_module: ModernMockServer,
+           name: session_name,
+           transport: [layer: StubTransport, name: transport_name],
+           task_supervisor: task_sup},
+          id: :modern_only_session
+        )
+
+      request =
+        build_request(
+          "initialize",
+          %{
+            "protocolVersion" => "2025-11-25",
+            "capabilities" => %{},
+            "clientInfo" => %{"name" => "legacy-client", "version" => "1.0.0"}
+          },
+          123
+        )
+
+      assert {:ok, encoded} = GenServer.call(session, {:mcp_request, request, %{}})
+      assert {:ok, [decoded]} = Message.decode(encoded)
+      assert decoded["error"]["code"] == -32_600
+      assert decoded["error"]["data"]["supportedProtocolVersions"] == []
+      assert Process.alive?(session)
     end
   end
 

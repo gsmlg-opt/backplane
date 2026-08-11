@@ -26,6 +26,22 @@ children = [
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
+## Protocol Eras
+
+One server module supports both eras. Modern `2026-07-28` Streamable HTTP is
+stateless and POST-only; it does not create `Mcp-Session-Id`, GET notification
+streams, replay state, or DELETE cleanup. Modern stdio also creates a fresh
+frame per request. Legacy peers keep `initialize`, `init/2`, and session state.
+
+Use optional `init_request/2` for request-local modern setup. The validated
+request context includes protocol version, client identity and capabilities,
+request `_meta`, transport headers, authorization claims, and MRTR inputs.
+`server/discover` is provided by the framework.
+
+Modern HTTP validates `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, and
+safe schema-declared `Mcp-Param-*` mirrors against the body before callback
+dispatch.
+
 ## Server Components
 
 ### Tools - Execute Functions
@@ -211,25 +227,62 @@ Report progress for long operations:
 
 ```elixir
 def handle_tool_call("process", params, frame) do
-  token = frame.assigns.progress_token
+  token = frame.context.progress_token
 
   # Send progress updates
-  send_progress(self(), token, 0.25, message: "Starting processing...")
+  send_progress(token, 0.25, message: "Starting processing...")
   :timer.sleep(1000)
   
-  send_progress(self(), token, 0.5, message: "Halfway done...")
+  send_progress(token, 0.5, message: "Halfway done...")
   :timer.sleep(1000)
   
-  send_progress(self(), token, 1.0, message: "Complete!")
+  send_progress(token, 1.0, message: "Complete!")
   {:reply, Response.text(Response.tool(), "Processing complete"), frame}
 end
 ```
+
+### Modern Results and Multi-Round Trips
+
+Modern complete results carry `resultType: "complete"`; discovery and
+catalog/read responses also expose conservative `ttlMs` and `cacheScope`
+hints. `tools/call`, `prompts/get`, and `resources/read` may instead return
+`resultType: "input_required"` with input requests and opaque `requestState`.
+The client performs roots, sampling, or elicitation work and retries the same
+operation. Authenticate or seal state that influences behavior and never log
+it.
+
+### Modern Subscriptions
+
+`subscriptions/listen` creates a request-owned HTTP POST/SSE stream or a
+multiplexed stdio subscription. Publish JSON-RPC notifications with
+`Backplane.McpProtocol.Server.Modern.Subscriptions.publish/2` through the
+server's `Backplane.McpProtocol.Server.Registry.subscriptions_name/1` hub.
+Closing the request or connection cancels the subscription; modern traffic
+does not use the legacy GET stream or session deletion.
+
+### JSON Schema and Tasks
+
+Modern tool schemas preserve arbitrary JSON Schema 2020-12 maps, including
+`$defs`, composition, references, and unknown keywords. Peri validates its
+supported local subset; external network `$ref` resolution is disabled by
+default. `structuredContent` may be any JSON value, including explicit `null`.
+
+The optional modern `io.modelcontextprotocol/tasks` extension is deferred.
+Legacy `2025-11-25` Tasks remain available.
+
+### Authorization
+
+OAuth resource-server validation runs before modern dispatch. Request frames
+contain normalized authorization claims. The client-side authorization helpers
+perform exact RFC 9207 issuer validation; select pre-registration, then Client
+ID Metadata Documents, then opt-in DCR; include DCR `application_type`; and
+bind persisted credentials to the exact validated issuer.
 
 ## Best Practices
 
 1. **Validate All Inputs**: Use schemas to ensure type safety
 2. **Handle Errors Gracefully**: Return proper MCP errors
-3. **Keep State in Frame**: Use frame.assigns for session data
+3. **Use Frames Correctly**: Frame assigns are session state on legacy peers and request-local state on modern peers
 4. **Log Important Events**: Use structured logging
 5. **Test Thoroughly**: Use the test framework for all components
 6. **Document Components**: Include descriptions in schemas
@@ -245,12 +298,13 @@ defmodule WeatherMCP.Server do
     capabilities: [:tools, :resources]
 
   component WeatherMCP.Tools.GetWeather
+  alias Backplane.McpProtocol.Server.Frame
 
-  def init(_client_info, frame) do
-    # Initialize with API client
-    frame = Frame.assign(frame, :weather_api, WeatherAPI.new())
-    {:ok, frame}
-  end
+  def init(_client_info, frame), do: put_api_client(frame)
+  def init_request(_request_context, frame), do: put_api_client(frame)
+
+  defp put_api_client(frame),
+    do: {:ok, Frame.assign(frame, :weather_api, WeatherAPI.new())}
 end
 
 defmodule WeatherMCP.Tools.GetWeather do

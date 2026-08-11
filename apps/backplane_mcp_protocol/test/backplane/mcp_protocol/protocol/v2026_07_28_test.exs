@@ -1,4 +1,4 @@
-defmodule Backplane.McpProtocol.Protocol.V2026_07_28Test do
+defmodule Backplane.McpProtocol.Protocol.V20260728Test do
   use ExUnit.Case, async: true
 
   alias Backplane.McpProtocol.Protocol.Registry

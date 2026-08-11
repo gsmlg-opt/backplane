@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Adds complete MCP `2026-07-28` client and server support over Streamable HTTP and stdio.
+- Defaults new clients to `protocol_version: :auto`, using modern `server/discover` with evidence-based legacy fallback while preserving explicit version pins.
+- Adds stateless modern request execution, required metadata and HTTP headers, modern result and cache envelopes, MRTR, and request-owned subscriptions.
+- Preserves arbitrary JSON Schema 2020-12 wire maps and every JSON `structuredContent` shape while safely disabling unsupported local validation.
+- Adds modern authorization issuer, registration-selection, and secure credential-store helpers.
+- Freezes official `2026-07-28` client and server conformance coverage and keeps all legacy protocol versions available.
+- Defers the optional modern `io.modelcontextprotocol/tasks` extension; legacy `2025-11-25` Tasks support remains available.
+
 ## 0.4.0
 
 - Keeps the Hex package version synchronized with Backplane releases.

@@ -80,7 +80,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
                capabilities: %{}
              )
 
-    assert :sys.get_state(client).protocol_preference == "2025-11-25"
+    assert :sys.get_state(client).protocol_preference == :auto
     GenServer.stop(client)
   end
 

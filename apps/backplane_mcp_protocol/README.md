@@ -11,7 +11,9 @@ Model Context Protocol (MCP) implementation in Elixir.
 Backplane.McpProtocol is the MCP protocol app used by Backplane and is also
 published on Hex. It provides client and server implementations for the
 [Model Context Protocol](https://spec.modelcontextprotocol.io/) under the
-`Backplane.McpProtocol` namespace.
+Backplane.McpProtocol namespace. The package supports the modern
+`2026-07-28` protocol over Streamable HTTP and stdio while preserving the
+legacy initialization and session behavior required by older protocol versions.
 
 ## Installation
 
@@ -60,10 +62,12 @@ defmodule MyApp.MCPServer do
 
   @impl true
   def init(_client_info, frame) do
-    # You can also register tools dynamically at runtime via the Frame:
+    # Legacy sessions can also register tools dynamically via the Frame:
     # frame = register_tool(frame, "dynamic_tool", description: "...", input_schema: %{...})
     {:ok, frame}
   end
+
+  # Use init_request/2 instead for request-local modern setup.
 end
 
 # Add to your application supervisor
@@ -89,16 +93,55 @@ children = [
    name: MyApp.MCPClient,
    transport: {:streamable_http, base_url: "http://localhost:4000"},
    client_info: %{"name" => "MyApp", "version" => "1.0.0"},
-   protocol_version: "2025-06-18"}
+   protocol_version: :auto}
 ]
 
 # Use the client
 {:ok, result} = Backplane.McpProtocol.Client.call_tool(MyApp.MCPClient, "echo", %{text: "this will be echoed!"})
 ```
 
+`:auto` is the default. It probes with modern `server/discover`, negotiates
+`2026-07-28` when available, and falls back to legacy initialization only when
+the transport provides protocol-defined evidence of a legacy peer. Pin a
+version string when cross-era fallback is not wanted:
+
+```elixir
+protocol_version: "2025-06-18"
+```
+
+Modern HTTP requests are stateless, POST-only, and do not create an MCP
+session. Legacy versions continue to use their existing initialization,
+session, GET notification stream, and DELETE cleanup behavior.
+
 ## Documentation
 
-For detailed guides and examples, see the files in `pages/`.
+For detailed guides and examples, see the files in `pages/`, including the
+client, server, API reference, and authorization guides.
+
+## Verification
+
+From `apps/backplane_mcp_protocol`, run the package and release checks with the
+umbrella dependency directory:
+
+```bash
+MIX_ENV=test MIX_DEPS_PATH=../../deps mix test
+MIX_ENV=dev MIX_DEPS_PATH=../../deps mix docs
+MIX_ENV=dev MIX_DEPS_PATH=../../deps mix hex.build --unpack
+```
+
+Run the frozen official conformance package in a second terminal after starting
+the server harness:
+
+```bash
+MIX_ENV=test MIX_DEPS_PATH=../../deps mix run --no-halt test/conformance/server_runner.exs -- 4105
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 server --url http://127.0.0.1:4105/mcp --requirements 2026-07-28
+
+MIX_ENV=test MIX_DEPS_PATH=../../deps mix compile
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 client --command "ERL_LIBS=../../_build/test/lib elixir test/conformance/client_runner.exs --" --requirements 2026-07-28
+```
+
+The package revision and scored requirement counts are recorded in the
+[conformance pin](https://github.com/gsmlg-opt/backplane/blob/main/apps/backplane_mcp_protocol/test/conformance/PIN.md).
 
 ## Examples
 

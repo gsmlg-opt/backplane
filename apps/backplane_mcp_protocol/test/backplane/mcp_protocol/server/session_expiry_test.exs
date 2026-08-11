@@ -37,6 +37,8 @@ defmodule Backplane.McpProtocol.Server.SessionExpiryTest do
       state = :sys.get_state(session)
       assert state.initialized
       assert state.client_info == %{"name" => "auto-recovered", "version" => "unknown"}
+      assert state.protocol_version == "2025-11-25"
+      assert state.protocol_module == Backplane.McpProtocol.Protocol.V2025_11_25
     end
 
     test "is idempotent when already initialized" do

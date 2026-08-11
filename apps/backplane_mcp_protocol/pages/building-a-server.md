@@ -424,7 +424,9 @@ For web services that multiple clients connect to:
 {MyApp.Server, transport: {:streamable_http, port: 8080}}
 ```
 
-This creates an HTTP endpoint at `http://localhost:8080/mcp`. Each client gets its own session.
+This creates an HTTP endpoint at `http://localhost:8080/mcp`. Modern
+`2026-07-28` POSTs are stateless and do not create MCP sessions. Explicitly
+legacy clients keep the existing session behavior.
 
 ### Integration with Phoenix
 
@@ -452,6 +454,35 @@ children = [
 ```
 
 Now your MCP server is available at `http://localhost:4000/mcp`.
+
+## Modern Request Lifecycle
+
+The same server module accepts both protocol eras. Modern Streamable HTTP is
+POST-only: it does not issue `Mcp-Session-Id`, open a GET notification stream,
+replay events, or use DELETE cleanup. Modern stdio also executes each request
+with a fresh frame. Legacy `initialize` and session transports continue to use
+`init/2` and `Backplane.McpProtocol.Server.Session`.
+
+Use the optional `init_request/2` callback for request-local setup. Its frame is
+discarded after the modern request completes:
+
+```elixir
+@impl true
+def init_request(request_context, frame) do
+  frame = Backplane.McpProtocol.Server.Frame.assign(frame, :tenant, tenant_for(request_context.auth))
+  {:ok, frame}
+end
+```
+
+The request context contains the validated protocol version, client identity
+and capabilities, request `_meta`, normalized HTTP headers, authorization
+claims, log level, and MRTR inputs. `server/discover` is handled by the package
+and reports supported versions, capabilities, server identity, instructions,
+and conservative cache hints.
+
+For HTTP, every modern request must agree across its body and
+`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, and declared `Mcp-Param-*`
+mirrors. Header mismatches are rejected before application dispatch.
 
 ## Error Handling
 
@@ -487,6 +518,10 @@ Backplane.McpProtocol automatically formats your error responses according to th
 ## Stateful Operations
 
 Need to maintain state across calls? The frame provides context:
+
+The following session-ID pattern is for explicitly legacy peers. Modern frames
+have `context.session_id == nil`; keep durable modern state in an external store
+keyed by authenticated application identity or by your own request data.
 
 ```elixir
 defmodule MyApp.Conversation do
@@ -544,6 +579,60 @@ end
 
 These annotations are exposed in the tool definition, helping clients understand additional constraints or requirements.
 
+For modern HTTP argument projection, use `x-mcp-header` in a raw JSON Schema.
+Only primitive, statically reachable values are mirrored. Unsafe strings use
+the protocol's base64 sentinel encoding. The server validates the decoded
+header against the body value before invoking the component, preventing raw
+header injection.
+
+## Modern Results and MRTR
+
+Modern successful results are normalized with `resultType: "complete"`.
+Discovery and catalog/read results also include conservative `ttlMs` and
+`cacheScope` hints unless the server overrides them.
+
+Only `tools/call`, `prompts/get`, and `resources/read` may return
+`resultType: "input_required"`. Include `inputRequests` and an opaque
+`requestState`; the client performs the requested roots, sampling, or
+elicitation work and retries the original method with `inputResponses` and the
+same state. Authenticate or seal any `requestState` that influences behavior,
+and do not log it.
+
+## Modern Subscriptions
+
+Modern clients open `subscriptions/listen` as a long-lived request. HTTP owns
+one POST/SSE stream per subscription; stdio multiplexes the same notifications
+through its connection writer. Publish JSON-RPC notifications through the
+server's supervised subscription hub:
+
+```elixir
+alias Backplane.McpProtocol.Server.{Modern.Subscriptions, Registry}
+
+hub = Registry.subscriptions_name(MyApp.Server)
+
+:ok =
+  Subscriptions.publish(hub, %{
+    "jsonrpc" => "2.0",
+    "method" => "notifications/tools/list_changed",
+    "params" => %{}
+  })
+```
+
+Only matching subscribers receive the notification. Closing the request or
+connection cancels its owned subscription; modern traffic does not use the
+legacy GET stream, replay IDs, or session deletion.
+
+## Schemas, Structured Content, and Tasks
+
+Modern wire schemas are preserved as arbitrary JSON Schema 2020-12 maps,
+including `$defs`, composition, references, and unknown keywords. Peri remains
+the local validator for its supported subset; external network `$ref`
+resolution is disabled by default. `structuredContent` may contain any JSON
+value, including arrays, primitives, booleans, and explicit `null`.
+
+The optional modern `io.modelcontextprotocol/tasks` extension is deferred.
+Existing Tasks support remains available for legacy `2025-11-25` sessions.
+
 ## Testing Your Server
 
 How do you know your server works correctly? Let's explore interactive testing first:
@@ -566,9 +655,6 @@ mix backplane.mcp_protocol.streamable_http.interactive --base-url=http://localho
 In the interactive session:
 
 ```
-mcp> ping
-pong
-
 mcp> list_tools
 Available tools:
 - greeter: Greet someone warmly
@@ -581,8 +667,7 @@ Result: Hello Alice! Welcome to the MCP world!
 
 mcp> show_state
 Client State:
-  Protocol: 2025-06-18
-  Initialized: true
+  Protocol: 2026-07-28
   ...
 ```
 

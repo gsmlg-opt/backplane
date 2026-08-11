@@ -203,6 +203,7 @@ defmodule Backplane.McpProtocol.MCP.Setup do
       context[:client_info] || %{"name" => "TestClient", "version" => "1.0.0"}
 
     client_capabilities = context[:client_capabilities] || %{}
+    protocol_version = context[:protocol_version] || "2025-03-26"
 
     client =
       start_supervised!(%{
@@ -213,7 +214,8 @@ defmodule Backplane.McpProtocol.MCP.Setup do
              [
                transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                client_info: client_info,
-               capabilities: client_capabilities
+               capabilities: client_capabilities,
+               protocol_version: protocol_version
              ]
            ]},
         restart: :temporary

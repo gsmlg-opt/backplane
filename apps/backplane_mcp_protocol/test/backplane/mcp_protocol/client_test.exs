@@ -25,7 +25,27 @@ defmodule Backplane.McpProtocol.ClientTest do
     :ok
   end
 
+  test "new clients default to automatic dual-era negotiation" do
+    assert Backplane.McpProtocol.Client.default_protocol_preference() == :auto
+  end
+
   describe "start_link/1" do
+    test "public supervisor path preserves automatic negotiation when version is omitted" do
+      assert {:ok, {_flags, children}} =
+               Backplane.McpProtocol.Client.Supervisor.init(
+                 transport: {:streamable_http, base_url: "http://127.0.0.1:9"},
+                 client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+                 capabilities: %{}
+               )
+
+      client_child = Enum.find(children, &(&1.id == Backplane.McpProtocol.Client))
+
+      assert {Backplane.McpProtocol.Client, :start_link_server, [protocol_opts]} =
+               client_child.start
+
+      assert protocol_opts[:protocol_version] == :auto
+    end
+
     test "starts the client with proper initialization" do
       test_pid = self()
 
@@ -48,7 +68,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -574,7 +595,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{"roots" => %{}}
+                 capabilities: %{"roots" => %{}},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -899,7 +921,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -2241,7 +2264,14 @@ defmodule Backplane.McpProtocol.ClientTest do
                server_info: %{"name" => "ModernServer", "version" => "2.0.0"}
              } = Backplane.McpProtocol.Client.get_protocol_info(client)
 
-      refute_receive {:mcp_send, _initialized}, 50
+      assert {:error, %Error{reason: :unsupported_operation, data: %{method: "ping"}}} =
+               Backplane.McpProtocol.Client.ping(client)
+
+      assert {:error,
+              %Error{reason: :unsupported_operation, data: %{method: "logging/setLevel"}}} =
+               Backplane.McpProtocol.Client.set_log_level(client, "info")
+
+      refute_receive {:mcp_send, _removed_modern_request}, 50
     end
 
     test "malformed modern discovery metadata fails once and keeps the client alive" do
@@ -2551,7 +2581,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -2580,7 +2611,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -2629,7 +2661,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary
@@ -2706,7 +2739,8 @@ defmodule Backplane.McpProtocol.ClientTest do
                [
                  transport: [layer: BufferedMockTransport, name: BufferedMockTransport],
                  client_info: %{"name" => "TestClient", "version" => "1.0.0"},
-                 capabilities: %{}
+                 capabilities: %{},
+                 protocol_version: "2025-03-26"
                ]
              ]},
           restart: :temporary

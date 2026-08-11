@@ -66,33 +66,37 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp snapshot_server(opts) do
-      task =
-        Task.Supervisor.async_nolink(opts.task_supervisor, fn ->
-          supported_versions = opts.server.supported_protocol_versions()
-          capabilities = opts.server.server_capabilities()
+      result =
+        opts.task_supervisor
+        |> Task.Supervisor.async_stream_nolink(
+          [:snapshot],
+          fn :snapshot ->
+            supported_versions = opts.server.supported_protocol_versions()
+            capabilities = opts.server.server_capabilities()
 
-          if is_list(supported_versions) and Enum.all?(supported_versions, &is_binary/1) and
-               is_map(capabilities) do
-            {:ok,
-             %{
-               supported_versions: supported_versions,
-               capabilities: capabilities,
-               server_info: safe_server_info(opts.server)
-             }}
-          else
-            {:error, Error.protocol(:internal_error)}
-          end
-        end)
+            if is_list(supported_versions) and Enum.all?(supported_versions, &is_binary/1) and
+                 is_map(capabilities) do
+              {:ok,
+               %{
+                 supported_versions: supported_versions,
+                 capabilities: capabilities,
+                 server_info: safe_server_info(opts.server)
+               }}
+            else
+              {:error, Error.protocol(:internal_error)}
+            end
+          end,
+          max_concurrency: 1,
+          on_timeout: :kill_task,
+          timeout: opts.timeout
+        )
+        |> Enum.at(0)
 
-      case Task.yield(task, opts.timeout) do
+      case result do
         {:ok, result} ->
           result
 
         {:exit, _reason} ->
-          {:error, Error.protocol(:internal_error)}
-
-        nil ->
-          _ = Task.shutdown(task, :brutal_kill)
           {:error, Error.protocol(:internal_error)}
       end
     rescue

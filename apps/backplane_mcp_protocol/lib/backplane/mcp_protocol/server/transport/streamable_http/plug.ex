@@ -726,6 +726,9 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
+    # Plug.Conn types decoded body params as maps, but parsers and adversarial callers can
+    # still supply a valid non-object JSON term. Keep that protocol boundary defensive.
+    @dialyzer {:no_match, maybe_decode_post_message: 1}
     defp maybe_decode_post_message(body) when is_binary(body) do
       case JSON.decode(body) do
         {:ok, message} when is_map(message) ->

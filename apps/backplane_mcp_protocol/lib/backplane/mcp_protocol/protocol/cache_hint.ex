@@ -5,14 +5,14 @@ defmodule Backplane.McpProtocol.Protocol.CacheHint do
   Cache hints stay in their wire spelling when added to protocol result maps.
   """
 
-  @cacheable_methods MapSet.new(~w(
+  @cacheable_methods ~w(
                        server/discover
                        tools/list
                        prompts/list
                        resources/list
                        resources/templates/list
                        resources/read
-                     ))
+                     )
 
   @enforce_keys []
   defstruct ttl_ms: 0, scope: :private
@@ -46,7 +46,7 @@ defmodule Backplane.McpProtocol.Protocol.CacheHint do
   def parse(result) when is_map(result), do: new(result)
 
   @spec cacheable_method?(term()) :: boolean()
-  def cacheable_method?(method) when is_binary(method), do: MapSet.member?(@cacheable_methods, method)
+  def cacheable_method?(method) when is_binary(method), do: method in @cacheable_methods
   def cacheable_method?(_method), do: false
 
   defp validate_ttl_ms(value) when is_integer(value) and value >= 0, do: :ok

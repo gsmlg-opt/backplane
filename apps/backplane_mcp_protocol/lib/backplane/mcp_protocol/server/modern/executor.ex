@@ -79,11 +79,12 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   end
 
   defp execute_modern(server_module, snapshot, profile, request, transport_context, task_supervisor, deadline, opts) do
-    with :ok <- RequestContext.validate_required_metadata(request),
+    with method when is_binary(method) <- request["method"],
+         :ok <- RequestContext.validate_required_metadata(request),
          :ok <- Headers.validate(profile, request, transport_context),
          {:ok, request_context} <- RequestContext.build(profile, request, transport_context),
-         :ok <- validate_method(profile, request_context.method),
-         :ok <- validate_server_capability(snapshot.capabilities, request_context.method) do
+         :ok <- validate_method(profile, method),
+         :ok <- validate_server_capability(snapshot.capabilities, method) do
       emit_request(request_context)
 
       if request_context.method == "server/discover" do
@@ -99,6 +100,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
       end
     else
       {:error, %Error{} = error} -> respond_error(error, request["id"])
+      _invalid_method -> respond_error(Error.protocol(:invalid_request), request["id"])
     end
   end
 
@@ -136,7 +138,6 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     case Discovery.execute(snapshot, request_context) do
       {:ok, result} when is_map(result) -> {:discovery_result, result}
       {:error, %Error{} = error} -> {:protocol_error, error}
-      _invalid -> :callback_failure
     end
   rescue
     _exception -> :callback_failure
@@ -222,17 +223,20 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   defp run_supervised(task_supervisor, timeout, fun) do
     if task_supervisor_alive?(task_supervisor) do
       try do
-        task = Task.Supervisor.async_nolink(task_supervisor, fun)
+        result =
+          task_supervisor
+          |> Task.Supervisor.async_stream_nolink([fun], & &1.(),
+            max_concurrency: 1,
+            on_timeout: :kill_task,
+            timeout: timeout
+          )
+          |> Enum.at(0)
 
-        case Task.yield(task, timeout) do
+        case result do
           {:ok, value} ->
             {:ok, value}
 
           {:exit, _reason} ->
-            :callback_failure
-
-          nil ->
-            _ = Task.shutdown(task, :brutal_kill)
             :callback_failure
         end
       catch
@@ -350,8 +354,6 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
       do: :ok,
       else: {:error, Error.protocol(:method_not_found, %{method: method})}
   end
-
-  defp validate_method(_profile, _method), do: {:error, Error.protocol(:invalid_request)}
 
   defp validate_server_capability(_capabilities, "server/discover"), do: :ok
 
