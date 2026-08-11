@@ -1,15 +1,32 @@
 defmodule Backplane.McpProtocol.Server.Component.Schema do
   @moduledoc false
 
+  alias Backplane.McpProtocol.SchemaValidator.Peri, as: PeriValidator
   alias Backplane.McpProtocol.Server.Component
 
-  @type schema :: map() | list()
+  @opaque raw_schema :: {:json_schema, map()}
+  @type schema :: map() | list() | raw_schema()
   @type field_type :: atom() | tuple()
   @type json_schema :: map()
   @type prompt_argument :: map()
+  @type validator :: (term() -> {:ok, term()} | {:error, term()})
+
+  @doc """
+  Marks a server-authored map as a raw JSON Schema wire document.
+
+  Untagged maps and lists remain the existing Peri DSL.
+  """
+  @spec raw(map()) :: raw_schema()
+  def raw(schema) when is_map(schema), do: {:json_schema, schema}
+
+  @doc false
+  @spec raw?(term()) :: boolean()
+  def raw?({:json_schema, schema}) when is_map(schema), do: true
+  def raw?(_schema), do: false
 
   @spec to_json_schema(schema() | nil) :: json_schema()
   def to_json_schema(nil), do: %{"type" => "object"}
+  def to_json_schema({:json_schema, schema}) when is_map(schema), do: schema
 
   def to_json_schema(schema) when is_list(schema) do
     schema |> Map.new() |> to_json_schema()
@@ -49,7 +66,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   end
 
   defp format_error(%{path: path, message: message}) do
-    path_str = Enum.join(path, ".")
+    path_str = Enum.join(path || [], ".")
     if path_str == "", do: message, else: "#{path_str}: #{message}"
   end
 
@@ -94,8 +111,15 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   defp describe_base_type(schema) when is_map(schema), do: "nested object"
   defp describe_base_type(_), do: "parameter"
 
-  @spec validator(schema()) :: (map() ->
-                                  {:ok, map()} | {:error, list(Peri.Error.t())})
+  @spec validator(schema()) :: validator()
+  def validator({:json_schema, _schema} = schema) do
+    case compile_validator(schema) do
+      {:ok, validator} -> validator
+      {:unsupported, _reason} -> &passthrough/1
+      {:error, _reason} -> &passthrough/1
+    end
+  end
+
   def validator(schema) when is_list(schema) do
     schema |> Map.new() |> validator()
   end
@@ -104,4 +128,29 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     peri_schema = Component.__clean_schema_for_peri__(schema)
     fn params -> Peri.validate(peri_schema, params) end
   end
+
+  @doc false
+  @spec compile_validator(schema(), keyword()) ::
+          {:ok, validator()} | {:unsupported, term()} | {:error, term()}
+  def compile_validator(schema, opts \\ [])
+
+  def compile_validator({:json_schema, schema}, opts) when is_map(schema) do
+    case PeriValidator.compile(schema, opts) do
+      {:ok, compiled} ->
+        {:ok,
+         fn value ->
+           case PeriValidator.validate(compiled, value, opts) do
+             :ok -> {:ok, value}
+             {:error, errors} -> {:error, errors}
+           end
+         end}
+
+      other ->
+        other
+    end
+  end
+
+  def compile_validator(schema, _opts), do: {:ok, validator(schema)}
+
+  defp passthrough(value), do: {:ok, value}
 end

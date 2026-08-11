@@ -1528,11 +1528,13 @@ defmodule Backplane.McpProtocol.Client do
     elapsed_ms = Request.elapsed_time(request)
 
     client = state.client_info["name"]
-    structured = result["structuredContent"]
+    structured = if is_map(result), do: Map.fetch(result, "structuredContent"), else: :error
     tool = request.params["name"]
     validator = Cache.get_tool_validator(client, tool)
 
-    if is_map(structured) and is_function(validator, 1) do
+    if match?({:ok, _}, structured) and is_function(validator, 1) do
+      {:ok, structured} = structured
+
       case validator.(structured) do
         {:ok, _} ->
           GenServer.reply(request.from, {:ok, response})
@@ -1574,7 +1576,7 @@ defmodule Backplane.McpProtocol.Client do
       tools = response.result["tools"]
       client = state.client_info["name"]
       Cache.clear_tool_validators(client)
-      Cache.put_tool_validators(client, tools)
+      Cache.put_tool_validators(client, tools, state.protocol_version)
     end
 
     if method == "ping",

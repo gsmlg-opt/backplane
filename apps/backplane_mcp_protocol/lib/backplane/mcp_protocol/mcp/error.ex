@@ -54,6 +54,11 @@ defmodule Backplane.McpProtocol.MCP.Error do
   # MCP-specific error codes
   @resource_not_found -32_002
 
+  # MCP 2026-07-28 protocol-defined error codes
+  @header_mismatch -32_020
+  @missing_client_capability -32_021
+  @unsupported_protocol_version -32_022
+
   # Generic server error code for custom errors
   @server_error -32_000
 
@@ -65,8 +70,46 @@ defmodule Backplane.McpProtocol.MCP.Error do
     invalid_params: "Invalid params",
     internal_error: "Internal error",
     resource_not_found: "Resource not found",
+    header_mismatch: "Header mismatch",
+    missing_client_capability: "Missing required client capability",
+    unsupported_protocol_version: "Unsupported protocol version",
     server_error: "Server error"
   }
+
+  @doc """
+  Creates an error using the codes defined by a specific MCP protocol version.
+
+  The `2026-07-28` revision replaces the legacy resource-not-found code with
+  JSON-RPC Invalid Params and allocates codes for its new wire errors.
+  """
+  @spec for_version(String.t(), atom(), map()) :: t()
+  def for_version(version, reason, data \\ %{})
+
+  def for_version("2026-07-28", :header_mismatch, data) do
+    modern_error(@header_mismatch, :header_mismatch, data)
+  end
+
+  def for_version("2026-07-28", :missing_client_capability, data) do
+    data = normalize_wire_keys(data, requiredCapabilities: "requiredCapabilities")
+    modern_error(@missing_client_capability, :missing_client_capability, data)
+  end
+
+  def for_version("2026-07-28", :unsupported_protocol_version, data) do
+    data = normalize_wire_keys(data, requested: "requested", supported: "supported")
+    modern_error(@unsupported_protocol_version, :unsupported_protocol_version, data)
+  end
+
+  def for_version("2026-07-28", :resource_not_found, data) do
+    protocol(:invalid_params, data)
+  end
+
+  def for_version(_version, :resource_not_found, data) do
+    resource(:not_found, data)
+  end
+
+  def for_version(_version, reason, data) do
+    protocol(reason, data)
+  end
 
   @doc """
   Creates a protocol-level error.
@@ -270,7 +313,28 @@ defmodule Backplane.McpProtocol.MCP.Error do
   defp reason_from_code(@invalid_params), do: :invalid_params
   defp reason_from_code(@internal_error), do: :internal_error
   defp reason_from_code(@resource_not_found), do: :resource_not_found
+  defp reason_from_code(@header_mismatch), do: :header_mismatch
+  defp reason_from_code(@missing_client_capability), do: :missing_client_capability
+  defp reason_from_code(@unsupported_protocol_version), do: :unsupported_protocol_version
   defp reason_from_code(_), do: :server_error
+
+  defp modern_error(code, reason, data) do
+    %__MODULE__{
+      code: code,
+      reason: reason,
+      message: Map.fetch!(@error_messages, reason),
+      data: data
+    }
+  end
+
+  defp normalize_wire_keys(data, keys) do
+    Enum.reduce(keys, data, fn {atom_key, wire_key}, acc ->
+      case Map.pop(acc, atom_key) do
+        {nil, acc} -> acc
+        {value, acc} -> Map.put_new(acc, wire_key, value)
+      end
+    end)
+  end
 
   defp default_message(reason) do
     Map.get(@error_messages, reason, @error_messages.server_error)

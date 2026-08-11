@@ -1,7 +1,10 @@
 defmodule Backplane.McpProtocol.Client.Cache do
   @moduledoc false
 
+  use Backplane.McpProtocol.Logging
+
   alias Backplane.McpProtocol.Client.JSONSchemaConverter
+  alias Backplane.McpProtocol.Protocol
 
   @tool_validators_key {__MODULE__, :tool_validators}
 
@@ -13,21 +16,55 @@ defmodule Backplane.McpProtocol.Client.Cache do
   """
   @spec put_tool_validators(client_name :: String.t(), tools :: list(map())) :: :ok
   def put_tool_validators(client, tools) when is_binary(client) and is_list(tools) do
+    store_tool_validators(client, tools, &JSONSchemaConverter.validator/1)
+  end
+
+  @doc """
+  Stores tool output validators using the schema profile for the negotiated
+  protocol version.
+  """
+  @spec put_tool_validators(
+          client_name :: String.t(),
+          tools :: list(map()),
+          protocol_version :: Protocol.version()
+        ) :: :ok
+  def put_tool_validators(client, tools, protocol_version)
+      when is_binary(client) and is_list(tools) and is_binary(protocol_version) do
+    validator_builder =
+      if Protocol.modern?(protocol_version) do
+        &JSONSchemaConverter.validator_2020_12/1
+      else
+        &JSONSchemaConverter.validator/1
+      end
+
+    store_tool_validators(client, tools, validator_builder)
+  end
+
+  defp store_tool_validators(client, tools, validator_builder) do
     table = ensure_table(client)
     :ets.delete_all_objects(table)
 
     tools
     |> Enum.filter(& &1["outputSchema"])
-    |> Enum.flat_map(&fetch_tool_validator/1)
+    |> Enum.flat_map(&fetch_tool_validator(client, &1, validator_builder))
     |> then(&:ets.insert(table, &1))
 
     :ok
   end
 
-  defp fetch_tool_validator(%{"outputSchema" => s, "name" => name}) when is_map(s) do
-    case JSONSchemaConverter.validator(s) do
-      {:ok, validator} -> [{name, validator}]
-      {:error, _errors} -> []
+  defp fetch_tool_validator(client, %{"outputSchema" => schema, "name" => name}, validator_builder) when is_map(schema) do
+    case validator_builder.(schema) do
+      {:ok, validator} ->
+        [{name, validator}]
+
+      {status, reason} when status in [:unsupported, :error] ->
+        Logging.client_event("schema_validation_disabled", %{
+          client: client,
+          tool: name,
+          reason: reason
+        })
+
+        []
     end
   end
 

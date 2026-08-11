@@ -52,6 +52,44 @@ defmodule Backplane.McpProtocol.MCP.ResponseTest do
     end
   end
 
+  describe "from_json_rpc/2" do
+    test "reads the modern result type" do
+      json_response = %{
+        "jsonrpc" => "2.0",
+        "result" => %{"resultType" => "complete", "value" => 42},
+        "id" => 1
+      }
+
+      assert {:ok, %Response{result_type: "complete"}} =
+               Response.from_json_rpc(json_response, "2026-07-28")
+    end
+
+    test "rejects a modern response without a result type" do
+      json_response = %{"jsonrpc" => "2.0", "result" => %{"value" => 42}, "id" => 1}
+
+      assert {:error, :missing_result_type} =
+               Response.from_json_rpc(json_response, "2026-07-28")
+    end
+
+    test "accepts extension result type strings and rejects non-strings" do
+      extension = %{"result" => %{"resultType" => "com.example/custom"}, "id" => 1}
+      malformed = %{"result" => %{"resultType" => 42}, "id" => 2}
+
+      assert {:ok, %Response{result_type: "com.example/custom"}} =
+               Response.from_json_rpc(extension, "2026-07-28")
+
+      assert {:error, {:invalid_result_type, 42}} =
+               Response.from_json_rpc(malformed, "2026-07-28")
+    end
+
+    test "keeps a missing result type compatible for legacy versions" do
+      json_response = %{"jsonrpc" => "2.0", "result" => "legacy", "id" => 1}
+
+      assert {:ok, %Response{result: "legacy", result_type: nil}} =
+               Response.from_json_rpc(json_response, "2025-11-25")
+    end
+  end
+
   describe "unwrap/1" do
     test "returns the raw result for any response" do
       success_response = %Response{

@@ -61,6 +61,7 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
   @type result :: term()
   @type schema :: map()
   @type annotations :: map() | nil
+  @type validator :: (term() -> {:ok, term()} | {:error, term()})
 
   @type task_support :: :forbidden | :optional | :required
 
@@ -74,8 +75,8 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
           meta: map | nil,
           task_support: task_support(),
           handler: module | nil,
-          validate_input: (map -> {:ok, map} | {:error, [Peri.Error.t()]}) | nil,
-          validate_output: (map -> {:ok, map} | {:error, [Peri.Error.t()]}) | nil,
+          validate_input: validator() | nil,
+          validate_output: validator() | nil,
           scopes: [String.t()]
         }
 

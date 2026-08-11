@@ -735,6 +735,31 @@ defmodule Backplane.McpProtocol.MCP.Message do
   end
 
   @doc """
+  Builds a response for a negotiated protocol version.
+
+  Modern responses always carry a `resultType`. Legacy response payloads are
+  left untouched.
+  """
+  @spec build_response(map(), String.t() | integer(), String.t()) :: map()
+  def build_response(%{"resultType" => result_type} = result, id, "2026-07-28") when is_binary(result_type) do
+    build_response(result, id)
+  end
+
+  def build_response(%{"resultType" => _result_type}, _id, "2026-07-28") do
+    raise ArgumentError, "modern MCP resultType must be a string"
+  end
+
+  def build_response(result, id, "2026-07-28") when is_map(result) do
+    build_response(Map.put(result, "resultType", "complete"), id)
+  end
+
+  def build_response(_result, _id, "2026-07-28") do
+    raise ArgumentError, "modern MCP result must be a map containing result metadata"
+  end
+
+  def build_response(result, id, _version), do: build_response(result, id)
+
+  @doc """
   Builds an error message map without encoding to JSON.
 
   ## Examples

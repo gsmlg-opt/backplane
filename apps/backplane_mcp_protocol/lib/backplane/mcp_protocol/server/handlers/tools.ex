@@ -141,9 +141,17 @@ defmodule Backplane.McpProtocol.Server.Handlers.Tools do
     {:reply, Response.to_protocol(resp), frame}
   end
 
-  defp maybe_validate_output_schema(%Tool{} = tool, %Response{structured_content: nil}, frame) do
+  defp maybe_validate_output_schema(
+         %Tool{} = tool,
+         %Response{structured_content: nil, structured_content_set?: false},
+         frame
+       ) do
     metadata = %{tool_name: tool.name}
     {:error, Error.execution(@output_schema_err, metadata), frame}
+  end
+
+  defp maybe_validate_output_schema(%Tool{validate_output: nil}, %Response{} = resp, frame) do
+    {:reply, Response.to_protocol(resp), frame}
   end
 
   defp maybe_validate_output_schema(%Tool{} = tool, %Response{} = resp, frame) do

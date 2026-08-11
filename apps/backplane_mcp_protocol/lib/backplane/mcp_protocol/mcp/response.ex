@@ -44,13 +44,14 @@ defmodule Backplane.McpProtocol.MCP.Response do
   """
 
   @type t :: %__MODULE__{
-          result: map(),
-          id: String.t(),
+          result: term(),
+          id: String.t() | integer(),
           is_error: boolean(),
-          method: String.t() | nil
+          method: String.t() | nil,
+          result_type: String.t() | nil
         }
 
-  defstruct [:result, :id, :method, is_error: false]
+  defstruct [:result, :id, :method, :result_type, is_error: false]
 
   @doc """
   Creates a Response struct from a JSON-RPC response.
@@ -76,9 +77,28 @@ defmodule Backplane.McpProtocol.MCP.Response do
     %__MODULE__{
       result: result,
       id: id,
+      result_type: result_type(result),
       is_error: is_error
     }
   end
+
+  @doc """
+  Creates a response using the result requirements of a protocol version.
+
+  The 2026-07-28 protocol requires a recognized `resultType`. Legacy
+  versions continue to accept results without that field.
+  """
+  @spec from_json_rpc(map(), String.t()) ::
+          {:ok, t()} | {:error, :missing_result_type | {:invalid_result_type, term()}}
+  def from_json_rpc(%{"result" => result} = response, "2026-07-28") do
+    case result_type(result) do
+      nil -> {:error, :missing_result_type}
+      result_type when is_binary(result_type) -> {:ok, from_json_rpc(response)}
+      result_type -> {:error, {:invalid_result_type, result_type}}
+    end
+  end
+
+  def from_json_rpc(response, _version), do: {:ok, from_json_rpc(response)}
 
   @doc """
   Unwraps the response, returning the raw result.
@@ -96,7 +116,7 @@ defmodule Backplane.McpProtocol.MCP.Response do
       iex> Backplane.McpProtocol.MCP.Response.unwrap(error_response)
       %{"isError" => true, "reason" => "not_found"}
   """
-  @spec unwrap(t()) :: map()
+  @spec unwrap(t()) :: term()
   def unwrap(%__MODULE__{result: result}), do: result
 
   @doc """
@@ -145,7 +165,7 @@ defmodule Backplane.McpProtocol.MCP.Response do
       iex> Backplane.McpProtocol.MCP.Response.get_result(response)
       %{"data" => "value"}
   """
-  @spec get_result(t()) :: map()
+  @spec get_result(t()) :: term()
   def get_result(%__MODULE__{result: result}), do: result
 
   @doc """
@@ -157,6 +177,9 @@ defmodule Backplane.McpProtocol.MCP.Response do
       iex> Backplane.McpProtocol.MCP.Response.get_id(response)
       "req_123"
   """
-  @spec get_id(t()) :: String.t()
+  @spec get_id(t()) :: String.t() | integer()
   def get_id(%__MODULE__{id: id}), do: id
+
+  defp result_type(result) when is_map(result), do: Map.get(result, "resultType")
+  defp result_type(_result), do: nil
 end

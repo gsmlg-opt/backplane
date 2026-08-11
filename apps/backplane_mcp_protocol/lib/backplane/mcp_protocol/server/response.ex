@@ -33,7 +33,8 @@ defmodule Backplane.McpProtocol.Server.Response do
           total: integer | nil,
           hasMore: boolean,
           isError: boolean,
-          structured_content: map | nil,
+          structured_content: term(),
+          structured_content_set?: boolean(),
           metadata: map
         }
 
@@ -54,6 +55,7 @@ defmodule Backplane.McpProtocol.Server.Response do
     hasMore: false,
     isError: false,
     structured_content: nil,
+    structured_content_set?: false,
     metadata: %{}
   ]
 
@@ -180,7 +182,7 @@ defmodule Backplane.McpProtocol.Server.Response do
         isError: false
       }
   """
-  @spec json(t(), data :: map, annotations) :: t
+  @spec json(t(), data :: term(), annotations) :: t
   def json(%{type: type} = r, data, opts \\ []) when type in ~w(tool resource)a do
     text(r, JSON.encode!(data), opts)
   end
@@ -194,7 +196,7 @@ defmodule Backplane.McpProtocol.Server.Response do
   ## Parameters
 
     * `response` - A tool response struct
-    * `data` - A map containing the structured data
+    * `data` - Any JSON value
 
   ## Examples
 
@@ -206,11 +208,13 @@ defmodule Backplane.McpProtocol.Server.Response do
         isError: false
       }
   """
-  @spec structured(t(), data :: map) :: t
-  def structured(%{type: :tool} = r, data) when is_map(data) do
+  @spec structured(t(), data :: term()) :: t
+  def structured(%{type: :tool} = r, data)
+      when is_map(data) or is_list(data) or is_binary(data) or is_number(data) or is_boolean(data) or is_nil(data) do
     r
     |> json(data)
     |> Map.put(:structured_content, data)
+    |> Map.put(:structured_content_set?, true)
   end
 
   @doc """
@@ -656,7 +660,7 @@ defmodule Backplane.McpProtocol.Server.Response do
   def to_protocol(%{type: :tool} = r) do
     base = %{"content" => r.content, "isError" => r.isError}
 
-    if r.structured_content,
+    if r.structured_content_set? or not is_nil(r.structured_content),
       do: Map.put(base, "structuredContent", r.structured_content),
       else: base
   end

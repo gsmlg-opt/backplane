@@ -180,6 +180,33 @@ defmodule Backplane.McpProtocol.Server.ResponseTest do
       assert decoded == %{"temperature" => 22.5, "conditions" => "Partly cloudy"}
     end
 
+    test "builds structured responses for every JSON value" do
+      for value <- [%{"answer" => 42}, [1, "two"], "value", 42, 4.2, true, false, nil] do
+        result =
+          Response.tool()
+          |> Response.structured(value)
+          |> Response.to_protocol()
+
+        assert Map.fetch(result, "structuredContent") == {:ok, value}
+        assert [%{"type" => "text", "text" => text}] = result["content"]
+        assert JSON.decode!(text) == value
+      end
+    end
+
+    test "distinguishes explicit structured null from absent structured content" do
+      explicit_null = Response.tool() |> Response.structured(nil) |> Response.to_protocol()
+      absent = Response.to_protocol(Response.tool())
+
+      assert Map.fetch(explicit_null, "structuredContent") == {:ok, nil}
+      assert :error = Map.fetch(absent, "structuredContent")
+    end
+
+    test "keeps directly constructed legacy responses with non-nil structured content" do
+      response = %Response{type: :tool, structured_content: []}
+
+      assert Response.to_protocol(response)["structuredContent"] == []
+    end
+
     test "builds content with annotations" do
       result =
         Response.tool()

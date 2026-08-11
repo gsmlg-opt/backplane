@@ -25,6 +25,8 @@ defmodule Backplane.McpProtocol.Server.Frame do
     * `context` - read-only `%Context{}`, refreshed by Session before each callback
   """
 
+  use Backplane.McpProtocol.Logging
+
   alias Backplane.McpProtocol.Server.Component
   alias Backplane.McpProtocol.Server.Component.Prompt
   alias Backplane.McpProtocol.Server.Component.Resource
@@ -129,23 +131,28 @@ defmodule Backplane.McpProtocol.Server.Frame do
   @spec register_tool(t(), String.t(), list(tool_opt)) :: t()
         when tool_opt:
                {:description, String.t() | nil}
-               | {:input_schema, map() | nil}
-               | {:output_schema, map() | nil}
+               | {:input_schema, Schema.schema() | nil}
+               | {:output_schema, Schema.schema() | nil}
                | {:title, String.t() | nil}
                | {:annotations, map() | nil}
                | {:task_support, Tool.task_support()}
                | {:scopes, [String.t()]}
   def register_tool(%__MODULE__{} = frame, name, opts) when is_binary(name) do
     input_schema = opts[:input_schema] || %{}
-    raw_schema = Component.__clean_schema_for_peri__(input_schema)
-    validate_input = fn params -> Peri.validate(raw_schema, params) end
+    validate_input = compile_tool_validator(input_schema, name, :input)
 
     output_schema = opts[:output_schema]
 
     validate_output =
       if output_schema do
-        raw_output = Component.__clean_schema_for_peri__(output_schema)
-        fn params -> Peri.validate(raw_output, params) end
+        compile_tool_validator(output_schema, name, :output)
+      end
+
+    output_json_schema =
+      cond do
+        is_nil(output_schema) -> nil
+        Schema.raw?(output_schema) -> Schema.to_json_schema(output_schema)
+        true -> output_schema |> Component.__make_optional_nullable__() |> Schema.to_json_schema()
       end
 
     annotations = opts[:annotations]
@@ -162,8 +169,7 @@ defmodule Backplane.McpProtocol.Server.Frame do
       name: name,
       description: opts[:description],
       input_schema: Schema.to_json_schema(input_schema),
-      output_schema:
-        if(output_schema, do: output_schema |> Component.__make_optional_nullable__() |> Schema.to_json_schema()),
+      output_schema: output_json_schema,
       annotations: annotations,
       meta: opts[:meta],
       title: title,
@@ -174,6 +180,22 @@ defmodule Backplane.McpProtocol.Server.Frame do
     }
 
     %{frame | tools: Map.put(frame.tools, name, tool)}
+  end
+
+  defp compile_tool_validator(schema, tool_name, direction) do
+    case Schema.compile_validator(schema) do
+      {:ok, validator} ->
+        validator
+
+      {status, reason} when status in [:unsupported, :error] ->
+        Logging.server_event("schema_validation_disabled", %{
+          tool: tool_name,
+          direction: direction,
+          reason: reason
+        })
+
+        fn value -> {:ok, value} end
+    end
   end
 
   @doc """

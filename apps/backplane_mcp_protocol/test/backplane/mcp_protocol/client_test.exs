@@ -2033,6 +2033,140 @@ defmodule Backplane.McpProtocol.ClientTest do
     end
   end
 
+  describe "modern tool output schema validation caching" do
+    setup do
+      client =
+        start_supervised!(%{
+          id: {Backplane.McpProtocol.Client, :modern_schema_cache},
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+                 client_info: %{"name" => "ModernSchemaClient", "version" => "1.0.0"},
+                 capabilities: %{},
+                 protocol_version: "2026-07-28"
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :initialize)
+      initialize_id = get_request_id(client, "initialize")
+
+      send_response(
+        client,
+        init_response(
+          initialize_id,
+          "2026-07-28",
+          %{"name" => "TestServer", "version" => "1.0.0"},
+          %{"tools" => %{}}
+        )
+      )
+
+      _ = :sys.get_state(client)
+      flush_mcp_sends()
+
+      %{client: client}
+    end
+
+    test "validates explicit structured null instead of treating it as absent", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      list_task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      request_id = get_request_id(client, "tools/list")
+
+      tools = [
+        %{
+          "name" => "string_result",
+          "outputSchema" => %{"type" => "string"}
+        }
+      ]
+
+      send_response(client, tools_list_response(request_id, tools))
+      assert {:ok, _response} = Task.await(list_task)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      call_task =
+        Task.async(fn -> Backplane.McpProtocol.Client.call_tool(client, "string_result", %{}) end)
+
+      call_request_id = get_request_id(client, "tools/call")
+
+      send_response(client, %{
+        "jsonrpc" => "2.0",
+        "id" => call_request_id,
+        "result" => %{
+          "content" => [%{"type" => "text", "text" => "null"}],
+          "structuredContent" => nil,
+          "isError" => false
+        }
+      })
+
+      assert {:error, error} = Task.await(call_task)
+      assert error.reason == :parse_error
+      assert error.data[:tool] == "string_result"
+    end
+
+    test "omits unsupported modern validators from the client cache", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      list_task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      list_request_id = get_request_id(client, "tools/list")
+
+      tools = [
+        %{
+          "name" => "choice",
+          "outputSchema" => %{
+            "oneOf" => [
+              %{"type" => "string"},
+              %{"type" => "integer"}
+            ]
+          }
+        }
+      ]
+
+      send_response(client, tools_list_response(list_request_id, tools))
+      assert {:ok, _response} = Task.await(list_task)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      call_task = Task.async(fn -> Backplane.McpProtocol.Client.call_tool(client, "choice", %{}) end)
+      call_request_id = get_request_id(client, "tools/call")
+
+      send_response(client, %{
+        "jsonrpc" => "2.0",
+        "id" => call_request_id,
+        "result" => %{
+          "content" => [%{"type" => "text", "text" => "true"}],
+          "structuredContent" => true,
+          "isError" => false
+        }
+      })
+
+      assert {:ok, response} = Task.await(call_task)
+      assert response.result["structuredContent"] == true
+    end
+  end
+
   describe "await_ready/2" do
     test "returns :ok immediately when client is already initialized" do
       test_pid = self()

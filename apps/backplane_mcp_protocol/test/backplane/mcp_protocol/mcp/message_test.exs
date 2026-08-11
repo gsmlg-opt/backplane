@@ -7,6 +7,42 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
 
   @moduletag capture_log: true
 
+  describe "build_response/3" do
+    test "adds the default result type for the modern protocol" do
+      assert Message.build_response(%{"value" => 42}, 1, "2026-07-28") == %{
+               "jsonrpc" => "2.0",
+               "result" => %{"resultType" => "complete", "value" => 42},
+               "id" => 1
+             }
+    end
+
+    test "preserves an explicit modern result type" do
+      result = %{"resultType" => "vendor.extension", "requests" => []}
+
+      assert Message.build_response(result, 1, "2026-07-28")["result"] == result
+    end
+
+    test "rejects malformed explicit modern result types" do
+      for invalid <- [nil, 42] do
+        assert_raise ArgumentError, ~r/modern MCP resultType must be a string/, fn ->
+          Message.build_response(%{"resultType" => invalid}, 1, "2026-07-28")
+        end
+      end
+    end
+
+    test "keeps legacy response results unchanged" do
+      result = %{"resultType" => nil, "value" => 42}
+
+      assert Message.build_response(result, 1, "2025-11-25")["result"] == result
+    end
+
+    test "does not emit a modern result without a result type" do
+      assert_raise ArgumentError, ~r/modern MCP result must be a map/, fn ->
+        Message.build_response("value", 1, "2026-07-28")
+      end
+    end
+  end
+
   describe "decode/1" do
     test "decodes a single valid message" do
       json = ~s({"jsonrpc":"2.0","method":"ping","id":1}\n)

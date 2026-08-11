@@ -1,9 +1,83 @@
 defmodule Backplane.McpProtocol.Server.FrameTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.Server.Component.Resource
+  alias Backplane.McpProtocol.Server.Component.Schema
   alias Backplane.McpProtocol.Server.Context
   alias Backplane.McpProtocol.Server.Frame
+  alias Backplane.McpProtocol.Server.Handlers.Tools
+  alias Backplane.McpProtocol.Server.Response
+
+  defmodule DynamicToolServer do
+    @moduledoc false
+    def __components__(:tool), do: []
+
+    def handle_tool_call("nullable", _params, frame) do
+      {:reply, Response.structured(Response.tool(), nil), frame}
+    end
+  end
+
+  describe "register_tool/3 with raw JSON Schema" do
+    test "preserves unsupported raw schemas and installs pass-through validators" do
+      raw = %{
+        "$defs" => %{"value" => %{"type" => "string"}},
+        "$ref" => "#/$defs/value",
+        "x-acme-keyword" => true
+      }
+
+      frame =
+        Frame.register_tool(Frame.new(), "raw",
+          input_schema: Schema.raw(raw),
+          output_schema: Schema.raw(raw)
+        )
+
+      tool = frame.tools["raw"]
+      value = %{"unvalidated" => [1, 2, 3]}
+
+      assert tool.input_schema == raw
+      assert tool.output_schema == raw
+      assert {:ok, ^value} = tool.validate_input.(value)
+      assert {:ok, ^value} = tool.validate_output.(value)
+    end
+
+    test "validates supported raw schemas while returning the original value" do
+      raw = %{
+        "type" => "object",
+        "properties" => %{"name" => %{"type" => "string"}},
+        "required" => ["name"]
+      }
+
+      frame = Frame.register_tool(Frame.new(), "supported", input_schema: Schema.raw(raw))
+      value = %{"name" => "Ada", "extension" => true}
+
+      assert {:ok, ^value} = frame.tools["supported"].validate_input.(value)
+      assert {:error, _} = frame.tools["supported"].validate_input.(%{})
+    end
+
+    test "returns invalid params when a numeric additional property violates its bound" do
+      raw = %{
+        "type" => "object",
+        "additionalProperties" => %{"type" => "number", "minimum" => 0}
+      }
+
+      frame = Frame.register_tool(Frame.new(), "bounded", input_schema: Schema.raw(raw))
+      request = %{"params" => %{"name" => "bounded", "arguments" => %{"score" => -1}}}
+
+      assert {:error, %Error{reason: :invalid_params}, _frame} =
+               Tools.handle_call(request, frame, DynamicToolServer)
+    end
+
+    test "accepts explicit structured null when the output schema allows null" do
+      frame =
+        Frame.register_tool(Frame.new(), "nullable", output_schema: Schema.raw(%{"type" => "null"}))
+
+      request = %{"params" => %{"name" => "nullable", "arguments" => %{}}}
+
+      assert {:reply, result, _frame} = Tools.handle_call(request, frame, DynamicToolServer)
+      assert Map.fetch(result, "structuredContent") == {:ok, nil}
+    end
+  end
 
   describe "assign/2 preserves context" do
     test "assigning values does not modify context" do
