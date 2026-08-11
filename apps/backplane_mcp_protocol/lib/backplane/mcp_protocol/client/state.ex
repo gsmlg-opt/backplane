@@ -6,6 +6,8 @@ defmodule Backplane.McpProtocol.Client.State do
   alias Backplane.McpProtocol.Client.Request
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
+  alias Backplane.McpProtocol.Protocol.Profile
+  alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Telemetry
 
   @type t :: %__MODULE__{
@@ -13,6 +15,14 @@ defmodule Backplane.McpProtocol.Client.State do
           capabilities: map(),
           server_capabilities: map() | nil,
           server_info: map() | nil,
+          protocol_preference: :auto | String.t(),
+          protocol_pinned?: boolean(),
+          negotiation_status: :connecting | :discovering | :initializing | :ready | :failed,
+          era: :modern | :legacy | nil,
+          negotiated_version: String.t() | nil,
+          peer_versions: [String.t()],
+          discovery: map() | nil,
+          negotiation_error: Error.t() | nil,
           protocol_version: String.t(),
           timeout: pos_integer(),
           transport: map(),
@@ -33,6 +43,13 @@ defmodule Backplane.McpProtocol.Client.State do
     :capabilities,
     :server_capabilities,
     :server_info,
+    :protocol_preference,
+    :protocol_pinned?,
+    :negotiation_status,
+    :era,
+    :negotiated_version,
+    :discovery,
+    :negotiation_error,
     :timeout,
     :protocol_version,
     :transport,
@@ -42,19 +59,48 @@ defmodule Backplane.McpProtocol.Client.State do
     sampling_callback: nil,
     elicitation_callback: nil,
     roots: %{},
+    peer_versions: [],
     ready_waiters: [],
     transport_parse_state: nil
   ]
 
   @spec new(map()) :: t()
   def new(opts) do
+    protocol_preference = opts.protocol_version
+
     %__MODULE__{
       client_info: opts.client_info,
       capabilities: opts.capabilities,
-      protocol_version: opts.protocol_version,
+      protocol_preference: protocol_preference,
+      protocol_pinned?: protocol_preference != :auto,
+      negotiation_status: :connecting,
+      era: nil,
+      negotiated_version: nil,
+      peer_versions: [],
+      discovery: nil,
+      negotiation_error: nil,
+      protocol_version: effective_protocol_version(protocol_preference),
       transport: opts.transport,
       timeout: opts.timeout,
       transport_parse_state: opts[:transport_parse_state]
+    }
+  end
+
+  @doc "Returns the client's current protocol negotiation context."
+  @spec protocol_context(t()) :: map()
+  def protocol_context(state) do
+    %{
+      protocol_preference: state.protocol_preference,
+      protocol_pinned?: state.protocol_pinned?,
+      negotiation_status: state.negotiation_status,
+      era: state.era,
+      protocol_version: state.protocol_version,
+      negotiated_version: state.negotiated_version,
+      peer_versions: state.peer_versions,
+      discovery: state.discovery,
+      server_capabilities: state.server_capabilities,
+      server_info: state.server_info,
+      negotiation_error: state.negotiation_error
     }
   end
 
@@ -560,6 +606,14 @@ defmodule Backplane.McpProtocol.Client.State do
       state
     end
   end
+
+  defp effective_protocol_version(:auto) do
+    Enum.find(Registry.supported_versions(), fn version ->
+      match?({:ok, %Profile{era: :modern}}, Registry.profile(version))
+    end) || Registry.latest_version()
+  end
+
+  defp effective_protocol_version(version), do: version
 
   @doc """
   Sets the sampling callback function.

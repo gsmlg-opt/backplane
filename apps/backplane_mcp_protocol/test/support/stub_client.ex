@@ -3,7 +3,7 @@ defmodule StubClient do
   use GenServer
 
   def start_link(_opts \\ []) do
-    GenServer.start_link(__MODULE__, %{messages: [], subscriber: nil}, name: __MODULE__)
+    GenServer.start_link(__MODULE__, %{messages: [], signals: [], subscriber: nil}, name: __MODULE__)
   end
 
   def init(state) do
@@ -18,9 +18,13 @@ defmodule StubClient do
     GenServer.call(__MODULE__, :clear_messages)
   end
 
+  def get_signals do
+    GenServer.call(__MODULE__, :get_signals)
+  end
+
   @doc """
-  Subscribes the given pid to `{:stub_client_response, data}` messages emitted
-  whenever the stub receives a response. Auto-clears on `clear_messages/0`.
+  Subscribes the given pid to response and lifecycle signal messages emitted by
+  the stub. Auto-clears on `clear_messages/0`.
   """
   def subscribe(pid \\ self()) do
     GenServer.call(__MODULE__, {:subscribe, pid})
@@ -30,8 +34,12 @@ defmodule StubClient do
     {:reply, Enum.reverse(messages), state}
   end
 
+  def handle_call(:get_signals, _from, %{signals: signals} = state) do
+    {:reply, Enum.reverse(signals), state}
+  end
+
   def handle_call(:clear_messages, _from, state) do
-    {:reply, :ok, %{state | messages: [], subscriber: nil}}
+    {:reply, :ok, %{state | messages: [], signals: [], subscriber: nil}}
   end
 
   def handle_call({:subscribe, pid}, _from, state) do
@@ -40,7 +48,10 @@ defmodule StubClient do
 
   def handle_cast(msg, state), do: handle_info(msg, state)
 
-  def handle_info(:initialize, state), do: {:noreply, state}
+  def handle_info(signal, %{signals: signals, subscriber: sub} = state) when signal in [:initialize, :negotiate] do
+    if sub, do: send(sub, {:stub_client_signal, signal})
+    {:noreply, %{state | signals: [signal | signals]}}
+  end
 
   def handle_info({:response, data}, %{messages: messages, subscriber: sub} = state) do
     if sub, do: send(sub, {:stub_client_response, data})

@@ -178,7 +178,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
       port = spawn_port(cmd, state)
       ref = Port.monitor(port)
 
-      GenServer.cast(state.client, :initialize)
+      GenServer.cast(state.client, :negotiate)
       {:noreply, %{state | port: port, ref: ref}}
     else
       {:stop, {:error, "Command not found: #{state.command}"}, state}

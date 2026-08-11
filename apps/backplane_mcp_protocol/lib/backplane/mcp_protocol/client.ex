@@ -88,6 +88,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Cache
   alias Backplane.McpProtocol.Client.Elicitation
   alias Backplane.McpProtocol.Client.Handlers
+  alias Backplane.McpProtocol.Client.Negotiation
   alias Backplane.McpProtocol.Client.Operation
   alias Backplane.McpProtocol.Client.Request
   alias Backplane.McpProtocol.Client.Sampling
@@ -96,6 +97,8 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Protocol
+  alias Backplane.McpProtocol.Protocol.Profile
+  alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Telemetry
 
   require Message
@@ -219,7 +222,7 @@ defmodule Backplane.McpProtocol.Client do
           | {:transport, transport}
           | {:client_info, map}
           | {:capabilities, map}
-          | {:protocol_version, String.t()}
+          | {:protocol_version, String.t() | :auto}
           | GenServer.option()
 
   defschema(:parse_options, [
@@ -227,7 +230,7 @@ defmodule Backplane.McpProtocol.Client do
     {:transport, {:required, {:custom, &Backplane.McpProtocol.client_transport/1}}},
     {:client_info, {:required, :map}},
     {:capabilities, {:required, :map}},
-    {:protocol_version, {:string, {:default, @default_protocol_version}}},
+    {:protocol_version, {{:oneof, [:string, {:enum, [:auto]}]}, {:default, @default_protocol_version}}},
     {:timeout, {:integer, {:default, @default_operation_timeout}}}
   ])
 
@@ -308,8 +311,7 @@ defmodule Backplane.McpProtocol.Client do
     protocol_version = opts[:protocol_version]
     layer = opts[:transport][:layer]
 
-    with :ok <- Protocol.validate_version(protocol_version),
-         :ok <- Protocol.validate_transport(protocol_version, layer) do
+    with :ok <- validate_protocol_preference(protocol_version, layer) do
       GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
     end
   end
@@ -610,13 +612,19 @@ defmodule Backplane.McpProtocol.Client do
     GenServer.call(client, :get_server_info, timeout)
   end
 
-  @doc """
-  Blocks until the client has completed the MCP initialization handshake.
+  @doc "Returns the negotiated protocol version, era, peer metadata, and negotiation status."
+  @spec get_protocol_info(t, opts :: Keyword.t()) :: map()
+  def get_protocol_info(client, opts \\ []) do
+    timeout = opts[:timeout] || to_timeout(second: 5)
+    GenServer.call(client, :get_protocol_info, timeout)
+  end
 
-  Returns `:ok` once the server capabilities have been received.
-  If the server has already been initialized, returns immediately.
-  Otherwise, the caller is parked until the initialization response arrives
-  or the GenServer call times out.
+  @doc """
+  Blocks until the client has completed protocol negotiation.
+
+  Returns `:ok` once modern discovery or legacy initialization succeeds, and
+  `{:error, error}` after a terminal negotiation failure. Otherwise, the caller
+  is parked until negotiation completes or the GenServer call times out.
 
   ## Options
 
@@ -628,7 +636,7 @@ defmodule Backplane.McpProtocol.Client do
       :ok = Backplane.McpProtocol.Client.await_ready(MyApp.MCPClient, timeout: 10_000)
       {:ok, tools} = Backplane.McpProtocol.Client.list_tools(MyApp.MCPClient)
   """
-  @spec await_ready(t, keyword()) :: :ok
+  @spec await_ready(t, keyword()) :: :ok | {:error, Error.t()}
   def await_ready(client, opts \\ []) do
     timeout = opts[:timeout] || @default_operation_timeout
     GenServer.call(client, :await_ready, timeout)
@@ -1085,8 +1093,16 @@ defmodule Backplane.McpProtocol.Client do
     {:reply, State.get_server_info(state), state}
   end
 
-  def handle_call(:await_ready, _from, %{server_capabilities: caps} = state) when not is_nil(caps) do
+  def handle_call(:get_protocol_info, _from, state) do
+    {:reply, State.protocol_context(state), state}
+  end
+
+  def handle_call(:await_ready, _from, %{negotiation_status: :ready} = state) do
     {:reply, :ok, state}
+  end
+
+  def handle_call(:await_ready, _from, %{negotiation_status: :failed, negotiation_error: %Error{} = error} = state) do
+    {:reply, {:error, error}, state}
   end
 
   def handle_call(:await_ready, from, state) do
@@ -1154,26 +1170,39 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   def handle_call({:cancel_request, request_id, reason}, _from, state) do
-    with true <- Map.has_key?(state.pending_requests, request_id),
-         :ok <- send_cancellation(state, request_id, reason) do
-      {request, updated_state} = State.remove_request(state, request_id)
+    case State.get_request(state, request_id) do
+      %Request{} = request ->
+        if negotiation_request?(request) do
+          {:reply, Error.transport(:request_not_found), state}
+        else
+          case send_cancellation(state, request_id, reason) do
+            :ok ->
+              {_request, updated_state} = State.remove_request(state, request_id)
 
-      error =
-        Error.transport(:request_cancelled, %{
-          message: "Request cancelled by client",
-          reason: reason
-        })
+              error =
+                Error.transport(:request_cancelled, %{
+                  message: "Request cancelled by client",
+                  reason: reason
+                })
 
-      GenServer.reply(request.from, {:error, error})
-      {:reply, :ok, updated_state}
-    else
-      false -> {:reply, Error.transport(:request_not_found), state}
-      error -> {:reply, error, state}
+              GenServer.reply(request.from, {:error, error})
+              {:reply, :ok, updated_state}
+
+            error ->
+              {:reply, error, state}
+          end
+        end
+
+      nil ->
+        {:reply, Error.transport(:request_not_found), state}
     end
   end
 
   def handle_call({:cancel_all_requests, reason}, _from, state) do
-    pending_requests = State.list_pending_requests(state)
+    {negotiation_requests, pending_requests} =
+      state
+      |> State.list_pending_requests()
+      |> Enum.split_with(&negotiation_request?/1)
 
     if Enum.empty?(pending_requests) do
       {:reply, {:ok, []}, state}
@@ -1193,7 +1222,8 @@ defmodule Backplane.McpProtocol.Client do
           request
         end
 
-      {:reply, {:ok, cancelled_requests}, %{state | pending_requests: %{}}}
+      retained_requests = Map.new(negotiation_requests, &{&1.id, &1})
+      {:reply, {:ok, cancelled_requests}, %{state | pending_requests: retained_requests}}
     end
   end
 
@@ -1210,34 +1240,12 @@ defmodule Backplane.McpProtocol.Client do
 
   def handle_cast(:initialize, state) do
     Logging.client_event("handshake", "Making initial client <> server handshake")
+    {:noreply, state |> Negotiation.begin() |> advance_negotiation()}
+  end
 
-    params = %{
-      "protocolVersion" => state.protocol_version,
-      "capabilities" => state.capabilities,
-      "clientInfo" => state.client_info
-    }
-
-    operation =
-      Operation.new(%{
-        method: "initialize",
-        params: params,
-        timeout: state.timeout
-      })
-
-    {request_id, updated_state} =
-      State.add_request_from_operation(state, operation, {self(), make_ref()})
-
-    with {:ok, request_data} <- encode_request("initialize", params, request_id),
-         :ok <- send_to_transport(state.transport, request_data, timeout: operation.timeout) do
-      {:noreply, updated_state}
-    else
-      err -> {:stop, err, state}
-    end
-  rescue
-    e ->
-      err = Exception.format(:error, e, __STACKTRACE__)
-      Logging.client_event("initialization_failed", %{error: err})
-      {:stop, :unexpected, state}
+  def handle_cast(:negotiate, state) do
+    Logging.client_event("negotiating", %{preference: state.protocol_preference})
+    {:noreply, state |> Negotiation.begin() |> advance_negotiation()}
   end
 
   @impl true
@@ -1353,11 +1361,16 @@ defmodule Backplane.McpProtocol.Client do
             message: "Request timed out after #{elapsed_ms}ms"
           })
 
-        GenServer.reply(request.from, {:error, error})
-
-        _ = send_cancellation(updated_state, request_id, "timeout")
-
-        {:noreply, updated_state}
+        if negotiation_request?(request) do
+          {:noreply,
+           updated_state
+           |> Negotiation.handle_error(request, error)
+           |> advance_negotiation()}
+        else
+          GenServer.reply(request.from, {:error, error})
+          _ = send_cancellation(updated_state, request_id, "timeout")
+          {:noreply, updated_state}
+        end
     end
   end
 
@@ -1394,12 +1407,14 @@ defmodule Backplane.McpProtocol.Client do
           reason: "client closed"
         })
 
-      GenServer.reply(request.from, {:error, error})
+      if !negotiation_request?(request) do
+        GenServer.reply(request.from, {:error, error})
 
-      send_notification(state, "notifications/cancelled", %{
-        "requestId" => request.id,
-        "reason" => "client closed"
-      })
+        send_notification(state, "notifications/cancelled", %{
+          "requestId" => request.id,
+          "reason" => "client closed"
+        })
+      end
     end
 
     for waiter <- state.ready_waiters do
@@ -1446,20 +1461,35 @@ defmodule Backplane.McpProtocol.Client do
         state
 
       {request, updated_state} ->
-        process_error_response(request, json_error, id, updated_state)
+        if negotiation_request?(request) do
+          error = normalize_json_rpc_error(json_error)
+          elapsed_ms = Request.elapsed_time(request)
+          log_error_response(request, id, elapsed_ms, json_error)
+
+          updated_state
+          |> Negotiation.handle_error(request, error)
+          |> advance_negotiation()
+        else
+          process_error_response(request, json_error, id, updated_state)
+        end
     end
   end
 
   defp log_unknown_error_response(id, json_error) do
-    Logging.client_event("unknown_error_response", %{
-      id: id,
-      code: json_error["code"],
-      message: json_error["message"]
-    })
+    Logging.client_event(
+      "unknown_error_response",
+      Map.put(unknown_error_response_meta(json_error), :id, id)
+    )
   end
 
+  defp unknown_error_response_meta(%{} = error) do
+    %{code: error["code"], message: error["message"]}
+  end
+
+  defp unknown_error_response_meta(_error), do: %{malformed_error: true}
+
   defp process_error_response(request, json_error, id, state) do
-    error = Error.from_json_rpc(json_error)
+    error = normalize_json_rpc_error(json_error)
     elapsed_ms = Request.elapsed_time(request)
 
     log_error_response(request, id, elapsed_ms, json_error)
@@ -1474,10 +1504,7 @@ defmodule Backplane.McpProtocol.Client do
       method: request.method
     })
 
-    meta =
-      if is_map(error),
-        do: %{error_code: error["code"], error_message: error["message"]},
-        else: %{errors: Enum.map(error, &Peri.Error.error_to_map/1)}
+    meta = error_response_meta(error)
 
     Telemetry.execute(
       Telemetry.event_client_error(),
@@ -1486,30 +1513,26 @@ defmodule Backplane.McpProtocol.Client do
     )
   end
 
-  defp handle_success_response(%{"id" => id, "result" => %{"serverInfo" => _} = result}, id, state) do
-    case State.remove_request(state, id) do
-      {nil, state} ->
-        state
-
-      {_request, state} ->
-        state =
-          State.update_server_info(
-            state,
-            result["capabilities"],
-            result["serverInfo"]
-          )
-
-        Logging.client_event("initialized", %{
-          server_info: result["serverInfo"],
-          capabilities: result["capabilities"]
-        })
-
-        :ok = send_notification(state, "notifications/initialized")
-
-        Enum.each(state.ready_waiters, &GenServer.reply(&1, :ok))
-        %{state | ready_waiters: []}
-    end
+  defp normalize_json_rpc_error(%{"code" => code, "message" => message} = error)
+       when is_integer(code) and is_binary(message) do
+    Error.from_json_rpc(error)
   end
+
+  defp normalize_json_rpc_error(_error) do
+    Error.transport(:malformed_response, %{message: "Malformed JSON-RPC error response"})
+  end
+
+  defp error_response_meta(%{"code" => code, "message" => message}) when is_integer(code) and is_binary(message) do
+    %{error_code: code, error_message: message}
+  end
+
+  defp error_response_meta(errors) when is_list(errors) do
+    %{errors: Enum.map(errors, &Peri.Error.error_to_map/1)}
+  rescue
+    _error -> %{malformed_error: true}
+  end
+
+  defp error_response_meta(_error), do: %{malformed_error: true}
 
   defp handle_success_response(%{"id" => id, "result" => result}, id, state) do
     case State.remove_request(state, id) do
@@ -1518,7 +1541,13 @@ defmodule Backplane.McpProtocol.Client do
         state
 
       {request, updated_state} ->
-        process_successful_response(request, result, id, updated_state)
+        if negotiation_request?(request) do
+          updated_state
+          |> Negotiation.handle_result(request, result)
+          |> advance_negotiation()
+        else
+          process_successful_response(request, result, id, updated_state)
+        end
     end
   end
 
@@ -1602,6 +1631,111 @@ defmodule Backplane.McpProtocol.Client do
 
   # Helper functions
 
+  defp advance_negotiation({:send, %Operation{} = operation, state}) do
+    {request_id, pending_state} =
+      State.add_request_from_operation(state, operation, {self(), make_ref()})
+
+    result =
+      with {:ok, request_data} <- encode_request(operation.method, operation.params, request_id) do
+        safe_send_to_transport(
+          pending_state.transport,
+          request_data,
+          timeout: operation.timeout
+        )
+      end
+
+    case result do
+      :ok ->
+        pending_state
+
+      {:error, reason} ->
+        {request, cleaned_state} = State.remove_request(pending_state, request_id)
+        error = normalize_negotiation_error(reason)
+
+        cleaned_state
+        |> Negotiation.handle_error(request, error)
+        |> advance_negotiation()
+    end
+  end
+
+  defp advance_negotiation({:ready, %{era: :legacy} = state}) do
+    case safe_send_notification(state, "notifications/initialized") do
+      :ok -> complete_negotiation(state)
+      {:error, %Error{} = error} -> fail_negotiation(state, error)
+      {:error, reason} -> fail_negotiation(state, normalize_negotiation_error(reason))
+    end
+  end
+
+  defp advance_negotiation({:ready, state}), do: complete_negotiation(state)
+  defp advance_negotiation({:error, %Error{} = error, state}), do: fail_negotiation(state, error)
+
+  defp complete_negotiation(state) do
+    Logging.client_event("negotiated", %{
+      era: state.era,
+      protocol_version: state.negotiated_version,
+      server_info: state.server_info,
+      capabilities: state.server_capabilities
+    })
+
+    Enum.each(state.ready_waiters, &GenServer.reply(&1, :ok))
+    %{state | ready_waiters: []}
+  end
+
+  defp fail_negotiation(state, error) do
+    state = %{state | negotiation_status: :failed, negotiation_error: error}
+
+    Logging.client_event("negotiation_failed", %{
+      error: error,
+      protocol_preference: state.protocol_preference,
+      era: state.era
+    })
+
+    Enum.each(state.ready_waiters, &GenServer.reply(&1, {:error, error}))
+    %{state | ready_waiters: []}
+  end
+
+  defp safe_send_to_transport(transport, data, opts) do
+    send_to_transport(transport, data, opts)
+  rescue
+    error ->
+      {:error,
+       Error.transport(:send_failure, %{
+         original_reason: Exception.format(:error, error, __STACKTRACE__)
+       })}
+  catch
+    :exit, reason -> {:error, Error.transport(:send_failure, %{original_reason: reason})}
+  end
+
+  defp safe_send_notification(state, method, params \\ %{}) do
+    with {:ok, notification_data} <- encode_notification(method, params) do
+      safe_send_to_transport(state.transport, notification_data, timeout: state.timeout)
+    end
+  end
+
+  defp normalize_negotiation_error(%Error{} = error), do: error
+
+  defp normalize_negotiation_error(reason) do
+    Error.protocol(:internal_error, %{original_reason: reason})
+  end
+
+  defp negotiation_request?(%Request{method: method}) do
+    method in ["initialize", "server/discover"]
+  end
+
+  defp encode_request("server/discover" = method, params, request_id) do
+    request = %{
+      "jsonrpc" => "2.0",
+      "id" => request_id,
+      "method" => method,
+      "params" => params
+    }
+
+    Logging.message("outgoing", "request", request_id, request)
+    {:ok, JSON.encode!(request) <> "\n"}
+  rescue
+    error -> {:error, error}
+  end
+
   defp encode_request(method, params, request_id) do
     request = %{"method" => method, "params" => params}
     Logging.message("outgoing", "request", request_id, request)
@@ -1638,5 +1772,29 @@ defmodule Backplane.McpProtocol.Client do
   defp send_roots_list_changed_notification(state) do
     Logging.client_event("sending_roots_list_changed", nil)
     send_notification(state, "notifications/roots/list_changed")
+  end
+
+  defp validate_protocol_preference(:auto, layer) do
+    supported_versions = layer.supported_protocol_versions()
+
+    if supported_versions == :all or
+         Enum.any?(supported_versions, fn version ->
+           match?({:ok, %Profile{era: :modern}}, Registry.profile(version))
+         end) do
+      :ok
+    else
+      {:error,
+       Error.transport(:incompatible_transport, %{
+         version: :auto,
+         transport: layer,
+         supported_versions: supported_versions
+       })}
+    end
+  end
+
+  defp validate_protocol_preference(version, layer) do
+    with :ok <- Protocol.validate_version(version) do
+      Protocol.validate_transport(version, layer)
+    end
   end
 end

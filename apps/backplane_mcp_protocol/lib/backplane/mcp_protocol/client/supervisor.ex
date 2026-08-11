@@ -27,7 +27,8 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
       * `:transport_name` - Optional custom name for the transport process
       * `:client_info` - Client identification info
       * `:capabilities` - Client capabilities map
-      * `:protocol_version` - MCP protocol version
+      * `:protocol_version` - MCP protocol version or `:auto`
+      * `:timeout` - Default operation and protocol-negotiation timeout
 
   ## Examples
 
@@ -87,13 +88,17 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
 
     client_transport = [layer: layer, name: transport_name]
 
-    client_opts = [
-      transport: client_transport,
-      client_info: client_info,
-      capabilities: capabilities,
-      protocol_version: protocol_version,
-      name: client_name
-    ]
+    client_opts =
+      maybe_put_timeout(
+        [
+          transport: client_transport,
+          client_info: client_info,
+          capabilities: capabilities,
+          protocol_version: protocol_version,
+          name: client_name
+        ],
+        opts
+      )
 
     children = [
       %{id: Client, start: {Client, :start_link_server, [client_opts]}},
@@ -138,4 +143,11 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
   end
 
   defp parse_transport_config({:websocket, opts}), do: {Websocket, opts}
+
+  defp maybe_put_timeout(client_opts, opts) do
+    case Keyword.fetch(opts, :timeout) do
+      {:ok, timeout} -> Keyword.put(client_opts, :timeout, timeout)
+      :error -> client_opts
+    end
+  end
 end

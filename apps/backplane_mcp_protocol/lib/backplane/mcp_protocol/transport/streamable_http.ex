@@ -184,7 +184,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl Transport
-  def supported_protocol_versions, do: ["2025-03-26", "2025-06-18"]
+  def supported_protocol_versions, do: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
 
   @impl GenServer
   def init(opts) do
@@ -208,7 +208,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   @impl GenServer
   def handle_continue(:connect, state) do
     emit_telemetry(:connect, state)
-    GenServer.cast(state.client, :initialize)
+    GenServer.cast(state.client, :negotiate)
     new_state = maybe_start_sse_connection(state)
     {:noreply, new_state}
   end

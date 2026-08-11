@@ -21,11 +21,67 @@ defmodule Backplane.McpProtocol.Client.StateTest do
       assert state.client_info == %{"name" => "TestClient", "version" => "1.0.0"}
       assert state.capabilities == %{"resources" => %{}}
       assert state.protocol_version == "2024-11-05"
+      assert state.protocol_preference == "2024-11-05"
+      assert state.protocol_pinned?
+      assert state.negotiation_status == :connecting
+      assert state.era == nil
+      assert state.negotiated_version == nil
+      assert state.peer_versions == []
+      assert state.discovery == nil
+      assert state.negotiation_error == nil
       assert state.transport == %{layer: :fake_transport, name: :fake_name}
       assert state.timeout == 30_000
       assert state.pending_requests == %{}
       assert state.progress_callbacks == %{}
       assert state.log_callback == nil
+    end
+
+    test "keeps :auto as a preference while exposing a string wire version" do
+      state =
+        State.new(%{
+          client_info: %{"name" => "TestClient", "version" => "1.0.0"},
+          capabilities: %{},
+          protocol_version: :auto,
+          transport: %{layer: :fake_transport, name: :fake_name},
+          timeout: 30_000
+        })
+
+      assert state.protocol_preference == :auto
+      refute state.protocol_pinned?
+      assert state.protocol_version == "2026-07-28"
+      assert is_binary(state.protocol_version)
+    end
+  end
+
+  describe "protocol_context/1" do
+    test "projects negotiation state for introspection" do
+      error = Error.transport(:request_timeout)
+
+      state =
+        Map.merge(new_test_state(), %{
+          protocol_preference: :auto,
+          protocol_pinned?: false,
+          negotiation_status: :failed,
+          era: :modern,
+          negotiated_version: nil,
+          peer_versions: ["2026-07-28"],
+          discovery: %{"supportedVersions" => ["2026-07-28"]},
+          negotiation_error: error
+        })
+
+      assert State.protocol_context(state) == %{
+               protocol_preference: :auto,
+               protocol_pinned?: false,
+               negotiation_status: :failed,
+               era: :modern,
+               protocol_version: "2024-11-05",
+               negotiated_version: nil,
+               peer_versions: ["2026-07-28"],
+               discovery: %{"supportedVersions" => ["2026-07-28"]},
+               server_capabilities: nil,
+               server_info: nil,
+               negotiation_error: error
+             }
     end
   end
 

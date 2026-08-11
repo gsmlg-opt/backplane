@@ -13,6 +13,8 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
 
   describe "start_link/1" do
     test "successfully starts transport", %{command: command, args: args} do
+      :ok = StubClient.subscribe()
+
       opts = [
         client: StubClient,
         command: command,
@@ -22,6 +24,9 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
 
       assert {:ok, pid} = STDIO.start_link(opts)
       assert Process.whereis(:test_transport)
+      assert_receive {:stub_client_signal, :negotiate}, 500
+      assert :negotiate in StubClient.get_signals()
+      refute :initialize in StubClient.get_signals()
 
       safe_stop(pid)
     end

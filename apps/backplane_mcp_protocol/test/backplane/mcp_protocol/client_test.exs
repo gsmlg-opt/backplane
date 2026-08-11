@@ -2053,17 +2053,28 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       allow(Backplane.McpProtocol.MockTransport, self(), client)
 
-      GenServer.cast(client, :initialize)
-      initialize_id = get_request_id(client, "initialize")
+      GenServer.cast(client, :negotiate)
+      discovery_id = get_request_id(client, "server/discover")
 
       send_response(
         client,
-        init_response(
-          initialize_id,
-          "2026-07-28",
-          %{"name" => "TestServer", "version" => "1.0.0"},
-          %{"tools" => %{}}
-        )
+        %{
+          "jsonrpc" => "2.0",
+          "id" => discovery_id,
+          "result" => %{
+            "resultType" => "complete",
+            "supportedVersions" => ["2026-07-28"],
+            "capabilities" => %{"tools" => %{}},
+            "ttlMs" => 0,
+            "cacheScope" => "private",
+            "_meta" => %{
+              "io.modelcontextprotocol/serverInfo" => %{
+                "name" => "TestServer",
+                "version" => "1.0.0"
+              }
+            }
+          }
+        }
       )
 
       _ = :sys.get_state(client)
@@ -2164,6 +2175,349 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       assert {:ok, response} = Task.await(call_task)
       assert response.result["structuredContent"] == true
+    end
+  end
+
+  describe "protocol negotiation" do
+    test "auto discovers a modern server, becomes ready, and exposes protocol context" do
+      client = start_negotiating_client(:auto, "AutoClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+
+      assert_receive {:mcp_send, raw_request}, 500
+      request = JSON.decode!(raw_request)
+      assert request["method"] == "server/discover"
+
+      assert request["params"]["_meta"] == %{
+               "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+               "io.modelcontextprotocol/clientCapabilities" => %{},
+               "io.modelcontextprotocol/clientInfo" => %{
+                 "name" => "AutoClient",
+                 "version" => "1.0.0"
+               }
+             }
+
+      send_response(client, %{
+        "jsonrpc" => "2.0",
+        "id" => request["id"],
+        "result" => %{
+          "resultType" => "complete",
+          "supportedVersions" => ["2026-07-28"],
+          "capabilities" => %{"tools" => %{}},
+          "ttlMs" => 0,
+          "cacheScope" => "private",
+          "serverInfo" => %{"name" => "ignored", "version" => "0"},
+          "_meta" => %{
+            "io.modelcontextprotocol/serverInfo" => %{
+              "name" => "ModernServer",
+              "version" => "2.0.0"
+            }
+          }
+        }
+      })
+
+      assert :ok = Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000)
+
+      assert %{
+               protocol_preference: :auto,
+               protocol_pinned?: false,
+               negotiation_status: :ready,
+               era: :modern,
+               protocol_version: "2026-07-28",
+               negotiated_version: "2026-07-28",
+               server_info: %{"name" => "ModernServer", "version" => "2.0.0"}
+             } = Backplane.McpProtocol.Client.get_protocol_info(client)
+
+      refute_receive {:mcp_send, _initialized}, 50
+    end
+
+    test "malformed modern discovery metadata fails once and keeps the client alive" do
+      client = start_negotiating_client(:auto, "MalformedDiscoveryClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+      request_id = get_request_id(client, "server/discover")
+      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      response = %{
+        "jsonrpc" => "2.0",
+        "id" => request_id,
+        "result" => %{
+          "resultType" => "complete",
+          "supportedVersions" => ["2026-07-28"],
+          "capabilities" => %{},
+          "ttlMs" => 0,
+          "cacheScope" => "private",
+          "_meta" => []
+        }
+      }
+
+      send_response(client, response)
+
+      assert {:error, %Error{reason: :invalid_params}} = Task.await(waiter, 1_000)
+      assert Process.alive?(client)
+      assert :sys.get_state(client).pending_requests == %{}
+
+      assert %{negotiation_status: :failed, negotiation_error: %Error{reason: :invalid_params}} =
+               Backplane.McpProtocol.Client.get_protocol_info(client)
+
+      assert {:error, %Error{reason: :invalid_params}} =
+               Backplane.McpProtocol.Client.await_ready(client, timeout: 100)
+
+      send_response(client, response)
+      assert :sys.get_state(client).pending_requests == %{}
+      assert Process.alive?(client)
+    end
+
+    test "malformed -32022 data is terminal and keeps the client alive" do
+      client = start_negotiating_client(:auto, "MalformedVersionErrorClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+      request_id = get_request_id(client, "server/discover")
+      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      GenServer.cast(
+        client,
+        {:response,
+         JSON.encode!(%{
+           "jsonrpc" => "2.0",
+           "id" => request_id,
+           "error" => %{
+             "code" => -32_022,
+             "message" => "Unsupported protocol version",
+             "data" => []
+           }
+         })}
+      )
+
+      assert {:error, %Error{reason: :unsupported_protocol_version}} = Task.await(waiter, 1_000)
+      assert Process.alive?(client)
+      assert :sys.get_state(client).pending_requests == %{}
+      assert %{negotiation_status: :failed} = Backplane.McpProtocol.Client.get_protocol_info(client)
+      refute_receive {:mcp_send, _retry}, 50
+    end
+
+    test "malformed discovery error parsed by STDIO fails without restoring the pending request" do
+      :persistent_term.put({BufferedMockTransport, :test_pid}, self())
+      on_exit(fn -> :persistent_term.erase({BufferedMockTransport, :test_pid}) end)
+
+      client =
+        start_supervised!(%{
+          id: {Backplane.McpProtocol.Client, :malformed_stdio_discovery_error},
+          start:
+            {Backplane.McpProtocol.Client, :start_link_server,
+             [
+               [
+                 transport: [layer: BufferedMockTransport, name: BufferedMockTransport],
+                 client_info: %{
+                   "name" => "MalformedSTDIOErrorClient",
+                   "version" => "1.0.0"
+                 },
+                 capabilities: %{},
+                 protocol_version: :auto
+               ]
+             ]},
+          restart: :temporary
+        })
+
+      GenServer.cast(client, :negotiate)
+      assert_receive {:mcp_send, raw_request}, 500
+      request = JSON.decode!(raw_request)
+      assert request["method"] == "server/discover"
+
+      state = :sys.get_state(client)
+      assert state.transport_parse_state == %{buffer: ""}
+      %{timer_ref: timer_ref} = state.pending_requests[request["id"]]
+      waiter = :gen_server.send_request(client, :await_ready)
+
+      GenServer.cast(
+        client,
+        {:response,
+         JSON.encode!(%{
+           "jsonrpc" => "2.0",
+           "id" => request["id"],
+           "error" => []
+         }) <> "\n"}
+      )
+
+      state = :sys.get_state(client)
+      assert state.pending_requests == %{}
+      assert state.negotiation_status == :failed
+      assert %Error{reason: :malformed_response} = state.negotiation_error
+      assert Process.read_timer(timer_ref) == false
+      assert Process.alive?(client)
+
+      assert {:reply, {:error, %Error{reason: :malformed_response}}} =
+               :gen_server.wait_response(waiter, 1_000)
+    end
+
+    test "routes an ordinary result containing serverInfo by its pending request method" do
+      client = start_negotiating_client("2025-06-18", "MethodRoutingClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+      initialize_client(client)
+
+      task = Task.async(fn -> Backplane.McpProtocol.Client.ping(client) end)
+      request_id = get_request_id(client, "ping")
+
+      send_response(client, %{
+        "jsonrpc" => "2.0",
+        "id" => request_id,
+        "result" => %{"serverInfo" => %{"name" => "not-an-init-result"}}
+      })
+
+      assert :pong = Task.await(task, 1_000)
+      assert Backplane.McpProtocol.Client.get_server_info(client)["name"] == "TestServer"
+    end
+
+    test "a pinned modern negotiation failure wakes waiters and keeps the client alive" do
+      client = start_negotiating_client("2026-07-28", "PinnedModernClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+      request_id = get_request_id(client, "server/discover")
+      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      GenServer.cast(
+        client,
+        {:response,
+         JSON.encode!(%{
+           "jsonrpc" => "2.0",
+           "id" => request_id,
+           "error" => %{
+             "code" => -32_022,
+             "message" => "Unsupported protocol version",
+             "data" => %{
+               "requested" => "2026-07-28",
+               "supported" => ["2026-07-28"]
+             }
+           }
+         })}
+      )
+
+      assert {:error, %Error{reason: :unsupported_protocol_version}} = Task.await(waiter, 1_000)
+      assert Process.alive?(client)
+
+      assert %{
+               protocol_pinned?: true,
+               negotiation_status: :failed,
+               era: :modern,
+               negotiation_error: %Error{reason: :unsupported_protocol_version}
+             } = Backplane.McpProtocol.Client.get_protocol_info(client)
+
+      assert {:error, %Error{reason: :unsupported_protocol_version}} =
+               Backplane.McpProtocol.Client.await_ready(client, timeout: 100)
+
+      refute_receive {:mcp_send, _retry}, 50
+    end
+
+    test "a negotiation send failure is terminal without stopping the client" do
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, _, _ ->
+        {:error, :econnrefused}
+      end)
+
+      client = start_negotiating_client(:auto, "SendFailureClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+
+      assert {:error, %Error{reason: :send_failure}} =
+               Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000)
+
+      assert Process.alive?(client)
+      assert %{negotiation_status: :failed} = Backplane.McpProtocol.Client.get_protocol_info(client)
+    end
+
+    for failure <- [:raise, :exit] do
+      test "legacy initialized notification #{failure} is terminal without stopping the client" do
+        test_pid = self()
+
+        expect(Backplane.McpProtocol.MockTransport, :send_message, 2, fn _, message, _ ->
+          case JSON.decode!(message)["method"] do
+            "initialize" ->
+              send(test_pid, {:legacy_initialize_request, JSON.decode!(message)})
+              :ok
+
+            "notifications/initialized" ->
+              case unquote(failure) do
+                :raise -> raise "initialized notification failed"
+                :exit -> exit(:initialized_notification_failed)
+              end
+          end
+        end)
+
+        client = start_negotiating_client("2025-06-18", "InitializedFailure#{unquote(failure)}")
+        allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+        GenServer.cast(client, :negotiate)
+        assert_receive {:legacy_initialize_request, request}, 500
+        waiter = :gen_server.send_request(client, :await_ready)
+
+        send_response(client, %{
+          "jsonrpc" => "2.0",
+          "id" => request["id"],
+          "result" => %{
+            "protocolVersion" => "2025-06-18",
+            "capabilities" => %{},
+            "serverInfo" => %{"name" => "LegacyServer", "version" => "1.0.0"}
+          }
+        })
+
+        assert {:reply, {:error, %Error{reason: :send_failure}}} =
+                 :gen_server.wait_response(waiter, 1_000)
+
+        assert Process.alive?(client)
+        assert :sys.get_state(client).pending_requests == %{}
+
+        assert %{
+                 negotiation_status: :failed,
+                 era: :legacy,
+                 negotiation_error: %Error{reason: :send_failure}
+               } = Backplane.McpProtocol.Client.get_protocol_info(client)
+      end
+    end
+
+    test "public cancellation cannot target internal negotiation requests" do
+      client = start_negotiating_client(:auto, "CancellationIsolationClient")
+      allow(Backplane.McpProtocol.MockTransport, self(), client)
+
+      GenServer.cast(client, :negotiate)
+      request_id = get_request_id(client, "server/discover")
+
+      assert %Error{reason: :request_not_found} =
+               Backplane.McpProtocol.Client.cancel_request(client, request_id)
+
+      assert {:ok, []} = Backplane.McpProtocol.Client.cancel_all_requests(client)
+      assert %{method: "server/discover"} = :sys.get_state(client).pending_requests[request_id]
+      assert Process.alive?(client)
+
+      send_response(client, %{
+        "jsonrpc" => "2.0",
+        "id" => request_id,
+        "result" => %{
+          "resultType" => "complete",
+          "supportedVersions" => ["2026-07-28"],
+          "capabilities" => %{},
+          "ttlMs" => 0,
+          "cacheScope" => "private"
+        }
+      })
+
+      assert :ok = Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000)
+    end
+
+    test "auto is rejected when a transport advertises only legacy versions" do
+      assert {:error, %Error{reason: :incompatible_transport}} =
+               Backplane.McpProtocol.Client.start_link_server(
+                 transport: [
+                   layer: Backplane.McpProtocol.Transport.SSE,
+                   name: :unused_legacy_transport
+                 ],
+                 client_info: %{"name" => "RejectedAuto", "version" => "1.0.0"},
+                 capabilities: %{},
+                 protocol_version: :auto
+               )
     end
   end
 
@@ -2392,5 +2746,22 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:ok, %Response{result: %{"tools" => [%{"name" => "search"}]}}} =
                Task.await(task, 2_000)
     end
+  end
+
+  defp start_negotiating_client(protocol_version, client_name) do
+    start_supervised!(%{
+      id: {Backplane.McpProtocol.Client, client_name},
+      start:
+        {Backplane.McpProtocol.Client, :start_link_server,
+         [
+           [
+             transport: [layer: Backplane.McpProtocol.MockTransport, name: MockTransport],
+             client_info: %{"name" => client_name, "version" => "1.0.0"},
+             capabilities: %{},
+             protocol_version: protocol_version
+           ]
+         ]},
+      restart: :temporary
+    })
   end
 end

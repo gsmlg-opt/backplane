@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Client
+  alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.Transport.StreamableHTTP
 
@@ -19,6 +21,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       server_url = "http://localhost:#{bypass.port}"
 
       {:ok, stub_client} = StubClient.start_link()
+      :ok = StubClient.subscribe()
 
       {:ok, transport} =
         StreamableHTTP.start_link(
@@ -33,6 +36,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       state = :sys.get_state(transport)
       assert state.mcp_url.path == "/mcp"
       assert state.session_id == nil
+      assert_receive {:stub_client_signal, :negotiate}, 500
+      assert :negotiate in StubClient.get_signals()
+      refute :initialize in StubClient.get_signals()
 
       StreamableHTTP.shutdown(transport)
       StubClient.clear_messages()
@@ -53,6 +59,113 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
 
       StreamableHTTP.shutdown(transport)
       StubClient.clear_messages()
+    end
+  end
+
+  test "advertises every compatible modern and legacy protocol version" do
+    assert StreamableHTTP.supported_protocol_versions() == [
+             "2026-07-28",
+             "2025-11-25",
+             "2025-06-18",
+             "2025-03-26"
+           ]
+  end
+
+  test "accepts the Client default protocol version when it is omitted" do
+    assert {:ok, client} =
+             Client.start_link_server(
+               name: :default_streamable_http_client_validation,
+               transport: [layer: StreamableHTTP, name: :unused_streamable_http_transport],
+               client_info: %{"name" => "DefaultHTTPClient", "version" => "1.0.0"},
+               capabilities: %{}
+             )
+
+    assert :sys.get_state(client).protocol_preference == "2025-11-25"
+    GenServer.stop(client)
+  end
+
+  describe "client negotiation integration" do
+    test "an unrecognized HTTP 400 falls back to legacy initialize", %{bypass: bypass} do
+      test_pid = self()
+
+      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        request = JSON.decode!(body)
+        send(test_pid, {:negotiation_request, request["method"]})
+
+        case request["method"] do
+          "server/discover" ->
+            Plug.Conn.resp(conn, 400, "legacy endpoint")
+
+          "initialize" ->
+            conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
+
+            Plug.Conn.resp(
+              conn,
+              200,
+              JSON.encode!(%{
+                "jsonrpc" => "2.0",
+                "id" => request["id"],
+                "result" => %{
+                  "protocolVersion" => "2025-03-26",
+                  "capabilities" => %{"tools" => %{}},
+                  "serverInfo" => %{"name" => "LegacyHTTP", "version" => "1.0.0"}
+                }
+              })
+            )
+
+          "notifications/initialized" ->
+            Plug.Conn.resp(conn, 202, "")
+        end
+      end)
+
+      {client, transport} = start_http_negotiation_client(bypass, :fallback)
+
+      assert :ok = Client.await_ready(client, timeout: 2_000)
+      assert :sys.get_state(client).timeout == 1_000
+      assert_receive {:negotiation_request, "server/discover"}
+      assert_receive {:negotiation_request, "initialize"}
+      assert_receive {:negotiation_request, "notifications/initialized"}
+
+      assert %{
+               negotiation_status: :ready,
+               era: :legacy,
+               negotiated_version: "2025-03-26"
+             } = Client.get_protocol_info(client)
+
+      assert Process.alive?(client)
+      assert Process.alive?(transport)
+    end
+
+    test "a recognized JSON-RPC HTTP 400 stays modern and surfaces the error", %{bypass: bypass} do
+      test_pid = self()
+
+      Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        request = JSON.decode!(body)
+        send(test_pid, {:negotiation_request, request["method"]})
+
+        Plug.Conn.resp(
+          conn,
+          400,
+          JSON.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => request["id"],
+            "error" => %{"code" => -32_601, "message" => "Method not found"}
+          })
+        )
+      end)
+
+      {client, transport} = start_http_negotiation_client(bypass, :recognized_error)
+
+      assert {:error, %Error{reason: :method_not_found}} =
+               Client.await_ready(client, timeout: 2_000)
+
+      assert_receive {:negotiation_request, "server/discover"}
+      refute_receive {:negotiation_request, "initialize"}, 50
+      assert %{negotiation_status: :failed, era: :modern} = Client.get_protocol_info(client)
+      assert Process.alive?(client)
+      assert Process.alive?(transport)
     end
   end
 
@@ -667,5 +780,38 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
 
     assert "application/json" in media_types
     assert "text/event-stream" in media_types
+  end
+
+  defp start_http_negotiation_client(bypass, suffix) do
+    client_name = Module.concat(__MODULE__, "#{suffix}Client")
+    transport_name = Module.concat(__MODULE__, "#{suffix}Transport")
+    server_url = "http://localhost:#{bypass.port}"
+
+    _supervisor =
+      start_supervised!(%{
+        id: {Client, suffix},
+        start:
+          {Client, :start_link,
+           [
+             [
+               name: client_name,
+               transport_name: transport_name,
+               transport:
+                 {:streamable_http,
+                  [
+                    base_url: server_url,
+                    mcp_path: "/mcp",
+                    transport_opts: @test_http_opts
+                  ]},
+               client_info: %{"name" => "HTTPNegotiation", "version" => "1.0.0"},
+               capabilities: %{},
+               protocol_version: :auto,
+               timeout: 1_000
+             ]
+           ]},
+        restart: :temporary
+      })
+
+    {Process.whereis(client_name), Process.whereis(transport_name)}
   end
 end
