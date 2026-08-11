@@ -252,13 +252,16 @@ if Code.ensure_loaded?(Plug) do
           ModernSubscription.call(conn, message, context, opts)
 
         {:ok, _method} ->
-          {:response, response} =
-            Executor.execute(opts.server, message, context,
-              task_supervisor: opts.task_supervisor,
-              timeout: opts.timeout
-            )
+          case Executor.execute(opts.server, message, context,
+                 task_supervisor: opts.task_supervisor,
+                 timeout: opts.timeout
+               ) do
+            {:response, response} ->
+              send_modern_response(conn, response)
 
-          send_modern_response(conn, response)
+            {:response, response, notifications} ->
+              send_modern_response(conn, response, notifications)
+          end
 
         {{:error, %Error{} = error}, _method} ->
           send_modern_response(conn, Error.build_json_rpc(error, nil))
@@ -455,12 +458,14 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp send_modern_response(conn, response) do
+    defp send_modern_response(conn, response), do: send_modern_response(conn, response, [])
+
+    defp send_modern_response(conn, response, notifications) do
       encoded = JSON.encode!(response)
       status = modern_http_status(response)
 
-      if status == 200 and wants_sse?(conn) do
-        stream_modern_response_on_conn(conn, encoded)
+      if status == 200 and (wants_sse?(conn) or (notifications != [] and accepts_sse?(conn))) do
+        stream_modern_response_on_conn(conn, notifications ++ [response])
       else
         conn
         |> put_resp_content_type("application/json")
@@ -468,23 +473,26 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp stream_modern_response_on_conn(conn, response) do
+    defp stream_modern_response_on_conn(conn, messages) do
       conn = Streaming.prepare_connection(conn)
-      event = Event.encode(%Event{event: "message", data: response})
 
-      case Plug.Conn.chunk(conn, event) do
-        {:ok, conn} ->
-          conn
+      Enum.reduce_while(messages, conn, fn message, conn ->
+        event = Event.encode(%Event{event: "message", data: JSON.encode!(message)})
 
-        {:error, reason} ->
-          Logging.transport_event(
-            "modern_sse_post_send_failed",
-            %{reason: inspect(reason)},
-            level: :warning
-          )
+        case Plug.Conn.chunk(conn, event) do
+          {:ok, conn} ->
+            {:cont, conn}
 
-          conn
-      end
+          {:error, reason} ->
+            Logging.transport_event(
+              "modern_sse_post_send_failed",
+              %{reason: inspect(reason)},
+              level: :warning
+            )
+
+            {:halt, conn}
+        end
+      end)
     end
 
     defp modern_http_status(%{"error" => %{"code" => -32_601}}), do: 404
@@ -585,6 +593,20 @@ if Code.ensure_loaded?(Plug) do
       |> Enum.map(&String.trim/1)
       |> List.first("")
       |> String.starts_with?("text/event-stream")
+    end
+
+    defp accepts_sse?(conn) do
+      conn
+      |> get_req_header("accept")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.any?(fn media_range ->
+        media_range
+        |> String.split(";", parts: 2)
+        |> hd()
+        |> String.trim()
+        |> String.downcase()
+        |> Kernel.==("text/event-stream")
+      end)
     end
 
     defp validate_accept_header(conn) do

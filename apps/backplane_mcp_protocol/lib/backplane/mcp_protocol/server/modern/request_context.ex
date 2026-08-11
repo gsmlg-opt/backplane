@@ -104,6 +104,17 @@ defmodule Backplane.McpProtocol.Server.Modern.RequestContext do
     end
   end
 
+  @doc false
+  @spec validate_required_metadata(map()) :: :ok | {:error, Error.t()}
+  def validate_required_metadata(request) when is_map(request) do
+    with {:ok, params} <- require_map(request["params"], "params"),
+         {:ok, meta} <- require_map(params["_meta"], "params._meta"),
+         {:ok, _protocol_version} <-
+           require_string(meta[@protocol_version_key], @protocol_version_key) do
+      :ok
+    end
+  end
+
   @spec to_server_context(t()) :: Context.t()
   def to_server_context(%__MODULE__{} = context) do
     %Context{

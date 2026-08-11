@@ -18,6 +18,38 @@ defmodule ModernHTTPMissingCapabilityServer do
   end
 end
 
+defmodule ModernHTTPProgressServer do
+  @moduledoc false
+
+  use Backplane.McpProtocol.Server,
+    name: "modern-http-progress",
+    version: "1.0.0",
+    capabilities: [:tools],
+    protocol_versions: ["2026-07-28"]
+
+  alias Backplane.McpProtocol.Server
+  alias Backplane.McpProtocol.Server.Frame
+  alias Backplane.McpProtocol.Server.Handlers
+  alias Backplane.McpProtocol.Server.Response
+
+  @impl true
+  def init_request(_context, frame) do
+    {:ok, Frame.register_tool(frame, "progress", input_schema: %{})}
+  end
+
+  @impl true
+  def handle_request(request, frame), do: Handlers.handle(request, __MODULE__, frame)
+
+  @impl true
+  def handle_tool_call("progress", _arguments, frame) do
+    token = frame.context.progress_token
+    :ok = Server.send_progress(token, 0, total: 100)
+    :ok = Server.send_progress(token, 50, total: 100)
+    :ok = Server.send_progress(token, 100, total: 100)
+    {:reply, Response.text(Response.tool(), "complete"), frame}
+  end
+end
+
 defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernPlugTest do
   use ExUnit.Case, async: false
 
@@ -243,6 +275,30 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernPlugTest d
            } = JSON.decode!(conn.resp_body)
   end
 
+  test "POST classifies absent required modern metadata as invalid params", context do
+    base_request = modern_request("tools/list", %{}, id: "missing-required-meta")
+
+    requests = [
+      update_in(base_request, ["params"], &Map.delete(&1, "_meta")),
+      update_in(
+        base_request,
+        ["params", "_meta"],
+        &Map.delete(&1, "io.modelcontextprotocol/protocolVersion")
+      )
+    ]
+
+    for request <- requests do
+      conn = post_modern(context.opts, request)
+
+      assert conn.status == 400
+
+      assert %{
+               "id" => "missing-required-meta",
+               "error" => %{"code" => -32_602}
+             } = JSON.decode!(conn.resp_body)
+    end
+  end
+
   test "POST maps a missing client capability to HTTP 400" do
     task_supervisor = start_supervised!({Task.Supervisor, []})
 
@@ -302,6 +358,21 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernPlugTest d
            } = JSON.decode!(conn.resp_body)
   end
 
+  test "POST maps a modern-marked removed initialize method to HTTP 404", context do
+    conn =
+      post_modern(
+        context.opts,
+        modern_request("initialize", %{}, id: "removed-initialize")
+      )
+
+    assert conn.status == 404
+
+    assert %{
+             "id" => "removed-initialize",
+             "error" => %{"code" => -32_601}
+           } = JSON.decode!(conn.resp_body)
+  end
+
   test "POST leaves an executor callback failure at HTTP 200", context do
     conn =
       post_modern(
@@ -336,6 +407,63 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernPlugTest d
 
     refute Enum.any?(String.split(body, "\n"), &String.starts_with?(&1, "id:"))
     refute Enum.any?(String.split(body, "\n"), &String.starts_with?(&1, "retry:"))
+  end
+
+  test "POST streams callback progress before the final modern response" do
+    task_supervisor =
+      start_supervised!({Task.Supervisor, name: Registry.task_supervisor_name(ModernHTTPProgressServer)})
+
+    session_supervisor =
+      start_supervised!(
+        {DynamicSupervisor, name: Registry.session_supervisor_name(ModernHTTPProgressServer), strategy: :one_for_one}
+      )
+
+    session_config = %{
+      server_module: ModernHTTPProgressServer,
+      registry_mod: Registry.None,
+      transport: [layer: StubTransport, name: nil],
+      session_idle_timeout: nil,
+      timeout: 30_000,
+      task_supervisor: task_supervisor,
+      max_concurrency: 1
+    }
+
+    :persistent_term.put(
+      {ServerSupervisor, ModernHTTPProgressServer, :session_config},
+      session_config
+    )
+
+    on_exit(fn ->
+      :persistent_term.erase({ServerSupervisor, ModernHTTPProgressServer, :session_config})
+      :persistent_term.erase({ServerSupervisor, ModernHTTPProgressServer, :authorization_config})
+    end)
+
+    opts = StreamableHTTPPlug.init(server: ModernHTTPProgressServer)
+
+    request =
+      "tools/call"
+      |> modern_request(%{"name" => "progress", "arguments" => %{}}, id: "progress-http")
+      |> put_in(["params", "_meta", "progressToken"], "progress-token")
+
+    conn = post_modern(opts, request, [{"mcp-name", "progress"}])
+
+    assert conn.status == 200
+    assert get_resp_header(conn, "content-type") == ["text/event-stream; charset=utf-8"]
+    assert DynamicSupervisor.count_children(session_supervisor).active == 0
+
+    events =
+      conn
+      |> response_body()
+      |> String.split("\n")
+      |> Enum.filter(&String.starts_with?(&1, "data:"))
+      |> Enum.map(fn "data:" <> data -> data |> String.trim() |> JSON.decode!() end)
+
+    assert [first, second, third, response] = events
+
+    assert Enum.map([first, second, third], & &1["params"]["progress"]) == [0, 50, 100]
+    assert Enum.all?([first, second, third], &(&1["method"] == "notifications/progress"))
+    assert Enum.all?([first, second, third], &(&1["params"]["progressToken"] == "progress-token"))
+    assert %{"id" => "progress-http", "result" => %{"resultType" => "complete"}} = response
   end
 
   test "GET and DELETE reject the known modern protocol marker with HTTP 405", context do

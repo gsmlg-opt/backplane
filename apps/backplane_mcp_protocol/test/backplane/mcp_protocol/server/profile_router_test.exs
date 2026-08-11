@@ -67,17 +67,21 @@ defmodule Backplane.McpProtocol.Server.ProfileRouterTest do
              })
   end
 
-  test "rejects modern markers mixed with initialize or an already-legacy connection" do
+  test "routes modern-marked initialize for removed-method validation" do
     request = modern_request("initialize")
 
-    assert {:error, %Error{code: -32_600}} =
+    assert {:ok, {:modern, %Profile{version: @modern_version}}} =
              ProfileRouter.route(request, %{
                transport: :http,
                protocol_version_header: @modern_version
              })
+  end
+
+  test "rejects modern markers on an already-legacy connection" do
+    request = modern_request("tools/list")
 
     assert {:error, %Error{code: -32_600}} =
-             ProfileRouter.route(modern_request("tools/list"), %{
+             ProfileRouter.route(request, %{
                transport: :stdio,
                connection_era: :legacy
              })

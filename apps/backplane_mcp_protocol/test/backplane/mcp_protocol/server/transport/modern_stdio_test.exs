@@ -11,12 +11,22 @@ defmodule ModernStdioTask5Server do
     ],
     protocol_versions: ["2026-07-28", "2025-11-25"]
 
+  alias Backplane.McpProtocol.Server
+
   @impl true
   def init(_client_info, frame), do: {:ok, frame}
 
   @impl true
   def handle_request(request, frame) do
     if delay = get_in(request, ["params", "_delayMs"]), do: Process.sleep(delay)
+
+    if get_in(request, ["params", "_progress"]) do
+      token = frame.context.progress_token
+      :ok = Server.send_progress(token, 0, total: 100)
+      :ok = Server.send_progress(token, 50, total: 100)
+      :ok = Server.send_progress(token, 100, total: 100)
+    end
+
     {:reply, %{"requestId" => request["id"]}, frame}
   end
 end
@@ -161,6 +171,22 @@ defmodule Backplane.McpProtocol.Server.Transport.ModernSTDIOTest do
     raw = TestIODevice.contents(context.io_device)
     assert String.ends_with?(raw, "\n")
     refute raw =~ "\n\n"
+  end
+
+  test "writes callback progress notifications before the final response", context do
+    request =
+      "tools/list"
+      |> modern_request("progress", %{"_progress" => true})
+      |> put_in(["params", "_meta", "progressToken"], "stdio-progress")
+
+    push(context, request)
+
+    [first, second, third, response] = await_messages(context.io_device, 4)
+
+    assert Enum.map([first, second, third], & &1["params"]["progress"]) == [0, 50, 100]
+    assert Enum.all?([first, second, third], &(&1["method"] == "notifications/progress"))
+    assert Enum.all?([first, second, third], &(&1["params"]["progressToken"] == "stdio-progress"))
+    assert %{"id" => "progress", "result" => %{"requestId" => "progress"}} = response
   end
 
   test "notifications/cancelled suppresses an active modern request response", context do

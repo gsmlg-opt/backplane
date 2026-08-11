@@ -454,6 +454,13 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
     write_json(state, response)
   end
 
+  defp handle_task_result({:response, response, notifications}, _request_id, state)
+       when is_map(response) and is_list(notifications) do
+    notifications
+    |> Enum.reduce(state, fn notification, state -> write_json(state, notification) end)
+    |> write_json(response)
+  end
+
   defp handle_task_result({:subscription_ready, subscription_context}, request_id, state) do
     case Subscriptions.subscribe(state.subscriptions, self(), subscription_context) do
       {:ok, subscription_ref} ->

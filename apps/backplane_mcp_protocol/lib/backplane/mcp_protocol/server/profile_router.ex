@@ -21,8 +21,7 @@ defmodule Backplane.McpProtocol.Server.ProfileRouter do
     header_marker? = modern_header_marker?(protocol_version_header(transport_context))
     modern? = body_marker? or method_marker? or header_marker?
 
-    hard_legacy? =
-      request["method"] == "initialize" or transport_context[:connection_era] == :legacy
+    hard_legacy? = transport_context[:connection_era] == :legacy
 
     cond do
       modern? and hard_legacy? ->

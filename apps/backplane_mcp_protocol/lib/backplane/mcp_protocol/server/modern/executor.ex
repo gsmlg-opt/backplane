@@ -21,7 +21,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
 
   @default_timeout to_timeout(second: 30)
 
-  @type execute_result :: {:response, map()}
+  @type execute_result :: {:response, map()} | {:response, map(), [map()]}
 
   @type server_snapshot :: %{
           supported_versions: [String.t()],
@@ -79,7 +79,8 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   end
 
   defp execute_modern(server_module, snapshot, profile, request, transport_context, task_supervisor, deadline, opts) do
-    with :ok <- Headers.validate(profile, request, transport_context),
+    with :ok <- RequestContext.validate_required_metadata(request),
+         :ok <- Headers.validate(profile, request, transport_context),
          {:ok, request_context} <- RequestContext.build(profile, request, transport_context),
          :ok <- validate_method(profile, request_context.method),
          :ok <- validate_server_capability(snapshot.capabilities, request_context.method) do
@@ -154,8 +155,12 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
         }
 
         case validate_tool_headers(server_module, request_context, initialized_frame, transport_context) do
-          :ok -> {:callback_return, server_module.handle_request(request_context.request, initialized_frame)}
-          {:error, %Error{} = error} -> {:protocol_error, error}
+          :ok ->
+            callback_return = server_module.handle_request(request_context.request, initialized_frame)
+            {:callback_return, callback_return, take_progress_notifications([])}
+
+          {:error, %Error{} = error} ->
+            {:protocol_error, error}
         end
 
       {:error, %Error{}, %Frame{}} = error_return ->
@@ -262,10 +267,21 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     respond_callback_failure(context)
   end
 
+  defp normalize_callback_to_envelope({:ok, {:callback_return, callback_return, notifications}}, snapshot, context) do
+    normalized =
+      context.method
+      |> Result.normalize(callback_return, context, snapshot)
+      |> normalize_to_envelope(context)
+
+    attach_notifications(normalized, notifications)
+  end
+
   defp normalize_callback_to_envelope({:ok, {:callback_return, callback_return}}, snapshot, context) do
-    context.method
-    |> Result.normalize(callback_return, context, snapshot)
-    |> normalize_to_envelope(context)
+    normalize_callback_to_envelope(
+      {:ok, {:callback_return, callback_return, []}},
+      snapshot,
+      context
+    )
   end
 
   defp normalize_callback_to_envelope({:ok, {:protocol_error, %Error{} = error}}, _server, context) do
@@ -311,6 +327,22 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   defp normalize_to_envelope({:error, %Error{} = error}, context) do
     emit_response(context, :error)
     respond_error(error, context.request_id)
+  end
+
+  defp take_progress_notifications(acc) do
+    receive do
+      {:send_notification, "notifications/progress", params} when is_map(params) ->
+        notification = Message.build_notification("notifications/progress", params)
+        take_progress_notifications([notification | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  defp attach_notifications({:response, response}, []), do: {:response, response}
+
+  defp attach_notifications({:response, response}, notifications) when is_list(notifications) do
+    {:response, response, notifications}
   end
 
   defp validate_method(%Profile{request_methods: methods}, method) when is_binary(method) do

@@ -70,6 +70,35 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
     refute_receive {:modern_handle_request, _, _}
   end
 
+  test "classifies missing required body metadata before HTTP mirror validation", context do
+    base_request = request("tools/list", %{}, id: "missing-modern-metadata")
+
+    requests = [
+      update_in(base_request, ["params"], &Map.delete(&1, "_meta")),
+      update_in(
+        base_request,
+        ["params", "_meta"],
+        &Map.delete(&1, "io.modelcontextprotocol/protocolVersion")
+      )
+    ]
+
+    http_context =
+      Map.merge(context.transport_context, %{
+        type: :http,
+        req_headers: [
+          {"MCP-Protocol-Version", @version},
+          {"Mcp-Method", "tools/list"}
+        ]
+      })
+
+    for malformed <- requests do
+      assert {:response, %{"error" => %{"code" => -32_602}}} =
+               Executor.execute(ModernStubServer, malformed, http_context)
+    end
+
+    refute_receive {:modern_init_request, _}
+  end
+
   test "normal requests initialize once, use fresh frames, and return deterministic lists", context do
     list_request = request("tools/list", %{}, id: 10)
 
