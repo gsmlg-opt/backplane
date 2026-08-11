@@ -14,6 +14,14 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
   @callback start_link(keyword()) :: GenServer.on_start()
   @callback send_message(t(), message(), list(opt)) :: :ok | {:error, reason()}
             when opt: {:timeout, pos_integer()} | {:request_context, RequestContext.t()}
+  @callback open_stream(t(), message(), list(stream_opt)) ::
+              {:ok, term()} | {:error, reason()}
+            when stream_opt:
+                   {:timeout, pos_integer()}
+                   | {:request_context, RequestContext.t()}
+                   | {:owner, pid()}
+                   | {:subscription_id, String.t() | integer()}
+  @callback close_stream(t(), term(), keyword()) :: :ok | {:error, reason()}
   @callback shutdown(t()) :: :ok | {:error, reason()}
 
   @doc """
@@ -25,4 +33,6 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
       ["2024-11-05", "2025-03-26"]
   """
   @callback supported_protocol_versions() :: [String.t()] | :all
+
+  @optional_callbacks open_stream: 3, close_stream: 3
 end

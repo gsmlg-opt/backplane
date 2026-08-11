@@ -54,6 +54,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
   alias Backplane.McpProtocol.Transport.RequestContext
   alias Backplane.McpProtocol.Transport.StreamableHTTP.Headers
+  alias Backplane.McpProtocol.Transport.StreamableHTTP.Stream
 
   @legacy_protocol_versions ~w(2025-11-25 2025-06-18 2025-03-26)
 
@@ -184,6 +185,24 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl Transport
+  def open_stream(pid \\ __MODULE__, message, opts) when is_binary(message) and is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    GenServer.call(pid, {:open_stream, message, opts}, timeout)
+  end
+
+  @impl Transport
+  def close_stream(pid \\ __MODULE__, stream, opts)
+
+  def close_stream(_pid, stream, opts) when is_pid(stream) and is_list(opts) do
+    case Keyword.get(opts, :timeout, 5_000) do
+      timeout when is_integer(timeout) and timeout > 0 -> Stream.close(stream, timeout)
+      _invalid -> {:error, :invalid_timeout}
+    end
+  end
+
+  def close_stream(_pid, _stream, _opts), do: {:error, :invalid_stream}
+
+  @impl Transport
   def shutdown(pid \\ __MODULE__) do
     GenServer.cast(pid, :close_connection)
   end
@@ -220,6 +239,35 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl GenServer
+  def handle_call({:open_stream, message, opts}, _from, state) do
+    context = Keyword.get(opts, :request_context)
+    owner = Keyword.get(opts, :owner)
+    subscription_id = Keyword.get(opts, :subscription_id)
+
+    with %RequestContext{era: :modern, method: "subscriptions/listen"} <- context,
+         true <- is_pid(owner),
+         true <- is_binary(subscription_id) or is_integer(subscription_id),
+         {:ok, stream} <-
+           Stream.start(%{
+             owner: owner,
+             transport: self(),
+             mcp_url: state.mcp_url,
+             headers: state.headers,
+             http_options: state.http_options,
+             encoded_request: message,
+             request_context: context,
+             subscription_id: subscription_id
+           }) do
+      {:reply, {:ok, stream}, state}
+    else
+      false -> {:reply, {:error, :invalid_stream_owner}, state}
+      %RequestContext{} -> {:reply, {:error, :unsupported_stream}, state}
+      nil -> {:reply, {:error, :missing_request_context}, state}
+      {:error, _reason} = error -> {:reply, error, state}
+      _invalid -> {:reply, {:error, :unsupported_stream}, state}
+    end
+  end
+
   def handle_call({:send, message, timeout, request_context}, from, state) do
     state = persist_legacy_protocol_version(state, request_context)
 

@@ -18,6 +18,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   alias Backplane.McpProtocol.Telemetry
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
+  alias Backplane.McpProtocol.Transport.RequestContext
 
   @type t :: GenServer.server()
 
@@ -146,6 +147,44 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     _request_context = Keyword.get(opts, :request_context)
     GenServer.call(pid, {:send, message}, Keyword.get(opts, :timeout, 5000))
   end
+
+  @impl Transport
+  def open_stream(pid \\ __MODULE__, message, opts) when is_binary(message) and is_list(opts) do
+    context = Keyword.get(opts, :request_context)
+    subscription_id = Keyword.get(opts, :subscription_id)
+
+    with %RequestContext{era: :modern, method: "subscriptions/listen"} <- context,
+         true <- is_binary(subscription_id) or is_integer(subscription_id),
+         :ok <- send_message(pid, message, opts) do
+      {:ok, %{transport: :stdio, subscription_id: subscription_id}}
+    else
+      false -> {:error, :invalid_subscription_id}
+      %RequestContext{} -> {:error, :unsupported_stream}
+      nil -> {:error, :missing_request_context}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :unsupported_stream}
+    end
+  end
+
+  @impl Transport
+  def close_stream(pid \\ __MODULE__, stream, opts)
+
+  def close_stream(pid, %{transport: :stdio, subscription_id: subscription_id}, opts)
+      when is_list(opts) do
+    reason = Keyword.get(opts, :reason, "subscription closed")
+
+    notification = %{
+      "jsonrpc" => "2.0",
+      "method" => "notifications/cancelled",
+      "params" => %{"requestId" => subscription_id, "reason" => reason}
+    }
+
+    send_message(pid, JSON.encode!(notification) <> "\n", opts)
+  rescue
+    _exception -> {:error, :encode_error}
+  end
+
+  def close_stream(_pid, _stream, _opts), do: {:error, :invalid_stream}
 
   @impl Transport
   def shutdown(pid \\ __MODULE__) do

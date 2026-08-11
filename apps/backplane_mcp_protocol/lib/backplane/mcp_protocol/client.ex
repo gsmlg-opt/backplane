@@ -86,6 +86,7 @@ defmodule Backplane.McpProtocol.Client do
   import Peri
 
   alias Backplane.McpProtocol.Client.Cache
+  alias Backplane.McpProtocol.Client.Catalog
   alias Backplane.McpProtocol.Client.Elicitation
   alias Backplane.McpProtocol.Client.Handlers
   alias Backplane.McpProtocol.Client.InputHandler
@@ -97,6 +98,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.ResultRouter
   alias Backplane.McpProtocol.Client.Sampling
   alias Backplane.McpProtocol.Client.State
+  alias Backplane.McpProtocol.Client.Subscription
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
@@ -106,6 +108,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Telemetry
   alias Backplane.McpProtocol.Transport.RequestContext
+  alias Backplane.McpProtocol.Transport.StreamableHTTP
 
   require Message
 
@@ -114,6 +117,8 @@ defmodule Backplane.McpProtocol.Client do
   @default_protocol_version Protocol.latest_version()
   @default_operation_timeout to_timeout(second: 30)
   @cancellation_worker_timeout to_timeout(second: 1)
+  @subscription_call_buffer to_timeout(second: 1)
+  @subscription_cleanup_timeout 100
 
   @type t :: GenServer.server()
 
@@ -486,6 +491,52 @@ defmodule Backplane.McpProtocol.Client do
 
     buffer_timeout = operation.timeout + to_timeout(second: 1)
     GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Opens a modern `subscriptions/listen` stream and waits for its acknowledgement.
+
+  A list of notification method names is accepted as shorthand for the frozen
+  subscription filter. Pass the wire filter map directly when subscribing to
+  individual resource URIs.
+
+  The returned handle receives matched notifications in the subscriber process
+  as `{:mcp_subscription, handle, notification}`. If the client connection is
+  lost, the handle closes; call this function again to open a new subscription
+  with a new ID after reconnecting.
+  """
+  @spec listen_subscriptions(t(), list(String.t()) | map(), keyword()) ::
+          {:ok, Subscription.t()} | {:error, Error.t()}
+  def listen_subscriptions(client, filters, opts \\ []) when is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, @default_operation_timeout)
+    subscriber = Keyword.get(opts, :subscriber, self())
+
+    if valid_subscription_timeout?(timeout) do
+      GenServer.call(
+        client,
+        {:listen_subscriptions, filters, subscriber, opts},
+        timeout + @subscription_call_buffer
+      )
+    else
+      {:error, Error.protocol(:invalid_params, %{field: "timeout"})}
+    end
+  end
+
+  @doc "Closes a modern subscription with the cancellation mechanism required by its transport."
+  @spec close_subscription(t(), Subscription.t(), keyword()) :: :ok | {:error, Error.t()}
+  def close_subscription(client, %Subscription{} = subscription, opts \\ []) when is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, to_timeout(second: 5))
+    reason = Keyword.get(opts, :reason, "subscription closed")
+
+    if valid_subscription_timeout?(timeout) do
+      GenServer.call(
+        client,
+        {:close_subscription, subscription, reason, timeout},
+        timeout + @subscription_call_buffer
+      )
+    else
+      {:error, Error.protocol(:invalid_params, %{field: "timeout"})}
+    end
   end
 
   @doc """
@@ -1086,6 +1137,16 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   @impl true
+  def handle_call({:operation, %Operation{method: method}}, _from, %{era: :modern} = state)
+      when method in ["resources/subscribe", "resources/unsubscribe"] do
+    {:reply,
+     {:error,
+      Error.transport(:unsupported_operation, %{
+        method: method,
+        replacement: "subscriptions/listen"
+      })}, state}
+  end
+
   def handle_call({:operation, %Operation{} = operation}, from, state) do
     method = operation.method
 
@@ -1110,6 +1171,50 @@ defmodule Backplane.McpProtocol.Client do
     else
       err -> {:reply, err, state}
     end
+  end
+
+  def handle_call({:listen_subscriptions, filters, subscriber, opts}, from, state) do
+    cond do
+      not modern_state?(state) ->
+        {:reply,
+         {:error,
+          Error.transport(:unsupported_operation, %{
+            method: "subscriptions/listen",
+            era: state.era
+          })}, state}
+
+      not is_pid(subscriber) ->
+        {:reply, {:error, Error.protocol(:invalid_params, %{field: "subscriber"})}, state}
+
+      not function_exported?(state.transport.layer, :open_stream, 3) or
+          not function_exported?(state.transport.layer, :close_stream, 3) ->
+        {:reply,
+         {:error,
+          Error.transport(:unsupported_operation, %{
+            method: "subscriptions/listen",
+            transport: state.transport.layer
+          })}, state}
+
+      true ->
+        start_subscription(filters, subscriber, opts, from, state)
+    end
+  end
+
+  def handle_call(
+        {:close_subscription, %Subscription{id: id, client: client, pid: pid}, reason, timeout},
+        _from,
+        state
+      )
+      when client == self() and is_pid(pid) and is_binary(reason) do
+    if Subscription.registered?(id, pid) do
+      {:reply, Subscription.close(pid, reason, timeout), state}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:close_subscription, %Subscription{}, _reason, _timeout}, _from, state) do
+    {:reply, {:error, Error.transport(:subscription_not_found)}, state}
   end
 
   def handle_call({:merge_capabilities, additional_capabilities}, _from, state) do
@@ -1441,6 +1546,11 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
+  def handle_info({:mcp_subscription_down, subscription_id, pid}, state) when is_pid(pid) do
+    Subscription.unregister(subscription_id, pid)
+    {:noreply, state}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
@@ -1492,6 +1602,8 @@ defmodule Backplane.McpProtocol.Client do
       GenServer.reply(waiter, {:error, Error.transport(:client_terminated, %{reason: reason})})
     end
 
+    Subscription.client_closing_all(reason)
+    Catalog.cleanup(catalog_key(state))
     Cache.cleanup(state.client_info["name"])
 
     state.transport.layer.shutdown(state.transport.name)
@@ -1500,6 +1612,15 @@ defmodule Backplane.McpProtocol.Client do
   # Message handling
 
   defp handle_message(message, state) do
+    if modern_state?(state) and (Message.is_response(message) or Message.is_error(message)) and
+         Subscription.dispatch(message) do
+      state
+    else
+      do_handle_message(message, state)
+    end
+  end
+
+  defp do_handle_message(message, state) do
     cond do
       Message.is_error(message) ->
         Logging.message("incoming", "error", message["id"], incoming_error_identity(message))
@@ -1512,7 +1633,8 @@ defmodule Backplane.McpProtocol.Client do
       Message.is_notification(message) ->
         Logging.message("incoming", "notification", nil, incoming_notification_identity(message))
 
-        if modern_state?(state) and message["method"] == "notifications/cancelled" do
+        if modern_state?(state) and Subscription.routable?(message) do
+          _handled? = Subscription.dispatch(message)
           state
         else
           Handlers.handle_notification(message, state)
@@ -1880,6 +2002,7 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp process_successful_response(request, result, id, state) do
+    result = maybe_replace_tool_catalog(request, result, state)
     response = Response.from_json_rpc(%{"result" => result, "id" => id})
     response = %{response | method: request.method}
     elapsed_ms = Request.elapsed_time(request)
@@ -1918,6 +2041,126 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   # Helper functions
+
+  defp start_subscription(filters, subscriber, opts, from, state) do
+    timeout = Keyword.get(opts, :timeout, @default_operation_timeout)
+
+    with true <- valid_subscription_timeout?(timeout),
+         transport_pid when is_pid(transport_pid) <- resolve_transport_pid(state.transport.name),
+         {:ok, notifications} <- Subscription.normalize_filters(filters) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      operation =
+        Operation.new(%{
+          method: "subscriptions/listen",
+          params: %{"notifications" => notifications},
+          extra_meta: Keyword.get(opts, :meta, %{}),
+          timeout: timeout
+        })
+
+      subscription_id = ID.generate_request_id()
+
+      with {:ok, encoded_request, request_context} <-
+             prepare_request(operation, state, subscription_id),
+           {:ok, subscription_pid} <-
+             Subscription.start(%{
+               id: subscription_id,
+               client: self(),
+               subscriber: subscriber,
+               waiter: from,
+               requested_notifications: notifications,
+               transport: state.transport,
+               transport_pid: transport_pid,
+               timeout: remaining_timeout(deadline)
+             }) do
+        Subscription.register(subscription_id, subscription_pid)
+
+        open_opts = [
+          owner: subscription_pid,
+          request_context: request_context,
+          subscription_id: subscription_id,
+          timeout: remaining_timeout(deadline)
+        ]
+
+        case safe_open_stream(state.transport, transport_pid, encoded_request, open_opts) do
+          {:ok, stream} ->
+            case Subscription.attach_stream(subscription_pid, stream, remaining_timeout(deadline)) do
+              :ok ->
+                {:noreply, state}
+
+              {:error, %Error{} = error} ->
+                Subscription.unregister(subscription_id, subscription_pid)
+
+                close_opened_stream(
+                  state.transport.layer,
+                  transport_pid,
+                  stream,
+                  subscription_id,
+                  @subscription_cleanup_timeout
+                )
+
+                stop_subscription(subscription_pid)
+                GenServer.reply(from, {:error, error})
+                {:noreply, state}
+            end
+
+          {:error, reason} ->
+            error = normalize_subscription_stream_error(reason)
+            Subscription.unregister(subscription_id, subscription_pid)
+            Subscription.fail(subscription_pid, error)
+            {:noreply, state}
+        end
+      else
+        {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+        {:error, reason} -> {:reply, {:error, normalize_subscription_stream_error(reason)}, state}
+        nil -> {:reply, {:error, Error.transport(:subscription_transport_down)}, state}
+      end
+    else
+      false -> {:reply, {:error, Error.protocol(:invalid_params, %{field: "timeout"})}, state}
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      nil -> {:reply, {:error, Error.transport(:subscription_transport_down)}, state}
+    end
+  end
+
+  defp safe_open_stream(transport, transport_pid, encoded_request, opts) do
+    transport.layer.open_stream(transport_pid, encoded_request, opts)
+  rescue
+    exception -> {:error, {:stream_open_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:stream_open_exit, reason}}
+  end
+
+  defp close_opened_stream(layer, transport_pid, stream, subscription_id, timeout) do
+    result =
+      try do
+        layer.close_stream(transport_pid, stream,
+          subscription_id: subscription_id,
+          reason: "subscription attach failed",
+          timeout: timeout
+        )
+      rescue
+        _exception -> {:error, :stream_close_exception}
+      catch
+        :exit, _reason -> {:error, :stream_close_exit}
+      end
+
+    if result != :ok and is_pid(stream) and Process.alive?(stream) do
+      Process.exit(stream, :kill)
+    end
+
+    :ok
+  end
+
+  defp stop_subscription(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
+    :ok
+  end
+
+  defp normalize_subscription_stream_error(%Error{} = error), do: error
+
+  defp normalize_subscription_stream_error(reason) do
+    Error.transport(:subscription_stream_failed, %{reason: reason})
+  end
 
   defp advance_negotiation({:send, %Operation{} = operation, state}) do
     {request_id, pending_state} =
@@ -2025,13 +2268,64 @@ defmodule Backplane.McpProtocol.Client do
   defp prepare_request(%Operation{} = operation, state, request_id) do
     extra_meta = progress_metadata(operation.extra_meta, operation.progress_opts)
     params = Metadata.attach(operation.params, state, extra_meta)
-    request_context = RequestContext.new(operation.method, params, state)
 
-    with {:ok, request_data} <-
+    with {:ok, parameter_headers} <- catalog_parameter_headers(operation, state),
+         request_context =
+           RequestContext.new(operation.method, params, state,
+             parameter_headers: parameter_headers
+           ),
+         {:ok, request_data} <-
            encode_prepared_request(operation.method, params, request_id, request_context) do
       {:ok, request_data, request_context}
     end
   end
+
+  defp maybe_replace_tool_catalog(
+         %{method: "tools/list"} = request,
+         %{"tools" => tools} = result,
+         state
+       )
+       when is_list(tools) do
+    if modern_streamable_http?(state) do
+      request_cursor = Map.get(request.base_params, "cursor")
+      next_cursor = if is_binary(result["nextCursor"]), do: result["nextCursor"]
+
+      {page_tools, _snapshot} =
+        Catalog.put_page(catalog_key(state), request_cursor, next_cursor, tools)
+
+      Map.put(result, "tools", page_tools)
+    else
+      result
+    end
+  end
+
+  defp maybe_replace_tool_catalog(_request, result, _state), do: result
+
+  defp catalog_parameter_headers(%Operation{method: "tools/call", params: params}, state) do
+    if modern_streamable_http?(state) do
+      snapshot = Catalog.current(catalog_key(state))
+      tool_name = params["name"]
+      arguments = Map.get(params, "arguments", %{})
+
+      case Catalog.parameter_headers(snapshot, tool_name, arguments) do
+        {:ok, headers} ->
+          {:ok, headers}
+
+        {:error, reason} ->
+          {:error, Error.protocol(:invalid_params, %{field: "arguments", reason: reason})}
+      end
+    else
+      {:ok, %{}}
+    end
+  end
+
+  defp catalog_parameter_headers(%Operation{}, _state), do: {:ok, %{}}
+
+  defp modern_streamable_http?(state) do
+    modern_state?(state) and state.transport.layer == StreamableHTTP
+  end
+
+  defp catalog_key(state), do: state.client_info["name"]
 
   defp progress_metadata(extra_meta, progress_opts) do
     extra_meta = if is_map(extra_meta), do: extra_meta, else: %{}
@@ -2324,6 +2618,23 @@ defmodule Backplane.McpProtocol.Client do
   defp modern_state?(%{era: :modern}), do: true
   defp modern_state?(%{negotiated_version: "2026-07-28"}), do: true
   defp modern_state?(_state), do: false
+
+  defp valid_subscription_timeout?(timeout), do: is_integer(timeout) and timeout > 0
+
+  defp remaining_timeout(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), 1)
+  end
+
+  defp resolve_transport_pid(name) do
+    case GenServer.whereis(name) do
+      pid when is_pid(pid) -> pid
+      _missing -> nil
+    end
+  rescue
+    _exception -> nil
+  catch
+    :exit, _reason -> nil
+  end
 
   defp validate_protocol_preference(:auto, layer) do
     supported_versions = layer.supported_protocol_versions()
