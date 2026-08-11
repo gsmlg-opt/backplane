@@ -131,6 +131,19 @@ defmodule Backplane.McpProtocol.Server do
   @callback init(client_info :: map(), Frame.t()) :: {:ok, Frame.t()}
 
   @doc """
+  Initializes a fresh frame for one stateless modern request.
+
+  Unlike `init/2`, this callback has no session lifecycle and its returned
+  frame is discarded after the request completes.
+  """
+  @callback init_request(
+              Backplane.McpProtocol.Server.Modern.RequestContext.t(),
+              Frame.t()
+            ) ::
+              {:ok, Frame.t()}
+              | {:error, mcp_error(), Frame.t()}
+
+  @doc """
   Handles a tool call request.
 
   This callback is invoked when a client calls a specific tool. It receives the tool name,
@@ -264,6 +277,7 @@ defmodule Backplane.McpProtocol.Server do
                       handle_prompt_get: 3,
                       handle_request: 2,
                       init: 2,
+                      init_request: 2,
                       handle_sampling: 3,
                       handle_completion: 3,
                       handle_roots: 3,

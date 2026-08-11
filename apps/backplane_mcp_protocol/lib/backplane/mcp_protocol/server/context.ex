@@ -41,6 +41,15 @@ defmodule Backplane.McpProtocol.Server.Context do
   @type t :: %__MODULE__{
           session_id: String.t() | nil,
           client_info: map() | nil,
+          protocol_version: String.t() | nil,
+          era: :legacy | :modern | nil,
+          execution_mode: :session | :stateless | nil,
+          client_capabilities: map(),
+          request_meta: map(),
+          log_level: String.t() | nil,
+          progress_token: String.t() | number() | nil,
+          input_responses: map() | nil,
+          request_state: String.t() | nil,
           headers: %{String.t() => String.t()},
           remote_ip: :inet.ip_address() | nil,
           auth: auth_claims() | nil
@@ -48,6 +57,15 @@ defmodule Backplane.McpProtocol.Server.Context do
 
   defstruct session_id: nil,
             client_info: nil,
+            protocol_version: nil,
+            era: nil,
+            execution_mode: nil,
+            client_capabilities: %{},
+            request_meta: %{},
+            log_level: nil,
+            progress_token: nil,
+            input_responses: nil,
+            request_state: nil,
             headers: %{},
             remote_ip: nil,
             auth: nil
