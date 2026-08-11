@@ -246,10 +246,12 @@ git commit -m "feat(mcp): add stateless modern server core"
 **Files:**
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
-- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/supervisor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/headers.ex`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/modern/headers_test.exs`
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/streamable_http/modern_plug_test.exs`
 
-- [ ] **Step 1: Run impact analysis for the Plug and supervisor symbols**
+- [ ] **Step 1: Run impact analysis for the Plug, executor, and header-validation symbols**
 
 - [ ] **Step 2: Write failing modern HTTP tests**
 
@@ -285,6 +287,7 @@ git commit -m "feat(mcp): route modern HTTP requests statelessly"
 **Files:**
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/stdio.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/supervisor.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/registry.ex`
 - Create: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/subscriptions.ex`
@@ -295,7 +298,7 @@ git commit -m "feat(mcp): route modern HTTP requests statelessly"
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/modern/subscriptions_test.exs`
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/streamable_http/modern_subscription_test.exs`
 
-- [ ] **Step 1: Run impact analysis for stdio, supervisor, and registry symbols**
+- [ ] **Step 1: Run impact analysis for stdio, Plug, supervisor, and registry symbols**
 
 - [ ] **Step 2: Write failing lazy-session and subscription tests**
 
@@ -340,11 +343,16 @@ git commit -m "feat(mcp): add modern stdio and subscriptions"
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/supervisor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/transport/stdio.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/transport/streamable_http.ex`
+- Modify: `apps/backplane_mcp_protocol/test/support/stub_client.ex`
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/negotiation_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/state_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/transport/stdio_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/transport/streamable_http_test.exs`
 
-- [ ] **Step 1: Run impact analysis for client, state, and supervisor symbols**
+- [ ] **Step 1: Run impact analysis for client, state, supervisor, and transport startup symbols**
 
 - [ ] **Step 2: Write failing negotiation tests**
 
@@ -369,12 +377,15 @@ State.protocol_context(State.t())
 Client.get_protocol_info(client, opts \\ [])
 ```
 
-Transports signal `:negotiate`, not `:initialize`. Route negotiation responses by pending request method.
+The stdio and Streamable HTTP transports signal `:negotiate`, not `:initialize`.
+Retain the client's legacy `:initialize` cast while the out-of-scope SSE and
+WebSocket transports still use it. Route negotiation responses by pending
+request method.
 
 - [ ] **Step 4: Run client state/negotiation tests and commit**
 
 ```sh
-cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix test test/backplane/mcp_protocol/client/negotiation_test.exs test/backplane/mcp_protocol/client/state_test.exs test/backplane/mcp_protocol/client_test.exs
+cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix test test/backplane/mcp_protocol/client/negotiation_test.exs test/backplane/mcp_protocol/client/state_test.exs test/backplane/mcp_protocol/client_test.exs test/backplane/mcp_protocol/transport/stdio_test.exs test/backplane/mcp_protocol/transport/streamable_http_test.exs
 git add apps/backplane_mcp_protocol
 git commit -m "feat(mcp): negotiate modern and legacy peers"
 ```
