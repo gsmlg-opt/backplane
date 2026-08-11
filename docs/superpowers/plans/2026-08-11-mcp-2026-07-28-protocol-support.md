@@ -549,9 +549,13 @@ git commit -m "feat(mcp): add modern catalog headers and subscriptions"
 - Create: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/authorization.ex`
 - Create: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/authorization/credential_store.ex`
 - Create: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/logging/redaction.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/logging.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/telemetry.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/authorization.ex`
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/authorization/authorization_test.exs`
 - Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/logging/redaction_test.exs`
+- Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/logging_test.exs`
+- Create: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/telemetry_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/authorization/authorization_test.exs`
 
 - [ ] **Step 1: Run impact analysis for server authorization**
@@ -578,6 +582,7 @@ Redaction.redact(term)
 ```
 
 Prefer pre-registration, then CIMD, then deprecated DCR. Do not add OAuth to stdio.
+Apply redaction in the package's central logging and telemetry emitters, with integration tests proving emitted metadata cannot contain secrets.
 
 - [ ] **Step 4: Run authorization tests and commit**
 
@@ -613,6 +618,7 @@ Conformance.Client.run(url, scenario, context, protocol_version)
 ```
 
 Pin the exact official package/revision and record its invocation in `PIN.md`. Do not accept expected failures.
+Use `@modelcontextprotocol/conformance@0.2.0-alpha.11` at git commit `c321dd32035556e6769d3724a8ee97d87c3faaac`; its frozen requirement manifest is anchored to the `0.2.0-alpha.10` scenario release. The client runner receives the scenario server URL as its final argument plus `MCP_CONFORMANCE_SCENARIO`, `MCP_CONFORMANCE_PROTOCOL_VERSION`, and optional JSON `MCP_CONFORMANCE_CONTEXT`; it is a one-shot Streamable HTTP client process, not an MCP-over-stdio adapter. Use Task 10's production authorization helpers for scored OAuth scenarios. Add `plug_cowboy` as a direct test-only dependency if the server runner uses `Plug.Cowboy`; do not rely on Bypass's transitive dependency. Do not replace the frozen requirements with the moving `--suite all`, and do not add expected failures.
 
 - [ ] **Step 3: Run integration and frozen official suites**
 
@@ -621,9 +627,11 @@ cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace
 
 cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix run --no-halt test/conformance/server_runner.exs -- 4105
 
-npx -y @modelcontextprotocol/conformance@0.2.0-alpha.9 server --url http://127.0.0.1:4105/mcp --requirements 2026-07-28
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 list --requirements 2026-07-28
 
-npx -y @modelcontextprotocol/conformance@0.2.0-alpha.9 client --command "MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix run test/conformance/client_runner.exs --" --requirements 2026-07-28
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 server --url http://127.0.0.1:4105/mcp --requirements 2026-07-28
+
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 client --command "MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix run test/conformance/client_runner.exs --" --requirements 2026-07-28
 ```
 
 - [ ] **Step 4: Commit the zero-expected-failure harness**
@@ -639,6 +647,7 @@ git commit -m "test(mcp): add 2026 dual-era conformance"
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/protocol/registry.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client.ex`
+- Modify: `apps/backplane_mcp_protocol/mix.exs` only to register `pages/authorization.md` with ExDoc.
 - Modify: `apps/backplane_mcp_protocol/README.md`
 - Modify: `apps/backplane_mcp_protocol/pages/introduction.md`
 - Modify: `apps/backplane_mcp_protocol/pages/building-a-client.md`
@@ -662,7 +671,7 @@ Register `2026-07-28` as latest and make new clients default to `:auto`. Preserv
 
 - [ ] **Step 3: Update package documentation and generated LLM docs**
 
-Document modern/legacy selection, per-request metadata, server discovery, modern HTTP headers, MRTR, subscriptions, JSON Schema behavior, authorization, and migration from legacy initialization. State that the modern Tasks extension is deferred.
+Register the authorization guide with ExDoc. Document modern/legacy selection, per-request metadata, server discovery, modern HTTP headers, MRTR, subscriptions, JSON Schema behavior, authorization, and migration from legacy initialization. State that explicit subscription handles close on connection loss and callers re-listen if they still want events. State that the modern Tasks extension is deferred.
 
 - [ ] **Step 4: Run the complete package gate**
 
