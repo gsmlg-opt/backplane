@@ -88,6 +88,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Cache
   alias Backplane.McpProtocol.Client.Elicitation
   alias Backplane.McpProtocol.Client.Handlers
+  alias Backplane.McpProtocol.Client.Metadata
   alias Backplane.McpProtocol.Client.Negotiation
   alias Backplane.McpProtocol.Client.Operation
   alias Backplane.McpProtocol.Client.Request
@@ -100,6 +101,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Protocol.Profile
   alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Telemetry
+  alias Backplane.McpProtocol.Transport.RequestContext
 
   require Message
 
@@ -324,6 +326,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds (default: 30s)
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -334,6 +337,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "ping",
         params: %{},
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -349,6 +353,7 @@ defmodule Backplane.McpProtocol.Client do
 
     * `:cursor` - Pagination cursor for continuing a previous request
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -362,6 +367,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "resources/list",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -377,6 +383,7 @@ defmodule Backplane.McpProtocol.Client do
 
     * `:cursor` - Pagination cursor for continuing a previous request
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -390,6 +397,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "resources/templates/list",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -404,6 +412,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -415,6 +424,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "resources/read",
         params: %{"uri" => uri},
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -433,6 +443,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
   """
   @spec subscribe_resource(t, String.t(), keyword) ::
           {:ok, Response.t()} | {:error, Error.t()}
@@ -441,6 +452,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "resources/subscribe",
         params: %{"uri" => uri},
+        extra_meta: Keyword.get(opts, :meta, %{}),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
 
@@ -454,6 +466,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
   """
   @spec unsubscribe_resource(t, String.t(), keyword) ::
           {:ok, Response.t()} | {:error, Error.t()}
@@ -462,6 +475,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "resources/unsubscribe",
         params: %{"uri" => uri},
+        extra_meta: Keyword.get(opts, :meta, %{}),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
 
@@ -476,6 +490,7 @@ defmodule Backplane.McpProtocol.Client do
 
     * `:cursor` - Pagination cursor for continuing a previous request
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -489,6 +504,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "prompts/list",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -503,6 +519,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -517,6 +534,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "prompts/get",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -532,6 +550,7 @@ defmodule Backplane.McpProtocol.Client do
 
     * `:cursor` - Pagination cursor for continuing a previous request
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -545,6 +564,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "tools/list",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -559,6 +579,7 @@ defmodule Backplane.McpProtocol.Client do
   ## Options
 
     * `:timeout` - Request timeout in milliseconds
+    * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
     * `:progress` - Progress tracking options
       * `:token` - A unique token to track progress (string or integer)
       * `:callback` - A function to call when progress updates are received
@@ -573,6 +594,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "tools/call",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -678,6 +700,7 @@ defmodule Backplane.McpProtocol.Client do
       * `%{"name" => arg_name, "value" => current_value}`
     * `opts` - Additional options
       * `:timeout` - Request timeout in milliseconds
+      * `:meta` - Additional request metadata; protocol-reserved fields are supplied by the client
       * `:progress` - Progress tracking options
         * `:token` - A unique token to track progress (string or integer)
         * `:callback` - A function to call when progress updates are received
@@ -703,6 +726,7 @@ defmodule Backplane.McpProtocol.Client do
       Operation.new(%{
         method: "completion/complete",
         params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
         progress_opts: Keyword.get(opts, :progress),
         timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
       })
@@ -1060,14 +1084,15 @@ defmodule Backplane.McpProtocol.Client do
   def handle_call({:operation, %Operation{} = operation}, from, state) do
     method = operation.method
 
-    params_with_token =
-      State.add_progress_token_to_params(operation.params, operation.progress_opts)
-
     with :ok <- State.validate_capability(state, method),
          {request_id, updated_state} =
            State.add_request_from_operation(state, operation, from),
-         {:ok, request_data} <- encode_request(method, params_with_token, request_id),
-         :ok <- send_to_transport(state.transport, request_data, timeout: operation.timeout) do
+         {:ok, request_data, request_context} <- prepare_request(operation, state, request_id),
+         :ok <-
+           send_to_transport(state.transport, request_data,
+             timeout: operation.timeout,
+             request_context: request_context
+           ) do
       Telemetry.execute(
         Telemetry.event_client_request(),
         %{system_time: System.system_time()},
@@ -1636,11 +1661,13 @@ defmodule Backplane.McpProtocol.Client do
       State.add_request_from_operation(state, operation, {self(), make_ref()})
 
     result =
-      with {:ok, request_data} <- encode_request(operation.method, operation.params, request_id) do
+      with {:ok, request_data, request_context} <-
+             prepare_request(operation, pending_state, request_id) do
         safe_send_to_transport(
           pending_state.transport,
           request_data,
-          timeout: operation.timeout
+          timeout: operation.timeout,
+          request_context: request_context
         )
       end
 
@@ -1708,7 +1735,17 @@ defmodule Backplane.McpProtocol.Client do
 
   defp safe_send_notification(state, method, params \\ %{}) do
     with {:ok, notification_data} <- encode_notification(method, params) do
-      safe_send_to_transport(state.transport, notification_data, timeout: state.timeout)
+      opts =
+        if state.era == :legacy do
+          [
+            timeout: state.timeout,
+            request_context: RequestContext.new(method, params, state)
+          ]
+        else
+          [timeout: state.timeout]
+        end
+
+      safe_send_to_transport(state.transport, notification_data, opts)
     end
   end
 
@@ -1722,7 +1759,38 @@ defmodule Backplane.McpProtocol.Client do
     method in ["initialize", "server/discover"]
   end
 
-  defp encode_request("server/discover" = method, params, request_id) do
+  defp prepare_request(%Operation{} = operation, state, request_id) do
+    extra_meta = progress_metadata(operation.extra_meta, operation.progress_opts)
+    params = Metadata.attach(operation.params, state, extra_meta)
+    request_context = RequestContext.new(operation.method, params, state)
+
+    with {:ok, request_data} <-
+           encode_prepared_request(operation.method, params, request_id, request_context) do
+      {:ok, request_data, request_context}
+    end
+  end
+
+  defp progress_metadata(extra_meta, progress_opts) do
+    extra_meta = if is_map(extra_meta), do: extra_meta, else: %{}
+
+    case progress_opts && Keyword.get(progress_opts, :token) do
+      token when is_binary(token) or is_integer(token) ->
+        Map.put(extra_meta, "progressToken", token)
+
+      _invalid_or_missing ->
+        extra_meta
+    end
+  end
+
+  defp encode_prepared_request(method, params, request_id, %RequestContext{} = context) do
+    if RequestContext.modern?(context) do
+      encode_modern_request(method, params, request_id)
+    else
+      encode_request(method, params, request_id)
+    end
+  end
+
+  defp encode_modern_request(method, params, request_id) do
     request = %{
       "jsonrpc" => "2.0",
       "id" => request_id,
@@ -1730,15 +1798,21 @@ defmodule Backplane.McpProtocol.Client do
       "params" => params
     }
 
-    Logging.message("outgoing", "request", request_id, request)
+    logged_request = Map.take(request, ["jsonrpc", "id", "method"])
+    Logging.message("outgoing", "request", request_id, logged_request)
     {:ok, JSON.encode!(request) <> "\n"}
   rescue
     error -> {:error, error}
   end
 
+  defp encode_request("server/discover" = method, params, request_id) do
+    encode_modern_request(method, params, request_id)
+  end
+
   defp encode_request(method, params, request_id) do
     request = %{"method" => method, "params" => params}
-    Logging.message("outgoing", "request", request_id, request)
+    logged_request = %{"method" => method}
+    Logging.message("outgoing", "request", request_id, logged_request)
     Message.encode_request(request, request_id)
   end
 

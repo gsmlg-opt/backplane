@@ -141,6 +141,9 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   @impl Transport
   def send_message(pid \\ __MODULE__, message, opts) when is_binary(message) do
+    # Request contexts carry HTTP-only routing fields. STDIO deliberately sends
+    # only the encoded JSON-RPC body, which already contains protocol metadata.
+    _request_context = Keyword.get(opts, :request_context)
     GenServer.call(pid, {:send, message}, Keyword.get(opts, :timeout, 5000))
   end
 

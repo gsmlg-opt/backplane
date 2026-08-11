@@ -4,6 +4,7 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
   """
 
   alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.Transport.RequestContext
 
   @type t :: GenServer.server()
   @typedoc "The JSON-RPC message encoded"
@@ -12,7 +13,7 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
 
   @callback start_link(keyword()) :: GenServer.on_start()
   @callback send_message(t(), message(), list(opt)) :: :ok | {:error, reason()}
-            when opt: {:timeout, pos_integer()}
+            when opt: {:timeout, pos_integer()} | {:request_context, RequestContext.t()}
   @callback shutdown(t()) :: :ok | {:error, reason()}
 
   @doc """
