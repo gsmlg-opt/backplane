@@ -47,6 +47,24 @@ defmodule Backplane.McpProtocol.Server.Modern.HeadersTest do
     end
   end
 
+  test "rejects duplicate standard HTTP routing headers case-insensitively", %{profile: profile} do
+    request = request("tools/call", %{"name" => "weather"})
+
+    headers = [
+      {"mcp-protocol-version", "2026-07-28"},
+      {"mcp-method", "tools/call"},
+      {"mcp-name", "weather"}
+    ]
+
+    for {name, value} <- headers do
+      assert {:error, %{code: -32_020}} =
+               Headers.validate(profile, request, %{
+                 transport: :http,
+                 req_headers: headers ++ [{String.upcase(name), value}]
+               })
+    end
+  end
+
   test "header/body disagreement wins over unsupported version classification", %{profile: profile} do
     request =
       "tools/list"
@@ -137,6 +155,30 @@ defmodule Backplane.McpProtocol.Server.Modern.HeadersTest do
              Headers.validate_tool_params(tool, request, %{
                transport: :http,
                headers: %{"mcp-param-unknown" => "ignored"}
+             })
+  end
+
+  test "rejects duplicate recognized parameter mirrors but ignores duplicate unknown mirrors" do
+    tool = tool_with_header("region", "string", "Region")
+    request = request("tools/call", %{"name" => "route", "arguments" => %{"region" => "west"}})
+
+    assert {:error, %{code: -32_020}} =
+             Headers.validate_tool_params(tool, request, %{
+               transport: :http,
+               req_headers: [
+                 {"mcp-param-region", "west"},
+                 {"MCP-PARAM-REGION", "west"}
+               ]
+             })
+
+    assert :ok =
+             Headers.validate_tool_params(tool, request, %{
+               transport: :http,
+               req_headers: [
+                 {"mcp-param-region", "west"},
+                 {"mcp-param-unknown", "first"},
+                 {"MCP-PARAM-UNKNOWN", "second"}
+               ]
              })
   end
 

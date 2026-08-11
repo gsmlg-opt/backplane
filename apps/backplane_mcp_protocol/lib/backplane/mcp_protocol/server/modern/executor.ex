@@ -79,7 +79,9 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
         |> normalize_discovery_to_envelope(snapshot, request_context)
       else
         task_supervisor
-        |> run_isolated(deadline, opts, fn -> safely_dispatch(server_module, request_context) end)
+        |> run_isolated(deadline, opts, fn ->
+          safely_dispatch(server_module, request_context, transport_context)
+        end)
         |> normalize_callback_to_envelope(snapshot, request_context)
       end
     else
@@ -129,7 +131,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     _kind, _reason -> :callback_failure
   end
 
-  defp safely_dispatch(server_module, request_context) do
+  defp safely_dispatch(server_module, request_context, transport_context) do
     frame = fresh_frame(request_context)
 
     case maybe_init_request(server_module, request_context, frame) do
@@ -139,7 +141,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
           | context: RequestContext.to_server_context(request_context)
         }
 
-        case validate_tool_headers(server_module, request_context, initialized_frame) do
+        case validate_tool_headers(server_module, request_context, initialized_frame, transport_context) do
           :ok -> {:callback_return, server_module.handle_request(request_context.request, initialized_frame)}
           {:error, %Error{} = error} -> {:protocol_error, error}
         end
@@ -164,14 +166,14 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     end
   end
 
-  defp validate_tool_headers(server_module, %RequestContext{method: "tools/call"} = context, frame) do
+  defp validate_tool_headers(server_module, %RequestContext{method: "tools/call"} = context, frame, transport_context) do
     tool_name = get_in(context.request, ["params", "name"])
     tool = server_module |> Handlers.get_server_tools(frame) |> Enum.find(&(&1.name == tool_name))
 
-    if tool, do: Headers.validate_tool_params(tool, context.request, context), else: :ok
+    if tool, do: Headers.validate_tool_params(tool, context.request, transport_context), else: :ok
   end
 
-  defp validate_tool_headers(_server_module, _request_context, _frame), do: :ok
+  defp validate_tool_headers(_server_module, _request_context, _frame, _transport_context), do: :ok
 
   defp fresh_frame(request_context) do
     frame = Frame.new(request_context.assigns)

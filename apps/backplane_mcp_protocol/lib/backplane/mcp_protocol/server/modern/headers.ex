@@ -23,7 +23,8 @@ defmodule Backplane.McpProtocol.Server.Modern.Headers do
       body_version = get_in(request, ["params", "_meta", @protocol_version_key])
       method = request["method"]
 
-      with :ok <- compare_plain(headers["mcp-protocol-version"], body_version, profile, "MCP-Protocol-Version"),
+      with :ok <- reject_duplicate_routing_headers(profile, transport_context),
+           :ok <- compare_plain(headers["mcp-protocol-version"], body_version, profile, "MCP-Protocol-Version"),
            :ok <- compare_plain(headers["mcp-method"], method, profile, "Mcp-Method") do
         validate_name(profile, method, request["params"], headers)
       end
@@ -45,7 +46,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Headers do
       tool.input_schema
       |> recognized_tool_headers()
       |> Enum.reduce_while(:ok, fn header, :ok ->
-        case validate_tool_header(header, arguments, headers) do
+        case validate_tool_header(header, arguments, headers, transport_context) do
           :ok -> {:cont, :ok}
           :error -> {:halt, parameter_mismatch(version, header.name)}
         end
@@ -77,6 +78,19 @@ defmodule Backplane.McpProtocol.Server.Modern.Headers do
   end
 
   defp compare_plain(_header_value, _body_value, profile, field), do: mismatch(profile, field)
+
+  defp reject_duplicate_routing_headers(profile, transport_context) do
+    [
+      {"mcp-protocol-version", "MCP-Protocol-Version"},
+      {"mcp-method", "Mcp-Method"},
+      {"mcp-name", "Mcp-Name"}
+    ]
+    |> Enum.find(fn {name, _field} -> duplicate_header?(transport_context, name) end)
+    |> case do
+      nil -> :ok
+      {_name, field} -> mismatch(profile, field)
+    end
+  end
 
   defp decode_mirrored(nil), do: :error
 
@@ -145,24 +159,28 @@ defmodule Backplane.McpProtocol.Server.Modern.Headers do
 
   defp header_type(_type), do: nil
 
-  defp validate_tool_header(header, arguments, headers) do
+  defp validate_tool_header(header, arguments, headers, transport_context) do
     header_name = "mcp-param-" <> String.downcase(header.name)
 
-    case fetch_path(arguments, header.path) do
-      :error ->
-        if Map.has_key?(headers, header_name), do: :error, else: :ok
+    if duplicate_header?(transport_context, header_name) do
+      :error
+    else
+      case fetch_path(arguments, header.path) do
+        :error ->
+          if Map.has_key?(headers, header_name), do: :error, else: :ok
 
-      {:ok, nil} ->
-        if Map.has_key?(headers, header_name), do: :error, else: :ok
+        {:ok, nil} ->
+          if Map.has_key?(headers, header_name), do: :error, else: :ok
 
-      {:ok, value} ->
-        with :ok <- validate_body_value(header.type, value),
-             {:ok, decoded} <- decode_mirrored(headers[header_name]),
-             true <- mirrored_value_equal?(header.type, value, decoded) do
-          :ok
-        else
-          _other -> :error
-        end
+        {:ok, value} ->
+          with :ok <- validate_body_value(header.type, value),
+               {:ok, decoded} <- decode_mirrored(headers[header_name]),
+               true <- mirrored_value_equal?(header.type, value, decoded) do
+            :ok
+          else
+            _other -> :error
+          end
+      end
     end
   end
 
@@ -234,4 +252,15 @@ defmodule Backplane.McpProtocol.Server.Modern.Headers do
   end
 
   defp normalized_headers(_transport_context), do: %{}
+
+  defp duplicate_header?(transport_context, header_name) do
+    transport_context
+    |> raw_header_pairs()
+    |> Enum.count(fn {name, _value} -> name |> to_string() |> String.downcase() == header_name end)
+    |> Kernel.>(1)
+  end
+
+  defp raw_header_pairs(%{req_headers: headers}) when is_list(headers), do: headers
+  defp raw_header_pairs(%{headers: headers}) when is_list(headers), do: headers
+  defp raw_header_pairs(_transport_context), do: []
 end

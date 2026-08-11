@@ -3,12 +3,15 @@ if Code.ensure_loaded?(Plug) do
     @moduledoc """
     A Plug implementation for the Streamable HTTP transport.
 
-    This plug handles the MCP Streamable HTTP protocol as specified in MCP 2025-11-25.
-    It provides a single endpoint that supports both GET and POST methods:
+    This plug serves both MCP lifecycle eras on one endpoint:
 
-    - GET: Opens an SSE stream for server-to-client communication
-    - POST: Handles JSON-RPC messages from client to server
-    - DELETE: Closes a session
+    - Modern `2026-07-28` requests are session-free and POST-only. Responses use
+      JSON or a request-scoped SSE stream and never create or return a session ID.
+    - Legacy requests retain their session-oriented behavior: POST dispatches
+      through a session, GET opens the session SSE stream, and DELETE closes it.
+
+    POST requests are decoded once and routed by their protocol markers before
+    either the stateless modern executor or the legacy session path is selected.
 
     ## Usage in Phoenix Router
 
@@ -38,11 +41,16 @@ if Code.ensure_loaded?(Plug) do
     alias Backplane.McpProtocol.MCP.Error
     alias Backplane.McpProtocol.MCP.ID
     alias Backplane.McpProtocol.MCP.Message
+    alias Backplane.McpProtocol.Protocol.Profile
+    alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
     alias Backplane.McpProtocol.Server.Authorization
+    alias Backplane.McpProtocol.Server.Modern.Executor
+    alias Backplane.McpProtocol.Server.ProfileRouter
     alias Backplane.McpProtocol.Server.Registry
     alias Backplane.McpProtocol.Server.Session
     alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
     alias Backplane.McpProtocol.Server.Transport.StreamableHTTP
+    alias Backplane.McpProtocol.SSE.Event
     alias Backplane.McpProtocol.SSE.Streaming
     alias Backplane.McpProtocol.Telemetry
     alias Plug.Conn.Unfetched
@@ -94,11 +102,17 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp handle_request(conn, opts) do
-      case conn.method do
-        "GET" -> handle_get(conn, opts)
-        "POST" -> handle_post(conn, opts)
-        "DELETE" -> handle_delete(conn, opts)
-        _ -> send_error(conn, 405, "Method not allowed")
+      if conn.method in ["GET", "DELETE"] and modern_protocol_version_marker?(conn) do
+        conn
+        |> put_resp_header("allow", "POST")
+        |> send_resp(405, "")
+      else
+        case conn.method do
+          "GET" -> handle_get(conn, opts)
+          "POST" -> handle_post(conn, opts)
+          "DELETE" -> handle_delete(conn, opts)
+          _ -> send_error(conn, 405, "Method not allowed")
+        end
       end
     end
 
@@ -110,6 +124,7 @@ if Code.ensure_loaded?(Plug) do
         registry_mod: session_config.registry_mod,
         registry_name: Registry.registry_name(server),
         transport: Registry.transport_name(server, :streamable_http),
+        task_supervisor: session_config.task_supervisor,
         authorization: auth_config
       })
     end
@@ -156,22 +171,15 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    # POST request handler - processes MCP messages directly to Session
+    # POST request handler - routes modern requests statelessly and legacy messages to Session
 
-    defp handle_post(conn, %{session_header: session_header} = opts) do
+    defp handle_post(conn, opts) do
       with :ok <- validate_accept_header(conn),
-           :ok <- validate_protocol_version(conn, opts.server),
+           :ok <- validate_known_legacy_protocol_version(conn, opts.server),
            {:ok, body, conn} <- maybe_read_request_body(conn, opts),
-           {:ok, [message]} <- maybe_parse_messages(body),
-           {:ok, session_id} <- determine_session_id(conn, session_header, message) do
+           {:ok, message} <- maybe_decode_post_message(body) do
         context = build_request_context(conn, Map.get(opts, :auth_claims))
-
-        Logging.transport_event("parsed_messages", %{
-          message: message,
-          session_id: session_id
-        })
-
-        process_message(conn, message, session_id, context, opts)
+        dispatch_post(conn, message, context, opts)
       else
         {:error, :invalid_accept_header} ->
           send_error(
@@ -180,6 +188,92 @@ if Code.ensure_loaded?(Plug) do
             "Not Acceptable: Client must accept application/json and text/event-stream"
           )
 
+        {:error, :unsupported_protocol_version} ->
+          send_error(conn, 400, "Unsupported MCP protocol version")
+
+        {:error, :invalid_json} ->
+          error = Error.protocol(:parse_error, %{message: "Invalid JSON"})
+
+          if modern_protocol_version_marker?(conn) do
+            send_modern_response(conn, Error.build_json_rpc(error, nil))
+          else
+            send_jsonrpc_error(conn, error, nil)
+          end
+
+        {:error, :invalid_request} ->
+          if modern_protocol_version_marker?(conn) do
+            send_modern_response(
+              conn,
+              Error.build_json_rpc(Error.protocol(:invalid_request), nil)
+            )
+          else
+            send_jsonrpc_error(
+              conn,
+              Error.protocol(:parse_error, %{message: "Invalid JSON"}),
+              nil
+            )
+          end
+
+        {:error, reason} ->
+          Logging.transport_event("request_error", %{reason: reason}, level: :error)
+
+          send_jsonrpc_error(
+            conn,
+            Error.protocol(:parse_error, %{reason: reason}),
+            nil
+          )
+      end
+    end
+
+    defp dispatch_post(conn, message, context, opts) do
+      routing_context =
+        Map.merge(context, %{
+          task_supervisor: opts.task_supervisor,
+          request_timeout: opts.timeout
+        })
+
+      case ProfileRouter.route(message, routing_context) do
+        {:ok, :legacy} ->
+          dispatch_legacy(conn, message, context, opts)
+
+        {:ok, {:modern, %Profile{}}} ->
+          dispatch_modern(conn, message, routing_context, opts)
+
+        {:error, %Error{}} ->
+          dispatch_modern(conn, message, routing_context, opts)
+      end
+    end
+
+    defp dispatch_modern(conn, message, context, opts) do
+      response =
+        case validate_modern_request(message) do
+          :ok ->
+            {:response, response} =
+              Executor.execute(opts.server, message, context,
+                task_supervisor: opts.task_supervisor,
+                timeout: opts.timeout
+              )
+
+            response
+
+          {:error, %Error{} = error} ->
+            Error.build_json_rpc(error, nil)
+        end
+
+      send_modern_response(conn, response)
+    end
+
+    defp dispatch_legacy(conn, message, context, %{session_header: session_header} = opts) do
+      with :ok <- validate_protocol_version(conn, opts.server),
+           {:ok, message} <- validate_legacy_message(message),
+           {:ok, session_id} <- determine_session_id(conn, session_header, message) do
+        Logging.transport_event("parsed_messages", %{
+          message: message,
+          session_id: session_id
+        })
+
+        process_message(conn, message, session_id, context, opts)
+      else
         {:error, :unsupported_protocol_version} ->
           send_error(conn, 400, "Unsupported MCP protocol version")
 
@@ -193,15 +287,6 @@ if Code.ensure_loaded?(Plug) do
           send_jsonrpc_error(
             conn,
             Error.protocol(:parse_error, %{message: "Invalid JSON"}),
-            nil
-          )
-
-        {:error, reason} ->
-          Logging.transport_event("request_error", %{reason: reason}, level: :error)
-
-          send_jsonrpc_error(
-            conn,
-            Error.protocol(:parse_error, %{reason: reason}),
             nil
           )
       end
@@ -368,6 +453,46 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
+    defp send_modern_response(conn, response) do
+      encoded = JSON.encode!(response)
+      status = modern_http_status(response)
+
+      if status == 200 and wants_sse?(conn) do
+        stream_modern_response_on_conn(conn, encoded)
+      else
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(status, encoded)
+      end
+    end
+
+    defp stream_modern_response_on_conn(conn, response) do
+      conn = Streaming.prepare_connection(conn)
+      event = Event.encode(%Event{event: "message", data: response})
+
+      case Plug.Conn.chunk(conn, event) do
+        {:ok, conn} ->
+          conn
+
+        {:error, reason} ->
+          Logging.transport_event(
+            "modern_sse_post_send_failed",
+            %{reason: inspect(reason)},
+            level: :warning
+          )
+
+          conn
+      end
+    end
+
+    defp modern_http_status(%{"error" => %{"code" => -32_601}}), do: 404
+
+    defp modern_http_status(%{"error" => %{"code" => code}})
+         when code in [-32_700, -32_600, -32_602, -32_020, -32_021, -32_022],
+         do: 400
+
+    defp modern_http_status(_response), do: 200
+
     defp handle_delete(conn, %{transport: transport, session_header: session_header} = opts) do
       with :ok <- validate_protocol_version(conn, opts.server),
            {:ok, session_id} <- require_session_id(conn, session_header),
@@ -524,6 +649,29 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
+    defp modern_protocol_version_marker?(conn) do
+      case get_req_header(conn, "mcp-protocol-version") do
+        [version] ->
+          match?({:ok, %Profile{era: :modern}}, ProtocolRegistry.profile(version))
+
+        _other ->
+          false
+      end
+    end
+
+    defp validate_known_legacy_protocol_version(conn, server) do
+      case get_req_header(conn, "mcp-protocol-version") do
+        [version] ->
+          case ProtocolRegistry.profile(version) do
+            {:ok, %Profile{era: :legacy}} -> validate_protocol_version(conn, server)
+            _modern_or_unknown -> :ok
+          end
+
+        _missing_or_duplicate ->
+          :ok
+      end
+    end
+
     defp validate_negotiated_protocol(_conn, message, _session_id, _opts)
          when Message.is_initialize(message),
          do: :ok
@@ -558,26 +706,51 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp maybe_parse_messages(body) when is_binary(body) do
-      case Message.decode(body) do
-        {:ok, messages} ->
-          {:ok, messages}
+    defp maybe_decode_post_message(body) when is_binary(body) do
+      case JSON.decode(body) do
+        {:ok, message} when is_map(message) ->
+          {:ok, message}
+
+        {:ok, _invalid} ->
+          {:error, :invalid_request}
 
         {:error, reason} ->
-          Logging.transport_event(
-            "parse_error",
-            %{body: body, reason: inspect(reason)},
-            level: :error
-          )
-
-          {:error, :invalid_json}
+          log_invalid_post_body(body, reason)
       end
     end
 
-    defp maybe_parse_messages(body) when is_map(body) do
-      case Message.validate_message(body) do
-        {:ok, message} -> {:ok, [message]}
-        {:error, _} -> {:error, :invalid_json}
+    defp maybe_decode_post_message(body) when is_map(body), do: {:ok, body}
+    defp maybe_decode_post_message(_body), do: {:error, :invalid_request}
+
+    defp log_invalid_post_body(body, reason) do
+      Logging.transport_event(
+        "parse_error",
+        %{body: body, reason: inspect(reason)},
+        level: :error
+      )
+
+      {:error, :invalid_json}
+    end
+
+    defp validate_legacy_message(message) do
+      case Message.validate_message(message) do
+        {:ok, validated} -> {:ok, validated}
+        {:error, _reason} -> {:error, :invalid_json}
+      end
+    end
+
+    defp validate_modern_request(message) when is_map(message) do
+      id = message["id"]
+
+      if message["jsonrpc"] == "2.0" and
+           is_binary(message["method"]) and
+           (is_binary(id) or is_integer(id)) and
+           is_map(message["params"]) and
+           not Map.has_key?(message, "result") and
+           not Map.has_key?(message, "error") do
+        :ok
+      else
+        {:error, Error.protocol(:invalid_request)}
       end
     end
 
