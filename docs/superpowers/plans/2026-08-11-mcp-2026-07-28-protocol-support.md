@@ -605,6 +605,15 @@ git commit -m "feat(mcp): harden modern authorization"
 - Create: `apps/backplane_mcp_protocol/test/conformance/client_runner.exs`
 - Create: `apps/backplane_mcp_protocol/test/conformance/PIN.md`
 - Modify: `apps/backplane_mcp_protocol/mix.exs` only if the harness proves an additional test-only dependency is required.
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/profile_router.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/request_context.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/stdio.ex`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/profile_router_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/modern/executor_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/streamable_http/modern_plug_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/modern_stdio_test.exs`
 
 - [ ] **Step 1: Write end-to-end dual-era tests**
 
@@ -619,6 +628,8 @@ Conformance.Client.run(url, scenario, context, protocol_version)
 
 Pin the exact official package/revision and record its invocation in `PIN.md`. Do not accept expected failures.
 Use `@modelcontextprotocol/conformance@0.2.0-alpha.11` at git commit `c321dd32035556e6769d3724a8ee97d87c3faaac`; its frozen requirement manifest is anchored to the `0.2.0-alpha.10` scenario release. The client runner receives the scenario server URL as its final argument plus `MCP_CONFORMANCE_SCENARIO`, `MCP_CONFORMANCE_PROTOCOL_VERSION`, and optional JSON `MCP_CONFORMANCE_CONTEXT`; it is a one-shot Streamable HTTP client process, not an MCP-over-stdio adapter. Use Task 10's production authorization helpers for scored OAuth scenarios. Add `plug_cowboy` as a direct test-only dependency if the server runner uses `Plug.Cowboy`; do not rely on Bypass's transitive dependency. Do not replace the frozen requirements with the moving `--suite all`, and do not add expected failures.
+
+The frozen server suite is also the acceptance oracle for production wire behavior. Add regressions and fix any scored package defect it exposes; do not hide production failures in a conformance-only adapter. In particular, required modern body metadata must fail as JSON-RPC invalid params (`-32602`), modern-marked removed methods must fail as method not found (`-32601` / HTTP 404), and progress emitted through the existing `Backplane.McpProtocol.Server.send_progress/3` callback API must precede the final response on modern HTTP SSE and stdio transports.
 
 - [ ] **Step 3: Run integration and frozen official suites**
 
