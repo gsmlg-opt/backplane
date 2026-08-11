@@ -104,6 +104,19 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       assert metadata["scopes_supported"] == ["tools:read", "tools:write"]
       assert metadata["bearer_methods_supported"] == ["header"]
     end
+
+    test "does not advertise offline_access" do
+      config =
+        Authorization.parse_config!(
+          authorization_servers: ["https://auth.example.com"],
+          resource: "https://api.example.com",
+          scopes_supported: ["tools:read", "offline_access", "tools:write"],
+          validator: {MockTokenValidator, []}
+        )
+
+      assert %{"scopes_supported" => ["tools:read", "tools:write"]} =
+               Authorization.build_resource_metadata(config)
+    end
   end
 
   describe "build_www_authenticate/2" do
@@ -131,6 +144,28 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
 
       assert header =~ ~s(error="insufficient_scope")
       assert header =~ ~s(scope="tools:write")
+
+      assert header =~
+               ~s(resource_metadata="https://api.example.com/.well-known/oauth-protected-resource")
+    end
+
+    test "does not include offline_access in an insufficient-scope challenge", %{config: config} do
+      header =
+        Authorization.build_www_authenticate(
+          config,
+          {:insufficient_scope, "tools:read offline_access tools:write"}
+        )
+
+      assert header =~ ~s(scope="tools:read tools:write")
+      refute header =~ "offline_access"
+
+      offline_only =
+        Authorization.build_www_authenticate(config, {:insufficient_scope, "offline_access"})
+
+      refute offline_only =~ "scope="
+
+      assert offline_only =~
+               ~s(resource_metadata="https://api.example.com/.well-known/oauth-protected-resource")
     end
   end
 

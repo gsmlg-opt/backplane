@@ -11,7 +11,11 @@ defmodule Backplane.McpProtocol.Telemetry do
   """
   @spec execute(list(atom()), map(), map()) :: :ok
   def execute(event_name, measurements, metadata) do
-    :telemetry.execute([:backplane_mcp_protocol | event_name], measurements, metadata)
+    :telemetry.execute(
+      [:backplane_mcp_protocol | event_name],
+      measurements,
+      Backplane.McpProtocol.Logging.Redaction.redact(metadata)
+    )
   end
 
   # Define event name constants to ensure consistency

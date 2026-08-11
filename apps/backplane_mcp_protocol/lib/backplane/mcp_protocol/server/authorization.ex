@@ -107,7 +107,7 @@ defmodule Backplane.McpProtocol.Server.Authorization do
     %{
       "resource" => config.resource,
       "authorization_servers" => config.authorization_servers,
-      "scopes_supported" => config.scopes_supported,
+      "scopes_supported" => without_offline_access(config.scopes_supported),
       "bearer_methods_supported" => ["header"]
     }
   end
@@ -129,7 +129,21 @@ defmodule Backplane.McpProtocol.Server.Authorization do
   end
 
   def build_www_authenticate(config, {:insufficient_scope, required_scope}) do
-    ~s(Bearer realm="#{config.realm}", error="insufficient_scope", scope="#{required_scope}")
+    metadata_url = well_known_url(config.resource)
+
+    params = [
+      ~s(realm="#{config.realm}"),
+      ~s(error="insufficient_scope"),
+      ~s(resource_metadata="#{metadata_url}")
+    ]
+
+    params =
+      case required_scope |> String.split() |> without_offline_access() |> Enum.join(" ") do
+        "" -> params
+        scope -> params ++ [~s(scope="#{scope}")]
+      end
+
+    "Bearer " <> Enum.join(params, ", ")
   end
 
   @doc """
@@ -251,5 +265,9 @@ defmodule Backplane.McpProtocol.Server.Authorization do
       is_binary(scope) -> String.split(scope, " ", trim: true)
       true -> []
     end
+  end
+
+  defp without_offline_access(scopes) do
+    Enum.reject(scopes, &(&1 == "offline_access"))
   end
 end

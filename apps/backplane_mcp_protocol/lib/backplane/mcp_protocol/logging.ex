@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Logging do
   @moduledoc false
 
+  alias Backplane.McpProtocol.Logging.Redaction
+
   require Logger
 
   @doc false
@@ -25,33 +27,47 @@ defmodule Backplane.McpProtocol.Logging do
   """
   defmacro message(direction, type, id, data, metadata \\ []) do
     quote generated: true do
+      direction = unquote(direction)
+      type = unquote(type)
+      id = unquote(id)
+      data = unquote(data)
+      metadata = unquote(metadata)
       level = Backplane.McpProtocol.Logging.get_logging_level(:protocol_messages)
-      level = Keyword.get(unquote(metadata), :level, level)
-      metadata = Keyword.delete(unquote(metadata), :level)
+      level = Keyword.get(metadata, :level, level)
+
+      metadata =
+        metadata
+        |> Keyword.delete(:level)
+        |> Backplane.McpProtocol.Logging.Redaction.redact()
+
+      direction = Backplane.McpProtocol.Logging.Redaction.redact(direction)
+      type = Backplane.McpProtocol.Logging.Redaction.redact(type)
+      id = Backplane.McpProtocol.Logging.Redaction.redact(id)
+      data = Backplane.McpProtocol.Logging.Redaction.redact(data)
 
       summary =
         Backplane.McpProtocol.Logging.create_message_summary(
-          unquote(type),
-          unquote(id),
-          unquote(data)
+          type,
+          id,
+          data
         )
 
       Backplane.McpProtocol.Logging.log(
         level,
-        "[MCP message] #{unquote(direction)} #{unquote(type)}: #{summary}",
+        "[MCP message] #{direction} #{type}: #{summary}",
         metadata
       )
 
-      if Backplane.McpProtocol.Logging.should_log_details?(unquote(data)) do
+      if Backplane.McpProtocol.Logging.should_log_details?(data) do
         Backplane.McpProtocol.Logging.log(
           level,
-          "[MCP message] #{unquote(direction)} #{unquote(type)} data: #{inspect(unquote(data))}",
+          "[MCP message] #{direction} #{type} data: #{inspect(data)}",
           metadata
         )
       else
         Backplane.McpProtocol.Logging.log(
           level,
-          "[MCP message] #{unquote(direction)} #{unquote(type)} data (truncated): #{Backplane.McpProtocol.Logging.truncate_data(unquote(data))}",
+          "[MCP message] #{direction} #{type} data (truncated): #{Backplane.McpProtocol.Logging.truncate_data(data)}",
           metadata
         )
       end
@@ -67,16 +83,26 @@ defmodule Backplane.McpProtocol.Logging do
   """
   defmacro server_event(event, details, metadata \\ []) do
     quote generated: true do
+      event = unquote(event)
+      details = unquote(details)
+      metadata = unquote(metadata)
       level = Backplane.McpProtocol.Logging.get_logging_level(:server_events)
-      level = Keyword.get(unquote(metadata), :level, level)
-      metadata = Keyword.delete(unquote(metadata), :level)
+      level = Keyword.get(metadata, :level, level)
 
-      Backplane.McpProtocol.Logging.log(level, "MCP server event: #{unquote(event)}", metadata)
+      metadata =
+        metadata
+        |> Keyword.delete(:level)
+        |> Backplane.McpProtocol.Logging.Redaction.redact()
 
-      if Backplane.McpProtocol.Logging.should_log_details?(unquote(details)) do
+      event = Backplane.McpProtocol.Logging.Redaction.redact(event)
+      details = Backplane.McpProtocol.Logging.Redaction.redact(details)
+
+      Backplane.McpProtocol.Logging.log(level, "MCP server event: #{event}", metadata)
+
+      if Backplane.McpProtocol.Logging.should_log_details?(details) do
         Backplane.McpProtocol.Logging.log(
           level,
-          "MCP event details: #{inspect(unquote(details))}",
+          "MCP event details: #{inspect(details)}",
           metadata
         )
       end
@@ -92,16 +118,26 @@ defmodule Backplane.McpProtocol.Logging do
   """
   defmacro client_event(event, details, metadata \\ []) do
     quote generated: true do
+      event = unquote(event)
+      details = unquote(details)
+      metadata = unquote(metadata)
       level = Backplane.McpProtocol.Logging.get_logging_level(:client_events)
-      level = Keyword.get(unquote(metadata), :level, level)
-      metadata = Keyword.delete(unquote(metadata), :level)
+      level = Keyword.get(metadata, :level, level)
 
-      Backplane.McpProtocol.Logging.log(level, "MCP client event: #{unquote(event)}", metadata)
+      metadata =
+        metadata
+        |> Keyword.delete(:level)
+        |> Backplane.McpProtocol.Logging.Redaction.redact()
 
-      if Backplane.McpProtocol.Logging.should_log_details?(unquote(details)) do
+      event = Backplane.McpProtocol.Logging.Redaction.redact(event)
+      details = Backplane.McpProtocol.Logging.Redaction.redact(details)
+
+      Backplane.McpProtocol.Logging.log(level, "MCP client event: #{event}", metadata)
+
+      if Backplane.McpProtocol.Logging.should_log_details?(details) do
         Backplane.McpProtocol.Logging.log(
           level,
-          "MCP event details: #{inspect(unquote(details))}",
+          "MCP event details: #{inspect(details)}",
           metadata
         )
       end
@@ -117,16 +153,26 @@ defmodule Backplane.McpProtocol.Logging do
   """
   defmacro transport_event(event, details, metadata \\ []) do
     quote generated: true do
+      event = unquote(event)
+      details = unquote(details)
+      metadata = unquote(metadata)
       level = Backplane.McpProtocol.Logging.get_logging_level(:transport_events)
-      level = Keyword.get(unquote(metadata), :level, level)
-      metadata = Keyword.delete(unquote(metadata), :level)
+      level = Keyword.get(metadata, :level, level)
 
-      Backplane.McpProtocol.Logging.log(level, "MCP transport event: #{unquote(event)}", metadata)
+      metadata =
+        metadata
+        |> Keyword.delete(:level)
+        |> Backplane.McpProtocol.Logging.Redaction.redact()
 
-      if Backplane.McpProtocol.Logging.should_log_details?(unquote(details)) do
+      event = Backplane.McpProtocol.Logging.Redaction.redact(event)
+      details = Backplane.McpProtocol.Logging.Redaction.redact(details)
+
+      Backplane.McpProtocol.Logging.log(level, "MCP transport event: #{event}", metadata)
+
+      if Backplane.McpProtocol.Logging.should_log_details?(details) do
         Backplane.McpProtocol.Logging.log(
           level,
-          "MCP transport details: #{inspect(unquote(details))}",
+          "MCP transport details: #{inspect(details)}",
           metadata
         )
       end
@@ -137,8 +183,22 @@ defmodule Backplane.McpProtocol.Logging do
 
   @doc false
   def log(level, message, metadata \\ []) when is_atom(level) do
-    if should_log?(level), do: log_by_level(level, message, metadata)
+    metadata = Redaction.redact(metadata)
+
+    if should_log?(level), do: log_by_level(level, redact_logger_message(message), metadata)
   end
+
+  defp redact_logger_message(message) when is_function(message, 0) do
+    fn -> redact_lazy_message(message.()) end
+  end
+
+  defp redact_logger_message(message), do: Redaction.redact(message)
+
+  defp redact_lazy_message({message, metadata}) when is_list(metadata) do
+    {Redaction.redact(message), Redaction.redact(metadata)}
+  end
+
+  defp redact_lazy_message(message), do: Redaction.redact(message)
 
   defp should_log?(level) do
     log? = Application.get_env(:backplane_mcp_protocol, :log, true)
