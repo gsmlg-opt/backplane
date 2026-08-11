@@ -9,6 +9,25 @@ defmodule Backplane.McpProtocol.Client.Elicitation do
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.Telemetry
 
+  @doc false
+  @spec resolve(map(), State.t()) :: {:ok, map()} | {:error, Error.t()}
+  def resolve(params, %State{} = state) when is_map(params) do
+    with callback when is_function(callback, 2) <- State.get_elicitation_callback(state),
+         {:ok, result} <- resolve_with_callback(params, callback),
+         true <- bare_result?(result),
+         {:ok, _encoded} <- Message.encode_elicitation_response(%{"result" => result}, "mrtr") do
+      {:ok, result}
+    else
+      _failure -> sanitized_resolution_error()
+    end
+  rescue
+    _exception -> sanitized_resolution_error()
+  catch
+    _kind, _reason -> sanitized_resolution_error()
+  end
+
+  def resolve(_params, %State{}), do: sanitized_resolution_error()
+
   @spec handle_request(msg :: map(), State.t()) :: State.t()
   def handle_request(%{"id" => id} = msg, state) do
     params = Map.get(msg, "params", %{})
@@ -28,6 +47,51 @@ defmodule Backplane.McpProtocol.Client.Elicitation do
     else
       {:error, "Client does not have elicitation capability enabled"}
     end
+  end
+
+  defp resolve_with_callback(%{"mode" => "url", "message" => message, "url" => url}, callback) do
+    context = %{"mode" => "url", "url" => url}
+
+    case callback.(message, context) do
+      {:accept, content} when is_map(content) -> {:ok, %{"action" => "accept"}}
+      :decline -> {:ok, %{"action" => "decline"}}
+      :cancel -> {:ok, %{"action" => "cancel"}}
+      _invalid -> :error
+    end
+  end
+
+  defp resolve_with_callback(%{"message" => message, "requestedSchema" => requested_schema}, callback) do
+    case callback.(message, requested_schema) do
+      {:accept, content} when is_map(content) ->
+        case ElicitationSchema.validate_content(content, requested_schema) do
+          :ok -> {:ok, %{"action" => "accept", "content" => content}}
+          {:error, _reason} -> :error
+        end
+
+      :decline ->
+        {:ok, %{"action" => "decline"}}
+
+      :cancel ->
+        {:ok, %{"action" => "cancel"}}
+
+      _invalid ->
+        :error
+    end
+  end
+
+  defp resolve_with_callback(_params, _callback), do: :error
+
+  defp bare_result?(result) do
+    Enum.all?(["id", "jsonrpc", "resultType", :id, :jsonrpc, :resultType], fn key ->
+      not Map.has_key?(result, key)
+    end)
+  end
+
+  defp sanitized_resolution_error do
+    {:error,
+     Error.protocol(:internal_error, %{
+       message: "Elicitation input resolution failed"
+     })}
   end
 
   defp handle_elicitation_with_callback(id, params, state) do

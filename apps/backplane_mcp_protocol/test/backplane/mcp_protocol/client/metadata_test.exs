@@ -256,7 +256,7 @@ defmodule Backplane.McpProtocol.Client.MetadataTest do
        JSON.encode!(%{
          "jsonrpc" => "2.0",
          "id" => request["id"],
-         "result" => %{"tools" => []}
+         "result" => %{"resultType" => "complete", "tools" => []}
        })}
     )
 
@@ -322,7 +322,7 @@ defmodule Backplane.McpProtocol.Client.MetadataTest do
            JSON.encode!(%{
              "jsonrpc" => "2.0",
              "id" => request["id"],
-             "result" => %{"content" => []}
+             "result" => %{"resultType" => "complete", "content" => []}
            })}
         )
 

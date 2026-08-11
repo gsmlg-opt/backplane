@@ -2101,7 +2101,12 @@ defmodule Backplane.McpProtocol.ClientTest do
         }
       ]
 
-      send_response(client, tools_list_response(request_id, tools))
+      list_response =
+        request_id
+        |> tools_list_response(tools)
+        |> put_in(["result", "resultType"], "complete")
+
+      send_response(client, list_response)
       assert {:ok, _response} = Task.await(list_task)
 
       expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
@@ -2118,6 +2123,7 @@ defmodule Backplane.McpProtocol.ClientTest do
         "jsonrpc" => "2.0",
         "id" => call_request_id,
         "result" => %{
+          "resultType" => "complete",
           "content" => [%{"type" => "text", "text" => "null"}],
           "structuredContent" => nil,
           "isError" => false
@@ -2152,7 +2158,12 @@ defmodule Backplane.McpProtocol.ClientTest do
         }
       ]
 
-      send_response(client, tools_list_response(list_request_id, tools))
+      list_response =
+        list_request_id
+        |> tools_list_response(tools)
+        |> put_in(["result", "resultType"], "complete")
+
+      send_response(client, list_response)
       assert {:ok, _response} = Task.await(list_task)
 
       expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
@@ -2167,6 +2178,7 @@ defmodule Backplane.McpProtocol.ClientTest do
         "jsonrpc" => "2.0",
         "id" => call_request_id,
         "result" => %{
+          "resultType" => "complete",
           "content" => [%{"type" => "text", "text" => "true"}],
           "structuredContent" => true,
           "isError" => false

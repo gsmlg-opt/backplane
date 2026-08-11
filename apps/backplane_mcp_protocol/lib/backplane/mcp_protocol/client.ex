@@ -88,13 +88,17 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Cache
   alias Backplane.McpProtocol.Client.Elicitation
   alias Backplane.McpProtocol.Client.Handlers
+  alias Backplane.McpProtocol.Client.InputHandler
   alias Backplane.McpProtocol.Client.Metadata
+  alias Backplane.McpProtocol.Client.MRTR
   alias Backplane.McpProtocol.Client.Negotiation
   alias Backplane.McpProtocol.Client.Operation
   alias Backplane.McpProtocol.Client.Request
+  alias Backplane.McpProtocol.Client.ResultRouter
   alias Backplane.McpProtocol.Client.Sampling
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Protocol
@@ -109,6 +113,7 @@ defmodule Backplane.McpProtocol.Client do
 
   @default_protocol_version Protocol.latest_version()
   @default_operation_timeout to_timeout(second: 30)
+  @cancellation_worker_timeout to_timeout(second: 1)
 
   @type t :: GenServer.server()
 
@@ -1085,9 +1090,11 @@ defmodule Backplane.McpProtocol.Client do
     method = operation.method
 
     with :ok <- State.validate_capability(state, method),
-         {request_id, updated_state} =
+         {request_id, pending_state} =
            State.add_request_from_operation(state, operation, from),
-         {:ok, request_data, request_context} <- prepare_request(operation, state, request_id),
+         pending_state = retain_operation(pending_state, request_id, operation),
+         {:ok, request_data, request_context} <-
+           prepare_request(operation, pending_state, request_id),
          :ok <-
            send_to_transport(state.transport, request_data,
              timeout: operation.timeout,
@@ -1099,7 +1106,7 @@ defmodule Backplane.McpProtocol.Client do
         %{method: method, request_id: request_id}
       )
 
-      {:noreply, updated_state}
+      {:noreply, pending_state}
     else
       err -> {:reply, err, state}
     end
@@ -1195,27 +1202,12 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   def handle_call({:cancel_request, request_id, reason}, _from, state) do
-    case State.get_request(state, request_id) do
-      %Request{} = request ->
+    case find_request(state, request_id) do
+      {active_request_id, %Request{} = request} ->
         if negotiation_request?(request) do
           {:reply, Error.transport(:request_not_found), state}
         else
-          case send_cancellation(state, request_id, reason) do
-            :ok ->
-              {_request, updated_state} = State.remove_request(state, request_id)
-
-              error =
-                Error.transport(:request_cancelled, %{
-                  message: "Request cancelled by client",
-                  reason: reason
-                })
-
-              GenServer.reply(request.from, {:error, error})
-              {:reply, :ok, updated_state}
-
-            error ->
-              {:reply, error, state}
-          end
+          cancel_pending_request(state, active_request_id, request, reason)
         end
 
       nil ->
@@ -1232,9 +1224,13 @@ defmodule Backplane.McpProtocol.Client do
     if Enum.empty?(pending_requests) do
       {:reply, {:ok, []}, state}
     else
+      retained_requests = Map.new(negotiation_requests, &{&1.id, &1})
+      updated_state = %{state | pending_requests: retained_requests}
+
       cancelled_requests =
         for request <- pending_requests do
-          _ = send_cancellation(state, request.id, reason)
+          Process.cancel_timer(request.timer_ref)
+          stop_request_resolver(request)
 
           error =
             Error.transport(:request_cancelled, %{
@@ -1247,8 +1243,11 @@ defmodule Backplane.McpProtocol.Client do
           request
         end
 
-      retained_requests = Map.new(negotiation_requests, &{&1.id, &1})
-      {:reply, {:ok, cancelled_requests}, %{state | pending_requests: retained_requests}}
+      Enum.each(cancelled_requests, fn request ->
+        best_effort_cancellation(updated_state, request.id, reason)
+      end)
+
+      {:reply, {:ok, cancelled_requests}, updated_state}
     end
   end
 
@@ -1315,7 +1314,34 @@ defmodule Backplane.McpProtocol.Client do
 
   # Server request handling
 
-  defp handle_server_request(%{"method" => "roots/list", "id" => id}, state) do
+  defp handle_server_request(%{"method" => method, "id" => _id} = request, state)
+       when method in ["roots/list", "sampling/createMessage", "elicitation/create"] do
+    if modern_state?(state) do
+      {:noreply, state}
+    else
+      dispatch_legacy_input_request(request, state)
+    end
+  end
+
+  defp handle_server_request(%{"method" => "ping", "id" => id}, state) do
+    with {:ok, response_data} <- Message.encode_response(%{"result" => %{}}, id),
+         :ok <- send_to_transport(state.transport, response_data, timeout: state.timeout) do
+      {:noreply, state}
+    else
+      err ->
+        Logging.client_event("ping_response_error", %{id: id, error: err}, level: :error)
+
+        Telemetry.execute(
+          Telemetry.event_client_error(),
+          %{system_time: System.system_time()},
+          %{method: "ping", request_id: id, error: err}
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  defp handle_legacy_roots_request(%{"id" => id}, state) do
     roots = State.list_roots(state)
     roots_result = %{"roots" => roots}
     roots_count = Enum.count(roots)
@@ -1346,31 +1372,22 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
-  defp handle_server_request(%{"method" => "ping", "id" => id}, state) do
-    with {:ok, response_data} <- Message.encode_response(%{"result" => %{}}, id),
-         :ok <- send_to_transport(state.transport, response_data, timeout: state.timeout) do
-      {:noreply, state}
-    else
-      err ->
-        Logging.client_event("ping_response_error", %{id: id, error: err}, level: :error)
-
-        Telemetry.execute(
-          Telemetry.event_client_error(),
-          %{system_time: System.system_time()},
-          %{method: "ping", request_id: id, error: err}
-        )
-
-        {:noreply, state}
-    end
-  end
-
-  defp handle_server_request(%{"method" => "sampling/createMessage"} = request, state) do
+  defp handle_legacy_sampling_request(request, state) do
     {:noreply, Sampling.handle_request(request, state)}
   end
 
-  defp handle_server_request(%{"method" => "elicitation/create"} = request, state) do
+  defp handle_legacy_elicitation_request(request, state) do
     {:noreply, Elicitation.handle_request(request, state)}
   end
+
+  defp dispatch_legacy_input_request(%{"method" => "roots/list"} = request, state),
+    do: handle_legacy_roots_request(request, state)
+
+  defp dispatch_legacy_input_request(%{"method" => "sampling/createMessage"} = request, state),
+    do: handle_legacy_sampling_request(request, state)
+
+  defp dispatch_legacy_input_request(%{"method" => "elicitation/create"} = request, state),
+    do: handle_legacy_elicitation_request(request, state)
 
   @impl true
   def handle_info({:request_timeout, request_id}, state) do
@@ -1379,6 +1396,7 @@ defmodule Backplane.McpProtocol.Client do
         {:noreply, state}
 
       {request, updated_state} ->
+        stop_request_resolver(request)
         elapsed_ms = Request.elapsed_time(request)
 
         error =
@@ -1393,11 +1411,37 @@ defmodule Backplane.McpProtocol.Client do
            |> advance_negotiation()}
         else
           GenServer.reply(request.from, {:error, error})
-          _ = send_cancellation(updated_state, request_id, "timeout")
+          best_effort_cancellation(updated_state, request_id, "timeout")
           {:noreply, updated_state}
         end
     end
   end
+
+  def handle_info({task_ref, resolution}, state) when is_reference(task_ref) do
+    case find_request_by_task_ref(state, task_ref) do
+      nil ->
+        {:noreply, state}
+
+      {request_id, request} ->
+        Process.demonitor(task_ref, [:flush])
+        {:noreply, handle_input_resolution(request_id, request, resolution, state)}
+    end
+  end
+
+  def handle_info({:DOWN, task_ref, :process, _pid, _reason}, state) when is_reference(task_ref) do
+    case find_request_by_task_ref(state, task_ref) do
+      nil ->
+        {:noreply, state}
+
+      {request_id, request} ->
+        error = input_resolution_error()
+        updated_state = fail_pending_request(request_id, request, error, state)
+        best_effort_cancellation(updated_state, request.id, "input resolution failed")
+        {:noreply, updated_state}
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def terminate(reason, %{client_info: %{"name" => name}} = state) do
@@ -1426,6 +1470,8 @@ defmodule Backplane.McpProtocol.Client do
     )
 
     for request <- pending_requests do
+      stop_request_resolver(request)
+
       error =
         Error.transport(:request_cancelled, %{
           message: "Request cancelled by client",
@@ -1456,19 +1502,24 @@ defmodule Backplane.McpProtocol.Client do
   defp handle_message(message, state) do
     cond do
       Message.is_error(message) ->
-        Logging.message("incoming", "error", message["id"], message)
+        Logging.message("incoming", "error", message["id"], incoming_error_identity(message))
         handle_error_response(message, message["id"], state)
 
       Message.is_response(message) ->
-        Logging.message("incoming", "response", message["id"], message)
+        Logging.message("incoming", "response", message["id"], incoming_response_identity(message))
         handle_success_response(message, message["id"], state)
 
       Message.is_notification(message) ->
-        Logging.message("incoming", "notification", nil, message)
-        Handlers.handle_notification(message, state)
+        Logging.message("incoming", "notification", nil, incoming_notification_identity(message))
+
+        if modern_state?(state) and message["method"] == "notifications/cancelled" do
+          state
+        else
+          Handlers.handle_notification(message, state)
+        end
 
       Message.is_request(message) ->
-        Logging.message("incoming", "request", message["id"], message)
+        Logging.message("incoming", "request", message["id"], incoming_request_identity(message))
         {_, state} = handle_server_request(message, state)
         state
 
@@ -1486,6 +1537,8 @@ defmodule Backplane.McpProtocol.Client do
         state
 
       {request, updated_state} ->
+        stop_request_resolver(request)
+
         if negotiation_request?(request) do
           error = normalize_json_rpc_error(json_error)
           elapsed_ms = Request.elapsed_time(request)
@@ -1560,20 +1613,230 @@ defmodule Backplane.McpProtocol.Client do
   defp error_response_meta(_error), do: %{malformed_error: true}
 
   defp handle_success_response(%{"id" => id, "result" => result}, id, state) do
-    case State.remove_request(state, id) do
-      {nil, state} ->
+    case State.get_request(state, id) do
+      nil ->
         Logging.client_event("unknown_response", %{id: id})
         state
 
-      {request, updated_state} ->
+      %Request{} = request ->
         if negotiation_request?(request) do
+          {_request, updated_state} = State.remove_request(state, id)
+
           updated_state
           |> Negotiation.handle_result(request, result)
           |> advance_negotiation()
         else
-          process_successful_response(request, result, id, updated_state)
+          route_operation_result(request, result, id, state)
         end
     end
+  end
+
+  defp route_operation_result(request, result, id, state) do
+    case ResultRouter.route(request, result, state) do
+      {:complete, _response, _state} ->
+        {_request, updated_state} = State.remove_request(state, id)
+        stop_request_resolver(request)
+        process_successful_response(request, result, id, updated_state)
+
+      {:input_required, %MRTR{} = continuation, _state} ->
+        if match?(%Task{}, request.resolver_task) do
+          state
+        else
+          start_input_resolution(id, request, continuation, state)
+        end
+
+      {:error, %Error{} = error, _state} ->
+        fail_pending_request(id, request, error, state)
+    end
+  end
+
+  defp start_input_resolution(request_id, request, continuation, state) do
+    case Task.Supervisor.start_link() do
+      {:ok, supervisor} ->
+        case start_resolver_task(supervisor, continuation, state) do
+          {:ok, task} ->
+            request = %{
+              request
+              | continuation: continuation,
+                resolver_supervisor: supervisor,
+                resolver_task: task
+            }
+
+            put_pending_request(state, request_id, request)
+
+          {:error, _reason} ->
+            stop_resolver_supervisor(supervisor)
+            fail_pending_request(request_id, request, input_resolution_error(), state)
+        end
+
+      {:error, _reason} ->
+        fail_pending_request(request_id, request, input_resolution_error(), state)
+    end
+  end
+
+  defp start_resolver_task(supervisor, continuation, state) do
+    {:ok,
+     Task.Supervisor.async_nolink(supervisor, fn ->
+       InputHandler.resolve(continuation.input_requests, state)
+     end)}
+  rescue
+    _exception -> {:error, :resolver_start_failed}
+  catch
+    _kind, _reason -> {:error, :resolver_start_failed}
+  end
+
+  defp handle_input_resolution(request_id, request, {:ok, input_responses}, state) when is_map(input_responses) do
+    stop_request_resolver(request)
+
+    if MapSet.new(Map.keys(input_responses)) ==
+         MapSet.new(Map.keys(request.continuation.input_requests)) do
+      retry_request(request_id, clear_request_resolver(request), input_responses, state)
+    else
+      fail_pending_request(request_id, request, input_resolution_error(), state)
+    end
+  end
+
+  defp handle_input_resolution(request_id, request, {:error, %Error{} = error}, state) do
+    updated_state = fail_pending_request(request_id, request, error, state)
+    best_effort_cancellation(updated_state, request.id, "input resolution failed")
+    updated_state
+  end
+
+  defp handle_input_resolution(request_id, request, _invalid, state) do
+    updated_state = fail_pending_request(request_id, request, input_resolution_error(), state)
+    best_effort_cancellation(updated_state, request.id, "input resolution failed")
+    updated_state
+  end
+
+  defp retry_request(request_id, request, input_responses, state) do
+    case Request.remaining_time(request) do
+      remaining when is_integer(remaining) and remaining > 0 ->
+        continuation = request.continuation
+        params = MRTR.retry_params(continuation, input_responses)
+
+        operation =
+          Operation.new(%{
+            method: request.method,
+            params: params,
+            extra_meta: request.extra_meta,
+            progress_opts: request.progress_opts,
+            timeout: remaining
+          })
+
+        retry_with_fresh_id(request_id, request, operation, state)
+
+      _expired ->
+        timeout_pending_request(request_id, request, state)
+    end
+  end
+
+  defp retry_with_fresh_id(request_id, request, operation, state) do
+    retry_id = ID.generate_request_id()
+
+    result =
+      with {:ok, request_data, request_context} <-
+             prepare_request(operation, state, retry_id) do
+        safe_send_to_transport(state.transport, request_data,
+          timeout: operation.timeout,
+          request_context: request_context
+        )
+      end
+
+    case {result, Request.remaining_time(request)} do
+      {:ok, remaining} when is_integer(remaining) and remaining > 0 ->
+        Process.cancel_timer(request.timer_ref)
+        timer_ref = Process.send_after(self(), {:request_timeout, retry_id}, remaining)
+
+        request = %{
+          request
+          | id: retry_id,
+            timer_ref: timer_ref,
+            continuation: nil,
+            resolver_supervisor: nil,
+            resolver_task: nil
+        }
+
+        pending_requests =
+          state.pending_requests
+          |> Map.delete(request_id)
+          |> Map.put(retry_id, request)
+
+        Telemetry.execute(
+          Telemetry.event_client_request(),
+          %{system_time: System.system_time()},
+          %{method: request.method, request_id: retry_id, retry: true}
+        )
+
+        %{state | pending_requests: pending_requests}
+
+      {{:error, %Error{}}, _remaining} ->
+        updated_state =
+          fail_pending_request(
+            request_id,
+            request,
+            sanitized_retry_send_error(),
+            state
+          )
+
+        best_effort_cancellation(updated_state, request.id, "retry send failed")
+        updated_state
+
+      {{:error, _reason}, _remaining} ->
+        updated_state =
+          fail_pending_request(
+            request_id,
+            request,
+            sanitized_retry_send_error(),
+            state
+          )
+
+        best_effort_cancellation(updated_state, request.id, "retry send failed")
+        updated_state
+
+      {:ok, _expired} ->
+        timeout_pending_request(request_id, request, state, retry_id)
+    end
+  end
+
+  defp timeout_pending_request(request_id, request, state, cancellation_id \\ nil) do
+    elapsed_ms = Request.elapsed_time(request)
+
+    error =
+      Error.transport(:request_timeout, %{
+        message: "Request timed out after #{elapsed_ms}ms"
+      })
+
+    updated_state = fail_pending_request(request_id, request, error, state)
+    best_effort_cancellation(updated_state, cancellation_id || request.id, "timeout")
+    updated_state
+  end
+
+  defp fail_pending_request(request_id, request, %Error{} = error, state) do
+    case State.get_request(state, request_id) do
+      %Request{} ->
+        {_request, updated_state} = State.remove_request(state, request_id)
+        stop_request_resolver(request)
+        GenServer.reply(request.from, {:error, error})
+
+        Logging.client_event("operation_failed", %{
+          id: request_id,
+          method: request.method,
+          reason: error.reason
+        })
+
+        updated_state
+
+      nil ->
+        state
+    end
+  end
+
+  defp input_resolution_error do
+    Error.protocol(:internal_error, %{message: "Input resolution failed"})
+  end
+
+  defp sanitized_retry_send_error do
+    Error.transport(:send_failure, %{message: "MRTR retry send failed"})
   end
 
   defp process_successful_response(%{method: "tools/call"} = request, result, id, state) do
@@ -1603,7 +1866,7 @@ defmodule Backplane.McpProtocol.Client do
                errors: errors,
                tool: tool,
                request_id: request.id,
-               request_params: request.params,
+               request_params: Map.drop(request.base_params || request.params, ["inputResponses", "requestState"]),
                request_method: request.method
              })}
           )
@@ -1831,6 +2094,75 @@ defmodule Backplane.McpProtocol.Client do
     send_notification(state, "notifications/cancelled", params)
   end
 
+  defp safe_send_cancellation(state, request_id, reason) do
+    case send_cancellation(state, request_id, reason) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :send_failure}
+      _unexpected -> {:error, :send_failure}
+    end
+  rescue
+    _error -> {:error, :exception}
+  catch
+    :exit, _reason -> {:error, :exit}
+    :throw, _reason -> {:error, :throw}
+  end
+
+  defp best_effort_cancellation(state, request_id, reason) do
+    case Task.start(fn -> run_cancellation_worker(state, request_id, reason) end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, _reason} ->
+        record_cancellation_failure(request_id, :worker_start_failed)
+    end
+  rescue
+    _error -> record_cancellation_failure(request_id, :worker_start_failed)
+  catch
+    _kind, _reason -> record_cancellation_failure(request_id, :worker_start_failed)
+  end
+
+  defp run_cancellation_worker(state, request_id, reason) do
+    task =
+      Task.async(fn ->
+        result = safe_send_cancellation(state, request_id, reason)
+        record_cancellation_result(request_id, result)
+        result
+      end)
+
+    case Task.yield(task, @cancellation_worker_timeout) do
+      {:ok, _result} ->
+        :ok
+
+      nil ->
+        _ = Task.shutdown(task, :brutal_kill)
+        record_cancellation_failure(request_id, :timeout)
+    end
+  rescue
+    _error -> record_cancellation_failure(request_id, :worker_failed)
+  catch
+    _kind, _reason -> record_cancellation_failure(request_id, :worker_failed)
+  end
+
+  defp record_cancellation_result(_request_id, :ok), do: :ok
+
+  defp record_cancellation_result(request_id, {:error, failure}) do
+    record_cancellation_failure(request_id, failure)
+  end
+
+  defp record_cancellation_result(request_id, _unexpected) do
+    record_cancellation_failure(request_id, :send_failure)
+  end
+
+  defp record_cancellation_failure(request_id, failure) do
+    Logging.client_event(
+      "cancellation_notification_failed",
+      %{id: request_id, failure: failure},
+      level: :warning
+    )
+
+    :ok
+  end
+
   defp send_to_transport(transport, data, opts) do
     with {:error, reason} <- transport.layer.send_message(transport.name, data, opts) do
       {:error, Error.transport(:send_failure, %{original_reason: reason})}
@@ -1847,6 +2179,151 @@ defmodule Backplane.McpProtocol.Client do
     Logging.client_event("sending_roots_list_changed", nil)
     send_notification(state, "notifications/roots/list_changed")
   end
+
+  defp retain_operation(state, request_id, operation) do
+    request =
+      state.pending_requests
+      |> Map.fetch!(request_id)
+      |> Request.retain_operation(operation)
+
+    put_pending_request(state, request_id, request)
+  end
+
+  defp put_pending_request(state, request_id, request) do
+    %{state | pending_requests: Map.put(state.pending_requests, request_id, request)}
+  end
+
+  defp find_request(state, request_id) do
+    case State.get_request(state, request_id) do
+      %Request{} = request ->
+        {request_id, request}
+
+      nil ->
+        Enum.find_value(state.pending_requests, fn {active_id, request} ->
+          if request.logical_id == request_id, do: {active_id, request}
+        end)
+    end
+  end
+
+  defp find_request_by_task_ref(state, task_ref) do
+    Enum.find_value(state.pending_requests, fn {request_id, request} ->
+      case request.resolver_task do
+        %Task{ref: ^task_ref} -> {request_id, request}
+        _other -> nil
+      end
+    end)
+  end
+
+  defp mrtr_request?(%Request{} = request) do
+    not is_nil(request.continuation) or match?(%Task{}, request.resolver_task) or
+      request.logical_id != request.id
+  end
+
+  defp cancel_pending_request(state, request_id, request, reason) do
+    if mrtr_request?(request) do
+      updated_state = locally_cancel_request(state, request_id, request, reason)
+      best_effort_cancellation(updated_state, request_id, reason)
+      {:reply, :ok, updated_state}
+    else
+      case send_cancellation(state, request_id, reason) do
+        :ok ->
+          updated_state = locally_cancel_request(state, request_id, request, reason)
+          {:reply, :ok, updated_state}
+
+        send_error ->
+          {:reply, send_error, state}
+      end
+    end
+  end
+
+  defp locally_cancel_request(state, request_id, request, reason) do
+    {_request, updated_state} = State.remove_request(state, request_id)
+    stop_request_resolver(request)
+
+    error =
+      Error.transport(:request_cancelled, %{
+        message: "Request cancelled by client",
+        reason: reason
+      })
+
+    GenServer.reply(request.from, {:error, error})
+    updated_state
+  end
+
+  defp clear_request_resolver(request) do
+    %{request | resolver_supervisor: nil, resolver_task: nil}
+  end
+
+  defp stop_request_resolver(%Request{} = request) do
+    case {request.resolver_supervisor, request.resolver_task} do
+      {supervisor, %Task{pid: task_pid}} when is_pid(supervisor) ->
+        if Process.alive?(supervisor) and Process.alive?(task_pid) do
+          _ = Task.Supervisor.terminate_child(supervisor, task_pid)
+        end
+
+      _inactive ->
+        :ok
+    end
+
+    case request.resolver_supervisor do
+      supervisor when is_pid(supervisor) ->
+        stop_resolver_supervisor(supervisor)
+
+      _inactive ->
+        :ok
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp stop_resolver_supervisor(supervisor) when is_pid(supervisor) do
+    if Process.alive?(supervisor), do: Supervisor.stop(supervisor, :normal, 1_000)
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp incoming_response_identity(message) do
+    result_type =
+      case message["result"] do
+        %{"resultType" => result_type} when is_binary(result_type) -> result_type
+        _other -> nil
+      end
+
+    %{
+      "jsonrpc" => message["jsonrpc"],
+      "id" => message["id"],
+      "resultType" => result_type
+    }
+  end
+
+  defp incoming_error_identity(message) do
+    error = if is_map(message["error"]), do: message["error"], else: %{}
+
+    %{
+      "jsonrpc" => message["jsonrpc"],
+      "id" => message["id"],
+      "error" => %{"code" => error["code"], "message" => error["message"]}
+    }
+  end
+
+  defp incoming_request_identity(message) do
+    Map.take(message, ["jsonrpc", "id", "method"])
+  end
+
+  defp incoming_notification_identity(message) do
+    Map.take(message, ["jsonrpc", "method"])
+  end
+
+  defp modern_state?(%{era: :modern}), do: true
+  defp modern_state?(%{negotiated_version: "2026-07-28"}), do: true
+  defp modern_state?(_state), do: false
 
   defp validate_protocol_preference(:auto, layer) do
     supported_versions = layer.supported_protocol_versions()

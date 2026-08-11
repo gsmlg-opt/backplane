@@ -3,14 +3,39 @@ defmodule Backplane.McpProtocol.Client.Request do
 
   @type t :: %__MODULE__{
           id: String.t(),
+          logical_id: String.t(),
           method: String.t(),
           from: GenServer.from(),
           timer_ref: reference(),
           start_time: integer(),
-          params: map()
+          params: map(),
+          base_params: map(),
+          extra_meta: map(),
+          progress_opts: keyword() | nil,
+          timeout: pos_integer() | nil,
+          deadline: integer() | nil,
+          continuation: term(),
+          resolver_supervisor: pid() | nil,
+          resolver_task: Task.t() | nil
         }
 
-  defstruct [:id, :method, :from, :timer_ref, :start_time, :params]
+  defstruct [
+    :id,
+    :logical_id,
+    :method,
+    :from,
+    :timer_ref,
+    :start_time,
+    :params,
+    :timeout,
+    :deadline,
+    :continuation,
+    :resolver_supervisor,
+    :resolver_task,
+    base_params: %{},
+    extra_meta: %{},
+    progress_opts: nil
+  ]
 
   @doc """
   Creates a new request struct.
@@ -33,12 +58,39 @@ defmodule Backplane.McpProtocol.Client.Request do
   def new(attrs) do
     %__MODULE__{
       id: attrs.id,
+      logical_id: attrs.id,
       method: attrs.method,
       from: attrs.from,
       timer_ref: attrs.timer_ref,
       params: attrs.params,
+      base_params: attrs.params,
       start_time: System.monotonic_time(:millisecond)
     }
+  end
+
+  @doc "Retains the immutable operation data and absolute deadline for retries."
+  @spec retain_operation(t(), map()) :: t()
+  def retain_operation(%__MODULE__{} = request, operation) when is_map(operation) do
+    now = System.monotonic_time(:millisecond)
+    remaining = Process.read_timer(request.timer_ref) || 0
+
+    %{
+      request
+      | base_params: operation.params,
+        params: operation.params,
+        extra_meta: operation.extra_meta,
+        progress_opts: operation.progress_opts,
+        timeout: operation.timeout,
+        deadline: now + remaining
+    }
+  end
+
+  @doc "Returns the time remaining before the operation's original deadline."
+  @spec remaining_time(t()) :: non_neg_integer() | nil
+  def remaining_time(%__MODULE__{deadline: nil}), do: nil
+
+  def remaining_time(%__MODULE__{deadline: deadline}) do
+    max(deadline - System.monotonic_time(:millisecond), 0)
   end
 
   @doc """
