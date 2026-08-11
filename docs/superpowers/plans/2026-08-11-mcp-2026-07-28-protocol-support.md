@@ -289,6 +289,7 @@ git commit -m "feat(mcp): route modern HTTP requests statelessly"
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/stdio.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/result_router.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/negotiation.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/supervisor.ex`
