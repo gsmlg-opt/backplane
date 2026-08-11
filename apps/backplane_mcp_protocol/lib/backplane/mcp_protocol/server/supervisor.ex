@@ -5,6 +5,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
   use Backplane.McpProtocol.Logging
 
   alias Backplane.McpProtocol.Server.Authorization
+  alias Backplane.McpProtocol.Server.Modern.Subscriptions
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Session
   alias Backplane.McpProtocol.Server.TaskStore
@@ -90,6 +91,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
       request_timeout = Keyword.get(opts, :request_timeout, to_timeout(second: 30))
       max_concurrency = Keyword.get(opts, :max_concurrency, 1)
       task_supervisor = Registry.task_supervisor_name(server)
+      subscriptions = Registry.subscriptions_name(server)
 
       {registry_mod, registry_opts} = resolve_registry(opts, transport, server)
       {sup_mod, _sup_opts} = resolve_session_supervisor(opts)
@@ -129,9 +131,11 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
           :stdio ->
             build_stdio_children(
               server,
+              sup_mod,
               layer,
               transport_opts,
               task_supervisor,
+              subscriptions,
               session_config,
               task_store_child
             )
@@ -145,6 +149,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
               layer,
               transport_opts,
               task_supervisor,
+              subscriptions,
               task_store_child
             )
         end
@@ -238,32 +243,30 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
     end
   end
 
-  # For STDIO: single session, no DynamicSupervisor, no registry
+  # For STDIO: one lazy legacy session under a DynamicSupervisor, no registry
   defp build_stdio_children(
          server,
+         sup_mod,
          layer,
          transport_opts,
          task_supervisor,
+         subscriptions,
          session_config,
          task_store_child
        ) do
-    session_name = Registry.stdio_session_name(server)
+    session_sup_name = Registry.session_supervisor_name(server)
 
-    session_opts = [
-      session_id: "stdio",
-      server_module: server,
-      name: session_name,
-      transport: session_config.transport,
-      session_idle_timeout: session_config.session_idle_timeout || to_timeout(minute: 30),
-      timeout: session_config.timeout,
-      max_concurrency: session_config.max_concurrency,
-      task_supervisor: task_supervisor,
-      task_store: session_config.task_store
-    ]
+    transport_opts =
+      Keyword.merge(transport_opts,
+        session_supervisor: session_sup_name,
+        subscriptions: subscriptions,
+        session_config: session_config
+      )
 
     base = [
       {Task.Supervisor, name: task_supervisor},
-      {Session, session_opts},
+      {sup_mod, name: session_sup_name, strategy: :one_for_one},
+      {Subscriptions, name: subscriptions},
       {layer, transport_opts}
     ]
 
@@ -279,6 +282,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
          layer,
          transport_opts,
          task_supervisor,
+         subscriptions,
          task_store_child
        ) do
     session_sup_name = Registry.session_supervisor_name(server)
@@ -292,6 +296,7 @@ defmodule Backplane.McpProtocol.Server.Supervisor do
     base = [
       {Task.Supervisor, name: task_supervisor},
       {sup_mod, name: session_sup_name, strategy: :one_for_one},
+      {Subscriptions, name: subscriptions},
       {layer, transport_opts}
     ]
 

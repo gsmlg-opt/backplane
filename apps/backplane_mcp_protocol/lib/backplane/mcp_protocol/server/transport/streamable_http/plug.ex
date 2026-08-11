@@ -50,6 +50,7 @@ if Code.ensure_loaded?(Plug) do
     alias Backplane.McpProtocol.Server.Session
     alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
     alias Backplane.McpProtocol.Server.Transport.StreamableHTTP
+    alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscription
     alias Backplane.McpProtocol.SSE.Event
     alias Backplane.McpProtocol.SSE.Streaming
     alias Backplane.McpProtocol.Telemetry
@@ -125,6 +126,7 @@ if Code.ensure_loaded?(Plug) do
         registry_name: Registry.registry_name(server),
         transport: Registry.transport_name(server, :streamable_http),
         task_supervisor: session_config.task_supervisor,
+        subscriptions: Registry.subscriptions_name(server),
         authorization: auth_config
       })
     end
@@ -245,22 +247,22 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp dispatch_modern(conn, message, context, opts) do
-      response =
-        case validate_modern_request(message) do
-          :ok ->
-            {:response, response} =
-              Executor.execute(opts.server, message, context,
-                task_supervisor: opts.task_supervisor,
-                timeout: opts.timeout
-              )
+      case {validate_modern_request(message), message["method"]} do
+        {:ok, "subscriptions/listen"} ->
+          ModernSubscription.call(conn, message, context, opts)
 
-            response
+        {:ok, _method} ->
+          {:response, response} =
+            Executor.execute(opts.server, message, context,
+              task_supervisor: opts.task_supervisor,
+              timeout: opts.timeout
+            )
 
-          {:error, %Error{} = error} ->
-            Error.build_json_rpc(error, nil)
-        end
+          send_modern_response(conn, response)
 
-      send_modern_response(conn, response)
+        {{:error, %Error{} = error}, _method} ->
+          send_modern_response(conn, Error.build_json_rpc(error, nil))
+      end
     end
 
     defp dispatch_legacy(conn, message, context, %{session_header: session_header} = opts) do
@@ -586,13 +588,19 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp validate_accept_header(conn) do
-      accept_header =
+      media_types =
         conn
         |> get_req_header("accept")
-        |> List.first("")
+        |> Enum.flat_map(&String.split(&1, ","))
+        |> Enum.map(fn media_range ->
+          media_range
+          |> String.split(";", parts: 2)
+          |> hd()
+          |> String.trim()
+          |> String.downcase()
+        end)
 
-      if String.contains?(accept_header, "application/json") and
-           String.contains?(accept_header, "text/event-stream") do
+      if "application/json" in media_types and "text/event-stream" in media_types do
         :ok
       else
         {:error, :invalid_accept_header}

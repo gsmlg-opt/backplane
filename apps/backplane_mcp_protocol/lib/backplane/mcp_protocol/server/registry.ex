@@ -56,6 +56,9 @@ defmodule Backplane.McpProtocol.Server.Registry do
   @spec task_supervisor_name(module()) :: atom()
   def task_supervisor_name(server), do: :"Backplane.McpProtocol.#{server}.task_supervisor"
 
+  @spec subscriptions_name(module()) :: atom()
+  def subscriptions_name(server), do: :"Backplane.McpProtocol.#{server}.subscriptions"
+
   @doc """
   Default atom name for a server's `Backplane.McpProtocol.Server.TaskStore` process. Adapters
   may override via the optional `resolve_name/2` callback to return a `:via`

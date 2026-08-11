@@ -30,6 +30,18 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
           instructions: String.t() | nil
         }
 
+  @doc """
+  Executes a validated modern request and returns its JSON-RPC response envelope.
+
+  The production-safe `isolation: :caller_supervised` mode runs server snapshot
+  and callback work directly in the process calling `execute/4`. Use it only
+  when that caller is itself a supervised, cancellable task that enforces the
+  request deadline. This lets cancellation and timeout terminate the actual
+  callback instead of only an intermediate task.
+
+  The `:inline` isolation value remains available only in tests. All other
+  calls retain Executor's default per-callback supervised isolation.
+  """
   @spec execute(module(), map(), map(), keyword()) :: execute_result()
   def execute(server_module, request, transport_context, opts \\ [])
       when is_atom(server_module) and is_map(request) and is_map(transport_context) and is_list(opts) do
@@ -189,7 +201,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   defp run_isolated(task_supervisor, deadline, opts, fun) do
     case remaining_timeout(deadline) do
       timeout when timeout > 0 ->
-        if inline_isolation?(opts),
+        if caller_owned_isolation?(opts),
           do: {:ok, fun.()},
           else: run_supervised(task_supervisor, timeout, fun)
 
@@ -359,6 +371,10 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   defp normalize_timeout(_timeout), do: @default_timeout
 
   defp remaining_timeout(deadline), do: deadline - System.monotonic_time(:millisecond)
+
+  defp caller_owned_isolation?(opts) do
+    opts[:isolation] == :caller_supervised or inline_isolation?(opts)
+  end
 
   if Mix.env() == :test do
     defp inline_isolation?(opts), do: opts[:isolation] == :inline

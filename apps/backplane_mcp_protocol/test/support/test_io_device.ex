@@ -2,9 +2,9 @@ defmodule TestIODevice do
   @moduledoc """
   Minimal Erlang IO-protocol server for exercising `Backplane.McpProtocol.Server.Transport.STDIO` in tests.
 
-  Read requests are intentionally never replied to, so a reader task blocks forever
-  instead of seeing `:eof` — this mirrors a live stdin while keeping tests deterministic.
-  Write requests are buffered and can be retrieved via `contents/1`.
+  Input lines can be queued deterministically with `push_line/2`. A single pending
+  reader is retained while the queue is empty, mirroring a live stdin. Write requests
+  are buffered and can be retrieved via `contents/1`.
   """
 
   use GenServer
@@ -19,9 +19,18 @@ defmodule TestIODevice do
     GenServer.call(device, :contents)
   end
 
+  @spec push_line(GenServer.server(), binary() | :eof | {:error, term()}) :: :ok
+  def push_line(device, line) when is_binary(line) or line == :eof do
+    GenServer.call(device, {:push_line, line})
+  end
+
+  def push_line(device, {:error, _reason} = error) do
+    GenServer.call(device, {:push_line, error})
+  end
+
   @impl GenServer
   def init(:ok) do
-    {:ok, %{output: []}}
+    {:ok, %{output: [], input: :queue.new(), pending_reader: nil}}
   end
 
   @impl GenServer
@@ -32,6 +41,15 @@ defmodule TestIODevice do
   @impl GenServer
   def handle_call(:contents, _from, state) do
     {:reply, state.output |> Enum.reverse() |> IO.iodata_to_binary(), state}
+  end
+
+  def handle_call({:push_line, line}, _from, %{pending_reader: {from, reply_as}} = state) do
+    send(from, {:io_reply, reply_as, normalize_line(line)})
+    {:reply, :ok, %{state | pending_reader: nil}}
+  end
+
+  def handle_call({:push_line, line}, _from, state) do
+    {:reply, :ok, %{state | input: :queue.in(normalize_line(line), state.input)}}
   end
 
   defp handle_io_request({:put_chars, _encoding, chars}, from, reply_as, state) do
@@ -50,8 +68,14 @@ defmodule TestIODevice do
     {:noreply, %{state | output: [chars | state.output]}}
   end
 
-  defp handle_io_request({:get_line, _encoding, _prompt}, _from, _reply_as, state), do: {:noreply, state}
-  defp handle_io_request({:get_line, _prompt}, _from, _reply_as, state), do: {:noreply, state}
+  defp handle_io_request({:get_line, _encoding, _prompt}, from, reply_as, state) do
+    handle_read_request(from, reply_as, state)
+  end
+
+  defp handle_io_request({:get_line, _prompt}, from, reply_as, state) do
+    handle_read_request(from, reply_as, state)
+  end
+
   defp handle_io_request({:get_chars, _encoding, _prompt, _n}, _from, _reply_as, state), do: {:noreply, state}
   defp handle_io_request({:get_chars, _prompt, _n}, _from, _reply_as, state), do: {:noreply, state}
 
@@ -74,4 +98,25 @@ defmodule TestIODevice do
     send(from, {:io_reply, reply_as, {:error, :request}})
     {:noreply, state}
   end
+
+  defp handle_read_request(from, reply_as, state) do
+    case :queue.out(state.input) do
+      {{:value, line}, input} ->
+        send(from, {:io_reply, reply_as, line})
+        {:noreply, %{state | input: input}}
+
+      {:empty, _input} when is_nil(state.pending_reader) ->
+        {:noreply, %{state | pending_reader: {from, reply_as}}}
+
+      {:empty, _input} ->
+        # Some legacy tests attach an additional idle transport to the same
+        # device. Keep the original pending reader deterministic and leave the
+        # extra reader blocked, matching the previous live-stdin behavior.
+        {:noreply, state}
+    end
+  end
+
+  defp normalize_line(:eof), do: :eof
+  defp normalize_line({:error, _reason} = error), do: error
+  defp normalize_line(line), do: String.trim_trailing(line, "\n") <> "\n"
 end
