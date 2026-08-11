@@ -19,6 +19,9 @@ defmodule Backplane.McpProtocol.Protocol.Behaviour do
   @type message :: map()
   @type feature :: atom()
 
+  @doc "Returns the lifecycle and wire profile for this protocol version."
+  @callback profile() :: Backplane.McpProtocol.Protocol.Profile.t()
+
   @doc "Returns the version string this module implements (e.g., '2025-03-26')."
   @callback version() :: version()
 
@@ -39,4 +42,6 @@ defmodule Backplane.McpProtocol.Protocol.Behaviour do
 
   @doc "All notification methods supported by this version."
   @callback notification_methods() :: [method()]
+
+  @optional_callbacks profile: 0
 end

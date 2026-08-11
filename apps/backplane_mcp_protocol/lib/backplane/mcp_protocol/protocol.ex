@@ -18,6 +18,22 @@ defmodule Backplane.McpProtocol.Protocol do
   @type version :: String.t()
   @type feature :: atom()
 
+  @doc "Returns the lifecycle and wire profile for a supported protocol version."
+  @spec profile(version()) :: {:ok, Backplane.McpProtocol.Protocol.Profile.t()} | :error
+  defdelegate profile(version), to: Registry
+
+  @doc "Checks whether a supported protocol version uses the stateless modern lifecycle."
+  @spec modern?(version()) :: boolean()
+  def modern?(version) do
+    match?({:ok, %{era: :modern}}, profile(version))
+  end
+
+  @doc "Checks whether a supported protocol version uses the initialized legacy lifecycle."
+  @spec legacy?(version()) :: boolean()
+  def legacy?(version) do
+    match?({:ok, %{era: :legacy}}, profile(version))
+  end
+
   @doc """
   Returns all supported protocol versions.
   """

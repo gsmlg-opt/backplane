@@ -11,17 +11,20 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
       {:ok, Backplane.McpProtocol.Protocol.V2025_11_25}
 
       iex> Backplane.McpProtocol.Protocol.Registry.supported_versions()
-      ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+      ["2025-11-25", "2026-07-28", "2025-06-18", "2025-03-26", "2024-11-05"]
 
       iex> Backplane.McpProtocol.Protocol.Registry.negotiate("2025-03-26")
       {:ok, "2025-03-26", Backplane.McpProtocol.Protocol.V2025_03_26}
   """
 
+  alias Backplane.McpProtocol.Protocol.Profile
+
   @versions %{
     "2024-11-05" => Backplane.McpProtocol.Protocol.V2024_11_05,
     "2025-03-26" => Backplane.McpProtocol.Protocol.V2025_03_26,
     "2025-06-18" => Backplane.McpProtocol.Protocol.V2025_06_18,
-    "2025-11-25" => Backplane.McpProtocol.Protocol.V2025_11_25
+    "2025-11-25" => Backplane.McpProtocol.Protocol.V2025_11_25,
+    "2026-07-28" => Backplane.McpProtocol.Protocol.V2026_07_28
   }
 
   @latest_version "2025-11-25"
@@ -43,12 +46,27 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
   @spec get(version()) :: {:ok, module()} | :error
   def get(version), do: Map.fetch(@versions, version)
 
+  @doc "Returns the lifecycle and wire profile for a supported version."
+  @spec profile(version()) :: {:ok, Profile.t()} | :error
+  def profile(version) do
+    with {:ok, module} <- get(version) do
+      if Code.ensure_loaded?(module) and function_exported?(module, :profile, 0) do
+        {:ok, module.profile()}
+      else
+        {:ok, Profile.legacy(module)}
+      end
+    end
+  end
+
   @doc """
-  List all supported versions in preference order (newest first).
+  List all supported versions in preference order.
+
+  The current default remains first while newer profiles are implemented but
+  not yet activated.
   """
   @spec supported_versions() :: [version()]
   def supported_versions do
-    @versions |> Map.keys() |> Enum.sort(:desc)
+    [@latest_version | @versions |> Map.keys() |> Enum.reject(&(&1 == @latest_version)) |> Enum.sort(:desc)]
   end
 
   @doc """
@@ -88,7 +106,8 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
       {:ok, "2025-11-25", Backplane.McpProtocol.Protocol.V2025_11_25}
 
       iex> Backplane.McpProtocol.Protocol.Registry.negotiate("9999-01-01")
-      {:error, :unsupported_version, ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]}
+      {:error, :unsupported_version,
+       ["2025-11-25", "2026-07-28", "2025-06-18", "2025-03-26", "2024-11-05"]}
   """
   @spec negotiate(version()) :: {:ok, version(), module()} | {:error, :unsupported_version, [version()]}
   def negotiate(client_version) do

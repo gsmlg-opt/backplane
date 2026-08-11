@@ -1,11 +1,12 @@
 defmodule Backplane.McpProtocol.Protocol.RegistryTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Protocol.V2024_11_05
   alias Backplane.McpProtocol.Protocol.V2025_03_26
   alias Backplane.McpProtocol.Protocol.V2025_06_18
   alias Backplane.McpProtocol.Protocol.V2025_11_25
+  alias Backplane.McpProtocol.Protocol.V2026_07_28
 
   describe "get/1" do
     test "returns module for known version" do
@@ -13,6 +14,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
       assert {:ok, V2025_03_26} = Registry.get("2025-03-26")
       assert {:ok, V2025_06_18} = Registry.get("2025-06-18")
       assert {:ok, V2025_11_25} = Registry.get("2025-11-25")
+      assert {:ok, V2026_07_28} = Registry.get("2026-07-28")
     end
 
     test "returns :error for unknown version" do
@@ -22,14 +24,30 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
   end
 
   describe "supported_versions/0" do
-    test "returns all versions newest first" do
+    test "returns all versions with the current default first" do
       versions = Registry.supported_versions()
       assert is_list(versions)
-      assert length(versions) == 4
+      assert length(versions) == 5
       assert hd(versions) == "2025-11-25"
+      assert "2026-07-28" in versions
+      assert "2025-11-25" in versions
       assert "2025-06-18" in versions
       assert "2025-03-26" in versions
       assert "2024-11-05" in versions
+    end
+  end
+
+  describe "profile/1" do
+    test "loads a modern version module before detecting its profile callback" do
+      :code.purge(V2026_07_28)
+      :code.delete(V2026_07_28)
+
+      refute function_exported?(V2026_07_28, :profile, 0)
+      assert {:ok, %{era: :modern, lifecycle: :per_request}} = Registry.profile("2026-07-28")
+    end
+
+    test "derives profiles for legacy modules" do
+      assert {:ok, %{era: :legacy, lifecycle: :initialize}} = Registry.profile("2025-11-25")
     end
   end
 
@@ -57,6 +75,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
       assert Registry.supported?("2025-03-26")
       assert Registry.supported?("2025-06-18")
       assert Registry.supported?("2025-11-25")
+      assert Registry.supported?("2026-07-28")
     end
 
     test "returns false for unsupported versions" do
@@ -68,6 +87,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
   describe "negotiate/1" do
     test "returns module for supported client version" do
       assert {:ok, "2025-11-25", V2025_11_25} = Registry.negotiate("2025-11-25")
+      assert {:ok, "2026-07-28", V2026_07_28} = Registry.negotiate("2026-07-28")
       assert {:ok, "2025-06-18", V2025_06_18} = Registry.negotiate("2025-06-18")
       assert {:ok, "2025-03-26", V2025_03_26} = Registry.negotiate("2025-03-26")
       assert {:ok, "2024-11-05", V2024_11_05} = Registry.negotiate("2024-11-05")
@@ -76,7 +96,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
     test "returns error for unsupported client version" do
       assert {:error, :unsupported_version, versions} = Registry.negotiate("9999-01-01")
       assert is_list(versions)
-      assert length(versions) == 4
+      assert length(versions) == 5
     end
   end
 

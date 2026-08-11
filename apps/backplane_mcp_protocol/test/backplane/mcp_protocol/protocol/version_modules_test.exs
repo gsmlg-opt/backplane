@@ -4,6 +4,8 @@ defmodule Backplane.McpProtocol.Protocol.VersionModulesTest do
   alias Backplane.McpProtocol.Protocol.V2024_11_05
   alias Backplane.McpProtocol.Protocol.V2025_03_26
   alias Backplane.McpProtocol.Protocol.V2025_06_18
+  alias Backplane.McpProtocol.Protocol.V2025_11_25
+  alias Backplane.McpProtocol.Protocol.V2026_07_28
 
   describe "V2024_11_05" do
     test "version/0 returns correct string" do
@@ -174,20 +176,22 @@ defmodule Backplane.McpProtocol.Protocol.VersionModulesTest do
     end
   end
 
-  describe "version feature inheritance" do
-    test "each version is a superset of the previous" do
+  describe "legacy version feature inheritance" do
+    test "each legacy version is a superset of the previous" do
       v1_features = MapSet.new(V2024_11_05.supported_features())
       v2_features = MapSet.new(V2025_03_26.supported_features())
       v3_features = MapSet.new(V2025_06_18.supported_features())
+      v4_features = MapSet.new(V2025_11_25.supported_features())
 
       assert MapSet.subset?(v1_features, v2_features)
       assert MapSet.subset?(v2_features, v3_features)
+      assert MapSet.subset?(v3_features, v4_features)
     end
   end
 
   describe "behaviour compliance" do
-    for mod <- [V2024_11_05, V2025_03_26, V2025_06_18] do
-      test "#{mod} implements all callbacks" do
+    for mod <- [V2024_11_05, V2025_03_26, V2025_06_18, V2025_11_25] do
+      test "legacy module #{mod} implements all required callbacks" do
         mod = unquote(mod)
         assert is_binary(mod.version())
         assert is_list(mod.supported_features())
@@ -197,6 +201,16 @@ defmodule Backplane.McpProtocol.Protocol.VersionModulesTest do
         assert "initialize" |> mod.request_params_schema() |> is_map()
         assert mod.notification_params_schema("notifications/initialized") == :map
       end
+    end
+
+    test "modern module implements the independent callback surface" do
+      assert "2026-07-28" = V2026_07_28.version()
+      assert is_list(V2026_07_28.supported_features())
+      assert is_list(V2026_07_28.request_methods())
+      assert is_list(V2026_07_28.notification_methods())
+      assert is_map(V2026_07_28.progress_params_schema())
+      assert :map = V2026_07_28.request_params_schema("server/discover")
+      assert :map = V2026_07_28.notification_params_schema("notifications/cancelled")
     end
   end
 end

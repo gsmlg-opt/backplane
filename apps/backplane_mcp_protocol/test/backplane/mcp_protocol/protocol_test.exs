@@ -11,6 +11,7 @@ defmodule Backplane.McpProtocol.ProtocolTest do
       assert "2025-03-26" in versions
       assert "2025-06-18" in versions
       assert "2025-11-25" in versions
+      assert "2026-07-28" in versions
     end
 
     test "latest_version/0 returns latest" do
@@ -25,6 +26,7 @@ defmodule Backplane.McpProtocol.ProtocolTest do
       assert :ok = Protocol.validate_version("2024-11-05")
       assert :ok = Protocol.validate_version("2025-03-26")
       assert :ok = Protocol.validate_version("2025-06-18")
+      assert :ok = Protocol.validate_version("2026-07-28")
     end
 
     test "validate_version/1 rejects unsupported versions" do
@@ -57,6 +59,16 @@ defmodule Backplane.McpProtocol.ProtocolTest do
     test "negotiate_version/2 returns error for incompatible" do
       assert {:error, %Error{}} =
                Protocol.negotiate_version("9999-01-01", "8888-01-01")
+    end
+  end
+
+  describe "protocol profiles" do
+    test "keeps the legacy default while exposing the modern profile" do
+      assert Protocol.latest_version() == "2025-11-25"
+      assert Protocol.legacy?("2025-11-25")
+      assert Protocol.modern?("2026-07-28")
+      refute Protocol.modern?("unknown")
+      refute Protocol.legacy?("unknown")
     end
   end
 
