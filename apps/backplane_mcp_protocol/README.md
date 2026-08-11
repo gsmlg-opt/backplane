@@ -20,7 +20,7 @@ legacy initialization and session behavior required by older protocol versions.
 ```elixir
 def deps do
   [
-    {:backplane_mcp_protocol, "~> 0.4.4"}
+    {:backplane_mcp_protocol, "~> 0.5.0"}
   ]
 end
 ```
