@@ -287,9 +287,6 @@ git commit -m "feat(mcp): route modern HTTP requests statelessly"
 **Files:**
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/stdio.ex`
-- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/result_router.ex`
-- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/negotiation.ex`
-- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/supervisor.ex`
@@ -613,12 +610,17 @@ git commit -m "feat(mcp): harden modern authorization"
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/modern/executor.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/streamable_http/plug.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/server/transport/stdio.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/result_router.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/negotiation.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/mcp/response.ex`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/profile_router_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/modern/executor_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/streamable_http/modern_plug_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/server/transport/modern_stdio_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/result_router_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/negotiation_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/mcp/response_test.exs`
 
 - [ ] **Step 1: Write end-to-end dual-era tests**
 
@@ -639,7 +641,7 @@ The frozen suites are also the acceptance oracle for production wire behavior. A
 - [ ] **Step 3: Run integration and frozen official suites**
 
 ```sh
-cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix test test/backplane/mcp_protocol/client/dual_era_integration_test.exs
+cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix test test/backplane/mcp_protocol/client/dual_era_integration_test.exs --include integration
 
 cd apps/backplane_mcp_protocol && MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix run --no-halt test/conformance/server_runner.exs -- 4105
 
@@ -647,7 +649,9 @@ npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 list --requirements 2026
 
 npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 server --url http://127.0.0.1:4105/mcp --requirements 2026-07-28
 
-npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 client --command "MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix run test/conformance/client_runner.exs --" --requirements 2026-07-28
+MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps mix compile
+
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.11 client --command "ERL_LIBS=../../_build/test/lib elixir test/conformance/client_runner.exs --" --requirements 2026-07-28
 ```
 
 - [ ] **Step 4: Commit the zero-expected-failure harness**
@@ -663,8 +667,12 @@ git commit -m "test(mcp): add 2026 dual-era conformance"
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/protocol/registry.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client.ex`
+- Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/state.ex`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol/registry_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client/state_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/transport/streamable_http_test.exs`
 - Modify: `apps/backplane_mcp_protocol/test/support/mcp/setup.ex`
 - Modify: `apps/backplane_mcp_protocol/mix.exs` only to register `pages/authorization.md` with ExDoc.
 - Modify: `apps/backplane_mcp_protocol/README.md`

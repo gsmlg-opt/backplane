@@ -24,10 +24,10 @@ defmodule Backplane.McpProtocol.Client.ResultRouterTest do
     end
   end
 
-  test "modern peers require a string resultType while legacy peers accept an omitted one" do
+  test "modern peers default an omitted resultType to complete but reject invalid values" do
     request = request("prompts/get")
 
-    assert {:error, %Error{reason: :malformed_response}, _state} =
+    assert {:complete, %Response{result: %{"description" => "missing"}, result_type: "complete"}, _state} =
              ResultRouter.route(request, %{"description" => "missing"}, state(:modern))
 
     assert {:error, %Error{reason: :malformed_response}, _state} =

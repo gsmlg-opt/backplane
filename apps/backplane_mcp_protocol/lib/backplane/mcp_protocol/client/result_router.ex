@@ -34,6 +34,11 @@ defmodule Backplane.McpProtocol.Client.ResultRouter do
     {:complete, Response.from_json_rpc(%{"id" => request.id, "result" => result}), state}
   end
 
+  defp route_modern(request, %{} = result, state) when not is_map_key(result, "resultType") do
+    response = Response.from_json_rpc(%{"id" => request.id, "result" => result})
+    {:complete, %{response | result_type: "complete"}, state}
+  end
+
   defp route_modern(_request, _result, state) do
     {:error,
      Error.transport(:malformed_response, %{

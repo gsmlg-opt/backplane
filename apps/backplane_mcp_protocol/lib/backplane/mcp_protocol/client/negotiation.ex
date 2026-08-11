@@ -33,6 +33,8 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
 
   @spec begin(State.t()) :: action()
   def begin(%State{protocol_preference: :auto} = state) do
+    state = reset_unsupported_version_retries(state)
+
     case preferred_modern_version() do
       nil -> fail(state, unsupported_version_error([]))
       version -> discover(state, version)
@@ -40,6 +42,8 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
   end
 
   def begin(%State{protocol_preference: version} = state) when is_binary(version) do
+    state = reset_unsupported_version_retries(state)
+
     case Registry.profile(version) do
       {:ok, %Profile{era: :modern}} -> discover(state, version)
       {:ok, %Profile{era: :legacy}} -> initialize(state, version)
@@ -48,6 +52,7 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
   end
 
   def begin(%State{} = state) do
+    state = reset_unsupported_version_retries(state)
     fail(state, Error.protocol(:invalid_params, %{message: "Invalid protocol preference"}))
   end
 
@@ -198,11 +203,21 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
     case supported_versions(error, requested_version) do
       {:ok, peer_versions} ->
         case select_modern_version(state, peer_versions) do
-          {:ok, version} when version != requested_version ->
-            state = %{state | peer_versions: peer_versions, negotiation_error: nil}
-            discover(state, version)
+          {:ok, version} ->
+            if MapSet.member?(state.unsupported_version_retries, version) do
+              fail(state, error)
+            else
+              state = %{
+                state
+                | peer_versions: peer_versions,
+                  negotiation_error: nil,
+                  unsupported_version_retries: MapSet.put(state.unsupported_version_retries, version)
+              }
 
-          _no_new_version ->
+              discover(state, version)
+            end
+
+          _no_mutual_version ->
             fail(state, error)
         end
 
@@ -240,6 +255,10 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
          negotiated_version: nil,
          negotiation_error: nil
      }}
+  end
+
+  defp reset_unsupported_version_retries(state) do
+    %{state | unsupported_version_retries: MapSet.new()}
   end
 
   defp initialize(state, version) do

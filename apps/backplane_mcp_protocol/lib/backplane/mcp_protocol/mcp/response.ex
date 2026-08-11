@@ -85,16 +85,24 @@ defmodule Backplane.McpProtocol.MCP.Response do
   @doc """
   Creates a response using the result requirements of a protocol version.
 
-  The 2026-07-28 protocol requires a recognized `resultType`. Legacy
-  versions continue to accept results without that field.
+  The 2026-07-28 protocol defaults an omitted `resultType` on an object result
+  to `complete`. Legacy versions preserve an omitted field as `nil`.
   """
   @spec from_json_rpc(map(), String.t()) ::
           {:ok, t()} | {:error, :missing_result_type | {:invalid_result_type, term()}}
   def from_json_rpc(%{"result" => result} = response, "2026-07-28") do
     case result_type(result) do
-      nil -> {:error, :missing_result_type}
-      result_type when is_binary(result_type) -> {:ok, from_json_rpc(response)}
-      result_type -> {:error, {:invalid_result_type, result_type}}
+      nil when is_map(result) and not is_map_key(result, "resultType") ->
+        {:ok, %{from_json_rpc(response) | result_type: "complete"}}
+
+      nil ->
+        {:error, :missing_result_type}
+
+      result_type when is_binary(result_type) ->
+        {:ok, from_json_rpc(response)}
+
+      result_type ->
+        {:error, {:invalid_result_type, result_type}}
     end
   end
 

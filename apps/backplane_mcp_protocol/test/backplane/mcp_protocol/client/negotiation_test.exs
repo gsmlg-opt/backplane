@@ -440,7 +440,7 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       assert failed.negotiation_status == :failed
     end
 
-    test "auto does not loop when -32022 offers the version already requested" do
+    test "auto retries an offered requested version once and then stops" do
       state = state(:auto, STDIO)
       request = request(discover_operation(@modern_version))
 
@@ -450,8 +450,14 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
           "supported" => [@modern_version]
         })
 
+      assert {:send, retry, retrying} = Negotiation.handle_error(state, request, error)
+      assert retry.params["_meta"][@version_key] == @modern_version
+      assert retrying.unsupported_version_retries == MapSet.new([@modern_version])
+
+      retry_request = request(retry)
+
       assert {:error, %Error{reason: :unsupported_protocol_version}, failed} =
-               Negotiation.handle_error(state, request, error)
+               Negotiation.handle_error(retrying, retry_request, error)
 
       assert failed.negotiation_status == :failed
     end

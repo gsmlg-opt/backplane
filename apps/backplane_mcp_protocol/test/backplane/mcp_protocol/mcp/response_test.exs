@@ -64,10 +64,10 @@ defmodule Backplane.McpProtocol.MCP.ResponseTest do
                Response.from_json_rpc(json_response, "2026-07-28")
     end
 
-    test "rejects a modern response without a result type" do
+    test "defaults an omitted modern result type to complete" do
       json_response = %{"jsonrpc" => "2.0", "result" => %{"value" => 42}, "id" => 1}
 
-      assert {:error, :missing_result_type} =
+      assert {:ok, %Response{result_type: "complete"}} =
                Response.from_json_rpc(json_response, "2026-07-28")
     end
 

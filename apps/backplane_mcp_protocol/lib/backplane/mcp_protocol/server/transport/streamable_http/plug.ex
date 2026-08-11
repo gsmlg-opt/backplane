@@ -83,22 +83,24 @@ if Code.ensure_loaded?(Plug) do
     def call(conn, opts) do
       opts = resolve_runtime_config(opts)
 
-      with :ok <- validate_origin(conn, opts.allowed_origins) do
-        if conn.request_path == "/.well-known/oauth-protected-resource" do
-          handle_well_known(conn, opts)
-        else
-          case authorize(conn, opts) do
-            {:ok, conn, claims} ->
-              opts
-              |> Map.put(:auth_claims, claims)
-              |> then(&handle_request(conn, &1))
+      case validate_origin(conn, opts.allowed_origins) do
+        :ok ->
+          if conn.request_path == "/.well-known/oauth-protected-resource" do
+            handle_well_known(conn, opts)
+          else
+            case authorize(conn, opts) do
+              {:ok, conn, claims} ->
+                opts
+                |> Map.put(:auth_claims, claims)
+                |> then(&handle_request(conn, &1))
 
-            {:halt, conn} ->
-              conn
+              {:halt, conn} ->
+                conn
+            end
           end
-        end
-      else
-        {:error, :invalid_origin} -> send_error(conn, 403, "Forbidden origin")
+
+        {:error, :invalid_origin} ->
+          send_error(conn, 403, "Forbidden origin")
       end
     end
 
@@ -298,25 +300,26 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp process_message(conn, message, session_id, context, opts) do
-      with :ok <- validate_negotiated_protocol(conn, message, session_id, opts) do
-        cond do
-          Message.is_notification(message) ->
-            handle_notification_message(conn, message, session_id, context, opts)
+      case validate_negotiated_protocol(conn, message, session_id, opts) do
+        :ok ->
+          cond do
+            Message.is_notification(message) ->
+              handle_notification_message(conn, message, session_id, context, opts)
 
-          Message.is_response(message) or Message.is_error(message) ->
-            handle_response_message(conn, message, session_id, context, opts)
+            Message.is_response(message) or Message.is_error(message) ->
+              handle_response_message(conn, message, session_id, context, opts)
 
-          Message.is_request(message) ->
-            handle_request_message(conn, message, session_id, context, opts)
+            Message.is_request(message) ->
+              handle_request_message(conn, message, session_id, context, opts)
 
-          true ->
-            send_jsonrpc_error(
-              conn,
-              Error.protocol(:invalid_request, %{message: "Invalid message type"}),
-              nil
-            )
-        end
-      else
+            true ->
+              send_jsonrpc_error(
+                conn,
+                Error.protocol(:invalid_request, %{message: "Invalid message type"}),
+                nil
+              )
+          end
+
         {:error, :not_found} ->
           send_error(conn, 404, "Session not found")
 
@@ -373,14 +376,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp handle_json_request(
-           conn,
-           session_pid,
-           message,
-           session_id,
-           context,
-           %{session_header: session_header} = opts
-         ) do
+    defp handle_json_request(conn, session_pid, message, session_id, context, %{session_header: session_header} = opts) do
       case GenServer.call(session_pid, {:mcp_request, message, context}, opts.timeout) do
         {:ok, response} when is_binary(response) ->
           conn
@@ -552,10 +548,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp start_new_session(
-           %{server: server, registry_mod: registry_mod, registry_name: registry_name} = opts,
-           session_id
-         ) do
+    defp start_new_session(%{server: server, registry_mod: registry_mod, registry_name: registry_name} = opts, session_id) do
       session_config = ServerSupervisor.get_session_config(server)
       session_name = Registry.resolve_session_name(registry_mod, registry_name, session_id)
 
@@ -636,8 +629,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp determine_session_id(conn, session_header, message)
-         when Message.is_initialize(message) do
+    defp determine_session_id(conn, session_header, message) when Message.is_initialize(message) do
       case get_req_header(conn, session_header) do
         [] -> {:ok, ID.generate_session_id()}
         _ -> {:error, :invalid_session_id}
@@ -702,9 +694,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp validate_negotiated_protocol(_conn, message, _session_id, _opts)
-         when Message.is_initialize(message),
-         do: :ok
+    defp validate_negotiated_protocol(_conn, message, _session_id, _opts) when Message.is_initialize(message), do: :ok
 
     defp validate_negotiated_protocol(conn, _message, session_id, opts) do
       with {:ok, session_pid} <- find_session(opts, session_id) do
@@ -792,9 +782,7 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp maybe_read_request_body(%{body_params: %Unfetched{aspect: :body_params}} = conn, %{
-           timeout: timeout
-         }) do
+    defp maybe_read_request_body(%{body_params: %Unfetched{aspect: :body_params}} = conn, %{timeout: timeout}) do
       case Plug.Conn.read_body(conn, read_timeout: timeout) do
         {:ok, body, conn} -> {:ok, body, conn}
         {:error, reason} -> {:error, reason}

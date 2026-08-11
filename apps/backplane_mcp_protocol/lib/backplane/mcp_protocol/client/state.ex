@@ -23,6 +23,7 @@ defmodule Backplane.McpProtocol.Client.State do
           peer_versions: [String.t()],
           discovery: map() | nil,
           negotiation_error: Error.t() | nil,
+          unsupported_version_retries: MapSet.t(String.t()),
           protocol_version: String.t(),
           timeout: pos_integer(),
           transport: map(),
@@ -60,6 +61,7 @@ defmodule Backplane.McpProtocol.Client.State do
     elicitation_callback: nil,
     roots: %{},
     peer_versions: [],
+    unsupported_version_retries: MapSet.new(),
     ready_waiters: [],
     transport_parse_state: nil
   ]
@@ -79,6 +81,7 @@ defmodule Backplane.McpProtocol.Client.State do
       peer_versions: [],
       discovery: nil,
       negotiation_error: nil,
+      unsupported_version_retries: MapSet.new(),
       protocol_version: effective_protocol_version(protocol_preference),
       transport: opts.transport,
       timeout: opts.timeout,

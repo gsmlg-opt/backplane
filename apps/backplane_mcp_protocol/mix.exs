@@ -61,6 +61,7 @@ defmodule Backplane.McpProtocol.MixProject do
       {:mox, "~> 1.2", only: :test},
       {:mimic, "~> 2.0", only: :test},
       {:bypass, "~> 2.1", only: :test},
+      {:plug_cowboy, "~> 2.7", only: :test},
       {:cowboy, "~> 2.10", only: :test},
       {:styler, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false},
