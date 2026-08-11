@@ -658,6 +658,8 @@ git commit -m "test(mcp): add 2026 dual-era conformance"
 
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/protocol/registry.ex`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client.ex`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/protocol/registry_test.exs`
+- Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/client_test.exs`
 - Modify: `apps/backplane_mcp_protocol/mix.exs` only to register `pages/authorization.md` with ExDoc.
 - Modify: `apps/backplane_mcp_protocol/README.md`
 - Modify: `apps/backplane_mcp_protocol/pages/introduction.md`
