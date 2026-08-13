@@ -112,6 +112,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "installed/backplane/bin/backplane eval"
     assert workflow =~ "second installed migration pass was not a no-op"
     assert workflow =~ "last_version == 20260812000024"
+    assert workflow =~ "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL"
 
     assert workflow =~
              ~r/publish:.*needs:\s+- qualify-memory-v2\s+- build\s+- installed-release-migration-smoke/s
