@@ -19,9 +19,9 @@ defmodule Backplane.Memory.Qualification.Runner do
     with {:ok, ingest} <-
            measure_ingest(
              run_id: "#{run_id}-ingest",
-             event_count: 1_000,
-             batch_size: 50,
-             warmup_event_count: 500
+             event_count: 2_000,
+             batch_size: 100,
+             warmup_event_count: 1_000
            ),
          {:ok, projection} <-
            measure_projection(run_id: "#{run_id}-projection", sample_count: 100),
@@ -52,9 +52,9 @@ defmodule Backplane.Memory.Qualification.Runner do
              schedulers_online: System.schedulers_online()
            },
            workload: %{
-             ingest_events: 1_000,
-             ingest_warmup_events: 500,
-             ingest_batch_size: 50,
+             ingest_events: 2_000,
+             ingest_warmup_events: 1_000,
+             ingest_batch_size: 100,
              projection_samples: 100,
              eligible_sessions: 20,
              outage_events: 100,
