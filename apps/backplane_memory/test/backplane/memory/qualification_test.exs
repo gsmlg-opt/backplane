@@ -131,6 +131,7 @@ end
 defmodule Backplane.Memory.Qualification.IngestTest do
   use Backplane.Memory.DataCase, async: false
 
+  @moduletag :memory_qualification_runtime
   @moduletag timeout: 120_000
 
   alias Backplane.Memory.Qualification.Runner

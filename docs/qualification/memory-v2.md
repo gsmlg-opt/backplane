@@ -39,7 +39,8 @@ MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix test \
     apps/backplane_memory/test/backplane/memory/m18_migration_chain_test.exs \
     apps/backplane_memory/test/backplane/memory/m18_migration_matrix_test.exs \
-    apps/backplane_memory/test/backplane/memory/qualification_test.exs
+    apps/backplane_memory/test/backplane/memory/qualification_test.exs \
+    --exclude memory_qualification_runtime
 
 MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix test \
@@ -49,7 +50,8 @@ MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
     apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
     apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs
 
-MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
+MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true \
+  MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.qualify \
     --report artifacts/memory-v2/memory-v2-m18-qualification.json
 
@@ -80,7 +82,10 @@ the replay PubSub topic. It fails unless the already-connected page receives the
 new row without a reload. The task is test-only; pass `--browser PATH` or set
 `CHROME_BIN` when Chrome is not installed at a standard path.
 
-The M18 ingest measurement exercises the production `Ingest.ingest_batch` and
+The M18 ingest measurement runs against the normal Ecto connection pool in the
+disposable qualification database. The surrounding contract tests retain SQL
+sandbox isolation and exclude the `memory_qualification_runtime` workload.
+The measurement exercises the production `Ingest.ingest_batch` and
 `Events.Store.append_batch_tagged` path through the durable Oban projection-job
 insert. Oban runs in manual test mode only to prevent background execution from
 contaminating ingest timing; the gate additionally requires one unique durable

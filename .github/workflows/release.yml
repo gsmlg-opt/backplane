@@ -127,7 +127,8 @@ jobs:
           mix test \
             apps/backplane_memory/test/backplane/memory/m18_migration_chain_test.exs \
             apps/backplane_memory/test/backplane/memory/m18_migration_matrix_test.exs \
-            apps/backplane_memory/test/backplane/memory/qualification_test.exs
+            apps/backplane_memory/test/backplane/memory/qualification_test.exs \
+            --exclude memory_qualification_runtime
 
       - name: Verify outage, privacy, performance, and integration adapters
         run: |
@@ -143,7 +144,7 @@ jobs:
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
           mkdir -p artifacts/memory-v2
-          mix memory.qualify \
+          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify \
             --report artifacts/memory-v2/memory-v2-m18-qualification.json
           mix memory.replay.browser_qualify \
             --report artifacts/memory-v2/memory-v2-replay-browser.json

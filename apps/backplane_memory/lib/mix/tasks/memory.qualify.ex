@@ -14,7 +14,14 @@ defmodule Mix.Tasks.Memory.Qualify do
 
     Mix.Task.run("app.start")
 
-    case Backplane.Memory.Qualification.Runner.sandboxed_run() do
+    result =
+      if real_pool?() do
+        Backplane.Memory.Qualification.Runner.run()
+      else
+        Backplane.Memory.Qualification.Runner.sandboxed_run()
+      end
+
+    case result do
       {:ok, report} ->
         encoded = Backplane.Memory.Qualification.encode_report(report)
         if path = opts[:report], do: File.write!(path, encoded)
@@ -24,5 +31,9 @@ defmodule Mix.Tasks.Memory.Qualify do
       {:error, reason} ->
         Mix.raise("M18 qualification failed: #{inspect(reason)}")
     end
+  end
+
+  defp real_pool? do
+    System.get_env("BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL") in ["1", "true"]
   end
 end

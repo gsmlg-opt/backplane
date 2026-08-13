@@ -1,11 +1,18 @@
 import Config
 
+qualification_real_pool? =
+  System.get_env("BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL") in ["1", "true"]
+
 config :backplane_system, Backplane.Repo,
   username: System.get_env("PGUSER", System.get_env("USER", "postgres")),
   password: System.get_env("PGPASSWORD", "postgres"),
   database: "backplane_test#{System.get_env("MIX_TEST_PARTITION")}",
   socket_dir: System.get_env("PGHOST", "/tmp"),
-  pool: Ecto.Adapters.SQL.Sandbox,
+  pool:
+    if(qualification_real_pool?,
+      do: DBConnection.ConnectionPool,
+      else: Ecto.Adapters.SQL.Sandbox
+    ),
   pool_size: System.schedulers_online() * 2,
   types: Backplane.PostgrexTypes
 
