@@ -324,6 +324,26 @@ defmodule Backplane.Memory.Events.StoreTest do
     assert Enum.map(events, & &1.sequence) == [1, 1, 2, 2]
   end
 
+  test "batch resolves matching and conflicting duplicate keys without extra writes" do
+    stream_id = unique("batch-internal-duplicate")
+    key = unique("batch-internal-key")
+    attrs = event(stream_id, "same", key)
+
+    assert {:ok, [inserted, duplicate]} = Store.append_batch([attrs, attrs])
+    assert duplicate.id == inserted.id
+    assert repo().get!(Stream, stream_id).next_sequence == 2
+    assert [%Event{id: event_id}] = Store.list(stream_id)
+    assert event_id == inserted.id
+
+    conflict_stream = unique("batch-internal-conflict")
+    conflict = event(conflict_stream, "first", unique("batch-conflict-key"))
+
+    assert {:error, :idempotency_conflict} =
+             Store.append_batch([conflict, %{conflict | content: "changed"}])
+
+    refute repo().get(Stream, conflict_stream)
+  end
+
   test "batch validation, closure, and idempotency conflicts roll back every change" do
     validation_stream = unique("batch-validation")
 

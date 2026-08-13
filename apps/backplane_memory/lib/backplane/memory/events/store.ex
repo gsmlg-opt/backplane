@@ -202,24 +202,44 @@ defmodule Backplane.Memory.Events.Store do
 
   defp batch_locked(repo, events) do
     streams = create_and_lock_streams(repo, events)
+    duplicates = load_batch_duplicates(repo, events)
 
     events
-    |> Enum.reduce_while({[], streams}, fn event, {results, stream_by_id} ->
-      case append_with_locked_stream(
-             repo,
-             Map.fetch!(stream_by_id, event.stream_id),
-             event,
-             batch?: true
-           ) do
-        {:ok, tagged, stream} ->
-          {:cont, {[tagged | results], Map.put(stream_by_id, event.stream_id, stream)}}
+    |> Enum.reduce_while({[], streams, duplicates}, fn event,
+                                                       {results, stream_by_id, duplicate_by_key} ->
+      stream = Map.fetch!(stream_by_id, event.stream_id)
 
-        {:error, reason} ->
-          repo.rollback(reason)
+      case Map.get(duplicate_by_key, event.idempotency_key) do
+        nil ->
+          case insert_new_event(repo, stream, event, batch?: true) do
+            {:inserted, inserted, updated_stream} ->
+              duplicate_by_key =
+                if event.idempotency_key do
+                  Map.put(duplicate_by_key, event.idempotency_key, inserted)
+                else
+                  duplicate_by_key
+                end
+
+              {:cont,
+               {[{:inserted, inserted} | results],
+                Map.put(stream_by_id, event.stream_id, updated_stream), duplicate_by_key}}
+
+            {:error, reason} ->
+              repo.rollback(reason)
+          end
+
+        existing ->
+          case validate_duplicate(existing, event) do
+            {:duplicate, duplicate} ->
+              {:cont, {[{:duplicate, duplicate} | results], stream_by_id, duplicate_by_key}}
+
+            {:error, reason} ->
+              repo.rollback(reason)
+          end
       end
     end)
     |> case do
-      {results, streams} ->
+      {results, streams, _duplicates} ->
         results = Enum.reverse(results)
         persist_batch_streams(repo, streams)
 
@@ -230,22 +250,16 @@ defmodule Backplane.Memory.Events.Store do
     end
   end
 
-  defp append_with_locked_stream(repo, stream, event, opts) do
-    case find_duplicate(repo, event.idempotency_key) do
-      nil ->
-        case insert_new_event(repo, stream, event, opts) do
-          {:inserted, inserted, updated_stream} ->
-            {:ok, {:inserted, inserted}, updated_stream}
+  defp load_batch_duplicates(repo, events) do
+    keys = events |> Enum.map(& &1.idempotency_key) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      existing ->
-        case validate_duplicate(existing, event) do
-          {:duplicate, duplicate} -> {:ok, {:duplicate, duplicate}, stream}
-          {:error, reason} -> {:error, reason}
-        end
+    if keys == [] do
+      %{}
+    else
+      Event
+      |> where([event], event.idempotency_key in ^keys)
+      |> repo.all()
+      |> Map.new(&{&1.idempotency_key, &1})
     end
   end
 

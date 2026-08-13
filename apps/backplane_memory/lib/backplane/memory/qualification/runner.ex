@@ -17,7 +17,12 @@ defmodule Backplane.Memory.Qualification.Runner do
     run_id = Keyword.get(opts, :run_id, "m18-#{System.unique_integer([:positive])}")
 
     with {:ok, ingest} <-
-           measure_ingest(run_id: "#{run_id}-ingest", event_count: 500, batch_size: 100),
+           measure_ingest(
+             run_id: "#{run_id}-ingest",
+             event_count: 1_000,
+             batch_size: 50,
+             warmup_event_count: 500
+           ),
          {:ok, projection} <-
            measure_projection(run_id: "#{run_id}-projection", sample_count: 100),
          {:ok, consolidation} <-
@@ -47,9 +52,9 @@ defmodule Backplane.Memory.Qualification.Runner do
              schedulers_online: System.schedulers_online()
            },
            workload: %{
-             ingest_events: 500,
+             ingest_events: 1_000,
              ingest_warmup_events: 500,
-             ingest_batch_size: 100,
+             ingest_batch_size: 50,
              projection_samples: 100,
              eligible_sessions: 20,
              outage_events: 100,
@@ -172,9 +177,11 @@ defmodule Backplane.Memory.Qualification.Runner do
 
   defp maybe_warm_ingest(run_id, event_count, batch_size, opts) do
     if Keyword.get(opts, :warmup, true) do
+      warmup_event_count = Keyword.get(opts, :warmup_event_count, event_count)
+
       case measure_ingest(
              run_id: "#{run_id}-warmup",
-             event_count: event_count,
+             event_count: warmup_event_count,
              batch_size: batch_size,
              warmup: false
            ) do

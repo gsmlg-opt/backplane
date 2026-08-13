@@ -16,11 +16,12 @@ defmodule Mix.Tasks.Memory.QualifyTest do
     assert report["passed"]
     assert Enum.all?(report["gates"], fn {_gate, passed?} -> passed? end)
     assert report["configuration"]["reproducible"]
-    assert report["configuration"]["workload"]["ingest_events"] == 500
+    assert report["configuration"]["workload"]["ingest_events"] == 1_000
     assert report["configuration"]["workload"]["ingest_warmup_events"] == 500
+    assert report["configuration"]["workload"]["ingest_batch_size"] == 50
     assert report["metrics"]["ingest"]["events_per_second"] >= 500
-    assert report["metrics"]["ingest"]["projection_jobs_durable"] == 500
-    assert report["metrics"]["ingest"]["projection_job_event_ids_unique"] == 500
+    assert report["metrics"]["ingest"]["projection_jobs_durable"] == 1_000
+    assert report["metrics"]["ingest"]["projection_job_event_ids_unique"] == 1_000
     assert report["metrics"]["projection"]["jobs_durable"] == 100
     assert report["metrics"]["projection"]["jobs_completed"] == 100
     assert report["metrics"]["projection"]["complete_subjects"] == 100
