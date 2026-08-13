@@ -13,7 +13,11 @@ config :backplane_system, Backplane.Repo,
       do: DBConnection.ConnectionPool,
       else: Ecto.Adapters.SQL.Sandbox
     ),
-  pool_size: max(System.schedulers_online() * 2, 10),
+  pool_size:
+    if(qualification_real_pool?,
+      do: System.schedulers_online() * 2,
+      else: max(System.schedulers_online() * 2, 10)
+    ),
   types: Backplane.PostgrexTypes
 
 config :backplane, env: :test
