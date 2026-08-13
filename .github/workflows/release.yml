@@ -144,8 +144,6 @@ jobs:
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
           mkdir -p artifacts/memory-v2
-          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify \
-            --report artifacts/memory-v2/memory-v2-m18-qualification.json
           mix memory.replay.browser_qualify \
             --report artifacts/memory-v2/memory-v2-replay-browser.json
           mix memory.seed_bench
@@ -153,6 +151,8 @@ jobs:
             --report artifacts/memory-v2/memory-v2-eval.json \
             --longmemeval artifacts/memory-v2/memory-v2-longmemeval.jsonl \
             --sidecar artifacts/memory-v2/memory-v2-longmemeval-sidecar.json
+          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify \
+            --report artifacts/memory-v2/memory-v2-m18-qualification.json
           {
             echo "revision=$(git rev-parse HEAD)"
             echo "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs"
