@@ -104,6 +104,8 @@ defmodule Backplane.ReleaseConfigTest do
     refute qualification_job =~ "_build/test"
     assert qualification_job =~ "release-memory-v2-qualification-v2-"
 
+    assert Backplane.Repo.config()[:pool_size] >= 10
+
     assert workflow =~ "postgresql-17"
     assert workflow =~ "CREATE EXTENSION IF NOT EXISTS vector"
     assert workflow =~ "installed-release-migration-smoke:"
