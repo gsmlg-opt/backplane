@@ -82,6 +82,7 @@ defmodule Backplane.ReleaseConfigTest do
   test "release gates publication on Memory V2 qualification and installed migration smoke" do
     workflow = File.read!(".github/workflows/release.yml")
 
+    assert workflow =~ "mix run --no-start test/release_config_test.exs"
     assert workflow =~ "qualify-memory-v2:"
     assert workflow =~ "m18_migration_chain_test.exs"
     assert workflow =~ "memory_m18_outage_qualification_test.exs"
