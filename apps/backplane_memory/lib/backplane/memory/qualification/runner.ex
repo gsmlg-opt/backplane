@@ -48,6 +48,7 @@ defmodule Backplane.Memory.Qualification.Runner do
            },
            workload: %{
              ingest_events: 500,
+             ingest_warmup_events: 500,
              ingest_batch_size: 100,
              projection_samples: 100,
              eligible_sessions: 20,
@@ -80,7 +81,8 @@ defmodule Backplane.Memory.Qualification.Runner do
     batch_size = Keyword.get(opts, :batch_size, @max_batch_size)
 
     with :ok <- validate_count(event_count),
-         :ok <- validate_batch_size(batch_size) do
+         :ok <- validate_batch_size(batch_size),
+         :ok <- maybe_warm_ingest(run_id, event_count, batch_size, opts) do
       host_id = "m18-ingest-#{run_id}"
       auth = auth_context(host_id)
 
@@ -165,6 +167,22 @@ defmodule Backplane.Memory.Qualification.Runner do
          measured_path:
            "Ingest.ingest_batch -> Events.Store.append_batch_tagged -> Oban projection job commit"
        }}
+    end
+  end
+
+  defp maybe_warm_ingest(run_id, event_count, batch_size, opts) do
+    if Keyword.get(opts, :warmup, true) do
+      case measure_ingest(
+             run_id: "#{run_id}-warmup",
+             event_count: event_count,
+             batch_size: batch_size,
+             warmup: false
+           ) do
+        {:ok, _measurement} -> :ok
+        {:error, reason} -> {:error, {:ingest_warmup_failed, reason}}
+      end
+    else
+      :ok
     end
   end
 
