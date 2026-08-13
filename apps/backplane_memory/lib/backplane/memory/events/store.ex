@@ -205,7 +205,12 @@ defmodule Backplane.Memory.Events.Store do
 
     events
     |> Enum.reduce_while({[], streams}, fn event, {results, stream_by_id} ->
-      case append_with_locked_stream(repo, Map.fetch!(stream_by_id, event.stream_id), event) do
+      case append_with_locked_stream(
+             repo,
+             Map.fetch!(stream_by_id, event.stream_id),
+             event,
+             batch?: true
+           ) do
         {:ok, tagged, stream} ->
           {:cont, {[tagged | results], Map.put(stream_by_id, event.stream_id, stream)}}
 
@@ -214,14 +219,21 @@ defmodule Backplane.Memory.Events.Store do
       end
     end)
     |> case do
-      {results, _streams} -> Enum.reverse(results)
+      {results, streams} ->
+        results = Enum.reverse(results)
+        persist_batch_streams(repo, streams)
+
+        case enqueue_batch_effects(repo, results) do
+          :ok -> results
+          {:error, reason} -> repo.rollback(reason)
+        end
     end
   end
 
-  defp append_with_locked_stream(repo, stream, event) do
+  defp append_with_locked_stream(repo, stream, event, opts) do
     case find_duplicate(repo, event.idempotency_key) do
       nil ->
-        case insert_new_event(repo, stream, event) do
+        case insert_new_event(repo, stream, event, opts) do
           {:inserted, inserted, updated_stream} ->
             {:ok, {:inserted, inserted}, updated_stream}
 
@@ -237,7 +249,7 @@ defmodule Backplane.Memory.Events.Store do
     end
   end
 
-  defp insert_new_event(repo, stream, event) do
+  defp insert_new_event(repo, stream, event, opts \\ []) do
     with :ok <- ensure_open(stream),
          :ok <- ensure_stream_metadata_consistent(stream, event) do
       stream = fill_null_metadata(repo, stream, event)
@@ -247,21 +259,25 @@ defmodule Backplane.Memory.Events.Store do
         {:ok, inserted} ->
           last_event_at = greatest_datetime(stream.last_event_at, event.occurred_at)
 
-          repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
-            set: [next_sequence: event.sequence + 1, last_event_at: last_event_at]
-          )
-
           updated_stream = %{
             stream
             | next_sequence: event.sequence + 1,
               last_event_at: last_event_at
           }
 
-          with :ok <- EventNotifier.enqueue(repo, inserted.id),
-               :ok <- enqueue_projection_repair(inserted) do
+          if opts[:batch?] do
             {:inserted, inserted, updated_stream}
           else
-            {:error, reason} -> {:error, reason}
+            repo.update_all(from(s in Stream, where: s.stream_id == ^event.stream_id),
+              set: [next_sequence: event.sequence + 1, last_event_at: last_event_at]
+            )
+
+            with :ok <- EventNotifier.enqueue(repo, inserted.id),
+                 :ok <- enqueue_projection_repair(inserted) do
+              {:inserted, inserted, updated_stream}
+            else
+              {:error, reason} -> {:error, reason}
+            end
           end
 
         {:error, changeset} ->
@@ -280,6 +296,50 @@ defmodule Backplane.Memory.Events.Store do
           end
       end
     end
+  end
+
+  defp persist_batch_streams(repo, streams) do
+    Enum.each(streams, fn {stream_id, stream} ->
+      repo.update_all(from(s in Stream, where: s.stream_id == ^stream_id),
+        set: [next_sequence: stream.next_sequence, last_event_at: stream.last_event_at]
+      )
+    end)
+  end
+
+  defp enqueue_batch_effects(repo, results) do
+    inserted = for {:inserted, event} <- results, do: event
+
+    with :ok <- EventNotifier.enqueue_many(repo, Enum.map(inserted, & &1.id)),
+         :ok <- enqueue_projection_repairs(inserted) do
+      :ok
+    end
+  end
+
+  defp enqueue_projection_repairs(events) do
+    events = Enum.filter(events, &(projection_repair_enabled?() and canonical_subject?(&1)))
+
+    case Application.get_env(:backplane_memory, :projection_repair_enqueue) do
+      enqueue when is_function(enqueue, 1) ->
+        Enum.reduce_while(events, :ok, fn event, :ok ->
+          case enqueue_projection_repair(event) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      nil ->
+        jobs =
+          Enum.map(events, fn event ->
+            ProjectionRepairWorker.new(%{event_id: event.id}, unique: nil)
+          end)
+
+        case Oban.insert_all(jobs) do
+          jobs when length(jobs) == length(events) -> :ok
+          _jobs -> {:error, :transaction_rolled_back}
+        end
+    end
+  rescue
+    _error -> {:error, :transaction_rolled_back}
   end
 
   defp create_and_lock_streams(repo, events) do

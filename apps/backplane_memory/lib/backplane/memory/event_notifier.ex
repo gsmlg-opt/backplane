@@ -56,6 +56,19 @@ defmodule Backplane.Memory.EventNotifier do
     end
   end
 
+  def enqueue_many(_repo, []), do: :ok
+
+  def enqueue_many(repo, event_ids) when is_list(event_ids) do
+    case Ecto.Adapters.SQL.query(
+           repo,
+           "SELECT pg_notify($1, event_id) FROM unnest($2::text[]) AS event_id",
+           [@database_channel, event_ids]
+         ) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def connection_options do
     repo().config()
     |> Keyword.take(@connection_keys)
