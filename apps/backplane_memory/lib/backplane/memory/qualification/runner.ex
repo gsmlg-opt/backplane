@@ -83,10 +83,22 @@ defmodule Backplane.Memory.Qualification.Runner do
          :ok <- validate_batch_size(batch_size) do
       host_id = "m18-ingest-#{run_id}"
       auth = auth_context(host_id)
-      events = Enum.map(1..event_count, &event(host_id, run_id, &1))
+
+      events =
+        Enum.map(1..event_count, fn index ->
+          batch_number = div(index - 1, batch_size) + 1
+          source_sequence = rem(index - 1, batch_size) + 1
+
+          event(host_id, run_id, index,
+            session_id: "#{run_id}-batch-#{batch_number}",
+            source_sequence: source_sequence
+          )
+        end)
+
       started_at = System.monotonic_time()
 
       batches = Enum.chunk_every(events, batch_size)
+      concurrency = length(batches)
 
       results =
         with_projection_repair(fn ->
@@ -102,7 +114,7 @@ defmodule Backplane.Memory.Qualification.Runner do
                   })
                 end)
               end,
-              max_concurrency: min(length(batches), System.schedulers_online()),
+              max_concurrency: concurrency,
               ordered: true,
               timeout: 60_000
             )
@@ -146,7 +158,7 @@ defmodule Backplane.Memory.Qualification.Runner do
          elapsed_ms: elapsed_seconds * 1_000,
          batch_size: batch_size,
          batch_count: length(batches),
-         concurrency: min(length(batches), System.schedulers_online()),
+         concurrency: concurrency,
          projection_jobs_durable: length(projection_jobs),
          projection_job_event_ids_unique:
            projection_job_event_ids |> MapSet.new() |> MapSet.size(),

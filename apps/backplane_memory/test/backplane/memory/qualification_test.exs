@@ -148,6 +148,7 @@ defmodule Backplane.Memory.Qualification.IngestTest do
     assert measurement.events_per_second >= 500
     assert measurement.batch_size == 100
     assert measurement.batch_count == 5
+    assert measurement.concurrency == 5
     assert measurement.projection_jobs_durable == 500
     assert measurement.projection_job_event_ids_unique == 500
     assert measurement.measured_path =~ "Oban projection job commit"
