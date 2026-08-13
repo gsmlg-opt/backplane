@@ -144,6 +144,7 @@ jobs:
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
           mkdir -p artifacts/memory-v2
+          mix compile --force
           mix memory.replay.browser_qualify \
             --report artifacts/memory-v2/memory-v2-replay-browser.json
           mix memory.seed_bench

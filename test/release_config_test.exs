@@ -92,6 +92,16 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "mix memory.replay.browser_qualify"
     assert workflow =~ "memory-v2-replay-browser.json"
     assert workflow =~ "mix memory.eval"
+
+    {sandbox_compile_offset, _} = :binary.match(workflow, "mix compile --force")
+    {seed_offset, _} = :binary.match(workflow, "mix memory.seed_bench")
+
+    {real_pool_offset, _} =
+      :binary.match(workflow, "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify")
+
+    assert sandbox_compile_offset < seed_offset
+    assert seed_offset < real_pool_offset
+
     assert workflow =~ "postgresql-17"
     assert workflow =~ "CREATE EXTENSION IF NOT EXISTS vector"
     assert workflow =~ "installed-release-migration-smoke:"
