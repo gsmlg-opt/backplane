@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Events.Types do
   @min_importance -2_147_483_648
   @max_importance 2_147_483_647
-  @types ~w(session.started session.ended conversation.user_message conversation.agent_message agent.run.started agent.run.completed agent.run.failed tool.call.started tool.call.completed tool.call.failed task.created task.updated task.completed memory.recalled heartbeat.triggered dream.started dream.completed schedule.triggered legacy.observation)
+  @types ~w(session.started session.ended conversation.user_message conversation.agent_message agent.run.started agent.run.completed agent.run.failed tool.call.started tool.call.completed tool.call.failed task.created task.updated task.completed memory.recalled heartbeat.triggered dream.started dream.completed schedule.triggered legacy.observation agent.session.started agent.prompt.submitted agent.tool.completed agent.tool.failed agent.context.pre_compact agent.subagent.started agent.subagent.stopped agent.session.stopped agent.session.ended agent.session.abandoned git.commit.created)
   @aliases %{
     "type" => :event_type,
     "event_type" => :event_type,
@@ -27,7 +27,18 @@ defmodule Backplane.Memory.Events.Types do
     "status" => :status,
     "correlation_id" => :correlation_id,
     "causation_id" => :causation_id,
-    "idempotency_key" => :idempotency_key
+    "idempotency_key" => :idempotency_key,
+    "schema_version" => :schema_version,
+    "integration" => :integration,
+    "scope" => :scope,
+    "parent_session_id" => :parent_session_id,
+    "source_sequence" => :source_sequence,
+    "captured_at" => :captured_at,
+    "payload_hash" => :payload_hash,
+    "privacy" => :privacy,
+    "trace" => :trace,
+    "raw_envelope" => :raw_envelope,
+    "ingest_auth_token_id" => :ingest_auth_token_id
   }
   def accepted_types, do: @types
 

@@ -49,6 +49,30 @@ defmodule Backplane.Skills.HostsTest do
   end
 
   describe "agents" do
+    test "defaults, trims, and validates the registered memory scope" do
+      assert {:ok, defaulted} = Hosts.create_agent(%{"name" => "default-scope"})
+      assert defaulted.memory_scope == "proj_local"
+
+      assert {:ok, scoped} =
+               Hosts.create_agent(%{"name" => "scoped", "memory_scope" => "  project:alpha  "})
+
+      assert scoped.memory_scope == "project:alpha"
+
+      assert {:error, changeset} =
+               Hosts.create_agent(%{"name" => "empty-scope", "memory_scope" => "   "})
+
+      assert {"can't be blank", _} = changeset.errors[:memory_scope]
+    end
+
+    test "name-only update preserves a custom registered memory scope" do
+      assert {:ok, host} =
+               Hosts.create_agent(%{"name" => "before", "memory_scope" => "project:custom"})
+
+      assert {:ok, updated} = Hosts.update_agent(host, %{"name" => "after"})
+      assert updated.name == "after"
+      assert updated.memory_scope == "project:custom"
+    end
+
     test "creates an agent without tokens" do
       assert {:ok, host} = Hosts.create_agent(%{"name" => "t430"})
 

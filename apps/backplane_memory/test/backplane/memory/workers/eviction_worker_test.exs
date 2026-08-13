@@ -41,8 +41,84 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
     |> then(&(!is_nil(&1)))
   end
 
+  defp archived?(id), do: lifecycle(id) == {nil, "archived"}
+
+  defp lifecycle(id) do
+    repo().one(
+      from(m in MemorySchema,
+        where: m.id == ^id,
+        select: {m.deleted_at, m.lifecycle_state}
+      )
+    )
+  end
+
   describe "perform/1" do
-    test "soft-deletes memories where strength * confidence is below threshold" do
+    test "rechecks eligibility after selection so a confidence update prevents eviction" do
+      {:ok, mem} = Memories.remember("racing memory", agent_id: "a", host_id: "h")
+      now = DateTime.utc_now()
+      old_dt = DateTime.add(now, -100 * 86_400, :second)
+      set_accessed_at(mem.id, old_dt)
+      set_confidence(mem.id, 0.1)
+
+      assert mem.id in EvictionWorker.candidate_ids(now, 30, 0.1, 100)
+
+      set_confidence(mem.id, 1.0)
+
+      assert 0 == EvictionWorker.evict_candidates([mem.id], now, 30, 0.1)
+      refute deleted?(mem.id)
+    end
+
+    test "concurrent workers report each eviction only once" do
+      {:ok, mem} = Memories.remember("single weak memory", agent_id: "a", host_id: "h")
+      old_dt = DateTime.add(DateTime.utc_now(), -100 * 86_400, :second)
+      set_accessed_at(mem.id, old_dt)
+      set_confidence(mem.id, 0.1)
+
+      results =
+        1..2
+        |> Task.async_stream(
+          fn _ -> EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 100}}) end,
+          max_concurrency: 2,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, {:ok, %{evicted: count}}} -> count end)
+
+      assert Enum.sum(results) == 1
+      assert archived?(mem.id)
+    end
+
+    test "evicts at most one deterministic batch per run" do
+      memories =
+        for suffix <- 1..3 do
+          {:ok, mem} =
+            Memories.remember("batched weak memory #{suffix}", agent_id: "a", host_id: "h")
+
+          old_dt = DateTime.add(DateTime.utc_now(), -100 * 86_400, :second)
+          set_accessed_at(mem.id, old_dt)
+          set_confidence(mem.id, 0.1)
+          mem
+        end
+
+      expected_ids =
+        memories
+        |> Enum.sort_by(&{&1.inserted_at, &1.id})
+        |> Enum.take(2)
+        |> Enum.map(& &1.id)
+
+      assert EvictionWorker.candidate_ids(DateTime.utc_now(), 30, 0.1, 2) == expected_ids
+
+      assert {:ok, %{evicted: 2}} =
+               EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 2}})
+
+      assert Enum.count(memories, &archived?(&1.id)) == 2
+
+      assert {:ok, %{evicted: 1}} =
+               EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 2}})
+
+      assert Enum.all?(memories, &archived?(&1.id))
+    end
+
+    test "archives memories where strength * confidence is below threshold and audits it" do
       # Insert a memory with a very old accessed_at so it decays heavily
       {:ok, mem} = Memories.remember("old weak memory", agent_id: "a", host_id: "h")
 
@@ -57,7 +133,14 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
 
-      assert deleted?(mem.id)
+      refute deleted?(mem.id)
+      assert {nil, "archived"} = lifecycle(mem.id)
+
+      assert [%{operation: "memory.archive", target_ids: [memory_id], metadata: metadata}] =
+               Backplane.Memory.Audit.list(operation: "memory.archive")
+
+      assert memory_id == mem.id
+      assert metadata["reason"] == "retention"
     end
 
     test "leaves strong recent memories untouched" do
@@ -90,7 +173,8 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       job = %Oban.Job{args: %{}}
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
-      assert deleted?(mem.id)
+      refute deleted?(mem.id)
+      assert {nil, "archived"} = lifecycle(mem.id)
     end
   end
 end

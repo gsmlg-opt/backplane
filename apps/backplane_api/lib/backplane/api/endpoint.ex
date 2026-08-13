@@ -8,8 +8,15 @@ defmodule Backplane.Api.Endpoint do
     same_site: "Lax"
   ]
 
+  # Allows the 512 KiB logical capture payload plus Phoenix's channel envelope,
+  # while bounding hostile frames before JSON decoding and channel dispatch.
+  @host_agent_max_frame_size 640 * 1024
+
   socket("/host-agent/socket", Backplane.Api.HostAgentSocket,
-    websocket: [connect_info: [:x_headers, :peer_data]],
+    websocket: [
+      connect_info: [:x_headers, :peer_data],
+      max_frame_size: @host_agent_max_frame_size
+    ],
     longpoll: false
   )
 

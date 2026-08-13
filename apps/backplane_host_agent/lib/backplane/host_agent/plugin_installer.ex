@@ -9,11 +9,17 @@ defmodule Backplane.HostAgent.PluginInstaller do
       source_parts: ["integrations", "memory"],
       runtimes: %{
         "hermes" => %{
-          required_files: ["plugin.yaml", "__init__.py"],
+          required_files: ["README.md", "plugin.yaml", "__init__.py"],
           target_parts: [".hermes", "plugins", "backplane-memory"]
         },
         "openclaw" => %{
-          required_files: ["package.json", "openclaw.plugin.json", "plugin.mjs"],
+          required_files: [
+            "README.md",
+            "package.json",
+            "openclaw.plugin.json",
+            "plugin.mjs",
+            "plugin.yaml"
+          ],
           target_parts: [".openclaw", "extensions", "backplane-memory"]
         }
       }

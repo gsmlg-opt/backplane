@@ -50,6 +50,16 @@ defmodule Backplane.Skills.AgentManageTest do
     assert authed_token.id == auth_token.id
   end
 
+  test "bounded snapshots report truncation" do
+    for name <- ~w(snapshot-a snapshot-b snapshot-c) do
+      assert {:ok, _host, _auth_token, _token} =
+               Hosts.create_agent_with_token(%{"name" => name})
+    end
+
+    assert %{entries: [_, _], truncated?: true} = AgentManage.list_agents(limit: 2)
+    assert %{entries: [_], truncated?: true} = AgentManage.list_agents(limit: 1)
+  end
+
   test "authenticates from the registry token cache without calling the manager" do
     assert {:ok, host, auth_token, token} = Hosts.create_agent_with_token(%{"name" => "t430"})
 
@@ -88,7 +98,21 @@ defmodule Backplane.Skills.AgentManageTest do
              AgentManage.update_runtime(host.id, %{
                "status" => "syncing",
                "agent_version" => "0.3.0",
-               "targets" => [%{"name" => "agents"}]
+               "targets" => [%{"name" => "agents"}],
+               "metadata" => %{"otp_release" => "28"},
+               "capture" => %{
+                 "connection_state" => "connected",
+                 "spool_depth" => 3,
+                 "spool_bytes" => 4096,
+                 "oldest_event_age_ms" => 7000,
+                 "captured_count" => 12,
+                 "redacted_count" => 4,
+                 "rejected_count" => 2,
+                 "retry_count" => 1,
+                 "dead_letter_count" => 1,
+                 "upload_latency_ms" => 14,
+                 "ack_latency_ms" => 9
+               }
              })
 
     assert :ok =
@@ -103,16 +127,96 @@ defmodule Backplane.Skills.AgentManageTest do
     assert entry.auth_token_id == auth_token.id
     assert entry.runtime.agent_version == "0.3.0"
     assert entry.runtime.targets == [%{"name" => "agents"}]
+    assert entry.runtime.metadata == %{"otp_release" => "28"}
+    assert entry.runtime.capture["spool_depth"] == 3
+    assert %DateTime{} = entry.last_heartbeat_at
+    refute Map.has_key?(entry.runtime.capture, "payload")
     assert entry.config["agent"]["machine_name"] == "t430"
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "capture" => %{
+                 "connection_state" => "disconnected",
+                 "spool_depth" => nil,
+                 "spool_bytes" => nil,
+                 "oldest_event_age_ms" => nil,
+                 "age_warning" => nil,
+                 "captured_count" => nil,
+                 "redacted_count" => nil,
+                 "rejected_count" => nil,
+                 "retry_count" => nil,
+                 "dead_letter_count" => nil,
+                 "upload_latency_ms" => nil,
+                 "ack_latency_ms" => nil
+               }
+             })
+
+    assert {:error, :invalid_payload} =
+             AgentManage.update_runtime(host.id, %{
+               "capture" => %{"payload" => "must not cross the heartbeat boundary"}
+             })
+
+    assert {:error, :invalid_payload} =
+             AgentManage.update_runtime(host.id, %{
+               "metadata" => %{"payload" => "must not cross the heartbeat boundary"}
+             })
+
+    for invalid_version <- ["", %{"payload" => "content"}, ["0.3.0"], String.duplicate("v", 129)] do
+      assert {:error, :invalid_payload} =
+               AgentManage.update_runtime(host.id, %{"agent_version" => invalid_version})
+    end
 
     send(pid, :stop)
 
     assert eventually(fn ->
              case AgentManage.get_agent(host.id) do
-               {:ok, %{status: :offline}} -> true
-               _ -> false
+               {:ok,
+                %{
+                  status: :offline,
+                  last_heartbeat_at: %DateTime{},
+                  runtime: %{agent_version: "0.3.0", capture: %{"spool_depth" => nil}}
+                }} ->
+                 true
+
+               _ ->
+                 false
              end
            end)
+  end
+
+  test "keeps retained capture visibly stale until a fresh capture heartbeat arrives" do
+    assert {:ok, host, auth_token, _token} =
+             Hosts.create_agent_with_token(%{"name" => "capture-reconnect"})
+
+    first_channel = spawn(fn -> Process.sleep(:infinity) end)
+    replacement_channel = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      Process.exit(first_channel, :kill)
+      Process.exit(replacement_channel, :kill)
+    end)
+
+    assert :ok = AgentManage.register_connection(host, auth_token, first_channel, %{})
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "agent_version" => "0.3.0",
+               "capture" => %{"connection_state" => "connected", "spool_depth" => 4}
+             })
+
+    assert {:ok, %{last_heartbeat_at: last_heartbeat_at}} = AgentManage.get_agent(host.id)
+    assert :ok = AgentManage.register_connection(host, auth_token, replacement_channel, %{})
+
+    assert {:ok,
+            %{
+              status: :online,
+              last_heartbeat_at: ^last_heartbeat_at,
+              runtime: %{capture: %{"connection_state" => "disconnected", "spool_depth" => 4}}
+            }} = AgentManage.get_agent(host.id)
+
+    assert :ok = AgentManage.update_runtime(host.id, %{"agent_version" => "0.2.0"})
+    assert {:ok, %{runtime: runtime}} = AgentManage.get_agent(host.id)
+    refute Map.has_key?(runtime, :capture)
   end
 
   test "plugin actions run through the connected host-agent channel" do

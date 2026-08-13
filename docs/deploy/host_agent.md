@@ -23,8 +23,9 @@ tar -xzf host_agent-<version>-<platform>.tar.gz -C ~/.local/opt
 
 ## 2. Register the host on the hub
 
-In the Backplane admin UI (`/admin` → System → Host agents), create a host to
-obtain its `host_id` and auth `token`.
+On the trusted Backplane admin endpoint (port `4101`,
+`/system/host-agents`), create a host to obtain its `host_id` and auth `token`.
+Do not expose the admin endpoint on public ingress.
 
 ## 3. Configure
 

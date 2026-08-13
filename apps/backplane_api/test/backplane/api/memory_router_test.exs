@@ -8,6 +8,9 @@ defmodule Backplane.Api.MemoryRouterTest do
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Coordination.Lease
   alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.Recall.QueryPlan
+  alias Backplane.Memory.Recall.Store, as: RecallStore
+  alias Backplane.Skills.Host
 
   defmodule QueryLLM do
     def expand_query(query), do: {:ok, [query, query <> " expanded"]}
@@ -18,7 +21,10 @@ defmodule Backplane.Api.MemoryRouterTest do
     "memory.pipeline.enabled",
     "memory.events.enabled",
     "memory.events.dual_write",
-    "memory.inject_context"
+    "memory.inject_context",
+    "memory.replay_enabled",
+    "memory.replay_import_enabled",
+    "memory.tools"
   ]
 
   setup do
@@ -33,7 +39,18 @@ defmodule Backplane.Api.MemoryRouterTest do
     :ets.insert(@settings_table, {"memory.events.enabled", true})
     :ets.insert(@settings_table, {"memory.events.dual_write", true})
     :ets.insert(@settings_table, {"memory.inject_context", false})
+    :ets.insert(@settings_table, {"memory.replay_enabled", true})
+    :ets.insert(@settings_table, {"memory.replay_import_enabled", false})
+    :ets.insert(@settings_table, {"memory.tools", "all"})
     Application.put_env(:backplane_memory, :llm_module, QueryLLM)
+
+    host =
+      repo().insert!(
+        Host.changeset(%Host{}, %{
+          name: "memory-router-#{System.unique_integer([:positive])}",
+          memory_scope: "scope:memory-router"
+        })
+      )
 
     on_exit(fn ->
       Enum.each(snapshot, fn {key, rows} ->
@@ -47,10 +64,10 @@ defmodule Backplane.Api.MemoryRouterTest do
       end
     end)
 
-    :ok
+    %{host: host}
   end
 
-  test "observation endpoint passes only the additive event whitelist", %{conn: conn} do
+  test "observation endpoint passes only the additive event whitelist", %{conn: conn, host: host} do
     causation_id = Ecto.UUID.generate()
     forbidden_id = Ecto.UUID.generate()
 
@@ -65,15 +82,15 @@ defmodule Backplane.Api.MemoryRouterTest do
         "stream_id" => "http-explicit-stream",
         "project" => "explicit-project",
         "agent_id" => "explicit-agent",
-        "host_id" => "explicit-host",
-        "client_id" => "explicit-client",
+        "host_id" => host.id,
+        "client_id" => "host:#{host.id}",
         "run_id" => "explicit-run",
         "correlation_id" => "explicit-correlation",
         "causation_id" => causation_id,
         "occurred_at" => "2026-07-16T04:00:00.000000Z",
         "idempotency_key" => "http-explicit-key",
         "id" => forbidden_id,
-        "namespace" => "public",
+        "namespace" => "private",
         "importance" => 100,
         "actor_type" => "user",
         "role" => "user",
@@ -91,8 +108,9 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert event.session_id == "http-explicit-event"
     assert event.project == "explicit-project"
     assert event.agent_id == "explicit-agent"
-    assert event.host_id == "explicit-host"
-    assert event.client_id == "explicit-client"
+    assert event.host_id == host.id
+    assert event.client_id == "host:#{host.id}"
+    assert event.scope == host.memory_scope
     assert event.run_id == "explicit-run"
     assert event.event_type == "task.created"
     assert event.tool_name == "Bash"
@@ -106,6 +124,213 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert event.status == "error"
     assert event.payload["input"] == %{"value" => 1}
     assert event.payload["_backplane"]["legacy_observation_id"] == observation_id
+  end
+
+  test "REST rejects caller-supplied cross-partition ownership", %{conn: conn} do
+    conn =
+      post(conn, "/api/memory/observations", %{
+        "session_id" => "spoofed-rest-owner",
+        "content" => "must not persist",
+        "host_id" => Ecto.UUID.generate(),
+        "namespace" => "team"
+      })
+
+    assert json_response(conn, 403) == %{"error" => "Forbidden"}
+    refute repo().get_by(Event, session_id: "spoofed-rest-owner")
+  end
+
+  test "activity and replay REST routes use the same exact-partition service results", %{
+    conn: conn,
+    host: host
+  } do
+    partition = %{
+      host_id: host.id,
+      client_id: "host:#{host.id}",
+      scope: host.memory_scope,
+      namespace: "private"
+    }
+
+    session = "rest-replay-#{System.unique_integer([:positive])}"
+
+    assert {:ok, {:inserted, _}} =
+             Store.append_tagged(%{
+               id: Ecto.UUID.generate(),
+               stream_id: "capture:#{host.id}:#{session}",
+               host_id: host.id,
+               client_id: partition.client_id,
+               scope: partition.scope,
+               namespace: partition.namespace,
+               session_id: session,
+               sequence: 1,
+               source_sequence: 1,
+               event_type: "agent.session.started",
+               occurred_at: ~U[2026-08-12 00:00:01.000000Z],
+               idempotency_key: "#{session}:1",
+               payload: %{},
+               payload_hash: "sha256:#{session}:1",
+               schema_version: 1
+             })
+
+    assert {:ok, {:inserted, _}} =
+             Store.append_tagged(%{
+               id: Ecto.UUID.generate(),
+               stream_id: "capture:#{host.id}:#{session}",
+               host_id: host.id,
+               client_id: partition.client_id,
+               scope: partition.scope,
+               namespace: partition.namespace,
+               session_id: session,
+               sequence: 2,
+               source_sequence: 2,
+               event_type: "conversation.agent_message",
+               occurred_at: ~U[2026-08-12 00:00:02.000000Z],
+               idempotency_key: "#{session}:2",
+               payload: %{},
+               payload_hash: "sha256:#{session}:2",
+               schema_version: 1
+             })
+
+    assert {:ok, _} = Backplane.Memory.Projections.Rebuild.session(host.id, session)
+
+    assert %{
+             "session_id" => ^session,
+             "host_id" => host_id,
+             "observation_count" => 2,
+             "event_type_breakdown" => %{
+               "agent.session.started" => 1,
+               "conversation.agent_message" => 1
+             },
+             "processing" => processing,
+             "links" => links
+           } =
+             conn
+             |> get("/api/memory/sessions/#{session}")
+             |> json_response(200)
+
+    assert host_id == host.id
+
+    assert Map.keys(processing) |> Enum.sort() ==
+             ~w(crystal embeddings graph lessons profile summary)
+
+    assert Map.keys(links) |> Enum.sort() == ~w(actions crystals lessons memories)
+
+    assert %{"sessions" => [%{"session_id" => ^session}]} =
+             conn
+             |> get("/api/memory/replay/sessions")
+             |> json_response(200)
+
+    assert %{"events" => [%{"kind" => "session_boundary"}, _]} =
+             conn
+             |> recycle()
+             |> get("/api/memory/replay/sessions/#{session}")
+             |> json_response(200)
+
+    assert %{"events" => [_], "next_cursor" => next_cursor} =
+             conn
+             |> recycle()
+             |> get("/api/memory/replay/sessions/#{session}?limit=1")
+             |> json_response(200)
+
+    assert is_binary(next_cursor)
+
+    assert %{"summary" => %{"event_count" => count}} =
+             conn
+             |> recycle()
+             |> get("/api/memory/activity/summary")
+             |> json_response(200)
+
+    assert count >= 1
+  end
+
+  test "replay REST pagination normalizes integers and rejects unknown query fields", %{
+    conn: conn
+  } do
+    assert %{"limit" => 1, "sessions" => sessions} =
+             conn
+             |> get("/api/memory/replay/sessions?limit=1&offset=0")
+             |> json_response(200)
+
+    assert length(sessions) <= 1
+
+    assert %{"error" => "invalid_arguments"} =
+             conn
+             |> recycle()
+             |> get("/api/memory/replay/sessions?unknown=true")
+             |> json_response(400)
+  end
+
+  test "Recall Inspector trace REST parity is exact-partition and strict", %{
+    conn: conn,
+    host: host
+  } do
+    assert {:ok, plan} =
+             QueryPlan.new(%{
+               query: "explain the selected recall",
+               host_id: host.id,
+               client_id: "host:#{host.id}",
+               scope: host.memory_scope,
+               namespace: "private"
+             })
+
+    assert {:ok, run} =
+             RecallStore.create(plan,
+               request_id: Ecto.UUID.generate(),
+               correlation_id: Ecto.UUID.generate()
+             )
+
+    assert %{"run" => %{"id" => run_id}, "candidates" => []} =
+             conn
+             |> get("/api/memory/recall/#{run.id}/trace")
+             |> json_response(200)
+
+    assert run_id == run.id
+
+    assert %{"error" => "invalid_arguments"} =
+             conn
+             |> recycle()
+             |> get("/api/memory/recall/#{run.id}/trace?unknown=true")
+             |> json_response(400)
+  end
+
+  test "session handoff REST parity reads the dynamic data-backed resource", %{
+    conn: conn,
+    host: host
+  } do
+    session_id = "rest-handoff-#{System.unique_integer([:positive])}"
+
+    assert {:ok, {:inserted, _}} =
+             Store.append_tagged(%{
+               id: Ecto.UUID.generate(),
+               stream_id: "capture:#{host.id}:#{session_id}",
+               host_id: host.id,
+               client_id: "host:#{host.id}",
+               scope: host.memory_scope,
+               namespace: "private",
+               project: "backplane",
+               session_id: session_id,
+               sequence: 1,
+               source_sequence: 1,
+               event_type: "agent.session.started",
+               occurred_at: ~U[2026-08-12 00:00:01.000000Z],
+               idempotency_key: "#{session_id}:1",
+               payload: %{},
+               payload_hash: "sha256:#{session_id}:1",
+               schema_version: 1
+             })
+
+    assert %{"uri" => uri, "handoff" => handoff} =
+             conn
+             |> get("/api/memory/sessions/#{session_id}/handoff")
+             |> json_response(200)
+
+    assert uri == "memory://session/#{session_id}/handoff"
+    assert inspect(handoff) =~ session_id
+
+    assert %{"error" => "invalid_arguments"} =
+             conn
+             |> recycle()
+             |> get("/api/memory/sessions/#{session_id}/handoff?unknown=true")
+             |> json_response(400)
   end
 
   test "observation endpoint preserves absent payload versus explicit null", %{conn: conn} do
@@ -172,8 +397,12 @@ defmodule Backplane.Api.MemoryRouterTest do
   test "session end persistence conflict returns retryable 503 and rolls back", %{conn: conn} do
     session_id = "http-end-conflict"
 
-    assert {:ok, _session} =
-             Backplane.Memory.Observations.register_session(session_id, "backplane")
+    assert conn
+           |> post("/api/memory/session/start", %{
+             "session_id" => session_id,
+             "project" => "backplane"
+           })
+           |> json_response(200) == %{"session_id" => session_id}
 
     assert {:ok, _event} =
              Store.append(
@@ -195,33 +424,48 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert repo().get!(Stream, "session:" <> session_id).closed_at == nil
   end
 
-  test "repeat and unknown session ends preserve the existing 200 body", %{conn: conn} do
+  test "repeat session end is idempotent and unknown sessions are hidden", %{conn: conn} do
     session_id = "http-repeat-end"
 
-    assert {:ok, _session} =
-             Backplane.Memory.Observations.register_session(session_id, "backplane")
+    assert conn
+           |> post("/api/memory/session/start", %{
+             "session_id" => session_id,
+             "project" => "backplane"
+           })
+           |> json_response(200) == %{"session_id" => session_id}
 
-    responses =
+    {first, repeat, unknown} =
       Oban.Testing.with_testing_mode(:manual, fn ->
         first = post(conn, "/api/memory/session/end", %{"session_id" => session_id})
         repeat = post(recycle(conn), "/api/memory/session/end", %{"session_id" => session_id})
         unknown = post(recycle(conn), "/api/memory/session/end", %{"session_id" => "unknown"})
-        [first, repeat, unknown]
+        {first, repeat, unknown}
       end)
 
-    assert Enum.map(responses, &json_response(&1, 200)) == [
-             %{"session_id" => session_id, "status" => "ended"},
-             %{"session_id" => session_id, "status" => "ended"},
-             %{"session_id" => "unknown", "status" => "ended"}
-           ]
+    assert json_response(first, 200) == %{"session_id" => session_id, "status" => "ended"}
+    assert json_response(repeat, 200) == %{"session_id" => session_id, "status" => "ended"}
+    assert json_response(unknown, 404) == %{"error" => "session not found"}
   end
 
-  test "activated read and maintenance routes preserve their response bodies", %{conn: conn} do
-    {:ok, source} = Graph.upsert_node(%{type: "Module", name: "Source"})
-    {:ok, target} = Graph.upsert_node(%{type: "File", name: "lib/target.ex"})
+  test "activated read and maintenance routes preserve their response bodies", %{
+    conn: conn,
+    host: host
+  } do
+    partition = %{
+      host_id: host.id,
+      client_id: "host:#{host.id}",
+      scope: host.memory_scope,
+      namespace: "private"
+    }
+
+    {:ok, source} = Graph.upsert_node(%{type: "Module", name: "Source"}, partition)
+    {:ok, target} = Graph.upsert_node(%{type: "File", name: "lib/target.ex"}, partition)
 
     {:ok, _edge} =
-      Graph.insert_edge(%{source_id: source.id, target_id: target.id, relation: "uses"})
+      Graph.insert_edge(
+        %{source_id: source.id, target_id: target.id, relation: "uses"},
+        partition
+      )
 
     updated_at = ~U[2026-07-16 05:00:00.000000Z]
 
@@ -233,12 +477,20 @@ defmodule Backplane.Api.MemoryRouterTest do
       patterns: %{"testing" => 1},
       session_count: 4,
       total_observations: 9,
-      updated_at: updated_at
+      updated_at: updated_at,
+      host_id: partition.host_id,
+      client_id: partition.client_id,
+      scope: partition.scope,
+      namespace: partition.namespace
     })
     |> repo().insert!()
 
     assert {:ok, file_observation} =
-             Backplane.Memory.Observations.record("file-history-session", "updated lib/router.ex")
+             Backplane.Memory.Observations.record(
+               "file-history-session",
+               "updated lib/router.ex",
+               Map.to_list(partition) ++ [trusted_partition: partition]
+             )
 
     audit_id = "11111111-2222-4333-8444-555555555555"
     created_at = ~U[2026-07-16 05:30:00.000000Z]
@@ -250,7 +502,11 @@ defmodule Backplane.Api.MemoryRouterTest do
           operation: "forget",
           actor: "tester",
           target_ids: %{"ids" => ["memory-1"]},
-          metadata: %{"reason" => "test"},
+          metadata:
+            Map.merge(
+              %{"reason" => "test"},
+              Map.new(partition, fn {k, v} -> {to_string(k), v} end)
+            ),
           created_at: created_at
         }
       ])
@@ -260,13 +516,22 @@ defmodule Backplane.Api.MemoryRouterTest do
       action_id: Ecto.UUID.generate(),
       holder_agent_id: "expired-agent",
       acquired_at: DateTime.add(created_at, -120, :second),
-      expires_at: DateTime.add(DateTime.utc_now(), -60, :second)
+      expires_at: DateTime.add(DateTime.utc_now(), -60, :second),
+      host_id: partition.host_id,
+      client_id: partition.client_id,
+      scope: partition.scope,
+      namespace: partition.namespace
     })
     |> repo().insert!()
 
     assert get(conn, "/api/memory/graph/stats") |> json_response(200) == %{
              "node_count_by_type" => %{"File" => 1, "Module" => 1},
-             "edge_count_by_relation" => %{"uses" => 1}
+             "edge_count_by_relation" => %{"uses" => 1},
+             "relation_count_by_domain" => %{
+               "knowledge" => 0,
+               "lifecycle" => 0,
+               "provenance" => 0
+             }
            }
 
     assert get(recycle(conn), "/api/memory/profile?project=backplane") |> json_response(200) == %{
@@ -311,7 +576,13 @@ defmodule Backplane.Api.MemoryRouterTest do
                  "operation" => "forget",
                  "actor" => "tester",
                  "target_ids" => %{"ids" => ["memory-1"]},
-                 "metadata" => %{"reason" => "test"},
+                 "metadata" => %{
+                   "reason" => "test",
+                   "host_id" => host.id,
+                   "client_id" => "host:#{host.id}",
+                   "scope" => host.memory_scope,
+                   "namespace" => "private"
+                 },
                  "created_at" => created_at |> DateTime.to_naive() |> NaiveDateTime.to_iso8601()
                }
              ]
@@ -321,7 +592,15 @@ defmodule Backplane.Api.MemoryRouterTest do
              "status" => "ok",
              "circuit_breaker" => "closed",
              "memory_stats" => [],
-             "active_leases" => 1
+             "active_leases" => 1,
+             "processing" => %{
+               "bounded" => true,
+               "content_exposed" => false,
+               "lesson_candidates" => 0,
+               "projections" => %{},
+               "relation_candidates" => 0,
+               "unembedded_memories" => 0
+             }
            }
 
     assert post(recycle(conn), "/api/memory/heal", %{}) |> json_response(200) == %{

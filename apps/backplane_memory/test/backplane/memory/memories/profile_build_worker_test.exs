@@ -6,13 +6,38 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Workers.ProfileBuildWorker
 
-  defp insert_memory(content, opts \\ []) do
-    defaults = [agent_id: "agent-1", host_id: "host-1"]
+  defp insert_memory(content, opts) do
+    metadata =
+      opts |> Keyword.get(:metadata, %{}) |> Map.put_new("project", Keyword.fetch!(opts, :scope))
+
+    opts = Keyword.put(opts, :metadata, metadata)
+
+    defaults =
+      [agent_id: "agent-1", host_id: "host-1", client_id: "host:host-1", namespace: "private"]
+
     {:ok, mem} = Memories.remember(content, Keyword.merge(defaults, opts))
     mem
   end
 
   describe "perform/1" do
+    test "does not blend projects that share one authorization scope" do
+      scope = "shared-scope-#{System.unique_integer([:positive])}"
+      project = "project-a"
+
+      insert_memory("owned", scope: scope, session_id: "owned", metadata: %{"project" => project})
+
+      insert_memory("foreign",
+        scope: scope,
+        session_id: "foreign",
+        metadata: %{"project" => "project-b"}
+      )
+
+      assert {:ok, :built} = ProfileBuildWorker.perform(job(project, scope))
+      profile = Profiles.get(project, partition(scope))
+      assert profile.total_observations == 1
+      assert profile.source_records["session_ids"] == ["owned"]
+    end
+
     test "builds profile from fixture memories and upserts correctly" do
       project = "test-project-#{System.unique_integer([:positive])}"
 
@@ -38,9 +63,9 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       )
 
       assert {:ok, :built} =
-               ProfileBuildWorker.perform(%Oban.Job{args: %{"project" => project}})
+               ProfileBuildWorker.perform(job(project))
 
-      profile = repo().get(Profile, project)
+      profile = Profiles.get(project, partition(project))
       assert profile != nil
       assert profile.session_count == 2
       assert profile.total_observations == 3
@@ -58,6 +83,13 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
       # all memories use default "semantic" type
       assert profile.patterns["semantic"] == 3
+      assert profile.summary =~ "3 observations"
+      assert profile.summary =~ "2 sessions"
+      assert profile.source_records["memory_ids"] != []
+      assert Enum.sort(profile.source_records["session_ids"]) == ["session-1", "session-2"]
+      assert is_map(profile.active_lessons)
+      assert is_map(profile.recent_crystals)
+      assert is_map(profile.recent_summaries)
     end
 
     test "upserts on second build, replacing previous values" do
@@ -72,6 +104,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       # Insert stale profile so TTL does not block the second build
       repo().insert!(%Profile{
         project: project,
+        host_id: "host-1",
+        client_id: "host:host-1",
+        scope: project,
+        namespace: "private",
         top_concepts: %{},
         top_files: %{},
         patterns: %{},
@@ -80,8 +116,8 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         updated_at: DateTime.add(DateTime.utc_now(), -7200, :second)
       })
 
-      ProfileBuildWorker.perform(%Oban.Job{args: %{"project" => project}})
-      first_profile = repo().get(Profile, project)
+      ProfileBuildWorker.perform(job(project))
+      first_profile = Profiles.get(project, partition(project))
       assert first_profile.total_observations == 1
 
       insert_memory("second memory",
@@ -96,8 +132,8 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         set: [updated_at: DateTime.add(DateTime.utc_now(), -7200, :second)]
       )
 
-      ProfileBuildWorker.perform(%Oban.Job{args: %{"project" => project}})
-      second_profile = repo().get(Profile, project)
+      ProfileBuildWorker.perform(job(project))
+      second_profile = Profiles.get(project, partition(project))
       assert second_profile.total_observations == 2
     end
 
@@ -107,6 +143,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       # Directly insert a fresh profile (updated less than 1 hour ago)
       repo().insert!(%Profile{
         project: project,
+        host_id: "host-1",
+        client_id: "host:host-1",
+        scope: project,
+        namespace: "private",
         top_concepts: %{"cached" => 1},
         top_files: %{},
         patterns: %{},
@@ -116,7 +156,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       })
 
       assert {:ok, :cached} =
-               ProfileBuildWorker.perform(%Oban.Job{args: %{"project" => project}})
+               ProfileBuildWorker.perform(job(project))
     end
 
     test "rebuilds when updated_at is older than 1 hour" do
@@ -126,6 +166,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
       repo().insert!(%Profile{
         project: project,
+        host_id: "host-1",
+        client_id: "host:host-1",
+        scope: project,
+        namespace: "private",
         top_concepts: %{"old" => 1},
         top_files: %{},
         patterns: %{},
@@ -135,18 +179,18 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       })
 
       assert {:ok, :built} =
-               ProfileBuildWorker.perform(%Oban.Job{args: %{"project" => project}})
+               ProfileBuildWorker.perform(job(project))
 
-      profile = repo().get(Profile, project)
+      profile = Profiles.get(project, partition(project))
       # After rebuild, stale "old" concept should be gone (no memories exist)
       assert profile.top_concepts == %{}
     end
   end
 
-  describe "get_or_build/1" do
+  describe "get_or_build/2" do
     test "returns {:building, nil} and enqueues job when no profile exists" do
       project = "test-build-trigger-#{System.unique_integer([:positive])}"
-      assert {:building, nil} = Profiles.get_or_build(project)
+      assert {:building, nil} = Profiles.get_or_build(project, partition(project))
     end
 
     test "returns {:ok, profile} when profile already exists" do
@@ -154,6 +198,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
       repo().insert!(%Profile{
         project: project,
+        host_id: "host-1",
+        client_id: "host:host-1",
+        scope: project,
+        namespace: "private",
         top_concepts: %{"foo" => 3},
         top_files: %{},
         patterns: %{},
@@ -162,9 +210,22 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         updated_at: DateTime.utc_now()
       })
 
-      assert {:ok, profile} = Profiles.get_or_build(project)
+      assert {:ok, profile} = Profiles.get_or_build(project, partition(project))
       assert profile.project == project
       assert profile.total_observations == 5
     end
+  end
+
+  defp partition(project) do
+    %{host_id: "host-1", client_id: "host:host-1", scope: project, namespace: "private"}
+  end
+
+  defp job(project, scope \\ nil) do
+    args =
+      partition(scope || project)
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("project", project)
+
+    %Oban.Job{args: args}
   end
 end

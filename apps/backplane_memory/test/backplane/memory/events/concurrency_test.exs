@@ -227,6 +227,186 @@ defmodule Backplane.Memory.Events.ConcurrencyTest do
     refute loser_stream
   end
 
+  test "concurrent canonical event-ID collisions resolve as conflicts across stream locks" do
+    for topology <- [:same_stream, :cross_stream] do
+      prefix = unique("event-id-race-#{topology}") <> "-" <> Ecto.UUID.generate()
+      stream_a = prefix <> ":a"
+      stream_b = if topology == :same_stream, do: stream_a, else: prefix <> ":b"
+      event_id = Ecto.UUID.generate()
+      occurred_at = DateTime.utc_now()
+      cleanup_on_exit(prefix)
+      parent = self()
+
+      winner_attrs = canonical_event(stream_a, event_id, prefix <> ":winner", occurred_at)
+
+      loser_attrs =
+        stream_b
+        |> canonical_event(event_id, prefix <> ":loser", occurred_at)
+        |> Map.put(:source_sequence, 2)
+
+      winner =
+        Task.async(fn ->
+          unboxed(fn ->
+            Ecto.Multi.new()
+            |> Store.append_multi(:event, winner_attrs)
+            |> Ecto.Multi.run(:barrier, fn _repo, %{event: {:inserted, event}} ->
+              send(parent, {:event_id_winner_uncommitted, topology, self(), event.id})
+
+              receive do
+                {:commit_event_id_winner, ^topology} -> {:ok, :commit}
+              after
+                @task_timeout -> {:error, :barrier_timeout}
+              end
+            end)
+            |> repo().transaction()
+          end)
+        end)
+
+      release_on_exit(winner, {:commit_event_id_winner, topology})
+
+      assert_receive {:event_id_winner_uncommitted, ^topology, winner_pid, ^event_id},
+                     @task_timeout
+
+      assert winner_pid == winner.pid
+
+      loser = Task.async(fn -> unboxed(fn -> Store.append(loser_attrs) end) end)
+      Process.sleep(50)
+      refute Task.yield(loser, 0)
+
+      send(winner.pid, {:commit_event_id_winner, topology})
+
+      assert {:ok, %{event: {:inserted, %Event{id: ^event_id}}}} =
+               Task.await(winner, @task_timeout)
+
+      assert {:error, :idempotency_conflict} = Task.await(loser, @task_timeout)
+
+      assert [%Event{id: ^event_id}] =
+               unboxed(fn -> repo().all(from(e in Event, where: e.id == ^event_id)) end)
+    end
+  end
+
+  test "concurrent canonical source-identity collisions resolve as conflicts across stream locks" do
+    for topology <- [:same_stream, :cross_stream] do
+      prefix = unique("source-identity-race-#{topology}") <> "-" <> Ecto.UUID.generate()
+      stream_a = prefix <> ":a"
+      stream_b = if topology == :same_stream, do: stream_a, else: prefix <> ":b"
+      session_id = prefix <> ":session"
+      occurred_at = DateTime.utc_now()
+      cleanup_on_exit(prefix)
+      parent = self()
+
+      winner_attrs =
+        stream_a
+        |> canonical_event(Ecto.UUID.generate(), prefix <> ":winner", occurred_at)
+        |> Map.put(:session_id, session_id)
+
+      loser_attrs =
+        stream_b
+        |> canonical_event(Ecto.UUID.generate(), prefix <> ":loser", occurred_at)
+        |> Map.put(:session_id, session_id)
+
+      winner =
+        Task.async(fn ->
+          unboxed(fn ->
+            Ecto.Multi.new()
+            |> Store.append_multi(:event, winner_attrs)
+            |> Ecto.Multi.run(:barrier, fn _repo, %{event: {:inserted, event}} ->
+              send(parent, {:source_identity_winner_uncommitted, topology, self(), event.id})
+
+              receive do
+                {:commit_source_identity_winner, ^topology} -> {:ok, :commit}
+              after
+                @task_timeout -> {:error, :barrier_timeout}
+              end
+            end)
+            |> repo().transaction()
+          end)
+        end)
+
+      release_on_exit(winner, {:commit_source_identity_winner, topology})
+
+      assert_receive {:source_identity_winner_uncommitted, ^topology, winner_pid, winner_id},
+                     @task_timeout
+
+      assert winner_pid == winner.pid
+
+      loser = Task.async(fn -> unboxed(fn -> Store.append(loser_attrs) end) end)
+      Process.sleep(50)
+      refute Task.yield(loser, 0)
+
+      send(winner.pid, {:commit_source_identity_winner, topology})
+
+      assert {:ok, %{event: {:inserted, %Event{id: ^winner_id}}}} =
+               Task.await(winner, @task_timeout)
+
+      assert {:error, :idempotency_conflict} = Task.await(loser, @task_timeout)
+
+      assert [%Event{id: ^winner_id}] =
+               unboxed(fn ->
+                 repo().all(
+                   from(e in Event,
+                     where:
+                       e.host_id == "host-1" and e.session_id == ^session_id and
+                         e.source_sequence == 1 and e.event_type == "agent.prompt.submitted" and
+                         like(e.stream_id, ^"#{prefix}%")
+                   )
+                 )
+               end)
+    end
+  end
+
+  test "concurrent canonical writers serialize stream project selection" do
+    prefix = unique("stream-project-race") <> "-" <> Ecto.UUID.generate()
+    stream_id = prefix <> ":stream"
+    cleanup_on_exit(prefix)
+    parent = self()
+
+    winner_attrs =
+      canonical_event(stream_id, Ecto.UUID.generate(), prefix <> ":winner", DateTime.utc_now())
+      |> Map.put(:project, "project-one")
+
+    loser_attrs =
+      canonical_event(stream_id, Ecto.UUID.generate(), prefix <> ":loser", DateTime.utc_now())
+      |> Map.merge(%{project: "project-two", source_sequence: 2})
+
+    winner =
+      Task.async(fn ->
+        unboxed(fn ->
+          Ecto.Multi.new()
+          |> Store.append_multi(:event, winner_attrs)
+          |> Ecto.Multi.run(:barrier, fn _repo, %{event: {:inserted, event}} ->
+            send(parent, {:stream_project_winner_uncommitted, self(), event.id})
+
+            receive do
+              :commit_stream_project_winner -> {:ok, :commit}
+            after
+              @task_timeout -> {:error, :barrier_timeout}
+            end
+          end)
+          |> repo().transaction()
+        end)
+      end)
+
+    release_on_exit(winner, :commit_stream_project_winner)
+
+    assert_receive {:stream_project_winner_uncommitted, winner_pid, winner_id}, @task_timeout
+    assert winner_pid == winner.pid
+
+    loser = Task.async(fn -> unboxed(fn -> Store.append(loser_attrs) end) end)
+    Process.sleep(50)
+    refute Task.yield(loser, 0)
+
+    send(winner.pid, :commit_stream_project_winner)
+
+    assert {:ok, %{event: {:inserted, %Event{id: ^winner_id}}}} =
+             Task.await(winner, @task_timeout)
+
+    assert {:error, :stream_metadata_conflict} = Task.await(loser, @task_timeout)
+
+    assert {%Stream{project: "project-one", next_sequence: 2}, [%Event{id: ^winner_id}]} =
+             unboxed(fn -> {repo().get!(Stream, stream_id), Store.list(stream_id)} end)
+  end
+
   defp concurrent_batch(parent, name, events) do
     Task.async(fn ->
       unboxed(fn ->
@@ -266,11 +446,35 @@ defmodule Backplane.Memory.Events.ConcurrencyTest do
     }
   end
 
+  defp canonical_event(stream_id, event_id, idempotency_key, occurred_at) do
+    %{
+      id: event_id,
+      stream_id: stream_id,
+      event_type: "agent.prompt.submitted",
+      host_id: "host-1",
+      agent_id: "agent-1",
+      integration: "codex",
+      session_id: stream_id,
+      source_sequence: 1,
+      schema_version: 1,
+      occurred_at: occurred_at,
+      idempotency_key: idempotency_key,
+      payload_hash: "sha256:test",
+      privacy: %{"server_filtered" => true},
+      trace: %{},
+      raw_envelope: %{"idempotency_key" => idempotency_key},
+      payload: %{"message" => "hello"}
+    }
+  end
+
   defp cleanup_on_exit(prefix) do
     on_exit(fn ->
       unboxed(fn ->
-        repo().delete_all(from(e in Event, where: like(e.stream_id, ^"#{prefix}%")))
-        repo().delete_all(from(s in Stream, where: like(s.stream_id, ^"#{prefix}%")))
+        repo().transaction(fn ->
+          repo().query!("SET LOCAL session_replication_role = replica")
+          repo().delete_all(from(e in Event, where: like(e.stream_id, ^"#{prefix}%")))
+          repo().delete_all(from(s in Stream, where: like(s.stream_id, ^"#{prefix}%")))
+        end)
       end)
     end)
   end

@@ -76,6 +76,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
        connect_ip: nil,
        connect_ip_source: nil,
        runtime: %{},
+       last_heartbeat_at: nil,
        config: nil,
        last_sync: nil,
        last_error: nil,
@@ -108,7 +109,17 @@ defmodule Backplane.Skills.AgentManage.Manager do
   end
 
   def handle_call({:update_runtime, runtime}, _from, state) do
-    state = %{state | runtime: Map.merge(state.runtime, runtime)}
+    stored_runtime =
+      state.runtime
+      |> discard_omitted_capture(runtime)
+      |> Map.merge(runtime)
+
+    state = %{
+      state
+      | runtime: stored_runtime,
+        last_heartbeat_at: DateTime.utc_now()
+    }
+
     broadcast_changed()
     {:reply, :ok, state}
   end
@@ -206,9 +217,22 @@ defmodule Backplane.Skills.AgentManage.Manager do
         status: :online,
         connected_at: now,
         connect_ip: Map.get(metadata, :connect_ip),
-        connect_ip_source: Map.get(metadata, :connect_ip_source)
+        connect_ip_source: Map.get(metadata, :connect_ip_source),
+        runtime: mark_capture_disconnected(state.runtime)
     }
   end
+
+  defp discard_omitted_capture(stored_runtime, incoming_runtime) do
+    if Map.has_key?(incoming_runtime, :capture),
+      do: stored_runtime,
+      else: Map.delete(stored_runtime, :capture)
+  end
+
+  defp mark_capture_disconnected(%{capture: capture} = runtime) when is_map(capture) do
+    Map.put(runtime, :capture, Map.put(capture, "connection_state", "disconnected"))
+  end
+
+  defp mark_capture_disconnected(runtime), do: runtime
 
   defp remove_connection(state, opts) do
     if is_reference(state.monitor_ref) do
@@ -240,7 +264,6 @@ defmodule Backplane.Skills.AgentManage.Manager do
           channel_pid: nil,
           monitor_ref: nil,
           status: :offline,
-          runtime: %{},
           pending_plugin_calls: %{}
       }
     end)
@@ -256,6 +279,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
       connect_ip: state.connect_ip,
       connect_ip_source: state.connect_ip_source,
       runtime: state.runtime,
+      last_heartbeat_at: state.last_heartbeat_at,
       config: state.config,
       last_sync: state.last_sync,
       last_error: state.last_error,

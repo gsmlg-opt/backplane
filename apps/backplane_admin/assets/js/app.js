@@ -18,6 +18,87 @@ registerBadge()
 registerDialog()
 registerAlert()
 
+const replayShortcutKeys = new Set(["ArrowLeft", "ArrowRight", "Home", "End", " ", "Spacebar"])
+
+function isEditableReplayTarget(target) {
+  if (!(target instanceof Element)) return false
+
+  return Boolean(
+    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")
+  )
+}
+
+const ReplayKeyboard = {
+  mounted() {
+    this.onKeydown = (event) => {
+      if (
+        event.defaultPrevented ||
+        !replayShortcutKeys.has(event.key) ||
+        isEditableReplayTarget(event.target)
+      ) {
+        return
+      }
+
+      if (event.key === " " || event.key === "Spacebar") event.preventDefault()
+      this.pushEvent("keyboard", {key: event.key})
+    }
+
+    window.addEventListener("keydown", this.onKeydown)
+    this.restoreReplayState()
+  },
+
+  updated() {
+    if (!this.replayStateBeforeDisconnect) this.storeReplayState()
+  },
+
+  disconnected() {
+    this.replayStateBeforeDisconnect = this.currentReplayState()
+    this.storeReplayState(this.replayStateBeforeDisconnect)
+  },
+
+  reconnected() {
+    this.restoreReplayState(this.replayStateBeforeDisconnect)
+    this.replayStateBeforeDisconnect = null
+  },
+
+  destroyed() {
+    this.storeReplayState()
+    window.removeEventListener("keydown", this.onKeydown)
+  },
+
+  restoreReplayState(savedState = null) {
+    if (!this.el.dataset.stateKey) return
+
+    const storageKey = `backplane:memory-replay:${this.el.dataset.stateKey}`
+
+    try {
+      const state = savedState || JSON.parse(sessionStorage.getItem(storageKey))
+      if (state) this.pushEvent("restore_view", state)
+    } catch (_error) {
+      sessionStorage.removeItem(storageKey)
+    }
+  },
+
+  currentReplayState() {
+    if (!this.el.dataset.selectedEventId) return null
+
+    return {
+      selected_event_id: this.el.dataset.selectedEventId,
+      active_kinds: JSON.parse(this.el.dataset.activeKinds),
+      speed: this.el.dataset.speed
+    }
+  },
+
+  storeReplayState(state = this.currentReplayState()) {
+    if (!this.el.dataset.stateKey || !state) return
+
+    sessionStorage.setItem(
+      `backplane:memory-replay:${this.el.dataset.stateKey}`,
+      JSON.stringify(state)
+    )
+  }
+}
+
 class LocalTime extends HTMLElement {
   static get observedAttributes() {
     return ["datetime", "format"]
@@ -107,7 +188,7 @@ window.addEventListener("phx:open_external_oauth", (e) => {
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
-  hooks: DuskmoonHooks
+  hooks: {...DuskmoonHooks, ReplayKeyboard}
 })
 
 // Close dialogs when buttons inside dialog forms are clicked

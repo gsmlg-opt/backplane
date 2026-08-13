@@ -435,7 +435,9 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp normalize_tab(_tab), do: {@default_tab, true}
 
   defp normalize_agent_params(params) do
-    Map.update(params, "name", "", &String.trim/1)
+    params
+    |> Map.update("name", "", &String.trim/1)
+    |> Map.update("memory_scope", "proj_local", &String.trim/1)
   end
 
   defp normalize_token_params(params) do
@@ -479,6 +481,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         <:title>Name</:title>
         <form id="agent-name-form" phx-submit="rename_agent" class="space-y-4">
           <.dm_input id="agent-name" name="agent[name]" label="Name" value={@entry.host.name} />
+          <.dm_input id="agent-memory-scope" name="agent[memory_scope]" label="Memory scope" value={@entry.host.memory_scope} />
           <p :if={@error} class="text-sm text-error">{@error}</p>
           <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
         </form>
@@ -825,6 +828,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         <div class="px-5 py-5">
           <form id="host-agent-form" phx-submit="create_agent" class="space-y-4">
             <.dm_input id="agent-name" name="agent[name]" label="Name" value="" placeholder="workstation" />
+            <.dm_input id="agent-memory-scope" name="agent[memory_scope]" label="Memory scope" value="proj_local" />
             <p :if={@error} class="text-sm text-error">{@error}</p>
             <div class="flex flex-wrap justify-end gap-2">
               <.dm_btn type="button" variant="outline" size="sm" phx-click="close_agent_modal">

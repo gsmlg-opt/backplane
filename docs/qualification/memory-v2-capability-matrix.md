@@ -1,0 +1,28 @@
+# Memory V2 capability matrix
+
+This is the release inventory for PRD API-002. A dash means that a surface is
+not appropriate for that operation; it does not mean that the capability is
+unimplemented. Every automated HTTP path is rooted at `/api/memory`, every MCP
+tool has the canonical `memory::` namespace, and every operator path is rooted
+at `/memory`.
+
+| Capability | Operations | Context | REST | MCP or resource | UI | Tests |
+|---|---|---|---|---|---|---|
+| Dashboard | inspect product and operational health | fail-open hook context health | `GET /diagnose` | `memory::stats`, `memory::diagnose` | `/memory` | `operations/dashboard_metrics_test.exs`, `memory_overview_live_test.exs` |
+| Graph | query relations; inspect domain counts; repair projection | recalled graph candidates | `GET /graph/stats`, `POST /heal` | `memory::graph_query`, `memory::graph_stats`, `memory::heal` | `/memory/graph` | `graph/graph_test.exs`, `memory_operator_pages_live_test.exs` |
+| Memories | remember; recall/search/list; inspect evidence and lifecycle; forget/govern | recalled semantic and episodic records | `POST /observations`, `POST /heal` | `memory::remember`, `memory::recall`, `memory::smart_search`, `memory::list`, `memory::relations`, `memory::forget`, `memory::governance_delete`, `memory::verify` | `/memory/memories`, `/memory/memories/:id` | `memories/memory_test.exs`, `memories/evidence_test.exs`, `recall/pipeline_test.exs`, `memory_operator_pages_live_test.exs` |
+| Timeline | inspect ordered events and observations; filter; inspect raw/enriched event | session-aware recall query | `POST /observations` | `memory::timeline` | `/memory/timeline`, `/memory/events/:event_id` | `events/query_test.exs`, `memory_events_live_test.exs`, `memory_operator_pages_live_test.exs` |
+| Sessions | start/end; list/detail; summarize; handoff | `SessionStart`, `UserPromptSubmit`, `PreCompact`, `Stop` | `POST /session/start`, `POST /session/end`, `GET /sessions/:id/handoff` | `memory::sessions`, `memory://session/{id}/handoff`, `session_handoff` prompt | `/memory/sessions` | `context_test.exs`, `projections/session_detail_test.exs`, `memory_operator_pages_live_test.exs` |
+| Lessons | save; recall; strengthen; promote; archive/dispute | active procedural lessons | `POST /lessons`, `POST /lessons/recall`, `POST /lessons/strengthen`, `POST /lessons/promote`, `POST /lessons/archive` | `memory::lesson_save`, `memory::lesson_recall`, `memory::lesson_strengthen`, `memory::lesson_promote`, `memory::lesson_archive`, `memory://lessons/top`, `/lessons` skill | `/memory/lessons`, `/memory/lessons/:id` | `lessons_test.exs`, `lesson_governance_test.exs`, `memory_lessons_live_test.exs` |
+| Actions | create/update; inspect source links; frontier/next; acquire lease; signal | open actions in session handoff | — | `memory::action_create`, `memory::action_update`, `memory::frontier`, `memory::next`, `memory::lease`, `memory::signal_send`, `memory::signal_read` | `/memory/actions` | `coordination/action_test.exs`, `coordination/lease_test.exs`, `memory_operator_pages_live_test.exs` |
+| Crystals | crystallize session/action chain; get/list/search; inspect typed sources | latest completed-work capability in handoff | `POST /crystals/crystallize`, `GET /crystals`, `GET /crystals/:id`, `POST /crystals/search` | `memory::crystallize`, `memory::crystal_get`, `memory::crystal_list`, `memory::crystal_search`, `memory://crystals/latest`, `/recap` skill | `/memory/crystals`, `/memory/crystals/:id` | `crystals_test.exs`, `crystal_action_chain_test.exs`, `memory_crystals_live_test.exs` |
+| Audit | query governance/lifecycle records and correlation; inspect actor and targets | — | `GET /audit` | `memory::audit` | `/memory/audit` | `audit_contract_test.exs`, `memory_operator_pages_live_test.exs` |
+| Activity | summarize daily aggregates and trends; inspect live feed | — | `GET /activity/summary` | `memory::activity_summary`, `memory://activity/summary`, `/activity` skill | `/memory/activity` | `activity_test.exs`, `memory_activity_live_test.exs` |
+| Profile | inspect; rebuild; inspect source links and freshness | project profile at session start | `GET /profile`, `POST /heal` | `memory::profile`, `memory::profile_refresh` | `/memory/profile` | `memories/profile_build_worker_test.exs`, `memory_operator_pages_live_test.exs` |
+| Replay | list/load canonical replay; import host-local Claude JSONL; inspect derived links | `/handoff` skill and session handoff resource | `GET /replay/sessions`, `GET /replay/sessions/:id`, `POST /replay/import` | `memory::replay_sessions`, `memory::replay_load`, `memory::replay_import`, `/handoff` skill | `/memory/replay` | `replay_test.exs`, `replay_link_resolver_test.exs`, `memory_replay_live_test.exs` |
+| Config | inspect and mutate typed settings with audit; diagnose/heal | injection settings govern fail-open behavior | `GET /diagnose`, `POST /heal` | `memory::diagnose`, `memory::heal` | `/memory/config`, `/memory/pipeline` | `config_test.exs`, `memory_operator_pages_live_test.exs`, `memory_pipeline_live_test.exs` |
+| Recall Inspector | execute recall; inspect channel ranks/scores/reranking/token selection/provenance | injected hybrid recall result | `GET /recall/:recall_run_id/trace` | `memory::recall`, `memory::recall_explain`, `memory://recall/{id}/trace`, `recall_context` prompt, `/recall` skill | `/memory/recall`, `/memory/recall/:id` | `recall/pipeline_test.exs`, `recall/store_test.exs`, `memory_recall_inspector_live_test.exs` |
+
+The executable contract tests verify that all named MCP tools remain registered,
+all documented REST paths remain routed, all LiveView roots remain routed, and
+the matrix retains every product capability and surface column.

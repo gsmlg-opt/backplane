@@ -3,6 +3,40 @@ defmodule Backplane.HostAgent.ReporterTest do
 
   alias Backplane.HostAgent.Reporter
 
+  defmodule CaptureSpool do
+    def stats(:capture_spool) do
+      %{
+        pending_depth: 3,
+        pending_bytes: 4096,
+        oldest_occurred_at:
+          DateTime.utc_now() |> DateTime.add(-7, :second) |> DateTime.to_iso8601(),
+        captured_count: 12,
+        redacted_count: 4,
+        rejected_count: 2,
+        retry_count: 1,
+        dead_letter_count: 1
+      }
+    end
+  end
+
+  defmodule CaptureUploader do
+    def status(:capture_uploader) do
+      %{
+        connection_state: :connected,
+        upload_latency_ms: 14,
+        ack_latency_ms: 9
+      }
+    end
+  end
+
+  defmodule UnavailableCaptureSpool do
+    def stats(:capture_spool), do: raise("spool telemetry unavailable")
+  end
+
+  defmodule UnavailableCaptureUploader do
+    def status(:capture_uploader), do: exit(:uploader_telemetry_unavailable)
+  end
+
   test "formats heartbeat payload" do
     config = %{
       machine_name: "t430",
@@ -31,6 +65,66 @@ defmodule Backplane.HostAgent.ReporterTest do
     assert is_binary(hostname)
     assert hostname != ""
     assert otp_release == System.otp_release()
+  end
+
+  test "heartbeat includes content-free capture runtime metrics" do
+    payload =
+      Reporter.heartbeat(%{
+        machine_name: "t430",
+        capture: %{
+          enabled: true,
+          spool: :capture_spool,
+          spool_module: CaptureSpool,
+          uploader: :capture_uploader,
+          uploader_module: CaptureUploader
+        }
+      })
+
+    assert %{
+             "connection_state" => "connected",
+             "spool_depth" => 3,
+             "spool_bytes" => 4096,
+             "oldest_event_age_ms" => age,
+             "captured_count" => 12,
+             "redacted_count" => 4,
+             "rejected_count" => 2,
+             "retry_count" => 1,
+             "dead_letter_count" => 1,
+             "upload_latency_ms" => 14,
+             "ack_latency_ms" => 9
+           } = payload["capture"]
+
+    assert age in 6_000..8_000
+    refute inspect(payload["capture"]) =~ "prompt"
+  end
+
+  test "heartbeat reports unavailable capture measurements when telemetry reads fail" do
+    payload =
+      Reporter.heartbeat(%{
+        machine_name: "t430",
+        capture: %{
+          enabled: true,
+          spool: :capture_spool,
+          spool_module: UnavailableCaptureSpool,
+          uploader: :capture_uploader,
+          uploader_module: UnavailableCaptureUploader
+        }
+      })
+
+    assert %{
+             "connection_state" => "disconnected",
+             "spool_depth" => nil,
+             "spool_bytes" => nil,
+             "oldest_event_age_ms" => nil,
+             "age_warning" => nil,
+             "captured_count" => nil,
+             "redacted_count" => nil,
+             "rejected_count" => nil,
+             "retry_count" => nil,
+             "dead_letter_count" => nil,
+             "upload_latency_ms" => nil,
+             "ack_latency_ms" => nil
+           } = payload["capture"]
   end
 
   test "formats loaded config report payload with token redacted" do

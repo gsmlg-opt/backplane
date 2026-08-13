@@ -18,6 +18,7 @@ defmodule Backplane.HostAgent.Config do
     :manifest_path,
     :work_dir,
     :memory,
+    :capture,
     :telemetry,
     interval_ms: 60_000,
     targets: [],
@@ -67,6 +68,35 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: 50
       max_attempts: 5
       tombstone_relearn: block
+      # Server-triggered imports name an opaque profile; only this host config
+      # resolves that profile to a path and approved roots.
+      import_profiles:
+        claude_default:
+          path: #{Path.join(System.user_home!(), ".claude/projects")}
+          approved_roots:
+            - #{Path.join(System.user_home!(), ".claude/projects")}
+
+    capture:
+      enabled: true
+      db_path: #{Path.join(work_dir, "memory/capture_spool.db")}
+      # Optional: name of an environment variable containing a Base64-encoded
+      # 32-byte AES-256-GCM key. The key itself never belongs in this file.
+      # encryption_key_env: BACKPLANE_CAPTURE_SPOOL_KEY
+      # Lifecycle context injection is opt-in. Its synchronous request is
+      # always capped at 1500ms and uses only a bounded volatile fallback cache.
+      inject_context: false
+      context_timeout_ms: 1200
+      recall_cache_max_entries: 128
+      recall_cache_max_bytes: 2097152
+      recall_cache_ttl_ms: 900000
+      upload_interval_ms: 5000
+      batch_size: 100
+      batch_bytes: 524288
+      spool_max_bytes: 67108864
+      spool_max_age_days: 30
+      retry_base_ms: 1000
+      retry_max_ms: 300000
+      compaction_batch_size: 100
 
     telemetry:
       enabled: true
@@ -162,6 +192,7 @@ defmodule Backplane.HostAgent.Config do
       http_bind: agent["http_bind"] || "127.0.0.1",
       http_port: http_port,
       memory: parse_memory(raw["memory"], work_dir, http_port),
+      capture: parse_capture(raw["capture"], work_dir, http_port),
       telemetry: parse_telemetry(raw["telemetry"], work_dir),
       targets: parse_targets(raw["targets"] || [])
     }
@@ -195,9 +226,34 @@ defmodule Backplane.HostAgent.Config do
       sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000),
       sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50),
       max_attempts: parse_positive_int(raw["max_attempts"], 5),
-      tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"])
+      tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"]),
+      import_profiles: parse_import_profiles(raw["import_profiles"])
     }
   end
+
+  defp parse_import_profiles(profiles) when is_map(profiles) do
+    profiles
+    |> Enum.filter(fn {name, value} ->
+      is_binary(name) and Regex.match?(~r/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/, name) and
+        is_map(value)
+    end)
+    |> Map.new(fn {name, value} ->
+      {name,
+       %{
+         path: expand_path(value["path"]),
+         approved_roots:
+           value
+           |> Map.get("approved_roots", [])
+           |> List.wrap()
+           |> Enum.filter(&is_binary/1)
+           |> Enum.map(&expand_path/1),
+         allow_symlinks: parse_bool(value["allow_symlinks"], false),
+         max_depth: parse_positive_int(value["max_depth"], 12)
+       }}
+    end)
+  end
+
+  defp parse_import_profiles(_profiles), do: %{}
 
   defp memory_enabled_by_default?(port) when is_integer(port) and port > 0, do: true
   defp memory_enabled_by_default?(_port), do: false
@@ -205,6 +261,38 @@ defmodule Backplane.HostAgent.Config do
   defp default_memory_db_path(work_dir) do
     base_dir = work_dir || default_work_dir()
     Path.join(base_dir, "memory/host_agent_memory.db")
+  end
+
+  defp parse_capture(raw, work_dir, http_port) do
+    raw = if is_map(raw), do: raw, else: %{}
+    retry_base_ms = parse_positive_int(raw["retry_base_ms"], 1_000)
+    retry_max_ms = max(parse_positive_int(raw["retry_max_ms"], 300_000), retry_base_ms)
+
+    %{
+      enabled: parse_bool(raw["enabled"], memory_enabled_by_default?(http_port)),
+      db_path: parse_capture_db_path(raw["db_path"], work_dir),
+      encryption_key_env: parse_non_empty_string(raw["encryption_key_env"], nil),
+      inject_context: parse_bool(raw["inject_context"], false),
+      context_timeout_ms: parse_bounded_positive_int(raw["context_timeout_ms"], 1_200, 1_500),
+      recall_cache_max_entries: parse_positive_int(raw["recall_cache_max_entries"], 128),
+      recall_cache_max_bytes: parse_positive_int(raw["recall_cache_max_bytes"], 2 * 1024 * 1024),
+      recall_cache_ttl_ms: parse_positive_int(raw["recall_cache_ttl_ms"], 15 * 60 * 1_000),
+      upload_interval_ms: parse_positive_int(raw["upload_interval_ms"], 5_000),
+      batch_size: parse_bounded_positive_int(raw["batch_size"], 100, 100),
+      batch_bytes: parse_bounded_positive_int(raw["batch_bytes"], 512 * 1024, 512 * 1024),
+      spool_max_bytes: parse_positive_int(raw["spool_max_bytes"], 64 * 1024 * 1024),
+      spool_max_age_days: parse_positive_int(raw["spool_max_age_days"], 30),
+      retry_base_ms: retry_base_ms,
+      retry_max_ms: retry_max_ms,
+      compaction_batch_size: parse_positive_int(raw["compaction_batch_size"], 100)
+    }
+  end
+
+  defp parse_capture_db_path(path, work_dir) do
+    case parse_non_empty_string(path, nil) do
+      nil -> Path.join(work_dir || default_work_dir(), "memory/capture_spool.db")
+      path -> expand_path(path)
+    end
   end
 
   defp parse_bool(nil, default), do: default
@@ -215,6 +303,12 @@ defmodule Backplane.HostAgent.Config do
 
   defp parse_positive_int(value, _default) when is_integer(value) and value > 0, do: value
   defp parse_positive_int(_value, default), do: default
+
+  defp parse_bounded_positive_int(value, _default, maximum)
+       when is_integer(value) and value > 0,
+       do: min(value, maximum)
+
+  defp parse_bounded_positive_int(_value, default, _maximum), do: default
 
   defp parse_non_empty_string(value, default) when is_binary(value) do
     case String.trim(value) do

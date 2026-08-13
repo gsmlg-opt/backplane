@@ -25,12 +25,26 @@ defmodule Backplane.Memory.Memories.Memory do
     field(:content_hash, :binary)
     field(:confidence, :float, default: 1.0)
     field(:access_count, :integer, default: 0)
+    field(:application_count, :integer, default: 0)
     field(:accessed_at, :utc_datetime_usec)
     field(:superseded_by, :binary_id)
     field(:expires_at, :utc_datetime_usec)
     field(:deleted_at, :utc_datetime_usec)
+    field(:lifecycle_state, :string, default: "active")
 
     timestamps(type: :utc_datetime_usec)
+  end
+
+  def lifecycle_changeset(memory, attrs) do
+    memory
+    |> cast(attrs, [:lifecycle_state, :superseded_by, :deleted_at])
+    |> validate_inclusion(
+      :lifecycle_state,
+      ~w(candidate active disputed superseded archived tombstoned)
+    )
+    |> foreign_key_constraint(:superseded_by)
+    |> check_constraint(:lifecycle_state, name: :bpm_memories_lifecycle_columns_check)
+    |> check_constraint(:superseded_by, name: :bpm_memories_superseded_self_check)
   end
 
   def changeset(memory, attrs) do
@@ -49,6 +63,7 @@ defmodule Backplane.Memory.Memories.Memory do
       :embedding_model,
       :confidence,
       :access_count,
+      :application_count,
       :accessed_at,
       :superseded_by,
       :expires_at,
@@ -56,9 +71,11 @@ defmodule Backplane.Memory.Memories.Memory do
     ])
     |> validate_required([:content, :agent_id, :host_id])
     |> validate_inclusion(:memory_type, @valid_types)
+    |> validate_number(:application_count, greater_than_or_equal_to: 0)
+    |> check_constraint(:application_count, name: :bpm_memories_application_count_nonnegative)
     |> derive_content_hash()
-    |> unique_constraint([:content_hash, :scope],
-      name: :bpm_memories_dedup_uniq,
+    |> unique_constraint(:content_hash,
+      name: :bpm_memories_exact_candidate_host_uniq,
       message: "duplicate memory"
     )
   end

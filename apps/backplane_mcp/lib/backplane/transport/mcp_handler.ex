@@ -2,7 +2,7 @@ defmodule Backplane.Transport.McpHandler do
   @moduledoc """
   JSON-RPC dispatcher for MCP protocol messages.
 
-  Handles: initialize, tools/list, tools/call, resources/list, resources/read,
+  Handles: initialize, tools/list, tools/call, resources/list, resources/templates/list, resources/read,
   prompts/list, prompts/get, completion/complete, logging/setLevel, ping,
   elicitation/create, tasks/create, tasks/get, tasks/result, tasks/cancel.
 
@@ -21,7 +21,7 @@ defmodule Backplane.Transport.McpHandler do
   alias Backplane.MCP.Info
   alias Backplane.MCP.JsonRpc
   alias Backplane.Proxy.Upstream
-  alias Backplane.Registry.{InputValidator, ToolRegistry}
+  alias Backplane.Registry.{InputValidator, PromptRegistry, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
   alias Backplane.Telemetry
   alias Backplane.Transport.{Extensions, Session, SSE, TaskManager}
@@ -106,6 +106,7 @@ defmodule Backplane.Transport.McpHandler do
   defp handle_batch(conn, requests) do
     scopes = conn.assigns[:tool_scopes] || ["*"]
     client = conn.assigns[:client]
+    auth = trusted_auth_context(conn)
 
     # Partition into requests needing responses vs notifications
     {to_dispatch, notifications_count} =
@@ -135,7 +136,7 @@ defmodule Backplane.Transport.McpHandler do
         fn
           {:request, method, id, params} ->
             Telemetry.emit_mcp_request(method)
-            dispatch_single(method, id, params, scopes, client)
+            dispatch_single(method, id, params, scopes, client, auth)
 
           {:invalid, response} ->
             response
@@ -149,11 +150,11 @@ defmodule Backplane.Transport.McpHandler do
           result
 
         {{:exit, reason}, {:request, _method, id, _params}} ->
-          Logger.warning("MCP dispatch task crashed: #{inspect(reason)}")
+          Logger.warning("MCP dispatch task crashed", failure: failure_category(reason))
           JsonRpc.error(id, -32_603, "Internal error")
 
         {{:exit, reason}, _} ->
-          Logger.warning("MCP dispatch task crashed: #{inspect(reason)}")
+          Logger.warning("MCP dispatch task crashed", failure: failure_category(reason))
           JsonRpc.error(nil, -32_603, "Internal error")
       end)
 
@@ -183,7 +184,7 @@ defmodule Backplane.Transport.McpHandler do
   defp notification?(_message), do: false
 
   # Batch dispatch: returns a JSON-RPC response map (no conn)
-  defp dispatch_single("tools/list", id, params, scopes, _client) do
+  defp dispatch_single("tools/list", id, params, scopes, _client, _auth) do
     case compute_result("tools/list", id, params) do
       {:result, %{tools: tools} = result} ->
         filtered = Clients.filter_tools(tools, scopes)
@@ -191,10 +192,10 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_single("tools/call", id, %{"name" => name} = params, scopes, client)
+  defp dispatch_single("tools/call", id, %{"name" => name} = params, scopes, client, auth)
        when is_binary(name) and name != "" do
     if Clients.scope_matches?(scopes, name) do
-      case compute_tool_call_result(params, client) do
+      case compute_tool_call_result(params, client, auth) do
         {:result, result} ->
           JsonRpc.result(id, result)
 
@@ -206,7 +207,62 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_single(method, id, params, _scopes, _client) do
+  defp dispatch_single("prompts/list", id, _params, _scopes, _client, auth) do
+    JsonRpc.result(id, %{prompts: list_prompts(auth)})
+  end
+
+  defp dispatch_single("resources/list", id, _params, _scopes, _client, auth) do
+    JsonRpc.result(id, %{resources: list_resources(auth)})
+  end
+
+  defp dispatch_single("resources/templates/list", id, _params, _scopes, _client, auth) do
+    JsonRpc.result(id, %{resourceTemplates: list_resource_templates(auth)})
+  end
+
+  defp dispatch_single("resources/read", id, %{"uri" => uri}, _scopes, _client, auth)
+       when is_binary(uri) do
+    case read_resource(uri, auth) do
+      {:ok, result} -> JsonRpc.result(id, result)
+      {:error, message} -> JsonRpc.error(id, -32_602, message)
+    end
+  end
+
+  defp dispatch_single("prompts/get", id, params, _scopes, _client, auth) do
+    case get_prompt(params || %{}, auth) do
+      {:ok, prompt} -> JsonRpc.result(id, prompt)
+      {:error, code, message} -> JsonRpc.error(id, code, message)
+    end
+  end
+
+  defp dispatch_single("tasks/create", id, %{"name" => name} = params, scopes, _client, auth)
+       when is_binary(name) and name != "" do
+    if Clients.scope_matches?(scopes, name) do
+      case create_task(params, auth) do
+        {:result, result} -> JsonRpc.result(id, result)
+        {:error, code, message} -> JsonRpc.error(id, code, message)
+      end
+    else
+      JsonRpc.error(id, -32_001, "Tool '#{name}' is not in scope for this client")
+    end
+  end
+
+  defp dispatch_single(method, id, params, _scopes, _client, auth)
+       when method in ["tasks/get", "tasks/result", "tasks/cancel"] do
+    case task_operation(method, params || %{}, auth) do
+      {:result, result} -> JsonRpc.result(id, result)
+      {:error, code, message} -> JsonRpc.error(id, code, message)
+    end
+  end
+
+  defp dispatch_single("logging/setLevel", id, params, scopes, _client, _auth) do
+    if logging_authorized?(scopes) do
+      result_response(id, compute_result("logging/setLevel", id, params))
+    else
+      JsonRpc.error(id, -32_001, "logging/setLevel requires an administrative scope")
+    end
+  end
+
+  defp dispatch_single(method, id, params, _scopes, _client, _auth) do
     case compute_result(method, id, params) do
       {:result, result} -> JsonRpc.result(id, result)
       {:error, code, message} -> JsonRpc.error(id, code, message)
@@ -233,7 +289,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("tools/call", _id, %{"name" => name} = params)
        when is_binary(name) and name != "" do
-    compute_tool_call_result(params, nil)
+    compute_tool_call_result(params, nil, %{})
   end
 
   defp compute_result("tools/call", _id, _params) do
@@ -244,6 +300,13 @@ defmodule Backplane.Transport.McpHandler do
     cursor = if is_map(params), do: params["cursor"]
     {resources, _next_cursor} = list_resources(cursor)
     {:result, %{resources: resources}}
+  end
+
+  defp compute_result("resources/templates/list", _id, _params) do
+    {:result,
+     %{
+       resourceTemplates: list_resource_templates(%{kind: :open, client_id: nil, scopes: []})
+     }}
   end
 
   defp compute_result("resources/read", _id, %{"uri" => uri}) when is_binary(uri) do
@@ -257,9 +320,9 @@ defmodule Backplane.Transport.McpHandler do
   defp compute_result("prompts/list", _id, _params), do: {:result, %{prompts: list_prompts()}}
 
   defp compute_result("prompts/get", _id, %{"name" => name}) when is_binary(name) do
-    case get_prompt(name) do
+    case get_prompt(%{"name" => name}, %{kind: :open, client_id: nil, scopes: []}) do
       {:ok, prompt} -> {:result, prompt}
-      {:error, reason} -> {:error, -32_602, "Prompt not found: #{reason}"}
+      {:error, code, message} -> {:error, code, message}
     end
   end
 
@@ -279,8 +342,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result("logging/setLevel", _id, %{"level" => level})
        when level in ~w(debug info notice warning error critical alert emergency) do
-    Logger.configure(level: String.to_existing_atom(level))
-    Logger.info("MCP client set log level to #{level}")
+    Logger.info("MCP logging preference accepted", requested_level: level)
     {:result, %{}}
   end
 
@@ -299,16 +361,8 @@ defmodule Backplane.Transport.McpHandler do
   # Tasks (2025-11-25 experimental)
   defp compute_result("tasks/create", _id, %{"name" => tool_name} = params)
        when is_binary(tool_name) and tool_name != "" do
-    arguments = params["arguments"] || %{}
-    session_id = params["_session_id"]
-
-    case TaskManager.create(tool_name, arguments, session_id) do
-      {:ok, task_id} ->
-        {:result, %{id: task_id, status: "working"}}
-
-      {:error, reason} ->
-        {:error, -32_603, "Failed to create task: #{reason}"}
-    end
+    _params = params
+    {:error, -32_603, "Task creation requires authenticated dispatch"}
   end
 
   defp compute_result("tasks/create", _id, _params) do
@@ -316,10 +370,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp compute_result("tasks/get", _id, %{"id" => task_id}) when is_binary(task_id) do
-    case TaskManager.get(task_id) do
-      nil -> {:error, -32_602, "Task not found: #{task_id}"}
-      task -> {:result, format_task(task)}
-    end
+    _task_id = task_id
+    {:error, -32_603, "Task access requires authenticated dispatch"}
   end
 
   defp compute_result("tasks/get", _id, _params) do
@@ -327,10 +379,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp compute_result("tasks/result", _id, %{"id" => task_id}) when is_binary(task_id) do
-    case TaskManager.result(task_id) do
-      {:ok, result} -> {:result, result}
-      {:error, reason} -> {:error, -32_602, reason}
-    end
+    _task_id = task_id
+    {:error, -32_603, "Task access requires authenticated dispatch"}
   end
 
   defp compute_result("tasks/result", _id, _params) do
@@ -338,10 +388,8 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp compute_result("tasks/cancel", _id, %{"id" => task_id}) when is_binary(task_id) do
-    case TaskManager.cancel(task_id) do
-      :ok -> {:result, %{id: task_id, status: "cancelled"}}
-      {:error, reason} -> {:error, -32_602, reason}
-    end
+    _task_id = task_id
+    {:error, -32_603, "Task access requires authenticated dispatch"}
   end
 
   defp compute_result("tasks/cancel", _id, _params) do
@@ -350,7 +398,7 @@ defmodule Backplane.Transport.McpHandler do
 
   defp compute_result(_method, _id, _params), do: {:error, -32_601, "Method not found"}
 
-  defp compute_tool_call_result(%{"name" => name} = params, client)
+  defp compute_tool_call_result(%{"name" => name} = params, client, auth)
        when is_binary(name) and name != "" do
     arguments = params["arguments"] || %{}
 
@@ -358,7 +406,7 @@ defmodule Backplane.Transport.McpHandler do
       :ok ->
         Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
 
-        case dispatch_tool_call(name, arguments) do
+        case dispatch_tool_call(name, arguments, auth) do
           {:ok, result} ->
             maybe_log_skill_load(client, name, result)
             Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
@@ -434,6 +482,78 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
+  defp dispatch(conn, "prompts/list", id, _params) do
+    json_rpc_result(conn, id, %{prompts: list_prompts(trusted_auth_context(conn))})
+  end
+
+  defp dispatch(conn, "resources/list", id, _params) do
+    json_rpc_result(conn, id, %{resources: list_resources(trusted_auth_context(conn))})
+  end
+
+  defp dispatch(conn, "resources/templates/list", id, _params) do
+    json_rpc_result(conn, id, %{
+      resourceTemplates: list_resource_templates(trusted_auth_context(conn))
+    })
+  end
+
+  defp dispatch(conn, "resources/read", id, %{"uri" => uri}) when is_binary(uri) do
+    case read_resource(uri, trusted_auth_context(conn)) do
+      {:ok, result} -> json_rpc_result(conn, id, result)
+      {:error, message} -> json_rpc_error(conn, id, -32_602, message)
+    end
+  end
+
+  defp dispatch(conn, "resources/read", id, _params) do
+    json_rpc_error(conn, id, -32_602, "Invalid params: 'uri' is required")
+  end
+
+  defp dispatch(conn, "prompts/get", id, params) do
+    auth = trusted_auth_context(conn)
+
+    case get_prompt(params || %{}, auth) do
+      {:ok, prompt} ->
+        json_rpc_result(conn, id, prompt)
+
+      {:error, code, message} ->
+        json_rpc_error(conn, id, code, message)
+    end
+  end
+
+  defp dispatch(conn, "tasks/create", id, %{"name" => name} = params)
+       when is_binary(name) and name != "" do
+    scopes = conn.assigns[:tool_scopes] || ["*"]
+
+    if Clients.scope_matches?(scopes, name) do
+      case create_task(params, trusted_auth_context(conn)) do
+        {:result, result} -> json_rpc_result(conn, id, result)
+        {:error, code, message} -> json_rpc_error(conn, id, code, message)
+      end
+    else
+      out_of_scope_tool(conn, id, name)
+    end
+  end
+
+  defp dispatch(conn, method, id, params)
+       when method in ["tasks/get", "tasks/result", "tasks/cancel"] do
+    case task_operation(method, params || %{}, trusted_auth_context(conn)) do
+      {:result, result} -> json_rpc_result(conn, id, result)
+      {:error, code, message} -> json_rpc_error(conn, id, code, message)
+    end
+  end
+
+  defp dispatch(conn, "logging/setLevel", id, params) do
+    scopes = conn.assigns[:tool_scopes] || []
+
+    if logging_authorized?(scopes) do
+      case compute_result("logging/setLevel", id, params) do
+        {:result, result} -> json_rpc_result(conn, id, result)
+        {:error, code, message} -> json_rpc_error(conn, id, code, message)
+      end
+    else
+      json_rpc_error(conn, id, -32_001, "logging/setLevel requires an administrative scope")
+    end
+  end
+
   # All remaining methods delegate to compute_result to avoid duplication
   defp dispatch(conn, method, id, params) do
     case compute_result(method, id, params) do
@@ -477,15 +597,17 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp dispatch_validated_tool_call(conn, id, name, arguments) do
+    auth = trusted_auth_context(conn)
+
     if SSE.streaming_requested?(conn) do
-      dispatch_tool_call_sse(conn, id, name, arguments)
+      dispatch_tool_call_sse(conn, id, name, arguments, auth)
     else
-      dispatch_tool_call_json(conn, id, name, arguments)
+      dispatch_tool_call_json(conn, id, name, arguments, auth)
     end
   end
 
-  defp dispatch_tool_call_json(conn, id, name, arguments) do
-    case dispatch_tool_call(name, arguments) do
+  defp dispatch_tool_call_json(conn, id, name, arguments, auth) do
+    case dispatch_tool_call(name, arguments, auth) do
       {:ok, result} ->
         maybe_log_skill_load(conn, name, result)
         json_rpc_result(conn, id, build_tool_call_result(name, result))
@@ -498,13 +620,13 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp dispatch_tool_call_sse(conn, id, name, arguments) do
+  defp dispatch_tool_call_sse(conn, id, name, arguments, auth) do
     start_time = System.monotonic_time()
     Telemetry.emit_sse_start(name)
     conn = SSE.start_stream(conn)
 
     conn =
-      case dispatch_tool_call(name, arguments) do
+      case dispatch_tool_call(name, arguments, auth) do
         {:ok, result} ->
           maybe_log_skill_load(conn, name, result)
           SSE.send_event(conn, id, build_tool_call_result(name, result))
@@ -532,25 +654,72 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   @doc "Execute a tool call by name. Used by admin UI test call form."
-  def dispatch_tool_call(name, args) do
+  def dispatch_tool_call(name, args), do: dispatch_tool_call(name, args, %{})
+
+  def dispatch_tool_call(name, args, auth) when is_map(auth) do
     Telemetry.span_tool_call(name, fn ->
-      name |> ToolRegistry.resolve() |> execute_tool(name, args)
+      name |> ToolRegistry.resolve() |> execute_tool(name, args, auth)
     end)
   end
 
-  defp execute_tool({:native, module, handler}, name, args) do
+  defp create_task(%{"name" => tool_name} = params, auth) do
+    arguments = params["arguments"] || %{}
+
+    case validate_tool_args(tool_name, arguments) do
+      :ok ->
+        case TaskManager.create(tool_name, arguments, params["_session_id"], auth) do
+          {:ok, task_id} -> {:result, %{id: task_id, status: "working"}}
+          {:error, reason} -> {:error, -32_603, "Failed to create task: #{reason}"}
+        end
+
+      {:error, reason} ->
+        {:error, -32_602, "Invalid params: #{reason}"}
+    end
+  end
+
+  defp task_operation("tasks/get", %{"id" => task_id}, auth) when is_binary(task_id) do
+    case TaskManager.get(task_id, auth) do
+      nil -> {:error, -32_602, "Task not found"}
+      task -> {:result, format_task(task)}
+    end
+  end
+
+  defp task_operation("tasks/result", %{"id" => task_id}, auth) when is_binary(task_id) do
+    case TaskManager.result(task_id, auth) do
+      {:ok, result} -> {:result, result}
+      {:error, "task not found"} -> {:error, -32_602, "Task not found"}
+      {:error, reason} -> {:error, -32_602, reason}
+    end
+  end
+
+  defp task_operation("tasks/cancel", %{"id" => task_id}, auth) when is_binary(task_id) do
+    case TaskManager.cancel(task_id, auth) do
+      :ok -> {:result, %{id: task_id, status: "cancelled"}}
+      {:error, "task not found"} -> {:error, -32_602, "Task not found"}
+      {:error, reason} -> {:error, -32_602, reason}
+    end
+  end
+
+  defp task_operation(_method, _params, _auth) do
+    {:error, -32_602, "Invalid params: 'id' is required"}
+  end
+
+  defp execute_tool({:native, module, handler}, name, args, _auth) do
     call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
     module.call(call_args)
   rescue
     e ->
-      Logger.error(
-        "Native tool crash: tool=#{name} module=#{inspect(module)} handler=#{inspect(handler)} error=#{Exception.message(e)}"
+      Logger.error("Native tool crashed",
+        tool: name,
+        module: inspect(module),
+        handler: inspect(handler),
+        failure: failure_category(e)
       )
 
       {:error, "Tool #{name} failed: #{Exception.message(e)}"}
   end
 
-  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args) do
+  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args, _auth) do
     # Check if upstream tool caching is configured
     case upstream_cache_ttl(name) do
       nil ->
@@ -576,8 +745,24 @@ defmodule Backplane.Transport.McpHandler do
     end
   end
 
-  defp execute_tool({:managed, handler}, name, args) when is_function(handler, 1) do
-    case handler.(args) do
+  defp execute_tool({:managed, handler}, name, args, auth) when is_function(handler, 2) do
+    managed_tool_result(handler.(args, auth), name)
+  rescue
+    e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
+  end
+
+  defp execute_tool({:managed, handler}, name, args, _auth) when is_function(handler, 1) do
+    managed_tool_result(handler.(args), name)
+  rescue
+    e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
+  end
+
+  defp execute_tool(:not_found, name, _args, _auth) do
+    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
+  end
+
+  defp managed_tool_result(result, name) do
+    case result do
       {:ok, result} ->
         {:ok, result}
 
@@ -590,12 +775,6 @@ defmodule Backplane.Transport.McpHandler do
       {:error, reason} ->
         {:error, "Managed tool #{name} failed: #{inspect(reason)}"}
     end
-  rescue
-    e -> {:error, "Managed tool #{name} failed: #{Exception.message(e)}"}
-  end
-
-  defp execute_tool(:not_found, name, _args) do
-    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
   end
 
   defp maybe_log_skill_load(%Plug.Conn{} = conn, "skill::load", result) when is_map(result) do
@@ -638,8 +817,10 @@ defmodule Backplane.Transport.McpHandler do
         {:ok, result}
 
       {:error, reason} ->
-        Logger.warning(
-          "Upstream tool call failed: tool=#{name} original=#{original_tool_name} error=#{inspect(reason)}"
+        Logger.warning("Upstream tool call failed",
+          tool: name,
+          original_tool: original_tool_name,
+          failure: failure_category(reason)
         )
 
         {:error, "Tool #{name} failed: #{reason}"}
@@ -685,29 +866,106 @@ defmodule Backplane.Transport.McpHandler do
 
   defp parse_ttl(_), do: nil
 
-  # Resources: no longer backed by doc chunks — return empty
+  defp list_resources(auth) do
+    service = memory_service()
 
-  defp list_resources(_cursor), do: {[], nil}
+    resources =
+      if Code.ensure_loaded?(service) and function_exported?(service, :resources, 1),
+        do: apply(service, :resources, [auth]),
+        else: []
 
-  # Prompts: skills as MCP prompts
-
-  defp list_prompts do
-    SkillsRegistry.list()
-    |> Enum.map(fn skill ->
+    resources
+    |> Enum.map(fn resource ->
       %{
-        name: skill.name,
-        description: skill.description,
-        arguments: build_prompt_arguments(skill)
+        uri: resource.uri,
+        name: resource.name,
+        description: resource.description,
+        mimeType: resource.mime_type
       }
     end)
   end
 
-  defp get_prompt(name) do
+  defp list_resource_templates(auth) do
+    service = memory_service()
+
+    templates =
+      if Code.ensure_loaded?(service) and function_exported?(service, :resource_templates, 1),
+        do: apply(service, :resource_templates, [auth]),
+        else: []
+
+    Enum.map(templates, fn template ->
+      %{
+        uriTemplate: template.uri_template,
+        name: template.name,
+        description: template.description,
+        mimeType: template.mime_type
+      }
+    end)
+  end
+
+  defp read_resource(uri, auth) do
+    service = memory_service()
+
+    result =
+      if Code.ensure_loaded?(service) and function_exported?(service, :read_resource, 2),
+        do: apply(service, :read_resource, [uri, auth]),
+        else: {:error, :not_found}
+
+    case result do
+      {:ok, text} ->
+        {:ok, %{contents: [%{uri: uri, mimeType: "application/json", text: text}]}}
+
+      {:error, :not_found} ->
+        {:error, "Resource not found: #{uri}"}
+
+      {:error, _reason} ->
+        {:error, "Resource unavailable"}
+    end
+  end
+
+  defp memory_service,
+    do: Application.get_env(:backplane_mcp, :memory_service, Backplane.Memory.Service)
+
+  # Prompts: skills as MCP prompts
+
+  defp list_prompts(auth \\ %{kind: :open, client_id: nil, scopes: []}) do
+    managed = PromptRegistry.list()
+    reserved_names = MapSet.new(managed, & &1.name)
+
+    skills =
+      SkillsRegistry.list()
+      |> Enum.reject(&MapSet.member?(reserved_names, &1.name))
+      |> Enum.map(fn skill ->
+        %{
+          name: skill.name,
+          description: skill.description,
+          arguments: build_prompt_arguments(skill)
+        }
+      end)
+
+    managed_prompts =
+      managed
+      |> Enum.filter(&managed_prompt_authorized?(&1, auth))
+      |> Enum.map(& &1.descriptor)
+
+    Enum.sort_by(skills ++ managed_prompts, &(&1[:name] || &1["name"]))
+  end
+
+  defp get_prompt(%{"name" => name} = params, auth) when is_binary(name) and name != "" do
+    case PromptRegistry.lookup(name) do
+      nil -> get_skill_prompt(name)
+      entry -> get_managed_prompt(entry, params["arguments"] || %{}, auth)
+    end
+  end
+
+  defp get_prompt(_params, _auth), do: {:error, -32_602, "Invalid params: 'name' is required"}
+
+  defp get_skill_prompt(name) do
     skills = SkillsRegistry.list()
 
     case Enum.find(skills, &(&1.name == name)) do
       nil ->
-        {:error, "not found"}
+        {:error, -32_602, "Prompt not found: not found"}
 
       skill ->
         case SkillsRegistry.fetch(skill.id) do
@@ -724,10 +982,91 @@ defmodule Backplane.Transport.McpHandler do
              }}
 
           {:error, :not_found} ->
-            {:error, "not found"}
+            {:error, -32_602, "Prompt not found: not found"}
         end
     end
   end
+
+  defp get_managed_prompt(entry, arguments, auth) when is_map(arguments) do
+    if managed_prompt_authorized?(entry, auth) do
+      case invoke_managed_prompt(entry, arguments, auth) do
+        {:ok, prompt} ->
+          {:ok, prompt}
+
+        {:error, :invalid_arguments} ->
+          {:error, -32_602, "Invalid params"}
+
+        {:error, :not_found} ->
+          {:error, -32_602, "Prompt not found: not found"}
+
+        {:error, :unauthorized} ->
+          {:error, -32_602, "Prompt not found: not found"}
+
+        {:error, _reason} ->
+          log_managed_prompt_failure(entry)
+          {:error, -32_603, "Internal error"}
+
+        :internal_error ->
+          log_managed_prompt_failure(entry)
+          {:error, -32_603, "Internal error"}
+      end
+    else
+      {:error, -32_602, "Prompt not found: not found"}
+    end
+  end
+
+  defp get_managed_prompt(_entry, _arguments, _auth),
+    do: {:error, -32_602, "Invalid params: 'arguments' must be an object"}
+
+  defp invoke_managed_prompt(entry, arguments, auth) do
+    entry.service.get_prompt(entry.name, arguments, auth)
+  rescue
+    _exception -> :internal_error
+  catch
+    _kind, _reason -> :internal_error
+  end
+
+  defp log_managed_prompt_failure(entry) do
+    Logger.warning("Managed prompt failed",
+      prompt_name: entry.name,
+      prompt_service: inspect(entry.service)
+    )
+  end
+
+  defp managed_prompt_authorized?(entry, %{kind: kind, client_id: client_id, scopes: scopes})
+       when kind in [:oauth, :client_token] and is_binary(client_id) and client_id != "" and
+              is_list(scopes) do
+    entry.permission in scopes or "*" in scopes or "#{entry.prefix}::*" in scopes or
+      entry.scope_target in scopes
+  end
+
+  defp managed_prompt_authorized?(_entry, %{kind: kind}) when kind in [:open, :legacy],
+    do: true
+
+  defp managed_prompt_authorized?(_entry, _auth), do: false
+
+  defp trusted_auth_context(conn) do
+    case conn.assigns[:resource_auth] do
+      auth when is_map(auth) ->
+        Map.take(auth, [:kind, :client_id, :scopes, :subject, :principal_metadata])
+
+      _ ->
+        %{kind: :open, client_id: nil, scopes: [], subject: nil, principal_metadata: %{}}
+    end
+  end
+
+  defp logging_authorized?(scopes) when is_list(scopes) do
+    Enum.any?(scopes, &(&1 in ["*", "memory.admin", "admin::*"]))
+  end
+
+  defp logging_authorized?(_scopes), do: false
+
+  defp failure_category(%module{}), do: inspect(module)
+  defp failure_category(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_category(_reason), do: "runtime_failure"
+
+  defp result_response(id, {:result, result}), do: JsonRpc.result(id, result)
+  defp result_response(id, {:error, code, message}), do: JsonRpc.error(id, code, message)
 
   defp build_prompt_arguments(skill) do
     tools = skill[:tools] || []

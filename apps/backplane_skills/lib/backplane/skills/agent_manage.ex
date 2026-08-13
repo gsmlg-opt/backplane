@@ -128,6 +128,33 @@ defmodule Backplane.Skills.AgentManage do
     :exit, _ -> []
   end
 
+  @doc "Returns a capped runtime snapshot and reports when additional managers exist."
+  @spec list_agents(keyword()) :: %{entries: [map()], truncated?: boolean()}
+  def list_agents(opts) when is_list(opts) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    if is_integer(limit) and limit in 1..100 and Keyword.keys(opts) == [:limit] do
+      hosts = Repo.all(from(h in Host, order_by: [asc: h.name, asc: h.id], limit: ^(limit + 1)))
+
+      entries =
+        hosts
+        |> Enum.take(limit)
+        |> Enum.flat_map(fn host ->
+          case get_agent(host.id) do
+            {:ok, entry} -> [entry]
+            {:error, :not_found} -> []
+          end
+        end)
+
+      %{entries: entries, truncated?: length(hosts) > limit}
+    else
+      %{entries: [], truncated?: false}
+    end
+  catch
+    :error, :badarg -> %{entries: [], truncated?: false}
+    :exit, _ -> %{entries: [], truncated?: false}
+  end
+
   @doc "List connected agents only."
   @spec list_connected() :: [map()]
   def list_connected do
@@ -354,18 +381,28 @@ defmodule Backplane.Skills.AgentManage do
   defp normalize_runtime(payload) do
     payload = stringify_keys(payload)
 
-    with :ok <- validate_targets(payload),
-         :ok <- validate_metadata(payload) do
+    with :ok <- validate_agent_version(payload),
+         :ok <- validate_targets(payload),
+         :ok <- validate_metadata(payload),
+         :ok <- validate_capture(payload) do
       runtime =
         %{}
         |> maybe_put(:status, payload["status"] || "online")
         |> maybe_put(:agent_version, payload["agent_version"])
         |> maybe_put(:targets, payload["targets"])
         |> maybe_put(:metadata, payload["metadata"])
+        |> maybe_put(:capture, payload["capture"])
 
       {:ok, runtime}
     end
   end
+
+  defp validate_agent_version(%{"agent_version" => version})
+       when is_binary(version) and byte_size(version) in 1..128,
+       do: :ok
+
+  defp validate_agent_version(%{"agent_version" => _version}), do: {:error, :invalid_payload}
+  defp validate_agent_version(_payload), do: :ok
 
   defp validate_targets(%{"targets" => targets}) when not is_list(targets) do
     {:error, :invalid_payload}
@@ -373,11 +410,37 @@ defmodule Backplane.Skills.AgentManage do
 
   defp validate_targets(_payload), do: :ok
 
-  defp validate_metadata(%{"metadata" => metadata}) when not is_map(metadata) do
-    {:error, :invalid_payload}
+  defp validate_metadata(%{"metadata" => metadata}) when is_map(metadata) do
+    case metadata do
+      %{"otp_release" => release} when is_binary(release) and map_size(metadata) == 1 -> :ok
+      _ -> {:error, :invalid_payload}
+    end
   end
 
+  defp validate_metadata(%{"metadata" => _metadata}), do: {:error, :invalid_payload}
   defp validate_metadata(_payload), do: :ok
+
+  defp validate_capture(%{"capture" => capture}) when is_map(capture) do
+    allowed =
+      MapSet.new(
+        ~w(connection_state spool_depth spool_bytes oldest_event_age_ms age_warning captured_count redacted_count rejected_count retry_count dead_letter_count upload_latency_ms ack_latency_ms)
+      )
+
+    valid_keys? = Enum.all?(Map.keys(capture), &MapSet.member?(allowed, &1))
+
+    valid_values? =
+      Enum.all?(capture, fn
+        {"connection_state", value} -> value in ~w(connected disconnected disabled)
+        {key, nil} when key != "connection_state" -> true
+        {"age_warning", value} -> is_boolean(value)
+        {_key, value} -> is_number(value) and value >= 0
+      end)
+
+    if valid_keys? and valid_values?, do: :ok, else: {:error, :invalid_payload}
+  end
+
+  defp validate_capture(%{"capture" => _capture}), do: {:error, :invalid_payload}
+  defp validate_capture(_payload), do: :ok
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

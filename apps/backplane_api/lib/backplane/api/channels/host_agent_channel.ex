@@ -1,13 +1,20 @@
 defmodule Backplane.Api.HostAgentChannel do
-  use Backplane.Api, :channel
+  use Phoenix.Channel, log_join: false, log_handle_in: false
 
   require Logger
 
   alias Backplane.AgentTraces
+  alias Backplane.Clients
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, SyncStatuses}
   alias Backplane.Transport.McpHandler
+
+  @max_memory_event_batch_size 100
+  @max_memory_event_payload_bytes 512 * 1024
+  @max_memory_sync_batch_size 50
+  @max_memory_sync_payload_bytes 512 * 1024
+  @default_host_agent_scopes ~w(host_agent.capture host_agent.recall host_agent.import)
 
   @impl true
   def join("host_agent:" <> host_id, payload, socket) do
@@ -134,7 +141,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("memory_call", %{"method" => method, "arguments" => args}, socket)
       when is_binary(method) and is_map(args) do
-    case dispatch_memory(method, args, socket.assigns.host.id) do
+    case dispatch_memory(method, args, socket.assigns.host, host_agent_scopes()) do
       {:ok, result} ->
         {:reply, {:ok, %{"ok" => true, "result" => result}}, socket}
 
@@ -148,8 +155,11 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   def handle_in("mcp_tools_list", payload, socket) when is_map(payload) do
+    auth = host_memory_auth(socket.assigns.host, host_agent_scopes())
+
     tools =
       ToolRegistry.list_all()
+      |> Clients.filter_tools(auth.scopes)
       |> Enum.map(&tool_to_json/1)
 
     {:reply, {:ok, %{"ok" => true, "result" => %{"tools" => tools}}}, socket}
@@ -161,12 +171,18 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("mcp_tool_call", %{"name" => name, "arguments" => args}, socket)
       when is_binary(name) and is_map(args) do
-    case McpHandler.dispatch_tool_call(name, args) do
+    auth = host_memory_auth(socket.assigns.host, host_agent_scopes())
+
+    case Clients.scope_matches?(auth.scopes, name) &&
+           McpHandler.dispatch_tool_call(name, args, auth) do
       {:ok, result} ->
         {:reply, {:ok, %{"ok" => true, "result" => result}}, socket}
 
       {:error, reason} ->
         {:reply, {:ok, %{"ok" => false, "error" => format_memory_error(reason)}}, socket}
+
+      false ->
+        {:reply, {:ok, %{"ok" => false, "error" => "unauthorized"}}, socket}
     end
   end
 
@@ -190,16 +206,63 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("memory_sync", %{"protocol" => "host_memory.v1", "items" => items}, socket)
       when is_list(items) do
-    case apply_memory_sync(socket.assigns.host, items) do
-      {:ok, ack_items} ->
-        {:reply, {:ok, %{"items" => ack_items}}, socket}
+    payload = %{"protocol" => "host_memory.v1", "items" => items}
 
-      {:error, reason} ->
-        {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
+    case validate_memory_sync_payload(payload) do
+      :ok -> apply_authorized_memory_sync(socket, items)
+      {:error, reason} -> {:reply, {:error, %{"reason" => reason}}, socket}
     end
   end
 
   def handle_in("memory_sync", _payload, socket) do
+    invalid_payload(socket)
+  end
+
+  def handle_in("memory_import_batch", %{"protocol" => "host_import.v1"} = payload, socket) do
+    if authorized?("host_agent.import", host_agent_scopes()) do
+      case safe_memory_import_record(socket.assigns.host.id, payload) do
+        {:ok, reply} -> {:reply, {:ok, %{"ok" => true, "result" => reply}}, socket}
+        {:error, reason} -> {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
+      end
+    else
+      {:reply, {:error, %{"reason" => "unauthorized"}}, socket}
+    end
+  end
+
+  def handle_in("memory_import_batch", _payload, socket), do: invalid_payload(socket)
+
+  def handle_in("memory_events", payload, socket) when is_map(payload) do
+    case validate_and_authorize_memory_events(payload, socket) do
+      :ok ->
+        auth_context = %{
+          host_id: socket.assigns.host.id,
+          auth_token_id: socket.assigns.auth_token.id,
+          scopes: host_agent_scopes()
+        }
+
+        case safe_host_event_ingest(auth_context, payload) do
+          {:ok, reply} when is_map(reply) ->
+            {:reply, {:ok, reply}, socket}
+
+          {:error, :host_mismatch} ->
+            {:reply, {:error, %{"reason" => "host_mismatch"}}, socket}
+
+          {:error, :invalid_batch} ->
+            invalid_payload(socket)
+
+          {:error, :ingest_unavailable} ->
+            {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => reason}}, socket}
+
+      false ->
+        {:reply, {:error, %{"reason" => "unauthorized"}}, socket}
+    end
+  end
+
+  def handle_in("memory_events", _payload, socket) do
     invalid_payload(socket)
   end
 
@@ -239,21 +302,67 @@ defmodule Backplane.Api.HostAgentChannel do
     {:stop, :normal, socket}
   end
 
-  defp dispatch_memory(method, args, host_id) do
-    args = Map.put(args, "host_id", host_id)
+  defp dispatch_memory(method, args, host, scopes) do
     service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
+    auth = host_memory_auth(host, scopes)
 
-    case method do
-      "remember" -> service.handle_remember(args)
-      "recall" -> service.handle_recall(args)
-      "list" -> service.handle_list(args)
-      "forget" -> service.handle_forget(args)
-      "stats" -> service.handle_stats(args)
-      _ -> {:error, {:unknown_method, method}}
+    with true <- authorized?(memory_method_permission(method), scopes) do
+      case method do
+        "remember" ->
+          service.handle_remember(args, auth)
+
+        "lifecycle_context" ->
+          service.handle_lifecycle_context(args, auth)
+
+        operation when operation in ~w(recall list forget stats) ->
+          service.call("memory::#{operation}", args, auth)
+
+        _ ->
+          {:error, {:unknown_method, method}}
+      end
+    else
+      false -> {:error, :unauthorized}
     end
   end
 
+  defp memory_method_permission(method) when method in ~w(recall list stats lifecycle_context),
+    do: "host_agent.recall"
+
+  defp memory_method_permission(method) when method in ~w(remember forget),
+    do: "host_agent.import"
+
+  defp memory_method_permission(_method), do: "host_agent.recall"
+
+  defp host_memory_auth(host, host_agent_scopes) do
+    memory_scopes =
+      []
+      |> maybe_add_memory_scope(host_agent_scopes, "host_agent.recall", "memory.read")
+      |> maybe_add_memory_scope(host_agent_scopes, "host_agent.import", "memory.write")
+
+    %{
+      kind: :client_token,
+      client_id: host.id,
+      scopes: memory_scopes,
+      subject: host.id,
+      principal_metadata: %{"memory_partition_id" => "host:#{host.id}"}
+    }
+  end
+
+  defp maybe_add_memory_scope(memory_scopes, host_agent_scopes, permission, memory_scope) do
+    if authorized?(permission, host_agent_scopes),
+      do: [memory_scope | memory_scopes],
+      else: memory_scopes
+  end
+
   defp push_memory_reconcile(payload, socket) do
+    if authorized?("host_agent.recall", host_agent_scopes()) do
+      do_push_memory_reconcile(payload, socket)
+    else
+      :ok
+    end
+  end
+
+  defp do_push_memory_reconcile(payload, socket) do
     adapter = memory_sync_adapter()
     announced_scopes = announced_memory_scopes(payload)
     entitled_scopes = adapter.entitled_scopes(socket.assigns.host)
@@ -261,7 +370,7 @@ defmodule Backplane.Api.HostAgentChannel do
     announced_scopes
     |> Enum.filter(fn %{"scope" => scope} -> MapSet.member?(entitled_scopes, scope) end)
     |> Enum.each(fn %{"scope" => scope, "fact_set_hash" => fact_set_hash} ->
-      case adapter.facts_for_scope(scope, fact_set_hash) do
+      case adapter.facts_for_scope(socket.assigns.host, scope, fact_set_hash) do
         {:full, facts} ->
           push(socket, "memory_facts", %{"scope" => scope, "full" => true, "facts" => facts})
 
@@ -272,7 +381,7 @@ defmodule Backplane.Api.HostAgentChannel do
           :ok
       end
 
-      case adapter.active_wipes(scope) do
+      case adapter.active_wipes(socket.assigns.host, scope) do
         [] ->
           :ok
 
@@ -285,19 +394,28 @@ defmodule Backplane.Api.HostAgentChannel do
     end)
   end
 
+  defp host_agent_scopes do
+    Application.get_env(:backplane_api, :host_agent_scopes, @default_host_agent_scopes)
+  end
+
+  defp authorized?(permission, scopes),
+    do: is_list(scopes) and (permission in scopes or "*" in scopes)
+
   defp safe_push_memory_reconcile(payload, socket) do
     push_memory_reconcile(payload, socket)
   rescue
     error ->
-      Logger.warning(
-        "Host-agent memory reconcile failed for #{socket.assigns.host.id}: #{Exception.message(error)}"
+      Logger.warning("Host-agent memory reconcile failed",
+        host_id: socket.assigns.host.id,
+        failure: inspect(error.__struct__)
       )
 
       :ok
   catch
-    kind, reason ->
-      Logger.warning(
-        "Host-agent memory reconcile failed for #{socket.assigns.host.id}: #{inspect({kind, reason})}"
+    kind, _reason ->
+      Logger.warning("Host-agent memory reconcile failed",
+        host_id: socket.assigns.host.id,
+        failure: Atom.to_string(kind)
       )
 
       :ok
@@ -346,6 +464,27 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
+  defp apply_authorized_memory_sync(socket, items) do
+    case authorized?("host_agent.import", host_agent_scopes()) &&
+           apply_memory_sync(socket.assigns.host, items) do
+      {:ok, ack_items} ->
+        {:reply, {:ok, %{"items" => ack_items}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
+
+      false ->
+        {:reply, {:error, %{"reason" => "unauthorized"}}, socket}
+    end
+  end
+
+  defp validate_memory_sync_payload(%{"items" => items} = payload) do
+    cond do
+      length(items) > @max_memory_sync_batch_size -> {:error, "batch_too_large"}
+      true -> validate_encoded_payload(payload, @max_memory_sync_payload_bytes)
+    end
+  end
+
   defp apply_memory_sync_item(adapter, host, %{"id" => id} = item) when is_binary(id) do
     case adapter.apply_sync_item(host, item) do
       {:ok, %{status: status, canonical_id: canonical_id}} when status in [:ok, :duplicate] ->
@@ -390,6 +529,129 @@ defmodule Backplane.Api.HostAgentChannel do
       :host_memory_sync_adapter,
       Backplane.Api.HostAgentMemorySync
     )
+  end
+
+  defp safe_memory_import_record(host_id, payload) do
+    memory_import_adapter().record(host_id, payload)
+  rescue
+    _error -> {:error, :import_unavailable}
+  catch
+    :exit, _reason -> {:error, :import_unavailable}
+  end
+
+  defp memory_import_adapter do
+    Application.get_env(:backplane_api, :host_memory_import_adapter, Backplane.Memory.Imports)
+  end
+
+  defp validate_memory_events_payload(
+         %{
+           "protocol" => "host_events.v1",
+           "batch_id" => batch_id,
+           "host_id" => host_id,
+           "events" => events
+         } = payload,
+         socket
+       )
+       when is_binary(batch_id) and is_binary(host_id) do
+    cond do
+      String.trim(batch_id) == "" or String.trim(host_id) == "" ->
+        {:error, "invalid_payload"}
+
+      not proper_list?(events) ->
+        {:error, "invalid_payload"}
+
+      host_id != socket.assigns.host.id ->
+        {:error, "host_mismatch"}
+
+      length(events) > @max_memory_event_batch_size ->
+        {:error, "batch_too_large"}
+
+      true ->
+        validate_encoded_payload(payload)
+    end
+  end
+
+  defp validate_memory_events_payload(_payload, _socket), do: {:error, "invalid_payload"}
+
+  defp validate_and_authorize_memory_events(payload, socket) do
+    case validate_memory_events_payload(payload, socket) do
+      :ok -> if(authorized_memory_events?(payload), do: :ok, else: false)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp authorized_memory_events?(%{"events" => events}) when is_list(events) do
+    authorized?("host_agent.capture", host_agent_scopes()) or
+      (authorized?("host_agent.import", host_agent_scopes()) and events != [] and
+         Enum.all?(events, &(is_map(&1) and Map.get(&1, "integration") == "claude_code_import")))
+  end
+
+  defp authorized_memory_events?(_payload), do: false
+
+  defp validate_encoded_payload(payload) do
+    validate_encoded_payload(payload, @max_memory_event_payload_bytes)
+  end
+
+  defp validate_encoded_payload(payload, max_bytes) do
+    case Jason.encode(payload) do
+      {:ok, encoded} when byte_size(encoded) <= max_bytes -> :ok
+      {:ok, _encoded} -> {:error, "payload_too_large"}
+      {:error, _reason} -> {:error, "invalid_payload"}
+    end
+  rescue
+    _error -> {:error, "invalid_payload"}
+  end
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_head | tail]), do: proper_list?(tail)
+  defp proper_list?(_other), do: false
+
+  defp host_event_ingest_adapter do
+    Application.get_env(
+      :backplane_api,
+      :host_event_ingest_adapter,
+      Backplane.Memory.Ingest
+    )
+  end
+
+  defp safe_host_event_ingest(auth_context, %{"batch_id" => expected_batch_id} = payload) do
+    case host_event_ingest_adapter().ingest_batch(auth_context, payload) do
+      {:ok, %{"batch_id" => batch_id, "results" => results} = reply} ->
+        if batch_id == expected_batch_id and proper_list?(results) and json_encodable?(reply) do
+          {:ok, reply}
+        else
+          unavailable_host_event_ingest(auth_context.host_id)
+        end
+
+      {:error, reason} when reason in [:host_mismatch, :invalid_batch] ->
+        {:error, reason}
+
+      _unexpected ->
+        unavailable_host_event_ingest(auth_context.host_id)
+    end
+  rescue
+    error ->
+      log_host_event_ingest_failure(auth_context.host_id, {:exception, error.__struct__})
+      {:error, :ingest_unavailable}
+  catch
+    kind, _reason ->
+      log_host_event_ingest_failure(auth_context.host_id, {:caught, kind})
+      {:error, :ingest_unavailable}
+  end
+
+  defp log_host_event_ingest_failure(host_id, category) do
+    Logger.warning("Host event ingest failed for #{host_id}: #{inspect(category)}")
+  end
+
+  defp unavailable_host_event_ingest(host_id) do
+    log_host_event_ingest_failure(host_id, :unexpected_reply)
+    {:error, :ingest_unavailable}
+  end
+
+  defp json_encodable?(value) do
+    match?({:ok, _encoded}, Jason.encode(value))
+  rescue
+    _error -> false
   end
 
   defp format_memory_error(reason) when is_binary(reason), do: reason

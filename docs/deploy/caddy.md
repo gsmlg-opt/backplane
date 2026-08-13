@@ -6,7 +6,7 @@ HTTP/1.1 connections must be configured with that in mind, otherwise a streaming
 response can pin or poison a pooled connection and make the *next* request to the
 backend hang.
 
-## Recommended reverse_proxy block
+## Recommended split public/admin proxies
 
 ```caddyfile
 backplane.example.net {
@@ -17,14 +17,24 @@ backplane.example.net {
 		flush_interval -1
 	}
 
-	# Everything else (admin UI, LLM proxy, REST APIs)
+	# Public REST APIs and LLM proxy. The admin UI is not served here.
 	reverse_proxy 127.0.0.1:4100
+}
+
+# This hostname must resolve only on a trusted network (for example a private
+# overlay or VPN). Do not publish it through a public ingress until the
+# platform has application-level admin authentication.
+admin.backplane.internal {
+	bind 10.0.0.10
+	reverse_proxy 127.0.0.1:4101
 }
 ```
 
 - `flush_interval -1` disables response buffering for the SSE route so events
   reach the client as soon as Backplane writes them.
 - Keep the MCP matcher first so the streaming settings only apply there.
+- Keep port `4101` off the public listener. Caddy network reachability is the
+  administration security boundary for current deployments.
 
 ## Why this matters (the HEAD-then-POST hang)
 

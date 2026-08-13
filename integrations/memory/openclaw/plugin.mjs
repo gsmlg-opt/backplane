@@ -113,6 +113,18 @@ function unwrap(body) {
   return body.result ?? null;
 }
 
+function errorClass(error) {
+  return error && typeof error === "object" && typeof error.name === "string"
+    ? error.name
+    : "request failed";
+}
+
+function detach(promise, api) {
+  void promise.catch((error) => {
+    api.logger?.warn?.(`backplane-memory: ${errorClass(error)}`);
+  });
+}
+
 function createClient(cfg, api) {
   const baseUrl = String(cfg.base_url || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const agentId = encodeURIComponent(cfg.agent_id || DEFAULT_AGENT_ID);
@@ -141,7 +153,7 @@ function createClient(cfg, api) {
       return unwrap(body);
     } catch (error) {
       if (!fallbackOnError) throw error;
-      api.logger?.warn?.(`backplane-memory: ${String(error)}`);
+      api.logger?.warn?.(`backplane-memory: ${errorClass(error)}`);
       return null;
     }
   }
@@ -206,7 +218,7 @@ const plugin = {
         `User: ${userText.slice(0, 1000).trim()}\n\n` +
         `Assistant: ${assistantText.slice(0, 4000).trim()}`;
 
-      await client.call("remember", {
+      detach(client.call("remember", {
         content,
         type: "episodic",
         session_id: sessionId,
@@ -214,7 +226,7 @@ const plugin = {
           captured_at: new Date().toISOString(),
           source: "openclaw.agent_end",
         },
-      });
+      }), api);
     });
   },
 };

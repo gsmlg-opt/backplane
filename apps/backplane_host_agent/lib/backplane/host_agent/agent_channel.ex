@@ -10,16 +10,21 @@ defmodule Backplane.HostAgent.AgentChannel do
 
   @impl true
   def handle_message("plugin_call", payload, state) when is_map(payload) do
-    Helpers.handle_push_cast({"plugin_call_result", plugin_call_result(payload)}, state)
+    Helpers.handle_push_cast(
+      {"plugin_call_result", plugin_call_result(payload, %{channel: self()})},
+      state
+    )
   end
 
   def handle_message(_event, _payload, state), do: {:noreply, state}
 
-  def plugin_call_result(%{"call_id" => call_id, "name" => name, "arguments" => args})
+  def plugin_call_result(payload), do: plugin_call_result(payload, %{})
+
+  def plugin_call_result(%{"call_id" => call_id, "name" => name, "arguments" => args}, ctx)
       when is_binary(call_id) and is_binary(name) and is_map(args) do
     case Services.resolve(name) do
       {:ok, service, bare} ->
-        case service.call(bare, args, %{}) do
+        case service.call(bare, args, ctx) do
           {:ok, result} -> %{"call_id" => call_id, "ok" => true, "result" => result}
           {:error, reason} -> plugin_call_error(call_id, reason)
         end
@@ -29,7 +34,7 @@ defmodule Backplane.HostAgent.AgentChannel do
     end
   end
 
-  def plugin_call_result(payload) when is_map(payload) do
+  def plugin_call_result(payload, _ctx) when is_map(payload) do
     plugin_call_error(payload["call_id"], "invalid plugin call")
   end
 

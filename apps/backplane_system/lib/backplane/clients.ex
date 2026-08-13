@@ -148,6 +148,15 @@ defmodule Backplane.Clients do
 
   defp scope_match?("*", _tool_name), do: true
 
+  defp scope_match?("memory." <> _permission = scope, "memory::" <> _ = tool_name) do
+    case Backplane.MemoryPermissions.for_tool(tool_name) do
+      {:ok, ^scope} -> true
+      _other -> false
+    end
+  end
+
+  defp scope_match?(scope, target) when scope == target, do: true
+
   defp scope_match?(scope, tool_name) do
     case String.split(scope, "::", parts: 2) do
       [prefix, "*"] -> String.starts_with?(tool_name, prefix <> "::")

@@ -147,6 +147,85 @@ defmodule Backplane.Memory.Events.MigrationTest do
              "USING btree (last_event_at DESC NULLS LAST, stream_id DESC)"
   end
 
+  test "canonical capture fields and source-sequence lookup index are ready" do
+    columns =
+      repo().query!("""
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'bpm_events'
+        AND column_name IN (
+          'schema_version', 'integration', 'scope', 'parent_session_id',
+          'source_sequence', 'captured_at', 'payload_hash', 'privacy', 'trace',
+          'raw_envelope', 'ingest_auth_token_id'
+        )
+      ORDER BY column_name
+      """).rows
+
+    assert Enum.map(columns, &hd/1) ==
+             Enum.sort(
+               ~w(schema_version integration scope parent_session_id source_sequence captured_at payload_hash privacy trace raw_envelope ingest_auth_token_id)
+             )
+
+    assert [[definition]] =
+             repo().query!("""
+             SELECT indexdef
+             FROM pg_indexes
+             WHERE schemaname = current_schema()
+               AND indexname = 'bpm_events_host_session_source_sequence_idx'
+             """).rows
+
+    assert definition =~ "USING btree (host_id, session_id, source_sequence)"
+
+    assert [[source_definition]] =
+             repo().query!("""
+             SELECT indexdef
+             FROM pg_indexes
+             WHERE schemaname = current_schema()
+               AND indexname = 'bpm_events_capture_source_identity_uniq'
+             """).rows
+
+    assert source_definition =~
+             "UNIQUE INDEX bpm_events_capture_source_identity_uniq"
+
+    assert source_definition =~
+             "USING btree (host_id, session_id, source_sequence, event_type)"
+
+    assert source_definition =~ "schema_version IS NOT NULL"
+    assert source_definition =~ "session_id IS NOT NULL"
+    assert source_definition =~ "source_sequence IS NOT NULL"
+  end
+
+  test "capture indexes are created without a table-locking migration transaction" do
+    for migration <- [
+          "20260804000002_add_capture_source_sequence_index.exs",
+          "20260804000003_add_capture_source_identity_constraint.exs"
+        ] do
+      source =
+        :backplane_system
+        |> Application.app_dir("priv/repo/migrations/#{migration}")
+        |> File.read!()
+
+      assert source =~ "@disable_ddl_transaction true"
+      assert source =~ "@disable_migration_lock true"
+      assert source =~ "concurrently: true"
+      assert source =~ "DROP INDEX CONCURRENTLY IF EXISTS"
+    end
+  end
+
+  test "capture columns remain transactionally retryable" do
+    source =
+      :backplane_system
+      |> Application.app_dir(
+        "priv/repo/migrations/20260804000001_add_capture_fields_to_memory_events.exs"
+      )
+      |> File.read!()
+
+    refute source =~ "@disable_ddl_transaction"
+    refute source =~ "@disable_migration_lock"
+    refute source =~ "concurrently: true"
+  end
+
   defp event_changeset(stream_id, idempotency_key) do
     Event.changeset(%Event{}, %{
       id: Ecto.UUID.generate(),

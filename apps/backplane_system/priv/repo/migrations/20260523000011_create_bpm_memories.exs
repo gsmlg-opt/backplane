@@ -29,18 +29,18 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
 
     # halfvec(2560) — added via raw SQL; pgvector >= 0.7 required
     execute(
-      "ALTER TABLE bpm_memories ADD COLUMN embedding halfvec(2560)",
-      "ALTER TABLE bpm_memories DROP COLUMN IF EXISTS embedding"
+      "ALTER TABLE #{qualified("bpm_memories")} ADD COLUMN embedding #{pgvector_object("halfvec")}(2560)",
+      "ALTER TABLE #{qualified("bpm_memories")} DROP COLUMN IF EXISTS embedding"
     )
 
     # generated tsvector for FTS (Postgres 12+)
     execute(
       """
-      ALTER TABLE bpm_memories
+      ALTER TABLE #{qualified("bpm_memories")}
         ADD COLUMN search_tsv tsvector
         GENERATED ALWAYS AS (to_tsvector('english', coalesce(content, ''))) STORED
       """,
-      "ALTER TABLE bpm_memories DROP COLUMN IF EXISTS search_tsv"
+      "ALTER TABLE #{qualified("bpm_memories")} DROP COLUMN IF EXISTS search_tsv"
     )
 
     create(
@@ -51,8 +51,8 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
 
     # HNSW index for halfvec cosine similarity
     execute(
-      "CREATE INDEX bpm_memories_embedding_hnsw_idx ON bpm_memories USING hnsw (embedding halfvec_cosine_ops) WHERE embedding IS NOT NULL",
-      "DROP INDEX IF EXISTS bpm_memories_embedding_hnsw_idx"
+      "CREATE INDEX bpm_memories_embedding_hnsw_idx ON #{qualified("bpm_memories")} USING hnsw (embedding #{pgvector_object("halfvec_cosine_ops")}) WHERE embedding IS NOT NULL",
+      "DROP INDEX IF EXISTS #{qualified("bpm_memories_embedding_hnsw_idx")}"
     )
 
     create(
@@ -70,5 +70,28 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
 
   def down do
     drop_if_exists(table(:bpm_memories))
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
+  end
+
+  defp pgvector_object(name) do
+    [[schema]] =
+      repo().query!("""
+      SELECT namespace.nspname
+      FROM pg_extension AS extension
+      JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace
+      WHERE extension.extname = 'vector'
+      """).rows
+
+    [schema, name]
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

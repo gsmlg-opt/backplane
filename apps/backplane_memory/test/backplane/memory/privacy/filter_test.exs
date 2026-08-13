@@ -4,6 +4,37 @@ defmodule Backplane.Memory.Privacy.FilterTest do
   alias Backplane.Memory.Privacy.Filter
 
   describe "apply/1" do
+    test "redacts exact secret keys while preserving benign telemetry keys" do
+      payload = %{
+        "access_token" => "secret",
+        "api_key" => "secret",
+        "client_secret" => "secret",
+        "password" => "secret",
+        "private_key" => "secret",
+        "token" => "secret",
+        "token_count" => 12,
+        "token_usage" => %{"input" => 8},
+        "token_budget" => 100,
+        "token_estimate" => 20,
+        "authorization_status" => "approved"
+      }
+
+      assert {:ok, event} =
+               Filter.apply_event(%{
+                 stream_id: "s",
+                 event_type: "heartbeat.triggered",
+                 payload: payload
+               })
+
+      for key <- ~w(access_token api_key client_secret password private_key token) do
+        assert event.payload[key] == "[REDACTED]"
+      end
+
+      for key <- ~w(token_count token_usage token_budget token_estimate authorization_status) do
+        assert event.payload[key] == payload[key]
+      end
+    end
+
     test "redacts atom sensitive keys" do
       {:ok, e} =
         Filter.apply_event(%{
@@ -348,6 +379,19 @@ defmodule Backplane.Memory.Privacy.FilterTest do
 
     test "strips <private> tagged content" do
       assert Filter.apply("<private>my secret</private>") == {:ok, "[REDACTED]"}
+    end
+
+    test "bounded filtering redacts an unmatched private block through the scan boundary" do
+      visible = String.duplicate("x", 85)
+      secret_prefix = "boundary-secret-prefix"
+      secret_body = secret_prefix <> String.duplicate("z", 500 - String.length(secret_prefix))
+      input = visible <> "<private>" <> secret_body <> "</private>"
+
+      assert String.length(secret_body) == 500
+      assert {:ok, result} = Filter.apply_bounded(input, 100)
+      assert result == visible <> "[REDACTED]"
+      refute result =~ "<private>"
+      refute result =~ String.slice(secret_prefix, 0, 6)
     end
 
     test "strips OpenAI/Anthropic-style API keys (sk- prefix)" do

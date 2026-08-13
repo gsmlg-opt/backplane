@@ -7,34 +7,34 @@ end
 defmodule BackplaneMemory.Memory do
   @moduledoc false
 
-  defdelegate remember(content), to: Backplane.Memory.Memories
-  defdelegate remember(content, opts), to: Backplane.Memory.Memories
-  defdelegate get(id), to: Backplane.Memory.Memories
-  defdelegate forget(id), to: Backplane.Memory.Memories
-  defdelegate stats(), to: Backplane.Memory.Memories
-  defdelegate list(), to: Backplane.Memory.Memories
-  defdelegate list(opts), to: Backplane.Memory.Memories
-  defdelegate count(), to: Backplane.Memory.Memories
-  defdelegate count(opts), to: Backplane.Memory.Memories
+  def remember(_content), do: {:error, :unauthorized}
+  def remember(_content, _opts), do: {:error, :unauthorized}
+  def get(_id), do: {:error, :unauthorized}
+  def forget(_id), do: {:error, :unauthorized}
+  def stats, do: {:error, :unauthorized}
+  def list, do: {:error, :unauthorized}
+  def list(_opts), do: {:error, :unauthorized}
+  def count, do: {:error, :unauthorized}
+  def count(_opts), do: {:error, :unauthorized}
 
-  defdelegate maybe_detect_contradiction(memory_id, other_memory_id),
-    to: Backplane.Memory.Memories
+  @deprecated "Use Backplane.Memory.Memories.Relations.create_candidate/3"
+  def maybe_detect_contradiction(_memory_id, _other_memory_id), do: {:error, :unauthorized}
 
-  defdelegate scope_stats(), to: Backplane.Memory.Memories
-  defdelegate team_share(memory_id, team_id), to: Backplane.Memory.Memories
-  defdelegate team_feed(team_id), to: Backplane.Memory.Memories
-  defdelegate team_feed(team_id, limit), to: Backplane.Memory.Memories
+  def scope_stats, do: {:error, :unauthorized}
+  def team_share(_memory_id, _team_id), do: {:error, :unauthorized}
+  def team_feed(_team_id), do: {:error, :unauthorized}
+  def team_feed(_team_id, _limit), do: {:error, :unauthorized}
 end
 
 defmodule BackplaneMemory.Observations do
   @moduledoc false
 
-  defdelegate record(session_id, content), to: Backplane.Memory.Observations
-  defdelegate record(session_id, content, opts), to: Backplane.Memory.Observations
-  defdelegate register_session(session_id, project), to: Backplane.Memory.Observations
-  defdelegate end_session(session_id), to: Backplane.Memory.Observations
-  defdelegate file_history(file_paths), to: Backplane.Memory.Observations
-  defdelegate file_history(file_paths, opts), to: Backplane.Memory.Observations
+  def record(_session_id, _content), do: {:error, :unauthorized}
+  def record(_session_id, _content, _opts), do: {:error, :unauthorized}
+  def register_session(_session_id, _project), do: {:error, :unauthorized}
+  def end_session(_session_id), do: {:error, :unauthorized}
+  def file_history(_file_paths), do: {:error, :unauthorized}
+  def file_history(_file_paths, _opts), do: {:error, :unauthorized}
 end
 
 defmodule BackplaneMemory.Service do
@@ -44,49 +44,26 @@ defmodule BackplaneMemory.Service do
   defdelegate prefix(), to: Backplane.Memory.Service
   defdelegate enabled?(), to: Backplane.Memory.Service
   defdelegate tools(), to: Backplane.Memory.Service
+  defdelegate call(name, arguments, auth), to: Backplane.Memory.Service
   defdelegate resources(), to: Backplane.Memory.Service
+  defdelegate resources(auth), to: Backplane.Memory.Service
   defdelegate read_resource(uri), to: Backplane.Memory.Service
+  defdelegate read_resource(uri, auth), to: Backplane.Memory.Service
   defdelegate prompts(), to: Backplane.Memory.Service
   defdelegate get_prompt(name, arguments), to: Backplane.Memory.Service
+  defdelegate get_prompt(name, arguments, auth), to: Backplane.Memory.Service
 
-  defdelegate handle_remember(arguments), to: Backplane.Memory.Service
-  defdelegate handle_recall(arguments), to: Backplane.Memory.Service
-  defdelegate handle_list(arguments), to: Backplane.Memory.Service
-  defdelegate handle_forget(arguments), to: Backplane.Memory.Service
-  defdelegate handle_stats(arguments), to: Backplane.Memory.Service
-  defdelegate handle_profile(arguments), to: Backplane.Memory.Service
-  defdelegate handle_profile_refresh(arguments), to: Backplane.Memory.Service
-  defdelegate handle_expand_query(arguments), to: Backplane.Memory.Service
-  defdelegate handle_file_history(arguments), to: Backplane.Memory.Service
-  defdelegate handle_facet_tag(arguments), to: Backplane.Memory.Service
-  defdelegate handle_facet_query(arguments), to: Backplane.Memory.Service
-  defdelegate handle_team_share(arguments), to: Backplane.Memory.Service
-  defdelegate handle_team_feed(arguments), to: Backplane.Memory.Service
-  defdelegate handle_lease(arguments), to: Backplane.Memory.Service
-  defdelegate handle_signal_send(arguments), to: Backplane.Memory.Service
-  defdelegate handle_signal_read(arguments), to: Backplane.Memory.Service
-  defdelegate handle_action_create(arguments), to: Backplane.Memory.Service
-  defdelegate handle_action_update(arguments), to: Backplane.Memory.Service
-  defdelegate handle_frontier(arguments), to: Backplane.Memory.Service
-  defdelegate handle_next(arguments), to: Backplane.Memory.Service
-  defdelegate handle_smart_search(arguments), to: Backplane.Memory.Service
-  defdelegate handle_sessions(arguments), to: Backplane.Memory.Service
-  defdelegate handle_patterns(arguments), to: Backplane.Memory.Service
-  defdelegate handle_timeline(arguments), to: Backplane.Memory.Service
-  defdelegate handle_export(arguments), to: Backplane.Memory.Service
-  defdelegate handle_relations(arguments), to: Backplane.Memory.Service
-  defdelegate handle_compress_file(arguments), to: Backplane.Memory.Service
-  defdelegate handle_audit(arguments), to: Backplane.Memory.Service
-  defdelegate handle_governance_delete(arguments), to: Backplane.Memory.Service
-  defdelegate handle_diagnose(arguments), to: Backplane.Memory.Service
-  defdelegate handle_heal(arguments), to: Backplane.Memory.Service
-  defdelegate handle_graph_query(arguments), to: Backplane.Memory.Service
-  defdelegate handle_graph_stats(arguments), to: Backplane.Memory.Service
-  defdelegate handle_consolidate(arguments), to: Backplane.Memory.Service
-  defdelegate handle_verify(arguments), to: Backplane.Memory.Service
-  defdelegate handle_slot_read(arguments), to: Backplane.Memory.Service
-  defdelegate handle_slot_write(arguments), to: Backplane.Memory.Service
-  defdelegate handle_slot_list(arguments), to: Backplane.Memory.Service
-  defdelegate handle_enrich(arguments), to: Backplane.Memory.Service
-  defdelegate handle_access_log(arguments), to: Backplane.Memory.Service
+  for handler <- ~w(
+        handle_remember handle_recall handle_list handle_forget handle_stats
+        handle_profile handle_profile_refresh handle_expand_query handle_file_history
+        handle_facet_tag handle_facet_query handle_team_share handle_team_feed
+        handle_lease handle_signal_send handle_signal_read handle_action_create
+        handle_action_update handle_frontier handle_next handle_smart_search
+        handle_sessions handle_patterns handle_timeline handle_export handle_relations
+        handle_compress_file handle_audit handle_governance_delete handle_diagnose
+        handle_heal handle_graph_query handle_graph_stats handle_consolidate handle_verify
+        handle_slot_read handle_slot_write handle_slot_list handle_enrich handle_access_log
+      )a do
+    def unquote(handler)(_arguments), do: {:error, :unauthorized}
+  end
 end

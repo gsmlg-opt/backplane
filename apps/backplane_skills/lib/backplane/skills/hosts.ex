@@ -220,7 +220,12 @@ defmodule Backplane.Skills.Hosts do
   @doc "Update a durable host agent identity and token assignments."
   @spec update_agent(Host.t(), map()) :: {:ok, Host.t()} | {:error, Ecto.Changeset.t()}
   def update_agent(%Host{} = host, attrs) when is_map(attrs) do
-    attrs = normalize_agent_attrs(attrs)
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.put_new("name", host.name)
+      |> Map.put_new("memory_scope", host.memory_scope)
+      |> normalize_agent_attrs()
 
     auth_token_ids =
       if Map.has_key?(attrs, "auth_token_ids") do
@@ -411,6 +416,7 @@ defmodule Backplane.Skills.Hosts do
     attrs
     |> stringify_keys()
     |> Map.update("name", "", &String.trim/1)
+    |> Map.update("memory_scope", "proj_local", &String.trim/1)
   end
 
   defp normalize_auth_token_params(attrs) do

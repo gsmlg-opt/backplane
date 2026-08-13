@@ -13,7 +13,9 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{} = job) do
-    perform_with_client(job, &Client.embed/3)
+    Backplane.Memory.PipelineTelemetry.span("embedding", job.args, fn ->
+      perform_with_client(job, &Client.embed/3)
+    end)
   end
 
   @doc false

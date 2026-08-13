@@ -28,6 +28,9 @@ defmodule Backplane.Memory.Events.SchemaTest do
     refute :updated_at in Event.__schema__(:fields)
     assert Event.__schema__(:type, :payload) == :map
     assert Event.__schema__(:type, :causation_id) == :binary_id
+    assert Event.__schema__(:type, :raw_envelope) == :map
+    assert Event.__schema__(:type, :source_sequence) == :integer
+    assert Event.__schema__(:type, :captured_at) == :utc_datetime_usec
   end
 
   test "event changesets enforce the shared event taxonomy" do

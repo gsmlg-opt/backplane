@@ -65,6 +65,51 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert %{"error" => "not found"} = json_body(conn)
     end
 
+    test "serves generated reference skill content", %{tmp_dir: _tmp_dir} do
+      content = "Use memory::lesson_recall for project-relevant lessons."
+
+      %Skill{}
+      |> Skill.changeset(%{
+        id: "generated/test-lessons",
+        slug: "generated-lessons",
+        name: "Lessons",
+        description: "Reference lesson workflow",
+        content: content,
+        content_hash: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower),
+        source_kind: "generated",
+        meta: %{"path" => "/lessons", "tools" => ["memory::lesson_recall"]}
+      })
+      |> Repo.insert!()
+
+      discovery_conn = api_request(:get, "/skills?q=lessons")
+
+      assert discovery_conn.status == 200
+      assert Enum.any?(json_body(discovery_conn)["data"], &(&1["slug"] == "generated-lessons"))
+
+      conn = api_request(:get, "/skills/generated-lessons")
+
+      assert conn.status == 200
+
+      assert %{
+               "slug" => "generated-lessons",
+               "content" => ^content,
+               "source_kind" => "generated"
+             } = json_body(conn)
+
+      update_conn =
+        api_request(
+          :put,
+          "/skills/generated-lessons",
+          Jason.encode!(%{"content" => "drifted"}),
+          [{"content-type", "application/json"}]
+        )
+
+      assert update_conn.status == 409
+      assert api_request(:delete, "/skills/generated-lessons").status == 409
+      assert {:ok, preserved} = Skills.get_by_slug("generated-lessons")
+      assert preserved.content == content
+    end
+
     test "returns an error when archive-backed file listing cannot read the blob", %{
       blob_root: blob_root,
       tmp_dir: tmp_dir
@@ -233,7 +278,11 @@ defmodule Backplane.Skills.ApiRouterTest do
 
   describe "PUT /skills/:slug" do
     test "updates existing skill attributes and refreshes registry", %{tmp_dir: tmp_dir} do
-      ingest_archive!(tmp_dir, "put-skill", name: "Put Skill", description: "Original description", tags: ["original"])
+      ingest_archive!(tmp_dir, "put-skill",
+        name: "Put Skill",
+        description: "Original description",
+        tags: ["original"]
+      )
 
       conn =
         api_request(

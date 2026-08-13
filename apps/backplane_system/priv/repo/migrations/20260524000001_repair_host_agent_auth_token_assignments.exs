@@ -22,13 +22,13 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
       IF EXISTS (
         SELECT 1
         FROM information_schema.columns
-        WHERE table_schema = current_schema()
+        WHERE table_schema = #{quoted_prefix()}
           AND table_name = 'skill_hosts'
           AND column_name = 'auth_token_id'
       ) THEN
-        INSERT INTO skill_host_agent_tokens (id, host_id, auth_token_id, inserted_at, updated_at)
+        INSERT INTO #{qualified("skill_host_agent_tokens")} (id, host_id, auth_token_id, inserted_at, updated_at)
         SELECT gen_random_uuid(), id, auth_token_id, now(), now()
-        FROM skill_hosts
+        FROM #{qualified("skill_hosts")}
         WHERE auth_token_id IS NOT NULL
         ON CONFLICT (auth_token_id) DO NOTHING;
       END IF;
@@ -36,7 +36,7 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
     """)
 
     execute("""
-    ALTER TABLE skill_hosts
+    ALTER TABLE #{qualified("skill_hosts")}
       DROP COLUMN IF EXISTS auth_token_id,
       DROP COLUMN IF EXISTS hostname,
       DROP COLUMN IF EXISTS token_hash,
@@ -49,7 +49,7 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
     """)
 
     execute("""
-    ALTER TABLE skill_host_auth_tokens
+    ALTER TABLE #{qualified("skill_host_auth_tokens")}
       DROP COLUMN IF EXISTS active,
       DROP COLUMN IF EXISTS last_used_at,
       DROP COLUMN IF EXISTS metadata
@@ -58,11 +58,11 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
 
   def down do
     execute(
-      "ALTER TABLE skill_host_auth_tokens ADD COLUMN IF NOT EXISTS active boolean DEFAULT true"
+      "ALTER TABLE #{qualified("skill_host_auth_tokens")} ADD COLUMN IF NOT EXISTS active boolean DEFAULT true"
     )
 
     execute("""
-    ALTER TABLE skill_host_auth_tokens
+    ALTER TABLE #{qualified("skill_host_auth_tokens")}
       ADD COLUMN IF NOT EXISTS last_used_at timestamp without time zone,
       ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'::jsonb
     """)
@@ -80,9 +80,9 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
     end
 
     execute("""
-    UPDATE skill_hosts AS host
+    UPDATE #{qualified("skill_hosts")} AS host
     SET auth_token_id = agent_token.auth_token_id
-    FROM skill_host_agent_tokens AS agent_token
+    FROM #{qualified("skill_host_agent_tokens")} AS agent_token
     WHERE agent_token.host_id = host.id
       AND host.auth_token_id IS NULL
     """)
@@ -90,5 +90,18 @@ defmodule Backplane.Repo.Migrations.RepairHostAgentAuthTokenAssignments do
     drop_if_exists unique_index(:skill_host_agent_tokens, [:auth_token_id])
     drop_if_exists index(:skill_host_agent_tokens, [:host_id])
     drop_if_exists table(:skill_host_agent_tokens)
+  end
+
+  defp quoted_prefix do
+    value = prefix() || "public"
+    "'#{value |> to_string() |> String.replace("'", "''")}'"
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

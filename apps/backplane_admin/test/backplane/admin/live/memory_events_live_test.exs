@@ -537,7 +537,6 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     for forbidden <- [
           "Edit event",
           "Delete event",
-          "Replay",
           "Retry"
         ] do
       refute html =~ forbidden

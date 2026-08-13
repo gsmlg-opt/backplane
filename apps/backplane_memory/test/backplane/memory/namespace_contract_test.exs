@@ -1,42 +1,73 @@
 defmodule Backplane.Memory.NamespaceContractTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Registry.{InputValidator, PromptRegistry, ToolRegistry}
   alias Backplane.Memory.Service
 
   @memories_api [
     count: 0,
     count: 1,
+    count: 2,
     forget: 1,
+    forget: 2,
     get: 1,
+    get: 2,
     list: 0,
     list: 1,
+    list: 2,
+    list_evidence: 1,
     maybe_detect_contradiction: 2,
+    provenance_trace: 1,
+    record_application: 4,
     remember: 1,
     remember: 2,
     scope_stats: 0,
     stats: 0,
     team_feed: 1,
     team_feed: 2,
-    team_share: 2
+    team_feed: 3,
+    team_share: 2,
+    team_share: 3,
+    trusted_count: 0,
+    trusted_count: 1,
+    trusted_forget: 1,
+    trusted_get: 1,
+    trusted_list: 0,
+    trusted_list: 1,
+    trusted_verify: 1,
+    verify: 1,
+    verify: 2
   ]
 
   @observation_api [
     end_session: 1,
+    end_session: 2,
     file_history: 1,
     file_history: 2,
     record: 2,
     record: 3,
-    register_session: 2
+    register_session: 2,
+    register_session: 3
   ]
 
   # Fingerprints keep the complete schemas visible as a compact, exact contract.
   # Any key, value, default, enum, description, or required-field change alters the digest.
   @core_tool_contracts [
+    {"memory::activity_summary",
+     "0b3809dcc7c10407f451f190c3745075a626efdd3c350dfa5a982e070acd88f0"},
+    {"memory::recall_explain",
+     "9964a85e2340b7e62cf28fb4f722e66b300e77d4bf5bd887536e2aaa2b9cab82"},
+    {"memory::crystal_get", "9b6388dece3f7d051cf8f31f8e9e5b2019f9bb25573c92cd5147971e6ddb04d6"},
+    {"memory::crystal_list", "c9784a879492c7dedf8b8b2b5ce2f0e43b9e97f93f4fe01305a8c7715767bf3f"},
+    {"memory::crystal_search",
+     "cb9443bba33b573518ed22c37defa1d4891d93e52268d370c1f4ac22020819ea"},
+    {"memory::lesson_save", "7f2f2b48d24792d6c656038ed1cc6f3620d34afa9c28ac314ea2979d5d2a6eaa"},
+    {"memory::lesson_recall", "32ba796e6454978950ca74317526499351b9c4f1a979b3e495dd77be1ab4afa9"},
+    {"memory::apply", "a2cc1e206b4a87d2d1758a7b5a5f509851623b96e410b2908d1efa696ca7130f"},
     {"memory::facet_tag", "f02c5459fb417d4a86cb121b650dbcbf42d41f6b1ded88d56b1ea02cf54cc9d5"},
     {"memory::facet_query", "b9873017618d35e7063f7b8143c27d09711f8ff657482022d59356554a74c122"},
-    {"memory::remember", "ad77b2c97bfd25238cba2d8a51e87309a773ff94b7ce86b83d4619d352d8cd47"},
-    {"memory::recall", "e1228a017dae05eb8c1a8410401b654f65238e3a609d5360ba169a3bcfa73717"},
+    {"memory::remember", "d9fa08ccb2377be72de08b7b1b3e2c24fe3e6769c39a0a96bdfd5edae00f691a"},
+    {"memory::recall", "3d11f65a1256ce7a81b26b50c5ba38f5e72be08dac35663c78fd5f3ee2aef2ea"},
     {"memory::list", "945afe0e1110224a03edc03b8ba1c9244bda95835733f893ee6f55c3c6f180d3"},
     {"memory::forget", "141f64d3f41b18db870a320c78edd80755d43ffed764f4661b64bf7421a9f92e"},
     {"memory::stats", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
@@ -50,25 +81,33 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::lease", "6da7388dc90c01a5d6c3eec4a2819689e5a0df16778e7fc79aa35d54fd36fbbf"},
     {"memory::signal_send", "00f60264fecf10967762ab9860a432d0536f5c09c06b85986308cc5612a291ba"},
     {"memory::signal_read", "bb2cc9ace1ff5f8803ec11d86cac069cfaa8f61186a547ba7791554c0320d687"},
-    {"memory::action_create", "3f8511fc69884e9107a754902ba0e9a90b5e031396c8423b1f406c4d98e101bf"},
+    {"memory::action_create", "87ae5ea7f2e1bb365765c09835d88cb0d8e7ff74c8094b0d8833b5269dffd9d9"},
     {"memory::action_update", "994218489f92b716fa1cea02361f63ad38c7d7e772d08bb20561fe9ec9e164e5"},
     {"memory::frontier", "129a9f4e82812211418fcbd8422f0b3ebadf62a07870f544f07285677604dd7a"},
     {"memory::next", "129a9f4e82812211418fcbd8422f0b3ebadf62a07870f544f07285677604dd7a"},
     {"memory::smart_search", "526b71d1976aeb512377a66ade3bca87a018fb42812f753bfe33315daf9cd390"},
-    {"memory::sessions", "b7170d5002781654078d1cd2e51b08037d83bc214baee04c83e867f77d0bcd7c"},
-    {"memory::patterns", "3b78b3b84cadbb68492387b72d298bed77c9ebb3fad130bbbf49d4d496c8d7bd"},
-    {"memory::timeline", "79f886137bdf04c8beaa0a5a5e791008890862d8a8a353f3d7f69dbabc8505f8"},
+    {"memory::sessions", "0bd73d1b6eac090f546dda3945c06b7065cb8f0efa1476ca4de0b510c3f3532d"},
+    {"memory::patterns", "22f624a3c35c4845948c4365c72db64f34252f54bb318e5e55efb405d2f295b5"},
+    {"memory::timeline", "ad323a6a3990e23952f62f9018a56aec6618f41bfde1e504113ec82204365920"},
     {"memory::export", "0d1ce286ba0cd50f348681dc087e3d973a073a4b7ee764974760974b794ecb88"},
     {"memory::relations", "0910a6da3840d37c4eaee6cc9d0d5fd6a1d8b9b05cef0141ba157a7e2beeda40"},
     {"memory::compress_file", "bb0abc766d39c2a56989d18303623a05e6241e6e1c5701dc0a55f53daaed22a6"},
     {"memory::audit", "dca7422220d538500eb01c1fa7ffe32bcc16f49cfcd21ef80c443b39ccbf852a"},
     {"memory::governance_delete",
-     "6e12021a792c4d7ca09e85292ac21cea9a2a5a026ca7baf0754865019ae69805"},
+     "0b52982f95a278025d8b3620dcc7072cf8644b5505a9705984ee91d1ce82d4cc"},
     {"memory::diagnose", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
-    {"memory::heal", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"}
+    {"memory::heal", "7be6fb307419cb44c78b606d887485a7e23aafce8d08d50e3d264e33b0e5502d"}
   ]
 
   @extended_tool_contracts [
+    {"memory::lesson_strengthen",
+     "e931d8898a025c162df362fb829ae42d3cfee4737015efc0f298549ac579c698"},
+    {"memory::lesson_promote",
+     "512fbae38f14307617996baa57f14a55834d822f8d4ee33a08f55ea37085a5ca"},
+    {"memory::lesson_archive",
+     "a0e583519b6a79c9f0c8fa0969deda62267c8fb8cd6296ac1b544cbb7f6c7301"},
+    {"memory::crystallize", "bb7589a37cf5d372d512c4bb480d1b5428b5b0c9fbe605da52a61ad32075fa95"},
+    {"memory::replay_import", "8642574f365c9becf4c789047cabb2e14b3335e4964488dcf59703afecc7cd50"},
     {"memory::graph_query", "b1ace1ac519d644e661b4d0629763c5d67feab7ed4ec7af9735f29bfc74fed4f"},
     {"memory::graph_stats", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
     {"memory::consolidate", "52c5e8ee28186a06e64534fc134167cae42e42b500af64cd44899c7bee7ff09d"},
@@ -80,7 +119,15 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::access_log", "c37839c4060e4d6590ba406b2f498ae4c267fee2f17d0453d6945a2398210887"}
   ]
 
-  @full_tool_contracts @core_tool_contracts ++ @extended_tool_contracts
+  @replay_tool_contracts [
+    {"memory::replay_sessions",
+     "feb504a8dc0dd4f0081426366d656d3ba32a16166e74ed7247e1d0326d5ef642"},
+    {"memory::replay_load", "ee3448b07e5761a199629e73060cae74241d00aeb046f3673177b372f8ac4782"}
+  ]
+
+  @full_tool_contracts Enum.take(@core_tool_contracts, 2) ++
+                         @replay_tool_contracts ++
+                         Enum.drop(@core_tool_contracts, 2) ++ @extended_tool_contracts
 
   @worker_options [
     {Backplane.Memory.Workers.AccessWritebackWorker, memory: 3},
@@ -129,7 +176,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
       assert Service.enabled?()
     end
 
-    test "exposes exactly 31 default tool names and schemas" do
+    test "exposes the exact default tool names and schemas" do
       saved_setting = preserve_ets_key(:backplane_settings, "memory.tools")
       on_exit(fn -> restore_ets_key(:backplane_settings, "memory.tools", saved_setting) end)
       :ets.delete(:backplane_settings, "memory.tools")
@@ -137,15 +184,49 @@ defmodule Backplane.Memory.NamespaceContractTest do
       assert tool_contract(Service.tools()) == @core_tool_contracts
     end
 
-    test "exposes exactly 40 full tool names and schemas" do
-      saved_setting = preserve_ets_key(:backplane_settings, "memory.tools")
-      on_exit(fn -> restore_ets_key(:backplane_settings, "memory.tools", saved_setting) end)
-      :ets.insert(:backplane_settings, {"memory.tools", "all"})
+    test "remember requires caller content and agent while rejecting ownership fields" do
+      tools = Service.tools()
+      schema = tools |> Enum.find(&(&1.name == "memory::remember")) |> Map.fetch!(:input_schema)
+
+      facet_tag_schema =
+        tools |> Enum.find(&(&1.name == "memory::facet_tag")) |> Map.fetch!(:input_schema)
+
+      assert schema["required"] == ["content", "agent_id"]
+      assert schema["additionalProperties"] == false
+      assert schema["properties"]["facets"] == facet_tag_schema["properties"]["facets"]
+      refute Map.has_key?(schema["properties"], "host_id")
+      refute Map.has_key?(schema["properties"], "client_id")
+
+      assert {:error, message} =
+               InputValidator.validate(
+                 %{"content" => "memory", "agent_id" => "agent", "host_id" => "forged"},
+                 schema
+               )
+
+      assert message =~ "Unexpected arguments: host_id"
+    end
+
+    test "exposes the exact full tool names and schemas" do
+      saved =
+        preserve_settings(
+          ~w(memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
+        )
+
+      on_exit(fn -> restore_settings(saved) end)
+
+      for {key, value} <- [
+            {"memory.tools", "all"},
+            {"memory.pipeline.enabled", true},
+            {"memory.replay_enabled", true},
+            {"memory.replay_import_enabled", true}
+          ],
+          do: put_ets_setting(key, value)
 
       assert tool_contract(Service.tools()) == @full_tool_contracts
     end
 
-    test "application start registers every default memory tool when enabled" do
+    test "application lifecycle registers tools when enabled and cleans up memory prompts" do
+      sandbox_auto!()
       registry_snapshot = :ets.tab2list(:backplane_tools)
       enabled_snapshot = preserve_ets_key(:backplane_settings, "services.memory.enabled")
       tools_snapshot = preserve_ets_key(:backplane_settings, "memory.tools")
@@ -176,6 +257,28 @@ defmodule Backplane.Memory.NamespaceContractTest do
         |> Enum.filter(&match?(%{origin: {:managed, "memory"}}, &1))
 
       assert tool_contract(registered_tools) == Enum.sort(@core_tool_contracts)
+
+      :ok = Application.stop(:backplane_memory)
+      PromptRegistry.clear()
+
+      assert :ok =
+               PromptRegistry.register_managed(
+                 "other",
+                 [%{name: "daily_agenda", description: "Agenda", arguments: []}],
+                 Service
+               )
+
+      put_ets_setting("services.memory.enabled", false)
+      assert {:ok, _} = Application.ensure_all_started(:backplane_memory)
+      assert Enum.map(PromptRegistry.list(), & &1.name) == ["daily_agenda"]
+
+      assert :ok = Application.stop(:backplane_memory)
+      put_ets_setting("services.memory.enabled", true)
+      assert {:ok, _} = Application.ensure_all_started(:backplane_memory)
+      assert Enum.any?(PromptRegistry.list(), &(&1.prefix == "memory"))
+
+      assert :ok = Application.stop(:backplane_memory)
+      assert Enum.map(PromptRegistry.list(), & &1.name) == ["daily_agenda"]
     end
   end
 
@@ -209,6 +312,17 @@ defmodule Backplane.Memory.NamespaceContractTest do
     if saved_rows != [] do
       :ets.insert(table, saved_rows)
     end
+  end
+
+  defp preserve_settings(keys),
+    do: Map.new(keys, &{&1, preserve_ets_key(:backplane_settings, &1)})
+
+  defp restore_settings(saved),
+    do: Enum.each(saved, fn {key, rows} -> restore_ets_key(:backplane_settings, key, rows) end)
+
+  defp sandbox_auto! do
+    :ok = Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :auto)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.mode(Backplane.Repo, :manual) end)
   end
 
   defp application_started?(application) do

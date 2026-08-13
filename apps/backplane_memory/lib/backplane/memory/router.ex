@@ -3,8 +3,7 @@ defmodule Backplane.Memory.Router do
 
   use Plug.Router
 
-  alias Backplane.Memory.Graph
-  alias Backplane.Memory.Profiles
+  alias Backplane.Memory.{Authorization, Service}
 
   @event_params [
     {"event_type", :event_type},
@@ -24,14 +23,11 @@ defmodule Backplane.Memory.Router do
   plug(:match)
   plug(:fetch_query_params)
   plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
+  plug(:authorize_request)
   plug(:dispatch)
 
   get "/graph/stats" do
-    stats = Graph.stats()
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(stats))
+    tool_response(conn, "memory::graph_stats", conn.query_params)
   end
 
   get "/profile" do
@@ -42,70 +38,132 @@ defmodule Backplane.Memory.Router do
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{error: "project param required"}))
     else
-      case Profiles.get_or_build(project) do
-        {:ok, profile} ->
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(
-            200,
-            Jason.encode!(%{
-              project: profile.project,
-              top_concepts: profile.top_concepts,
-              top_files: profile.top_files,
-              patterns: profile.patterns,
-              session_count: profile.session_count,
-              total_observations: profile.total_observations,
-              updated_at: profile.updated_at
-            })
-          )
-
-        {:building, nil} ->
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(
-            202,
-            Jason.encode!(%{
-              status: "building",
-              message: "Profile is being built, retry shortly"
-            })
-          )
-      end
+      tool_response(conn, "memory::profile", conn.query_params)
     end
   end
 
   post "/query/expand" do
-    query = conn.body_params["query"]
+    tool_response(conn, "memory::expand_query", conn.body_params)
+  end
 
-    if is_binary(query) and query != "" do
-      llm_module =
-        Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
+  post "/lessons" do
+    tool_response(conn, "memory::lesson_save", conn.body_params)
+  end
 
-      body =
-        case llm_module.expand_query(query) do
-          {:ok, expansions} ->
-            Jason.encode!(%{query: query, expansions: expansions})
+  post "/lessons/recall" do
+    tool_response(conn, "memory::lesson_recall", conn.body_params)
+  end
 
-          {:skip, _} ->
-            Jason.encode!(%{query: query, expansions: [query], note: "LLM not configured"})
-        end
+  post "/lessons/strengthen" do
+    tool_response(conn, "memory::lesson_strengthen", conn.body_params)
+  end
 
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(200, body)
+  post "/lessons/promote" do
+    tool_response(conn, "memory::lesson_promote", conn.body_params)
+  end
+
+  post "/lessons/archive" do
+    tool_response(conn, "memory::lesson_archive", conn.body_params)
+  end
+
+  post "/crystals/crystallize" do
+    tool_response(conn, "memory::crystallize", conn.body_params)
+  end
+
+  get "/crystals" do
+    tool_response(conn, "memory::crystal_list", conn.query_params)
+  end
+
+  get "/crystals/:id" do
+    tool_response(conn, "memory::crystal_get", %{"crystal_id" => id})
+  end
+
+  post "/crystals/search" do
+    tool_response(conn, "memory::crystal_search", conn.body_params)
+  end
+
+  get "/activity/summary" do
+    tool_response(conn, "memory::activity_summary", conn.query_params)
+  end
+
+  get "/replay/sessions" do
+    tool_response(conn, "memory::replay_sessions", conn.query_params)
+  end
+
+  get "/replay/sessions/:session_id" do
+    tool_response(
+      conn,
+      "memory::replay_load",
+      Map.put(conn.query_params, "session_id", session_id)
+    )
+  end
+
+  get "/recall/:recall_run_id/trace" do
+    tool_response(
+      conn,
+      "memory::recall_explain",
+      Map.put(conn.query_params, "recall_run_id", recall_run_id)
+    )
+  end
+
+  get "/sessions/:session_id/handoff" do
+    if conn.query_params == %{} do
+      resource_response(conn, "memory://session/#{URI.encode(session_id)}/handoff")
     else
       conn
       |> put_resp_content_type("application/json")
-      |> send_resp(400, Jason.encode!(%{error: "query is required"}))
+      |> send_resp(400, Jason.encode!(%{error: "invalid_arguments"}))
     end
+  end
+
+  get "/sessions/:session_id" do
+    if conn.query_params == %{} do
+      partition = conn.assigns.memory_partition
+
+      case Backplane.Memory.Projections.SessionDetail.get(
+             %{
+               host_id: partition.host_id,
+               client_id: partition.partition_id,
+               scope: partition.scope,
+               namespace: partition.namespace
+             },
+             session_id
+           ) do
+        {:ok, detail} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, Jason.encode!(detail))
+
+        {:error, :not_found} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(404, Jason.encode!(%{error: "not found"}))
+
+        {:error, reason} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(400, Jason.encode!(%{error: format_error(reason)}))
+      end
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{error: "invalid_arguments"}))
+    end
+  end
+
+  post "/replay/import" do
+    tool_response(conn, "memory::replay_import", conn.body_params)
   end
 
   post "/session/start" do
     case conn.body_params do
       %{"session_id" => session_id, "project" => project}
       when is_binary(session_id) and is_binary(project) ->
-        case Backplane.Memory.Observations.register_session(session_id, project) do
+        opts = partition_opts(conn.assigns.memory_partition)
+
+        case Backplane.Memory.Observations.register_session(session_id, project, opts) do
           {:ok, _session} ->
-            context = Backplane.Memory.Context.build(project, session_id)
+            context = Backplane.Memory.Context.build(project, session_id, opts)
             response = %{session_id: session_id}
             response = if context, do: Map.put(response, :context, context), else: response
 
@@ -127,11 +185,19 @@ defmodule Backplane.Memory.Router do
   post "/session/end" do
     case conn.body_params do
       %{"session_id" => session_id} when is_binary(session_id) ->
-        case Backplane.Memory.Observations.end_session(session_id) do
+        case Backplane.Memory.Observations.end_session(
+               session_id,
+               partition_opts(conn.assigns.memory_partition)
+             ) do
           {count, nil} when count in [0, 1] ->
             conn
             |> put_resp_content_type("application/json")
             |> send_resp(200, Jason.encode!(%{session_id: session_id, status: "ended"}))
+
+          {:error, :not_found} ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(404, Jason.encode!(%{error: "session not found"}))
 
           {:error, _reason} ->
             persistence_unavailable(conn)
@@ -153,7 +219,7 @@ defmodule Backplane.Memory.Router do
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{error: "content is required"}))
     else
-      opts = observation_opts(conn.body_params)
+      opts = observation_opts(conn.body_params, conn.assigns.memory_partition)
 
       case Backplane.Memory.Observations.record(session_id, content, opts) do
         {:ok, obs} ->
@@ -176,87 +242,20 @@ defmodule Backplane.Memory.Router do
 
   get "/file-history" do
     files = String.split(conn.query_params["files"] || "", ",", trim: true)
-    exclude = conn.query_params["exclude_session"]
-    opts = [exclude_session: exclude, limit: 50]
-    rows = Backplane.Memory.Observations.file_history(files, opts)
-
-    result =
-      Enum.map(rows, fn o ->
-        %{
-          id: o.id,
-          session_id: o.session_id,
-          tool_name: o.tool_name,
-          content: o.content,
-          created_at: o.created_at
-        }
-      end)
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{results: result}))
+    args = Map.put(conn.query_params, "files", files)
+    tool_response(conn, "memory::file_history", args)
   end
 
   get "/audit" do
-    limit = parse_int(conn.query_params["limit"], 50)
-    offset = parse_int(conn.query_params["offset"], 0)
-    operation = conn.query_params["operation"]
-    actor = conn.query_params["actor"]
-
-    opts = [limit: limit, offset: offset]
-    opts = if operation && operation != "", do: opts ++ [operation: operation], else: opts
-    opts = if actor && actor != "", do: opts ++ [actor: actor], else: opts
-
-    entries = Backplane.Memory.Audit.list(opts) |> Enum.map(&serialize_audit_entry/1)
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{results: entries}))
+    tool_response(conn, "memory::audit", conn.query_params)
   end
 
   get "/diagnose" do
-    alias Backplane.Memory.Embedding.CircuitBreaker
-
-    stats = Backplane.Memory.Memories.stats()
-    cb_state = CircuitBreaker.state()
-
-    repo = Application.fetch_env!(:backplane_memory, :repo)
-    lease_count = repo.aggregate(Backplane.Memory.Coordination.Lease, :count, :id)
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(
-      200,
-      Jason.encode!(%{
-        status: "ok",
-        circuit_breaker: to_string(cb_state),
-        memory_stats: stats,
-        active_leases: lease_count
-      })
-    )
+    tool_response(conn, "memory::diagnose", conn.query_params)
   end
 
   post "/heal" do
-    alias Backplane.Memory.Embedding.CircuitBreaker
-    import Ecto.Query
-
-    repo = Application.fetch_env!(:backplane_memory, :repo)
-    now = DateTime.utc_now()
-
-    {deleted, _} =
-      repo.delete_all(from(l in Backplane.Memory.Coordination.Lease, where: l.expires_at < ^now))
-
-    CircuitBreaker.reset()
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(
-      200,
-      Jason.encode!(%{
-        status: "healed",
-        expired_leases_cleared: deleted,
-        circuit_breaker: "closed"
-      })
-    )
+    tool_response(conn, "memory::heal", conn.body_params)
   end
 
   match _ do
@@ -265,34 +264,167 @@ defmodule Backplane.Memory.Router do
     |> send_resp(404, Jason.encode!(%{error: "not found"}))
   end
 
-  defp parse_int(nil, default), do: default
+  defp authorize_request(conn, _opts) do
+    case request_tool(conn.method, conn.path_info) do
+      nil ->
+        conn
 
-  defp parse_int(str, default) do
-    case Integer.parse(str) do
-      {n, ""} when n >= 0 -> n
-      _ -> default
+      tool ->
+        auth = Map.get(conn.assigns, :resource_auth, %{})
+        args = Map.merge(conn.query_params, conn.body_params)
+
+        case Authorization.authorize_tool(tool, args, auth) do
+          {:ok, _trusted_args, partition} ->
+            conn
+            |> assign(:memory_auth, auth)
+            |> assign(:memory_partition, partition)
+
+          {:error, _reason} ->
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(403, Jason.encode!(%{error: "Forbidden"}))
+            |> halt()
+        end
     end
   end
 
-  defp observation_opts(params) do
+  defp request_tool("GET", ["graph", "stats"]), do: "memory::graph_stats"
+  defp request_tool("GET", ["profile"]), do: "memory::profile"
+  defp request_tool("POST", ["query", "expand"]), do: "memory::expand_query"
+  defp request_tool("POST", ["lessons"]), do: "memory::lesson_save"
+  defp request_tool("POST", ["lessons", "recall"]), do: "memory::lesson_recall"
+  defp request_tool("POST", ["lessons", "strengthen"]), do: "memory::lesson_strengthen"
+  defp request_tool("POST", ["lessons", "promote"]), do: "memory::lesson_promote"
+  defp request_tool("POST", ["lessons", "archive"]), do: "memory::lesson_archive"
+  defp request_tool("POST", ["crystals", "crystallize"]), do: "memory::crystallize"
+  defp request_tool("GET", ["crystals"]), do: "memory::crystal_list"
+  defp request_tool("GET", ["crystals", _id]), do: "memory::crystal_get"
+  defp request_tool("POST", ["crystals", "search"]), do: "memory::crystal_search"
+  defp request_tool("GET", ["activity", "summary"]), do: "memory::activity_summary"
+  defp request_tool("GET", ["replay", "sessions"]), do: "memory::replay_sessions"
+  defp request_tool("GET", ["replay", "sessions", _session_id]), do: "memory::replay_load"
+
+  defp request_tool("GET", ["recall", _recall_run_id, "trace"]),
+    do: "memory::recall_explain"
+
+  defp request_tool("GET", ["sessions", _session_id, "handoff"]), do: "memory::sessions"
+  defp request_tool("GET", ["sessions", _session_id]), do: "memory::sessions"
+  defp request_tool("POST", ["replay", "import"]), do: "memory::replay_import"
+  defp request_tool("POST", ["session", "start"]), do: "memory::remember"
+  defp request_tool("POST", ["session", "end"]), do: "memory::forget"
+  defp request_tool("POST", ["observations"]), do: "memory::remember"
+  defp request_tool("GET", ["file-history"]), do: "memory::file_history"
+  defp request_tool("GET", ["audit"]), do: "memory::audit"
+  defp request_tool("GET", ["diagnose"]), do: "memory::diagnose"
+  defp request_tool("POST", ["heal"]), do: "memory::heal"
+  defp request_tool(_method, _path), do: nil
+
+  defp tool_response(conn, tool, args) do
+    case Service.call(tool, normalize_tool_args(tool, args), conn.assigns.memory_auth) do
+      {:ok, result} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(rest_result(tool, result)))
+
+      {:error, :unauthorized} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(403, Jason.encode!(%{error: "Forbidden"}))
+
+      {:error, :not_found} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(404, Jason.encode!(%{error: "not found"}))
+
+      {:error, reason} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{error: format_error(reason)}))
+    end
+  end
+
+  defp resource_response(conn, uri) do
+    case Service.read_resource(uri, conn.assigns.memory_auth) do
+      {:ok, json} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, json)
+
+      {:error, :unauthorized} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(403, Jason.encode!(%{error: "Forbidden"}))
+
+      {:error, :not_found} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(404, Jason.encode!(%{error: "not found"}))
+
+      {:error, reason} ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{error: format_error(reason)}))
+    end
+  end
+
+  defp normalize_tool_args("memory::replay_sessions", args) do
+    args
+    |> normalize_integer("limit")
+    |> normalize_integer("offset")
+  end
+
+  defp normalize_tool_args("memory::replay_load", args), do: normalize_integer(args, "limit")
+  defp normalize_tool_args("memory::crystal_list", args), do: normalize_integer(args, "limit")
+  defp normalize_tool_args(_tool, args), do: args
+
+  defp normalize_integer(args, key) do
+    case args[key] do
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {integer, ""} -> Map.put(args, key, integer)
+          _invalid -> args
+        end
+
+      _value ->
+        args
+    end
+  end
+
+  defp observation_opts(params, partition) do
     base = [tool_name: params["tool_name"], is_error: params["is_error"] == true]
 
-    Enum.reduce(@event_params, base, fn {param, option}, opts ->
+    @event_params
+    |> Enum.reject(fn {_param, option} -> option in [:host_id, :client_id] end)
+    |> Enum.reduce(base, fn {param, option}, opts ->
       case Map.fetch(params, param) do
         {:ok, value} -> Keyword.put(opts, option, value)
         :error -> opts
       end
     end)
+    |> Keyword.merge(partition_opts(partition))
   end
 
-  defp serialize_audit_entry(%{id: id} = entry) when is_binary(id) and byte_size(id) == 16 do
-    case Ecto.UUID.load(id) do
-      {:ok, canonical_id} -> %{entry | id: canonical_id}
-      :error -> entry
-    end
+  defp partition_opts(partition) do
+    [
+      host_id: partition.host_id,
+      client_id: partition.partition_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
+      trusted_partition: %{
+        host_id: partition.host_id,
+        client_id: partition.partition_id,
+        scope: partition.scope,
+        namespace: partition.namespace
+      }
+    ]
   end
 
-  defp serialize_audit_entry(entry), do: entry
+  defp format_error(reason) when is_binary(reason), do: reason
+  defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_error(reason), do: inspect(reason)
+
+  defp rest_result("memory::audit", %{entries: entries}), do: %{results: entries}
+  defp rest_result(_tool, result), do: result
 
   defp persistence_unavailable(conn) do
     conn

@@ -9,6 +9,10 @@ defmodule Backplane.Memory.Graph.Node do
   @timestamps_opts [type: :utc_datetime_usec, updated_at: false, inserted_at: :created_at]
 
   schema "memory_graph_nodes" do
+    field(:host_id, :string)
+    field(:client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:type, :string)
     field(:name, :string)
     field(:properties, :map, default: %{})
@@ -18,7 +22,16 @@ defmodule Backplane.Memory.Graph.Node do
 
   def changeset(node, attrs) do
     node
-    |> cast(attrs, [:type, :name, :properties, :source_observation_ids])
+    |> cast(attrs, [
+      :host_id,
+      :client_id,
+      :scope,
+      :namespace,
+      :type,
+      :name,
+      :properties,
+      :source_observation_ids
+    ])
     |> validate_required([:type, :name])
     |> validate_inclusion(:type, @valid_types)
   end

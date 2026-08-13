@@ -289,3 +289,45 @@ def send_json(memory_url, endpoint, body):
         return result.returncode == 0
     except (AttributeError, OSError, TypeError, UnicodeError, ValueError, subprocess.SubprocessError):
         return False
+
+
+def request_json(memory_url, endpoint, body, timeout_seconds=1.5):
+    """POST JSON with a bounded deadline and decode a JSON object response."""
+    try:
+        timeout = min(max(float(timeout_seconds), 0.05), 1.5)
+        encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        result = subprocess.run(
+            [
+                "curl",
+                "-sf",
+                "-m",
+                str(timeout),
+                "-X",
+                "POST",
+                memory_url.rstrip("/") + endpoint,
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                "@-",
+            ],
+            input=encoded,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout,
+        )
+
+        if result.returncode != 0:
+            return None
+
+        response = json.loads(result.stdout.decode("utf-8"))
+        return response if isinstance(response, dict) else None
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        subprocess.SubprocessError,
+    ):
+        return None

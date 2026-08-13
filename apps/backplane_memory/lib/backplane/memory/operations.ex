@@ -2,7 +2,8 @@ defmodule Backplane.Memory.Operations do
   @moduledoc false
 
   alias Backplane.Memory.{EventNotifier, Events}
-  alias Backplane.Memory.Operations.{Params, Query, Rollout}
+  alias Backplane.Memory.Coordination.Action
+  alias Backplane.Memory.Operations.{DashboardMetrics, Params, Query, Rollout}
 
   @notification_fields %{
     stream: :stream_id,
@@ -46,20 +47,52 @@ defmodule Backplane.Memory.Operations do
   end
 
   def get_event(id), do: safe_read(fn -> Query.get_event(id) end)
+  def list_actions(partition, opts), do: safe_read(fn -> Action.list(partition, opts) end)
+  def get_action_detail(id, partition), do: safe_read(fn -> Action.detail(id, partition) end)
   def subscribe_events, do: EventNotifier.subscribe()
   def rollout_state, do: Rollout.state()
   def get_rollout_state, do: safe_read(fn -> Rollout.state() end)
-  def set_gate(gate, value), do: safe_command(fn -> Rollout.set_gate(gate, value) end)
+
+  def set_gate(gate, value) do
+    safe_command(fn ->
+      result = Rollout.set_gate(gate, value)
+      audit_gate_mutation(gate, value, result)
+      result
+    end)
+  end
+
   def subscribe_rollout, do: Rollout.subscribe()
   def normalize_timeline_params(raw), do: Params.timeline(raw)
   def normalize_stream_params(raw), do: Params.streams(raw)
   def normalize_sequence_params(raw), do: Params.sequence(raw)
+
+  defp audit_gate_mutation(gate, value, result) do
+    request_id = Ecto.UUID.generate()
+
+    Backplane.Memory.Audit.log(
+      "memory.gate.set",
+      "memory_pipeline_runtime",
+      [to_string(gate)],
+      %{
+        "host_id" => "system",
+        "client_id" => "system",
+        "scope" => "global",
+        "namespace" => "system",
+        "request_id" => request_id,
+        "correlation_id" => request_id,
+        "correlation_ids" => [request_id],
+        "result" => if(result == :ok, do: "updated", else: "rejected"),
+        "value" => value
+      }
+    )
+  end
 
   def overview do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     collect_regions(%{
       pipeline: &rollout_state/0,
+      dashboard: fn -> DashboardMetrics.snapshot(now) end,
       persisted_counts: fn -> Query.persisted_counts(now) end,
       event_volume: fn -> Query.event_volume(now) end,
       runtime_metrics: &runtime_metrics/0,

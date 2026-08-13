@@ -1,17 +1,38 @@
 defmodule Backplane.Memory.Privacy.Filter do
   @content_max_bytes 65_536
   @payload_max_bytes 262_144
-  @sensitive ~r/(^|_)(authorization|cookie|set_cookie|password|secret|token|api_key|access_key|access_key_id)(_|$)/i
+  @bounded_privacy_lookahead_chars 256
+  @sensitive_keys ~w(authorization cookie set_cookie password passwd pwd secret client_secret token api_key access_token access_key access_key_id private_key)
+  @benign_sensitive_keys ~w(token_count token_usage token_budget token_estimate authorization_status)
+  @sensitive_suffix ~r/(^|_)(authorization|cookie|set_cookie|password|passwd|pwd|secret|client_secret|token|api_key|access_token|access_key|access_key_id|private_key)$/
 
   def apply(content) when is_binary(content), do: {:ok, sanitize_string(content)}
 
   def apply(_), do: {:ok, ""}
+
+  def apply_bounded(content, max_chars)
+      when is_binary(content) and is_integer(max_chars) and max_chars >= 0 do
+    content
+    |> String.slice(0, max_chars + @bounded_privacy_lookahead_chars)
+    |> redact_unmatched_private()
+    |> sanitize_string()
+    |> String.slice(0, max_chars)
+    |> then(&{:ok, &1})
+  end
 
   def apply_event(event) when is_map(event) do
     with :ok <- validate_utf8(event) do
       filter_event(event)
     end
   end
+
+  def apply_payload(payload) when is_map(payload) and not is_struct(payload) do
+    with :ok <- validate_utf8(payload) do
+      {:ok, sanitize(payload)}
+    end
+  end
+
+  def apply_payload(_payload), do: {:error, :invalid_payload}
 
   defp filter_event(event) do
     clean = sanitize(event)
@@ -161,6 +182,10 @@ defmodule Backplane.Memory.Privacy.Filter do
   defp canonical_json(value), do: value
 
   defp strip_null_bytes(s), do: String.replace(s, <<0>>, "")
+
+  defp redact_unmatched_private(s),
+    do: Regex.replace(~r/<private>(?!.*<\/private>).*$/s, s, "[REDACTED]")
+
   defp strip_private_tags(s), do: Regex.replace(~r/<private>.*?<\/private>/s, s, "[REDACTED]")
 
   defp redact_secrets(s) do
@@ -207,8 +232,12 @@ defmodule Backplane.Memory.Privacy.Filter do
   defp sanitize_key(k) when is_binary(k), do: sanitize_string(k)
   defp sanitize_key(k), do: k
 
-  defp sensitive?(k) when is_binary(k),
-    do: Regex.match?(@sensitive, normalize_sensitive_key(k))
+  defp sensitive?(k) when is_binary(k) do
+    normalized = normalize_sensitive_key(k)
+
+    normalized not in @benign_sensitive_keys and
+      (normalized in @sensitive_keys or Regex.match?(@sensitive_suffix, normalized))
+  end
 
   defp sensitive?(k) when is_atom(k), do: k |> Atom.to_string() |> sensitive?()
 

@@ -3,9 +3,13 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   import ExUnit.CaptureLog
   import Backplane.SkillArchiveCase
+  import Ecto.Query
 
   alias Backplane.Repo
   alias Backplane.AgentTraces.Event
+  alias Backplane.Memory.Events.Event, as: MemoryEvent
+  alias Backplane.Memory.Ingest.EventValidator
+  alias Backplane.Memory.Imports.ImportBatch
   alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Skills
   alias Backplane.Skills.{AgentManage, AgentPlugins, Assignments, HostStatus, Hosts}
@@ -27,7 +31,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       ToolRegistry.deregister_native("test::host_agent_channel_echo")
     end)
 
-    {host, _auth_token, token} = create_agent_with_token!("channel-host")
+    {host, auth_token, token} = create_agent_with_token!("channel-host")
 
     assert {:ok, socket} =
              connect(HostAgentSocket, %{"host_id" => host.id},
@@ -36,7 +40,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
                }
              )
 
-    %{host: host, socket: socket}
+    %{host: host, auth_token: auth_token, socket: socket}
   end
 
   test "joins only its own host topic", %{host: host, socket: socket} do
@@ -46,6 +50,46 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
     assert {:error, %{reason: "unauthorized"}} =
              subscribe_and_join(socket, "host_agent:00000000-0000-0000-0000-000000000000", %{})
+  end
+
+  test "real channel capture keeps the host partition across assigned token rotation", %{
+    host: host,
+    auth_token: token_a_record,
+    socket: token_a_socket
+  } do
+    Application.delete_env(:backplane_api, :host_event_ingest_adapter)
+
+    assert {:ok, _reply, token_a_socket} =
+             subscribe_and_join(token_a_socket, "host_agent:#{host.id}", %{})
+
+    first = captured_memory_event(host, 1)
+    first_ref = push_memory_events(token_a_socket, host, "batch-token-a", first)
+    assert_reply(first_ref, :ok, %{"results" => [%{"status" => "accepted"}]})
+
+    assert {:ok, token_b_record, token_b} =
+             Hosts.create_auth_token_for_agent(host, %{"name" => "rotated token"})
+
+    assert {:ok, _revoked} = Hosts.revoke_auth_token_for_agent(host, token_a_record.id)
+
+    assert {:ok, token_b_socket} =
+             connect(HostAgentSocket, %{"host_id" => host.id},
+               connect_info: %{x_headers: [{"x-backplane-host-token", token_b}]}
+             )
+
+    assert {:ok, _reply, token_b_socket} =
+             subscribe_and_join(token_b_socket, "host_agent:#{host.id}", %{})
+
+    second = captured_memory_event(host, 2)
+    second_ref = push_memory_events(token_b_socket, host, "batch-token-b", second)
+    assert_reply(second_ref, :ok, %{"results" => [%{"status" => "accepted"}]})
+
+    events = Repo.all(from(event in MemoryEvent, where: event.host_id == ^host.id))
+    assert length(events) == 2
+    assert Enum.all?(events, &(&1.client_id == "host:#{host.id}"))
+    assert Enum.all?(events, &(&1.scope == host.memory_scope))
+
+    assert MapSet.new(events, & &1.ingest_auth_token_id) ==
+             MapSet.new([token_a_record.id, token_b_record.id])
   end
 
   test "heartbeat updates live runtime state only", %{host: host, socket: socket} do
@@ -231,15 +275,24 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   defmodule StubMemoryService do
     def handle_remember(args), do: send_and_ok({:remember, args})
-    def handle_recall(args), do: send_and_ok({:recall, args})
-    def handle_list(args), do: send_and_ok({:list, args})
-    def handle_forget(args), do: send_and_ok({:forget, args})
-    def handle_stats(args), do: send_and_ok({:stats, args})
+    def handle_remember(args, auth), do: send_and_ok({:remember, args, auth})
+    def handle_lifecycle_context(args, auth), do: send_and_ok({:lifecycle_context, args, auth})
+
+    def call("memory::" <> operation, args, auth) do
+      send_and_ok({String.to_existing_atom(operation), args, auth})
+    end
 
     defp send_and_ok(message) do
       owner = :persistent_term.get({__MODULE__, :owner}, nil)
       if owner, do: send(owner, {:memory_service, message})
       {:ok, %{"echo" => elem(message, 0) |> to_string()}}
+    end
+  end
+
+  defmodule RaisingLifecycleContext do
+    def build(_project, _session_id, _opts) do
+      send(:persistent_term.get({__MODULE__, :owner}), :channel_context_builder_called)
+      raise "channel context builder secret"
     end
   end
 
@@ -257,7 +310,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       %{socket: socket}
     end
 
-    test "remember injects host_id and dispatches to the memory service",
+    test "remember derives the canonical host partition outside wire arguments",
          %{host: host, socket: socket} do
       ref =
         push(socket, "memory_call", %{
@@ -266,10 +319,101 @@ defmodule Backplane.Api.HostAgentChannelTest do
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "remember"}})
-      assert_received {:memory_service, {:remember, args}}
-      assert args["host_id"] == host.id
+      assert_received {:memory_service, {:remember, args, auth}}
+      refute Map.has_key?(args, "host_id")
+      refute Map.has_key?(args, "client_id")
+      assert auth.principal_metadata == %{"memory_partition_id" => "host:#{host.id}"}
       assert args["agent_id"] == "agt_1"
       assert args["content"] == "hi"
+    end
+
+    test "lifecycle_context forwards only request data with authenticated host identity",
+         %{host: host, socket: socket} do
+      args = %{
+        "kind" => "session_start",
+        "session_id" => "session-1",
+        "project" => "/workspace/project",
+        "agent_id" => "agt_1"
+      }
+
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "lifecycle_context",
+          "arguments" => args
+        })
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "lifecycle_context"}})
+      assert_received {:memory_service, {:lifecycle_context, ^args, auth}}
+      assert auth.client_id == host.id
+      assert auth.subject == host.id
+      assert auth.principal_metadata == %{"memory_partition_id" => "host:#{host.id}"}
+    end
+
+    test "lifecycle_context rejects spoofed ownership through the production handler",
+         %{socket: socket} do
+      Application.delete_env(:backplane_api, :memory_service)
+
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "lifecycle_context",
+          "arguments" => %{
+            "kind" => "session_start",
+            "session_id" => "session-1",
+            "project" => "/workspace/project",
+            "agent_id" => "agt_1",
+            "scope" => "scope:attacker"
+          }
+        })
+
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_arguments"})
+    end
+
+    test "lifecycle_context keeps the channel alive when context construction raises",
+         %{socket: socket} do
+      previous_context_module = Application.get_env(:backplane_memory, :context_module)
+      previous_inject_context = Backplane.Settings.get("memory.inject_context")
+      Application.delete_env(:backplane_api, :memory_service)
+      Application.put_env(:backplane_memory, :context_module, RaisingLifecycleContext)
+      :ok = Backplane.Settings.set("memory.inject_context", "true")
+      :persistent_term.put({RaisingLifecycleContext, :owner}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({RaisingLifecycleContext, :owner})
+        Backplane.Settings.set("memory.inject_context", previous_inject_context)
+
+        if previous_context_module do
+          Application.put_env(:backplane_memory, :context_module, previous_context_module)
+        else
+          Application.delete_env(:backplane_memory, :context_module)
+        end
+      end)
+
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "lifecycle_context",
+          "arguments" => %{
+            "kind" => "session_start",
+            "session_id" => "session-raise",
+            "project" => "/workspace/project",
+            "agent_id" => "agt_1"
+          }
+        })
+
+      assert_reply(ref, :ok, %{
+        "ok" => true,
+        "result" => %{
+          kind: "session_start",
+          context: nil,
+          source_revision: nil,
+          cached: false,
+          stale: false
+        }
+      })
+
+      assert_received :channel_context_builder_called
+
+      heartbeat_ref = push(socket, "heartbeat", %{})
+      assert_reply(heartbeat_ref, :ok, %{"ok" => true})
     end
 
     # Hermes prefetch / OpenClaw before_agent_start route here.
@@ -281,8 +425,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "recall"}})
-      assert_received {:memory_service, {:recall, args}}
-      assert args["host_id"] == host.id
+      assert_received {:memory_service, {:recall, args, auth}}
+      refute Map.has_key?(args, "host_id")
+      assert auth.client_id == host.id
       assert args["query"] == "what"
       assert args["limit"] == 5
     end
@@ -297,8 +442,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "list"}})
-      assert_received {:memory_service, {:list, args}}
-      assert args["host_id"] == host.id
+      assert_received {:memory_service, {:list, args, auth}}
+      refute Map.has_key?(args, "host_id")
+      assert auth.client_id == host.id
       assert args["scope"] == "/tmp/proj"
       assert args["limit"] == 10
     end
@@ -312,8 +458,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "forget"}})
-      assert_received {:memory_service, {:forget, args}}
-      assert args["host_id"] == host.id
+      assert_received {:memory_service, {:forget, args, auth}}
+      refute Map.has_key?(args, "host_id")
+      assert auth.client_id == host.id
       assert args["id"] == "mem_42"
     end
 
@@ -325,8 +472,30 @@ defmodule Backplane.Api.HostAgentChannelTest do
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "stats"}})
-      assert_received {:memory_service, {:stats, args}}
-      assert args["host_id"] == host.id
+      assert_received {:memory_service, {:stats, args, auth}}
+      refute Map.has_key?(args, "host_id")
+      assert auth.client_id == host.id
+    end
+
+    test "recall and import methods require independent host-agent permissions", %{socket: socket} do
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+
+      recall_ref =
+        push(socket, "memory_call", %{
+          "method" => "recall",
+          "arguments" => %{"query" => "hidden"}
+        })
+
+      import_ref =
+        push(socket, "memory_call", %{
+          "method" => "remember",
+          "arguments" => %{"content" => "hidden", "agent_id" => "agent"}
+        })
+
+      assert_reply(recall_ref, :ok, %{"ok" => false, "error" => "unauthorized"})
+      assert_reply(import_ref, :ok, %{"ok" => false, "error" => "unauthorized"})
+      refute_received {:memory_service, _call}
     end
 
     test "unknown method returns an error reply", %{socket: socket} do
@@ -360,39 +529,382 @@ defmodule Backplane.Api.HostAgentChannelTest do
           module: StubMcpTool
         })
 
+      for name <- ["memory::recall", "memory::remember"] do
+        ToolRegistry.deregister_native(name)
+
+        :ok =
+          ToolRegistry.register_native(%Tool{
+            name: name,
+            description: "Host Memory scope test tool",
+            input_schema: %{"type" => "object"},
+            origin: :native,
+            module: StubMcpTool
+          })
+      end
+
+      on_exit(fn ->
+        ToolRegistry.deregister_native("memory::recall")
+        ToolRegistry.deregister_native("memory::remember")
+      end)
+
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
       %{socket: socket}
     end
 
-    test "mcp_tools_list replies with the registry tool catalog", %{socket: socket} do
+    test "mcp_tools_list hides tools outside the host Memory scope", %{socket: socket} do
       ref = push(socket, "mcp_tools_list", %{})
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => tools}})
 
-      assert %{
-               "name" => "test::host_agent_channel_echo",
-               "description" => "Echo test tool",
-               "inputSchema" => %{"type" => "object"}
-             } = Enum.find(tools, &(&1["name"] == "test::host_agent_channel_echo"))
+      refute Enum.any?(tools, &(&1["name"] == "test::host_agent_channel_echo"))
     end
 
-    test "mcp_tool_call dispatches through the MCP handler", %{socket: socket} do
+    test "mcp_tools_list exposes only the independently granted host Memory surfaces", %{
+      socket: socket
+    } do
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.recall"])
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+
+      ref = push(socket, "mcp_tools_list", %{})
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => recall_tools}})
+      recall_names = MapSet.new(recall_tools, & &1["name"])
+      assert MapSet.member?(recall_names, "memory::recall")
+      refute MapSet.member?(recall_names, "memory::remember")
+
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.import"])
+
+      ref = push(socket, "mcp_tools_list", %{})
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => import_tools}})
+      import_names = MapSet.new(import_tools, & &1["name"])
+      assert MapSet.member?(import_names, "memory::remember")
+      refute MapSet.member?(import_names, "memory::recall")
+
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])
+
+      ref = push(socket, "mcp_tools_list", %{})
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => []}})
+    end
+
+    test "mcp_tool_call rejects tools outside the host Memory scope", %{socket: socket} do
       ref =
         push(socket, "mcp_tool_call", %{
           "name" => "test::host_agent_channel_echo",
           "arguments" => %{"value" => "ok"}
         })
 
-      assert_reply(ref, :ok, %{
-        "ok" => true,
-        "result" => %{"echo" => %{"value" => "ok"}}
-      })
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "unauthorized"})
     end
 
     test "mcp_tool_call returns invalid_payload for malformed payloads", %{socket: socket} do
       ref = push(socket, "mcp_tool_call", %{"name" => "test::host_agent_channel_echo"})
       assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+  end
+
+  defmodule StubHostEventIngest do
+    def ingest_batch(auth_context, payload) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:host_event_ingest, auth_context, payload})
+
+      case :persistent_term.get({__MODULE__, :reply}) do
+        {:raise, message} -> raise message
+        {:exit, reason} -> exit(reason)
+        reply -> reply
+      end
+    end
+  end
+
+  describe "host-local memory import lifecycle" do
+    test "records only remote-safe batch metadata under the import scope", %{
+      host: host,
+      socket: socket
+    } do
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.import"])
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+      batch_id = Ecto.UUID.generate()
+
+      started = %{
+        "protocol" => "host_import.v1",
+        "action" => "started",
+        "batch_id" => batch_id,
+        "integration" => "claude_code",
+        "source_format" => "claude_code_jsonl",
+        "source_path_fingerprint" => "sha256:" <> String.duplicate("b", 64)
+      }
+
+      ref = push(socket, "memory_import_batch", started)
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"status" => "started"}})
+
+      ref =
+        push(
+          socket,
+          "memory_import_batch",
+          Map.merge(started, %{
+            "action" => "completed",
+            "discovered_count" => 3,
+            "imported_count" => 2,
+            "duplicate_count" => 0,
+            "rejected_count" => 1
+          })
+        )
+
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"status" => "completed"}})
+
+      assert %ImportBatch{host_id: host_id, status: "completed"} =
+               Repo.get!(ImportBatch, batch_id)
+
+      assert host_id == host.id
+    end
+
+    test "rejects import lifecycle messages without the import scope", %{
+      host: host,
+      socket: socket
+    } do
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "memory_import_batch", %{
+          "protocol" => "host_import.v1",
+          "action" => "started"
+        })
+
+      assert_reply(ref, :error, %{"reason" => "unauthorized"})
+    end
+  end
+
+  describe "host memory event ingest" do
+    setup %{host: host, socket: socket} do
+      :persistent_term.put({StubHostEventIngest, :owner}, self())
+
+      Application.put_env(
+        :backplane_api,
+        :host_event_ingest_adapter,
+        StubHostEventIngest
+      )
+
+      on_exit(fn ->
+        Application.delete_env(:backplane_api, :host_event_ingest_adapter)
+        _ = :persistent_term.erase({StubHostEventIngest, :owner})
+        _ = :persistent_term.erase({StubHostEventIngest, :reply})
+      end)
+
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+      %{socket: socket}
+    end
+
+    test "memory_events returns the exact mixed acknowledgement and trusted auth context", %{
+      host: host,
+      auth_token: auth_token,
+      socket: socket
+    } do
+      payload = %{
+        "protocol" => "host_events.v1",
+        "batch_id" => "batch_1",
+        "host_id" => host.id,
+        "events" => [%{"event_id" => "event_1"}, %{"event_id" => "event_2"}]
+      }
+
+      reply = %{
+        "batch_id" => "batch_1",
+        "results" => [
+          %{
+            "event_id" => "event_1",
+            "status" => "accepted",
+            "server_event_id" => "server_1"
+          },
+          %{
+            "event_id" => "event_2",
+            "status" => "rejected",
+            "retryable" => false,
+            "reason" => "host_mismatch"
+          }
+        ]
+      }
+
+      :persistent_term.put({StubHostEventIngest, :reply}, {:ok, reply})
+
+      ref = push(socket, "memory_events", payload)
+      assert_reply(ref, :ok, ^reply)
+
+      assert_received {:host_event_ingest,
+                       %{
+                         host_id: host_id,
+                         auth_token_id: auth_token_id,
+                         scopes: scopes
+                       }, ^payload}
+
+      assert host_id == host.id
+      assert auth_token_id == auth_token.id
+      assert "host_agent.capture" in scopes
+    end
+
+    test "memory_events requires capture independently from recall and import", %{
+      host: host,
+      socket: socket
+    } do
+      Application.put_env(:backplane_api, :host_agent_scopes, [
+        "host_agent.recall",
+        "host_agent.import"
+      ])
+
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+
+      ref =
+        push(socket, "memory_events", %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "capture-denied",
+          "host_id" => host.id,
+          "events" => []
+        })
+
+      assert_reply(ref, :error, %{"reason" => "unauthorized"})
+      refute_received {:host_event_ingest, _, _}
+    end
+
+    test "memory_events rejects a spoofed batch host before calling the adapter", %{
+      socket: socket
+    } do
+      :persistent_term.put({StubHostEventIngest, :reply}, {:ok, %{}})
+
+      ref =
+        push(socket, "memory_events", %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => Ecto.UUID.generate(),
+          "events" => []
+        })
+
+      assert_reply(ref, :error, %{"reason" => "host_mismatch"})
+      refute_received {:host_event_ingest, _, _}
+    end
+
+    test "memory_events rejects malformed protocol and fields", %{host: host, socket: socket} do
+      malformed = [
+        %{
+          "protocol" => "host_events.v0",
+          "batch_id" => "batch_1",
+          "host_id" => host.id,
+          "events" => []
+        },
+        %{"protocol" => "host_events.v1", "batch_id" => "", "host_id" => host.id, "events" => []},
+        %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => "",
+          "events" => []
+        },
+        %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => host.id,
+          "events" => %{}
+        },
+        %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => host.id,
+          "events" => [%{"payload" => self()}]
+        },
+        %{
+          "protocol" => "host_events.v1",
+          "batch_id" => <<255>>,
+          "host_id" => host.id,
+          "events" => []
+        },
+        "not-a-map"
+      ]
+
+      for payload <- malformed do
+        ref = push(socket, "memory_events", payload)
+        assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+      end
+
+      refute_received {:host_event_ingest, _, _}
+    end
+
+    test "memory_events rejects batches over 100 events", %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_events", %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => host.id,
+          "events" => Enum.map(1..101, &%{"event_id" => "event_#{&1}"})
+        })
+
+      assert_reply(ref, :error, %{"reason" => "batch_too_large"})
+      refute_received {:host_event_ingest, _, _}
+    end
+
+    test "memory_events rejects encoded payloads over 512 KiB", %{host: host, socket: socket} do
+      ref =
+        push(socket, "memory_events", %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch_1",
+          "host_id" => host.id,
+          "events" => [%{"event_id" => "event_1", "payload" => String.duplicate("x", 524_288)}]
+        })
+
+      assert_reply(ref, :error, %{"reason" => "payload_too_large"})
+      refute_received {:host_event_ingest, _, _}
+    end
+
+    test "memory_events maps known domain errors to channel errors", %{
+      host: host,
+      socket: socket
+    } do
+      for {domain_reason, channel_reason} <- [
+            {:invalid_batch, "invalid_payload"},
+            {:host_mismatch, "host_mismatch"}
+          ] do
+        :persistent_term.put({StubHostEventIngest, :reply}, {:error, domain_reason})
+
+        ref =
+          push(socket, "memory_events", %{
+            "protocol" => "host_events.v1",
+            "batch_id" => "batch_1",
+            "host_id" => host.id,
+            "events" => []
+          })
+
+        assert_reply(ref, :error, %{"reason" => ^channel_reason})
+      end
+    end
+
+    test "memory_events contains unexpected adapter errors", %{host: host, socket: socket} do
+      assert_ingest_unavailable(socket, host, {:error, :database_went_away})
+    end
+
+    test "memory_events contains malformed adapter replies", %{host: host, socket: socket} do
+      secret_marker = "must-not-appear-in-ingest-log"
+
+      log =
+        capture_log(fn ->
+          assert_ingest_unavailable(socket, host, {:ok, %{"secret" => secret_marker}})
+        end)
+
+      refute log =~ secret_marker
+
+      for reply <- [
+            {:ok, %{}},
+            {:ok, %{"batch_id" => "batch_1", "results" => [%{} | :improper]}},
+            {:ok, %{"batch_id" => "batch_1", "results" => [self()]}},
+            :not_an_ingest_reply
+          ] do
+        assert_ingest_unavailable(socket, host, reply)
+      end
+    end
+
+    test "memory_events contains adapter exceptions", %{host: host, socket: socket} do
+      assert_ingest_unavailable(socket, host, {:raise, "adapter exploded"})
+    end
+
+    test "memory_events contains adapter exits", %{host: host, socket: socket} do
+      assert_ingest_unavailable(socket, host, {:exit, :adapter_stopped})
     end
   end
 
@@ -403,9 +915,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
       MapSet.new(["proj_local"])
     end
 
-    def facts_for_scope(scope, fact_set_hash) do
+    def facts_for_scope(host, scope, fact_set_hash) do
       owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:host_memory_sync, {:facts_for_scope, scope, fact_set_hash}})
+      send(owner, {:host_memory_sync, {:facts_for_scope, host.id, scope, fact_set_hash}})
 
       {:full,
        [
@@ -420,9 +932,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
        ]}
     end
 
-    def active_wipes(scope) do
+    def active_wipes(host, scope) do
       owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:host_memory_sync, {:active_wipes, scope}})
+      send(owner, {:host_memory_sync, {:active_wipes, host.id, scope}})
 
       [
         %{
@@ -447,9 +959,13 @@ defmodule Backplane.Api.HostAgentChannelTest do
   end
 
   defmodule RaisingHostMemorySync do
-    def entitled_scopes(_host), do: raise("memory reconcile unavailable")
-    def facts_for_scope(_scope, _fact_set_hash), do: :unchanged
-    def active_wipes(_scope), do: []
+    def entitled_scopes(_host) do
+      send(:persistent_term.get({__MODULE__, :owner}), :memory_reconcile_attempted)
+      raise "memory reconcile unavailable"
+    end
+
+    def facts_for_scope(_host, _scope, _fact_set_hash), do: :unchanged
+    def active_wipes(_host, _scope), do: []
     def apply_sync_item(_host, _item), do: {:error, :transient, "unavailable"}
   end
 
@@ -490,11 +1006,14 @@ defmodule Backplane.Api.HostAgentChannelTest do
         "items" => [%{"content_hash" => "hash_wipe", "scope" => "proj_local"}]
       })
 
+      host_id = host.id
       assert_received {:host_memory_sync, {:entitled_scopes, _host_id}}
-      assert_received {:host_memory_sync, {:facts_for_scope, "proj_local", "old_hash"}}
-      assert_received {:host_memory_sync, {:active_wipes, "proj_local"}}
-      refute_received {:host_memory_sync, {:facts_for_scope, "secret", "secret_hash"}}
-      refute_received {:host_memory_sync, {:active_wipes, "secret"}}
+      assert_received {:host_memory_sync, {:facts_for_scope, ^host_id, "proj_local", "old_hash"}}
+
+      assert_received {:host_memory_sync, {:active_wipes, ^host_id, "proj_local"}}
+      refute_received {:host_memory_sync, {:facts_for_scope, ^host_id, "secret", "secret_hash"}}
+
+      refute_received {:host_memory_sync, {:active_wipes, ^host_id, "secret"}}
     end
 
     test "join memory reconcile failures do not disconnect the host", %{
@@ -505,6 +1024,8 @@ defmodule Backplane.Api.HostAgentChannelTest do
       on_exit(fn -> Process.flag(:trap_exit, previous_flag) end)
 
       Application.put_env(:backplane_api, :host_memory_sync_adapter, RaisingHostMemorySync)
+      :persistent_term.put({RaisingHostMemorySync, :owner}, self())
+      on_exit(fn -> :persistent_term.erase({RaisingHostMemorySync, :owner}) end)
 
       payload = %{
         "memory" => %{
@@ -520,10 +1041,18 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
           send(self(), {:joined_socket, socket})
 
+          assert_receive :memory_reconcile_attempted
+
+          ref = push(socket, "heartbeat", %{"agent_version" => "0.3.1"})
+          assert_reply(ref, :ok, %{"ok" => true})
+
+          Logger.flush()
+
           refute_receive {:EXIT, _pid, _reason}, 100
         end)
 
       assert log =~ "Host-agent memory reconcile failed"
+      refute log =~ "memory reconcile unavailable"
       assert_receive {:joined_socket, socket}
       assert {:ok, %{status: :online}} = AgentManage.get_agent(host.id)
 
@@ -568,6 +1097,28 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_reply(ref, :error, %{"reason" => "temporarily unavailable"})
     end
 
+    test "memory_sync requires import independently from capture and recall", %{
+      host: host,
+      socket: socket
+    } do
+      Application.put_env(:backplane_api, :host_agent_scopes, [
+        "host_agent.capture",
+        "host_agent.recall"
+      ])
+
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "memory_sync", %{
+          "protocol" => "host_memory.v1",
+          "items" => [%{"id" => "denied", "op" => "remember", "content" => "secret"}]
+        })
+
+      assert_reply(ref, :error, %{"reason" => "unauthorized"})
+      refute_received {:host_memory_sync, {:apply_sync_item, _, _}}
+    end
+
     test "facts and wipe acks are accepted", %{host: host, socket: socket} do
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
@@ -593,6 +1144,35 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
       ref = push(socket, "memory_sync", %{"items" => "bad"})
       assert_reply(ref, :error, %{"reason" => "invalid_payload"})
+    end
+
+    test "memory_sync rejects more than 50 items before calling the adapter", %{
+      host: host,
+      socket: socket
+    } do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      items = Enum.map(1..51, &%{"id" => "item_#{&1}", "op" => "remember"})
+      ref = push(socket, "memory_sync", %{"protocol" => "host_memory.v1", "items" => items})
+
+      assert_reply(ref, :error, %{"reason" => "batch_too_large"})
+      refute_received {:host_memory_sync, {:apply_sync_item, _, _}}
+    end
+
+    test "memory_sync rejects encoded payloads over 512 KiB before calling the adapter", %{
+      host: host,
+      socket: socket
+    } do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+      ref =
+        push(socket, "memory_sync", %{
+          "protocol" => "host_memory.v1",
+          "items" => [%{"id" => "large", "content" => String.duplicate("x", 512 * 1024)}]
+        })
+
+      assert_reply(ref, :error, %{"reason" => "payload_too_large"})
+      refute_received {:host_memory_sync, {:apply_sync_item, _, _}}
     end
   end
 
@@ -655,6 +1235,58 @@ defmodule Backplane.Api.HostAgentChannelTest do
   defp create_agent_with_token!(name) do
     assert {:ok, host, auth_token, token} = Hosts.create_agent_with_token(%{"name" => name})
     {host, auth_token, token}
+  end
+
+  defp push_memory_events(socket, host, batch_id, event) do
+    push(socket, "memory_events", %{
+      "protocol" => "host_events.v1",
+      "batch_id" => batch_id,
+      "host_id" => host.id,
+      "events" => [event]
+    })
+  end
+
+  defp captured_memory_event(host, sequence) do
+    payload = %{"message" => "capture #{sequence}"}
+
+    %{
+      "event_id" => Ecto.UUID.generate(),
+      "schema_version" => 1,
+      "host_id" => host.id,
+      "agent_id" => "channel-agent",
+      "client_id" => "caller-controlled-client",
+      "integration" => "codex",
+      "project" => "/workspace/backplane",
+      "scope" => host.memory_scope,
+      "session_id" => "rotation-session",
+      "parent_session_id" => nil,
+      "sequence" => sequence,
+      "event_type" => "agent.prompt.submitted",
+      "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "captured_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "idempotency_key" => "rotation-session:#{sequence}",
+      "payload_hash" => EventValidator.payload_hash(payload),
+      "privacy" => %{"filtered" => true, "filter_version" => "1"},
+      "trace" => %{"correlation_id" => "rotation-#{sequence}"},
+      "payload" => payload
+    }
+  end
+
+  defp assert_ingest_unavailable(socket, host, adapter_reply) do
+    :persistent_term.put({StubHostEventIngest, :reply}, adapter_reply)
+
+    ref =
+      push(socket, "memory_events", %{
+        "protocol" => "host_events.v1",
+        "batch_id" => "batch_1",
+        "host_id" => host.id,
+        "events" => []
+      })
+
+    assert_reply(ref, :error, %{"reason" => "ingest_unavailable"})
+
+    heartbeat_ref = push(socket, "heartbeat", %{"agent_version" => "test"})
+    assert_reply(heartbeat_ref, :ok, %{"ok" => true})
   end
 
   defp valid_trace_item(seq, overrides \\ %{}) do

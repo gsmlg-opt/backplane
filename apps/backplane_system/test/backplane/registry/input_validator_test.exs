@@ -71,6 +71,16 @@ defmodule Backplane.Registry.InputValidatorTest do
       assert :ok = InputValidator.validate(args, @schema)
     end
 
+    test "rejects extra fields when additionalProperties is false" do
+      schema = Map.put(@schema, "additionalProperties", false)
+
+      assert {:error, message} =
+               InputValidator.validate(%{"query" => "hi", "host_id" => "forged"}, schema)
+
+      assert message =~ "Unexpected arguments"
+      assert message =~ "host_id"
+    end
+
     test "handles schema without required key" do
       schema = Map.delete(@schema, "required")
       assert :ok = InputValidator.validate(%{}, schema)

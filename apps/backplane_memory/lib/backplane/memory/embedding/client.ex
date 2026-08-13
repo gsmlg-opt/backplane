@@ -44,10 +44,14 @@ defmodule Backplane.Memory.Embedding.Client do
     req_opts =
       [
         url: url,
+        headers: [
+          {"x-backplane-memory-origin", "embedding"},
+          {"x-backplane-memory-capture", "skip"}
+        ],
         json: %{model: model, input: inputs, encoding_format: "float"}
       ] ++ req_options
 
-    case Req.post(req_opts) do
+    case Backplane.Memory.LLM.with_capture_suppressed(fn -> Req.post(req_opts) end) do
       {:ok, %{status: 200, body: %{"data" => data}}} ->
         vectors =
           data

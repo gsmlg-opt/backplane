@@ -10,6 +10,8 @@ defmodule Backplane.Clients.Client do
   @timestamps_opts [type: :utc_datetime_usec]
 
   @scope_pattern ~r/^(\*|[\w-]+::\*|[\w-]+::[\w-]+)$/
+  @memory_permissions ~w(memory.read memory.write memory.coordinate memory.replay memory.admin)
+  @host_agent_permissions ~w(host_agent.capture host_agent.recall host_agent.import)
 
   schema "clients" do
     field(:name, :string)
@@ -43,7 +45,12 @@ defmodule Backplane.Clients.Client do
         add_error(changeset, :scopes, "must not be empty")
 
       scopes when is_list(scopes) ->
-        invalid = Enum.reject(scopes, &Regex.match?(@scope_pattern, &1))
+        invalid =
+          Enum.reject(
+            scopes,
+            &(Regex.match?(@scope_pattern, &1) or &1 in @memory_permissions or
+                &1 in @host_agent_permissions)
+          )
 
         if invalid == [] do
           changeset

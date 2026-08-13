@@ -101,6 +101,34 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "pending", 0)
   end
 
+  test "clamps configured sync batches to 50 items", %{store: store, opts: opts} do
+    Enum.each(1..51, fn index ->
+      assert {:ok, _} = Memory.remember(%{"content" => "item #{index}"}, opts)
+    end)
+
+    assert {:ok, %{"drained" => 50}} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               batch_size: 10_000
+             )
+
+    assert_receive {:memory_push, "memory_sync", %{"items" => items}}
+    assert length(items) == 50
+  end
+
+  test "does not send a memory_sync payload over 512 KiB", %{store: store, opts: opts} do
+    assert {:ok, %{"id" => id}} =
+             Memory.remember(%{"content" => String.duplicate("x", 512 * 1024)}, opts)
+
+    assert {:ok, %{"drained" => 0}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    refute_receive {:memory_push, "memory_sync", _payload}
+    assert_outbox(store, id, "pending", 0)
+  end
+
   test "start resets stranded inflight rows to pending", %{store: store, opts: opts} do
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => "claimed before crash"}, opts)
 

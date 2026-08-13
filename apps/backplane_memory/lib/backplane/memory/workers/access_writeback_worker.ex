@@ -8,7 +8,13 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorker do
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"memory_ids" => ids}}) when is_list(ids) do
+  def perform(%Oban.Job{} = job) do
+    Backplane.Memory.PipelineTelemetry.span("access.writeback", job.args, fn ->
+      do_perform(job)
+    end)
+  end
+
+  defp do_perform(%Oban.Job{args: %{"memory_ids" => ids}}) when is_list(ids) do
     repo().update_all(
       from(m in Memory, where: m.id in ^ids),
       inc: [access_count: 1],
@@ -17,6 +23,8 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorker do
 
     :ok
   end
+
+  defp do_perform(%Oban.Job{}), do: {:cancel, :invalid_arguments}
 
   @doc "Enqueue a batch access writeback for a list of memory IDs."
   def enqueue(memory_ids) when is_list(memory_ids) and memory_ids != [] do

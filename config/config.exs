@@ -22,14 +22,30 @@ config :backplane_system, Backplane.Repo,
 
 config :backplane, Oban,
   repo: Backplane.Repo,
-  queues: [default: 10, indexing: 5, sync: 3, embeddings: 2, llm: 5, memory: 3],
+  queues: [
+    default: 10,
+    indexing: 5,
+    sync: 3,
+    embeddings: 2,
+    llm: 5,
+    memory: 3,
+    memory_relation_classifier: 1,
+    memory_lessons: 1,
+    memory_crystals: 1
+  ],
   plugins: [
     {Oban.Plugins.Cron,
      crontab: [
        # Procedural extraction: nightly at 02:00
        {"0 2 * * *", Backplane.Memory.Workers.ProceduralWorker},
-       # Fallback sweep: every 4 hours
-       {"0 */4 * * *", Backplane.Memory.Workers.FallbackSweepWorker},
+       # Lesson decay: nightly at 03:15, isolated and bounded by exact-partition pages
+       {"15 3 * * *", Backplane.Memory.Workers.LessonDecaySweepWorker},
+       # Fallback sweep: every 30 minutes, leaving room for gap grace within the four-hour SLA
+       {"*/30 * * * *", Backplane.Memory.Workers.FallbackSweepWorker},
+       # Privacy-safe recall trace retention: bounded daily purge
+       {"30 3 * * *", Backplane.Memory.Workers.RecallTracePurgeWorker},
+       # Durable Activity retention: daily bounded purge with continuation jobs
+       {"45 3 * * *", Backplane.Memory.Workers.ActivityRetentionWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker}
      ]}
@@ -42,6 +58,12 @@ config :backplane_monitor, repo: Backplane.Repo
 config :backplane_api, Backplane.Api.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
+  http: [
+    websocket_options: [
+      max_frame_size: 640 * 1024,
+      max_fragmented_message_size: 640 * 1024
+    ]
+  ],
   check_origin: false,
   render_errors: [
     formats: [html: Backplane.Api.ErrorHTML, json: Backplane.Api.ErrorJSON],

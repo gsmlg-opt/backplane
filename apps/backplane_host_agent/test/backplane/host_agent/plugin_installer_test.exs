@@ -150,19 +150,35 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
              })
   end
 
+  @tag :tmp_dir
+  test "installs and validates the actual packaged integration sources", %{tmp_dir: tmp_dir} do
+    home_dir = Path.join(tmp_dir, "home")
+
+    for runtime <- ~w(hermes openclaw) do
+      assert {:ok, %{"valid" => true, "source_path" => source, "target_path" => target}} =
+               PluginInstaller.install("memory", runtime, %{home_dir: home_dir})
+
+      assert source =~ Path.join(["integrations", "memory", runtime])
+      assert File.read!(Path.join(target, "README.md")) =~ "Backplane"
+    end
+  end
+
   defp source_root!(tmp_dir) do
     source_root = Path.join(tmp_dir, "source")
 
     hermes = Path.join(source_root, "hermes")
     File.mkdir_p!(hermes)
+    File.write!(Path.join(hermes, "README.md"), "Backplane Hermes\n")
     File.write!(Path.join(hermes, "plugin.yaml"), "name: hermes\n")
     File.write!(Path.join(hermes, "__init__.py"), "# hermes\n")
 
     openclaw = Path.join(source_root, "openclaw")
     File.mkdir_p!(openclaw)
+    File.write!(Path.join(openclaw, "README.md"), "Backplane OpenClaw\n")
     File.write!(Path.join(openclaw, "package.json"), ~s({"name":"backplane-memory"}))
     File.write!(Path.join(openclaw, "openclaw.plugin.json"), ~s({"id":"backplane-memory"}))
     File.write!(Path.join(openclaw, "plugin.mjs"), "export default {};\n")
+    File.write!(Path.join(openclaw, "plugin.yaml"), "name: openclaw\n")
 
     source_root
   end

@@ -59,6 +59,20 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert [%{host: %{name: "new-host"}}] = AgentManage.list_agents()
   end
 
+  test "creating an agent persists its registered memory scope", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/system/host-agents")
+    view |> element("#open-agent-modal") |> render_click()
+
+    view
+    |> form("#host-agent-form", %{
+      "agent" => %{"name" => "scoped-host", "memory_scope" => "  project:trusted  "}
+    })
+    |> render_submit()
+
+    assert %{memory_scope: "project:trusted"} =
+             Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
+  end
+
   test "legacy detail path redirects to overview tab", %{conn: conn} do
     assert {:ok, host} = Hosts.create_agent(%{"name" => "legacy-host"})
     expected_path = "/system/host-agents/#{host.id}/overview"

@@ -21,7 +21,18 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
 
   defmodule MockLLMExpand do
     def expand_query(query), do: {:ok, [query, query <> " alternative"]}
-    def rerank(_query, candidates), do: {:ok, Enum.reverse(candidates)}
+
+    def rerank(_query, candidates) do
+      count = length(candidates)
+
+      {:ok,
+       candidates
+       |> Enum.reverse()
+       |> Enum.with_index()
+       |> Enum.map(fn {candidate, index} ->
+         %{token: candidate.token, score: (count - index) / max(count, 1)}
+       end)}
+    end
   end
 
   defmodule MockLLMNoLLM do
@@ -133,6 +144,49 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
       reranked_ids = Enum.map(reranked_results, & &1.id)
       # Reversal from MockLLMExpand means order should be opposite of pre_ids
       assert reranked_ids == Enum.reverse(pre_ids)
+    end
+
+    test "real proxy errors and malformed responses preserve exact hybrid results" do
+      base = [agent_id: "real-rerank", host_id: "h"]
+      _first = insert_with_embedding("alpha fallback", vec(%{0 => 1.0}), base)
+      _second = insert_with_embedding("beta fallback", vec(%{0 => 0.8, 1 => 0.2}), base)
+
+      opts = [
+        limit: 10,
+        embed_fn: embed_const(vec(%{0 => 1.0})),
+        llm_module: Backplane.Memory.LLM
+      ]
+
+      Backplane.Settings.set("memory.reranker_enabled", "false")
+      assert {:ok, baseline} = Search.hybrid_recall("fallback", opts)
+
+      previous_model = Backplane.Settings.get("memory.llm_model")
+      previous_req = Application.get_env(:backplane_memory, :llm_req_options)
+      Backplane.Settings.set("memory.llm_model", "test-model")
+      Backplane.Settings.set("memory.reranker_enabled", "true")
+      Application.put_env(:backplane_memory, :llm_req_options, plug: {Req.Test, __MODULE__})
+
+      on_exit(fn ->
+        Backplane.Settings.set("memory.llm_model", previous_model)
+
+        if previous_req,
+          do: Application.put_env(:backplane_memory, :llm_req_options, previous_req),
+          else: Application.delete_env(:backplane_memory, :llm_req_options)
+      end)
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        conn |> Plug.Conn.put_status(503) |> Req.Test.json(%{"error" => "private"})
+      end)
+
+      assert {:ok, ^baseline} = Search.hybrid_recall("fallback", opts)
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [%{"message" => %{"content" => ~s({"rankings":[]})}}]
+        })
+      end)
+
+      assert {:ok, ^baseline} = Search.hybrid_recall("fallback", opts)
     end
   end
 end

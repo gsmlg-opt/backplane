@@ -13,6 +13,7 @@ defmodule Backplane.Memory.Memories.Search do
 
   alias Backplane.Memory.Embedding.Client
   alias Backplane.Memory.Memories.Memory, as: M
+  alias Backplane.Memory.Privacy.Filter
   alias Pgvector.HalfVector
 
   @default_limit 10
@@ -53,7 +54,11 @@ defmodule Backplane.Memory.Memories.Search do
 
       rows =
         M
-        |> where([m], is_nil(m.deleted_at) and not is_nil(m.embedding))
+        |> where(
+          [m],
+          is_nil(m.deleted_at) and not is_nil(m.embedding) and
+            m.lifecycle_state not in ["tombstoned", "superseded", "archived"]
+        )
         |> apply_filters(opts)
         |> order_by([m], fragment("? <=> ?", m.embedding, ^hv))
         |> limit(^limit)
@@ -100,6 +105,27 @@ defmodule Backplane.Memory.Memories.Search do
 
   defp apply_filter({:tag, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], ^v in m.tags)
+
+  defp apply_filter({:client_id, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.client_id == ^v)
+
+  defp apply_filter({:namespace, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.namespace == ^v)
+
+  defp apply_filter({:session, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.session_id == ^v)
+
+  defp apply_filter({:project, v}, q) when is_binary(v) and v != "" do
+    where(
+      q,
+      [m],
+      fragment(
+        "CASE WHEN jsonb_typeof(?->'project') = 'string' THEN ?->>'project' ELSE NULL END",
+        m.metadata,
+        m.metadata
+      ) == ^v
+    )
+  end
 
   defp apply_filter({:min_confidence, v}, q) when is_float(v),
     do: where(q, [m], m.confidence >= ^v)
@@ -180,15 +206,68 @@ defmodule Backplane.Memory.Memories.Search do
 
     if enabled and length(candidates) > 0 do
       top_k = Enum.take(candidates, k)
+      descriptors = reranker_descriptors(top_k)
 
-      case llm_module.rerank(query, top_k) do
-        {:ok, reranked} -> reranked
-        {:skip, _} -> candidates
+      case llm_module.rerank(filtered_query(query), descriptors) do
+        {:ok, rows} -> apply_reranking(rows, top_k, candidates)
+        {:skip, _reason} -> candidates
+        {:error, _reason} -> candidates
+        _malformed -> candidates
       end
     else
       candidates
     end
   end
+
+  defp reranker_descriptors(candidates) do
+    candidates
+    |> Enum.with_index()
+    |> Enum.map(fn {candidate, token} ->
+      {:ok, content} = Filter.apply_bounded(candidate.content, 2_000)
+
+      %{
+        token: token,
+        kind: "memory",
+        memory_type: candidate.memory_type,
+        content: content
+      }
+    end)
+  end
+
+  defp filtered_query(query) do
+    {:ok, filtered} = Filter.apply_bounded(query, 2_000)
+    filtered
+  end
+
+  defp apply_reranking(rows, top_k, all) when is_list(rows) do
+    parsed =
+      Enum.reduce_while(rows, {:ok, []}, fn
+        %{token: token, score: score} = row, {:ok, acc}
+        when map_size(row) == 2 and is_integer(token) and is_number(score) and token >= 0 and
+               token < length(top_k) and score >= 0 and score <= 1 and score == score ->
+          {:cont, {:ok, [{token, score / 1} | acc]}}
+
+        _row, _acc ->
+          {:halt, :error}
+      end)
+
+    with {:ok, reversed} <- parsed,
+         ranked = Enum.reverse(reversed),
+         tokens = Enum.map(ranked, &elem(&1, 0)),
+         true <- length(tokens) == length(top_k),
+         true <- tokens == Enum.uniq(tokens) do
+      reordered =
+        ranked
+        |> Enum.sort_by(fn {token, score} -> {-score, token} end)
+        |> Enum.map(fn {token, _score} -> Enum.at(top_k, token) end)
+
+      reordered ++ Enum.drop(all, length(top_k))
+    else
+      _invalid -> all
+    end
+  end
+
+  defp apply_reranking(_rows, _top_k, all), do: all
 
   defp dedup_by_id(rows) do
     rows |> Enum.uniq_by(& &1.id)
@@ -229,7 +308,11 @@ defmodule Backplane.Memory.Memories.Search do
 
   defp fts_search(query, opts) do
     M
-    |> where([m], is_nil(m.deleted_at))
+    |> where(
+      [m],
+      is_nil(m.deleted_at) and
+        m.lifecycle_state not in ["tombstoned", "superseded", "archived"]
+    )
     |> where([m], fragment("? @@ plainto_tsquery('english', ?)", m.search_tsv, ^query))
     |> apply_filters(opts)
     |> order_by([m],

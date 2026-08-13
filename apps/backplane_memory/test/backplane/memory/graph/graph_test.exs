@@ -57,6 +57,18 @@ defmodule Backplane.Memory.GraphTest do
   end
 
   describe "stats/0" do
+    test "separates lifecycle, provenance, and knowledge relation domains" do
+      partition = %{
+        host_id: "graph-host",
+        client_id: "graph-client",
+        scope: "graph-scope",
+        namespace: "private"
+      }
+
+      assert %{relation_count_by_domain: domains} = Graph.stats(partition)
+      assert Map.keys(domains) == ["knowledge", "lifecycle", "provenance"]
+    end
+
     test "counts include newly inserted nodes by type" do
       suffix = System.unique_integer()
       {:ok, _} = Graph.upsert_node(%{type: "Decision", name: "StatDecision#{suffix}"})
