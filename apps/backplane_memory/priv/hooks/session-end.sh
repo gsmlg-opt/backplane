@@ -3,10 +3,10 @@
 
 [ "${AGENTMEMORY_SDK_CHILD:-}" = "1" ] && exit 0
 
-MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
+CAPTURE_URL="${BACKPLANE_HOST_AGENT_URL:-http://127.0.0.1:4222}"
 HOOKS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-HOOKS_DIR="$HOOKS_DIR" MEMORY_URL="$MEMORY_URL" python3 -c '
+HOOKS_DIR="$HOOKS_DIR" CAPTURE_URL="$CAPTURE_URL" python3 -c '
 import json
 import os
 import sys
@@ -25,14 +25,10 @@ if prepared is None:
     sys.exit(0)
 
 digest, session_id = prepared
-project = data.get("cwd") or data.get("project") or ""
-body = {"session_id": session_id, "project": project}
-agent_id = data.get("agent_id")
-if isinstance(agent_id, str) and agent_id:
-    body["agent_id"] = agent_id
+data["session_id"] = session_id
 
 try:
-    send_json(os.environ["MEMORY_URL"], "/api/memory/session/end", body)
+    send_json(os.environ["CAPTURE_URL"], "/capture/v1/hooks/claude_code/SessionEnd", data)
 finally:
     cleanup(digest, session_id)
 ' >/dev/null 2>&1 || true

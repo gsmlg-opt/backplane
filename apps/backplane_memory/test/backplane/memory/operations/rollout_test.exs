@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Operations.RolloutTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Operations
+  alias Backplane.Memory.Audit
   alias Backplane.Settings
 
   @pipeline "memory.pipeline.enabled"
@@ -151,6 +152,17 @@ defmodule Backplane.Memory.Operations.RolloutTest do
 
     assert :ok = Operations.set_gate(:pipeline, true)
     assert_receive {:setting_changed, @pipeline, true}
+
+    assert [%{actor: "memory_pipeline_runtime", target_ids: ["pipeline"], metadata: metadata}] =
+             Audit.list(operation: "memory.gate.set", limit: 1)
+
+    assert metadata["result"] == "updated"
+    assert metadata["value"] == true
+    assert metadata["host_id"] == "system"
+    assert metadata["client_id"] == "system"
+    assert metadata["scope"] == "global"
+    assert metadata["namespace"] == "system"
+    assert metadata["correlation_ids"] == [metadata["request_id"]]
   end
 
   test "adapter failures propagate without changing configured state" do

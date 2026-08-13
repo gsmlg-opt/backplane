@@ -20,7 +20,7 @@ defmodule Backplane.Repo.Migrations.ExtendSkillsForArchives do
     flush()
 
     execute("""
-    UPDATE skills
+    UPDATE #{qualified("skills")}
     SET slug =
       trim(both '-' from regexp_replace(lower(coalesce(nullif(name, ''), id)), '[^a-z0-9]+', '-', 'g'))
       || '-' || substr(md5(id), 1, 8)
@@ -51,5 +51,13 @@ defmodule Backplane.Repo.Migrations.ExtendSkillsForArchives do
       remove :version
       remove :slug
     end
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

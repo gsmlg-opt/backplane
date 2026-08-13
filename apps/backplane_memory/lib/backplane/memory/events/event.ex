@@ -25,6 +25,17 @@ defmodule Backplane.Memory.Events.Event do
     field :idempotency_key, :string
     field :importance, :integer, default: 0
     field :payload, :map, default: %{}
+    field :schema_version, :integer
+    field :integration, :string
+    field :scope, :string
+    field :parent_session_id, :string
+    field :source_sequence, :integer
+    field :captured_at, :utc_datetime_usec
+    field :payload_hash, :string
+    field :privacy, :map, default: %{}
+    field :trace, :map, default: %{}
+    field :raw_envelope, :map, default: %{}
+    field :ingest_auth_token_id, :string
     field :causation_id, :binary_id
     field :occurred_at, :utc_datetime_usec
     field :inserted_at, :utc_datetime_usec
@@ -44,6 +55,8 @@ defmodule Backplane.Memory.Events.Event do
       :occurred_at
     ])
     |> validate_inclusion(:event_type, Types.accepted_types())
+    |> unique_constraint(:id, name: :bpm_events_pkey)
+    |> unique_constraint(:source_sequence, name: :bpm_events_capture_source_identity_uniq)
     |> foreign_key_constraint(:stream_id, name: :bpm_events_stream_id_fkey)
     |> unique_constraint(:sequence, name: :bpm_events_stream_sequence_uniq)
     |> unique_constraint(:idempotency_key, name: :bpm_events_idempotency_key_uniq)

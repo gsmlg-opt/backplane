@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "fixture_id": "backplane-coding-v2-2026-08-12",
+  "partition": {"host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private"},
+  "memories": [
+    {"fixture_memory_id":"m01","content":"JWT validation uses JOSE middleware before database lookup","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-auth","derived":false,"distractor":false},
+    {"fixture_memory_id":"m02","content":"Session expiry is twenty four hours via SESSION_TTL","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-auth","derived":false,"distractor":false},
+    {"fixture_memory_id":"m03","content":"Passwords use bcrypt cost factor twelve","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-auth","derived":false,"distractor":false},
+    {"fixture_memory_id":"m04","content":"OAuth callback registration happens in provider dashboard","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-auth","derived":false,"distractor":false},
+    {"fixture_memory_id":"m05","content":"TOTP two factor authentication uses a rotating six digit code","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-auth","derived":true,"distractor":false},
+    {"fixture_memory_id":"m06","content":"PostgreSQL pool size is twenty connections per instance","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-db","derived":false,"distractor":false},
+    {"fixture_memory_id":"m07","content":"Ecto migrations run automatically during deployment","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-db","derived":false,"distractor":false},
+    {"fixture_memory_id":"m08","content":"Soft deletion uses the deleted_at timestamp column","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-db","derived":false,"distractor":false},
+    {"fixture_memory_id":"m09","content":"Nightly backups start at two AM UTC and retain thirty days","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-db","derived":false,"distractor":false},
+    {"fixture_memory_id":"m10","content":"Search uses tsvector columns backed by GIN indexes","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-db","derived":true,"distractor":false},
+    {"fixture_memory_id":"m11","content":"Rate limiting uses a Redis sliding window algorithm","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-rate","derived":false,"distractor":false},
+    {"fixture_memory_id":"m12","content":"Default authenticated rate limit is one hundred requests per minute","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-rate","derived":false,"distractor":false},
+    {"fixture_memory_id":"m13","content":"Exceeded rate limits return HTTP 429 with Retry-After","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-rate","derived":false,"distractor":false},
+    {"fixture_memory_id":"m14","content":"Premium users receive a burst allowance of twenty requests","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-rate","derived":false,"distractor":false},
+    {"fixture_memory_id":"m15","content":"Webhook destinations allow ten deliveries per second","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-rate","derived":false,"distractor":false},
+    {"fixture_memory_id":"m16","content":"Elixir supervision restarts failed worker processes","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-elixir","derived":false,"distractor":false},
+    {"fixture_memory_id":"m17","content":"Ecto sandbox isolates concurrent database tests","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-elixir","derived":false,"distractor":false},
+    {"fixture_memory_id":"m18","content":"Phoenix LiveView streams bound large collections","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-elixir","derived":false,"distractor":false},
+    {"fixture_memory_id":"m19","content":"Oban unique jobs prevent duplicate background work","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-elixir","derived":false,"distractor":false},
+    {"fixture_memory_id":"m20","content":"Telemetry spans report start stop and exception events","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-elixir","derived":false,"distractor":false},
+    {"fixture_memory_id":"d01","content":"CSS moon artwork uses layered radial gradients","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-noise","derived":false,"distractor":true},
+    {"fixture_memory_id":"d02","content":"Coffee beans are roasted at medium temperature","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-noise","derived":false,"distractor":true},
+    {"fixture_memory_id":"d03","content":"Garden irrigation starts shortly before sunrise","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-noise","derived":false,"distractor":true},
+    {"fixture_memory_id":"d04","content":"Music playlists shuffle tracks using random seeds","host_id":"memory-eval-host","client_id":"memory-eval-client","scope":"memory-eval","namespace":"private","session_id":"s-noise","derived":false,"distractor":true}
+  ],
+  "queries": [
+    {"query_id":"q01","query":"JWT JOSE validation middleware","relevant_ids":["m01"]}, {"query_id":"q02","query":"SESSION_TTL session expiry","relevant_ids":["m02"]},
+    {"query_id":"q03","query":"bcrypt cost factor","relevant_ids":["m03"]}, {"query_id":"q04","query":"OAuth callback provider dashboard","relevant_ids":["m04"]},
+    {"query_id":"q05","query":"TOTP rotating six digit code","relevant_ids":["m05"]}, {"query_id":"q06","query":"PostgreSQL pool connections","relevant_ids":["m06"]},
+    {"query_id":"q07","query":"Ecto migrations deployment","relevant_ids":["m07"]}, {"query_id":"q08","query":"soft deletion deleted_at","relevant_ids":["m08"]},
+    {"query_id":"q09","query":"nightly backups retention","relevant_ids":["m09"]}, {"query_id":"q10","query":"tsvector GIN indexes","relevant_ids":["m10"]},
+    {"query_id":"q11","query":"Redis sliding window rate limiting","relevant_ids":["m11"]}, {"query_id":"q12","query":"authenticated rate limit one hundred","relevant_ids":["m12"]},
+    {"query_id":"q13","query":"HTTP 429 Retry-After","relevant_ids":["m13"]}, {"query_id":"q14","query":"premium burst allowance","relevant_ids":["m14"]},
+    {"query_id":"q15","query":"webhook deliveries per second","relevant_ids":["m15"]}, {"query_id":"q16","query":"Elixir supervision restarts workers","relevant_ids":["m16"]},
+    {"query_id":"q17","query":"Ecto sandbox concurrent tests","relevant_ids":["m17"]}, {"query_id":"q18","query":"Phoenix LiveView streams collections","relevant_ids":["m18"]},
+    {"query_id":"q19","query":"Oban unique jobs duplicates","relevant_ids":["m19"]}, {"query_id":"q20","query":"Telemetry span exception events","relevant_ids":["m20"]}
+  ]
+}

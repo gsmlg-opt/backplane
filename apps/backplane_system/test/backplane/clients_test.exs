@@ -188,6 +188,59 @@ defmodule Backplane.ClientsTest do
       assert Clients.scope_matches?(scopes, "git::repo-tree")
       refute Clients.scope_matches?(scopes, "git::list-repos")
     end
+
+    test "canonical memory permissions match only their operation class" do
+      assert Clients.scope_matches?(["memory.read"], "memory::recall")
+      assert Clients.scope_matches?(["memory.write"], "memory::remember")
+      assert Clients.scope_matches?(["memory.write"], "memory::apply")
+      assert Clients.scope_matches?(["memory.coordinate"], "memory::action_create")
+      assert Clients.scope_matches?(["memory.replay"], "memory::export")
+      assert Clients.scope_matches?(["memory.admin"], "memory::governance_delete")
+
+      refute Clients.scope_matches?(["memory.read"], "memory::remember")
+      refute Clients.scope_matches?(["memory.read"], "memory::apply")
+      refute Clients.scope_matches?(["memory.write"], "memory::recall")
+      refute Clients.scope_matches?(["memory.coordinate"], "memory::export")
+      refute Clients.scope_matches?(["memory.replay"], "memory::audit")
+      refute Clients.scope_matches?(["memory.admin"], "docs::query-docs")
+    end
+
+    test "host-agent permissions are exact and independently assignable" do
+      for permission <- ~w(host_agent.capture host_agent.recall host_agent.import) do
+        assert Clients.scope_matches?([permission], permission)
+
+        assert {:ok, _client} =
+                 Clients.create_client(%{
+                   name: "#{permission}-#{System.unique_integer([:positive])}",
+                   token: "token",
+                   scopes: [permission]
+                 })
+      end
+
+      refute Clients.scope_matches?(["host_agent.capture"], "host_agent.recall")
+      refute Clients.scope_matches?(["host_agent.recall"], "host_agent.import")
+      refute Clients.scope_matches?(["host_agent.import"], "host_agent.capture")
+    end
+
+    test "every canonical memory tool has exactly one permission class" do
+      permissions = Backplane.MemoryPermissions.tool_permissions()
+
+      assert map_size(permissions) == 55
+      assert permissions["memory::apply"] == "memory.write"
+      assert permissions["memory::lesson_save"] == "memory.write"
+      assert permissions["memory::lesson_recall"] == "memory.read"
+      assert permissions["memory::crystallize"] == "memory.admin"
+      assert permissions["memory::crystal_get"] == "memory.read"
+      assert permissions["memory::activity_summary"] == "memory.read"
+      assert permissions["memory::recall_explain"] == "memory.read"
+      assert permissions["memory::replay_load"] == "memory.replay"
+      assert permissions["memory::replay_import"] == "memory.admin"
+
+      assert Enum.all?(permissions, fn {name, permission} ->
+               String.starts_with?(name, "memory::") and
+                 permission in ~w(memory.read memory.write memory.coordinate memory.replay memory.admin)
+             end)
+    end
   end
 
   describe "upsert_from_config/1" do

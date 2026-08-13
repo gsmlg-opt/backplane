@@ -14,6 +14,9 @@ defmodule Backplane.Transport.TaskManager do
 
   require Logger
 
+  alias Backplane.Repo
+  alias Backplane.Skills.Host
+
   @table :backplane_mcp_tasks
   @cleanup_interval :timer.minutes(5)
   @max_age_ms :timer.hours(1)
@@ -25,9 +28,9 @@ defmodule Backplane.Transport.TaskManager do
 
   Returns `{:ok, task_id}` where `task_id` is a unique string identifier.
   """
-  @spec create(String.t(), map(), String.t()) :: {:ok, String.t()}
-  def create(tool_name, arguments, session_id) do
-    GenServer.call(__MODULE__, {:create, tool_name, arguments, session_id})
+  @spec create(String.t(), map(), String.t() | nil, map()) :: {:ok, String.t()}
+  def create(tool_name, arguments, session_id, auth) when is_map(auth) do
+    GenServer.call(__MODULE__, {:create, tool_name, arguments, session_id, auth})
   end
 
   @doc """
@@ -35,11 +38,13 @@ defmodule Backplane.Transport.TaskManager do
 
   Returns a task state map or `nil` if the task does not exist.
   """
-  @spec get(String.t()) :: map() | nil
-  def get(task_id) do
-    case :ets.lookup(@table, task_id) do
-      [{^task_id, task}] -> task
-      [] -> nil
+  @spec get(String.t(), map()) :: map() | nil
+  def get(task_id, auth) when is_map(auth) do
+    expected_owner = owner_key(auth)
+
+    case lookup(task_id) do
+      %{owner: ^expected_owner} = task -> task
+      _other -> nil
     end
   end
 
@@ -49,9 +54,9 @@ defmodule Backplane.Transport.TaskManager do
   Returns `{:ok, result}` if the task completed successfully,
   `{:error, reason}` if it failed, or `{:error, "still working"}` if in progress.
   """
-  @spec result(String.t()) :: {:ok, term()} | {:error, term()}
-  def result(task_id) do
-    case get(task_id) do
+  @spec result(String.t(), map()) :: {:ok, term()} | {:error, term()}
+  def result(task_id, auth) when is_map(auth) do
+    case get(task_id, auth) do
       nil -> {:error, "task not found"}
       %{status: :completed, result: result} -> {:ok, result}
       %{status: :failed, result: reason} -> {:error, reason}
@@ -65,9 +70,9 @@ defmodule Backplane.Transport.TaskManager do
 
   Kills the underlying async task if still running.
   """
-  @spec cancel(String.t()) :: :ok | {:error, term()}
-  def cancel(task_id) do
-    GenServer.call(__MODULE__, {:cancel, task_id})
+  @spec cancel(String.t(), map()) :: :ok | {:error, term()}
+  def cancel(task_id, auth) when is_map(auth) do
+    GenServer.call(__MODULE__, {:cancel, task_id, owner_key(auth)})
   end
 
   @doc """
@@ -92,13 +97,13 @@ defmodule Backplane.Transport.TaskManager do
   end
 
   @impl true
-  def handle_call({:create, tool_name, arguments, session_id}, _from, state) do
+  def handle_call({:create, tool_name, arguments, session_id, auth}, _from, state) do
     task_id = generate_task_id()
     now = DateTime.utc_now()
 
     task =
       Task.async(fn ->
-        Backplane.Transport.McpHandler.dispatch_tool_call(tool_name, arguments)
+        Backplane.Transport.McpHandler.dispatch_tool_call(tool_name, arguments, auth)
       end)
 
     task_state = %{
@@ -110,6 +115,7 @@ defmodule Backplane.Transport.TaskManager do
       created_at: now,
       updated_at: now,
       result: nil,
+      owner: owner_key(auth),
       task_ref: task.ref
     }
 
@@ -119,9 +125,12 @@ defmodule Backplane.Transport.TaskManager do
     {:reply, {:ok, task_id}, %{state | refs: refs}}
   end
 
-  def handle_call({:cancel, task_id}, _from, state) do
-    case get(task_id) do
+  def handle_call({:cancel, task_id, owner}, _from, state) do
+    case lookup(task_id) do
       nil ->
+        {:reply, {:error, "task not found"}, state}
+
+      %{owner: task_owner} when task_owner != owner ->
         {:reply, {:error, "task not found"}, state}
 
       %{status: status} when status in [:completed, :failed, :cancelled] ->
@@ -148,7 +157,7 @@ defmodule Backplane.Transport.TaskManager do
   end
 
   def handle_call({:update_status, task_id, status, result}, _from, state) do
-    case get(task_id) do
+    case lookup(task_id) do
       nil ->
         {:reply, {:error, "task not found"}, state}
 
@@ -175,7 +184,7 @@ defmodule Backplane.Transport.TaskManager do
         {:noreply, %{state | refs: refs}}
 
       {task_id, refs} ->
-        case get(task_id) do
+        case lookup(task_id) do
           %{status: :cancelled} ->
             # Already cancelled, ignore result
             {:noreply, %{state | refs: refs}}
@@ -211,7 +220,7 @@ defmodule Backplane.Transport.TaskManager do
         {:noreply, %{state | refs: refs}}
 
       {task_id, refs} ->
-        case get(task_id) do
+        case lookup(task_id) do
           %{status: :cancelled} ->
             {:noreply, %{state | refs: refs}}
 
@@ -245,6 +254,37 @@ defmodule Backplane.Transport.TaskManager do
   end
 
   # ── Helpers ─────────────────────────────────────────────────────────────────
+
+  defp lookup(task_id) do
+    case :ets.lookup(@table, task_id) do
+      [{^task_id, task}] -> task
+      [] -> nil
+    end
+  end
+
+  defp owner_key(auth) do
+    {
+      auth[:kind],
+      auth[:client_id],
+      auth[:subject],
+      resolved_partition_identity(auth)
+    }
+  end
+
+  defp resolved_partition_identity(%{
+         principal_metadata: %{"memory_partition_id" => partition_id}
+       })
+       when is_binary(partition_id) do
+    with "host:" <> host_id <- partition_id,
+         {:ok, ^host_id} <- Ecto.UUID.cast(host_id),
+         %Host{} = host <- Repo.get(Host, host_id) do
+      {host.id, partition_id, host.memory_scope, "private"}
+    else
+      _invalid_or_missing -> :unresolved
+    end
+  end
+
+  defp resolved_partition_identity(_auth), do: :unresolved
 
   defp generate_task_id do
     Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)

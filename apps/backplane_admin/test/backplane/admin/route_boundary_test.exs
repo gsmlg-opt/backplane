@@ -5,18 +5,26 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     "/memory",
     "/memory/streams",
     "/memory/events",
-    "/memory/pipeline"
+    "/memory/sessions",
+    "/memory/timeline",
+    "/memory/memories",
+    "/memory/graph",
+    "/memory/profile",
+    "/memory/actions",
+    "/memory/audit",
+    "/memory/config",
+    "/memory/pipeline",
+    "/memory/activity",
+    "/memory/replay",
+    "/memory/lessons",
+    "/memory/crystals",
+    "/memory/recall"
   ]
 
   @legacy_memory_paths ~w(
     /memory/browse
     /memory/stats
     /memory/observations
-    /memory/sessions
-    /memory/graph
-    /memory/actions
-    /memory/audit
-    /memory/config
   )
 
   test "redirects root to the dashboard", %{conn: conn} do
@@ -56,8 +64,10 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end
   end
 
-  test "Memory sidebar contains only the four V2 destinations", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/memory")
+  test "Memory sidebar matches the required Observe, Knowledge, Coordinate, and Operate IA", %{
+    conn: conn
+  } do
+    {:ok, view, html} = live(conn, "/memory")
 
     items =
       html
@@ -72,10 +82,24 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
     assert items == [
              {"Overview", "/memory"},
-             {"Streams", "/memory/streams"},
-             {"Events", "/memory/events"},
-             {"Pipeline", "/memory/pipeline"}
+             {"Activity", "/memory/activity"},
+             {"Sessions", "/memory/sessions"},
+             {"Timeline", "/memory/timeline"},
+             {"Replay", "/memory/replay"},
+             {"Memories", "/memory/memories"},
+             {"Lessons", "/memory/lessons"},
+             {"Crystals", "/memory/crystals"},
+             {"Graph", "/memory/graph"},
+             {"Profile", "/memory/profile"},
+             {"Actions", "/memory/actions"},
+             {"Recall Inspector", "/memory/recall"},
+             {"Audit", "/memory/audit"},
+             {"Config", "/memory/config"}
            ]
+
+    for group <- ~w(Observe Knowledge Coordinate Operate) do
+      assert has_element?(view, ".admin-sidebar-group-title", group)
+    end
   end
 
   test "Memory V2 pages accept client theme changes without disconnecting", %{conn: conn} do

@@ -11,6 +11,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   @protocol "host_memory.v1"
   @default_batch_size 50
+  @max_batch_size 50
+  @max_payload_bytes 512 * 1024
   @default_interval_ms 5_000
   @default_max_attempts 5
 
@@ -56,8 +58,11 @@ defmodule Backplane.HostAgent.Memory.Syncer do
         {:ok, %{"drained" => 0}}
       else
         {items, failed_rows} = build_payload_items(opts.store, outbox_rows, opts.max_attempts)
-        payload = %{"protocol" => @protocol, "items" => items}
         pushed_rows = outbox_rows -- failed_rows
+        {items, deferred_rows} = fit_payload(items, pushed_rows)
+        pushed_rows = pushed_rows -- deferred_rows
+        reset_pending(opts.store, Enum.map(deferred_rows, & &1["seq"]))
+        payload = %{"protocol" => @protocol, "items" => items}
 
         if items == [] do
           {:ok, %{"drained" => 0}}
@@ -399,11 +404,9 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       channel_module: Keyword.get(opts, :channel_module, Channel),
       channel_provider: Keyword.get(opts, :channel_provider, MemoryProxy),
       batch_size:
-        Keyword.get(
-          opts,
-          :batch_size,
-          config_value(config, :sync_batch_size) || @default_batch_size
-        ),
+        opts
+        |> Keyword.get(:batch_size, config_value(config, :sync_batch_size) || @default_batch_size)
+        |> clamp_batch_size(),
       interval_ms:
         Keyword.get(
           opts,
@@ -423,6 +426,28 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     opts
     |> Map.to_list()
     |> normalize_opts()
+  end
+
+  defp clamp_batch_size(value) when is_integer(value), do: min(max(value, 1), @max_batch_size)
+  defp clamp_batch_size(_value), do: @default_batch_size
+
+  defp fit_payload(items, rows) do
+    items
+    |> Enum.zip(rows)
+    |> Enum.reduce_while({[], []}, fn {item, _row}, {accepted, _deferred} ->
+      candidate = Enum.reverse([item | accepted])
+
+      if encoded_payload_bytes(candidate) <= @max_payload_bytes do
+        {:cont, {[item | accepted], []}}
+      else
+        {:halt, {accepted, Enum.drop(rows, length(accepted))}}
+      end
+    end)
+    |> then(fn {accepted, deferred} -> {Enum.reverse(accepted), deferred} end)
+  end
+
+  defp encoded_payload_bytes(items) do
+    Jason.encode!(%{"protocol" => @protocol, "items" => items}) |> byte_size()
   end
 
   defp schedule_drain(%{interval_ms: interval_ms})

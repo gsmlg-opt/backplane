@@ -218,9 +218,12 @@ defmodule Backplane.Repo.Migrations.CreateLlmProviderRedesign do
   end
 
   defp seed_auto_models do
+    auto_models = qualified("llm_auto_models")
+    auto_model_routes = qualified("llm_auto_model_routes")
+
     execute("""
     WITH inserted_auto_models AS (
-      INSERT INTO llm_auto_models (id, name, description, enabled, inserted_at, updated_at)
+      INSERT INTO #{auto_models} (id, name, description, enabled, inserted_at, updated_at)
       VALUES
         (gen_random_uuid(), 'fast', 'Low-latency default model', true, now(), now()),
         (gen_random_uuid(), 'smart', 'Balanced reasoning default model', true, now(), now()),
@@ -231,9 +234,9 @@ defmodule Backplane.Repo.Migrations.CreateLlmProviderRedesign do
     all_auto_models AS (
       SELECT id, name FROM inserted_auto_models
       UNION
-      SELECT id, name FROM llm_auto_models WHERE name IN ('fast', 'smart', 'expert')
+      SELECT id, name FROM #{auto_models} WHERE name IN ('fast', 'smart', 'expert')
     )
-    INSERT INTO llm_auto_model_routes (
+    INSERT INTO #{auto_model_routes} (
       id,
       auto_model_id,
       api_surface,
@@ -270,5 +273,13 @@ defmodule Backplane.Repo.Migrations.CreateLlmProviderRedesign do
     drop_if_exists table(:llm_usage_logs)
     drop_if_exists table(:llm_model_aliases)
     drop_if_exists table(:llm_providers)
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

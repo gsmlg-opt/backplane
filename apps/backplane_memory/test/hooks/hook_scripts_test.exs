@@ -4,6 +4,7 @@ defmodule Backplane.Memory.HookScriptsTest do
   @moduletag :tmp_dir
 
   @hooks_dir Path.expand("../../priv/hooks", __DIR__)
+  @capture_url "http://127.0.0.1:4222/capture/v1/hooks/claude_code"
   @memory_url "http://memory.test"
   @session "session-\"quoted\"\nline"
   @project "/work/project \"quoted\"\nline"
@@ -249,7 +250,7 @@ defmodule Backplane.Memory.HookScriptsTest do
   for case_data <- @cases do
     @case_data case_data
 
-    test "#{case_data.script} posts its explicit event mapping", %{tmp_dir: tmp_dir} do
+    test "#{case_data.script} forwards its raw payload to local capture", %{tmp_dir: tmp_dir} do
       case_data = @case_data
       result = run_hook(case_data.script, case_data.input, tmp_dir)
 
@@ -257,21 +258,73 @@ defmodule Backplane.Memory.HookScriptsTest do
       assert result.output == ""
       assert result.python_calls == 1
 
+      timeout =
+        if case_data.script in ["session-start.sh", "pre-compact.sh"], do: "1.5", else: "2.0"
+
       assert result.args == [
                "-sf",
                "-m",
-               "2.0",
+               timeout,
                "-X",
                "POST",
-               @memory_url <> case_data.endpoint,
+               @capture_url <> "/" <> hook_class(case_data.script),
                "-H",
                "Content-Type: application/json",
                "--data-binary",
                "@-"
              ]
 
-      assert Jason.decode!(result.body) == case_data.body
+      assert Jason.decode!(result.body) == case_data.input
     end
+  end
+
+  test "session-start emits official additionalContext JSON only for non-empty context", %{
+    tmp_dir: tmp_dir
+  } do
+    response =
+      Jason.encode!(%{
+        "ok" => true,
+        "lifecycle_context" => %{
+          "context" => "trusted memory context",
+          "cached" => false,
+          "stale" => false
+        }
+      })
+
+    result =
+      run_hook(
+        "session-start.sh",
+        %{"session_id" => "context-session", "source" => "startup", "cwd" => "/work"},
+        tmp_dir,
+        seed: false,
+        curl_response: response
+      )
+
+    assert Jason.decode!(result.output) == %{
+             "hookSpecificOutput" => %{
+               "hookEventName" => "SessionStart",
+               "additionalContext" => "trusted memory context"
+             }
+           }
+  end
+
+  test "pre-compact retrieves context without fabricating hook output", %{tmp_dir: tmp_dir} do
+    runtime_dir = Path.join(tmp_dir, "runtime")
+    memory_id = establish_activation!("precompact-context", "startup", runtime_dir)
+
+    result =
+      run_hook(
+        "pre-compact.sh",
+        %{"session_id" => "precompact-context", "cwd" => "/work"},
+        tmp_dir,
+        runtime_dir: runtime_dir,
+        seed: false,
+        curl_response: Jason.encode!(%{"lifecycle_context" => %{"context" => "must not print"}})
+      )
+
+    assert result.output == ""
+    assert Jason.decode!(result.body)["session_id"] == memory_id
+    assert result.args |> Enum.chunk_every(2, 1) |> Enum.any?(&(&1 == ["-m", "1.5"]))
   end
 
   for case_data <- @cases do
@@ -302,10 +355,7 @@ defmodule Backplane.Memory.HookScriptsTest do
       assert result.called_curl?
       body = Jason.decode!(result.body)
       assert body["session_id"] == memory_id
-
-      if idempotency_key = case_data.body["idempotency_key"] do
-        assert body["idempotency_key"] == String.replace(idempotency_key, @session, memory_id)
-      end
+      assert body == Map.put(input, "session_id", memory_id)
     end
   end
 
@@ -713,7 +763,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       assert result.called_curl?, "missed valid commit command: #{command}"
-      assert Jason.decode!(result.body)["tool_name"] == "git_commit"
+      assert Jason.decode!(result.body)["tool_name"] == "Bash"
     end
   end
 
@@ -741,7 +791,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
       assert result.status == 0
       assert result.called_curl?, "missed commit after #{unquote(quote_name)} heredoc body"
-      assert Jason.decode!(result.body)["tool_name"] == "git_commit"
+      assert Jason.decode!(result.body)["tool_name"] == "Bash"
     end
   end
 
@@ -764,7 +814,7 @@ defmodule Backplane.Memory.HookScriptsTest do
 
     assert result.status == 0
     assert result.called_curl?
-    assert Jason.decode!(result.body)["tool_name"] == "git_commit"
+    assert Jason.decode!(result.body)["tool_name"] == "Bash"
   end
 
   for {behavior, command, expect_curl?} <- [
@@ -831,6 +881,14 @@ defmodule Backplane.Memory.HookScriptsTest do
     end
   end
 
+  test "hook scripts contain no direct central memory API calls" do
+    for script <- hook_names() do
+      source = File.read!(hook_path(script))
+      refute source =~ ":4220", "#{script} still references the central memory port"
+      refute source =~ "/api/memory", "#{script} still references the central memory API"
+    end
+  end
+
   test "large structured tool input is consumed from stdin and never passed through argv", %{
     tmp_dir: tmp_dir
   } do
@@ -853,8 +911,23 @@ defmodule Backplane.Memory.HookScriptsTest do
     assert result.status == 0
     assert result.python_calls == 1
 
-    assert get_in(Jason.decode!(result.body), ["payload", "tool_input", "nested", "value"]) ==
+    assert get_in(Jason.decode!(result.body), ["tool_input", "nested", "value"]) ==
              large_value
+  end
+
+  test "hook scripts honor the configured host-agent URL", %{tmp_dir: tmp_dir} do
+    capture_base = "http://127.0.0.1:4999"
+
+    result =
+      run_hook(
+        "user-prompt-submit.sh",
+        %{"session_id" => "configured-port", "prompt" => "capture locally"},
+        tmp_dir,
+        capture_base: capture_base
+      )
+
+    assert Enum.at(result.args, 5) ==
+             capture_base <> "/capture/v1/hooks/claude_code/UserPromptSubmit"
   end
 
   defp run_hook(script_name, input, tmp_dir, opts \\ []) do
@@ -881,6 +954,7 @@ defmodule Backplane.Memory.HookScriptsTest do
     env = [
       {"PATH", fake_bin <> ":" <> System.fetch_env!("PATH")},
       {"BACKPLANE_MEMORY_URL", @memory_url},
+      {"BACKPLANE_HOST_AGENT_URL", Keyword.get(opts, :capture_base)},
       {"AGENTMEMORY_SDK_CHILD", ""},
       {"HOOK_CAPTURE_DIR", capture_dir},
       {"XDG_RUNTIME_DIR", runtime_dir},
@@ -888,7 +962,8 @@ defmodule Backplane.Memory.HookScriptsTest do
       {"HOOK_CURL_EXIT", Integer.to_string(Keyword.get(opts, :curl_exit, 0))},
       {"HOOK_MAX_ARG_BYTES", Integer.to_string(Keyword.get(opts, :max_python_arg_bytes, 0))},
       {"HOOK_CURL_STARTED", Keyword.get(opts, :curl_started, "")},
-      {"HOOK_CURL_RELEASE", Keyword.get(opts, :curl_release, "")}
+      {"HOOK_CURL_RELEASE", Keyword.get(opts, :curl_release, "")},
+      {"HOOK_CURL_RESPONSE", Keyword.get(opts, :curl_response, "")}
     ]
 
     {output, status} =
@@ -924,6 +999,7 @@ defmodule Backplane.Memory.HookScriptsTest do
     while [ -n "${HOOK_CURL_RELEASE:-}" ] && [ ! -e "$HOOK_CURL_RELEASE" ]; do
       sleep 0.01
     done
+    printf '%s' "${HOOK_CURL_RESPONSE:-}"
     exit "${HOOK_CURL_EXIT:-0}"
     """)
 
@@ -952,6 +1028,17 @@ defmodule Backplane.Memory.HookScriptsTest do
 
   defp hook_names, do: Enum.map(@cases, & &1.script)
   defp hook_path(name), do: Path.join(@hooks_dir, name)
+
+  defp hook_class("session-start.sh"), do: "SessionStart"
+  defp hook_class("user-prompt-submit.sh"), do: "UserPromptSubmit"
+  defp hook_class("post-tool-use.sh"), do: "PostToolUse"
+  defp hook_class("post-tool-use-failure.sh"), do: "PostToolUseFailure"
+  defp hook_class("pre-compact.sh"), do: "PreCompact"
+  defp hook_class("subagent-start.sh"), do: "SubagentStart"
+  defp hook_class("subagent-stop.sh"), do: "SubagentStop"
+  defp hook_class("stop.sh"), do: "Stop"
+  defp hook_class("session-end.sh"), do: "SessionEnd"
+  defp hook_class("post-commit.sh"), do: "PostCommit"
 
   defp body_session_id(result), do: result.body |> Jason.decode!() |> Map.fetch!("session_id")
 

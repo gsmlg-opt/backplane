@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Coordination.ActionTest do
   use Backplane.Memory.DataCase, async: false
 
-  alias Backplane.Memory.Coordination.Action
+  alias Backplane.Memory.{Audit, Coordination.Action, Coordination.Lease}
 
   defp build_attrs(overrides \\ %{}) do
     Map.merge(%{"title" => "Do something important"}, overrides)
@@ -15,6 +15,11 @@ defmodule Backplane.Memory.Coordination.ActionTest do
       assert action.status == "pending"
       assert action.priority == 0
       assert action.tags == []
+
+      assert [%{operation: "coordination.action.create", target_ids: [action_id]}] =
+               Audit.list(operation: "coordination.action.create")
+
+      assert action_id == action.id
     end
 
     test "accepts custom fields" do
@@ -23,6 +28,30 @@ defmodule Backplane.Memory.Coordination.ActionTest do
       assert action.priority == 5
       assert action.project == "proj-x"
       assert action.created_by == "agent-1"
+    end
+
+    test "preserves every supported provenance origin" do
+      observation_id = Ecto.UUID.generate()
+      memory_id = Ecto.UUID.generate()
+      lesson_id = Ecto.UUID.generate()
+      crystal_id = Ecto.UUID.generate()
+
+      assert {:ok, action} =
+               Action.create(
+                 build_attrs(%{
+                   "source_observation_ids" => [observation_id],
+                   "source_memory_ids" => [memory_id],
+                   "source_session_ids" => ["session-a"],
+                   "source_lesson_ids" => [lesson_id],
+                   "source_crystal_ids" => [crystal_id]
+                 })
+               )
+
+      assert action.source_observation_ids == [observation_id]
+      assert action.source_memory_ids == [memory_id]
+      assert action.source_session_ids == ["session-a"]
+      assert action.source_lesson_ids == [lesson_id]
+      assert action.source_crystal_ids == [crystal_id]
     end
 
     test "title is required" do
@@ -45,6 +74,11 @@ defmodule Backplane.Memory.Coordination.ActionTest do
 
       updated = repo().get(Action, action.id)
       assert updated.status == "in_progress"
+
+      assert [%{operation: "coordination.action.status", target_ids: [action_id]}] =
+               Audit.list(operation: "coordination.action.status")
+
+      assert action_id == action.id
     end
 
     test "returns not_found for unknown id" do
@@ -138,6 +172,87 @@ defmodule Backplane.Memory.Coordination.ActionTest do
         Action.create(build_attrs(%{"title" => "B", "project" => "proj-y", "priority" => 99}))
 
       assert Action.next("proj-x").id == a.id
+    end
+  end
+
+  describe "list/2" do
+    test "returns a bounded all-status page from only the exact partition" do
+      partition = %{
+        host_id: "host-a",
+        client_id: "client-a",
+        scope: "scope-a",
+        namespace: "private"
+      }
+
+      foreign = %{partition | client_id: "client-b"}
+
+      assert {:ok, pending} =
+               Action.create(
+                 build_attrs(%{"title" => "Pending", "project" => "alpha"}),
+                 [],
+                 partition
+               )
+
+      assert {:ok, done} =
+               Action.create(
+                 build_attrs(%{"title" => "Done", "status" => "done", "project" => "alpha"}),
+                 [],
+                 partition
+               )
+
+      assert {:ok, _foreign} = Action.create(build_attrs(%{"title" => "Foreign"}), [], foreign)
+
+      assert {:ok, %{entries: [first], next_offset: 1}} =
+               Action.list(partition, limit: 1, offset: 0, project: "alpha")
+
+      assert first.id in [pending.id, done.id]
+
+      assert {:ok, %{entries: [second], next_offset: nil}} =
+               Action.list(partition, limit: 1, offset: 1, project: "alpha")
+
+      assert Enum.sort([first.id, second.id]) == Enum.sort([pending.id, done.id])
+    end
+
+    test "rejects missing partitions and unbounded options" do
+      partition = %{
+        host_id: "host-a",
+        client_id: "client-a",
+        scope: "scope-a",
+        namespace: "private"
+      }
+
+      assert {:error, :partition_required} = Action.list(nil, [])
+      assert {:error, :invalid_options} = Action.list(partition, limit: 101)
+      assert {:error, :invalid_options} = Action.list(partition, offset: 10_001)
+    end
+  end
+
+  describe "detail/2" do
+    test "returns the exact-partition action with its active lease" do
+      partition = %{
+        host_id: "host-a",
+        client_id: "client-a",
+        scope: "scope-a",
+        namespace: "private"
+      }
+
+      assert {:ok, action} =
+               Action.create(
+                 build_attrs(%{"source_session_ids" => ["session-a"]}),
+                 [],
+                 partition
+               )
+
+      assert {:ok, lease_id} = Lease.acquire(action.id, "agent-a", 300, partition)
+
+      assert {:ok, %{action: selected, lease: lease}} = Action.detail(action.id, partition)
+      assert selected.id == action.id
+      assert selected.source_session_ids == ["session-a"]
+      assert lease.id == lease_id
+      assert lease.holder_agent_id == "agent-a"
+
+      assert {:error, :not_found} =
+               Action.detail(action.id, %{partition | client_id: "client-b"})
     end
   end
 end

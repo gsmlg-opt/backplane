@@ -20,6 +20,11 @@ defmodule Backplane.Api.Router do
     plug(:accepts, ["json"])
   end
 
+  pipeline :memory_api do
+    plug(:accepts, ["json"])
+    plug(Backplane.Auth.ResourceAuthPlug, resource: :mcp)
+  end
+
   scope "/", Backplane.Api do
     pipe_through(:public_browser)
 
@@ -67,7 +72,10 @@ defmodule Backplane.Api.Router do
     forward("/skills", Backplane.Skills.ApiRouter)
   end
 
-  forward("/api/memory", Backplane.Memory.Router)
+  scope "/api" do
+    pipe_through(:memory_api)
+    forward("/memory", Backplane.Memory.Router)
+  end
 
   match(:*, "/*path", Backplane.Api.NotFoundPlug, [])
 end

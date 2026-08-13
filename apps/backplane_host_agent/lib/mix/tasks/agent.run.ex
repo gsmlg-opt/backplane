@@ -31,6 +31,7 @@ defmodule Mix.Tasks.Agent.Run do
     Worker
   }
 
+  alias Backplane.HostAgent.Memory.CaptureSupervisor
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
   alias Backplane.HostAgent.TraceSupervisor
 
@@ -99,13 +100,7 @@ defmodule Mix.Tasks.Agent.Run do
   end
 
   defp connect_and_run(config) do
-    MemoryProxy.set_config(config)
-    maybe_start_memory(config)
-    maybe_start_trace(config)
-
-    %{channel: channel} = link = connect_with_retry(config)
-    MemoryProxy.set_connection(link, config)
-    maybe_start_http_server(config)
+    {:ok, %{connection: %{channel: channel}}} = bootstrap(config)
 
     {:ok, worker} =
       Worker.start_link(
@@ -118,74 +113,138 @@ defmodule Mix.Tasks.Agent.Run do
     Process.sleep(:infinity)
   end
 
-  defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}) do
-    case MemorySupervisor.start_link(memory_config) do
-      {:ok, _pid} ->
-        Mix.shell().info("Memory store ready at #{memory_config.db_path}.")
-        :ok
+  @doc false
+  def bootstrap(config, opts \\ []) do
+    memory_proxy_module = Keyword.get(opts, :memory_proxy_module, MemoryProxy)
+
+    capture_supervisor_module =
+      Keyword.get(opts, :capture_supervisor_module, CaptureSupervisor)
+
+    memory_supervisor_module = Keyword.get(opts, :memory_supervisor_module, MemorySupervisor)
+    trace_supervisor_module = Keyword.get(opts, :trace_supervisor_module, TraceSupervisor)
+    http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
+
+    :ok = memory_proxy_module.set_config(config)
+    capture_supervisor = maybe_start_capture(config, capture_supervisor_module)
+    memory_supervisor = maybe_start_memory(config, memory_supervisor_module)
+    trace_supervisor = maybe_start_trace(config, trace_supervisor_module)
+    http_supervisor = maybe_start_http_server(config, http_server_module)
+
+    connection = connect_with_retry(config, opts)
+    :ok = memory_proxy_module.set_connection(connection, config)
+
+    {:ok,
+     %{
+       capture_supervisor: capture_supervisor,
+       memory_supervisor: memory_supervisor,
+       trace_supervisor: trace_supervisor,
+       http_supervisor: http_supervisor,
+       connection: connection
+     }}
+  end
+
+  defp maybe_start_capture(%{capture: capture_config} = config, capture_supervisor_module)
+       when is_map(capture_config) do
+    capture_config = Map.put(capture_config, :host_id, config.host_id)
+
+    case capture_supervisor_module.start_link(capture_config) do
+      {:ok, pid} ->
+        Mix.shell().info("Capture spool ready at #{capture_config.db_path}.")
+        pid
 
       :ignore ->
-        :ok
+        nil
 
-      {:error, {:already_started, _pid}} ->
-        :ok
+      {:error, {:already_started, pid}} ->
+        pid
+
+      {:error, reason} ->
+        Mix.raise("failed to start capture spool: #{inspect(reason)}")
+    end
+  end
+
+  defp maybe_start_capture(_config, _capture_supervisor_module), do: nil
+
+  defp maybe_start_memory(
+         %{memory: %{enabled: true} = memory_config},
+         memory_supervisor_module
+       ) do
+    case memory_supervisor_module.start_link(memory_config) do
+      {:ok, pid} ->
+        Mix.shell().info("Memory store ready at #{memory_config.db_path}.")
+        pid
+
+      :ignore ->
+        nil
+
+      {:error, {:already_started, pid}} ->
+        pid
 
       {:error, reason} ->
         Mix.raise("failed to start memory store: #{inspect(reason)}")
     end
   end
 
-  defp maybe_start_memory(_config), do: :ok
+  defp maybe_start_memory(_config, _memory_supervisor_module), do: nil
 
-  defp maybe_start_trace(%{telemetry: %{enabled: true} = telemetry_config}) do
-    case TraceSupervisor.start_link(telemetry_config) do
-      {:ok, _pid} ->
+  defp maybe_start_trace(
+         %{telemetry: %{enabled: true} = telemetry_config},
+         trace_supervisor_module
+       ) do
+    case trace_supervisor_module.start_link(telemetry_config) do
+      {:ok, pid} ->
         Application.put_env(:backplane_host_agent, :telemetry_config, telemetry_config)
         Mix.shell().info("Trace store ready at #{telemetry_config.dir}.")
-        :ok
+        pid
 
       :ignore ->
-        :ok
+        nil
 
-      {:error, {:already_started, _pid}} ->
-        :ok
+      {:error, {:already_started, pid}} ->
+        pid
 
       {:error, reason} ->
         Mix.raise("failed to start trace store: #{inspect(reason)}")
     end
   end
 
-  defp maybe_start_trace(_config), do: :ok
+  defp maybe_start_trace(_config, _trace_supervisor_module), do: nil
 
-  defp connect_with_retry(config) do
+  defp connect_with_retry(config, opts) do
+    connector_module = Keyword.get(opts, :connector_module, Connector)
+    retry_interval_ms = Keyword.get(opts, :retry_interval_ms, @retry_interval_ms)
+    sleep_fun = Keyword.get(opts, :sleep_fun, &Process.sleep/1)
+
     Mix.shell().info("Connecting host agent #{config.machine_name} to #{config.hub_url}…")
 
-    case Connector.connect(config) do
+    case connector_module.connect(config) do
       {:ok, %{host_name: host_name} = link} ->
         Mix.shell().info("Connected as host \"#{host_name}\" (id=#{link.host_id}).")
         link
 
       {:error, reason} ->
         Mix.shell().error(
-          "Failed to connect to Backplane hub: #{inspect(reason)}; retrying in #{@retry_interval_ms}ms."
+          "Failed to connect to Backplane hub: #{inspect(reason)}; retrying in #{retry_interval_ms}ms."
         )
 
-        Process.sleep(@retry_interval_ms)
-        connect_with_retry(config)
+        sleep_fun.(retry_interval_ms)
+        connect_with_retry(config, opts)
     end
   end
 
-  defp maybe_start_http_server(config) do
-    case HttpServer.child_spec(config) do
+  defp maybe_start_http_server(config, http_server_module) do
+    case http_server_module.child_spec(config) do
       nil ->
-        :ok
+        nil
 
       spec ->
         case Supervisor.start_link([spec], strategy: :one_for_one) do
-          {:ok, _sup} ->
+          {:ok, sup} ->
             Mix.shell().info(
               "Memory HTTP API listening on http://#{config.http_bind}:#{config.http_port}/memory/:agent_id/{call/:method,mcp}"
             )
+
+            sup
 
           {:error, reason} ->
             Mix.raise("failed to start memory HTTP server: #{inspect(reason)}")

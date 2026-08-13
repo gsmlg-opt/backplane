@@ -45,13 +45,21 @@ defmodule Backplane.Repo.Migrations.CreateMemoryActions do
     create(unique_index(:memory_action_edges, [:source_id, :target_id, :edge_type]))
 
     execute(
-      "ALTER TABLE memory_actions ADD CONSTRAINT memory_actions_status_check CHECK (status IN ('pending','in_progress','done','blocked','cancelled'))",
-      "ALTER TABLE memory_actions DROP CONSTRAINT memory_actions_status_check"
+      "ALTER TABLE #{qualified("memory_actions")} ADD CONSTRAINT memory_actions_status_check CHECK (status IN ('pending','in_progress','done','blocked','cancelled'))",
+      "ALTER TABLE #{qualified("memory_actions")} DROP CONSTRAINT memory_actions_status_check"
     )
 
     execute(
-      "ALTER TABLE memory_action_edges ADD CONSTRAINT memory_action_edges_type_check CHECK (edge_type IN ('requires','unlocks','spawned_by','gated_by','conflicts_with'))",
-      "ALTER TABLE memory_action_edges DROP CONSTRAINT memory_action_edges_type_check"
+      "ALTER TABLE #{qualified("memory_action_edges")} ADD CONSTRAINT memory_action_edges_type_check CHECK (edge_type IN ('requires','unlocks','spawned_by','gated_by','conflicts_with'))",
+      "ALTER TABLE #{qualified("memory_action_edges")} DROP CONSTRAINT memory_action_edges_type_check"
     )
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

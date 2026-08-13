@@ -21,6 +21,13 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end
   end
 
+  defmodule TimeoutChannel do
+    def push(channel, event, payload, timeout) do
+      send(channel, {:push_timeout, event, payload, timeout})
+      {:ok, %{"ok" => true, "result" => %{"status" => "ok"}}}
+    end
+  end
+
   defmodule RejoinChannel do
     def join(socket, host_id) do
       owner = :persistent_term.get({__MODULE__, :owner})
@@ -116,6 +123,68 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
 
     assert {:error, :not_connected} = MemoryProxy.call("list", %{}, agent_id: "hermes")
     assert MemoryProxy.channel() == nil
+  end
+
+  test "exposes and forwards lifecycle_context with the local agent identity" do
+    MemoryProxy.set_channel(self())
+
+    assert "lifecycle_context" in MemoryProxy.methods()
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call(
+               "lifecycle_context",
+               %{
+                 "kind" => "session_start",
+                 "session_id" => "session-1",
+                 "project" => "/workspace/project"
+               },
+               agent_id: "hermes",
+               channel_module: FakeChannel
+             )
+
+    assert_receive {:push, channel, "memory_call",
+                    %{
+                      "method" => "lifecycle_context",
+                      "arguments" => %{
+                        "kind" => "session_start",
+                        "session_id" => "session-1",
+                        "project" => "/workspace/project",
+                        "agent_id" => "hermes"
+                      }
+                    }}
+
+    assert channel == self()
+  end
+
+  test "caps the channel push timeout at the lifecycle hard limit" do
+    MemoryProxy.set_channel(self())
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call(
+               "lifecycle_context",
+               %{
+                 "kind" => "session_start",
+                 "session_id" => "session-1",
+                 "project" => "/workspace/project"
+               },
+               agent_id: "hermes",
+               timeout: 9_000,
+               channel_module: TimeoutChannel
+             )
+
+    assert_receive {:push_timeout, "memory_call", _payload, 1_500}
+  end
+
+  test "preserves the existing channel timeout for non-lifecycle memory calls" do
+    MemoryProxy.set_channel(self())
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("list", %{},
+               agent_id: "hermes",
+               channel_module: TimeoutChannel
+             )
+
+    assert_receive {:push_timeout, "memory_call", _payload, 5_000}
   end
 
   test "reconnects with stored config when the cached channel pid is dead" do

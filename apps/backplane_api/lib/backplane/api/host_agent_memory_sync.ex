@@ -7,32 +7,33 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   alias Backplane.Repo
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.Memories.RememberRequest
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.Api.HostMemoryRevocation
+  alias Backplane.Skills.Host
 
   @fact_memory_types ~w(semantic procedural)
   @host_memory_metadata_key "host_memory"
+  @host_memory_idempotency_prefix "host-memory.v1:"
 
   def apply_sync_item(host, %{"op" => "remember"} = item) do
-    with {:ok, local_id} <- required_binary(item, "id"),
-         {:ok, content} <- required_binary(item, "content") do
-      scope = scope_for(item)
-
-      case find_by_local_id(host.id, scope, local_id) do
-        %MemorySchema{} = existing ->
-          {:ok, %{status: :duplicate, canonical_id: existing.id}}
-
-        nil ->
-          remember_host_item(host, item, local_id, content, scope)
-      end
+    with {:ok, host} <- reload_host(host),
+         {:ok, local_id} <- required_binary(item, "id"),
+         {:ok, content} <- required_binary(item, "content"),
+         :ok <- validate_content_hash(item, content),
+         :ok <- validate_host_scope(host, scope_for(item)) do
+      remember_host_item(host, item, local_id, content, scope_for(item))
     else
       {:error, reason} -> {:error, :validation, reason}
     end
   end
 
   def apply_sync_item(host, %{"op" => "forget"} = item) do
-    with {:ok, memory} <- resolve_forget_memory(host, item),
-         :ok <- Memories.forget(memory.id) do
-      {:ok, %{status: :ok, canonical_id: memory.id}}
+    with {:ok, host} <- reload_host(host),
+         :ok <- validate_host_scope(host, scope_for(item)),
+         {:ok, mapping} <- resolve_forget_mapping(host, item),
+         {:ok, _revocation} <- revoke_mapping(host, mapping) do
+      {:ok, %{status: :ok, canonical_id: mapping.memory.id}}
     else
       {:error, reason} -> {:error, :validation, reason}
     end
@@ -40,87 +41,113 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   def apply_sync_item(_host, _item), do: {:error, :validation, "unsupported memory sync op"}
 
-  def facts_for_scope(scope, host_fact_set_hash) when is_binary(scope) do
-    facts =
-      MemorySchema
-      |> where([memory], memory.scope == ^scope)
-      |> where([memory], memory.memory_type in ^@fact_memory_types)
-      |> where([memory], is_nil(memory.deleted_at))
-      |> order_by([memory], asc: memory.id, asc: memory.updated_at)
-      |> select([memory], %{
-        id: memory.id,
-        content: memory.content,
-        content_hash: memory.content_hash,
-        tags: memory.tags,
-        metadata: memory.metadata,
-        updated_at: memory.updated_at
-      })
-      |> Repo.all()
-      |> Enum.map(&fact_payload/1)
+  def facts_for_scope(host, scope, host_fact_set_hash) when is_binary(scope) do
+    with {:ok, current_host} <- reload_host(host),
+         :ok <- validate_host_scope(current_host, scope) do
+      partition_id = host_partition_id(current_host)
 
-    if host_fact_set_hash == fact_set_hash(facts) do
-      :unchanged
+      facts =
+        MemorySchema
+        |> where([memory], memory.scope == ^scope)
+        |> where([memory], memory.namespace == "private")
+        |> where([memory], memory.client_id == ^partition_id)
+        |> where([memory], memory.memory_type in ^@fact_memory_types)
+        |> where([memory], is_nil(memory.deleted_at))
+        |> order_by([memory], asc: memory.id, asc: memory.updated_at)
+        |> select([memory], %{
+          id: memory.id,
+          content: memory.content,
+          content_hash: memory.content_hash,
+          tags: memory.tags,
+          metadata: memory.metadata,
+          updated_at: memory.updated_at
+        })
+        |> Repo.all()
+        |> Enum.map(&fact_payload/1)
+
+      if host_fact_set_hash == fact_set_hash(facts) do
+        :unchanged
+      else
+        {:full, facts}
+      end
     else
-      {:full, facts}
+      _error -> :unchanged
     end
   end
 
-  def facts_for_scope(_scope, _host_fact_set_hash), do: :unchanged
+  def facts_for_scope(_host, _scope, _host_fact_set_hash), do: :unchanged
 
-  def active_wipes(scope) when is_binary(scope) do
-    MemorySchema
-    |> where([memory], memory.scope == ^scope)
-    |> where([memory], not is_nil(memory.deleted_at))
-    |> order_by([memory], asc: memory.deleted_at, asc: memory.id)
-    |> select([memory], %{
-      id: memory.id,
-      scope: memory.scope,
-      content_hash: memory.content_hash
-    })
-    |> Repo.all()
-    |> Enum.map(fn memory ->
-      %{
-        "directive_id" => "deleted:#{memory.id}",
-        "remote_id" => memory.id,
-        "content_hash" => encode_hash(memory.content_hash),
-        "scope" => memory.scope
-      }
-    end)
+  def active_wipes(host, scope) when is_binary(scope) do
+    with {:ok, current_host} <- reload_host(host),
+         :ok <- validate_host_scope(current_host, scope) do
+      partition_id = host_partition_id(current_host)
+
+      MemorySchema
+      |> where([memory], memory.scope == ^scope)
+      |> where([memory], memory.namespace == "private")
+      |> where([memory], memory.client_id == ^partition_id)
+      |> where([memory], not is_nil(memory.deleted_at))
+      |> order_by([memory], asc: memory.deleted_at, asc: memory.id)
+      |> select([memory], %{
+        id: memory.id,
+        scope: memory.scope,
+        content_hash: memory.content_hash
+      })
+      |> Repo.all()
+      |> Enum.map(fn memory ->
+        %{
+          "directive_id" => "deleted:#{memory.id}",
+          "remote_id" => memory.id,
+          "content_hash" => encode_hash(memory.content_hash),
+          "scope" => memory.scope
+        }
+      end)
+    else
+      _error -> []
+    end
   end
 
-  def active_wipes(_scope), do: []
+  def active_wipes(_host, _scope), do: []
 
   def entitled_scopes(host) do
-    MemorySchema
-    |> where([memory], memory.host_id == ^host.id)
-    |> where([memory], not is_nil(memory.scope))
-    |> distinct(true)
-    |> select([memory], memory.scope)
-    |> Repo.all()
-    |> MapSet.new()
+    case reload_host(host) do
+      {:ok, current} -> MapSet.new([current.memory_scope])
+      {:error, _reason} -> MapSet.new()
+    end
   end
 
   defp remember_host_item(host, item, local_id, content, scope) do
-    content_hash = :crypto.hash(:sha256, content)
-    duplicate? = not is_nil(find_by_content_hash(scope, content_hash))
     host_content_hash = host_content_hash(item, content)
     metadata = item |> Map.get("metadata", %{}) |> normalize_metadata()
 
     opts = [
-      type: optional_binary(item, "type") || "episodic",
+      type: "episodic",
       scope: scope,
       agent_id: optional_binary(item, "agent_id") || "",
       host_id: host.id,
-      client_id: optional_binary(item, "client_id"),
+      client_id: host_partition_id(host),
+      namespace: "private",
       session_id: optional_binary(item, "session_id"),
       tags: normalize_tags(Map.get(item, "tags", [])),
-      metadata: put_host_metadata(metadata, local_id, host_content_hash)
+      metadata: put_host_metadata(metadata, local_id, host_content_hash),
+      idempotency_scope: host_request_scope(host.id),
+      idempotency_key: local_id
     ]
 
-    case Memories.remember(content, opts) do
-      {:ok, %MemorySchema{} = memory} ->
-        memory = ensure_local_mapping(memory, host.id, local_id, host_content_hash)
-        status = if duplicate?, do: :duplicate, else: :ok
+    case Repo.transaction(fn ->
+           advisory_lock!(host.id, local_id)
+
+           if revoked?(host.id, local_id), do: Repo.rollback(:mapping_revoked)
+
+           replay? = request_exists?(host.id, local_id)
+
+           case Memories.remember(content, opts) do
+             {:ok, %MemorySchema{} = memory} -> {memory, replay?}
+             {:error, reason} -> Repo.rollback(reason)
+           end
+         end) do
+      {:ok, {memory, replay?}} ->
+        status = if replay?, do: :duplicate, else: :ok
         {:ok, %{status: status, canonical_id: memory.id}}
 
       {:error, reason} ->
@@ -128,81 +155,90 @@ defmodule Backplane.Api.HostAgentMemorySync do
     end
   end
 
-  defp resolve_forget_memory(host, item) do
-    scope = optional_scope(item)
-
-    memory =
-      case optional_binary(item, "remote_id") do
-        nil -> find_by_local_id(host.id, scope_for(item), item["id"])
-        remote_id -> find_by_remote_id(host.id, remote_id, scope)
-      end
-
-    case memory do
-      %MemorySchema{} = memory -> {:ok, memory}
+  defp resolve_forget_mapping(host, item) do
+    with {:ok, local_id} <- required_binary(item, "id"),
+         scope = scope_for(item),
+         %{memory: %MemorySchema{}} = mapping <-
+           find_local_mapping(host.id, scope, local_id) ||
+             find_revoked_mapping(host.id, scope, local_id),
+         :ok <- validate_remote_id(item, mapping.memory.id) do
+      {:ok, mapping}
+    else
       nil -> {:error, "memory not found"}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp find_by_remote_id(host_id, remote_id, scope) do
-    with {:ok, uuid} <- Ecto.UUID.cast(remote_id) do
-      MemorySchema
-      |> where([memory], memory.id == ^uuid)
-      |> where([memory], memory.host_id == ^host_id)
-      |> where([memory], is_nil(memory.deleted_at))
-      |> maybe_scope(scope)
+  defp find_local_mapping(host_id, scope, local_id) when is_binary(local_id) do
+    request_memory =
+      from(request in RememberRequest, as: :request)
+      |> join(:inner, [request], memory in MemorySchema, on: memory.id == request.memory_id)
+      |> where([request, _memory], request.idempotency_scope == ^host_request_scope(host_id))
+      |> where([request, _memory], request.idempotency_key == ^local_id)
+      |> where([_request, memory], is_nil(memory.deleted_at))
+      |> where(
+        [request, _memory],
+        not exists(
+          from(rv in HostMemoryRevocation, where: rv.source_request_id == parent_as(:request).id)
+        )
+      )
+      |> select([request, memory], {memory, request})
       |> limit(1)
       |> Repo.one()
-    else
-      :error -> nil
+
+    case request_memory do
+      {%MemorySchema{scope: ^scope} = memory, request} ->
+        %{memory: memory, request: request, local_id: local_id}
+
+      {%MemorySchema{}, _request} ->
+        nil
+
+      nil ->
+        case find_legacy_local_mapping(host_id, scope, local_id) do
+          nil -> nil
+          memory -> %{memory: memory, request: nil, local_id: local_id}
+        end
     end
   end
 
-  defp find_by_local_id(host_id, scope, local_id) when is_binary(local_id) do
-    MemorySchema
+  defp find_local_mapping(_host_id, _scope, _local_id), do: nil
+
+  defp find_revoked_mapping(host_id, scope, local_id) when is_binary(local_id) do
+    HostMemoryRevocation
+    |> join(:inner, [revocation], memory in MemorySchema, on: memory.id == revocation.memory_id)
+    |> where(
+      [revocation, _memory],
+      revocation.host_id == ^host_id and revocation.local_id == ^local_id
+    )
+    |> where([revocation, _memory], revocation.scope == ^scope)
+    |> select([revocation, memory], %{memory: memory, request: nil, local_id: revocation.local_id})
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp find_revoked_mapping(_host_id, _scope, _local_id), do: nil
+
+  defp find_legacy_local_mapping(host_id, scope, local_id) do
+    from(memory in MemorySchema, as: :memory)
     |> where([memory], memory.host_id == ^host_id)
     |> where([memory], is_nil(memory.deleted_at))
+    |> where([memory], memory.scope == ^scope)
+    |> where(
+      [memory],
+      not exists(
+        from(rv in HostMemoryRevocation,
+          where: rv.host_id == ^host_id and rv.local_id == ^local_id
+        )
+      )
+    )
     |> where(
       [memory],
       fragment("?->'host_memory'->>'local_id' = ?", memory.metadata, ^local_id)
     )
-    |> maybe_scope(scope)
     |> order_by([memory], desc: memory.inserted_at)
     |> limit(1)
     |> Repo.one()
   end
-
-  defp find_by_local_id(_host_id, _scope, _local_id), do: nil
-
-  defp find_by_content_hash(scope, content_hash) do
-    MemorySchema
-    |> where([memory], memory.scope == ^scope)
-    |> where([memory], memory.content_hash == ^content_hash)
-    |> where([memory], is_nil(memory.deleted_at))
-    |> limit(1)
-    |> Repo.one()
-  end
-
-  defp maybe_scope(query, nil), do: query
-  defp maybe_scope(query, scope), do: where(query, [memory], memory.scope == ^scope)
-
-  defp ensure_local_mapping(
-         %MemorySchema{host_id: host_id} = memory,
-         host_id,
-         local_id,
-         content_hash
-       ) do
-    if get_in(memory.metadata || %{}, [@host_memory_metadata_key, "local_id"]) == local_id do
-      memory
-    else
-      memory
-      |> Ecto.Changeset.change(
-        metadata: put_host_metadata(memory.metadata || %{}, local_id, content_hash)
-      )
-      |> Repo.update!()
-    end
-  end
-
-  defp ensure_local_mapping(memory, _host_id, _local_id, _content_hash), do: memory
 
   defp fact_payload(memory) do
     %{
@@ -210,7 +246,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
       "content" => memory.content,
       "content_hash" => encode_hash(memory.content_hash),
       "tags" => memory.tags || [],
-      "metadata" => memory.metadata || %{},
+      "metadata" => Map.delete(memory.metadata || %{}, @host_memory_metadata_key),
       "updated_at" => DateTime.to_iso8601(memory.updated_at)
     }
   end
@@ -231,11 +267,93 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp host_content_hash(%{"content_hash" => hash}, _content)
        when is_binary(hash) and hash != "" do
-    hash
+    String.downcase(hash)
   end
 
   defp host_content_hash(_item, content) do
     :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+  end
+
+  defp validate_content_hash(%{"content_hash" => hash}, content)
+       when is_binary(hash) and hash != "" do
+    if String.downcase(hash) == host_content_hash(%{}, content) do
+      :ok
+    else
+      {:error, "content_hash does not match content"}
+    end
+  end
+
+  defp validate_content_hash(%{"content_hash" => _invalid}, _content),
+    do: {:error, "content_hash does not match content"}
+
+  defp validate_content_hash(_item, _content), do: :ok
+
+  defp host_request_scope(host_id), do: @host_memory_idempotency_prefix <> host_id
+  defp host_partition_id(%Host{id: host_id}), do: "host:" <> host_id
+  defp validate_host_scope(%{memory_scope: scope}, scope), do: :ok
+  defp validate_host_scope(_host, _scope), do: {:error, "scope is not registered for host"}
+
+  defp reload_host(%{id: id}) when is_binary(id) do
+    case Repo.get(Host, id) do
+      %Host{} = host -> {:ok, host}
+      nil -> {:error, "host is not registered"}
+    end
+  end
+
+  defp reload_host(_host), do: {:error, "host is not registered"}
+
+  defp validate_remote_id(item, memory_id) do
+    case optional_binary(item, "remote_id") do
+      nil ->
+        :ok
+
+      remote_id ->
+        case Ecto.UUID.cast(remote_id) do
+          {:ok, ^memory_id} -> :ok
+          _ -> {:error, "remote_id does not match local mapping"}
+        end
+    end
+  end
+
+  defp request_exists?(host_id, local_id) do
+    Repo.exists?(
+      from(r in RememberRequest,
+        where:
+          r.idempotency_scope == ^host_request_scope(host_id) and r.idempotency_key == ^local_id
+      )
+    )
+  end
+
+  defp revoked?(host_id, local_id),
+    do:
+      Repo.exists?(
+        from(r in HostMemoryRevocation, where: r.host_id == ^host_id and r.local_id == ^local_id)
+      )
+
+  defp revoke_mapping(host, mapping) do
+    attrs = %{
+      host_id: host.id,
+      local_id: mapping.local_id,
+      memory_id: mapping.memory.id,
+      source_request_id: mapping.request && mapping.request.id,
+      scope: mapping.memory.scope,
+      content_hash: mapping.memory.content_hash
+    }
+
+    Repo.insert(HostMemoryRevocation.changeset(%HostMemoryRevocation{}, attrs),
+      on_conflict: :nothing
+    )
+  end
+
+  defp advisory_lock!(host_id, local_id) do
+    <<key::signed-64, _::binary>> =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary(["host-memory", host_id, local_id], [:deterministic])
+      )
+
+    Repo.query!("SELECT pg_advisory_xact_lock($1::bigint)", [key])
+    :ok
   end
 
   defp scope_for(item), do: optional_scope(item) || "global"

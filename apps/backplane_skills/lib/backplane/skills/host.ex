@@ -15,6 +15,7 @@ defmodule Backplane.Skills.Host do
 
   schema "skill_hosts" do
     field(:name, :string)
+    field(:memory_scope, :string)
 
     has_many(:agent_tokens, HostAgentToken)
 
@@ -26,13 +27,14 @@ defmodule Backplane.Skills.Host do
     timestamps()
   end
 
-  @required_fields ~w(name)a
+  @required_fields ~w(name memory_scope)a
 
   @doc "Changeset for creating or updating a host agent identity."
   @spec changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def changeset(host, attrs) do
     host
     |> cast(attrs, @required_fields)
+    |> update_change(:memory_scope, &String.trim/1)
     |> validate_required(@required_fields)
     |> unique_constraint(:name)
   end

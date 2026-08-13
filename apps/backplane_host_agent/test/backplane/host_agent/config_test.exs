@@ -90,12 +90,49 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert sample =~ "host_id: REPLACE_WITH_AGENT_ID"
     assert sample =~ "\n  http_port: 4222\n"
     assert sample =~ "\nmemory:\n"
+    assert sample =~ "\ncapture:\n"
+    assert sample =~ "capture_spool.db"
+    assert sample =~ "upload_interval_ms: 5000"
+    assert sample =~ "batch_size: 100"
+    assert sample =~ "batch_bytes: 524288"
     assert sample =~ "db_path:"
     assert sample =~ "local_ttl_days: 90"
+    assert sample =~ "import_profiles:"
+    assert sample =~ "claude_default:"
     assert sample =~ "\ntelemetry:\n"
     assert sample =~ "sync_interval_ms: 10000"
     assert sample =~ "retention_days: 14"
     refute sample =~ "# http_port"
+  end
+
+  @tag :tmp_dir
+  test "parses opaque import profiles while retaining paths only in host config", %{tmp_dir: dir} do
+    path = Path.join(dir, "sessions")
+    config_path = Path.join(dir, "agent.yaml")
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{dir}
+    memory:
+      import_profiles:
+        project_history:
+          path: #{path}
+          approved_roots:
+            - #{dir}
+          max_depth: 7
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.memory.import_profiles == %{
+             "project_history" => %{
+               path: path,
+               approved_roots: [dir],
+               allow_symlinks: false,
+               max_depth: 7
+             }
+           }
   end
 
   @tag :tmp_dir
@@ -123,7 +160,27 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_interval_ms: 5_000,
              sync_batch_size: 50,
              max_attempts: 5,
+             import_profiles: %{},
              tombstone_relearn: "block"
+           }
+
+    assert config.capture == %{
+             enabled: true,
+             db_path: Path.join(work_dir, "memory/capture_spool.db"),
+             encryption_key_env: nil,
+             inject_context: false,
+             context_timeout_ms: 1_200,
+             recall_cache_max_entries: 128,
+             recall_cache_max_bytes: 2 * 1024 * 1024,
+             recall_cache_ttl_ms: 15 * 60 * 1_000,
+             upload_interval_ms: 5_000,
+             batch_size: 100,
+             batch_bytes: 524_288,
+             spool_max_bytes: 64 * 1024 * 1024,
+             spool_max_age_days: 30,
+             retry_base_ms: 1_000,
+             retry_max_ms: 300_000,
+             compaction_batch_size: 100
            }
 
     assert config.telemetry == %{
@@ -133,6 +190,128 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_batch_size: 100,
              retention_days: 14
            }
+  end
+
+  @tag :tmp_dir
+  test "parses explicit capture config and safe fallbacks", %{tmp_dir: tmp_dir} do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+    work_dir = Path.join(tmp_dir, "work")
+    capture_path = Path.join(tmp_dir, "capture.db")
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: true
+      db_path: #{capture_path}
+      encryption_key_env: BACKPLANE_CAPTURE_SPOOL_KEY
+      inject_context: true
+      context_timeout_ms: 9000
+      recall_cache_max_entries: 7
+      recall_cache_max_bytes: 8192
+      recall_cache_ttl_ms: 60000
+      upload_interval_ms: 250
+      batch_size: 8
+      batch_bytes: 4096
+      spool_max_bytes: 1048576
+      spool_max_age_days: 7
+      retry_base_ms: 250
+      retry_max_ms: 4000
+      compaction_batch_size: 25
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+
+    assert config.capture == %{
+             enabled: true,
+             db_path: capture_path,
+             encryption_key_env: "BACKPLANE_CAPTURE_SPOOL_KEY",
+             inject_context: true,
+             context_timeout_ms: 1_500,
+             recall_cache_max_entries: 7,
+             recall_cache_max_bytes: 8_192,
+             recall_cache_ttl_ms: 60_000,
+             upload_interval_ms: 250,
+             batch_size: 8,
+             batch_bytes: 4096,
+             spool_max_bytes: 1_048_576,
+             spool_max_age_days: 7,
+             retry_base_ms: 250,
+             retry_max_ms: 4_000,
+             compaction_batch_size: 25
+           }
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: invalid
+      db_path: ""
+      upload_interval_ms: 0
+      batch_size: -1
+      batch_bytes: nope
+      spool_max_bytes: 0
+      spool_max_age_days: old
+      retry_base_ms: -1
+      retry_max_ms: 0
+      compaction_batch_size: no
+    """)
+
+    assert {:ok, invalid} = Config.load(config_path)
+
+    assert invalid.capture == %{
+             enabled: false,
+             db_path: Path.join(work_dir, "memory/capture_spool.db"),
+             encryption_key_env: nil,
+             inject_context: false,
+             context_timeout_ms: 1_200,
+             recall_cache_max_entries: 128,
+             recall_cache_max_bytes: 2 * 1024 * 1024,
+             recall_cache_ttl_ms: 15 * 60 * 1_000,
+             upload_interval_ms: 5_000,
+             batch_size: 100,
+             batch_bytes: 524_288,
+             spool_max_bytes: 64 * 1024 * 1024,
+             spool_max_age_days: 30,
+             retry_base_ms: 1_000,
+             retry_max_ms: 300_000,
+             compaction_batch_size: 100
+           }
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+
+    capture:
+      batch_size: 101
+      batch_bytes: 524289
+    """)
+
+    assert {:ok, clamped} = Config.load(config_path)
+    assert clamped.capture.batch_size == 100
+    assert clamped.capture.batch_bytes == 524_288
+  end
+
+  @tag :tmp_dir
+  test "capture defaults disabled with the local HTTP listener", %{tmp_dir: tmp_dir} do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{Path.join(tmp_dir, "work")}
+      http_port: 0
+    """)
+
+    assert {:ok, config} = Config.load(config_path)
+    refute config.capture.enabled
   end
 
   @tag :tmp_dir
@@ -204,6 +383,7 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_interval_ms: 250,
              sync_batch_size: 10,
              max_attempts: 2,
+             import_profiles: %{},
              tombstone_relearn: "allow_with_log"
            }
   end

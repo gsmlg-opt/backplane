@@ -15,7 +15,7 @@ defmodule Backplane.Repo.Migrations.SeedFacetDimensions do
 
     Enum.each(dimensions, fn {name, desc} ->
       execute("""
-      INSERT INTO memory_facet_dimensions (name, description, created_at)
+      INSERT INTO #{qualified("memory_facet_dimensions")} (name, description, created_at)
       VALUES ('#{name}', '#{desc}', '#{now}')
       ON CONFLICT (name) DO NOTHING
       """)
@@ -24,7 +24,15 @@ defmodule Backplane.Repo.Migrations.SeedFacetDimensions do
 
   def down do
     execute(
-      "DELETE FROM memory_facet_dimensions WHERE name IN ('language','framework','project','environment','team','type')"
+      "DELETE FROM #{qualified("memory_facet_dimensions")} WHERE name IN ('language','framework','project','environment','team','type')"
     )
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

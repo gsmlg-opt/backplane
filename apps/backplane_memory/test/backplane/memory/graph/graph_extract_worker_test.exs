@@ -4,6 +4,13 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Workers.GraphExtractWorker
 
+  @partition %{
+    host_id: "host-test",
+    client_id: "host:host-test",
+    scope: "global",
+    namespace: "private"
+  }
+
   defmodule MockLLMEmpty do
     def extract_graph(_observations), do: {:ok, %{nodes: [], edges: []}}
   end
@@ -41,6 +48,9 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
         Memories.remember("observation #{i} for session #{session_id}",
           agent_id: "agent-test",
           host_id: "host-test",
+          client_id: "host:host-test",
+          scope: "global",
+          namespace: "private",
           session_id: session_id
         )
     end
@@ -53,7 +63,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       make_memories(session_id, 2)
 
       result =
-        GraphExtractWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+        GraphExtractWorker.perform(job(session_id))
 
       assert result == {:ok, :skipped_min_observations}
     end
@@ -62,7 +72,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       session_id = Ecto.UUID.generate()
 
       result =
-        GraphExtractWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+        GraphExtractWorker.perform(job(session_id))
 
       assert result == {:ok, :skipped_min_observations}
     end
@@ -75,7 +85,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       make_memories(session_id, 3)
 
       assert {:ok, %{nodes_extracted: 2, edges_extracted: 0}} =
-               GraphExtractWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+               GraphExtractWorker.perform(job(session_id))
     end
 
     test "returns {:ok, {:skipped, reason}} when LLM returns :skip" do
@@ -84,7 +94,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       make_memories(session_id, 3)
 
       assert {:ok, {:skipped, :no_llm}} =
-               GraphExtractWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+               GraphExtractWorker.perform(job(session_id))
     end
 
     test "returns {:error, reason} when LLM returns error so Oban retries" do
@@ -93,7 +103,15 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       make_memories(session_id, 3)
 
       assert {:error, "llm unavailable"} =
-               GraphExtractWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+               GraphExtractWorker.perform(job(session_id))
     end
+  end
+
+  defp job(session_id) do
+    args =
+      Map.new(@partition, fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("session_id", session_id)
+
+    %Oban.Job{args: args}
   end
 end

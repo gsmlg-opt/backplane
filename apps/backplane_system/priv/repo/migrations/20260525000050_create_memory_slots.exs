@@ -17,12 +17,20 @@ defmodule Backplane.Repo.Migrations.CreateMemorySlots do
 
     Enum.each(slots, fn name ->
       execute(
-        "INSERT INTO memory_slots (name, content, updated_at) VALUES ('#{name}', '', '#{now}') ON CONFLICT (name) DO NOTHING"
+        "INSERT INTO #{qualified("memory_slots")} (name, content, updated_at) VALUES ('#{name}', '', '#{now}') ON CONFLICT (name) DO NOTHING"
       )
     end)
   end
 
   def down do
     drop_if_exists(table(:memory_slots))
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

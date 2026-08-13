@@ -6,6 +6,8 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   alias Backplane.Repo
   alias Backplane.Skills.Hosts
   alias Backplane.Api.HostAgentMemorySync
+  alias Backplane.Api.HostMemoryRevocation
+  alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
   setup do
@@ -15,8 +17,11 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   end
 
   test "remember maps a host local id to one stable canonical memory id" do
-    host = create_host!("remember")
-    item = remember_item("local_1", "scope:stable", "local memory")
+    host = create_host!("remember", "scope:stable")
+
+    item =
+      remember_item("local_1", "scope:stable", "local memory")
+      |> Map.put("client_id", "host:attacker")
 
     assert {:ok, %{status: :ok, canonical_id: canonical_id}} =
              HostAgentMemorySync.apply_sync_item(host, item)
@@ -27,6 +32,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert [
              %MemorySchema{
                id: ^canonical_id,
+               client_id: partition_id,
                metadata: %{
                  "host_memory" => %{
                    "local_id" => "local_1",
@@ -35,11 +41,264 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                }
              }
            ] = memories_for(host, "scope:stable", include_deleted: true)
+
+    assert partition_id == "host:#{host.id}"
   end
 
-  test "forget resolves a host local id remembered earlier in the same sync flow" do
-    host = create_host!("same-batch")
+  test "remember retries keep one immutable request and one request evidence row" do
+    host = create_host!("retry-ledger", "scope:retry")
+    item = remember_item("local_retry", "scope:retry", "retry-safe memory")
+
+    results = Enum.map(1..10, fn _attempt -> HostAgentMemorySync.apply_sync_item(host, item) end)
+
+    assert [{:ok, %{status: :ok, canonical_id: canonical_id}} | retries] = results
+
+    assert Enum.all?(retries, fn result ->
+             result == {:ok, %{status: :duplicate, canonical_id: canonical_id}}
+           end)
+
+    assert 1 ==
+             Repo.aggregate(
+               from(r in RememberRequest,
+                 where:
+                   r.idempotency_scope == ^"host-memory.v1:#{host.id}" and
+                     r.idempotency_key == "local_retry"
+               ),
+               :count
+             )
+
+    assert 1 ==
+             Repo.aggregate(
+               from(e in Evidence,
+                 where: e.memory_id == ^canonical_id and not is_nil(e.source_request_id)
+               ),
+               :count
+             )
+  end
+
+  test "concurrent retries atomically report one first write and duplicate replays" do
+    host = create_host!("concurrent-ledger", "scope:concurrent")
+    item = remember_item("local_concurrent", "scope:concurrent", "concurrent memory")
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn _ -> HostAgentMemorySync.apply_sync_item(host, item) end,
+        max_concurrency: 8,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert 1 == Enum.count(results, &match?({:ok, %{status: :ok}}, &1))
+    assert 7 == Enum.count(results, &match?({:ok, %{status: :duplicate}}, &1))
+    assert 1 == Repo.aggregate(RememberRequest, :count)
+    assert 1 == Repo.aggregate(Evidence, :count)
+  end
+
+  test "remember rejects changed immutable content or scope without partial writes" do
+    host = create_host!("immutable", "scope:first")
+    item = remember_item("local_immutable", "scope:first", "first content")
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    changed_content =
+      item
+      |> Map.put("content", "changed content")
+      |> Map.put("content_hash", sha256_hex("changed content"))
+
+    assert {:error, :validation, :idempotency_conflict} =
+             HostAgentMemorySync.apply_sync_item(host, changed_content)
+
+    assert {:error, :validation, "scope is not registered for host"} =
+             HostAgentMemorySync.apply_sync_item(host, Map.put(item, "scope", "scope:changed"))
+
+    assert 1 == Repo.aggregate(RememberRequest, :count)
+    assert 1 == Repo.aggregate(Evidence, :count)
+
+    assert [%MemorySchema{id: ^canonical_id, content: "first content", scope: "scope:first"}] =
+             Repo.all(MemorySchema)
+  end
+
+  test "remember rejects a supplied content hash mismatch before writing" do
+    host = create_host!("hash-mismatch", "scope:hash")
+
+    item =
+      remember_item("local_bad_hash", "scope:hash", "trusted content")
+      |> Map.put("content_hash", String.duplicate("0", 64))
+
+    assert {:error, :validation, "content_hash does not match content"} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert 0 == Repo.aggregate(MemorySchema, :count)
+    assert 0 == Repo.aggregate(RememberRequest, :count)
+    assert 0 == Repo.aggregate(Evidence, :count)
+  end
+
+  test "remember accepts uppercase hex hashes and rejects non-string supplied hashes" do
+    host = create_host!("hash-shape", "scope:hash-shape")
+    content = "case-insensitive hash"
+
+    assert {:ok, %{status: :ok}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("uppercase", "scope:hash-shape", content)
+               |> Map.put("content_hash", String.upcase(sha256_hex(content)))
+             )
+
+    assert {:error, :validation, "content_hash does not match content"} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("invalid", "scope:hash-shape", "invalid hash shape")
+               |> Map.put("content_hash", 123)
+             )
+
+    assert 1 == Repo.aggregate(MemorySchema, :count)
+    assert 1 == Repo.aggregate(RememberRequest, :count)
+  end
+
+  test "remember rejects scope injection and ignores payload memory type" do
+    host = create_host!("payload-trust", "proj_local")
+
+    assert {:error, :validation, "scope is not registered for host"} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("evil", "scope:foreign", "untrusted scope")
+             )
+
+    assert {:ok, %{canonical_id: id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("typed", "proj_local", "forced episodic")
+               |> Map.put("type", "procedural")
+             )
+
+    assert %MemorySchema{memory_type: "episodic"} = Repo.get!(MemorySchema, id)
+  end
+
+  test "fact payload removes private host mapping metadata" do
+    host = create_host!("fact-redaction", "scope:redacted")
+
+    memory =
+      insert_memory!(host, "scope:redacted", "redacted fact",
+        memory_type: "semantic",
+        metadata: %{"public" => "yes", "host_memory" => %{"local_id" => "secret"}}
+      )
+
+    assert {:full, [%{"id" => id, "metadata" => %{"public" => "yes"}}]} =
+             HostAgentMemorySync.facts_for_scope(host, "scope:redacted", nil)
+
+    assert id == memory.id
+  end
+
+  test "identical content from two hosts with one scope remains partitioned" do
+    scope = "scope:shared"
+    first_host = create_host!("shared-first", scope)
+    second_host = create_host!("shared-second", scope)
+    content = "shared host memory"
+
+    durable_fact =
+      insert_memory!(first_host, scope, "shared durable fact", memory_type: "semantic")
+
+    first_item = remember_item("first_local", scope, content) |> Map.put("type", "semantic")
+    second_item = remember_item("second_local", scope, content) |> Map.put("type", "semantic")
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(first_host, first_item)
+
+    assert {:ok, %{status: :ok, canonical_id: second_canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(second_host, second_item)
+
+    refute second_canonical_id == canonical_id
+
+    assert %MemorySchema{id: ^canonical_id, host_id: first_host_id, metadata: metadata} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert first_host_id == first_host.id
+    assert get_in(metadata, ["host_memory", "local_id"]) == "first_local"
+    assert 2 == Repo.aggregate(RememberRequest, :count)
+    assert 2 == Repo.aggregate(Evidence, :count)
+    assert MapSet.member?(HostAgentMemorySync.entitled_scopes(first_host), scope)
+    assert MapSet.member?(HostAgentMemorySync.entitled_scopes(second_host), scope)
+
+    assert {:ok, %{status: :ok, canonical_id: ^second_canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(second_host, %{
+               "id" => "second_local",
+               "op" => "forget",
+               "scope" => scope
+             })
+
+    assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, canonical_id)
+
+    assert {:full, [%{"id" => fact_id}]} =
+             HostAgentMemorySync.facts_for_scope(first_host, scope, nil)
+
+    assert fact_id == durable_fact.id
+    assert {:full, []} = HostAgentMemorySync.facts_for_scope(second_host, scope, nil)
+    assert [] = HostAgentMemorySync.active_wipes(first_host, scope)
+    assert [] = HostAgentMemorySync.active_wipes(second_host, scope)
+  end
+
+  test "forget binds remote id to the authenticated host local mapping" do
+    host = create_host!("forget-binding", "scope:binding")
+    content = "same canonical source"
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_a", "scope:binding", content)
+             )
+
+    assert {:ok, %{canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_b", "scope:binding", content)
+             )
+
+    forget = %{
+      "id" => "local_a",
+      "op" => "forget",
+      "remote_id" => canonical_id,
+      "scope" => "scope:binding"
+    }
+
+    assert {:ok, %{canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, forget)
+
+    assert {:ok, %{canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, forget)
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_b", "scope:binding", content)
+             )
+
+    assert {:error, :validation, "remote_id does not match local mapping"} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               forget
+               | "id" => "local_b",
+                 "remote_id" => Ecto.UUID.generate()
+             })
+  end
+
+  test "reloads the current registered scope instead of trusting a stale host struct" do
+    stale_host = create_host!("fresh-scope", "scope:old")
+    assert {:ok, current_host} = Hosts.update_agent(stale_host, %{"memory_scope" => "scope:new"})
+
+    assert {:error, :validation, "scope is not registered for host"} =
+             HostAgentMemorySync.apply_sync_item(
+               stale_host,
+               remember_item("stale", "scope:old", "stale scope")
+             )
+
+    assert MapSet.new(["scope:new"]) == HostAgentMemorySync.entitled_scopes(stale_host)
+    assert MapSet.new(["scope:new"]) == HostAgentMemorySync.entitled_scopes(current_host)
+  end
+
+  test "forget acknowledges a host local id without tombstoning the canonical memory" do
     scope = "scope:same-batch"
+    host = create_host!("same-batch", scope)
 
     assert {:ok, %{canonical_id: canonical_id}} =
              HostAgentMemorySync.apply_sync_item(
@@ -54,8 +313,46 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                "scope" => scope
              })
 
-    assert [%MemorySchema{id: ^canonical_id, deleted_at: %DateTime{}}] =
+    assert [%MemorySchema{id: ^canonical_id, deleted_at: nil}] =
              memories_for(host, scope, include_deleted: true)
+
+    assert [] = HostAgentMemorySync.active_wipes(host, scope)
+    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
+
+    assert {:ok, %{status: :ok, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               "id" => "local_2",
+               "op" => "forget",
+               "scope" => scope
+             })
+
+    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
+
+    assert {:error, :validation, :mapping_revoked} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_2", scope, "remember then forget")
+             )
+  end
+
+  test "local-id forget rejects the wrong scope and leaves the canonical memory active" do
+    host = create_host!("wrong-forget-scope", "scope:owned")
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_scoped", "scope:owned", "scope-bound local memory")
+             )
+
+    assert {:error, :validation, "scope is not registered for host"} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               "id" => "local_scoped",
+               "op" => "forget",
+               "scope" => "scope:wrong"
+             })
+
+    assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, canonical_id)
+    assert [] = HostAgentMemorySync.active_wipes(host, "scope:owned")
   end
 
   test "forget rejects remote ids owned by another host" do
@@ -75,8 +372,8 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   end
 
   test "facts_for_scope returns canonical hub facts and recognizes matching hashes" do
-    host = create_host!("facts")
     scope = "scope:facts"
+    host = create_host!("facts", scope)
 
     fact =
       insert_memory!(host, scope, "use the project formatter",
@@ -86,7 +383,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
     _episodic = insert_memory!(host, scope, "draft local note", memory_type: "episodic")
 
-    assert {:full, facts} = HostAgentMemorySync.facts_for_scope(scope, "stale")
+    assert {:full, facts} = HostAgentMemorySync.facts_for_scope(host, scope, "stale")
 
     assert [
              %{
@@ -102,11 +399,13 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert fact_id == fact.id
     assert content_hash == Base.encode16(fact.content_hash, case: :lower)
     assert is_binary(updated_at)
-    assert :unchanged = HostAgentMemorySync.facts_for_scope(scope, fact_set_hash(facts))
+
+    assert :unchanged =
+             HostAgentMemorySync.facts_for_scope(host, scope, fact_set_hash(facts))
   end
 
   test "entitled_scopes and active_wipes are backed by memory rows" do
-    host = create_host!("entitled")
+    host = create_host!("entitled", "scope:entitled")
     other = create_host!("other")
     scope = "scope:entitled"
 
@@ -116,7 +415,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     deleted =
       host
       |> insert_memory!(scope, "deleted fact", memory_type: "semantic")
-      |> Ecto.Changeset.change(deleted_at: DateTime.utc_now())
+      |> Ecto.Changeset.change(deleted_at: DateTime.utc_now(), lifecycle_state: "tombstoned")
       |> Repo.update!()
 
     entitled = HostAgentMemorySync.entitled_scopes(host)
@@ -130,16 +429,19 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                "content_hash" => deleted_hash,
                "scope" => ^scope
              }
-           ] = HostAgentMemorySync.active_wipes(scope)
+           ] = HostAgentMemorySync.active_wipes(host, scope)
 
     assert directive_id == "deleted:#{deleted.id}"
     assert deleted_id == deleted.id
     assert deleted_hash == Base.encode16(deleted.content_hash, case: :lower)
   end
 
-  defp create_host!(suffix) do
+  defp create_host!(suffix, memory_scope \\ "proj_local") do
     name = "host-memory-sync-#{suffix}-#{System.unique_integer([:positive])}"
-    assert {:ok, host, _auth_token, _token} = Hosts.create_agent_with_token(%{"name" => name})
+
+    assert {:ok, host, _auth_token, _token} =
+             Hosts.create_agent_with_token(%{"name" => name, "memory_scope" => memory_scope})
+
     host
   end
 
@@ -163,6 +465,8 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
       scope: scope,
       agent_id: "agent_1",
       host_id: host.id,
+      client_id: "host:#{host.id}",
+      namespace: "private",
       tags: Keyword.get(opts, :tags, []),
       metadata: Keyword.get(opts, :metadata, %{})
     }

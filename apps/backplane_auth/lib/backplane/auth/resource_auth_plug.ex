@@ -15,6 +15,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
           kind: :oauth | :client_token | :legacy | :open,
           subject: String.t() | nil,
           client_id: String.t() | nil,
+          principal_metadata: map(),
           resource: Resources.key(),
           scopes: [String.t()]
         }
@@ -87,6 +88,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       kind: :oauth,
       subject: oauth.token.sub,
       client_id: oauth.token.client_id,
+      principal_metadata: memory_principal_metadata(oauth.client.metadata),
       resource: resource,
       scopes: oauth.scopes
     }
@@ -99,6 +101,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       kind: :client_token,
       subject: nil,
       client_id: client.id,
+      principal_metadata: memory_principal_metadata(client.metadata),
       resource: resource,
       scopes: client.scopes
     }
@@ -113,6 +116,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       kind: kind,
       subject: nil,
       client_id: nil,
+      principal_metadata: %{},
       resource: resource,
       scopes: ["*"]
     })
@@ -154,6 +158,18 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp memory_principal_metadata(metadata) when is_map(metadata) do
+    case Map.get(metadata, "memory_partition_id", Map.get(metadata, :memory_partition_id)) do
+      partition_id when is_binary(partition_id) ->
+        %{"memory_partition_id" => partition_id}
+
+      _other ->
+        %{}
+    end
+  end
+
+  defp memory_principal_metadata(_metadata), do: %{}
 
   defp bearer_credential(conn) do
     case get_req_header(conn, "authorization") do

@@ -38,6 +38,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
              kind: :oauth,
              subject: token.sub,
              client_id: token.client_id,
+             principal_metadata: %{},
              resource: :mcp,
              scopes: ["github::*"]
            }
@@ -63,6 +64,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
              kind: :client_token,
              subject: nil,
              client_id: client.id,
+             principal_metadata: %{},
              resource: :mcp,
              scopes: ["github::read"]
            }
@@ -81,6 +83,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
              kind: :legacy,
              subject: nil,
              client_id: nil,
+             principal_metadata: %{},
              resource: :mcp,
              scopes: ["*"]
            }
@@ -139,6 +142,7 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
              kind: :open,
              subject: nil,
              client_id: nil,
+             principal_metadata: %{},
              resource: :mcp,
              scopes: ["*"]
            }
@@ -171,6 +175,54 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     assert challenge =~ ~s(error="invalid_token")
     assert challenge =~ ~s(resource_metadata="#{Resources.metadata_uri(:mcp)}")
     refute conn.assigns[:resource_auth]
+  end
+
+  test "copies only server-stored memory partition metadata for OAuth and PAT principals" do
+    partition = "host:#{Ecto.UUID.generate()}"
+    user = auth_user_fixture!()
+
+    oauth_client =
+      oauth_client_fixture!(
+        resources: [:mcp],
+        scopes: ["memory::*"],
+        metadata: %{
+          "memory_partition_id" => partition,
+          "untrusted_extra" => "must-not-propagate"
+        }
+      )
+
+    oauth_token = resource_access_token_fixture!(user, oauth_client, ["memory::*"], :mcp)
+
+    oauth_conn =
+      :post
+      |> conn("/mcp")
+      |> bearer(oauth_token.value)
+      |> authenticate(:mcp)
+
+    assert oauth_conn.assigns.resource_auth.principal_metadata == %{
+             "memory_partition_id" => partition
+           }
+
+    {pat, pat_token} =
+      pat_fixture!(
+        scopes: ["memory::*"],
+        metadata: %{
+          "memory_partition_id" => partition,
+          "untrusted_extra" => "must-not-propagate"
+        }
+      )
+
+    pat_conn =
+      :post
+      |> conn("/mcp")
+      |> bearer(pat_token)
+      |> authenticate(:mcp)
+
+    assert pat_conn.assigns.resource_auth.client_id == pat.id
+
+    assert pat_conn.assigns.resource_auth.principal_metadata == %{
+             "memory_partition_id" => partition
+           }
   end
 
   test "rejects a supplied invalid bearer even when the resource is otherwise open" do
@@ -375,7 +427,8 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
         name: "PAT #{System.unique_integer([:positive])}",
         token: token,
         scopes: Keyword.get(attrs, :scopes, ["*"]),
-        active: Keyword.get(attrs, :active, true)
+        active: Keyword.get(attrs, :active, true),
+        metadata: Keyword.get(attrs, :metadata, %{})
       })
 
     {client, token}

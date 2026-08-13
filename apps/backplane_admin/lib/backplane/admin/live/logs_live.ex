@@ -5,6 +5,7 @@ defmodule Backplane.Admin.LogsLive do
 
   alias Backplane.PubSubBroadcaster
   alias Backplane.Repo
+  alias Backplane.Memory.Privacy.Filter
 
   @page_size 50
 
@@ -21,13 +22,20 @@ defmodule Backplane.Admin.LogsLive do
        loading: true,
        tab: "jobs",
        jobs: [],
+       selected_job_id: nil,
+       selected_job: nil,
        tool_events: []
      )}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, load_data(socket)}
+  def handle_params(params, _uri, socket) do
+    selected_job_id = parse_job_id(params["job_id"])
+
+    {:noreply,
+     socket
+     |> assign(selected_job_id: selected_job_id)
+     |> load_data()}
   end
 
   @impl true
@@ -62,8 +70,47 @@ defmodule Backplane.Admin.LogsLive do
 
   defp load_data(socket) do
     jobs = load_recent_jobs()
-    assign(socket, loading: false, jobs: jobs)
+    selected_job = load_selected_job(socket.assigns.selected_job_id)
+    assign(socket, loading: false, jobs: jobs, selected_job: selected_job)
   end
+
+  defp load_selected_job(nil), do: nil
+
+  defp load_selected_job(job_id) do
+    from(j in "oban_jobs",
+      where: j.id == ^job_id,
+      select: %{
+        id: j.id,
+        worker: j.worker,
+        queue: j.queue,
+        state: j.state,
+        attempt: j.attempt,
+        max_attempts: j.max_attempts,
+        errors: j.errors
+      }
+    )
+    |> Repo.one()
+    |> sanitize_job_errors()
+  rescue
+    _ -> nil
+  end
+
+  defp sanitize_job_errors(nil), do: nil
+
+  defp sanitize_job_errors(job) do
+    encoded = Jason.encode!(job.errors || [])
+    {:ok, error_detail} = Filter.apply_bounded(encoded, 4_096)
+    Map.put(job, :error_detail, error_detail)
+  end
+
+  defp parse_job_id(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {id, ""} when id > 0 -> id
+      _ -> nil
+    end
+  end
+
+  defp parse_job_id(_value), do: nil
 
   defp load_recent_jobs do
     from(j in "oban_jobs",
@@ -106,6 +153,23 @@ defmodule Backplane.Admin.LogsLive do
       </div>
 
       <div :if={@tab == "jobs"}>
+        <.dm_card
+          :if={@selected_job}
+          id={"job-detail-#{@selected_job.id}"}
+          variant="bordered"
+          padding="sm"
+          class="mb-6"
+        >
+          <h2 class="font-semibold">Failed job detail</h2>
+          <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+            <div><dt class="text-on-surface-variant">Worker</dt><dd class="font-mono text-xs">{@selected_job.worker}</dd></div>
+            <div><dt class="text-on-surface-variant">Queue / state</dt><dd>{@selected_job.queue} / {@selected_job.state}</dd></div>
+            <div><dt class="text-on-surface-variant">Attempt</dt><dd>{@selected_job.attempt}/{@selected_job.max_attempts}</dd></div>
+          </dl>
+          <h3 class="mt-4 text-sm font-semibold">Sanitized error</h3>
+          <pre class="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{@selected_job.error_detail}</pre>
+        </.dm_card>
+
         <div :if={@jobs == []} class="text-on-surface-variant text-sm">No recent jobs found.</div>
         <.dm_table :if={@jobs != []} id="jobs-table" data={@jobs} hover zebra>
           <:col :let={job} label="Worker">
@@ -175,6 +239,7 @@ defmodule Backplane.Admin.LogsLive do
 
   defp format_time(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} format="time" />
     """

@@ -13,9 +13,17 @@ defmodule BackplaneSystem.Application do
       Backplane.Settings.OAuthStateStore,
       Backplane.Settings,
       Backplane.Registry.ToolRegistry,
+      Backplane.Registry.PromptCatalog,
+      Backplane.Registry.PromptRegistry,
       Backplane.Metrics
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: BackplaneSystem.Supervisor)
+  end
+
+  @impl true
+  def stop(_state) do
+    Backplane.Registry.PromptCatalog.cleanup()
+    :ok
   end
 end

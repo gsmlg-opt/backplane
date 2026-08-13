@@ -237,6 +237,28 @@ defmodule Backplane.Memory.Events.StoreTest do
            } = repo().get!(Stream, stream_id)
   end
 
+  test "canonical appends fill a nil stream project and reject a later non-nil mismatch" do
+    stream_id = unique("canonical-project")
+
+    assert {:ok, %Event{sequence: 1}} =
+             Store.append(canonical_event(stream_id, "without-project", nil))
+
+    matching = canonical_event(stream_id, "matching", "project-one")
+
+    assert {:ok, %Event{sequence: 2} = inserted} = Store.append(matching)
+    assert {:ok, %Event{id: duplicate_id}} = Store.append(matching)
+    assert duplicate_id == inserted.id
+
+    assert {:ok, %Event{sequence: 3}} =
+             Store.append(canonical_event(stream_id, "nil-remains-compatible", nil))
+
+    assert {:error, :stream_metadata_conflict} =
+             Store.append(canonical_event(stream_id, "different", "project-two"))
+
+    assert %Stream{project: "project-one", next_sequence: 4} = repo().get!(Stream, stream_id)
+    assert [%Event{sequence: 1}, %Event{sequence: 2}, %Event{sequence: 3}] = Store.list(stream_id)
+  end
+
   test "last_event_at keeps the greatest occurred_at rather than append order" do
     stream_id = unique("last-event")
     newer = ~U[2026-07-16 12:00:00.000000Z]
@@ -340,6 +362,19 @@ defmodule Backplane.Memory.Events.StoreTest do
     refute repo().get(Stream, rollback_stream)
     assert repo().get!(Stream, conflict_stream).next_sequence == 2
     assert repo().get!(Event, existing.id).content == "stable"
+  end
+
+  test "batch rejects conflicting canonical stream projects atomically" do
+    stream_id = unique("batch-canonical-project")
+
+    assert {:error, :stream_metadata_conflict} =
+             Store.append_batch([
+               canonical_event(stream_id, "first", "project-one"),
+               canonical_event(stream_id, "second", "project-two")
+             ])
+
+    refute repo().get(Stream, stream_id)
+    assert [] = Store.list(stream_id)
   end
 
   test "append telemetry has exact safe measurements and bounded metadata" do
@@ -543,6 +578,18 @@ defmodule Backplane.Memory.Events.StoreTest do
       event_type: "task.created",
       content: content,
       idempotency_key: idempotency_key
+    }
+  end
+
+  defp canonical_event(stream_id, content, project) do
+    %{
+      stream_id: stream_id,
+      event_type: "task.created",
+      content: content,
+      project: project,
+      schema_version: 1,
+      occurred_at: ~U[2026-08-12 00:00:00.000000Z],
+      idempotency_key: unique("canonical-key")
     }
   end
 

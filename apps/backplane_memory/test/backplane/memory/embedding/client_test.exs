@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Embedding.ClientTest do
   use ExUnit.Case, async: true
 
   alias Backplane.Memory.Embedding.Client
+  alias Backplane.Memory.LLM
 
   @model "test-embedding-model"
 
@@ -25,6 +26,9 @@ defmodule Backplane.Memory.Embedding.ClientTest do
       vector = Enum.map(1..2560, fn _ -> 0.001 end)
 
       mock = fn req ->
+        assert LLM.capture_suppressed?()
+        assert Req.Request.get_header(req, "x-backplane-memory-origin") == ["embedding"]
+        assert Req.Request.get_header(req, "x-backplane-memory-capture") == ["skip"]
         body = %{"data" => [%{"embedding" => vector, "index" => 0}]}
         {req, Req.Response.new(status: 200, body: body)}
       end
@@ -33,6 +37,7 @@ defmodule Backplane.Memory.Embedding.ClientTest do
                Client.embed(["hello"], :document, model: @model, req_options: [adapter: mock])
 
       assert length(result_vec) == 2560
+      refute LLM.capture_suppressed?()
     end
 
     test "sorts results by index when multiple texts embedded" do

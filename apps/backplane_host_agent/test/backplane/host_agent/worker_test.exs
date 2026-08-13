@@ -1,5 +1,5 @@
 defmodule Backplane.HostAgent.WorkerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.{Manifest, Worker}
 
@@ -77,6 +77,25 @@ defmodule Backplane.HostAgent.WorkerTest do
     end
   end
 
+  defmodule OfflineRuntimeConfig do
+    def load_default do
+      {:ok,
+       %{
+         host_id: "host-authoritative",
+         hub_url: "http://localhost:4220",
+         interval_ms: 60_000,
+         machine_name: "t430",
+         manifest_path: "/tmp/manifest.json",
+         memory: %{enabled: false},
+         capture: %{enabled: true, host_id: "spoofed", db_path: "/tmp/capture.db"},
+         telemetry: %{enabled: false},
+         http_bind: "127.0.0.1",
+         http_port: 4222,
+         token: "host-token"
+       }}
+    end
+  end
+
   defmodule FakeConnector do
     def connect(config) do
       owner = :persistent_term.get({__MODULE__, :owner})
@@ -94,10 +113,32 @@ defmodule Backplane.HostAgent.WorkerTest do
   end
 
   defmodule FakeMemoryProxy do
+    def set_config(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:set_config, config})
+      :ok
+    end
+
     def set_channel(channel) do
       owner = :persistent_term.get({__MODULE__, :owner})
       send(owner, {:set_channel, channel})
       :ok
+    end
+  end
+
+  defmodule FakeCaptureSupervisor do
+    def start_link(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:capture_start, config})
+      {:ok, spawn_link(fn -> Process.sleep(:infinity) end)}
+    end
+  end
+
+  defmodule FailingCaptureSupervisor do
+    def start_link(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:capture_start_failed, config})
+      {:error, :spool_unavailable}
     end
   end
 
@@ -110,6 +151,18 @@ defmodule Backplane.HostAgent.WorkerTest do
       owner = :persistent_term.get({__MODULE__, :owner})
       send(owner, {:http_child_spec_called, config})
       nil
+    end
+  end
+
+  defmodule LiveHttpServer do
+    def child_spec(config) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:http_child_spec_called, config})
+
+      Task.child_spec(fn ->
+        send(owner, {:http_child_started, self()})
+        Process.sleep(:infinity)
+      end)
     end
   end
 
@@ -169,6 +222,120 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert is_reference(retry_ref)
     assert_receive {:connect_failed, %{host_id: "host-1", interval_ms: 10}}, 100
+  end
+
+  test "starts and retains capture and HTTP while the hub remains offline" do
+    owners = [FailingConnector, FakeMemoryProxy, FakeCaptureSupervisor, LiveHttpServer]
+    Enum.each(owners, &:persistent_term.put({&1, :owner}, self()))
+
+    on_exit(fn -> Enum.each(owners, &:persistent_term.erase({&1, :owner})) end)
+
+    {:ok, worker} =
+      Worker.start_link(
+        name: nil,
+        config_module: OfflineRuntimeConfig,
+        connector_module: FailingConnector,
+        capture_supervisor_module: FakeCaptureSupervisor,
+        http_server_module: LiveHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
+      )
+
+    assert_receive first_message
+    assert {:set_config, %{host_id: "host-authoritative"}} = first_message
+
+    assert_receive second_message
+
+    assert {:capture_start,
+            %{enabled: true, host_id: "host-authoritative", db_path: "/tmp/capture.db"}} =
+             second_message
+
+    assert_receive third_message
+    assert {:http_child_spec_called, %{host_id: "host-authoritative"}} = third_message
+    assert_receive fourth_message
+    assert {:connect_failed, %{host_id: "host-authoritative"}} = fourth_message
+    assert_receive {:http_child_started, http_child}
+
+    assert %{
+             capture_supervisor: capture_supervisor,
+             http_supervisor: http_supervisor,
+             config: %{host_id: "host-authoritative"},
+             last_error: :hub_down
+           } = GenServer.call(worker, :status)
+
+    assert Process.alive?(capture_supervisor)
+    assert Process.alive?(http_supervisor)
+    assert Process.alive?(http_child)
+
+    send(worker, :connect_retry)
+
+    assert_receive {:set_config, %{host_id: "host-authoritative"}}
+    assert_receive {:connect_failed, %{host_id: "host-authoritative"}}
+    refute_receive {:capture_start, _}, 50
+    refute_receive {:http_child_spec_called, _}, 50
+
+    assert %{
+             capture_supervisor: ^capture_supervisor,
+             http_supervisor: ^http_supervisor
+           } = GenServer.call(worker, :status)
+  end
+
+  test "reconnect success reuses the capture supervisor started while offline" do
+    owners = [FakeConnector, FakeMemoryProxy, FakeCaptureSupervisor, FakeHttpServer]
+    Enum.each(owners, &:persistent_term.put({&1, :owner}, self()))
+
+    on_exit(fn -> Enum.each(owners, &:persistent_term.erase({&1, :owner})) end)
+
+    {:ok, worker} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        config_module: OfflineRuntimeConfig,
+        connector_module: FakeConnector,
+        capture_supervisor_module: FakeCaptureSupervisor,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
+      )
+
+    send(worker, :connect_retry)
+
+    assert_receive {:capture_start, %{host_id: "host-authoritative"}}
+    assert_receive {:connect, %{host_id: "host-authoritative"}}
+
+    assert %{capture_supervisor: capture_supervisor, channel: ^worker} =
+             GenServer.call(worker, :status)
+
+    send(worker, :connect_retry)
+    assert_receive {:connect, %{host_id: "host-authoritative"}}
+    refute_receive {:capture_start, _}, 50
+
+    assert %{capture_supervisor: ^capture_supervisor, channel: ^worker} =
+             GenServer.call(worker, :status)
+  end
+
+  test "classifies capture startup failures without attempting a connection" do
+    owners = [FailingConnector, FakeMemoryProxy, FailingCaptureSupervisor]
+    Enum.each(owners, &:persistent_term.put({&1, :owner}, self()))
+
+    on_exit(fn -> Enum.each(owners, &:persistent_term.erase({&1, :owner})) end)
+
+    {:ok, worker} =
+      Worker.start_link(
+        name: nil,
+        config_module: OfflineRuntimeConfig,
+        connector_module: FailingConnector,
+        capture_supervisor_module: FailingCaptureSupervisor,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
+      )
+
+    assert_receive {:capture_start_failed, %{host_id: "host-authoritative"}}
+    refute_receive {:connect_failed, _}, 50
+
+    assert %{last_error: {:capture_start_failed, :spool_unavailable}} =
+             GenServer.call(worker, :status)
   end
 
   test "reconnect reuses alive side supervisors" do

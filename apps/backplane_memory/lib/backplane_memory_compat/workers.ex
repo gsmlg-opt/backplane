@@ -29,6 +29,7 @@ defmodule BackplaneMemory.Workers.EpisodicWorker do
   defdelegate perform(job), to: Backplane.Memory.Workers.EpisodicWorker
 
   defdelegate enqueue(session_id), to: Backplane.Memory.Workers.EpisodicWorker
+  defdelegate enqueue_summary(summary_id), to: Backplane.Memory.Workers.EpisodicWorker
 end
 
 defmodule BackplaneMemory.Workers.EvictionWorker do
@@ -37,6 +38,14 @@ defmodule BackplaneMemory.Workers.EvictionWorker do
 
   @impl Oban.Worker
   defdelegate perform(job), to: Backplane.Memory.Workers.EvictionWorker
+
+  @doc false
+  defdelegate candidate_ids(now, decay_period_days, threshold, batch_size),
+    to: Backplane.Memory.Workers.EvictionWorker
+
+  @doc false
+  defdelegate evict_candidates(ids, now, decay_period_days, threshold),
+    to: Backplane.Memory.Workers.EvictionWorker
 end
 
 defmodule BackplaneMemory.Workers.FallbackSweepWorker do
@@ -55,6 +64,7 @@ defmodule BackplaneMemory.Workers.GraphExtractWorker do
   defdelegate perform(job), to: Backplane.Memory.Workers.GraphExtractWorker
 
   defdelegate enqueue(session_id), to: Backplane.Memory.Workers.GraphExtractWorker
+  defdelegate enqueue(session_id, partition), to: Backplane.Memory.Workers.GraphExtractWorker
 end
 
 defmodule BackplaneMemory.Workers.LeaseCleanupWorker do
@@ -81,6 +91,8 @@ defmodule BackplaneMemory.Workers.ProfileBuildWorker do
   defdelegate perform(job), to: Backplane.Memory.Workers.ProfileBuildWorker
 
   defdelegate enqueue(project), to: Backplane.Memory.Workers.ProfileBuildWorker
+  defdelegate enqueue(project, partition), to: Backplane.Memory.Workers.ProfileBuildWorker
+  defdelegate enqueue(project, partition, opts), to: Backplane.Memory.Workers.ProfileBuildWorker
 end
 
 defmodule BackplaneMemory.Workers.SummaryWorker do
@@ -91,4 +103,11 @@ defmodule BackplaneMemory.Workers.SummaryWorker do
   defdelegate perform(job), to: Backplane.Memory.Workers.SummaryWorker
 
   defdelegate enqueue(session_id), to: Backplane.Memory.Workers.SummaryWorker
+
+  defdelegate enqueue(host_id, session_id, input_revision),
+    to: Backplane.Memory.Workers.SummaryWorker
+
+  @doc false
+  defdelegate record_failed(host_id, session_id, subject_id, input_revision, reason),
+    to: Backplane.Memory.Workers.SummaryWorker
 end

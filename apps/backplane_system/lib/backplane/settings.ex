@@ -107,10 +107,176 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable Memory V2 procedure extraction"
     },
+    "memory.relation_classifier.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable automatic Memory V2 relation classification"
+    },
     "memory.recall_v2.enabled" => %{
       value: false,
       type: "boolean",
       desc: "Enable Memory V2 recall"
+    },
+    "memory.recall_trace_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Persist privacy-filtered Recall V2 traces"
+    },
+    "memory.recall_trace_retention_days" => %{
+      value: 30,
+      type: "integer",
+      desc: "Recall trace retention in days (allowed range 1..3660)"
+    },
+    "memory.recall_rrf_k" => %{
+      value: 60,
+      type: "integer",
+      desc: "Weighted reciprocal-rank-fusion constant (allowed range 1..1000)"
+    },
+    "memory.recall_channel_weights" => %{
+      value: %{"fts" => 1.0, "vector" => 1.0, "graph" => 1.0},
+      type: "json",
+      desc: "Recall V2 FTS, vector, and graph fusion weights (each allowed range 0..100)"
+    },
+    "memory.recall_channel_limits" => %{
+      value: %{"fts" => 50, "vector" => 50, "graph" => 50},
+      type: "json",
+      desc: "Recall V2 per-channel candidate limits (each allowed range 1..500)"
+    },
+    "memory.recall_max_per_session" => %{
+      value: 3,
+      type: "integer",
+      desc: "Recall diversity maximum per source session (allowed range 1..100)"
+    },
+    "memory.recall_token_budget" => %{
+      value: 4_096,
+      type: "integer",
+      desc: "Default Recall V2 context token budget (allowed range 1..100000)"
+    },
+    "memory.recall_reranker_enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable optional Recall V2 top-K reranking"
+    },
+    "memory.recall_reranker_top_k" => %{
+      value: 20,
+      type: "integer",
+      desc: "Maximum Recall V2 candidates sent to the reranker (allowed range 1..500)"
+    },
+    "memory.event_gap_grace_seconds" => %{
+      value: 60,
+      type: "integer",
+      desc: "Final session processing gap grace in seconds (allowed range 1..3600)"
+    },
+    "memory.host_batch_max_events" => %{
+      value: 100,
+      type: "integer",
+      desc: "Maximum events in one host capture upload batch (allowed range 1..100)"
+    },
+    "memory.host_batch_max_bytes" => %{
+      value: 524_288,
+      type: "integer",
+      desc: "Maximum uncompressed host capture batch bytes (allowed range 1..524288)"
+    },
+    "memory.host_spool_max_bytes" => %{
+      value: 67_108_864,
+      type: "integer",
+      desc: "Default host capture spool capacity in bytes (allowed range 1..1073741824)"
+    },
+    "memory.host_spool_max_age_days" => %{
+      value: 30,
+      type: "integer",
+      desc: "Host capture unacknowledged-event age warning in days (allowed range 1..3660)"
+    },
+    "memory.session_stale_after_seconds" => %{
+      value: 10_800,
+      type: "integer",
+      desc: "Session inactivity before fallback closure in seconds (allowed range 60..10800)"
+    },
+    "memory.fallback_sweep_batch_size" => %{
+      value: 100,
+      type: "integer",
+      desc: "Maximum stale-session candidates per fallback sweep (allowed range 1..500)"
+    },
+    "memory.activity_retention_days" => %{
+      value: 730,
+      type: "integer",
+      desc: "Durable memory activity retention in days (allowed range 1..3660)"
+    },
+    "memory.replay_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable canonical replay reads"
+    },
+    "memory.replay_import_enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Allow trusted host-local replay import dispatch"
+    },
+    "memory.replay_max_events" => %{
+      value: 1_000,
+      type: "integer",
+      desc: "Maximum replay events per bounded load (1..10000)"
+    },
+    "memory.replay_import_max_files" => %{
+      value: 200,
+      type: "integer",
+      desc: "Maximum files per host-local replay import (1..1000)"
+    },
+    "memory.replay_import_max_entries" => %{
+      value: 100_000,
+      type: "integer",
+      desc: "Maximum entries per host-local replay import (1..1000000)"
+    },
+    "memory.replay_import_max_bytes" => %{
+      value: 1_073_741_824,
+      type: "integer",
+      desc: "Maximum bytes per host-local replay import (1..1073741824)"
+    },
+    "memory.lesson_auto_extract" => %{
+      value: true,
+      type: "boolean",
+      desc: "Produce automatic lesson candidates when an LLM is configured"
+    },
+    "memory.lesson_auto_promote" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable threshold-gated automatic lesson promotion"
+    },
+    "memory.lesson_promote_confidence" => %{
+      value: 0.85,
+      type: "float",
+      desc: "Minimum automatic lesson promotion confidence (allowed range 0..1)"
+    },
+    "memory.lesson_promote_sources" => %{
+      value: 2,
+      type: "integer",
+      desc:
+        "Minimum independent evidence and source diversity for lesson promotion (allowed range 1..100)"
+    },
+    "memory.lesson_decay_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Apply bounded lesson retrieval-utility decay"
+    },
+    "memory.lesson_decay_archive_days" => %{
+      value: 180,
+      type: "integer",
+      desc: "Archive lessons inactive for this many days (allowed range 1..3660)"
+    },
+    "memory.crystals_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Generate crystals when an LLM is configured"
+    },
+    "memory.crystal_session_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable session crystallization"
+    },
+    "memory.crystal_action_enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable action-chain crystallization"
     }
   }
 

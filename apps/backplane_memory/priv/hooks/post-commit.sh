@@ -3,7 +3,7 @@
 
 [ "${AGENTMEMORY_SDK_CHILD:-}" = "1" ] && exit 0
 
-MEMORY_URL="${BACKPLANE_MEMORY_URL:-http://localhost:4220}"
+CAPTURE_URL="${BACKPLANE_HOST_AGENT_URL:-http://127.0.0.1:4222}"
 HOOKS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 python3 -c '
@@ -282,31 +282,8 @@ content = display(tool_output)
 if session_id is None or not content:
     sys.exit(0)
 
-payload = {"tool_input": tool_input, "tool_output": tool_output}
-tool_use_id = data.get("tool_use_id")
-if isinstance(tool_use_id, str) and tool_use_id:
-    payload["tool_use_id"] = tool_use_id
-
-duration_ms = data.get("duration_ms")
-if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
-    payload["duration_ms"] = duration_ms
-
-body = {
-    "session_id": session_id,
-    "project": data.get("cwd") or data.get("project") or "",
-    "content": content,
-    "tool_name": "git_commit",
-    "is_error": False,
-    "event_type": "tool.call.completed",
-    "payload": payload,
-}
-agent_id = data.get("agent_id")
-if isinstance(agent_id, str) and agent_id:
-    body["agent_id"] = agent_id
-if isinstance(tool_use_id, str) and tool_use_id:
-    body["idempotency_key"] = f"claude:git_commit:{session_id}:{tool_use_id}"
-
-send_json(sys.argv[2], "/api/memory/observations", body)
-' "$HOOKS_DIR" "$MEMORY_URL" >/dev/null 2>&1 || true
+data["session_id"] = session_id
+send_json(sys.argv[2], "/capture/v1/hooks/claude_code/PostCommit", data)
+' "$HOOKS_DIR" "$CAPTURE_URL" >/dev/null 2>&1 || true
 
 exit 0

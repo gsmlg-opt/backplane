@@ -6,9 +6,9 @@ defmodule Backplane.Memory.Operations.OverviewTest do
   alias Backplane.Memory.Operations.Query
 
   test "persisted counts distinguish open streams and use insertion time" do
-    reset_memory_tables()
     now = ~U[2030-07-17 12:34:56.000000Z]
     cutoff = DateTime.add(now, -24, :hour)
+    baseline = Query.persisted_counts(now)
 
     delayed =
       append!(%{
@@ -44,14 +44,12 @@ defmodule Backplane.Memory.Operations.OverviewTest do
     set_inserted_at(boundary, cutoff)
     assert {:ok, _stream} = Store.close_stream(closed.stream_id)
 
-    assert Query.persisted_counts(now) == %{
-             open_streams: 2,
-             events_last_24h: 3
-           }
+    counts = Query.persisted_counts(now)
+    assert counts.open_streams - baseline.open_streams == 2
+    assert counts.events_last_24h - baseline.events_last_24h == 3
   end
 
   test "event volume returns 60 ascending, gap-filled minute buckets" do
-    reset_memory_tables()
     now = ~U[2030-07-17 12:34:56.654321Z]
     final_bucket = ~U[2030-07-17 12:34:00.000000Z]
     first_bucket = ~U[2030-07-17 11:35:00.000000Z]
@@ -89,7 +87,6 @@ defmodule Backplane.Memory.Operations.OverviewTest do
   end
 
   test "recent events and active streams retain their authoritative ordering" do
-    reset_memory_tables()
     occurred_at = ~U[2030-07-17 13:00:00.000000Z]
 
     lower =
@@ -122,8 +119,11 @@ defmodule Backplane.Memory.Operations.OverviewTest do
              lower.id
            ]
 
-    reset_memory_tables()
-    tied_time = ~U[2030-07-17 12:00:00.000000Z]
+    for event <- [lower, higher, newest] do
+      assert {:ok, _stream} = Store.close_stream(event.stream_id)
+    end
+
+    tied_time = ~U[2031-07-17 12:00:00.000000Z]
     newest_time = DateTime.add(tied_time, 1, :hour)
 
     insert_stream!("active-a", last_event_at: tied_time)
@@ -136,7 +136,12 @@ defmodule Backplane.Memory.Operations.OverviewTest do
       closed_at: newest_time
     )
 
-    assert Enum.map(Query.active_streams(4), & &1.stream_id) == [
+    active_stream_ids =
+      Query.active_streams(10_000)
+      |> Enum.map(& &1.stream_id)
+      |> Enum.filter(&String.starts_with?(&1, "active-"))
+
+    assert active_stream_ids == [
              "active-z",
              "active-b",
              "active-a",
@@ -145,8 +150,6 @@ defmodule Backplane.Memory.Operations.OverviewTest do
   end
 
   test "overview labels runtime counters and treats missing counters as zero" do
-    reset_memory_tables()
-
     counter_names = [
       "memory_events_appended",
       "memory_events_duplicates",
@@ -178,6 +181,7 @@ defmodule Backplane.Memory.Operations.OverviewTest do
     assert Map.keys(overview) |> Enum.sort() ==
              [
                :active_streams,
+               :dashboard,
                :event_volume,
                :persisted_counts,
                :pipeline,
@@ -192,6 +196,9 @@ defmodule Backplane.Memory.Operations.OverviewTest do
               errors: 2,
               scope: :since_process_start
             }} = overview.runtime_metrics
+
+    assert {:ok, %{ingestion: _, processing: _, recall: _, knowledge: _, coordination: _}} =
+             overview.dashboard
 
     assert Enum.all?(overview, fn {_region, result} -> match?({:ok, _value}, result) end)
   end
@@ -217,11 +224,6 @@ defmodule Backplane.Memory.Operations.OverviewTest do
     assert result.runtime_metrics == {:ok, :metrics}
     assert result.recent_events == {:ok, :recent}
     assert result.active_streams == {:ok, :streams}
-  end
-
-  defp reset_memory_tables do
-    repo().delete_all(Event)
-    repo().delete_all(Stream)
   end
 
   defp append!(attrs) do

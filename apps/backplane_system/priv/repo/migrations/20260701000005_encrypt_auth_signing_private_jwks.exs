@@ -8,14 +8,15 @@ defmodule Backplane.Repo.Migrations.EncryptAuthSigningPrivateJwks do
 
     flush()
 
-    for [id, private_jwk] <- repo().query!("SELECT id, private_jwk FROM auth_signing_keys").rows do
+    for [id, private_jwk] <-
+          repo().query!("SELECT id, private_jwk FROM #{qualified("auth_signing_keys")}").rows do
       encrypted =
         private_jwk
         |> Jason.encode!()
         |> Backplane.Settings.Encryption.encrypt()
 
       repo().query!(
-        "UPDATE auth_signing_keys SET encrypted_private_jwk = $1 WHERE id = $2",
+        "UPDATE #{qualified("auth_signing_keys")} SET encrypted_private_jwk = $1 WHERE id = $2",
         [encrypted, id]
       )
     end
@@ -34,12 +35,12 @@ defmodule Backplane.Repo.Migrations.EncryptAuthSigningPrivateJwks do
     flush()
 
     for [id, encrypted] <-
-          repo().query!("SELECT id, encrypted_private_jwk FROM auth_signing_keys").rows do
+          repo().query!("SELECT id, encrypted_private_jwk FROM #{qualified("auth_signing_keys")}").rows do
       {:ok, raw_jwk} = Backplane.Settings.Encryption.decrypt(encrypted)
       private_jwk = Jason.decode!(raw_jwk)
 
       repo().query!(
-        "UPDATE auth_signing_keys SET private_jwk = $1 WHERE id = $2",
+        "UPDATE #{qualified("auth_signing_keys")} SET private_jwk = $1 WHERE id = $2",
         [private_jwk, id]
       )
     end
@@ -48,5 +49,13 @@ defmodule Backplane.Repo.Migrations.EncryptAuthSigningPrivateJwks do
       modify :private_jwk, :map, null: false
       remove :encrypted_private_jwk
     end
+  end
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn identifier ->
+      ~s("#{identifier |> to_string() |> String.replace("\"", "\"\"")}")
+    end)
   end
 end

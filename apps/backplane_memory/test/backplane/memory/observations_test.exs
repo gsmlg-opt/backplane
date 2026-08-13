@@ -599,6 +599,29 @@ defmodule Backplane.Memory.ObservationsTest do
       assert length(results) <= 2
     end
 
+    test "breaks created_at ties by descending observation id" do
+      created_at = ~U[2026-01-01 00:00:00.000000Z]
+
+      rows =
+        for suffix <- [1, 3, 2] do
+          %{
+            id:
+              "00000000-0000-0000-0000-#{String.pad_leading(Integer.to_string(suffix), 12, "0")}",
+            session_id: "fh-tie",
+            content: "tie #{suffix}",
+            files: %{"paths" => ["lib/foo.ex"]},
+            created_at: created_at
+          }
+        end
+
+      {3, nil} = repo().insert_all(Observation, rows)
+
+      assert Enum.map(Observations.file_history(["lib/foo.ex"]), & &1.id) ==
+               Enum.map([3, 2, 1], fn suffix ->
+                 "00000000-0000-0000-0000-#{String.pad_leading(Integer.to_string(suffix), 12, "0")}"
+               end)
+    end
+
     test "returns empty list when no observations match the given paths" do
       assert [] = Observations.file_history(["does/not/exist.ex"])
     end

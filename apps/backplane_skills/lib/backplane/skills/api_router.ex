@@ -98,11 +98,15 @@ defmodule Backplane.Skills.ApiRouter do
 
   put "/:slug" do
     with {:ok, skill} <- Skills.get_by_slug(slug),
+         :ok <- mutable_skill(skill),
          {:ok, updated} <- Skills.update(skill, conn.body_params) do
       json(conn, 200, serialize_metadata(updated))
     else
       {:error, :not_found} ->
         json(conn, 404, %{error: "not found"})
+
+      {:error, :generated_skill_read_only} ->
+        json(conn, 409, %{error: "generated skills are read-only"})
 
       {:error, %Ecto.Changeset{} = changeset} ->
         json(conn, 422, %{errors: format_changeset_errors(changeset)})
@@ -111,17 +115,27 @@ defmodule Backplane.Skills.ApiRouter do
 
   delete "/:slug" do
     with {:ok, skill} <- Skills.get_by_slug(slug),
+         :ok <- mutable_skill(skill),
          {:ok, _deleted} <- Skills.delete(skill) do
       json(conn, 200, %{ok: true})
     else
-      {:error, :not_found} -> json(conn, 404, %{error: "not found"})
-      {:error, reason} -> json(conn, 500, %{error: format_reason(reason)})
+      {:error, :not_found} ->
+        json(conn, 404, %{error: "not found"})
+
+      {:error, :generated_skill_read_only} ->
+        json(conn, 409, %{error: "generated skills are read-only"})
+
+      {:error, reason} ->
+        json(conn, 500, %{error: format_reason(reason)})
     end
   end
 
   match _ do
     json(conn, 404, %{error: "not found"})
   end
+
+  defp mutable_skill(%{source_kind: "generated"}), do: {:error, :generated_skill_read_only}
+  defp mutable_skill(_skill), do: :ok
 
   defp search_opts(params) do
     [
@@ -253,6 +267,14 @@ defmodule Backplane.Skills.ApiRouter do
         {:error, _reason} -> {:halt, conn}
       end
     end)
+  end
+
+  defp serialize_detail(%Skill{source_kind: "generated"} = skill) do
+    {:ok,
+     skill
+     |> serialize_metadata()
+     |> Map.put(:content, skill.content)
+     |> Map.put(:meta, skill.meta)}
   end
 
   defp serialize_detail(%Skill{} = skill) do

@@ -368,7 +368,7 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
     assert html =~ "Closed"
     assert sequence_numbers(html) == [first.sequence, 2, third.sequence]
 
-    for forbidden <- ["Edit stream", "Delete stream", "Replay", "Retry", "Close stream"] do
+    for forbidden <- ["Edit stream", "Delete stream", "Retry", "Close stream"] do
       refute html =~ forbidden
     end
   end

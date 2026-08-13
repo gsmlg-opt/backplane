@@ -2,10 +2,15 @@ defmodule Backplane.Memory.Slots.Slot do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:name, :string, autogenerate: false}
+  @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts false
 
   schema "memory_slots" do
+    field(:name, :string)
+    field(:host_id, :string)
+    field(:client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:content, :string, default: "")
     field(:updated_at, :utc_datetime_usec)
     field(:updated_by, :string)
@@ -14,7 +19,17 @@ defmodule Backplane.Memory.Slots.Slot do
 
   def changeset(slot, attrs) do
     slot
-    |> cast(attrs, [:name, :content, :updated_at, :updated_by, :size_limit_chars])
+    |> cast(attrs, [
+      :name,
+      :host_id,
+      :client_id,
+      :scope,
+      :namespace,
+      :content,
+      :updated_at,
+      :updated_by,
+      :size_limit_chars
+    ])
     |> validate_required([:name])
     |> validate_content_size()
   end

@@ -28,8 +28,10 @@ defmodule Backplane.Memory.CompatibilityTest do
                     ])
 
   @service_api Enum.sort([
+                 {:call, 3},
                  {:enabled?, 0},
                  {:get_prompt, 2},
+                 {:get_prompt, 3},
                  {:handle_access_log, 1},
                  {:handle_action_create, 1},
                  {:handle_action_update, 1},
@@ -73,7 +75,9 @@ defmodule Backplane.Memory.CompatibilityTest do
                  {:prefix, 0},
                  {:prompts, 0},
                  {:read_resource, 1},
+                 {:read_resource, 2},
                  {:resources, 0},
+                 {:resources, 1},
                  {:tools, 0}
                ])
 
@@ -92,19 +96,20 @@ defmodule Backplane.Memory.CompatibilityTest do
     {BackplaneMemory.Workers.EmbedWorker, Backplane.Memory.Workers.EmbedWorker, 5,
      [{:enqueue, 1}, {:perform_with_client, 2}]},
     {BackplaneMemory.Workers.EpisodicWorker, Backplane.Memory.Workers.EpisodicWorker, 3,
-     [{:enqueue, 1}]},
-    {BackplaneMemory.Workers.EvictionWorker, Backplane.Memory.Workers.EvictionWorker, 3, []},
+     [{:enqueue, 1}, {:enqueue_summary, 1}]},
+    {BackplaneMemory.Workers.EvictionWorker, Backplane.Memory.Workers.EvictionWorker, 3,
+     [{:candidate_ids, 4}, {:evict_candidates, 4}]},
     {BackplaneMemory.Workers.FallbackSweepWorker, Backplane.Memory.Workers.FallbackSweepWorker, 2,
      []},
     {BackplaneMemory.Workers.GraphExtractWorker, Backplane.Memory.Workers.GraphExtractWorker, 3,
-     [{:enqueue, 1}]},
+     [{:enqueue, 1}, {:enqueue, 2}]},
     {BackplaneMemory.Workers.LeaseCleanupWorker, Backplane.Memory.Workers.LeaseCleanupWorker, 3,
      []},
     {BackplaneMemory.Workers.ProceduralWorker, Backplane.Memory.Workers.ProceduralWorker, 2, []},
     {BackplaneMemory.Workers.ProfileBuildWorker, Backplane.Memory.Workers.ProfileBuildWorker, 3,
-     [{:enqueue, 1}]},
+     [{:enqueue, 1}, {:enqueue, 2}, {:enqueue, 3}]},
     {BackplaneMemory.Workers.SummaryWorker, Backplane.Memory.Workers.SummaryWorker, 3,
-     [{:enqueue, 1}]}
+     [{:enqueue, 1}, {:enqueue, 3}, {:record_failed, 5}]}
   ]
 
   @legacy_modules [
@@ -150,10 +155,8 @@ defmodule Backplane.Memory.CompatibilityTest do
       {:team_feed, ["compatibility", 1]}
     ]
 
-    for {function, arguments} <- memory_calls do
-      assert apply(BackplaneMemory.Memory, function, arguments) ==
-               apply(Backplane.Memory.Memories, function, arguments)
-    end
+    for {function, arguments} <- memory_calls,
+        do: assert(apply(BackplaneMemory.Memory, function, arguments) == {:error, :unauthorized})
 
     observation_calls = [
       {:end_session, ["missing-compatibility-session"]},
@@ -161,10 +164,11 @@ defmodule Backplane.Memory.CompatibilityTest do
       {:file_history, [["compatibility/missing.ex"], [limit: 1]]}
     ]
 
-    for {function, arguments} <- observation_calls do
-      assert apply(BackplaneMemory.Observations, function, arguments) ==
-               apply(Backplane.Memory.Observations, function, arguments)
-    end
+    for {function, arguments} <- observation_calls,
+        do:
+          assert(
+            apply(BackplaneMemory.Observations, function, arguments) == {:error, :unauthorized}
+          )
   end
 
   test "legacy service preserves catalog and managed-service callbacks" do
@@ -187,6 +191,11 @@ defmodule Backplane.Memory.CompatibilityTest do
 
     assert BackplaneMemory.Service.get_prompt("compatibility_missing", %{}) ==
              Backplane.Memory.Service.get_prompt("compatibility_missing", %{})
+
+    auth = %{kind: :client_token, client_id: "compatibility", scopes: ["memory.read"]}
+
+    assert BackplaneMemory.Service.get_prompt("compatibility_missing", %{}, auth) ==
+             Backplane.Memory.Service.get_prompt("compatibility_missing", %{}, auth)
   end
 
   test "legacy service preserves safe handler success and error shapes" do
@@ -204,10 +213,8 @@ defmodule Backplane.Memory.CompatibilityTest do
       {:handle_slot_list, [%{}]}
     ]
 
-    for {function, arguments} <- successful_calls do
-      assert apply(BackplaneMemory.Service, function, arguments) ==
-               apply(Backplane.Memory.Service, function, arguments)
-    end
+    for {function, arguments} <- successful_calls,
+        do: assert(apply(BackplaneMemory.Service, function, arguments) == {:error, :unauthorized})
 
     error_calls = [
       {:handle_access_log, [%{}]},
@@ -240,9 +247,7 @@ defmodule Backplane.Memory.CompatibilityTest do
     ]
 
     for {function, arguments} <- error_calls do
-      new_result = apply(Backplane.Memory.Service, function, arguments)
-      assert {:error, _reason} = new_result
-      assert apply(BackplaneMemory.Service, function, arguments) == new_result
+      assert apply(BackplaneMemory.Service, function, arguments) == {:error, :unauthorized}
     end
   end
 

@@ -14,10 +14,11 @@ defmodule Backplane.HostAgent.Application do
   end
 
   def child_specs do
-    if Application.get_env(:backplane_host_agent, :start_on_application, true) do
-      [Backplane.HostAgent.Worker]
-    else
-      []
+    import_supervisor = Backplane.HostAgent.Memory.ImportSupervisor
+
+    case Application.get_env(:backplane_host_agent, :start_on_application, true) do
+      true -> [import_supervisor, Backplane.HostAgent.Worker]
+      false -> [import_supervisor]
     end
   end
 

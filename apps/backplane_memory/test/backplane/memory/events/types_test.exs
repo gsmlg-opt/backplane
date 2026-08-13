@@ -23,6 +23,17 @@ defmodule Backplane.Memory.Events.TypesTest do
     dream.completed
     schedule.triggered
     legacy.observation
+    agent.session.started
+    agent.prompt.submitted
+    agent.tool.completed
+    agent.tool.failed
+    agent.context.pre_compact
+    agent.subagent.started
+    agent.subagent.stopped
+    agent.session.stopped
+    agent.session.ended
+    agent.session.abandoned
+    git.commit.created
   )
 
   test "accepts every exact taxonomy value and rejects close variants" do

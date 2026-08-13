@@ -20,6 +20,7 @@ defmodule Backplane.HostAgent.Worker do
     Reporter
   }
 
+  alias Backplane.HostAgent.Memory.CaptureSupervisor
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
   alias Backplane.HostAgent.TraceSupervisor
 
@@ -135,16 +136,20 @@ defmodule Backplane.HostAgent.Worker do
   defp connect_state(opts, state) do
     config_module = Keyword.get(opts, :config_module, Config)
     connector_module = Keyword.get(opts, :connector_module, Connector)
+
+    capture_supervisor_module =
+      Keyword.get(opts, :capture_supervisor_module, CaptureSupervisor)
+
     http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
     memory_proxy_module = Keyword.get(opts, :memory_proxy_module, MemoryProxy)
 
     case config_module.load_default() do
       {:ok, config} ->
         connect_loaded_state(
-          opts,
           state,
           config,
           connector_module,
+          capture_supervisor_module,
           http_server_module,
           memory_proxy_module
         )
@@ -159,44 +164,83 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp connect_loaded_state(
-         opts,
          state,
          config,
          connector_module,
+         capture_supervisor_module,
          http_server_module,
          memory_proxy_module
        ) do
-    with :ok <- validate_required_config(config),
-         {:ok, %{channel: channel} = connection} <- connector_module.connect(config),
-         :ok <- set_memory_connection(memory_proxy_module, connection, config),
-         {:ok, memory_supervisor} <-
-           maybe_start_memory(config, Map.get(state, :memory_supervisor)),
-         {:ok, trace_supervisor} <-
-           maybe_start_trace(config, Map.get(state, :trace_supervisor)),
-         {:ok, http_supervisor} <-
-           maybe_start_http_server(http_server_module, config, Map.get(state, :http_supervisor)) do
-      opts =
-        opts
-        |> Keyword.put(:channel, channel)
-        |> Keyword.put(:config, config)
-        |> Keyword.put(:http_supervisor, http_supervisor)
-        |> Keyword.put(:memory_supervisor, memory_supervisor)
-        |> Keyword.put(:trace_supervisor, trace_supervisor)
-        |> Keyword.put(:owns_connection?, true)
+    case validate_required_config(config) do
+      :ok ->
+        state = %{state | config: config}
 
-      connected_state =
-        opts
-        |> state_from_opts()
-        |> Map.put(:sync_timer_ref, Map.get(state, :sync_timer_ref))
-        |> Map.put(:connect_retry_ref, Map.get(state, :connect_retry_ref))
+        case prepare_local_runtime(
+               state,
+               config,
+               capture_supervisor_module,
+               http_server_module,
+               memory_proxy_module
+             ) do
+          {:ok, local_state} ->
+            case connector_module.connect(config) do
+              {:ok, %{channel: channel} = connection} ->
+                case set_memory_connection(memory_proxy_module, connection, config) do
+                  :ok ->
+                    {:ok, %{local_state | channel: channel, owns_connection?: true}}
 
-      {:ok, connected_state}
-    else
+                  {:error, reason} ->
+                    {:error, reason, local_state}
+                end
+
+              {:error, reason} ->
+                {:error, reason, local_state}
+            end
+
+          {:error, reason, local_state} ->
+            {:error, reason, local_state}
+        end
+
       {:error, {:missing_required_config, _fields} = reason} ->
         {:error, reason}
+    end
+  end
 
-      {:error, reason} ->
-        {:error, reason, config}
+  defp prepare_local_runtime(
+         state,
+         config,
+         capture_supervisor_module,
+         http_server_module,
+         memory_proxy_module
+       ) do
+    with :ok <- set_memory_config(memory_proxy_module, config),
+         {:ok, state} <-
+           start_and_store(state, :capture_supervisor, fn existing_pid ->
+             maybe_start_capture(capture_supervisor_module, config, existing_pid)
+           end),
+         {:ok, state} <-
+           start_and_store(state, :memory_supervisor, fn existing_pid ->
+             maybe_start_memory(config, existing_pid)
+           end),
+         {:ok, state} <-
+           start_and_store(state, :trace_supervisor, fn existing_pid ->
+             maybe_start_trace(config, existing_pid)
+           end),
+         {:ok, state} <-
+           start_and_store(state, :http_supervisor, fn existing_pid ->
+             maybe_start_http_server(http_server_module, config, existing_pid)
+           end) do
+      {:ok, state}
+    else
+      {:error, reason, failed_state} -> {:error, reason, failed_state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp start_and_store(state, key, start_fun) do
+    case start_fun.(Map.get(state, key)) do
+      {:ok, pid} -> {:ok, Map.put(state, key, pid)}
+      {:error, reason} -> {:error, reason, state}
     end
   end
 
@@ -206,12 +250,14 @@ defmodule Backplane.HostAgent.Worker do
       channel_module: Keyword.get(opts, :channel_module, Channel),
       config: Keyword.get(opts, :config),
       desired: Keyword.get(opts, :desired),
+      capture_supervisor: Keyword.get(opts, :capture_supervisor),
       http_supervisor: Keyword.get(opts, :http_supervisor),
       memory_supervisor: Keyword.get(opts, :memory_supervisor),
       trace_supervisor: Keyword.get(opts, :trace_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
       config_module: Keyword.get(opts, :config_module, Config),
       connector_module: Keyword.get(opts, :connector_module, Connector),
+      capture_supervisor_module: Keyword.get(opts, :capture_supervisor_module, CaptureSupervisor),
       http_server_module: Keyword.get(opts, :http_server_module, HttpServer),
       memory_proxy_module: Keyword.get(opts, :memory_proxy_module, MemoryProxy),
       connect_opts: opts,
@@ -240,9 +286,13 @@ defmodule Backplane.HostAgent.Worker do
       {:error, {:missing_required_config, _fields} = reason} ->
         {:stop, reason, state}
 
-      {:error, reason, config} ->
+      {:error, reason, failed_state} ->
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
-        {:noreply, schedule_connect_retry(%{state | config: config, last_error: reason})}
+
+        {:noreply,
+         failed_state
+         |> Map.put(:last_error, reason)
+         |> schedule_connect_retry()}
 
       {:error, reason} ->
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
@@ -299,8 +349,41 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
+  defp set_memory_config(memory_proxy_module, config) do
+    if function_exported?(memory_proxy_module, :set_config, 1) do
+      memory_proxy_module.set_config(config)
+    else
+      :ok
+    end
+  end
+
   defp cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_timer(_ref), do: false
+
+  defp maybe_start_capture(capture_supervisor_module, config, existing_pid)
+
+  defp maybe_start_capture(capture_supervisor_module, config, existing_pid)
+       when is_pid(existing_pid) do
+    if Process.alive?(existing_pid) do
+      {:ok, existing_pid}
+    else
+      maybe_start_capture(capture_supervisor_module, config, nil)
+    end
+  end
+
+  defp maybe_start_capture(capture_supervisor_module, %{capture: capture_config} = config, _pid)
+       when is_map(capture_config) do
+    capture_config = Map.put(capture_config, :host_id, field(config, :host_id))
+
+    case capture_supervisor_module.start_link(capture_config) do
+      {:ok, pid} -> {:ok, pid}
+      :ignore -> {:ok, nil}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, reason} -> {:error, {:capture_start_failed, reason}}
+    end
+  end
+
+  defp maybe_start_capture(_capture_supervisor_module, _config, _pid), do: {:ok, nil}
 
   defp maybe_start_memory(config, existing_pid \\ nil)
 

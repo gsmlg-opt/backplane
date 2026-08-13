@@ -11,7 +11,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   alias Backplane.HostAgent.{Channel, Connector, Telemetry, Trace}
 
-  @methods ~w(remember recall list forget stats)
+  @methods ~w(remember recall list forget stats lifecycle_context)
   @method_set MapSet.new(@methods)
   @reconnect_lock_resource {__MODULE__, :reconnect}
 
@@ -116,18 +116,19 @@ defmodule Backplane.HostAgent.MemoryProxy do
           Keyword.get(opts, :connector_module) ||
             Application.get_env(:backplane_host_agent, :connector_module, Connector)
 
-        push_with_reconnect(push_module, connector_module, payload)
+        timeout = request_timeout(method, Keyword.get(opts, :timeout, 5_000))
+        push_with_reconnect(push_module, connector_module, payload, timeout)
     end
   end
 
-  defp push_with_reconnect(push_module, connector_module, payload) do
+  defp push_with_reconnect(push_module, connector_module, payload, timeout) do
     with {:ok, channel} <- ensure_channel(connector_module, push_module) do
-      case push_channel(push_module, channel, payload) do
+      case push_channel(push_module, channel, payload, timeout) do
         {:error, :not_connected} ->
           mark_channel_dead()
 
           with {:ok, reconnected_channel} <- reconnect(connector_module, push_module) do
-            push_channel(push_module, reconnected_channel, payload)
+            push_channel(push_module, reconnected_channel, payload, timeout)
           end
 
         result ->
@@ -162,8 +163,8 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
-  defp push_channel(push_module, channel, payload) do
-    case safe_push(push_module, channel, payload) do
+  defp push_channel(push_module, channel, payload, timeout) do
+    case safe_push(push_module, channel, payload, timeout) do
       {:ok, %{"ok" => true, "result" => result}} -> {:ok, result}
       {:ok, %{"error" => error}} -> {:error, error}
       {:ok, reply} -> {:ok, reply}
@@ -172,13 +173,21 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
-  defp safe_push(push_module, channel, payload) do
+  defp safe_push(push_module, channel, payload, timeout) do
     try do
-      push_module.push(channel, "memory_call", payload)
+      push_module.push(channel, "memory_call", payload, timeout)
     catch
       :exit, reason -> {:error, push_exit_reason(reason)}
     end
   end
+
+  defp request_timeout("lifecycle_context", timeout)
+       when is_integer(timeout) and timeout > 0,
+       do: min(timeout, 1_500)
+
+  defp request_timeout("lifecycle_context", _timeout), do: 1_500
+  defp request_timeout(_method, timeout) when is_integer(timeout) and timeout > 0, do: timeout
+  defp request_timeout(_method, _timeout), do: 5_000
 
   defp reconnect(connector_module, channel_module) do
     :global.trans(

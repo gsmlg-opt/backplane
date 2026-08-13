@@ -52,7 +52,7 @@ defmodule Backplane.Memory.Memories.SearchTest do
       base = [agent_id: "a", host_id: "h"]
       alive = insert_with_embedding("alive", vec(%{0 => 1.0}), base)
       dead = insert_with_embedding("dead", vec(%{0 => 1.0}), base)
-      :ok = Memories.forget(dead.id)
+      :ok = Memories.trusted_forget(dead.id)
 
       assert {:ok, [%{id: id}]} =
                Search.recall("q", embed_fn: embed_const(vec(%{0 => 1.0})))
@@ -102,6 +102,62 @@ defmodule Backplane.Memory.Memories.SearchTest do
                )
 
       assert id == mem_a.id
+    end
+
+    test "applies the trusted partition before the vector candidate limit" do
+      query_vector = vec(%{0 => 1.0})
+
+      for index <- 1..11 do
+        insert_with_embedding("near foreign row #{index}", query_vector,
+          agent_id: "a",
+          host_id: "h",
+          client_id: "foreign-client",
+          namespace: "private",
+          session_id: "session-a",
+          metadata: %{"project" => "project-a"}
+        )
+      end
+
+      authorized =
+        insert_with_embedding("far authorized row", vec(%{1 => 1.0}),
+          agent_id: "a",
+          host_id: "h",
+          client_id: "client-a",
+          namespace: "private",
+          session_id: "session-a",
+          metadata: %{"project" => "project-a"}
+        )
+
+      assert {:ok, [%{id: id}]} =
+               Search.recall("q",
+                 limit: 10,
+                 client_id: "client-a",
+                 namespace: "private",
+                 project: "project-a",
+                 session: "session-a",
+                 embed_fn: embed_const(query_vector),
+                 writeback_fn: fn _ids -> :ok end
+               )
+
+      assert id == authorized.id
+    end
+
+    test "excludes archived rows from vector candidates" do
+      archived =
+        insert_with_embedding("archived vector row", vec(%{0 => 1.0}),
+          agent_id: "a",
+          host_id: "h"
+        )
+
+      archived
+      |> MemorySchema.lifecycle_changeset(%{lifecycle_state: "archived"})
+      |> repo().update!()
+
+      assert {:ok, []} =
+               Search.recall("q",
+                 embed_fn: embed_const(vec(%{0 => 1.0})),
+                 writeback_fn: fn _ids -> :ok end
+               )
     end
 
     test "respects :limit" do
@@ -182,6 +238,62 @@ defmodule Backplane.Memory.Memories.SearchTest do
                )
 
       assert id == vector_mem.id
+    end
+
+    test "applies the trusted partition before the full-text candidate limit" do
+      for index <- 1..51 do
+        {:ok, _memory} =
+          Memories.remember(
+            "partitionneedle partitionneedle partitionneedle foreign #{index}",
+            agent_id: "a",
+            host_id: "h",
+            client_id: "foreign-client",
+            namespace: "private",
+            session_id: "session-a",
+            metadata: %{"project" => "project-a"}
+          )
+      end
+
+      {:ok, authorized} =
+        Memories.remember("partitionneedle authorized",
+          agent_id: "a",
+          host_id: "h",
+          client_id: "client-a",
+          namespace: "private",
+          session_id: "session-a",
+          metadata: %{"project" => "project-a"}
+        )
+
+      assert {:ok, [%{id: id}]} =
+               Search.hybrid_recall("partitionneedle",
+                 limit: 10,
+                 client_id: "client-a",
+                 namespace: "private",
+                 project: "project-a",
+                 session: "session-a",
+                 embed_fn: embed_error(:embedding_model_not_configured),
+                 writeback_fn: fn _ids -> :ok end
+               )
+
+      assert id == authorized.id
+    end
+
+    test "excludes archived rows from full-text candidates" do
+      {:ok, archived} =
+        Memories.remember("archivedftsneedle",
+          agent_id: "a",
+          host_id: "h"
+        )
+
+      archived
+      |> MemorySchema.lifecycle_changeset(%{lifecycle_state: "archived"})
+      |> repo().update!()
+
+      assert {:ok, []} =
+               Search.hybrid_recall("archivedftsneedle",
+                 embed_fn: embed_error(:embedding_model_not_configured),
+                 writeback_fn: fn _ids -> :ok end
+               )
     end
   end
 

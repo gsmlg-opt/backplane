@@ -36,6 +36,7 @@ defmodule BackplaneApi.MixProject do
       {:backplane_llama, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},
       {:backplane_memory, in_umbrella: true},
+      {:backplane_host_agent, in_umbrella: true, only: :test, runtime: false},
       {:relayixir, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:phoenix, "~> 1.8"},

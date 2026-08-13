@@ -69,7 +69,7 @@ defmodule Backplane.Admin.SkillLiveTest do
       assert html =~ "Delete Skill"
 
       view
-      |> element("[phx-click=delete][phx-value-id]")
+      |> element(~s([phx-click=delete][phx-value-id="skill/delete-skill"]))
       |> render_click()
 
       assert {:error, :not_found} = Skills.get_by_slug("delete-skill")

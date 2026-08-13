@@ -5,11 +5,18 @@ defmodule Backplane.Memory.Events.Store do
 
   alias Backplane.Memory.EventNotifier
   alias Backplane.Memory.Events.{Event, Preparation, Stream}
+  alias Backplane.Memory.Workers.ProjectionRepairWorker
 
   @metadata_fields [:project, :agent_id, :host_id, :client_id, :session_id, :run_id]
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
+    append_tagged(attrs, opts)
+    |> unwrap_public()
+  end
+
+  @doc false
+  def append_tagged(attrs, opts \\ []) do
     started_at = System.monotonic_time()
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
@@ -20,7 +27,7 @@ defmodule Backplane.Memory.Events.Store do
       |> transact_append(repo, :event)
 
     if telemetry?, do: emit_telemetry(tagged_result, started_at)
-    unwrap_public(tagged_result)
+    tagged_result
   end
 
   @doc false
@@ -37,6 +44,18 @@ defmodule Backplane.Memory.Events.Store do
   def append_batch(attrs_list, opts \\ [])
 
   def append_batch(attrs_list, opts) when is_list(attrs_list) do
+    append_batch_tagged(attrs_list, opts)
+    |> unwrap_public()
+  end
+
+  def append_batch(_, opts) do
+    append_batch_tagged(:invalid, opts)
+  end
+
+  @doc false
+  def append_batch_tagged(attrs_list, opts \\ [])
+
+  def append_batch_tagged(attrs_list, opts) when is_list(attrs_list) do
     started_at = System.monotonic_time()
     repo = Keyword.get(opts, :repo, repo())
     telemetry? = Keyword.get(opts, :telemetry, true)
@@ -47,10 +66,10 @@ defmodule Backplane.Memory.Events.Store do
       end
 
     if telemetry?, do: emit_batch_telemetry(tagged_result, started_at)
-    unwrap_public(tagged_result)
+    tagged_result
   end
 
-  def append_batch(_, opts) do
+  def append_batch_tagged(_, opts) do
     started_at = System.monotonic_time()
     result = {:error, :invalid_attributes}
     telemetry? = if Keyword.keyword?(opts), do: Keyword.get(opts, :telemetry, true), else: true
@@ -120,6 +139,12 @@ defmodule Backplane.Memory.Events.Store do
       {:error, ^name, {:idempotency_race, _marker} = race, _changes} ->
         resolve_idempotency_race(race, repo: repo)
 
+      {:error, ^name, {:event_id_race, _marker} = race, _changes} ->
+        resolve_event_id_race(race, repo: repo)
+
+      {:error, ^name, {:source_identity_race, _marker} = race, _changes} ->
+        resolve_source_identity_race(race, repo: repo)
+
       {:error, ^name, reason, _changes} ->
         {:error, reason}
     end
@@ -145,6 +170,13 @@ defmodule Backplane.Memory.Events.Store do
   end
 
   defp append_locked(repo, %Event{} = event) do
+    case find_event_id_collision(repo, event) do
+      nil -> append_by_idempotency(repo, event)
+      existing -> append_duplicate_result(validate_duplicate(existing, event))
+    end
+  end
+
+  defp append_by_idempotency(repo, event) do
     case find_duplicate(repo, event.idempotency_key) do
       nil ->
         stream = create_and_lock_stream(repo, event.stream_id, event)
@@ -158,6 +190,9 @@ defmodule Backplane.Memory.Events.Store do
         append_duplicate_result(validate_duplicate(existing, event))
     end
   end
+
+  defp find_event_id_collision(_repo, %Event{schema_version: nil}), do: nil
+  defp find_event_id_collision(repo, %Event{id: id}), do: repo.get(Event, id)
 
   defp append_insert_result({:inserted, event, _stream}), do: {:ok, {:inserted, event}}
   defp append_insert_result({:error, reason}), do: {:error, reason}
@@ -203,7 +238,8 @@ defmodule Backplane.Memory.Events.Store do
   end
 
   defp insert_new_event(repo, stream, event) do
-    with :ok <- ensure_open(stream) do
+    with :ok <- ensure_open(stream),
+         :ok <- ensure_stream_metadata_consistent(stream, event) do
       stream = fill_null_metadata(repo, stream, event)
       event = %{event | sequence: stream.next_sequence}
 
@@ -221,16 +257,26 @@ defmodule Backplane.Memory.Events.Store do
               last_event_at: last_event_at
           }
 
-          case EventNotifier.enqueue(repo, inserted.id) do
-            :ok -> {:inserted, inserted, updated_stream}
+          with :ok <- EventNotifier.enqueue(repo, inserted.id),
+               :ok <- enqueue_projection_repair(inserted) do
+            {:inserted, inserted, updated_stream}
+          else
             {:error, reason} -> {:error, reason}
           end
 
         {:error, changeset} ->
-          if idempotency_unique_violation?(changeset, event) do
-            {:error, race_marker(event)}
-          else
-            {:error, changeset}
+          cond do
+            event_id_unique_violation?(changeset, event) ->
+              {:error, event_id_race_marker(event)}
+
+            source_identity_unique_violation?(changeset, event) ->
+              {:error, source_identity_race_marker(event)}
+
+            idempotency_unique_violation?(changeset, event) ->
+              {:error, race_marker(event)}
+
+            true ->
+              {:error, changeset}
           end
       end
     end
@@ -299,7 +345,8 @@ defmodule Backplane.Memory.Events.Store do
     if existing.stream_id == event_or_marker.stream_id and
          existing.event_type == event_or_marker.event_type and
          not is_nil(fingerprint(existing)) and
-         fingerprint(existing) == fingerprint do
+         fingerprint(existing) == fingerprint and
+         canonical_duplicate?(existing, event_or_marker) do
       {:duplicate, existing}
     else
       {:error, :idempotency_conflict}
@@ -311,14 +358,116 @@ defmodule Backplane.Memory.Events.Store do
 
   defp fingerprint(marker), do: Map.get(marker, :event_fingerprint)
 
+  defp canonical_duplicate?(%Event{schema_version: nil}, %{schema_version: nil}), do: true
+  defp canonical_duplicate?(%Event{schema_version: nil}, _event_or_marker), do: false
+
+  defp canonical_duplicate?(existing, event_or_marker) do
+    Enum.all?(
+      [
+        :schema_version,
+        :host_id,
+        :agent_id,
+        :client_id,
+        :integration,
+        :project,
+        :scope,
+        :session_id,
+        :parent_session_id,
+        :source_sequence,
+        :occurred_at,
+        :payload_hash,
+        :privacy,
+        :trace,
+        :raw_envelope
+      ],
+      fn field ->
+        Map.get(existing, field) == Map.get(event_or_marker, field)
+      end
+    )
+  end
+
   defp race_marker(event) do
-    {:idempotency_race,
-     %{
-       idempotency_key: event.idempotency_key,
-       stream_id: event.stream_id,
-       event_type: event.event_type,
-       event_fingerprint: fingerprint(event)
-     }}
+    {:idempotency_race, duplicate_marker(event)}
+  end
+
+  defp event_id_race_marker(event) do
+    {:event_id_race, Map.put(duplicate_marker(event), :id, event.id)}
+  end
+
+  defp source_identity_race_marker(event),
+    do: {:source_identity_race, duplicate_marker(event)}
+
+  defp duplicate_marker(event) do
+    %{
+      idempotency_key: event.idempotency_key,
+      stream_id: event.stream_id,
+      event_type: event.event_type,
+      event_fingerprint: fingerprint(event),
+      schema_version: event.schema_version,
+      host_id: event.host_id,
+      agent_id: event.agent_id,
+      client_id: event.client_id,
+      integration: event.integration,
+      project: event.project,
+      scope: event.scope,
+      session_id: event.session_id,
+      parent_session_id: event.parent_session_id,
+      source_sequence: event.source_sequence,
+      occurred_at: event.occurred_at,
+      payload_hash: event.payload_hash,
+      privacy: event.privacy,
+      trace: event.trace,
+      raw_envelope: event.raw_envelope
+    }
+  end
+
+  defp resolve_event_id_race({:event_id_race, marker}, opts) do
+    repo = Keyword.get(opts, :repo, repo())
+
+    case repo.get(Event, marker.id) do
+      nil -> {:error, :event_id_unique_violation}
+      existing -> append_duplicate_result(validate_duplicate(existing, marker))
+    end
+  end
+
+  defp resolve_source_identity_race({:source_identity_race, marker}, opts) do
+    repo = Keyword.get(opts, :repo, repo())
+
+    existing =
+      repo.get_by(Event,
+        host_id: marker.host_id,
+        session_id: marker.session_id,
+        source_sequence: marker.source_sequence,
+        event_type: marker.event_type
+      )
+
+    case existing do
+      nil -> {:error, :source_identity_unique_violation}
+      existing -> append_duplicate_result(validate_duplicate(existing, marker))
+    end
+  end
+
+  defp event_id_unique_violation?(changeset, event) do
+    not is_nil(event.schema_version) and
+      Enum.any?(changeset.errors, fn
+        {:id, {_message, opts}} ->
+          opts[:constraint] == :unique and to_string(opts[:constraint_name]) == "bpm_events_pkey"
+
+        _ ->
+          false
+      end)
+  end
+
+  defp source_identity_unique_violation?(changeset, event) do
+    not is_nil(event.schema_version) and
+      Enum.any?(changeset.errors, fn
+        {:source_sequence, {_message, opts}} ->
+          opts[:constraint] == :unique and
+            to_string(opts[:constraint_name]) == "bpm_events_capture_source_identity_uniq"
+
+        _ ->
+          false
+      end)
   end
 
   defp idempotency_unique_violation?(changeset, event) do
@@ -347,6 +496,55 @@ defmodule Backplane.Memory.Events.Store do
 
   defp ensure_open(%{closed_at: nil}), do: :ok
   defp ensure_open(_), do: {:error, :stream_closed}
+
+  defp ensure_stream_metadata_consistent(
+         %Stream{project: stream_project},
+         %Event{schema_version: schema_version, project: event_project}
+       )
+       when not is_nil(schema_version) and not is_nil(stream_project) and
+              not is_nil(event_project) and stream_project != event_project,
+       do: {:error, :stream_metadata_conflict}
+
+  defp ensure_stream_metadata_consistent(_stream, _event), do: :ok
+
+  defp enqueue_projection_repair(%Event{} = event) do
+    if projection_repair_enabled?() and canonical_subject?(event) do
+      case projection_repair_enqueue(event.id) do
+        {:ok, %Oban.Job{state: state}}
+        when state in ["available", "scheduled", "executing", "completed"] ->
+          :ok
+
+        {:ok, %Oban.Job{}} ->
+          {:error, :transaction_rolled_back}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp canonical_subject?(%Event{
+         schema_version: schema_version,
+         host_id: host_id,
+         session_id: session_id
+       }) do
+    not is_nil(schema_version) and non_empty_binary?(host_id) and non_empty_binary?(session_id)
+  end
+
+  defp projection_repair_enabled? do
+    Application.get_env(:backplane_memory, :projection_repair_enabled, true)
+  end
+
+  defp projection_repair_enqueue(event_id) do
+    case Application.get_env(:backplane_memory, :projection_repair_enqueue) do
+      enqueue when is_function(enqueue, 1) -> enqueue.(event_id)
+      nil -> ProjectionRepairWorker.enqueue(event_id)
+    end
+  end
+
+  defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp unwrap_public({:ok, {_status, %Event{} = event}}), do: {:ok, event}
 

@@ -1,45 +1,25 @@
 defmodule Mix.Tasks.Memory.SeedBench do
-  @shortdoc "Seed the benchmark fixture corpus into the memory store"
-
-  @moduledoc """
-  Loads the bench_corpus.json fixture into the memory store.
-  Used to populate the database before running `mix memory.eval`.
-
-  ## Examples
-
-      mix memory.seed_bench
-
-  """
-
+  @shortdoc "Validate the schema-v2 coding benchmark seed in a rollback sandbox"
   use Mix.Task
 
   @impl Mix.Task
-  def run(_args) do
+  def run(args) do
+    {_opts, _, invalid} = OptionParser.parse(args, strict: [])
+    if invalid != [], do: Mix.raise("invalid options: #{inspect(invalid)}")
+
+    if Mix.env() != :test, do: Mix.raise("memory.seed_bench is restricted to MIX_ENV=test")
+
     Mix.Task.run("app.start")
+    {:ok, fixture} = Backplane.Memory.Eval.load_fixture()
 
-    fixture_path =
-      Path.join([__DIR__, "../../../priv/memory_fixtures/bench_corpus.json"])
-      |> Path.expand()
-
-    corpus = fixture_path |> File.read!() |> Jason.decode!()
-    memories = corpus["memories"]
-
-    Mix.shell().info("Seeding #{length(memories)} memories...")
-
-    results =
-      Enum.map(memories, fn mem ->
-        Backplane.Memory.Memories.remember(mem["content"],
-          type: mem["type"] || "semantic",
-          scope: mem["scope"] || "global",
-          agent_id: mem["agent_id"] || "bench-agent",
-          host_id: mem["host_id"] || "bench",
-          tags: mem["tags"] || []
+    case Backplane.Memory.Eval.Runner.sandboxed_seed(fixture) do
+      {:ok, ids} ->
+        Mix.shell().info(
+          "Validated #{map_size(ids)} schema-v2 benchmark memories; transaction rolled back"
         )
-      end)
 
-    ok_count = Enum.count(results, &match?({:ok, _}, &1))
-    err_count = length(results) - ok_count
-
-    Mix.shell().info("Seeded #{ok_count} memories (#{err_count} duplicates/errors skipped).")
+      {:error, reason} ->
+        Mix.raise("benchmark seed failed: #{inspect(reason)}")
+    end
   end
 end

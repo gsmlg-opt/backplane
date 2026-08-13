@@ -14,7 +14,8 @@ defmodule Backplane.Registry.InputValidator do
   """
   @spec validate(map(), map()) :: :ok | {:error, String.t()}
   def validate(args, schema) when is_map(args) and is_map(schema) do
-    with :ok <- validate_required(args, schema) do
+    with :ok <- validate_required(args, schema),
+         :ok <- validate_additional_properties(args, schema) do
       validate_types(args, schema)
     end
   end
@@ -38,6 +39,18 @@ defmodule Backplane.Registry.InputValidator do
       fields -> {:error, "Missing required arguments: #{Enum.join(fields, ", ")}"}
     end
   end
+
+  defp validate_additional_properties(args, %{"additionalProperties" => false} = schema) do
+    allowed = schema |> Map.get("properties", %{}) |> Map.keys() |> MapSet.new()
+    unexpected = args |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1)) |> Enum.sort()
+
+    case unexpected do
+      [] -> :ok
+      fields -> {:error, "Unexpected arguments: #{Enum.join(fields, ", ")}"}
+    end
+  end
+
+  defp validate_additional_properties(_args, _schema), do: :ok
 
   defp validate_types(args, schema) do
     properties = Map.get(schema, "properties", %{})

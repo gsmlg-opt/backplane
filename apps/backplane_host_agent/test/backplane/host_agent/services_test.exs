@@ -177,14 +177,17 @@ defmodule Backplane.HostAgent.ServicesTest do
     source_root = Path.join(tmp_dir, "plugins")
     hermes = Path.join(source_root, "hermes")
     File.mkdir_p!(hermes)
+    File.write!(Path.join(hermes, "README.md"), "Backplane Hermes\n")
     File.write!(Path.join(hermes, "plugin.yaml"), "name: hermes\n")
     File.write!(Path.join(hermes, "__init__.py"), "# hermes\n")
 
     openclaw = Path.join(source_root, "openclaw")
     File.mkdir_p!(openclaw)
+    File.write!(Path.join(openclaw, "README.md"), "Backplane OpenClaw\n")
     File.write!(Path.join(openclaw, "package.json"), ~s({"name":"backplane-memory"}))
     File.write!(Path.join(openclaw, "openclaw.plugin.json"), ~s({"id":"backplane-memory"}))
     File.write!(Path.join(openclaw, "plugin.mjs"), "export default {};\n")
+    File.write!(Path.join(openclaw, "plugin.yaml"), "name: openclaw\n")
 
     source_root
   end

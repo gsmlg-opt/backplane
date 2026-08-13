@@ -13,6 +13,7 @@ config :backplane, env: :test
 config :backplane_auth, allow_insecure_resource_origins: true
 config :backplane, llm_route_loader_enabled: false
 config :backplane, Oban, testing: :inline
+config :backplane_memory, projection_repair_enabled: false
 
 secret_key_base =
   "test_secret_key_base_that_is_at_least_64_bytes_long_for_testing_only_please"

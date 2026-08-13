@@ -83,13 +83,58 @@ defmodule Backplane.Admin.Router do
   scope "/", Backplane.Admin do
     pipe_through([:browser, :memory])
 
-    live_session :memory_v2 do
+    # The admin endpoint is an intentionally open trusted-operator surface. Replay still
+    # receives two explicit server-owned capabilities so its LiveView fails closed when
+    # mounted outside this router and payload detail can be restricted independently later.
+    live_session :memory_v2,
+      session: %{
+        "memory_replay_authorized" => true,
+        "memory_replay_detail_authorized" => true,
+        "memory_config_authorized" => true
+      } do
       live("/memory", MemoryOverviewLive, :index)
       live("/memory/streams", MemoryStreamsLive, :index)
       live("/memory/streams/:stream_id", MemoryStreamsLive, :show)
       live("/memory/events", MemoryEventsLive, :index)
       live("/memory/events/:event_id", MemoryEventsLive, :show)
+      live("/memory/sessions", MemorySessionsLive, :index)
+      live("/memory/sessions/:session_id", MemorySessionsLive, :show)
+      live("/memory/timeline", MemoryTimelineLive, :index)
+      live("/memory/memories", MemoryMemoriesLive, :index)
+      live("/memory/memories/:id", MemoryMemoriesLive, :show)
+      live("/memory/graph", MemoryGraphLive, :index)
+      live("/memory/profile", MemoryProfileLive, :index)
+      live("/memory/actions", MemoryActionsLive, :index)
+      live("/memory/audit", MemoryAuditLive, :index)
+      live("/memory/config", MemoryConfigLive, :index)
       live("/memory/pipeline", MemoryPipelineLive, :index)
+      live("/memory/activity", MemoryActivityLive, :index)
+      live("/memory/replay", MemoryReplayLive, :index)
+      live("/memory/lessons", MemoryLessonsLive, :index)
+      live("/memory/lessons/:id", MemoryLessonsLive, :show)
+      live("/memory/crystals", MemoryCrystalsLive, :index)
+      live("/memory/crystals/:id", MemoryCrystalsLive, :show)
+
+      live(
+        "/memory/crystals/:id/sources/actions/:source_id",
+        MemoryCrystalsLive,
+        :source_action
+      )
+
+      live(
+        "/memory/crystals/:id/sources/summaries/:source_id",
+        MemoryCrystalsLive,
+        :source_summary
+      )
+
+      live(
+        "/memory/crystals/:id/sources/sessions/:source_id",
+        MemoryCrystalsLive,
+        :source_session
+      )
+
+      live("/memory/recall", MemoryRecallInspectorLive, :index)
+      live("/memory/recall/:recall_run_id", MemoryRecallInspectorLive, :show)
     end
   end
 

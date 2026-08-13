@@ -1,6 +1,6 @@
 defmodule Backplane.Memory.Observations do
   import Ecto.Query
-  alias Backplane.Memory.Events.Store
+  alias Backplane.Memory.Events.{Event, Store}
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Config
@@ -157,7 +157,9 @@ defmodule Backplane.Memory.Observations do
       |> Keyword.take(@event_opt_keys -- [:event_type, :payload])
       |> Map.new()
 
-    Map.merge(base, option_attrs)
+    base
+    |> Map.merge(option_attrs)
+    |> Map.merge(trusted_partition_attrs(opts[:trusted_partition]))
   end
 
   defp event_is_error(value) do
@@ -191,11 +193,11 @@ defmodule Backplane.Memory.Observations do
   defp fallback_event_type(_tool_name, _is_error), do: "legacy.observation"
 
   @doc "Register/upsert a session."
-  def register_session(session_id, project) do
+  def register_session(session_id, project, opts \\ []) do
     if Config.dual_write?() do
       started_at = System.monotonic_time()
 
-      case register_session_with_event(session_id, project, 1) do
+      case register_session_with_event(session_id, project, opts, 1) do
         {:ok, session, event_result} ->
           if event_result, do: Store.emit_result({:ok, event_result}, started_at)
           {:ok, session}
@@ -211,7 +213,7 @@ defmodule Backplane.Memory.Observations do
     end
   end
 
-  defp register_session_with_event(session_id, project, attempts_left) do
+  defp register_session_with_event(session_id, project, opts, attempts_left) do
     multi =
       Ecto.Multi.new()
       |> Ecto.Multi.run(:session, fn repo, _changes ->
@@ -230,7 +232,7 @@ defmodule Backplane.Memory.Observations do
           Store.append_multi(
             Ecto.Multi.new(),
             :event,
-            lifecycle_event_attrs("session.started", session)
+            lifecycle_event_attrs("session.started", session, opts)
           )
 
         %{session: {_session, false}} ->
@@ -245,7 +247,7 @@ defmodule Backplane.Memory.Observations do
       when attempts_left > 0 ->
         case Store.resolve_idempotency_race(race, repo: repo()) do
           {:ok, {:duplicate, _event} = resolved} ->
-            case register_session_with_event(session_id, project, attempts_left - 1) do
+            case register_session_with_event(session_id, project, opts, attempts_left - 1) do
               {:ok, session, retried} -> {:ok, session, retried || resolved}
               {:error, reason, _event_attempted?} -> {:error, reason, true}
             end
@@ -268,11 +270,19 @@ defmodule Backplane.Memory.Observations do
   end
 
   @doc "Mark a session as ended and enqueue consolidation."
-  def end_session(session_id) do
+  def end_session(session_id, opts \\ []) do
+    if partition_opts?(opts) and not owned_session?(session_id, opts) do
+      {:error, :not_found}
+    else
+      do_end_session(session_id, opts)
+    end
+  end
+
+  defp do_end_session(session_id, opts) do
     if Config.dual_write?() do
       started_at = System.monotonic_time()
 
-      case end_session_with_event(session_id, 1) do
+      case end_session_with_event(session_id, opts, 1) do
         {:ok, result, event_result} ->
           if event_result, do: Store.emit_result({:ok, event_result}, started_at)
           maybe_enqueue_summary(result, session_id)
@@ -289,7 +299,7 @@ defmodule Backplane.Memory.Observations do
     end
   end
 
-  defp end_session_with_event(session_id, attempts_left) do
+  defp end_session_with_event(session_id, opts, attempts_left) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     multi =
@@ -303,7 +313,7 @@ defmodule Backplane.Memory.Observations do
       |> Ecto.Multi.merge(fn
         %{session_transition: {1, nil}, session: %Session{} = session} ->
           Ecto.Multi.new()
-          |> Store.append_multi(:event, lifecycle_event_attrs("session.ended", session))
+          |> Store.append_multi(:event, lifecycle_event_attrs("session.ended", session, opts))
           |> Ecto.Multi.run(:closed_stream, fn repo, _changes ->
             Store.close_stream("session:" <> session.session_id, repo: repo)
           end)
@@ -320,7 +330,7 @@ defmodule Backplane.Memory.Observations do
       when attempts_left > 0 ->
         case Store.resolve_idempotency_race(race, repo: repo()) do
           {:ok, {:duplicate, _event} = resolved} ->
-            case end_session_with_event(session_id, attempts_left - 1) do
+            case end_session_with_event(session_id, opts, attempts_left - 1) do
               {:ok, result, retried} -> {:ok, result, retried || resolved}
               {:error, reason, _event_attempted?} -> {:error, reason, true}
             end
@@ -348,17 +358,42 @@ defmodule Backplane.Memory.Observations do
 
   defp maybe_enqueue_summary(_result, _session_id), do: :ok
 
-  defp lifecycle_event_attrs(type, session) do
-    %{
-      stream_id: "session:" <> session.session_id,
-      session_id: session.session_id,
-      project: session.project,
-      event_type: type,
-      actor_type: "system",
-      role: "system",
-      status: "ok",
-      idempotency_key: type <> ":" <> session.session_id
-    }
+  defp lifecycle_event_attrs(type, session, opts) do
+    Map.merge(
+      %{
+        stream_id: "session:" <> session.session_id,
+        session_id: session.session_id,
+        project: session.project,
+        event_type: type,
+        actor_type: "system",
+        role: "system",
+        status: "ok",
+        idempotency_key: type <> ":" <> session.session_id
+      },
+      opts
+      |> Keyword.take([:host_id, :client_id, :agent_id])
+      |> Map.new()
+      |> Map.merge(trusted_partition_attrs(opts[:trusted_partition]))
+    )
+  end
+
+  defp trusted_partition_attrs(partition) when is_map(partition),
+    do: Map.take(partition, [:host_id, :client_id, :scope, :namespace])
+
+  defp trusted_partition_attrs(_partition), do: %{}
+
+  defp partition_opts?(opts),
+    do: Enum.all?([:host_id, :client_id, :scope, :namespace], &is_binary(opts[&1]))
+
+  defp owned_session?(session_id, opts) do
+    repo().exists?(
+      from(e in Event,
+        where:
+          e.session_id == ^session_id and e.event_type == "session.started" and
+            e.host_id == ^opts[:host_id] and e.client_id == ^opts[:client_id] and
+            e.scope == ^opts[:scope] and e.namespace == ^opts[:namespace]
+      )
+    )
   end
 
   @doc "Return observations referencing any of the listed file paths, newest first."
@@ -374,7 +409,7 @@ defmodule Backplane.Memory.Observations do
             o.files,
             ^file_paths
           ),
-        order_by: [desc: o.created_at],
+        order_by: [desc: o.created_at, desc: o.id],
         limit: ^limit
       )
 
@@ -383,6 +418,28 @@ defmodule Backplane.Memory.Observations do
         where(query, [o], o.session_id != ^exclude_session)
       else
         query
+      end
+
+    query =
+      case {opts[:host_id], opts[:client_id], opts[:scope], opts[:namespace]} do
+        {host_id, client_id, scope, namespace}
+        when is_binary(host_id) and is_binary(client_id) and is_binary(scope) and
+               is_binary(namespace) ->
+          from(o in query,
+            join: e in Event,
+            on:
+              fragment(
+                "?->'_backplane'->>'legacy_observation_id' = ?::text",
+                e.payload,
+                o.id
+              ),
+            where:
+              e.host_id == ^host_id and e.client_id == ^client_id and e.scope == ^scope and
+                e.namespace == ^namespace
+          )
+
+        _tenant ->
+          query
       end
 
     repo().all(query)
