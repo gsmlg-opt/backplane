@@ -79,9 +79,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: deps
-          key: release-memory-v2-qualification-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: release-memory-v2-qualification-v2-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
           restore-keys: |
-            release-memory-v2-qualification-
+            release-memory-v2-qualification-v2-
 
       - name: Install dependencies
         run: mix deps.get

@@ -102,6 +102,7 @@ defmodule Backplane.ReleaseConfigTest do
 
     [qualification_job, _rest] = String.split(workflow, "  build:", parts: 2)
     refute qualification_job =~ "_build/test"
+    assert qualification_job =~ "release-memory-v2-qualification-v2-"
 
     assert workflow =~ "postgresql-17"
     assert workflow =~ "CREATE EXTENSION IF NOT EXISTS vector"
