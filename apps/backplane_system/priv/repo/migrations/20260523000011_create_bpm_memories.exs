@@ -2,7 +2,7 @@ defmodule Backplane.Repo.Migrations.CreateBpmMemories do
   use Ecto.Migration
 
   def up do
-    execute("CREATE EXTENSION IF NOT EXISTS vector")
+    repo().query!("CREATE EXTENSION IF NOT EXISTS vector")
 
     create table(:bpm_memories, primary_key: false) do
       add(:id, :binary_id, primary_key: true, default: fragment("gen_random_uuid()"))
