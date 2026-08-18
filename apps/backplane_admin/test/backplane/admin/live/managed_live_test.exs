@@ -2,6 +2,7 @@ defmodule Backplane.Admin.ManagedLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Math.Config
+  alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Services.Skills
   alias Backplane.Settings
@@ -73,7 +74,7 @@ defmodule Backplane.Admin.ManagedLiveTest do
     assert html =~ ~s(href="/mcp/managed/skill/tool/list")
   end
 
-  test "refreshes enabled web service tools from the current module definitions", %{conn: conn} do
+  test "page load does not reconcile or broadcast tool changes", %{conn: conn} do
     Backplane.Settings.set("services.web.enabled", true)
 
     stale_tools =
@@ -82,10 +83,25 @@ defmodule Backplane.Admin.ManagedLiveTest do
 
     Backplane.Registry.ToolRegistry.deregister_managed("web")
     Backplane.Registry.ToolRegistry.register_managed("web", stale_tools)
+    PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
+    flush_mcp_notifications()
 
     {:ok, _view, html} = live(conn, "/mcp/managed")
 
-    assert html =~ "web::live_search"
+    refute html =~ "web::live_search"
+    assert ToolRegistry.resolve("web::live_search") == :not_found
+
+    refute_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
+  end
+
+  test "rejects an unknown service prefix without mutating the registry", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/mcp/managed")
+    previous_tools = Map.new(:ets.tab2list(:backplane_tools))
+
+    html = render_click(view, "toggle", %{"prefix" => "missing"})
+
+    assert html =~ "Failed to update service"
+    assert Map.new(:ets.tab2list(:backplane_tools)) == previous_tools
   end
 
   test "links managed services to settings pages", %{conn: conn} do
@@ -150,5 +166,13 @@ defmodule Backplane.Admin.ManagedLiveTest do
     assert Skills.enabled?()
     assert Settings.get(@skills_setting)
     assert {:managed, _} = ToolRegistry.resolve("skill::list")
+  end
+
+  defp flush_mcp_notifications do
+    receive do
+      {:mcp_notification, _notification} -> flush_mcp_notifications()
+    after
+      0 -> :ok
+    end
   end
 end

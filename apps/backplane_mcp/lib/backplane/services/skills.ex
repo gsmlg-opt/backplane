@@ -8,6 +8,7 @@ defmodule Backplane.Services.Skills do
   alias Backplane.Tools.Skill
 
   @setting_key "services.skill.enabled"
+  @enablement_lock {__MODULE__, :enablement}
 
   @impl true
   def prefix, do: "skill"
@@ -24,6 +25,19 @@ defmodule Backplane.Services.Skills do
 
   @spec set_enabled(boolean()) :: :ok | {:error, term()}
   def set_enabled(enabled) when is_boolean(enabled) do
+    case :global.trans(
+           {@enablement_lock, self()},
+           fn -> persist_and_sync(enabled) end,
+           [node()]
+         ) do
+      :aborted -> {:error, :enablement_lock_aborted}
+      result -> result
+    end
+  catch
+    :exit, reason -> {:error, {:enablement_lock_failed, reason}}
+  end
+
+  defp persist_and_sync(enabled) do
     with :ok <- Settings.set(@setting_key, enabled), do: sync_registry(enabled)
   end
 
