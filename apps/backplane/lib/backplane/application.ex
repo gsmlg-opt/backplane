@@ -5,7 +5,7 @@ defmodule Backplane.Application do
   require Logger
 
   alias Backplane.Config.Validator
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.{Namespace, Tool, ToolRegistry}
   alias Backplane.Tools.{Admin, Hub}
 
   @drain_timeout 15_000
@@ -114,11 +114,33 @@ defmodule Backplane.Application do
   defp managed_service_enabled?(Backplane.Services.Skills, values),
     do: values["services.skill.enabled"] == true
 
+  @doc false
+  def start_upstream(config, pool_module \\ Backplane.Proxy.Pool) do
+    case pool_module.start_upstream(config) do
+      {:error, reason} = error ->
+        name = Map.get(config, :name, Map.get(config, "name"))
+
+        prefix =
+          config
+          |> Map.get(:prefix, Map.get(config, "prefix"))
+          |> Namespace.normalize_prefix()
+
+        Logger.warning(
+          "Failed to start upstream #{inspect(name)} with prefix #{inspect(prefix)}: #{inspect(reason)}"
+        )
+
+        error
+
+      result ->
+        result
+    end
+  end
+
   defp start_configured_upstreams do
     upstreams = Application.get_env(:backplane, :upstreams, [])
 
     for upstream <- upstreams do
-      Backplane.Proxy.Pool.start_upstream(upstream)
+      start_upstream(upstream)
     end
   end
 
@@ -139,7 +161,7 @@ defmodule Backplane.Application do
         auth_header_name: upstream.auth_header_name
       }
 
-      Backplane.Proxy.Pool.start_upstream(config)
+      start_upstream(config)
     end
   rescue
     e ->

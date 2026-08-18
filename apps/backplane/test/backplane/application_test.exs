@@ -1,6 +1,8 @@
 defmodule Backplane.ApplicationTest do
   use Backplane.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   defmodule FailingSettings do
     def fetch_many(_keys), do: {:error, :database_unavailable}
   end
@@ -14,6 +16,26 @@ defmodule Backplane.ApplicationTest do
   test "prep_stop returns state and does not crash" do
     state = %{some: :state}
     assert Backplane.Application.prep_stop(state) == state
+  end
+
+  test "reports a rejected legacy upstream during boot" do
+    config = %{
+      name: "legacy-skills",
+      prefix: " /skill/ ",
+      transport: "http",
+      url: "http://127.0.0.1:1/mcp",
+      headers: %{}
+    }
+
+    log =
+      capture_log(fn ->
+        assert Backplane.Application.start_upstream(config) ==
+                 {:error, {:reserved_prefix, "skill"}}
+      end)
+
+    assert log =~ "legacy-skills"
+    assert log =~ "skill"
+    assert log =~ "reserved_prefix"
   end
 
   test "managed reconciliation honors persisted Skills state and removes stale native rows" do
