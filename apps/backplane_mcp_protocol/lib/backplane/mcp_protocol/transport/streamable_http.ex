@@ -140,7 +140,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   @typedoc """
   The options for the Streamable HTTP transport.
 
-  - `:base_url` - The base URL of the MCP server (e.g. http://localhost:8000) (required).
+  - `:url` - The exact MCP endpoint URL (e.g. http://localhost:8000/custom/mcp).
+  - `:base_url` - The base URL of the MCP server (e.g. http://localhost:8000).
   - `:mcp_path` - The MCP endpoint path (e.g. /mcp) (default "/mcp").
   - `:client` - The client to send the messages to.
   - `:headers` - The headers to send with the HTTP requests.
@@ -151,6 +152,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   @type option ::
           {:name, GenServer.name()}
           | {:client, GenServer.server()}
+          | {:url, String.t()}
           | {:base_url, String.t()}
           | {:mcp_path, String.t()}
           | {:headers, map()}
@@ -162,7 +164,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defschema(:options_schema, %{
     name: {{:custom, &Backplane.McpProtocol.genserver_name/1}, {:default, __MODULE__}},
     client: {:required, Backplane.McpProtocol.get_schema(:process_name)},
-    base_url: {:required, {:string, {:transform, &URI.new!/1}}},
+    url: {:string, {:transform, &URI.new!/1}},
+    base_url: {:string, {:transform, &URI.new!/1}},
     mcp_path: {:string, {:default, "/mcp"}},
     headers: {:map, {:default, %{}}},
     transport_opts: {:any, {:default, []}},
@@ -174,7 +177,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   @spec start_link(params_t) :: GenServer.on_start()
   def start_link(opts \\ []) do
     opts = options_schema!(opts)
-    GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
+    opts = Map.new(opts)
+    opts = Map.put(opts, :mcp_url, resolve_mcp_url(opts))
+    GenServer.start_link(__MODULE__, opts, name: opts.name)
   end
 
   @impl Transport
@@ -214,7 +219,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   def init(opts) do
     state = %{
       client: opts.client,
-      mcp_url: URI.append_path(opts.base_url, opts.mcp_path),
+      mcp_url: opts.mcp_url,
       headers: opts.headers,
       transport_opts: opts.transport_opts,
       http_options: opts.http_options,
@@ -228,6 +233,22 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
     emit_telemetry(:init, state)
     {:ok, state, {:continue, :connect}}
+  end
+
+  defp resolve_mcp_url(opts) do
+    case {Map.get(opts, :url), Map.get(opts, :base_url)} do
+      {%URI{}, %URI{}} ->
+        raise ArgumentError, "provide only one of url or base_url"
+
+      {%URI{} = url, nil} ->
+        url
+
+      {nil, %URI{} = base_url} ->
+        URI.append_path(base_url, opts.mcp_path)
+
+      {nil, nil} ->
+        raise ArgumentError, "provide url or base_url"
+    end
   end
 
   @impl GenServer

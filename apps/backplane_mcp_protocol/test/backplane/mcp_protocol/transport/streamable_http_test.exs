@@ -60,6 +60,48 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StreamableHTTP.shutdown(transport)
       StubClient.clear_messages()
     end
+
+    test "accepts an exact MCP endpoint URL without appending mcp_path", %{bypass: bypass} do
+      url = "http://localhost:#{bypass.port}/custom/mcp?tenant=one"
+      {:ok, stub_client} = StubClient.start_link()
+
+      {:ok, transport} =
+        StreamableHTTP.start_link(
+          client: stub_client,
+          url: url,
+          transport_opts: @test_http_opts
+        )
+
+      assert ^url = transport |> :sys.get_state() |> Map.fetch!(:mcp_url) |> URI.to_string()
+
+      StreamableHTTP.shutdown(transport)
+      StubClient.clear_messages()
+    end
+
+    test "raises when neither url nor base_url is supplied" do
+      {:ok, stub_client} = StubClient.start_link()
+
+      assert_raise ArgumentError, ~r/url or base_url/, fn ->
+        StreamableHTTP.start_link(client: stub_client, transport_opts: @test_http_opts)
+      end
+
+      StubClient.clear_messages()
+    end
+
+    test "raises when both url and base_url are supplied", %{bypass: bypass} do
+      {:ok, stub_client} = StubClient.start_link()
+
+      assert_raise ArgumentError, ~r/only one of url or base_url/, fn ->
+        StreamableHTTP.start_link(
+          client: stub_client,
+          url: "http://localhost:#{bypass.port}/custom/mcp",
+          base_url: "http://localhost:#{bypass.port}",
+          transport_opts: @test_http_opts
+        )
+      end
+
+      StubClient.clear_messages()
+    end
   end
 
   test "advertises every compatible modern and legacy protocol version" do
