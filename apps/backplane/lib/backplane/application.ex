@@ -20,14 +20,21 @@ defmodule Backplane.Application do
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
       register_native_tools()
-      reconcile_managed_services()
-      start_configured_upstreams()
-      start_db_upstreams()
-      Backplane.LLM.UsageCollector.attach()
-      Backplane.Clients.init_cache()
-      upsert_config_clients()
 
-      {:ok, pid}
+      case reconcile_managed_services() do
+        :ok ->
+          start_configured_upstreams()
+          start_db_upstreams()
+          Backplane.LLM.UsageCollector.attach()
+          Backplane.Clients.init_cache()
+          upsert_config_clients()
+
+          {:ok, pid}
+
+        {:error, _reason} = error ->
+          Supervisor.stop(pid)
+          error
+      end
     end
   end
 
@@ -61,26 +68,32 @@ defmodule Backplane.Application do
 
   @doc false
   def reconcile_managed_services do
-    Backplane.Settings.get_many([
+    setting_keys = [
       "services.day.enabled",
       "services.web.enabled",
       "services.skill.enabled"
-    ])
-
-    services = [
-      Backplane.Services.Day,
-      Backplane.Services.Web,
-      Backplane.Services.Math,
-      Backplane.Services.Skills
     ]
 
-    Enum.each(services, fn service ->
-      ToolRegistry.deregister_managed(service.prefix())
+    case Backplane.Settings.fetch_many(setting_keys) do
+      {:ok, values} ->
+        services = [
+          {Backplane.Services.Day, values["services.day.enabled"] == true},
+          {Backplane.Services.Web, values["services.web.enabled"] == true},
+          {Backplane.Services.Math, Backplane.Services.Math.enabled?()},
+          {Backplane.Services.Skills, values["services.skill.enabled"] == true}
+        ]
 
-      if service.enabled?() do
-        ToolRegistry.register_managed(service.prefix(), service.tools())
-      end
-    end)
+        Enum.each(services, fn {service, enabled?} ->
+          ToolRegistry.deregister_managed(service.prefix())
+
+          if enabled? do
+            ToolRegistry.register_managed(service.prefix(), service.tools())
+          end
+        end)
+
+      {:error, reason} ->
+        {:error, {:settings_not_loaded, reason}}
+    end
   end
 
   defp start_configured_upstreams do

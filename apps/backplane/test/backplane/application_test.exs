@@ -76,4 +76,32 @@ defmodule Backplane.ApplicationTest do
 
     assert %{name: "test::sentinel", origin: :native} = ToolRegistry.lookup("test::sentinel")
   end
+
+  test "managed reconciliation fails closed when persisted settings are unavailable" do
+    previous_state = :sys.get_state(Settings)
+    previous_rows = :ets.tab2list(:backplane_tools)
+
+    on_exit(fn ->
+      :sys.replace_state(Settings, fn _state -> previous_state end)
+      :ets.delete_all_objects(:backplane_tools)
+
+      if previous_rows != [] do
+        :ets.insert(:backplane_tools, previous_rows)
+      end
+    end)
+
+    Enum.each(:ets.tab2list(:backplane_tools), fn
+      {"skill::" <> _, _tool} = row -> :ets.delete_object(:backplane_tools, row)
+      _row -> :ok
+    end)
+
+    :sys.replace_state(Settings, fn state ->
+      Map.put(state, :load_status, {:error, :database_unavailable})
+    end)
+
+    assert {:error, {:settings_not_loaded, :database_unavailable}} =
+             Backplane.Application.reconcile_managed_services()
+
+    assert ToolRegistry.lookup("skill::publish") == nil
+  end
 end
