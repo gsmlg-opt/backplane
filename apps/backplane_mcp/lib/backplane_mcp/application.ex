@@ -13,6 +13,7 @@ defmodule BackplaneMcp.Application do
       Backplane.Transport.Session,
       Backplane.Transport.TaskManager,
       Backplane.Math.Supervisor,
+      {Task.Supervisor, name: Backplane.MCP.ModernTaskSupervisor},
       Backplane.Proxy.Pool,
       {Backplane.Cache, cache_opts}
     ]
