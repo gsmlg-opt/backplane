@@ -1,28 +1,27 @@
 defmodule Backplane.Proxy.Upstream do
   @moduledoc """
-  GenServer managing a single upstream MCP server connection.
+  Coordinates one configured upstream MCP server through the protocol client.
 
-  Supports two transport types:
-  - `"http"` — stateless HTTP requests via Req (Streamable HTTP)
-  - `"stdio"` — persistent Port-based communication over stdin/stdout
-
-  On startup, sends `initialize` then `tools/list` to discover upstream tools,
-  registers them in the ToolRegistry with the configured prefix.
+  The protocol package owns negotiation, transport framing, request IDs,
+  Streamable HTTP sessions, and stdio ports. This GenServer owns the Backplane
+  lifecycle: catalog registration, health checks, call degradation, and one
+  monitored reconnect loop.
   """
 
   use GenServer
   require Logger
 
+  alias Backplane.McpProtocol.Client
+  alias Backplane.McpProtocol.MCP.Response
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
+  alias Backplane.Proxy.{ClientLeaseManager, ClientPool, ProtocolClient, ToolCatalog}
   alias Backplane.PubSubBroadcaster
-  alias Backplane.MCP.{Info, JsonRpc}
-  alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Registry.ToolRegistry
 
   @default_timeout 30_000
   @refresh_interval 300_000
   @health_ping_interval 60_000
   @max_consecutive_failures 3
-  # 10 MB — drop buffer and log if a misbehaving upstream streams without newlines
-  @max_buffer_size 10_000_000
   @initial_backoff_ms 1_000
   @max_backoff_ms 60_000
   @supported_transports ~w(http stdio)
@@ -36,152 +35,144 @@ defmodule Backplane.Proxy.Upstream do
   @doc """
   Forward a tool call to this upstream server.
 
-  The optional `timeout` parameter overrides the default 30s GenServer call
-  timeout. This is used by per-tool timeout configuration.
+  The optional `timeout` parameter remains both the package operation deadline
+  and the caller's GenServer deadline.
   """
   @spec forward(pid(), String.t(), map(), pos_integer()) :: {:ok, term()} | {:error, term()}
   def forward(pid, tool_name, arguments, timeout \\ @default_timeout) do
-    GenServer.call(pid, {:tools_call, tool_name, arguments}, timeout)
+    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout}, timeout)
   catch
     :exit, {:timeout, _} -> {:error, "Upstream timeout after #{timeout}ms"}
-    :exit, reason -> {:error, "Upstream error: #{inspect(reason)}"}
+    :exit, _reason -> {:error, "Upstream connection error"}
   end
 
   @doc "Get the status of this upstream connection."
   @spec status(pid()) :: map()
-  def status(pid) do
-    GenServer.call(pid, :status)
-  end
+  def status(pid), do: GenServer.call(pid, :status)
 
   @doc "Trigger a tool refresh."
   @spec refresh(pid()) :: :ok
-  def refresh(pid) do
-    GenServer.cast(pid, :refresh)
-  end
+  def refresh(pid), do: GenServer.cast(pid, :refresh)
+
+  @doc false
+  @spec prepare_stop(pid(), timeout()) :: :ok
+  def prepare_stop(pid, timeout \\ 5_000), do: GenServer.call(pid, :prepare_stop, timeout)
 
   # Server implementation
 
   @impl true
   def init(config) do
-    unless config.transport in @supported_transports do
-      {:stop, {:unsupported_transport, config.transport}}
+    if config.transport in @supported_transports do
+      options = ProtocolClient.client_options(config)
+
+      state = %{
+        name: config.name,
+        prefix: config.prefix,
+        transport: config.transport,
+        config: config,
+        client: ProtocolClient.client_name(config.prefix),
+        client_supervisor: nil,
+        client_monitor: nil,
+        protocol_preference: configured_preference(config),
+        negotiated_version: nil,
+        era: nil,
+        negotiation_status: :connecting,
+        server_info: nil,
+        server_capabilities: nil,
+        tools: [],
+        status: :connecting,
+        reconnect_attempts: 0,
+        consecutive_call_failures: 0,
+        consecutive_ping_failures: 0,
+        last_ping_at: nil,
+        last_pong_at: nil,
+        tool_timeout: Keyword.fetch!(options, :timeout),
+        refresh_interval: Map.get(config, :refresh_interval),
+        reconnect_timer: nil,
+        refresh_timer: nil,
+        health_timer: nil,
+        stopping: false,
+        pool_owned: false
+      }
+
+      {:ok, state, {:continue, :connect}}
     else
-      init_supported(config)
+      {:stop, {:unsupported_transport, config.transport}}
     end
   end
 
-  defp init_supported(config) do
-    state = %{
-      name: config.name,
-      prefix: config.prefix,
-      transport: config.transport,
-      config: config,
-      tools: [],
-      status: :connecting,
-      port: nil,
-      buffer: "",
-      pending_requests: %{},
-      next_id: 1,
-      initialized: false,
-      last_ping_at: nil,
-      last_pong_at: nil,
-      consecutive_ping_failures: 0,
-      consecutive_call_failures: 0,
-      reconnect_attempts: 0,
-      pending_ping_id: nil,
-      tool_timeout: config[:timeout] || @default_timeout,
-      refresh_interval: config[:refresh_interval],
-      upstream_version: nil,
-      upstream_capabilities: %{}
-    }
-
-    {:ok, state, {:continue, :connect}}
+  @impl true
+  def handle_continue(:connect, %{client_supervisor: supervisor} = state)
+      when is_pid(supervisor) do
+    {:noreply, state}
   end
 
-  @impl true
   def handle_continue(:connect, state) do
-    case connect_and_initialize(state) do
-      {:ok, state} ->
-        case discover_tools(state) do
-          {:ok, state} ->
-            schedule_refresh(state)
-            schedule_health_ping()
-            new_state = %{state | status: :connected, reconnect_attempts: 0}
-            PubSubBroadcaster.broadcast_upstream(state.prefix, :connected, %{name: state.name})
-            {:noreply, new_state}
+    state =
+      state
+      |> cancel_timer(:reconnect_timer)
+      |> Map.put(:status, :connecting)
 
-          {:error, reason, state} ->
-            Logger.warning("Failed to discover tools",
-              upstream: state.name,
-              reason: inspect(reason)
-            )
+    case start_client_tree(state) do
+      {:ok, supervisor, pool_owned} ->
+        monitor = Process.monitor(supervisor)
 
-            schedule_reconnect(state.reconnect_attempts)
-
-            new_state = %{
-              state
-              | status: :degraded,
-                reconnect_attempts: state.reconnect_attempts + 1
-            }
-
-            PubSubBroadcaster.broadcast_upstream(state.prefix, :degraded, %{
-              name: state.name,
-              reason: reason
-            })
-
-            {:noreply, new_state}
-        end
-
-      {:error, reason, state} ->
-        Logger.warning("Failed to connect to upstream",
-          upstream: state.name,
-          reason: inspect(reason)
-        )
-
-        schedule_reconnect(state.reconnect_attempts)
-
-        new_state = %{
+        connecting = %{
           state
-          | status: :disconnected,
-            reconnect_attempts: state.reconnect_attempts + 1
+          | client_supervisor: supervisor,
+            client_monitor: monitor,
+            pool_owned: pool_owned
         }
 
-        PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
-          name: state.name,
-          reason: reason
-        })
+        case connect_client(connecting) do
+          {:ok, connected} ->
+            connected = connected |> schedule_refresh() |> schedule_health()
 
-        {:noreply, new_state}
+            PubSubBroadcaster.broadcast_upstream(connected.prefix, :connected, %{
+              name: connected.name
+            })
+
+            {:noreply, connected}
+
+          {:error, reason, failed} ->
+            {:noreply, disconnect(failed, reason)}
+        end
+
+      {:error, reason} ->
+        {:noreply, disconnect(state, reason)}
     end
   end
 
   @impl true
-  def handle_call({:tools_call, tool_name, arguments}, _from, %{transport: "http"} = state) do
-    result = http_tools_call(state, tool_name, arguments)
-    state = track_call_result(state, result)
-    {:reply, result, state}
+  def handle_call(:prepare_stop, _from, state) do
+    {:reply, :ok, stop_owned_resources(state)}
   end
 
-  def handle_call({:tools_call, tool_name, arguments}, from, %{transport: "stdio"} = state) do
-    {id, state} = next_request_id(state)
+  def handle_call(
+        {:tools_call, _tool_name, _arguments, _timeout},
+        _from,
+        %{stopping: true} = state
+      ) do
+    {:reply, {:error, "Upstream connection error"}, state}
+  end
 
-    request =
-      JsonRpc.request("tools/call", %{"name" => tool_name, "arguments" => arguments}, id: id)
+  def handle_call({:tools_call, tool_name, arguments, timeout}, _from, state) do
+    case call_tool(state, tool_name, arguments, timeout) do
+      {:ok, result} ->
+        {:reply, {:ok, result}, track_call_result(state, {:ok, result})}
 
-    case send_stdio(state.port, request) do
-      :ok ->
-        state = %{state | pending_requests: Map.put(state.pending_requests, id, from)}
-        {:noreply, state}
+      {:error, reason, :protocol} ->
+        result = {:error, ProtocolClient.error_message(reason)}
+        {:reply, result, track_call_result(state, result)}
 
-      {:error, reason} ->
-        {:reply, {:error, "Failed to send to upstream: #{inspect(reason)}"}, state}
+      {:error, reason, :connection} ->
+        result = {:error, ProtocolClient.error_message(reason)}
+        {:reply, result, disconnect(state, reason)}
     end
   end
 
   def handle_call(:status, _from, state) do
-    protocol_preference = state.config[:protocol_version] || "2025-11-25"
-    negotiated_version = validated_legacy_version(state.upstream_version)
-    negotiation_ready? = state.initialized and is_binary(negotiated_version)
+    {negotiated_version, era, negotiation_status} = safe_negotiation_status(state)
 
     info = %{
       name: state.name,
@@ -193,656 +184,517 @@ defmodule Backplane.Proxy.Upstream do
       last_pong_at: state.last_pong_at,
       consecutive_ping_failures: state.consecutive_ping_failures,
       post_url_known: false,
-      protocol_preference: protocol_preference,
+      protocol_preference: state.protocol_preference,
       negotiated_version: negotiated_version,
-      era: if(negotiation_ready?, do: :legacy, else: nil),
-      negotiation_status: if(negotiation_ready?, do: :ready, else: :connecting)
+      era: era,
+      negotiation_status: negotiation_status
     }
 
     {:reply, info, state}
   end
 
   @impl true
-  def handle_cast(:refresh, state) do
-    case discover_tools(state) do
-      {:ok, state} ->
-        schedule_refresh(state)
-        {:noreply, %{state | reconnect_attempts: 0}}
+  def handle_cast(:refresh, %{stopping: true} = state), do: {:noreply, state}
 
-      {:error, _reason, state} ->
-        schedule_refresh(state)
-        {:noreply, state}
-    end
+  def handle_cast(:refresh, state) do
+    {:noreply, state |> cancel_timer(:refresh_timer) |> refresh_now()}
   end
 
   @impl true
+  def handle_info(_message, %{stopping: true} = state), do: {:noreply, state}
+
   def handle_info(:refresh, state) do
-    handle_cast(:refresh, state)
+    {:noreply, state |> cancel_timer(:refresh_timer) |> refresh_now()}
   end
 
-  def handle_info(:reconnect, state) do
-    {:noreply, state, {:continue, :connect}}
+  def handle_info({:refresh, token}, %{refresh_timer: {_timer, token}} = state) do
+    {:noreply, state |> Map.put(:refresh_timer, nil) |> refresh_now()}
   end
 
-  def handle_info(:health_ping, %{status: status} = state)
-      when status in [:disconnected, :connecting] do
-    # Don't ping if not connected, just reschedule
-    schedule_health_ping()
-    {:noreply, state}
+  def handle_info({:refresh, _stale_token}, state), do: {:noreply, state}
+
+  def handle_info(:reconnect, %{client_supervisor: nil} = state) do
+    state = cancel_timer(state, :reconnect_timer)
+    {:noreply, %{state | status: :connecting}, {:continue, :connect}}
   end
 
-  def handle_info(:health_ping, %{transport: "http"} = state) do
-    now = System.system_time(:second)
-    state = %{state | last_ping_at: now}
+  def handle_info(:reconnect, state), do: {:noreply, state}
 
-    case send_ping(state) do
-      :ok ->
-        schedule_health_ping()
-
-        {:noreply, %{state | last_pong_at: now, consecutive_ping_failures: 0, status: :connected}}
-
-      {:error, reason} ->
-        handle_ping_failure(state, reason)
-    end
+  def handle_info(
+        {:reconnect, token},
+        %{reconnect_timer: {_timer, token}, client_supervisor: nil} = state
+      ) do
+    {:noreply, %{state | reconnect_timer: nil, status: :connecting}, {:continue, :connect}}
   end
 
-  def handle_info(:health_ping, %{transport: "stdio"} = state) do
-    now = System.system_time(:second)
-    state = %{state | last_ping_at: now}
+  def handle_info({:reconnect, _stale_token}, state), do: {:noreply, state}
 
-    # If the previous ping never got a response, count as failure
-    state =
-      if state.pending_ping_id != nil do
-        failures = state.consecutive_ping_failures + 1
-        new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-        %{state | consecutive_ping_failures: failures, status: new_status, pending_ping_id: nil}
-      else
-        state
-      end
-
-    {id, state} = next_request_id(state)
-    state = %{state | pending_ping_id: id}
-
-    case send_ping(state) do
-      :ok ->
-        schedule_health_ping()
-        {:noreply, state}
-
-      {:error, reason} ->
-        state = %{state | pending_ping_id: nil}
-        handle_ping_failure(state, reason)
-    end
+  def handle_info(:health_ping, state) do
+    {:noreply, state |> cancel_timer(:health_timer) |> health_now()}
   end
 
-  def handle_info({port, {:data, data}}, %{port: port} = state) do
-    state = handle_stdio_data(state, data)
-    {:noreply, state}
+  def handle_info({:health_ping, token}, %{health_timer: {_timer, token}} = state) do
+    {:noreply, state |> Map.put(:health_timer, nil) |> health_now()}
   end
 
-  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.warning("Upstream stdio process exited",
+  def handle_info({:health_ping, _stale_token}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, supervisor, reason},
+        %{client_monitor: monitor, client_supervisor: supervisor} = state
+      ) do
+    detach_client(state, supervisor)
+    state = %{state | client_monitor: nil, client_supervisor: nil}
+    {:noreply, disconnect(state, reason)}
+  end
+
+  def handle_info({:DOWN, _monitor, :process, _supervisor, _reason}, state),
+    do: {:noreply, state}
+
+  def handle_info(message, state) do
+    Logger.debug("Upstream received an unexpected message",
       upstream: state.name,
-      exit_status: status
+      message: inspect(message, limit: 5, printable_limit: 128)
     )
 
-    # Reply to all pending callers so they don't hang until GenServer.call timeout
-    for {_id, from} <- state.pending_requests do
-      GenServer.reply(from, {:error, "upstream process exited (status #{status})"})
-    end
-
-    ToolRegistry.deregister_upstream(state.prefix)
-    schedule_reconnect(state.reconnect_attempts)
-    state = reset_negotiation(state)
-
-    PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
-      name: state.name,
-      reason: "process exited (status #{status})"
-    })
-
-    {:noreply,
-     %{
-       state
-       | status: :disconnected,
-         port: nil,
-         tools: [],
-         pending_requests: %{},
-         pending_ping_id: nil,
-         reconnect_attempts: state.reconnect_attempts + 1
-     }}
-  end
-
-  def handle_info(msg, state) do
-    Logger.debug("Upstream #{state.name} received unexpected message: #{inspect(msg)}")
     {:noreply, state}
   end
 
   @impl true
   def terminate(_reason, state) do
-    # Reply to all pending callers so they don't hang
-    for {_id, from} <- state.pending_requests do
-      GenServer.reply(from, {:error, "upstream terminated"})
-    end
-
-    ToolRegistry.deregister_upstream(state.prefix)
-
-    if state.port do
-      try do
-        Port.close(state.port)
-      rescue
-        e ->
-          Logger.debug("Port.close failed during terminate: #{Exception.message(e)}")
-      end
-    end
-
+    _state = stop_owned_resources(state)
     :ok
   end
 
-  defp handle_ping_failure(state, reason) do
+  # Connection and catalog
+
+  defp connect_client(state) do
+    with :ok <- await_ready(state),
+         {:ok, info} <- protocol_info(state),
+         {:ok, tools} <- fetch_catalog(state) do
+      ToolRegistry.register_upstream(state.prefix, self(), tools)
+      broadcast_tools_refreshed(state, tools)
+
+      {:ok,
+       %{
+         state
+         | negotiated_version: info.negotiated_version,
+           era: info.era,
+           negotiation_status: info.negotiation_status,
+           server_info: info.server_info,
+           server_capabilities: info.server_capabilities,
+           tools: tools,
+           status: :connected,
+           reconnect_attempts: 0,
+           consecutive_call_failures: 0,
+           consecutive_ping_failures: 0
+       }}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp await_ready(state) do
+    case safe_client_call(fn -> Client.await_ready(state.client, timeout: state.tool_timeout) end) do
+      {:ok, :ok} -> :ok
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+      {:ok, _invalid} -> {:error, :invalid_ready_result}
+    end
+  end
+
+  defp protocol_info(state) do
+    case safe_client_call(fn ->
+           Client.get_protocol_info(state.client, timeout: state.tool_timeout)
+         end) do
+      {:ok,
+       %{
+         negotiated_version: version,
+         era: era,
+         negotiation_status: :ready,
+         server_info: server_info,
+         server_capabilities: server_capabilities
+       } = info}
+      when is_binary(version) and era in [:legacy, :modern] and
+             (is_map(server_info) or is_nil(server_info)) and is_map(server_capabilities) ->
+        {:ok, info}
+
+      {:ok, _invalid} ->
+        {:error, :invalid_protocol_info}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_catalog(state) do
+    with {:ok, raw_tools} <- ToolCatalog.fetch_all(&list_tools_page(state, &1)),
+         {:ok, tools} <-
+           ToolCatalog.normalize_all(raw_tools, state.prefix, self(), state.tool_timeout) do
+      {:ok, apply_tool_timeouts(tools, state.config, state.tool_timeout)}
+    end
+  end
+
+  defp list_tools_page(state, nil) do
+    client_result(fn -> Client.list_tools(state.client, timeout: state.tool_timeout) end)
+  end
+
+  defp list_tools_page(state, cursor) do
+    client_result(fn ->
+      Client.list_tools(state.client, cursor: cursor, timeout: state.tool_timeout)
+    end)
+  end
+
+  defp client_result(fun) do
+    case safe_client_call(fun) do
+      {:ok, result} -> result
+      {:error, _reason} -> {:error, :client_unavailable}
+    end
+  end
+
+  defp apply_tool_timeouts(tools, config, default_timeout) do
+    configured = Map.get(config, :tool_timeouts)
+    configured = if is_map(configured), do: configured, else: %{}
+
+    Enum.map(tools, fn tool ->
+      timeout =
+        case Map.get(configured, tool.original_name) do
+          timeout when is_integer(timeout) and timeout > 0 -> timeout
+          _missing_or_invalid -> default_timeout
+        end
+
+      %{tool | timeout: timeout}
+    end)
+  end
+
+  defp refresh_now(%{status: status} = state) when status in [:connecting, :disconnected] do
+    state
+  end
+
+  defp refresh_now(state) do
+    case fetch_catalog(state) do
+      {:ok, tools} ->
+        ToolRegistry.register_upstream(state.prefix, self(), tools)
+        broadcast_tools_refreshed(state, tools)
+
+        state
+        |> Map.merge(%{tools: tools, status: :connected, reconnect_attempts: 0})
+        |> schedule_refresh()
+
+      {:error, reason} ->
+        if client_tree_available?(state) do
+          schedule_refresh(state)
+        else
+          disconnect(state, reason)
+        end
+    end
+  end
+
+  # Calls and health
+
+  defp call_tool(%{client_supervisor: nil}, _tool_name, _arguments, _timeout),
+    do: {:error, :not_connected, :connection}
+
+  defp call_tool(state, tool_name, arguments, timeout) do
+    case safe_client_call(fn ->
+           Client.call_tool(state.client, tool_name, arguments, timeout: timeout)
+         end) do
+      {:ok, {:ok, %Response{result: result}}} -> {:ok, result}
+      {:ok, {:error, reason}} -> {:error, reason, :protocol}
+      {:ok, _invalid} -> {:error, :invalid_tool_response, :protocol}
+      {:error, reason} -> {:error, reason, :connection}
+    end
+  end
+
+  defp health_now(%{status: status} = state) when status in [:connecting, :disconnected],
+    do: state
+
+  defp health_now(state) do
+    now = System.system_time(:second)
+    checking = %{state | last_ping_at: now}
+
+    result =
+      case state.era do
+        :legacy -> legacy_ping(checking)
+        :modern -> fetch_catalog(checking)
+        _unknown -> {:error, :not_ready}
+      end
+
+    case result do
+      :pong ->
+        health_success(checking, now)
+
+      {:ok, tools} when state.era == :modern ->
+        ToolRegistry.register_upstream(state.prefix, self(), tools)
+        broadcast_tools_refreshed(state, tools)
+        health_success(%{checking | tools: tools}, now)
+
+      {:error, reason} ->
+        if client_tree_available?(state) do
+          health_failure(checking, reason)
+        else
+          disconnect(checking, reason)
+        end
+    end
+  end
+
+  defp legacy_ping(state) do
+    case safe_client_call(fn -> Client.ping(state.client, timeout: state.tool_timeout) end) do
+      {:ok, :pong} -> :pong
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:ok, _invalid} -> {:error, :invalid_ping_result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp health_success(state, now) do
+    state
+    |> Map.merge(%{
+      last_pong_at: now,
+      consecutive_ping_failures: 0,
+      status: :connected
+    })
+    |> schedule_health()
+  end
+
+  defp health_failure(state, reason) do
     failures = state.consecutive_ping_failures + 1
 
-    Logger.warning("Health ping failed",
+    Logger.warning("Upstream health check failed",
       upstream: state.name,
-      reason: inspect(reason),
+      reason: ProtocolClient.error_message(reason),
       consecutive_failures: failures
     )
 
-    new_status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-    schedule_health_ping()
-    {:noreply, %{state | consecutive_ping_failures: failures, status: new_status}}
+    status = if failures >= @max_consecutive_failures, do: :degraded, else: state.status
+
+    state
+    |> Map.merge(%{consecutive_ping_failures: failures, status: status})
+    |> schedule_health()
   end
 
-  # HTTP Transport
+  defp track_call_result(state, {:ok, _result}) do
+    %{state | consecutive_call_failures: 0, status: :connected}
+  end
 
-  defp connect_and_initialize(%{transport: "http"} = state) do
-    state = reset_negotiation(state)
+  defp track_call_result(state, {:error, _reason}) do
+    failures = state.consecutive_call_failures + 1
 
-    request =
-      jsonrpc_request("initialize", %{
-        "protocolVersion" => Backplane.MCP.Info.protocol_version(),
-        "clientInfo" => %{"name" => "backplane", "version" => Backplane.MCP.Info.version()},
-        "capabilities" => %{}
-      })
+    status =
+      cond do
+        state.status in [:connecting, :disconnected] -> state.status
+        failures >= @max_consecutive_failures -> :degraded
+        true -> state.status
+      end
 
-    case http_request(state, request) do
-      {:ok, %{"result" => result}} ->
-        case validate_initialize_result(result) do
-          {:ok, upstream_version, upstream_caps} ->
-            {:ok,
-             %{
-               state
-               | initialized: true,
-                 upstream_version: upstream_version,
-                 upstream_capabilities: upstream_caps
-             }}
+    %{state | consecutive_call_failures: failures, status: status}
+  end
 
-          {:error, reason} ->
-            {:error, reason, state}
+  # Lifecycle and timers
+
+  defp stop_owned_resources(state) do
+    state =
+      state
+      |> Map.put(:stopping, true)
+      |> cancel_all_timers()
+      |> stop_client_tree()
+
+    ToolRegistry.deregister_upstream(state.prefix, self())
+    release_client_lease(state)
+
+    Map.merge(state, %{
+      tools: [],
+      status: :disconnected,
+      negotiated_version: nil,
+      era: nil,
+      negotiation_status: :connecting,
+      server_info: nil,
+      server_capabilities: nil
+    })
+  end
+
+  defp disconnect(state, reason) do
+    message = ProtocolClient.error_message(reason)
+
+    Logger.warning("Upstream connection unavailable", upstream: state.name, reason: message)
+
+    state =
+      state
+      |> cancel_timer(:refresh_timer)
+      |> cancel_timer(:health_timer)
+      |> stop_client_tree()
+
+    ToolRegistry.deregister_upstream(state.prefix, self())
+
+    PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
+      name: state.name,
+      reason: message
+    })
+
+    attempt = state.reconnect_attempts
+
+    state
+    |> Map.merge(%{
+      tools: [],
+      status: :disconnected,
+      negotiated_version: nil,
+      era: nil,
+      negotiation_status: :connecting,
+      server_info: nil,
+      server_capabilities: nil,
+      reconnect_attempts: attempt + 1
+    })
+    |> schedule_reconnect(attempt)
+  end
+
+  defp stop_client_tree(state) do
+    client_supervisor = state.client_supervisor
+
+    if is_reference(state.client_monitor) do
+      Process.demonitor(state.client_monitor, [:flush])
+    end
+
+    if is_pid(client_supervisor) do
+      stop_client(state, client_supervisor)
+    end
+
+    %{state | client_supervisor: nil, client_monitor: nil}
+  end
+
+  defp client_tree_available?(state) do
+    is_pid(state.client_supervisor) and Process.alive?(state.client_supervisor) and
+      is_pid(GenServer.whereis(state.client))
+  catch
+    :exit, _reason -> false
+  end
+
+  defp safe_client_call(fun) do
+    {:ok, fun.()}
+  rescue
+    _exception -> {:error, :client_unavailable}
+  catch
+    :exit, _reason -> {:error, :client_unavailable}
+    _kind, _reason -> {:error, :client_unavailable}
+  end
+
+  defp start_client_tree(state) do
+    options = ProtocolClient.client_options(state.config)
+
+    case ClientLeaseManager.start_client(self(), state.prefix, options) do
+      {:ok, supervisor} ->
+        {:ok, supervisor, true}
+
+      {:error, :not_owned} ->
+        case ClientPool.start_client(options) do
+          {:ok, supervisor} -> {:ok, supervisor, false}
+          {:error, _reason} = error -> error
         end
 
-      {:ok, _response} ->
-        {:error, :invalid_initialize_result, state}
-
-      {:error, reason} ->
-        {:error, reason, state}
+      {:error, _reason} = error ->
+        error
     end
+  catch
+    :exit, _reason ->
+      ClientLeaseManager.cleanup(self())
+      {:error, :client_lease_manager_unavailable}
   end
 
-  defp connect_and_initialize(%{transport: "stdio"} = state) do
-    state = reset_negotiation(state)
-    config = state.config
+  defp detach_client(%{pool_owned: true}, client_supervisor) do
+    ClientLeaseManager.detach_client(self(), client_supervisor)
+  end
 
-    port_opts = [
-      :binary,
-      :exit_status,
-      :use_stdio,
-      {:args, config[:args] || []},
-      {:env, format_env(config[:env] || %{})}
-    ]
+  defp detach_client(_state, _client_supervisor), do: :ok
 
+  defp stop_client(%{pool_owned: true}, client_supervisor) do
+    ClientLeaseManager.stop_client(self(), client_supervisor)
+  end
+
+  defp stop_client(_state, client_supervisor) do
     try do
-      port = Port.open({:spawn_executable, find_executable(config.command)}, port_opts)
-
-      state = %{state | port: port}
-
-      request =
-        jsonrpc_request("initialize", %{
-          "protocolVersion" => Backplane.MCP.Info.protocol_version(),
-          "clientInfo" => %{"name" => "backplane", "version" => Backplane.MCP.Info.version()},
-          "capabilities" => %{}
-        })
-
-      case send_stdio_and_wait(state, request) do
-        {:ok, result, state} ->
-          case validate_initialize_result(result) do
-            {:ok, upstream_version, upstream_caps} ->
-              {:ok,
-               %{
-                 state
-                 | initialized: true,
-                   upstream_version: upstream_version,
-                   upstream_capabilities: upstream_caps
-               }}
-
-            {:error, reason} ->
-              {:error, reason, close_stdio_port(state)}
-          end
-
-        {:error, reason, state} ->
-          {:error, reason, state}
-      end
+      _ = ClientPool.stop_client(client_supervisor)
     rescue
-      e ->
-        Logger.warning("Stdio initialization failed for #{state.name}: #{Exception.message(e)}")
-        {:error, Exception.message(e), state}
+      _exception -> :ok
+    catch
+      :exit, _reason -> :ok
     end
   end
 
-  defp validate_initialize_result(%{
-         "protocolVersion" => version,
-         "capabilities" => capabilities
+  defp release_client_lease(%{pool_owned: true}), do: ClientLeaseManager.cleanup(self())
+  defp release_client_lease(_state), do: :ok
+
+  defp configured_preference(config) do
+    case ProtocolClient.protocol_preference(config) do
+      :auto -> "auto"
+      version -> version
+    end
+  end
+
+  defp safe_negotiation_status(%{
+         negotiated_version: version,
+         era: era,
+         negotiation_status: :ready
        })
-       when is_map(capabilities) do
-    case validated_legacy_version(version) do
-      nil -> {:error, :invalid_initialize_result}
-      version -> {:ok, version, capabilities}
+       when is_binary(version) and era in [:legacy, :modern] do
+    case ProtocolRegistry.profile(version) do
+      {:ok, %{era: ^era}} -> {version, era, :ready}
+      _unknown_or_mismatched -> {nil, nil, :connecting}
     end
   end
 
-  defp validate_initialize_result(_result), do: {:error, :invalid_initialize_result}
+  defp safe_negotiation_status(%{negotiation_status: :ready}),
+    do: {nil, nil, :connecting}
 
-  defp validated_legacy_version(version) when is_binary(version) do
-    if version in Info.supported_versions(), do: version
+  defp safe_negotiation_status(state) do
+    {nil, nil, state.negotiation_status}
   end
 
-  defp validated_legacy_version(_version), do: nil
-
-  defp reset_negotiation(state) do
-    %{
-      state
-      | initialized: false,
-        upstream_version: nil,
-        upstream_capabilities: %{}
-    }
-  end
-
-  defp close_stdio_port(%{port: port} = state) when is_port(port) do
-    Port.close(port)
-    %{state | port: nil}
-  end
-
-  defp close_stdio_port(state), do: state
-
-  defp discover_tools(%{transport: "http"} = state) do
-    request = jsonrpc_request("tools/list", %{})
-
-    case http_request(state, request) do
-      {:ok, %{"result" => %{"tools" => tools}}} ->
-        register_tools(state, tools)
-
-      {:ok, _} ->
-        {:error, "Unexpected response from tools/list", state}
-
-      {:error, reason} ->
-        {:error, reason, state}
-    end
-  end
-
-  defp discover_tools(%{transport: "stdio"} = state) do
-    request = jsonrpc_request("tools/list", %{})
-
-    case send_stdio_and_wait(state, request) do
-      {:ok, %{"tools" => tools}, state} ->
-        register_tools(state, tools)
-
-      {:ok, _, state} ->
-        {:error, "Unexpected response from tools/list", state}
-
-      {:error, reason, state} ->
-        {:error, reason, state}
-    end
-  end
-
-  defp register_tools(state, raw_tools) do
-    # Deregister old tools first
-    ToolRegistry.deregister_upstream(state.prefix)
-    tool_timeouts = state.config[:tool_timeouts] || %{}
-    default_timeout = state.tool_timeout
-
-    tools =
-      Enum.map(raw_tools, fn raw ->
-        tool_name = raw["name"]
-        timeout = Map.get(tool_timeouts, tool_name, default_timeout)
-
-        %Tool{
-          name: tool_name,
-          description: raw["description"] || "",
-          input_schema: raw["inputSchema"] || %{},
-          output_schema: raw["outputSchema"],
-          annotations: raw["annotations"],
-          icon: raw["icon"],
-          origin: {:upstream, state.prefix},
-          timeout: timeout
-        }
-      end)
-
-    ToolRegistry.register_upstream(state.prefix, self(), tools)
-
+  defp broadcast_tools_refreshed(state, tools) do
     PubSubBroadcaster.broadcast_upstream(state.prefix, :tools_refreshed, %{
       name: state.name,
       tool_count: length(tools)
     })
-
-    {:ok, %{state | tools: tools}}
   end
 
-  defp http_tools_call(state, tool_name, arguments) do
-    request =
-      jsonrpc_request("tools/call", %{
-        "name" => tool_name,
-        "arguments" => arguments
-      })
+  defp schedule_refresh(state) do
+    interval =
+      if is_integer(state.refresh_interval) and state.refresh_interval > 0,
+        do: state.refresh_interval,
+        else: @refresh_interval
 
-    case http_request(state, request) do
-      {:ok, %{"result" => result}} ->
-        {:ok, result}
-
-      {:ok, %{"error" => error}} ->
-        {:error, error["message"] || "Unknown upstream error"}
-
-      {:ok, body} ->
-        {:error, "Malformed upstream response: #{inspect(body)}"}
-
-      {:error, reason} ->
-        {:error, "Upstream request failed: #{inspect(reason)}"}
-    end
+    schedule_timer(state, :refresh_timer, :refresh, interval)
   end
 
-  defp http_request(state, body) do
-    config = state.config
-    headers = build_request_headers(config)
-
-    opts = [
-      url: config.url,
-      method: :post,
-      json: body,
-      headers: [
-        {"content-type", "application/json"},
-        {"accept", "application/json, text/event-stream"}
-        | headers
-      ],
-      receive_timeout: config[:timeout] || @default_timeout,
-      decode_body: false
-    ]
-
-    case Req.request(opts) do
-      {:ok, %{status: 200, headers: resp_headers, body: resp_body}} ->
-        decode_http_response(resp_headers, resp_body)
-
-      {:ok, %{status: status}} ->
-        {:error, "HTTP #{status}"}
-
-      {:error, %{reason: reason}} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  catch
-    {:auth_error, reason} -> {:error, reason}
+  defp schedule_health(state) do
+    schedule_timer(state, :health_timer, :health_ping, @health_ping_interval)
   end
 
-  defp build_request_headers(config) do
-    base_headers = Map.to_list(config[:headers] || %{})
-
-    base_headers =
-      case Backplane.Proxy.AuthInjector.inject(
-             base_headers,
-             config[:auth_scheme],
-             config[:auth_header_name],
-             config[:credential]
-           ) do
-        {:ok, h} -> h
-        {:error, reason} -> throw({:auth_error, reason})
-      end
-
-    case Logger.metadata()[:request_id] do
-      nil -> base_headers
-      req_id -> [{"x-request-id", req_id} | base_headers]
-    end
-  end
-
-  defp decode_http_response(resp_headers, resp_body) do
-    content_type = get_content_type(resp_headers)
-
-    if String.contains?(content_type, "text/event-stream") do
-      parse_sse_response(resp_body)
-    else
-      case Jason.decode(resp_body) do
-        {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-        {:ok, _} -> {:error, "Unexpected non-object JSON response"}
-        {:error, _} -> {:error, "Invalid JSON response"}
-      end
-    end
-  end
-
-  defp parse_sse_response(body) when is_binary(body) do
-    {events, _rest} = Backplane.Proxy.SSEParser.parse(body, "")
-
-    case Enum.find(events, &(&1.event == "message")) do
-      %{data: data} ->
-        case Jason.decode(data) do
-          {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-          {:ok, _} -> {:error, "Unexpected non-object in SSE data"}
-          {:error, _} -> {:error, "Invalid JSON in SSE data"}
-        end
-
-      nil ->
-        {:error, "No message event in SSE response"}
-    end
-  end
-
-  defp get_content_type(headers) when is_map(headers) do
-    case headers["content-type"] do
-      [ct | _] -> ct
-      _ -> ""
-    end
-  end
-
-  defp get_content_type(headers) when is_list(headers) do
-    Enum.find_value(headers, "", fn
-      {k, v} when is_binary(k) -> if String.downcase(k) == "content-type", do: v
-      _ -> nil
-    end)
-  end
-
-  # Stdio Transport helpers
-
-  defp send_stdio(port, request) when is_port(port) do
-    data = Jason.encode!(request) <> "\n"
-    Port.command(port, data)
-    :ok
-  rescue
-    e ->
-      Logger.debug("Stdio send failed: #{Exception.message(e)}")
-      {:error, Exception.message(e)}
-  end
-
-  defp send_stdio(nil, _request), do: {:error, :not_connected}
-
-  defp send_stdio_and_wait(state, request) do
-    case send_stdio(state.port, request) do
-      :ok ->
-        receive do
-          {port, {:data, data}} when port == state.port ->
-            case Jason.decode(data) do
-              {:ok, %{"result" => result}} ->
-                {:ok, result, state}
-
-              {:ok, %{"error" => error}} ->
-                {:error, error["message"], state}
-
-              {:error, _} ->
-                {:error, "Invalid JSON response", state}
-            end
-        after
-          @default_timeout ->
-            {:error, :timeout, state}
-        end
-
-      {:error, reason} ->
-        {:error, reason, state}
-    end
-  end
-
-  defp handle_stdio_data(state, data) do
-    buffer = state.buffer <> data
-
-    if byte_size(buffer) > @max_buffer_size do
-      Logger.warning("Stdio buffer exceeded #{@max_buffer_size} bytes, dropping",
-        upstream: state.name
-      )
-
-      %{state | buffer: ""}
-    else
-      split_and_process(state, buffer)
-    end
-  end
-
-  defp split_and_process(state, buffer) do
-    case String.split(buffer, "\n", parts: 2) do
-      [complete, rest] ->
-        state = %{state | buffer: ""} |> process_stdio_message(complete)
-        handle_stdio_data(state, rest)
-
-      [_incomplete] ->
-        %{state | buffer: buffer}
-    end
-  end
-
-  defp process_stdio_message(state, message) when byte_size(message) == 0, do: state
-
-  defp process_stdio_message(state, message) do
-    case Jason.decode(message) do
-      {:ok, %{"id" => id} = response} ->
-        dispatch_stdio_response(state, id, response)
-
-      {:ok, decoded} ->
-        Logger.debug("Upstream #{state.prefix}: received message without id: #{inspect(decoded)}")
-        state
-
-      {:error, _} ->
-        Logger.warning(
-          "Upstream #{state.prefix}: failed to decode stdio message: #{String.slice(message, 0, 200)}"
-        )
-
-        state
-    end
-  end
-
-  defp dispatch_stdio_response(%{pending_ping_id: ping_id} = state, id, _response)
-       when id == ping_id and not is_nil(ping_id) do
-    now = System.system_time(:second)
-
-    %{
-      state
-      | pending_ping_id: nil,
-        last_pong_at: now,
-        consecutive_ping_failures: 0,
-        status: :connected
-    }
-  end
-
-  defp dispatch_stdio_response(state, id, response) do
-    case Map.pop(state.pending_requests, id) do
-      {nil, _} ->
-        state
-
-      {from, pending} ->
-        result = parse_jsonrpc_result(response)
-        GenServer.reply(from, result)
-        %{state | pending_requests: pending}
-    end
-  end
-
-  defp parse_jsonrpc_result(%{"result" => result}), do: {:ok, result}
-  defp parse_jsonrpc_result(%{"error" => error}), do: {:error, error["message"]}
-
-  # Call failure tracking
-
-  defp track_call_result(state, {:ok, _}) do
-    %{state | consecutive_call_failures: 0, status: :connected}
-  end
-
-  defp track_call_result(state, {:error, _}) do
-    failures = state.consecutive_call_failures + 1
-
-    new_status =
-      if failures >= @max_consecutive_failures, do: :degraded, else: state.status
-
-    %{state | consecutive_call_failures: failures, status: new_status}
-  end
-
-  # Helpers
-
-  defp jsonrpc_request(method, params) do
-    JsonRpc.request(method, params)
-  end
-
-  defp next_request_id(state) do
-    {state.next_id, %{state | next_id: state.next_id + 1}}
-  end
-
-  defp schedule_refresh(%{refresh_interval: interval}) when is_integer(interval) do
-    Process.send_after(self(), :refresh, interval)
-  end
-
-  defp schedule_refresh(_state) do
-    Process.send_after(self(), :refresh, @refresh_interval)
-  end
-
-  defp schedule_reconnect(attempt) do
+  defp schedule_reconnect(state, attempt) do
     base_delay = min(@initial_backoff_ms * Integer.pow(2, attempt), @max_backoff_ms)
-    # Add jitter: 75-125% of base delay
     jitter = div(base_delay, 4)
     delay = base_delay - jitter + :rand.uniform(max(jitter * 2, 1))
-    Process.send_after(self(), :reconnect, delay)
+    schedule_timer(state, :reconnect_timer, :reconnect, delay)
   end
 
-  defp schedule_health_ping do
-    Process.send_after(self(), :health_ping, @health_ping_interval)
+  defp schedule_timer(state, field, message, delay) do
+    state = cancel_timer(state, field)
+    token = make_ref()
+    timer = Process.send_after(self(), {message, token}, delay)
+    Map.put(state, field, {timer, token})
   end
 
-  defp send_ping(%{transport: "http"} = state) do
-    request = jsonrpc_request("ping", %{})
-
-    case http_request(state, request) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
+  defp cancel_timer(state, field) do
+    case Map.get(state, field) do
+      {timer, _token} when is_reference(timer) -> Process.cancel_timer(timer)
+      _missing -> :ok
     end
+
+    Map.put(state, field, nil)
   end
 
-  defp send_ping(%{transport: "stdio", port: nil}), do: {:error, :not_connected}
-
-  defp send_ping(%{transport: "stdio"} = state) do
-    # Use the pending_ping_id so the async response can be matched
-    request = JsonRpc.request("ping", %{}, id: state.pending_ping_id)
-
-    case send_stdio(state.port, request) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp find_executable(command) do
-    case System.find_executable(command) do
-      nil -> command
-      path -> path
-    end
-  end
-
-  defp format_env(env) when is_map(env) do
-    Enum.map(env, fn {k, v} ->
-      {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
-    end)
+  defp cancel_all_timers(state) do
+    state
+    |> cancel_timer(:reconnect_timer)
+    |> cancel_timer(:refresh_timer)
+    |> cancel_timer(:health_timer)
   end
 end

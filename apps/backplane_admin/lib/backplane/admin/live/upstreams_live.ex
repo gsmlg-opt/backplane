@@ -1,8 +1,8 @@
 defmodule Backplane.Admin.UpstreamsLive do
   use Backplane.Admin, :live_view
 
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
   alias Backplane.Proxy.{McpUpstream, Pool, Upstreams}
-  alias Backplane.MCP.Info
   alias Backplane.PubSubBroadcaster
   alias Backplane.Settings.Credentials
 
@@ -335,7 +335,10 @@ defmodule Backplane.Admin.UpstreamsLive do
   end
 
   defp safe_negotiated_version(%{negotiated_version: version}) when is_binary(version) do
-    if version in Info.supported_versions(), do: version
+    case ProtocolRegistry.profile(version) do
+      {:ok, _profile} -> version
+      :error -> nil
+    end
   end
 
   defp safe_negotiated_version(_status), do: nil

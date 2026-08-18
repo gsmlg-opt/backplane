@@ -24,6 +24,16 @@ defmodule Backplane.Registry.ToolRegistryTest do
     }
   end
 
+  defp upstream_tool(name, opts \\ []) do
+    %Tool{
+      name: name,
+      description: Keyword.get(opts, :description, name),
+      input_schema: %{},
+      origin: :native,
+      timeout: Keyword.get(opts, :timeout, 30_000)
+    }
+  end
+
   describe "register_native/1" do
     test "registers a tool module and appears in list_all" do
       tool = sample_tool()
@@ -122,6 +132,132 @@ defmodule Backplane.Registry.ToolRegistryTest do
   end
 
   describe "register_upstream/3" do
+    test "commits each same-prefix catalog as one immutable snapshot" do
+      old = [upstream_tool("old_a"), upstream_tool("old_b")]
+      new = [upstream_tool("new_a"), upstream_tool("new_b")]
+
+      assert :ok = ToolRegistry.register_upstream("snapshot", self(), old)
+
+      assert ["snapshot::old_a", "snapshot::old_b"] ==
+               ToolRegistry.list_all()
+               |> Enum.map(& &1.name)
+               |> Enum.filter(&String.starts_with?(&1, "snapshot::"))
+
+      assert :ok = ToolRegistry.register_upstream("snapshot", self(), new)
+
+      assert ["snapshot::new_a", "snapshot::new_b"] ==
+               ToolRegistry.list_all()
+               |> Enum.map(& &1.name)
+               |> Enum.filter(&String.starts_with?(&1, "snapshot::"))
+
+      assert ToolRegistry.lookup("snapshot::old_a") == nil
+      assert :not_found = ToolRegistry.resolve("snapshot::old_a")
+      assert %Tool{name: "snapshot::new_a"} = ToolRegistry.lookup("snapshot::new_a")
+    end
+
+    test "concurrent readers observe exactly the old or new whole catalog" do
+      old = [
+        upstream_tool("old_a"),
+        upstream_tool("old_b"),
+        upstream_tool("shared", description: "old", timeout: 1_001)
+      ]
+
+      new = [
+        upstream_tool("new_a"),
+        upstream_tool("new_b"),
+        upstream_tool("shared", description: "new", timeout: 2_002)
+      ]
+
+      assert :ok = ToolRegistry.register_upstream("atomic", self(), old)
+
+      writer =
+        Task.async(fn ->
+          for index <- 1..200 do
+            tools = if rem(index, 2) == 0, do: old, else: new
+            :ok = ToolRegistry.register_upstream("atomic", self(), tools)
+          end
+
+          :ok
+        end)
+
+      observations =
+        for _ <- 1..500 do
+          names =
+            ToolRegistry.list_all()
+            |> Enum.map(& &1.name)
+            |> Enum.filter(&String.starts_with?(&1, "atomic::"))
+
+          lookup = ToolRegistry.lookup("atomic::shared")
+          resolved = ToolRegistry.resolve("atomic::shared")
+          {names, lookup, resolved}
+        end
+
+      assert :ok = Task.await(writer, 5_000)
+
+      old_names = ["atomic::old_a", "atomic::old_b", "atomic::shared"]
+      new_names = ["atomic::new_a", "atomic::new_b", "atomic::shared"]
+
+      assert Enum.all?(observations, fn {names, lookup, resolved} ->
+               names in [old_names, new_names] and
+                 match?(
+                   %Tool{description: description} when description in ["old", "new"],
+                   lookup
+                 ) and
+                 match?(
+                   {:upstream, _pid, "shared", timeout} when timeout in [1_001, 2_002],
+                   resolved
+                 )
+             end)
+    end
+
+    test "logical count and notifications ignore the private snapshot row" do
+      Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.mcp_notifications_topic())
+
+      ToolRegistry.register_native(sample_tool("native::one"))
+      assert_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
+
+      assert :ok =
+               ToolRegistry.register_upstream("counted", self(), [
+                 upstream_tool("one"),
+                 upstream_tool("two")
+               ])
+
+      assert_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
+      refute_receive {:mcp_notification, _}, 25
+      assert ToolRegistry.count() == 3
+
+      assert :ok = ToolRegistry.deregister_upstream("counted")
+      assert_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}
+      refute_receive {:mcp_notification, _}, 25
+      assert ToolRegistry.count() == 1
+      assert ToolRegistry.lookup("counted::one") == nil
+      assert :not_found = ToolRegistry.resolve("counted::two")
+    end
+
+    test "a stale owner cannot deregister a newer same-prefix snapshot" do
+      owner_a = spawn(fn -> Process.sleep(:infinity) end)
+      owner_b = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(owner_a, :kill) end)
+      on_exit(fn -> Process.exit(owner_b, :kill) end)
+
+      assert :ok =
+               ToolRegistry.register_upstream("owned", owner_a, [upstream_tool("old")])
+
+      assert :ok =
+               ToolRegistry.register_upstream("owned", owner_b, [upstream_tool("new")])
+
+      assert :ok = ToolRegistry.deregister_upstream("owned", owner_a)
+      assert ToolRegistry.lookup("owned::old") == nil
+
+      assert %Tool{name: "owned::new", upstream_pid: ^owner_b} =
+               ToolRegistry.lookup("owned::new")
+
+      assert {:upstream, ^owner_b, "new", _timeout} = ToolRegistry.resolve("owned::new")
+
+      assert :ok = ToolRegistry.deregister_upstream("owned", owner_b)
+      assert ToolRegistry.lookup("owned::new") == nil
+    end
+
     test "preserves complete upstream catalog metadata while namespacing forwarding fields" do
       pid = self()
 

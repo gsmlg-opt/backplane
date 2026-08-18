@@ -5,7 +5,9 @@ defmodule Backplane.Proxy.Pool do
 
   use DynamicSupervisor
 
-  alias Backplane.Proxy.Upstream
+  alias Backplane.Proxy.{ClientLeaseManager, Upstream}
+
+  @prepare_stop_timeout 250
 
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
@@ -26,7 +28,25 @@ defmodule Backplane.Proxy.Pool do
   @doc "Stop an upstream connection by pid."
   @spec stop_upstream(pid()) :: :ok | {:error, :not_found}
   def stop_upstream(pid) when is_pid(pid) do
-    DynamicSupervisor.terminate_child(__MODULE__, pid)
+    if child?(pid) do
+      ClientLeaseManager.mark_stopping(pid)
+      prepare_stop(pid)
+      ClientLeaseManager.cleanup(pid)
+      result = DynamicSupervisor.terminate_child(__MODULE__, pid)
+      ClientLeaseManager.finalize_owner(pid)
+      result
+    else
+      {:error, :not_found}
+    end
+  end
+
+  @doc false
+  @spec child?(pid()) :: boolean()
+  def child?(pid) when is_pid(pid) do
+    Enum.any?(DynamicSupervisor.which_children(__MODULE__), fn
+      {_id, ^pid, _type, _modules} -> true
+      _other_child -> false
+    end)
   end
 
   @doc "List status of all upstream connections."
@@ -56,5 +76,11 @@ defmodule Backplane.Proxy.Pool do
     Upstream.status(pid)
   catch
     :exit, _ -> nil
+  end
+
+  defp prepare_stop(pid) do
+    Upstream.prepare_stop(pid, @prepare_stop_timeout)
+  catch
+    :exit, _reason -> :ok
   end
 end

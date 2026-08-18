@@ -16,6 +16,7 @@ defmodule BackplaneMcp.Application do
       {Task.Supervisor, name: Backplane.MCP.ModernTaskSupervisor},
       {Registry, keys: :unique, name: Backplane.Proxy.ProcessRegistry},
       Backplane.Proxy.ClientPool,
+      Backplane.Proxy.ClientLeaseManager,
       Backplane.Proxy.Pool,
       {Backplane.Cache, cache_opts}
     ]

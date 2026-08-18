@@ -153,7 +153,7 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
   test "renders configured and negotiated protocol status without credential references", %{
     conn: conn
   } do
-    {bandit, port} = start_mock_server()
+    {bandit, port} = start_mock_server(:modern)
     on_exit(fn -> stop_bandit(bandit) end)
 
     {:ok, upstream} =
@@ -181,8 +181,8 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
 
     html = render(view)
     assert html =~ "Preference: 2026-07-28"
-    assert html =~ "Negotiated: 2025-11-25"
-    assert html =~ "Era: Legacy"
+    assert html =~ "Negotiated: 2026-07-28"
+    assert html =~ "Era: Modern"
     assert html =~ "Negotiation: Ready"
     refute html =~ "internal-credential-reference"
   end
@@ -191,7 +191,7 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
     {view, runtime_pid} = start_status_runtime(conn, "unknown-version")
 
     :sys.replace_state(runtime_pid, fn state ->
-      %{state | upstream_version: "2099-01-01"}
+      %{state | negotiated_version: "2099-01-01"}
     end)
 
     send(view.pid, {:reloaded, %{}})
@@ -206,7 +206,7 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
     {view, runtime_pid} = start_status_runtime(conn, "non-string-version")
 
     :sys.replace_state(runtime_pid, fn state ->
-      %{state | upstream_version: %{"unsafe" => "value"}}
+      %{state | negotiated_version: %{"unsafe" => "value"}}
     end)
 
     send(view.pid, {:reloaded, %{}})
@@ -288,7 +288,7 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
       create_upstream(%{
         name: name,
         prefix: "status#{System.unique_integer([:positive])}",
-        protocol_version: "2026-07-28",
+        protocol_version: "2025-11-25",
         url: "http://127.0.0.1:#{port}/mcp"
       })
 
@@ -331,10 +331,10 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
 
   defp eventually(_fun, 0), do: false
 
-  defp start_mock_server do
+  defp start_mock_server(mode \\ :legacy) do
     {:ok, bandit} =
       Bandit.start_link(
-        plug: Backplane.Test.MockMcpPlug,
+        plug: {Backplane.Test.MockMcpPlug, mode: mode},
         port: 0,
         ip: {127, 0, 0, 1}
       )
