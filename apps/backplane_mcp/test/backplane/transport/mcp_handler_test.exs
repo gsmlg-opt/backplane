@@ -18,6 +18,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
+  @legacy_versions ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 
   setup %{tmp_dir: tmp_dir} do
     previous_blob_root = Backplane.Settings.get(@blob_setting)
@@ -77,6 +78,18 @@ defmodule Backplane.Transport.McpHandlerTest do
     test "accepts unsupported protocolVersion and returns server version" do
       resp = mcp_request("initialize", %{"protocolVersion" => "1999-01-01"})
       assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+    end
+
+    test "falls back to the legacy endpoint default for 2026-07-28" do
+      resp = mcp_request("initialize", %{"protocolVersion" => "2026-07-28"})
+      assert resp["result"]["protocolVersion"] == "2025-11-25"
+    end
+
+    for version <- @legacy_versions do
+      test "accepts legacy protocolVersion #{version}" do
+        resp = mcp_request("initialize", %{"protocolVersion" => unquote(version)})
+        assert resp["result"]["protocolVersion"] == unquote(version)
+      end
     end
 
     test "accepts matching protocolVersion" do
