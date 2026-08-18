@@ -81,22 +81,9 @@ defmodule Backplane.Application do
 
   defp start_db_upstreams do
     for upstream <- Backplane.Proxy.Upstreams.list_enabled() do
-      config = %{
-        name: upstream.name,
-        prefix: upstream.prefix,
-        transport: upstream.transport,
-        url: upstream.url,
-        command: upstream.command,
-        args: upstream.args || [],
-        timeout: upstream.timeout_ms,
-        refresh_interval: upstream.refresh_interval_ms,
-        headers: upstream.headers || %{},
-        credential: upstream.credential,
-        auth_scheme: upstream.auth_scheme || "none",
-        auth_header_name: upstream.auth_header_name
-      }
-
-      Backplane.Proxy.Pool.start_upstream(config)
+      upstream
+      |> Backplane.Proxy.Upstreams.runtime_config()
+      |> Backplane.Proxy.Pool.start_upstream()
     end
   rescue
     e ->

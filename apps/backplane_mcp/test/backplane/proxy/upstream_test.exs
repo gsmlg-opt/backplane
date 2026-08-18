@@ -620,6 +620,9 @@ defmodule Backplane.Proxy.UpstreamTest do
       status = Upstream.status(pid)
       assert status.status == :disconnected
       assert status.tool_count == 0
+      assert status.negotiated_version == nil
+      assert status.era == nil
+      assert status.negotiation_status == :connecting
 
       GenServer.stop(pid)
     end
@@ -1032,6 +1035,122 @@ defmodule Backplane.Proxy.UpstreamTest do
     end
   end
 
+  describe "protocol negotiation status" do
+    test "reports the configured preference and negotiated legacy state" do
+      {:ok, _} = start_mock_http_server(4284)
+
+      config = %{
+        name: "protocol-status",
+        prefix: "protocolstatus",
+        transport: "http",
+        protocol_version: "2026-07-28",
+        url: "http://127.0.0.1:4284/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert Map.has_key?(status, :protocol_preference)
+      assert status.protocol_preference == "2026-07-28"
+      assert status.negotiated_version == "2025-11-25"
+      assert status.era == :legacy
+      assert status.negotiation_status == :ready
+
+      GenServer.stop(pid)
+    end
+
+    test "uses the legacy preference fallback while negotiation is incomplete" do
+      config = %{
+        name: "protocol-connecting",
+        prefix: "protocolconnecting",
+        transport: "http",
+        url: "http://127.0.0.1:19987/mcp",
+        headers: %{}
+      }
+
+      {:ok, pid} = Upstream.start_link(config)
+      Process.sleep(200)
+
+      status = Upstream.status(pid)
+      assert Map.has_key?(status, :protocol_preference)
+      assert status.protocol_preference == "2025-11-25"
+      assert status.negotiated_version == nil
+      assert status.era == nil
+      assert status.negotiation_status == :connecting
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "initialize response validation" do
+    for {label, initialize_result} <- [
+          {"a non-string protocol version",
+           %{"protocolVersion" => %{"unsafe" => true}, "capabilities" => %{}}},
+          {"an unknown protocol version",
+           %{"protocolVersion" => "2099-01-01", "capabilities" => %{}}},
+          {"malformed capabilities",
+           %{"protocolVersion" => "2025-11-25", "capabilities" => ["tools"]}}
+        ] do
+      test "rejects HTTP initialize with #{label}" do
+        initialize_result = unquote(Macro.escape(initialize_result))
+        {:ok, bandit, port} = start_mock_invalid_initialize_server(initialize_result)
+        on_exit(fn -> stop_bandit(bandit) end)
+
+        config = %{
+          name: "invalid-http-#{System.unique_integer([:positive])}",
+          prefix: "invalidhttp",
+          transport: "http",
+          protocol_version: "2026-07-28",
+          url: "http://127.0.0.1:#{port}/mcp",
+          headers: %{}
+        }
+
+        {:ok, pid} = Upstream.start_link(config)
+        Process.sleep(250)
+
+        status = Upstream.status(pid)
+        assert status.status == :disconnected
+        assert status.protocol_preference == "2026-07-28"
+        assert status.negotiated_version == nil
+        assert status.era == nil
+        assert status.negotiation_status == :connecting
+
+        GenServer.stop(pid)
+      end
+
+      @tag :stdio
+      @tag :tmp_dir
+      test "rejects stdio initialize with #{label}", %{tmp_dir: tmp_dir} do
+        initialize_result = unquote(Macro.escape(initialize_result))
+        script = write_stdio_initialize_server(tmp_dir, initialize_result)
+
+        config = %{
+          name: "invalid-stdio-#{System.unique_integer([:positive])}",
+          prefix: "invalidstdio",
+          transport: "stdio",
+          protocol_version: "auto",
+          command: "bash",
+          args: [script],
+          env: %{}
+        }
+
+        {:ok, pid} = Upstream.start_link(config)
+        Process.sleep(300)
+
+        status = Upstream.status(pid)
+        assert status.status == :disconnected
+        assert status.protocol_preference == "auto"
+        assert status.negotiated_version == nil
+        assert status.era == nil
+        assert status.negotiation_status == :connecting
+
+        GenServer.stop(pid)
+      end
+    end
+  end
+
   # Mock HTTP MCP Server
 
   defp start_mock_sse_http_server(port) do
@@ -1072,6 +1191,75 @@ defmodule Backplane.Proxy.UpstreamTest do
       port: port,
       ip: {127, 0, 0, 1}
     )
+  end
+
+  defp start_mock_invalid_initialize_server(initialize_result) do
+    {:ok, bandit} =
+      Bandit.start_link(
+        plug: {MockMcpInvalidInitializePlug, initialize_result: initialize_result},
+        port: 0,
+        ip: {127, 0, 0, 1}
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    {:ok, bandit, port}
+  end
+
+  defp stop_bandit(bandit) do
+    if Process.alive?(bandit), do: GenServer.stop(bandit)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp write_stdio_initialize_server(tmp_dir, initialize_result) do
+    path = Path.join(tmp_dir, "invalid_initialize.sh")
+    encoded_result = Jason.encode!(initialize_result)
+
+    File.write!(path, """
+    while IFS= read -r line; do
+      method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"//;s/"//')
+      id=$(echo "$line" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*("[^"]*"|-?[0-9]+|null).*/\1/p')
+
+      case "$method" in
+        initialize)
+          printf '{"jsonrpc":"2.0","id":%s,"result":%s}\\n' "$id" '#{encoded_result}'
+          ;;
+        tools/list)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\\n' "$id"
+          ;;
+        ping)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\\n' "$id"
+          ;;
+      esac
+    done
+    """)
+
+    path
+  end
+end
+
+defmodule MockMcpInvalidInitializePlug do
+  @moduledoc false
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(conn, opts) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    request = Jason.decode!(body)
+
+    result =
+      case request["method"] do
+        "initialize" -> Keyword.fetch!(opts, :initialize_result)
+        "tools/list" -> %{"tools" => []}
+        _ -> %{}
+      end
+
+    response = %{"jsonrpc" => "2.0", "id" => request["id"], "result" => result}
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(response))
   end
 end
 

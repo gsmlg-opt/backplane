@@ -75,6 +75,25 @@ defmodule Backplane.Proxy.Upstreams do
     McpUpstream.changeset(upstream, attrs)
   end
 
+  @spec runtime_config(%McpUpstream{}) :: map()
+  def runtime_config(%McpUpstream{} = upstream) do
+    %{
+      name: upstream.name,
+      prefix: upstream.prefix,
+      transport: upstream.transport,
+      protocol_version: upstream.protocol_version || "2025-11-25",
+      url: upstream.url,
+      command: upstream.command,
+      args: upstream.args || [],
+      timeout: upstream.timeout_ms,
+      refresh_interval: upstream.refresh_interval_ms,
+      headers: upstream.headers || %{},
+      credential: upstream.credential,
+      auth_scheme: upstream.auth_scheme || "none",
+      auth_header_name: upstream.auth_header_name
+    }
+  end
+
   def topic, do: @topic
 
   defp stop_runtime(upstream) do

@@ -1,7 +1,7 @@
 defmodule Backplane.Proxy.McpUpstreamTest do
   use ExUnit.Case, async: true
 
-  alias Backplane.Proxy.McpUpstream
+  alias Backplane.Proxy.{McpUpstream, Upstreams}
 
   defp changeset(attrs) do
     McpUpstream.changeset(%McpUpstream{}, attrs)
@@ -46,6 +46,87 @@ defmodule Backplane.Proxy.McpUpstreamTest do
     test "defaults auth_scheme to none" do
       cs = changeset(valid_http_attrs())
       assert Ecto.Changeset.get_field(cs, :auth_scheme) == "none"
+    end
+  end
+
+  describe "protocol preference" do
+    test "defaults to the legacy protocol version" do
+      assert Map.has_key?(%McpUpstream{}, :protocol_version)
+
+      assert Ecto.Changeset.get_field(changeset(valid_http_attrs()), :protocol_version) ==
+               "2025-11-25"
+    end
+
+    test "accepts only supported protocol preferences" do
+      assert Map.has_key?(%McpUpstream{}, :protocol_version)
+
+      for preference <- ["2025-11-25", "2026-07-28", "auto"] do
+        assert changeset(Map.put(valid_http_attrs(), :protocol_version, preference)).valid?
+      end
+
+      for preference <- [nil, "", "latest"] do
+        refute changeset(Map.put(valid_http_attrs(), :protocol_version, preference)).valid?
+      end
+    end
+
+    test "runtime config preserves all runtime fields and the selected preference" do
+      assert function_exported?(Upstreams, :runtime_config, 1)
+
+      upstream =
+        struct!(McpUpstream,
+          name: "runtime-http",
+          prefix: "runtime",
+          transport: "http",
+          protocol_version: "2026-07-28",
+          url: "https://example.test/mcp",
+          command: nil,
+          args: ["--flag"],
+          timeout_ms: 12_345,
+          refresh_interval_ms: 67_890,
+          headers: %{"X-Trace" => "enabled"},
+          credential: "runtime-credential",
+          auth_scheme: "custom_header",
+          auth_header_name: "X-Service-Key"
+        )
+
+      assert Upstreams.runtime_config(upstream) == %{
+               name: "runtime-http",
+               prefix: "runtime",
+               transport: "http",
+               protocol_version: "2026-07-28",
+               url: "https://example.test/mcp",
+               command: nil,
+               args: ["--flag"],
+               timeout: 12_345,
+               refresh_interval: 67_890,
+               headers: %{"X-Trace" => "enabled"},
+               credential: "runtime-credential",
+               auth_scheme: "custom_header",
+               auth_header_name: "X-Service-Key"
+             }
+    end
+
+    test "runtime config falls back to legacy defaults for nullable historical values" do
+      assert function_exported?(Upstreams, :runtime_config, 1)
+
+      upstream =
+        struct!(McpUpstream,
+          name: "historical-http",
+          prefix: "historical",
+          transport: "http",
+          protocol_version: nil,
+          url: "https://example.test/mcp",
+          args: nil,
+          headers: nil,
+          auth_scheme: nil
+        )
+
+      assert %{
+               protocol_version: "2025-11-25",
+               args: [],
+               headers: %{},
+               auth_scheme: "none"
+             } = Upstreams.runtime_config(upstream)
     end
   end
 

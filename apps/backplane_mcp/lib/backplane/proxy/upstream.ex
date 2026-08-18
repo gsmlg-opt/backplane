@@ -14,7 +14,7 @@ defmodule Backplane.Proxy.Upstream do
   require Logger
 
   alias Backplane.PubSubBroadcaster
-  alias Backplane.MCP.JsonRpc
+  alias Backplane.MCP.{Info, JsonRpc}
   alias Backplane.Registry.{Tool, ToolRegistry}
 
   @default_timeout 30_000
@@ -179,6 +179,10 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   def handle_call(:status, _from, state) do
+    protocol_preference = state.config[:protocol_version] || "2025-11-25"
+    negotiated_version = validated_legacy_version(state.upstream_version)
+    negotiation_ready? = state.initialized and is_binary(negotiated_version)
+
     info = %{
       name: state.name,
       prefix: state.prefix,
@@ -188,7 +192,11 @@ defmodule Backplane.Proxy.Upstream do
       last_ping_at: state.last_ping_at,
       last_pong_at: state.last_pong_at,
       consecutive_ping_failures: state.consecutive_ping_failures,
-      post_url_known: false
+      post_url_known: false,
+      protocol_preference: protocol_preference,
+      negotiated_version: negotiated_version,
+      era: if(negotiation_ready?, do: :legacy, else: nil),
+      negotiation_status: if(negotiation_ready?, do: :ready, else: :connecting)
     }
 
     {:reply, info, state}
@@ -284,6 +292,7 @@ defmodule Backplane.Proxy.Upstream do
 
     ToolRegistry.deregister_upstream(state.prefix)
     schedule_reconnect(state.reconnect_attempts)
+    state = reset_negotiation(state)
 
     PubSubBroadcaster.broadcast_upstream(state.prefix, :disconnected, %{
       name: state.name,
@@ -345,6 +354,8 @@ defmodule Backplane.Proxy.Upstream do
   # HTTP Transport
 
   defp connect_and_initialize(%{transport: "http"} = state) do
+    state = reset_negotiation(state)
+
     request =
       jsonrpc_request("initialize", %{
         "protocolVersion" => Backplane.MCP.Info.protocol_version(),
@@ -354,16 +365,22 @@ defmodule Backplane.Proxy.Upstream do
 
     case http_request(state, request) do
       {:ok, %{"result" => result}} ->
-        upstream_version = result["protocolVersion"]
-        upstream_caps = result["capabilities"] || %{}
+        case validate_initialize_result(result) do
+          {:ok, upstream_version, upstream_caps} ->
+            {:ok,
+             %{
+               state
+               | initialized: true,
+                 upstream_version: upstream_version,
+                 upstream_capabilities: upstream_caps
+             }}
 
-        {:ok,
-         %{
-           state
-           | initialized: true,
-             upstream_version: upstream_version,
-             upstream_capabilities: upstream_caps
-         }}
+          {:error, reason} ->
+            {:error, reason, state}
+        end
+
+      {:ok, _response} ->
+        {:error, :invalid_initialize_result, state}
 
       {:error, reason} ->
         {:error, reason, state}
@@ -371,6 +388,7 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   defp connect_and_initialize(%{transport: "stdio"} = state) do
+    state = reset_negotiation(state)
     config = state.config
 
     port_opts = [
@@ -395,16 +413,19 @@ defmodule Backplane.Proxy.Upstream do
 
       case send_stdio_and_wait(state, request) do
         {:ok, result, state} ->
-          upstream_version = result["protocolVersion"]
-          upstream_caps = result["capabilities"] || %{}
+          case validate_initialize_result(result) do
+            {:ok, upstream_version, upstream_caps} ->
+              {:ok,
+               %{
+                 state
+                 | initialized: true,
+                   upstream_version: upstream_version,
+                   upstream_capabilities: upstream_caps
+               }}
 
-          {:ok,
-           %{
-             state
-             | initialized: true,
-               upstream_version: upstream_version,
-               upstream_capabilities: upstream_caps
-           }}
+            {:error, reason} ->
+              {:error, reason, close_stdio_port(state)}
+          end
 
         {:error, reason, state} ->
           {:error, reason, state}
@@ -415,6 +436,41 @@ defmodule Backplane.Proxy.Upstream do
         {:error, Exception.message(e), state}
     end
   end
+
+  defp validate_initialize_result(%{
+         "protocolVersion" => version,
+         "capabilities" => capabilities
+       })
+       when is_map(capabilities) do
+    case validated_legacy_version(version) do
+      nil -> {:error, :invalid_initialize_result}
+      version -> {:ok, version, capabilities}
+    end
+  end
+
+  defp validate_initialize_result(_result), do: {:error, :invalid_initialize_result}
+
+  defp validated_legacy_version(version) when is_binary(version) do
+    if version in Info.supported_versions(), do: version
+  end
+
+  defp validated_legacy_version(_version), do: nil
+
+  defp reset_negotiation(state) do
+    %{
+      state
+      | initialized: false,
+        upstream_version: nil,
+        upstream_capabilities: %{}
+    }
+  end
+
+  defp close_stdio_port(%{port: port} = state) when is_port(port) do
+    Port.close(port)
+    %{state | port: nil}
+  end
+
+  defp close_stdio_port(state), do: state
 
   defp discover_tools(%{transport: "http"} = state) do
     request = jsonrpc_request("tools/list", %{})
