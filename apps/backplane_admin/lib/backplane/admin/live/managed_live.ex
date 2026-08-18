@@ -18,6 +18,12 @@ defmodule Backplane.Admin.ManagedLive do
       description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
     },
     %{
+      module: Backplane.Services.Skills,
+      name: "Skills",
+      description: "Search, load, download, and publish archive-backed agent skills",
+      setting_key: "services.skill.enabled"
+    },
+    %{
       module: Backplane.Services.Math,
       name: "Math",
       description: "Evaluate math expressions with the native math engine"
@@ -85,6 +91,8 @@ defmodule Backplane.Admin.ManagedLive do
     Settings.set("services.web.enabled", enabled)
     sync_registry(mod, enabled)
   end
+
+  defp set_enabled(Backplane.Services.Skills = mod, enabled), do: mod.set_enabled(enabled)
 
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
 
