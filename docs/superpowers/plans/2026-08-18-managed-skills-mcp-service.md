@@ -10,6 +10,23 @@
 
 ---
 
+## Final Review Addendum
+
+Execution followed this plan test-first. Final production review then superseded
+the plan's read-time registry refresh and added these completed hardening steps:
+
+- fail managed-service startup closed when the authoritative Settings load fails,
+  retrying a prior load error on application-level restart;
+- clear stale managed rows on readiness failure while preserving unrelated tools;
+- serialize Skills writes and toggles, plus Day/Web/Math UI read-modify-write
+  toggles;
+- make Managed MCP page loads read-only and report toggle errors truthfully;
+- reserve normalized prefix `skill` in upstream config, persistence, and runtime;
+- log rejected legacy upstreams during both configured and database boot paths.
+
+The final implementation and verification evidence therefore take precedence over
+individual steps below that mention page-load reconciliation.
+
 ## Working Directory and Verification Contract
 
 Run every command from:

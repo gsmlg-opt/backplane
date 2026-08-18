@@ -115,6 +115,23 @@ from existing clients.
   the existing managed-tool error handling.
 - Unknown service and tool routes retain the current redirect-and-flash behavior.
 
+## Final Review Hardening
+
+Production review added four constraints to the approved adapter design:
+
+- Settings records whether its authoritative database load succeeded. Managed
+  service reconciliation uses a successful snapshot and fails startup closed when
+  that load is unavailable; an application-level retry retries the load.
+- Skills desired-state writes and read-modify-write toggles serialize persistence
+  and registry synchronization under one node-local lock. Managed MCP serializes
+  the corresponding Day, Web, and Math UI toggles by prefix.
+- `/mcp/managed` page loads are read-only. Startup reconciliation and successful
+  toggle operations are the only synchronization points, so a page visit cannot
+  create registry gaps or emit unchanged tool-list notifications.
+- `skill` is reserved for the built-in service across config warnings, database
+  changesets, and runtime upstream startup. Legacy conflicting upstreams are
+  rejected before child startup and logged with their name, prefix, and reason.
+
 ## Test Strategy
 
 Focused tests will prove:
