@@ -40,6 +40,7 @@ defmodule Backplane.Config.Validator do
         |> check_required(upstream, :name, "upstream")
         |> check_required(upstream, :prefix, "upstream #{upstream[:name]}")
         |> check_prefix_format(upstream)
+        |> check_reserved_prefix(upstream)
         |> check_required(upstream, :transport, "upstream #{upstream[:name]}")
         |> check_upstream_transport(upstream)
       end)
@@ -65,6 +66,18 @@ defmodule Backplane.Config.Validator do
   end
 
   defp check_prefix_format(warnings, _upstream), do: warnings
+
+  defp check_reserved_prefix(warnings, %{prefix: prefix, name: name}) when is_binary(prefix) do
+    prefix = Namespace.normalize_prefix(prefix)
+
+    if Namespace.reserved_prefix?(prefix) do
+      ["upstream #{name}: prefix '#{prefix}' is reserved for a built-in service" | warnings]
+    else
+      warnings
+    end
+  end
+
+  defp check_reserved_prefix(warnings, _upstream), do: warnings
 
   defp check_upstream_transport(warnings, %{transport: "http"} = upstream) do
     warnings

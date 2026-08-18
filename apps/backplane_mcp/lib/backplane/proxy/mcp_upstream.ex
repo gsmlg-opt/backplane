@@ -40,6 +40,9 @@ defmodule Backplane.Proxy.McpUpstream do
     |> validate_format(:prefix, ~r/^[A-Za-z0-9_-]+$/,
       message: "can contain only letters, numbers, underscores, and hyphens"
     )
+    |> validate_exclusion(:prefix, Namespace.reserved_prefixes(),
+      message: "is reserved for a built-in service"
+    )
     |> validate_inclusion(:transport, ~w(http stdio))
     |> validate_inclusion(:auth_scheme, ~w(none bearer x_api_key custom_header))
     |> validate_transport_fields()

@@ -8,6 +8,7 @@ defmodule Backplane.Registry.Namespace do
 
   @separator "::"
   @prefix_format ~r/^[A-Za-z0-9_-]+$/
+  @reserved_prefixes ~w(skill)
 
   @doc "Returns the namespace separator used in tool names."
   @spec separator() :: String.t()
@@ -23,6 +24,18 @@ defmodule Backplane.Registry.Namespace do
   end
 
   def normalize_prefix(prefix), do: prefix
+
+  @doc "Returns namespace prefixes reserved for built-in MCP services."
+  @spec reserved_prefixes() :: [String.t()]
+  def reserved_prefixes, do: @reserved_prefixes
+
+  @doc "Checks whether a prefix is reserved after namespace normalization."
+  @spec reserved_prefix?(term()) :: boolean()
+  def reserved_prefix?(prefix) when is_binary(prefix) do
+    normalize_prefix(prefix) in @reserved_prefixes
+  end
+
+  def reserved_prefix?(_prefix), do: false
 
   @doc "Checks whether a normalized prefix is valid for MCP tool namespaces."
   @spec valid_prefix?(term()) :: boolean()
