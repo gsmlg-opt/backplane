@@ -82,7 +82,7 @@ defmodule Backplane.Services.SkillsTest do
     handler_id = "skills-toggle-race-#{System.unique_integer([:positive])}"
     parent = self()
     release_query = make_ref()
-    {:ok, gate} = Agent.start_link(fn -> false end)
+    gate = start_supervised!({Agent, fn -> false end})
 
     :ok =
       :telemetry.attach(
@@ -148,6 +148,75 @@ defmodule Backplane.Services.SkillsTest do
     assert Task.yield(second_toggle, 100) == nil
 
     assert true = :erlang.resume_process(first_toggle.pid)
+    assert Task.await(first_toggle, 1_000) == :ok
+    assert Task.await(second_toggle, 1_000) == :ok
+
+    assert Settings.get(@setting_key) == false
+    assert :not_found = ToolRegistry.resolve("skill::list")
+  end
+
+  test "concurrent toggles each flip the state atomically" do
+    assert function_exported?(Skills, :toggle_enabled, 0)
+    assert :ok = Skills.set_enabled(false)
+
+    handler_id = "skills-atomic-toggle-race-#{System.unique_integer([:positive])}"
+    parent = self()
+    release_query = make_ref()
+    gate = start_supervised!({Agent, fn -> false end})
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:backplane, :repo, :query],
+        fn _event, _measurements, metadata, {test_pid, query_ref, gate} ->
+          first_settings_query? =
+            metadata[:source] == "system_settings" and
+              Agent.get_and_update(gate, fn
+                false -> {true, true}
+                true -> {false, true}
+              end)
+
+          if first_settings_query? do
+            send(test_pid, {:toggle_query_blocked, self()})
+
+            receive do
+              {:release_toggle_query, ^query_ref} -> :ok
+            end
+          end
+        end,
+        {parent, release_query, gate}
+      )
+
+    first_toggle = Task.async(&Skills.toggle_enabled/0)
+
+    on_exit(fn ->
+      :telemetry.detach(handler_id)
+
+      if Process.alive?(first_toggle.pid) do
+        if settings_pid = Process.whereis(Settings) do
+          send(settings_pid, {:release_toggle_query, release_query})
+        end
+
+        safely_resume(first_toggle.pid)
+      end
+    end)
+
+    assert_receive {:toggle_query_blocked, settings_pid}, 1_000
+
+    second_toggle =
+      Task.async(fn ->
+        send(parent, :second_atomic_toggle_started)
+        Skills.toggle_enabled()
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(second_toggle.pid), do: safely_resume(second_toggle.pid)
+    end)
+
+    assert_receive :second_atomic_toggle_started, 1_000
+    assert Task.yield(second_toggle, 100) == nil
+
+    send(settings_pid, {:release_toggle_query, release_query})
     assert Task.await(first_toggle, 1_000) == :ok
     assert Task.await(second_toggle, 1_000) == :ok
 

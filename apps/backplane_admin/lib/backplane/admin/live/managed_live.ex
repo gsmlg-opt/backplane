@@ -5,6 +5,8 @@ defmodule Backplane.Admin.ManagedLive do
   alias Backplane.Settings
   alias Backplane.Registry.ToolRegistry
 
+  @toggle_lock {__MODULE__, :service_toggle}
+
   @managed_services [
     %{
       module: Backplane.Services.Day,
@@ -48,8 +50,7 @@ defmodule Backplane.Admin.ManagedLive do
           {:error, :unknown_service}
 
         service ->
-          mod = service.module
-          set_enabled(mod, !mod.enabled?())
+          toggle_enabled(service.module)
       end
 
     socket =
@@ -99,9 +100,24 @@ defmodule Backplane.Admin.ManagedLive do
     with :ok <- Settings.set("services.web.enabled", enabled), do: sync_registry(mod, enabled)
   end
 
-  defp set_enabled(Backplane.Services.Skills = mod, enabled), do: mod.set_enabled(enabled)
-
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
+
+  defp toggle_enabled(Backplane.Services.Skills = mod), do: mod.toggle_enabled()
+
+  defp toggle_enabled(mod) do
+    prefix = mod.prefix()
+
+    case :global.trans(
+           {{@toggle_lock, prefix}, self()},
+           fn -> set_enabled(mod, !mod.enabled?()) end,
+           [node()]
+         ) do
+      :aborted -> {:error, :toggle_lock_aborted}
+      result -> result
+    end
+  catch
+    :exit, reason -> {:error, {:toggle_lock_failed, reason}}
+  end
 
   defp sync_registry(mod, true) do
     ToolRegistry.deregister_managed(mod.prefix())

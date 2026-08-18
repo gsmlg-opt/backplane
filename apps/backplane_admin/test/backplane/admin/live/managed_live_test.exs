@@ -168,11 +168,89 @@ defmodule Backplane.Admin.ManagedLiveTest do
     assert {:managed, _} = ToolRegistry.resolve("skill::list")
   end
 
+  test "concurrent Skills clicks each flip the state atomically", %{conn: conn} do
+    :ok = Skills.set_enabled(false)
+    {:ok, first_view, _html} = live(conn, "/mcp/managed")
+    {:ok, second_view, _html} = live(recycle(conn), "/mcp/managed")
+
+    handler_id = "managed-skills-toggle-race-#{System.unique_integer([:positive])}"
+    parent = self()
+    release_query = make_ref()
+    gate = start_supervised!({Agent, fn -> false end})
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:backplane, :repo, :query],
+        fn _event, _measurements, metadata, {test_pid, query_ref, gate} ->
+          first_settings_query? =
+            metadata[:source] == "system_settings" and
+              Agent.get_and_update(gate, fn
+                false -> {true, true}
+                true -> {false, true}
+              end)
+
+          if first_settings_query? do
+            send(test_pid, {:ui_toggle_query_blocked, self()})
+
+            receive do
+              {:release_ui_toggle_query, ^query_ref} -> :ok
+            end
+          end
+        end,
+        {parent, release_query, gate}
+      )
+
+    first_click =
+      Task.async(fn -> render_click(first_view, "toggle", %{"prefix" => "skill"}) end)
+
+    on_exit(fn ->
+      :telemetry.detach(handler_id)
+
+      if Process.alive?(first_click.pid) do
+        if settings_pid = Process.whereis(Settings) do
+          send(settings_pid, {:release_ui_toggle_query, release_query})
+        end
+
+        safely_resume(first_click.pid)
+      end
+    end)
+
+    assert_receive {:ui_toggle_query_blocked, settings_pid}, 1_000
+
+    second_click =
+      Task.async(fn ->
+        send(parent, :second_ui_toggle_started)
+        render_click(second_view, "toggle", %{"prefix" => "skill"})
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(second_click.pid), do: safely_resume(second_click.pid)
+    end)
+
+    assert_receive :second_ui_toggle_started, 1_000
+    assert Task.yield(second_click, 100) == nil
+
+    send(settings_pid, {:release_ui_toggle_query, release_query})
+    assert is_binary(Task.await(first_click, 1_000))
+    assert is_binary(Task.await(second_click, 1_000))
+
+    refute Skills.enabled?()
+    refute Settings.get(@skills_setting)
+    assert ToolRegistry.resolve("skill::list") == :not_found
+  end
+
   defp flush_mcp_notifications do
     receive do
       {:mcp_notification, _notification} -> flush_mcp_notifications()
     after
       0 -> :ok
     end
+  end
+
+  defp safely_resume(pid) do
+    :erlang.resume_process(pid)
+  catch
+    :error, :badarg -> :ok
   end
 end

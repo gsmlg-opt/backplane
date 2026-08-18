@@ -25,9 +25,18 @@ defmodule Backplane.Services.Skills do
 
   @spec set_enabled(boolean()) :: :ok | {:error, term()}
   def set_enabled(enabled) when is_boolean(enabled) do
+    with_enablement_lock(fn -> persist_and_sync(enabled) end)
+  end
+
+  @spec toggle_enabled() :: :ok | {:error, term()}
+  def toggle_enabled do
+    with_enablement_lock(fn -> persist_and_sync(!enabled?()) end)
+  end
+
+  defp with_enablement_lock(fun) do
     case :global.trans(
            {@enablement_lock, self()},
-           fn -> persist_and_sync(enabled) end,
+           fun,
            [node()]
          ) do
       :aborted -> {:error, :enablement_lock_aborted}
