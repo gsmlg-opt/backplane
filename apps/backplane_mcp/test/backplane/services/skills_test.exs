@@ -11,18 +11,16 @@ defmodule Backplane.Services.SkillsTest do
   setup do
     previous_enabled = Settings.get(@setting_key)
 
-    previous_tools =
-      SkillTool.tools()
-      |> Enum.map(&ToolRegistry.lookup(&1.name))
-      |> Enum.reject(&is_nil/1)
+    previous_rows =
+      :backplane_tools
+      |> :ets.tab2list()
+      |> Enum.filter(fn {name, _tool} -> String.starts_with?(name, "skill::") end)
 
     on_exit(fn ->
       Settings.set(@setting_key, previous_enabled)
       ToolRegistry.deregister_managed(Skills.prefix())
 
-      Enum.each(previous_tools, fn tool ->
-        ToolRegistry.register_native(tool)
-      end)
+      if previous_rows != [], do: :ets.insert(:backplane_tools, previous_rows)
     end)
 
     :ok
