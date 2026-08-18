@@ -69,6 +69,8 @@ defmodule Backplane.Transport.McpHandler do
 
   @spec handle(Plug.Conn.t()) :: Plug.Conn.t()
   def handle(conn) do
+    conn = assign(conn, :mcp_protocol_version, session_version(conn))
+
     case conn.body_params do
       %{"_json" => batch} when is_list(batch) ->
         handle_batch(conn, batch)
@@ -308,6 +310,7 @@ defmodule Backplane.Transport.McpHandler do
     result = initialize_result(negotiated, params)
 
     conn
+    |> assign(:mcp_protocol_version, negotiated)
     |> put_resp_header("mcp-session-id", session_id)
     |> json_rpc_result(id, result)
   end

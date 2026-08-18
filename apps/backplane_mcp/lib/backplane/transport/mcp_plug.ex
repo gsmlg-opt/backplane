@@ -8,10 +8,15 @@ defmodule Backplane.Transport.McpPlug do
 
   require Logger
 
-  alias Backplane.MCP.SSE
-  alias Backplane.Transport.{McpHandler, CacheBodyReader}
+  alias Backplane.MCP.{Info, ModernServer, SSE}
+  alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernRequest
+  alias Backplane.Transport.{CacheBodyReader, McpEraRouter, McpHandler, Session, VersionHeader}
+
+  @modern_protocol_version "2026-07-28"
+  @modern_request_timeout 30_000
 
   plug Backplane.Transport.VersionHeader
+  plug :assign_protocol_version_hint
   plug Backplane.Transport.CORS
   plug :short_circuit_head_root
   plug :match
@@ -19,7 +24,6 @@ defmodule Backplane.Transport.McpPlug do
   plug Backplane.Transport.RequestLogger
   plug Backplane.Transport.RateLimiter
   plug Backplane.Auth.ResourceAuthPlug, resource: :mcp
-  plug Backplane.Transport.Idempotency
 
   plug Plug.Parsers,
     parsers: [:json],
@@ -28,28 +32,42 @@ defmodule Backplane.Transport.McpPlug do
     length: 1_000_000,
     body_reader: {CacheBodyReader, :read_body, []}
 
+  plug :assign_mcp_route
+  plug Backplane.Transport.Idempotency
   plug :dispatch
 
   post "/" do
-    McpHandler.handle(conn)
+    case conn.assigns.mcp_route do
+      {:ok, :legacy} -> McpHandler.handle(conn)
+      {:ok, {:modern, _profile}} -> dispatch_modern(conn)
+      {:error, _error} -> dispatch_modern(conn)
+    end
   end
 
   delete "/" do
-    case get_req_header(conn, "mcp-session-id") do
-      [session_id | _] -> Backplane.Transport.Session.delete(session_id)
-      [] -> :ok
-    end
+    if McpEraRouter.modern_header?(conn.req_headers) do
+      method_not_allowed(conn)
+    else
+      case get_req_header(conn, "mcp-session-id") do
+        [session_id | _] -> Session.delete(session_id)
+        [] -> :ok
+      end
 
-    send_resp(conn, 200, "")
+      send_resp(conn, 200, "")
+    end
   end
 
   get "/" do
-    conn
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_header("connection", "keep-alive")
-    |> send_chunked(200)
-    |> sse_notification_loop()
+    if McpEraRouter.modern_header?(conn.req_headers) do
+      method_not_allowed(conn)
+    else
+      conn
+      |> put_resp_content_type("text/event-stream")
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("connection", "keep-alive")
+      |> send_chunked(200)
+      |> sse_notification_loop()
+    end
   end
 
   match _ do
@@ -65,6 +83,64 @@ defmodule Backplane.Transport.McpPlug do
   end
 
   defp short_circuit_head_root(conn, _opts), do: conn
+
+  defp assign_protocol_version_hint(conn, _opts) do
+    version =
+      if McpEraRouter.modern_header?(conn.req_headers),
+        do: @modern_protocol_version,
+        else: stored_session_version(conn)
+
+    Plug.Conn.assign(conn, :mcp_protocol_version, version)
+  end
+
+  defp stored_session_version(conn) do
+    with [session_id] when is_binary(session_id) and session_id != "" <-
+           get_req_header(conn, "mcp-session-id"),
+         %{protocol_version: version} when is_binary(version) <- Session.get(session_id),
+         true <- version in Info.supported_versions() do
+      version
+    else
+      _invalid_or_unknown -> Info.protocol_version()
+    end
+  rescue
+    ArgumentError -> Info.protocol_version()
+  end
+
+  defp assign_mcp_route(conn, _opts) do
+    route = McpEraRouter.route(conn.body_params, conn.req_headers)
+    era = McpEraRouter.era(route)
+
+    conn =
+      conn
+      |> Plug.Conn.assign(:mcp_route, route)
+      |> Plug.Conn.assign(:mcp_era, era)
+
+    if era == :modern,
+      do: Plug.Conn.assign(conn, :mcp_protocol_version, @modern_protocol_version),
+      else: conn
+  end
+
+  defp dispatch_modern(conn) do
+    assigns = Map.take(conn.assigns, [:resource_auth, :tool_scopes, :client])
+
+    transport_context = %{
+      type: :http,
+      req_headers: conn.req_headers,
+      remote_ip: conn.remote_ip,
+      auth: assigns[:resource_auth],
+      assigns: assigns,
+      connection_era: if(get_req_header(conn, "mcp-session-id") == [], do: nil, else: :legacy)
+    }
+
+    ModernRequest.call(conn, conn.body_params, transport_context,
+      server: ModernServer,
+      task_supervisor: Backplane.MCP.ModernTaskSupervisor,
+      timeout: @modern_request_timeout,
+      subscriptions: nil
+    )
+  end
+
+  defp method_not_allowed(conn), do: send_resp(conn, 405, "")
 
   defp sse_notification_loop(conn) do
     Phoenix.PubSub.subscribe(Backplane.PubSub, "mcp:notifications")
@@ -104,10 +180,20 @@ defmodule Backplane.Transport.McpPlug do
   rescue
     e in Plug.Parsers.ParseError ->
       Logger.warning("Malformed request body: #{Exception.message(e)}")
-      send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
+      conn = conn |> VersionHeader.call([]) |> assign_protocol_version_hint([])
+
+      if McpEraRouter.modern_header?(conn.req_headers) do
+        ModernRequest.parse_error(conn)
+      else
+        send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
+      end
 
     e in Plug.Parsers.RequestTooLargeError ->
       Logger.warning("Request body too large: #{Exception.message(e)}")
-      send_resp(conn, 413, Jason.encode!(%{error: "Request body too large"}))
+
+      conn
+      |> VersionHeader.call([])
+      |> assign_protocol_version_hint([])
+      |> send_resp(413, Jason.encode!(%{error: "Request body too large"}))
   end
 end
