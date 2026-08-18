@@ -33,6 +33,7 @@ defmodule Backplane.Transport.McpPlug do
     body_reader: {CacheBodyReader, :read_body, []}
 
   plug :assign_mcp_route
+  # Composite idempotency keys depend on trusted auth, parsed/raw body, and the assigned MCP era.
   plug Backplane.Transport.Idempotency
   plug :dispatch
 
