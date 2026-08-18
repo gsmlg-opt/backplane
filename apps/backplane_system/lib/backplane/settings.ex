@@ -71,6 +71,11 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable web fetch service"
     },
+    "services.skill.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable the managed Skills MCP service"
+    },
     # Memory V2 rollout controls
     "memory.pipeline.enabled" => %{
       value: false,
