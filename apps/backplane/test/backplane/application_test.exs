@@ -12,11 +12,16 @@ defmodule Backplane.ApplicationTest do
   end
 
   test "managed reconciliation honors persisted Skills state and removes stale native rows" do
-    previous_enabled = Settings.get(@service_setting)
+    previous_setting = :ets.lookup(:backplane_settings, @service_setting)
     previous_rows = :ets.tab2list(:backplane_tools)
 
     on_exit(fn ->
-      Settings.set(@service_setting, previous_enabled)
+      :ets.delete(:backplane_settings, @service_setting)
+
+      if previous_setting != [] do
+        :ets.insert(:backplane_settings, previous_setting)
+      end
+
       :ets.delete_all_objects(:backplane_tools)
 
       if previous_rows != [] do
