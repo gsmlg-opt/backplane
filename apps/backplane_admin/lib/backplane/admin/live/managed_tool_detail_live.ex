@@ -26,6 +26,12 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
       name: "Math",
       prefix: "math",
       description: "Evaluate math expressions with the native math engine"
+    },
+    %{
+      module: Backplane.Services.Skills,
+      name: "Skills",
+      prefix: "skill",
+      description: "Search, load, download, and publish archive-backed agent skills"
     }
   ]
 
