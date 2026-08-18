@@ -6,7 +6,7 @@ defmodule Backplane.Application do
 
   alias Backplane.Config.Validator
   alias Backplane.Registry.{Tool, ToolRegistry}
-  alias Backplane.Tools.{Admin, Hub, Skill}
+  alias Backplane.Tools.{Admin, Hub}
 
   @drain_timeout 15_000
 
@@ -20,7 +20,7 @@ defmodule Backplane.Application do
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
       register_native_tools()
-      register_managed_services()
+      reconcile_managed_services()
       start_configured_upstreams()
       start_db_upstreams()
       Backplane.LLM.UsageCollector.attach()
@@ -43,7 +43,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [Skill, Hub, Admin]
+    tool_modules = [Hub, Admin]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
@@ -59,16 +59,28 @@ defmodule Backplane.Application do
     end
   end
 
-  defp register_managed_services do
+  @doc false
+  def reconcile_managed_services do
+    Backplane.Settings.get_many([
+      "services.day.enabled",
+      "services.web.enabled",
+      "services.skill.enabled"
+    ])
+
     services = [
       Backplane.Services.Day,
       Backplane.Services.Web,
-      Backplane.Services.Math
+      Backplane.Services.Math,
+      Backplane.Services.Skills
     ]
 
-    for service <- services do
-      ToolRegistry.register_managed(service.prefix(), service.tools())
-    end
+    Enum.each(services, fn service ->
+      ToolRegistry.deregister_managed(service.prefix())
+
+      if service.enabled?() do
+        ToolRegistry.register_managed(service.prefix(), service.tools())
+      end
+    end)
   end
 
   defp start_configured_upstreams do

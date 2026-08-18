@@ -18,18 +18,20 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
+  @service_setting "services.skill.enabled"
 
   setup %{tmp_dir: tmp_dir} do
     previous_blob_root = Backplane.Settings.get(@blob_setting)
+    previous_service_setting = :ets.lookup(:backplane_settings, @service_setting)
     :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
+    :ets.insert(:backplane_settings, {@service_setting, true})
     Backplane.Skills.Registry.refresh()
 
-    # Ensure native tools are registered for the test
     alias Backplane.Registry.{Tool, ToolRegistry}
 
     :ets.delete_all_objects(:backplane_tools)
 
-    for module <- [Backplane.Tools.Skill, Backplane.Tools.Hub, Backplane.Tools.Admin],
+    for module <- [Backplane.Tools.Hub, Backplane.Tools.Admin],
         tool_def <- module.tools() do
       tool = %Tool{
         name: tool_def.name,
@@ -43,6 +45,8 @@ defmodule Backplane.Transport.McpHandlerTest do
       ToolRegistry.register_native(tool)
     end
 
+    ToolRegistry.register_managed("skill", Backplane.Services.Skills.tools())
+
     ToolRegistry.register_native(%Tool{
       name: "public::echo",
       description: "Visible test tool",
@@ -54,6 +58,11 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     on_exit(fn ->
       :ets.insert(:backplane_settings, {@blob_setting, previous_blob_root})
+      :ets.delete(:backplane_settings, @service_setting)
+
+      if previous_service_setting != [] do
+        :ets.insert(:backplane_settings, previous_service_setting)
+      end
     end)
 
     :ok
@@ -110,6 +119,20 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert "skill::search" in names
       refute "hub::status" in names
       refute "admin::clients" in names
+    end
+
+    test "registers Skills tools with a managed origin" do
+      assert %{origin: {:managed, "skill"}} =
+               Backplane.Registry.ToolRegistry.lookup("skill::search")
+    end
+
+    test "removes Skills tools when the managed service is disabled" do
+      assert :ok = Backplane.Services.Skills.set_enabled(false)
+
+      names = mcp_request("tools/list")["result"]["tools"] |> Enum.map(& &1["name"])
+
+      refute Enum.any?(names, &String.starts_with?(&1, "skill::"))
+      assert :not_found = Backplane.Registry.ToolRegistry.resolve("skill::list")
     end
 
     test "exposes v1 archive skill tools and hides legacy mutation tools" do
