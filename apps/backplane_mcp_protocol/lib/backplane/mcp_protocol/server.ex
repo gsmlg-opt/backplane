@@ -408,6 +408,7 @@ defmodule Backplane.McpProtocol.Server do
 
   def parse_components({:tool, name, mod}) do
     annotations = if Backplane.McpProtocol.exported?(mod, :annotations, 0), do: mod.annotations()
+    icons = if Backplane.McpProtocol.exported?(mod, :icons, 0), do: mod.icons()
     meta = if Backplane.McpProtocol.exported?(mod, :meta, 0), do: mod.meta()
     output_schema = if Backplane.McpProtocol.exported?(mod, :output_schema, 0), do: mod.output_schema()
     task_support = if Backplane.McpProtocol.exported?(mod, :task_support, 0), do: mod.task_support(), else: :forbidden
@@ -439,6 +440,7 @@ defmodule Backplane.McpProtocol.Server do
           input_schema: mod.input_schema(),
           output_schema: output_schema,
           annotations: annotations,
+          icons: icons,
           meta: meta,
           task_support: task_support,
           handler: mod,

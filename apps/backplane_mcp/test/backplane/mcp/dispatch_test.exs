@@ -124,6 +124,65 @@ defmodule Backplane.MCP.DispatchTest do
            )
   end
 
+  test "projects modern catalog metadata without changing legacy version shapes" do
+    :ok =
+      ToolRegistry.register_native(%Tool{
+        name: "catalog::lookup",
+        title: "Lookup",
+        description: "Find one record",
+        input_schema: %{"type" => "object"},
+        output_schema: %{"type" => "boolean"},
+        annotations: %{"readOnlyHint" => true},
+        icon: %{"url" => "https://example.test/legacy.svg"},
+        icons: [%{"src" => "https://example.test/modern.svg"}],
+        meta: %{"vendor" => %{"stable" => true}},
+        execution: %{"taskSupport" => "required"},
+        origin: :native
+      })
+
+    legacy_keys = %{
+      "2024-11-05" => ~w(description inputSchema name),
+      "2025-03-26" => ~w(annotations description inputSchema name),
+      "2025-06-18" => ~w(annotations description inputSchema name outputSchema),
+      "2025-11-25" => ~w(annotations description icon inputSchema name outputSchema)
+    }
+
+    for {version, expected_keys} <- legacy_keys do
+      version_context = %{context(["catalog::*"]) | protocol_version: version}
+      assert {:ok, %{"tools" => tools}} = Dispatch.execute("tools/list", %{}, version_context)
+
+      assert %{"name" => "catalog::lookup"} =
+               tool = Enum.find(tools, &(&1["name"] == "catalog::lookup"))
+
+      assert Enum.sort(Map.keys(tool)) == Enum.sort(expected_keys)
+      refute Map.has_key?(tool, "execution")
+    end
+
+    modern_context = %{context(["*"]) | protocol_version: "2026-07-28"}
+    assert {:ok, %{"tools" => modern_tools}} = Dispatch.execute("tools/list", %{}, modern_context)
+
+    assert %{
+             "name" => "catalog::lookup",
+             "title" => "Lookup",
+             "icons" => [%{"src" => "https://example.test/modern.svg"}],
+             "_meta" => %{"vendor" => %{"stable" => true}}
+           } = modern = Enum.find(modern_tools, &(&1["name"] == "catalog::lookup"))
+
+    assert Enum.sort(Map.keys(modern)) ==
+             Enum.sort(
+               ~w(_meta annotations description icons inputSchema name outputSchema title)
+             )
+
+    refute Map.has_key?(modern, "icon")
+    refute Map.has_key?(modern, "execution")
+    refute get_in(modern, ["execution", "taskSupport"])
+
+    assert fixture = Enum.find(modern_tools, &(&1["name"] == "fixture::echo"))
+    refute Map.has_key?(fixture, "title")
+    refute Map.has_key?(fixture, "icons")
+    refute Map.has_key?(fixture, "_meta")
+  end
+
   test "lists and reads resources with string-keyed payloads" do
     assert {:ok,
             %{

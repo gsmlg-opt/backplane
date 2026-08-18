@@ -597,9 +597,19 @@ defmodule Backplane.MCP.Dispatch do
         do: Map.put(base, "outputSchema", json_keys(tool.output_schema)),
         else: base
 
-    if supports_since?(version, "2025-11-25") and tool.icon,
-      do: Map.put(base, "icon", json_keys(tool.icon)),
-      else: base
+    base =
+      if Protocol.legacy?(version) and Info.version_gte?(version, "2025-11-25") and tool.icon,
+        do: Map.put(base, "icon", json_keys(tool.icon)),
+        else: base
+
+    if Protocol.modern?(version) do
+      base
+      |> then(&if tool.title, do: Map.put(&1, "title", tool.title), else: &1)
+      |> then(&if tool.icons, do: Map.put(&1, "icons", json_keys(tool.icons)), else: &1)
+      |> then(&if tool.meta, do: Map.put(&1, "_meta", json_keys(tool.meta)), else: &1)
+    else
+      base
+    end
   end
 
   defp supports_since?(version, threshold) do

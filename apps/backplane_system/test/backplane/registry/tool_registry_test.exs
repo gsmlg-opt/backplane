@@ -122,6 +122,46 @@ defmodule Backplane.Registry.ToolRegistryTest do
   end
 
   describe "register_upstream/3" do
+    test "preserves complete upstream catalog metadata while namespacing forwarding fields" do
+      pid = self()
+
+      tool = %Tool{
+        name: "lookup",
+        title: "Lookup",
+        description: "Find one record",
+        input_schema: %{"type" => "object"},
+        output_schema: %{"type" => "boolean"},
+        annotations: %{"readOnlyHint" => true},
+        icon: %{"url" => "https://example.test/legacy.svg"},
+        icons: [%{"src" => "https://example.test/modern.svg"}],
+        meta: %{"vendor" => %{"stable" => true}},
+        execution: %{"taskSupport" => "required"},
+        origin: :native,
+        timeout: 12_345
+      }
+
+      assert :ok = ToolRegistry.register_upstream("/search", pid, [tool])
+
+      assert [
+               %Tool{
+                 name: "search::lookup",
+                 title: "Lookup",
+                 description: "Find one record",
+                 input_schema: %{"type" => "object"},
+                 output_schema: %{"type" => "boolean"},
+                 annotations: %{"readOnlyHint" => true},
+                 icon: %{"url" => "https://example.test/legacy.svg"},
+                 icons: [%{"src" => "https://example.test/modern.svg"}],
+                 meta: %{"vendor" => %{"stable" => true}},
+                 execution: %{"taskSupport" => "required"},
+                 origin: {:upstream, "search"},
+                 upstream_pid: ^pid,
+                 original_name: "lookup",
+                 timeout: 12_345
+               }
+             ] = ToolRegistry.list_all()
+    end
+
     test "registers upstream tools with prefix" do
       upstream_tools = [
         %Tool{

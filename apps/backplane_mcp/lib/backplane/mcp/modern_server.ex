@@ -48,11 +48,13 @@ defmodule Backplane.MCP.ModernServer do
 
   defp register_tool(tool, frame) do
     Frame.register_tool(frame, tool.name,
-      title: tool.name,
+      title: tool.title || tool.name,
       description: tool.description,
       input_schema: Schema.raw(tool.input_schema),
       output_schema: raw_optional(tool.output_schema),
-      annotations: tool.annotations
+      annotations: tool.annotations,
+      icons: tool.icons,
+      meta: tool.meta
     )
   end
 

@@ -72,6 +72,7 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
           input_schema: map | nil,
           output_schema: map | nil,
           annotations: map | nil,
+          icons: [map()] | nil,
           meta: map | nil,
           task_support: task_support(),
           handler: module | nil,
@@ -87,6 +88,7 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
     input_schema: nil,
     output_schema: nil,
     annotations: nil,
+    icons: nil,
     meta: nil,
     task_support: :forbidden,
     handler: nil,
@@ -170,6 +172,14 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
   @callback meta() :: map()
 
   @doc """
+  Returns optional icons for displaying the tool in user interfaces.
+
+  Each icon uses the MCP Icon shape with an absolute `src` URI and optional
+  `mimeType`, `sizes`, and `theme` fields.
+  """
+  @callback icons() :: [map()]
+
+  @doc """
   Returns the task-augmentation policy for this tool.
 
   See the MCP Tasks specification (2025-11-25) — `execution.taskSupport`.
@@ -220,7 +230,13 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
               | {:noreply, new_state :: Frame.t()}
               | {:error, error :: Error.t(), new_state :: Frame.t()}
 
-  @optional_callbacks annotations: 0, output_schema: 0, title: 0, description: 0, meta: 0, task_support: 0
+  @optional_callbacks annotations: 0,
+                      output_schema: 0,
+                      title: 0,
+                      description: 0,
+                      icons: 0,
+                      meta: 0,
+                      task_support: 0
 
   defimpl JSON.Encoder, for: __MODULE__ do
     alias Backplane.McpProtocol.Server.Component.Tool
@@ -234,12 +250,14 @@ defmodule Backplane.McpProtocol.Server.Component.Tool do
       |> then(&if t = tool.title, do: Map.put(&1, "title", t), else: &1)
       |> then(&if os = tool.output_schema, do: Map.put(&1, "outputSchema", os), else: &1)
       |> then(&if a = tool.annotations, do: Map.put(&1, "annotations", a), else: &1)
+      |> then(&if i = tool.icons, do: Map.put(&1, "icons", i), else: &1)
       |> then(&if m = tool.meta, do: Map.put(&1, "_meta", m), else: &1)
       |> maybe_put_execution(tool)
       |> JSON.encode!()
     end
 
-    defp maybe_put_execution(map, %Tool{task_support: support}) when support in [:optional, :required] do
+    defp maybe_put_execution(map, %Tool{task_support: support})
+         when support in [:optional, :required] do
       Map.put(map, "execution", %{"taskSupport" => Atom.to_string(support)})
     end
 

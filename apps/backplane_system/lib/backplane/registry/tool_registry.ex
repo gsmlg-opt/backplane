@@ -49,11 +49,15 @@ defmodule Backplane.Registry.ToolRegistry do
 
         entry = %Tool{
           name: namespaced,
+          title: tool.title,
           description: tool.description,
           input_schema: tool.input_schema,
           output_schema: tool.output_schema,
           annotations: tool.annotations,
           icon: tool.icon,
+          icons: tool.icons,
+          meta: tool.meta,
+          execution: tool.execution,
           origin: {:upstream, prefix},
           upstream_pid: upstream_pid,
           original_name: tool.name,

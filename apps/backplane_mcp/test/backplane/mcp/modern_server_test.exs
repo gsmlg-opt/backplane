@@ -6,7 +6,7 @@ defmodule Backplane.MCP.ModernServerTest do
   alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Server.Frame
   alias Backplane.McpProtocol.Server.Modern.{Executor, RequestContext}
-  alias Backplane.Registry.{PromptRegistry, ToolRegistry}
+  alias Backplane.Registry.{PromptRegistry, Tool, ToolRegistry}
   alias Backplane.Transport.Session
 
   @version "2026-07-28"
@@ -121,6 +121,57 @@ defmodule Backplane.MCP.ModernServerTest do
                allowed_context,
                task_supervisor
              )
+  end
+
+  test "keeps upstream presentation metadata request-local without enabling execution", %{
+    task_supervisor: task_supervisor
+  } do
+    :ok =
+      ToolRegistry.register_upstream("catalog", self(), [
+        %Tool{
+          name: "lookup",
+          title: "Lookup",
+          description: "Find one record",
+          input_schema: %{"type" => "object"},
+          output_schema: %{"type" => "boolean"},
+          annotations: %{"readOnlyHint" => true},
+          icon: %{"url" => "https://example.test/legacy.svg"},
+          icons: [%{"src" => "https://example.test/modern.svg"}],
+          meta: %{"vendor" => %{"stable" => true}},
+          execution: %{"taskSupport" => "required"},
+          origin: :native
+        }
+      ])
+
+    request_context = request_context(["catalog::lookup"])
+
+    assert {:response, %{"result" => %{"tools" => [wire_tool]}}} =
+             execute_modern("tools/list", %{}, request_context, task_supervisor)
+
+    assert %{
+             "name" => "catalog::lookup",
+             "title" => "Lookup",
+             "icons" => [%{"src" => "https://example.test/modern.svg"}],
+             "_meta" => %{"vendor" => %{"stable" => true}}
+           } = wire_tool
+
+    refute Map.has_key?(wire_tool, "icon")
+    refute Map.has_key?(wire_tool, "execution")
+
+    resource_auth = auth(["catalog::lookup"])
+    assigns = %{resource_auth: resource_auth, tool_scopes: ["catalog::lookup"], client: nil}
+    context = build_request_context(assigns)
+
+    assert {:ok, frame} = ModernServer.init_request(context, Frame.new(context.assigns))
+
+    assert %{
+             "catalog::lookup" => %{
+               title: "Lookup",
+               icons: [%{"src" => "https://example.test/modern.svg"}],
+               meta: %{"vendor" => %{"stable" => true}},
+               task_support: :forbidden
+             }
+           } = frame.tools
   end
 
   test "does not create legacy sessions for modern calls", %{task_supervisor: task_supervisor} do

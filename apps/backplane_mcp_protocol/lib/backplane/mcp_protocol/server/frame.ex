@@ -135,6 +135,8 @@ defmodule Backplane.McpProtocol.Server.Frame do
                | {:output_schema, Schema.schema() | nil}
                | {:title, String.t() | nil}
                | {:annotations, map() | nil}
+               | {:icons, [map()] | nil}
+               | {:meta, map() | nil}
                | {:task_support, Tool.task_support()}
                | {:scopes, [String.t()]}
   def register_tool(%__MODULE__{} = frame, name, opts) when is_binary(name) do
@@ -171,6 +173,7 @@ defmodule Backplane.McpProtocol.Server.Frame do
       input_schema: Schema.to_json_schema(input_schema),
       output_schema: output_json_schema,
       annotations: annotations,
+      icons: opts[:icons],
       meta: opts[:meta],
       title: title,
       task_support: task_support,
@@ -272,7 +275,8 @@ defmodule Backplane.McpProtocol.Server.Frame do
                | {:description, String.t() | nil}
                | {:mime_type, String.t() | nil}
                | {:scopes, [String.t()]}
-  def register_resource_template(%__MODULE__{} = frame, uri_template, opts) when is_binary(uri_template) do
+  def register_resource_template(%__MODULE__{} = frame, uri_template, opts)
+      when is_binary(uri_template) do
     name = Keyword.fetch!(opts, :name)
     scopes = validate_scopes_opt!(Keyword.get(opts, :scopes, []))
 
