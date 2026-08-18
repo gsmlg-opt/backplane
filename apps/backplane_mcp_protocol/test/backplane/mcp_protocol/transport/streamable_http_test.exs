@@ -482,6 +482,197 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
+    test "resolves rotating provider headers for every POST", %{bypass: bypass} do
+      server_url = "http://localhost:#{bypass.port}"
+      {:ok, stub_client} = StubClient.start_link()
+      counter = start_supervised!({Agent, fn -> 0 end})
+      test_pid = self()
+
+      provider = fn ->
+        value = Agent.get_and_update(counter, &{&1 + 1, &1 + 1})
+        {:ok, %{"authorization" => "Bearer token-#{value}"}}
+      end
+
+      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        request = JSON.decode!(body)
+        [authorization] = Plug.Conn.get_req_header(conn, "authorization")
+        ["one"] = Plug.Conn.get_req_header(conn, "x-static")
+        send(test_pid, {:post_authorization, request["id"], authorization})
+
+        conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
+        Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"#{request["id"]}","result":{}}|)
+      end)
+
+      {:ok, transport} =
+        StreamableHTTP.start_link(
+          client: stub_client,
+          base_url: server_url,
+          mcp_path: "/mcp",
+          headers: %{"authorization" => "Bearer old", "x-static" => "one"},
+          headers_provider: provider,
+          transport_opts: @test_http_opts
+        )
+
+      for id <- ["1", "2"] do
+        {:ok, ping} = Message.encode_request(%{"method" => "ping", "params" => %{}}, id)
+        assert :ok = StreamableHTTP.send_message(transport, ping, timeout: 5_000)
+      end
+
+      assert_receive {:post_authorization, "1", "Bearer token-1"}
+      assert_receive {:post_authorization, "2", "Bearer token-2"}
+
+      StreamableHTTP.shutdown(transport)
+      StubClient.clear_messages()
+    end
+
+    test "returns a sanitized POST error for an invalid headers provider", %{bypass: bypass} do
+      server_url = "http://localhost:#{bypass.port}"
+      {:ok, stub_client} = StubClient.start_link()
+
+      {:ok, transport} =
+        StreamableHTTP.start_link(
+          client: stub_client,
+          base_url: server_url,
+          mcp_path: "/mcp",
+          headers_provider: :not_a_function,
+          transport_opts: @test_http_opts
+        )
+
+      {:ok, ping} = Message.encode_request(%{"method" => "ping", "params" => %{}}, "invalid-provider")
+
+      assert {:error, :invalid_headers_provider_result} =
+               StreamableHTTP.send_message(transport, ping, timeout: 5_000)
+
+      assert Process.alive?(transport)
+
+      StreamableHTTP.shutdown(transport)
+      StubClient.clear_messages()
+    end
+
+    test "resolves rotating provider headers for legacy GET and DELETE", %{bypass: bypass} do
+      server_url = "http://localhost:#{bypass.port}"
+      {:ok, stub_client} = StubClient.start_link()
+      counter = start_supervised!({Agent, fn -> 0 end})
+      session_id = "rotating-header-session"
+      test_pid = self()
+
+      provider = fn ->
+        value = Agent.get_and_update(counter, &{&1 + 1, &1 + 1})
+        {:ok, %{"authorization" => "Bearer token-#{value}"}}
+      end
+
+      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        [authorization] = Plug.Conn.get_req_header(conn, "authorization")
+        send(test_pid, {:post_authorization, authorization})
+
+        conn =
+          conn
+          |> Plug.Conn.put_resp_header("content-type", "application/json")
+          |> Plug.Conn.put_resp_header("mcp-session-id", session_id)
+
+        Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
+      end)
+
+      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+        [authorization] = Plug.Conn.get_req_header(conn, "authorization")
+        [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
+        send(test_pid, {:get_authorization, authorization, self()})
+
+        receive do
+          :finish -> Plug.Conn.resp(conn, 405, "")
+        after
+          5_000 -> Plug.Conn.resp(conn, 405, "")
+        end
+      end)
+
+      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+        [authorization] = Plug.Conn.get_req_header(conn, "authorization")
+        [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
+        send(test_pid, {:delete_authorization, authorization})
+        Plug.Conn.resp(conn, 200, "")
+      end)
+
+      {:ok, transport} =
+        StreamableHTTP.start_link(
+          client: stub_client,
+          base_url: server_url,
+          mcp_path: "/mcp",
+          enable_sse: true,
+          headers: %{"authorization" => "Bearer old"},
+          headers_provider: provider,
+          transport_opts: @test_http_opts
+        )
+
+      {:ok, ping} = Message.encode_request(%{"method" => "ping", "params" => %{}}, "1")
+      assert :ok = StreamableHTTP.send_message(transport, ping, timeout: 5_000)
+
+      assert_receive {:post_authorization, "Bearer token-1"}
+      assert_receive {:get_authorization, "Bearer token-2", get_server}
+
+      :sys.replace_state(transport, &Map.put(&1, :enable_sse, false))
+      sse_task = :sys.get_state(transport).sse_task
+      sse_monitor = Process.monitor(sse_task)
+      send(get_server, :finish)
+      assert_receive {:DOWN, ^sse_monitor, :process, ^sse_task, _reason}
+
+      monitor = Process.monitor(transport)
+      StreamableHTTP.shutdown(transport)
+      assert_receive {:delete_authorization, "Bearer token-3"}
+      assert_receive {:DOWN, ^monitor, :process, ^transport, :normal}
+      StubClient.clear_messages()
+    end
+
+    test "backs off legacy SSE retries when request headers cannot be resolved", %{bypass: bypass} do
+      server_url = "http://localhost:#{bypass.port}"
+      {:ok, stub_client} = StubClient.start_link()
+      counter = start_supervised!({Agent, fn -> 0 end})
+      session_id = "headers-retry-session"
+      test_pid = self()
+
+      provider = fn ->
+        call = Agent.get_and_update(counter, &{&1 + 1, &1 + 1})
+        send(test_pid, {:headers_provider_call, call})
+
+        if call == 1 do
+          {:ok, %{"authorization" => "Bearer initial"}}
+        else
+          {:error, :credential_unavailable}
+        end
+      end
+
+      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        conn =
+          conn
+          |> Plug.Conn.put_resp_header("content-type", "application/json")
+          |> Plug.Conn.put_resp_header("mcp-session-id", session_id)
+
+        Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
+      end)
+
+      {:ok, transport} =
+        StreamableHTTP.start_link(
+          client: stub_client,
+          base_url: server_url,
+          mcp_path: "/mcp",
+          enable_sse: true,
+          headers_provider: provider,
+          transport_opts: @test_http_opts
+        )
+
+      {:ok, ping} = Message.encode_request(%{"method" => "ping", "params" => %{}}, "1")
+      assert :ok = StreamableHTTP.send_message(transport, ping, timeout: 5_000)
+
+      assert_receive {:headers_provider_call, 1}
+      assert_receive {:headers_provider_call, 2}, 1_000
+      refute_receive {:headers_provider_call, 3}, 250
+      assert Agent.get(counter, & &1) == 2
+      assert Process.alive?(transport)
+
+      StreamableHTTP.shutdown(transport)
+      StubClient.clear_messages()
+    end
+
     test "forwards custom :headers to the SSE GET request", %{bypass: bypass} do
       server_url = "http://localhost:#{bypass.port}"
       {:ok, stub_client} = StubClient.start_link()

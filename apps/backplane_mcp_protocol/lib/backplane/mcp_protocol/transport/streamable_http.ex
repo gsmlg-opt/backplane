@@ -54,9 +54,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
   alias Backplane.McpProtocol.Transport.RequestContext
   alias Backplane.McpProtocol.Transport.StreamableHTTP.Headers
+  alias Backplane.McpProtocol.Transport.StreamableHTTP.RequestHeaders
   alias Backplane.McpProtocol.Transport.StreamableHTTP.Stream
 
   @legacy_protocol_versions ~w(2025-11-25 2025-06-18 2025-03-26)
+  @sse_retry_ms 1_000
 
   @type t :: GenServer.server()
   @type params_t :: Enumerable.t(option)
@@ -145,6 +147,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   - `:mcp_path` - The MCP endpoint path (e.g. /mcp) (default "/mcp").
   - `:client` - The client to send the messages to.
   - `:headers` - The headers to send with the HTTP requests.
+  - `:headers_provider` - A zero-arity function that resolves additional headers for every request.
   - `:transport_opts` - The underlying HTTP transport options.
   - `:http_options` - The underlying HTTP client options.
   - `:enable_sse` - Whether to establish a GET connection for server-initiated messages (default false).
@@ -156,6 +159,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
           | {:base_url, String.t()}
           | {:mcp_path, String.t()}
           | {:headers, map()}
+          | {:headers_provider, RequestHeaders.provider() | nil}
           | {:transport_opts, keyword}
           | {:http_options, Finch.request_opts()}
           | {:enable_sse, boolean()}
@@ -168,6 +172,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     base_url: {:string, {:transform, &URI.new!/1}},
     mcp_path: {:string, {:default, "/mcp"}},
     headers: {:map, {:default, %{}}},
+    headers_provider: {:any, {:default, nil}},
     transport_opts: {:any, {:default, []}},
     http_options: {:any, {:default, []}},
     enable_sse: {:boolean, {:default, false}}
@@ -221,6 +226,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
       client: opts.client,
       mcp_url: opts.mcp_url,
       headers: opts.headers,
+      headers_provider: opts.headers_provider,
       transport_opts: opts.transport_opts,
       http_options: opts.http_options,
       session_id: nil,
@@ -274,6 +280,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
              transport: self(),
              mcp_url: state.mcp_url,
              headers: state.headers,
+             headers_provider: state.headers_provider,
              http_options: state.http_options,
              encoded_request: message,
              request_context: context,
@@ -353,6 +360,21 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl GenServer
+  def handle_info({:sse_closed, {:headers_error, reason}}, state) do
+    Logging.transport_event(
+      "sse_headers_failed",
+      %{reason: sanitize_headers_error(reason)},
+      level: :warning
+    )
+
+    Process.send_after(self(), :retry_sse, @sse_retry_ms)
+    {:noreply, %{state | sse_task: nil}}
+  end
+
+  def handle_info(:retry_sse, state) do
+    {:noreply, maybe_start_sse_connection(state)}
+  end
+
   def handle_info({:sse_closed, reason}, state) do
     Logging.transport_event("sse_connection_closed", %{reason: reason})
     new_state = maybe_start_sse_connection(%{state | sse_task: nil})
@@ -387,7 +409,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   # Private functions
 
   defp send_http_request(state, message, timeout, request_context) do
-    with {:ok, headers} <- Headers.build(state.headers, message, request_context) do
+    with {:ok, request_headers} <-
+           RequestHeaders.resolve(state.headers, state.headers_provider),
+         {:ok, headers} <- Headers.build(request_headers, message, request_context) do
       headers =
         if legacy_request?(request_context) do
           headers
@@ -644,26 +668,32 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   defp run_sse_task(parent, state) do
-    headers = build_sse_headers(state)
     options = state.http_options
-    request = HTTP.build(:get, URI.to_string(state.mcp_url), headers, nil)
 
-    process_sse_request(request, options, parent)
-    send(parent, {:sse_closed, :normal})
+    case build_sse_headers(state) do
+      {:ok, headers} ->
+        request = HTTP.build(:get, URI.to_string(state.mcp_url), headers, nil)
+        process_sse_request(request, options, parent)
+        send(parent, {:sse_closed, :normal})
+
+      {:error, reason} ->
+        send(parent, {:sse_closed, {:headers_error, reason}})
+    end
   end
 
   defp build_sse_headers(state) do
-    configured_headers =
-      case Headers.legacy_configured(state.headers) do
-        {:ok, headers} -> headers
-        {:error, _reason} -> %{}
-      end
+    with {:ok, request_headers} <-
+           RequestHeaders.resolve(state.headers, state.headers_provider),
+         {:ok, configured_headers} <- Headers.legacy_configured(request_headers) do
+      headers =
+        configured_headers
+        |> Headers.put_legacy_protocol_header(state.legacy_protocol_version)
+        |> Map.put("accept", "text/event-stream")
+        |> put_session_header(state.session_id)
+        |> put_last_event_id_header(state.last_event_id)
 
-    configured_headers
-    |> Headers.put_legacy_protocol_header(state.legacy_protocol_version)
-    |> Map.put("accept", "text/event-stream")
-    |> put_session_header(state.session_id)
-    |> put_last_event_id_header(state.last_event_id)
+      {:ok, headers}
+    end
   end
 
   defp process_sse_request(request, options, parent) do
@@ -691,29 +721,23 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   defp delete_session(state) do
-    configured_headers =
-      case Headers.legacy_configured(state.headers) do
-        {:ok, configured} -> configured
-        {:error, _reason} -> %{}
-      end
-
-    headers =
-      configured_headers
-      |> Headers.put_legacy_protocol_header(state.legacy_protocol_version)
-      |> put_session_header(state.session_id)
-
     options = state.http_options
 
-    request =
-      HTTP.build(:delete, URI.to_string(state.mcp_url), headers, nil)
-
-    case HTTP.follow_redirect(request, options) do
-      {:ok, %{status: status}} when status in [200, 405] ->
-        :ok
-
+    with {:ok, request_headers} <-
+           RequestHeaders.resolve(state.headers, state.headers_provider),
+         {:ok, configured_headers} <- Headers.legacy_configured(request_headers),
+         headers =
+           configured_headers
+           |> Headers.put_legacy_protocol_header(state.legacy_protocol_version)
+           |> put_session_header(state.session_id),
+         %Finch.Request{} = request <-
+           HTTP.build(:delete, URI.to_string(state.mcp_url), headers, nil),
+         {:ok, %{status: status}} when status in [200, 405] <-
+           HTTP.follow_redirect(request, options) do
+      :ok
+    else
       error ->
         Logging.transport_event("session_delete_failed", %{error: error}, level: :debug)
-
         :ok
     end
   end
@@ -721,6 +745,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defp put_last_event_id_header(headers, nil), do: headers
 
   defp put_last_event_id_header(headers, event_id), do: Map.put(headers, "last-event-id", event_id)
+
+  defp sanitize_headers_error(reason) when is_atom(reason), do: reason
+
+  defp sanitize_headers_error({reason, _detail})
+       when reason in [:duplicate_header, :invalid_header, :invalid_header_name, :invalid_header_value],
+       do: reason
+
+  defp sanitize_headers_error(_reason), do: :request_headers_unavailable
 
   defp legacy_request?(nil), do: true
   defp legacy_request?(%RequestContext{era: :legacy}), do: true
