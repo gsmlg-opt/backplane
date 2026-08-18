@@ -29,6 +29,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     alias Backplane.Registry.{Tool, ToolRegistry}
 
+    previous_tool_rows = :ets.tab2list(:backplane_tools)
     :ets.delete_all_objects(:backplane_tools)
 
     for module <- [Backplane.Tools.Hub, Backplane.Tools.Admin],
@@ -62,6 +63,12 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       if previous_service_setting != [] do
         :ets.insert(:backplane_settings, previous_service_setting)
+      end
+
+      :ets.delete_all_objects(:backplane_tools)
+
+      if previous_tool_rows != [] do
+        :ets.insert(:backplane_tools, previous_tool_rows)
       end
     end)
 
