@@ -49,6 +49,24 @@ defmodule Backplane.SettingsTest do
                Settings.load_all(FailingRepo)
     end
 
+    test "fetch_many/1 retries a failed load and restores ready status" do
+      previous_state = :sys.get_state(Settings)
+
+      on_exit(fn ->
+        :sys.replace_state(Settings, fn _state -> previous_state end)
+      end)
+
+      :sys.replace_state(Settings, fn state ->
+        Map.put(state, :load_status, {:error, :database_unavailable})
+      end)
+
+      assert {:ok, %{"services.skill.enabled" => enabled}} =
+               Settings.fetch_many(["services.skill.enabled"])
+
+      assert is_boolean(enabled)
+      assert %{load_status: :ok} = :sys.get_state(Settings)
+    end
+
     test "get_many/1 returns the requested values from one snapshot" do
       first = unique_key("snapshot-first")
       second = unique_key("snapshot-second")

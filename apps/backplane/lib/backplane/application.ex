@@ -9,6 +9,12 @@ defmodule Backplane.Application do
   alias Backplane.Tools.{Admin, Hub}
 
   @drain_timeout 15_000
+  @managed_services [
+    Backplane.Services.Day,
+    Backplane.Services.Web,
+    Backplane.Services.Math,
+    Backplane.Services.Skills
+  ]
 
   @impl true
   def start(_type, _args) do
@@ -67,34 +73,46 @@ defmodule Backplane.Application do
   end
 
   @doc false
-  def reconcile_managed_services do
+  def reconcile_managed_services(settings_module \\ Backplane.Settings) do
     setting_keys = [
       "services.day.enabled",
       "services.web.enabled",
       "services.skill.enabled"
     ]
 
-    case Backplane.Settings.fetch_many(setting_keys) do
+    case settings_module.fetch_many(setting_keys) do
       {:ok, values} ->
-        services = [
-          {Backplane.Services.Day, values["services.day.enabled"] == true},
-          {Backplane.Services.Web, values["services.web.enabled"] == true},
-          {Backplane.Services.Math, Backplane.Services.Math.enabled?()},
-          {Backplane.Services.Skills, values["services.skill.enabled"] == true}
-        ]
+        deregister_managed_services()
 
-        Enum.each(services, fn {service, enabled?} ->
-          ToolRegistry.deregister_managed(service.prefix())
-
-          if enabled? do
+        Enum.each(@managed_services, fn service ->
+          if managed_service_enabled?(service, values) do
             ToolRegistry.register_managed(service.prefix(), service.tools())
           end
         end)
 
       {:error, reason} ->
+        deregister_managed_services()
         {:error, {:settings_not_loaded, reason}}
     end
   end
+
+  defp deregister_managed_services do
+    Enum.each(@managed_services, fn service ->
+      ToolRegistry.deregister_managed(service.prefix())
+    end)
+  end
+
+  defp managed_service_enabled?(Backplane.Services.Day, values),
+    do: values["services.day.enabled"] == true
+
+  defp managed_service_enabled?(Backplane.Services.Web, values),
+    do: values["services.web.enabled"] == true
+
+  defp managed_service_enabled?(Backplane.Services.Math, _values),
+    do: Backplane.Services.Math.enabled?()
+
+  defp managed_service_enabled?(Backplane.Services.Skills, values),
+    do: values["services.skill.enabled"] == true
 
   defp start_configured_upstreams do
     upstreams = Application.get_env(:backplane, :upstreams, [])

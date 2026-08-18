@@ -1,7 +1,12 @@
 defmodule Backplane.ApplicationTest do
   use Backplane.DataCase, async: false
 
+  defmodule FailingSettings do
+    def fetch_many(_keys), do: {:error, :database_unavailable}
+  end
+
   alias Backplane.Registry.{Tool, ToolRegistry}
+  alias Backplane.Services.{Day, Math, Skills, Web}
   alias Backplane.Settings
 
   @service_setting "services.skill.enabled"
@@ -78,11 +83,9 @@ defmodule Backplane.ApplicationTest do
   end
 
   test "managed reconciliation fails closed when persisted settings are unavailable" do
-    previous_state = :sys.get_state(Settings)
     previous_rows = :ets.tab2list(:backplane_tools)
 
     on_exit(fn ->
-      :sys.replace_state(Settings, fn _state -> previous_state end)
       :ets.delete_all_objects(:backplane_tools)
 
       if previous_rows != [] do
@@ -90,18 +93,35 @@ defmodule Backplane.ApplicationTest do
       end
     end)
 
-    Enum.each(:ets.tab2list(:backplane_tools), fn
-      {"skill::" <> _, _tool} = row -> :ets.delete_object(:backplane_tools, row)
-      _row -> :ok
+    ToolRegistry.register_native(%Tool{
+      name: "test::readiness-sentinel",
+      description: "Unrelated native sentinel",
+      input_schema: %{"type" => "object", "properties" => %{}},
+      origin: :native,
+      module: __MODULE__,
+      handler: nil
+    })
+
+    Enum.each([Day, Web, Math, Skills], fn service ->
+      ToolRegistry.register_managed(service.prefix(), service.tools())
     end)
 
-    :sys.replace_state(Settings, fn state ->
-      Map.put(state, :load_status, {:error, :database_unavailable})
+    Enum.each(~w(day web math skill), fn prefix ->
+      assert Enum.any?(:ets.tab2list(:backplane_tools), fn {name, _tool} ->
+               String.starts_with?(name, prefix <> "::")
+             end)
     end)
 
     assert {:error, {:settings_not_loaded, :database_unavailable}} =
-             Backplane.Application.reconcile_managed_services()
+             Backplane.Application.reconcile_managed_services(FailingSettings)
 
-    assert ToolRegistry.lookup("skill::publish") == nil
+    Enum.each(~w(day web math skill), fn prefix ->
+      refute Enum.any?(:ets.tab2list(:backplane_tools), fn {name, _tool} ->
+               String.starts_with?(name, prefix <> "::")
+             end)
+    end)
+
+    assert %{name: "test::readiness-sentinel", origin: :native} =
+             ToolRegistry.lookup("test::readiness-sentinel")
   end
 end

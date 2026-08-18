@@ -377,8 +377,15 @@ defmodule Backplane.Settings do
     {:reply, {:ok, values}, state}
   end
 
-  def handle_call({:fetch_many, _keys}, _from, %{load_status: {:error, reason}} = state) do
-    {:reply, {:error, reason}, state}
+  def handle_call({:fetch_many, keys}, _from, %{load_status: {:error, _reason}} = state) do
+    case load_all() do
+      :ok ->
+        values = Map.new(keys, fn key -> {key, get(key)} end)
+        {:reply, {:ok, values}, %{state | load_status: :ok}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | load_status: {:error, reason}}}
+    end
   end
 
   def handle_call({:fetch_many, _keys}, _from, %{load_status: :loading} = state) do
