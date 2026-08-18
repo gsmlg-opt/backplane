@@ -100,6 +100,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernPlugTest d
     conn = post_modern(context.opts, modern_request("server/discover", %{}, id: "discover-http"))
 
     assert conn.status == 200
+    assert get_resp_header(conn, "content-type") == ["application/json; charset=utf-8"]
     assert get_resp_header(conn, "mcp-session-id") == []
     assert DynamicSupervisor.count_children(context.session_supervisor).active == 0
 

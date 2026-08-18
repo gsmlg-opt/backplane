@@ -44,14 +44,12 @@ if Code.ensure_loaded?(Plug) do
     alias Backplane.McpProtocol.Protocol.Profile
     alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
     alias Backplane.McpProtocol.Server.Authorization
-    alias Backplane.McpProtocol.Server.Modern.Executor
     alias Backplane.McpProtocol.Server.ProfileRouter
     alias Backplane.McpProtocol.Server.Registry
     alias Backplane.McpProtocol.Server.Session
     alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
     alias Backplane.McpProtocol.Server.Transport.StreamableHTTP
-    alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscription
-    alias Backplane.McpProtocol.SSE.Event
+    alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernRequest
     alias Backplane.McpProtocol.SSE.Streaming
     alias Backplane.McpProtocol.Telemetry
     alias Plug.Conn.Unfetched
@@ -199,16 +197,18 @@ if Code.ensure_loaded?(Plug) do
           error = Error.protocol(:parse_error, %{message: "Invalid JSON"})
 
           if modern_protocol_version_marker?(conn) do
-            send_modern_response(conn, Error.build_json_rpc(error, nil))
+            ModernRequest.parse_error(conn)
           else
             send_jsonrpc_error(conn, error, nil)
           end
 
         {:error, :invalid_request} ->
           if modern_protocol_version_marker?(conn) do
-            send_modern_response(
+            ModernRequest.call(
               conn,
-              Error.build_json_rpc(Error.protocol(:invalid_request), nil)
+              nil,
+              build_request_context(conn, Map.get(opts, :auth_claims)),
+              modern_request_opts(opts)
             )
           else
             send_jsonrpc_error(
@@ -241,33 +241,20 @@ if Code.ensure_loaded?(Plug) do
           dispatch_legacy(conn, message, context, opts)
 
         {:ok, {:modern, %Profile{}}} ->
-          dispatch_modern(conn, message, routing_context, opts)
+          ModernRequest.call(conn, message, routing_context, modern_request_opts(opts))
 
         {:error, %Error{}} ->
-          dispatch_modern(conn, message, routing_context, opts)
+          ModernRequest.call(conn, message, routing_context, modern_request_opts(opts))
       end
     end
 
-    defp dispatch_modern(conn, message, context, opts) do
-      case {validate_modern_request(message), message["method"]} do
-        {:ok, "subscriptions/listen"} ->
-          ModernSubscription.call(conn, message, context, opts)
-
-        {:ok, _method} ->
-          case Executor.execute(opts.server, message, context,
-                 task_supervisor: opts.task_supervisor,
-                 timeout: opts.timeout
-               ) do
-            {:response, response} ->
-              send_modern_response(conn, response)
-
-            {:response, response, notifications} ->
-              send_modern_response(conn, response, notifications)
-          end
-
-        {{:error, %Error{} = error}, _method} ->
-          send_modern_response(conn, Error.build_json_rpc(error, nil))
-      end
+    defp modern_request_opts(opts) do
+      [
+        server: opts.server,
+        task_supervisor: opts.task_supervisor,
+        timeout: opts.timeout,
+        subscriptions: opts.subscriptions
+      ]
     end
 
     defp dispatch_legacy(conn, message, context, %{session_header: session_header} = opts) do
@@ -454,51 +441,6 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp send_modern_response(conn, response), do: send_modern_response(conn, response, [])
-
-    defp send_modern_response(conn, response, notifications) do
-      encoded = JSON.encode!(response)
-      status = modern_http_status(response)
-
-      if status == 200 and (wants_sse?(conn) or (notifications != [] and accepts_sse?(conn))) do
-        stream_modern_response_on_conn(conn, notifications ++ [response])
-      else
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(status, encoded)
-      end
-    end
-
-    defp stream_modern_response_on_conn(conn, messages) do
-      conn = Streaming.prepare_connection(conn)
-
-      Enum.reduce_while(messages, conn, fn message, conn ->
-        event = Event.encode(%Event{event: "message", data: JSON.encode!(message)})
-
-        case Plug.Conn.chunk(conn, event) do
-          {:ok, conn} ->
-            {:cont, conn}
-
-          {:error, reason} ->
-            Logging.transport_event(
-              "modern_sse_post_send_failed",
-              %{reason: inspect(reason)},
-              level: :warning
-            )
-
-            {:halt, conn}
-        end
-      end)
-    end
-
-    defp modern_http_status(%{"error" => %{"code" => -32_601}}), do: 404
-
-    defp modern_http_status(%{"error" => %{"code" => code}})
-         when code in [-32_700, -32_600, -32_602, -32_020, -32_021, -32_022],
-         do: 400
-
-    defp modern_http_status(_response), do: 200
-
     defp handle_delete(conn, %{transport: transport, session_header: session_header} = opts) do
       with :ok <- validate_protocol_version(conn, opts.server),
            {:ok, session_id} <- require_session_id(conn, session_header),
@@ -586,20 +528,6 @@ if Code.ensure_loaded?(Plug) do
       |> Enum.map(&String.trim/1)
       |> List.first("")
       |> String.starts_with?("text/event-stream")
-    end
-
-    defp accepts_sse?(conn) do
-      conn
-      |> get_req_header("accept")
-      |> Enum.flat_map(&String.split(&1, ","))
-      |> Enum.any?(fn media_range ->
-        media_range
-        |> String.split(";", parts: 2)
-        |> hd()
-        |> String.trim()
-        |> String.downcase()
-        |> Kernel.==("text/event-stream")
-      end)
     end
 
     defp validate_accept_header(conn) do
@@ -759,21 +687,6 @@ if Code.ensure_loaded?(Plug) do
       case Message.validate_message(message) do
         {:ok, validated} -> {:ok, validated}
         {:error, _reason} -> {:error, :invalid_json}
-      end
-    end
-
-    defp validate_modern_request(message) when is_map(message) do
-      id = message["id"]
-
-      if message["jsonrpc"] == "2.0" and
-           is_binary(message["method"]) and
-           (is_binary(id) or is_integer(id)) and
-           is_map(message["params"]) and
-           not Map.has_key?(message, "result") and
-           not Map.has_key?(message, "error") do
-        :ok
-      else
-        {:error, Error.protocol(:invalid_request)}
       end
     end
 
