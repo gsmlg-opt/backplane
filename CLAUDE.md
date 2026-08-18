@@ -46,7 +46,7 @@ This is an umbrella project. Config lives at the umbrella root (`config/`). Core
 - **`apps/backplane_mcp`** (`:backplane_mcp`) — MCP transport, math engine, upstream proxy pool, response cache, session/task management.
 - **`apps/backplane_llama`** (`:backplane_llama`) — LLM reverse proxy: provider routing, credential injection, model resolution, rate limiting, usage tracking. Uses `relayixir` for HTTP forwarding.
 - **`apps/backplane_memory`** (`:backplane_memory`) — Self-hosted agent memory: observations, sessions, knowledge graph, facets, profiles, coordination, `memory::*` managed service.
-- **`apps/backplane_skills`** (`:backplane_skills`) — Skill storage, search, sync, host management, `skills::*` managed service.
+- **`apps/backplane_skills`** (`:backplane_skills`) — Skill storage, search, sync, and host management; exposed through the `skill::*` managed service adapter in `backplane_mcp`.
 - **`apps/backplane_monitor`** (`:backplane_monitor`) — Subscription plan monitoring (z.ai, MiniMax, etc.), per-plan GenServer polling.
 - **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Unified telemetry logger for LLM requests and MCP tool calls.
 - **`apps/backplane`** (`:backplane`) — Top-level application: orchestrates Oban jobs, registers native/managed tools at boot, starts configured upstreams, seeds client cache.
@@ -83,7 +83,7 @@ mix phx.server          # Start the server (or: iex -S mix)
 
 ### Tool Namespacing
 
-All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `skills::list`, `day::now`, `hub::discover`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix; hub meta tools use `hub`.
+All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `skill::list`, `day::now`, `hub::discover`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix; hub meta tools use `hub`.
 
 ### Key Internal Modules
 
@@ -106,7 +106,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.WebFetch` — `web::fetch`
 - `Backplane.Services.WebSearch` — `web_search::search` (Ollama/MiniMax/Z.ai/BigModel backends)
 - `Backplane.Services.Math` — `math::evaluate` via native math engine
-- `Backplane.Skills.*` — `skills::*` tools (in `backplane_skills`)
+- `Backplane.Services.Skills` — `skill::*` managed adapter backed by `Backplane.Tools.Skill` and `backplane_skills`
 - `Backplane.Memory.Service` — `memory::*` tools (in `backplane_memory`)
 
 **LLM Proxy (backplane_llama)**

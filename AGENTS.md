@@ -69,7 +69,7 @@ mix phx.server          # Start the server (or: iex -S mix)
 
 ### Tool Namespacing
 
-All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `skills::list`, `day::now`, `hub::discover`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix; hub meta tools use `hub`.
+All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `skill::list`, `day::now`, `hub::discover`, `fs::read_file`). This is a fixed convention. Upstream tools use their configured prefix; managed services use a fixed prefix; hub meta tools use `hub`.
 
 ### Key Internal Modules
 
@@ -83,8 +83,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.Day` — Managed service wrapping `day_ex` datetime tools (`day::*`)
 - `Backplane.Services.WebFetch` — Managed service for web fetching (`webfetch::*`)
 - `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
-- `Backplane.Services.Skills.*` — Managed service for skill upload, browse, serve (`skills::*`)
-- `Backplane.Tools.*` — Native tool modules (Hub, Skill, Admin) registered at boot
+- `Backplane.Services.Skills` — Managed service adapter for archive-backed skill tools (`skill::*`)
+- `Backplane.Tools.*` — Native Hub/Admin modules plus the Skills implementation delegated by `Backplane.Services.Skills`
 - `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector
 - `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
 - `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
@@ -115,7 +115,7 @@ Backplane.Admin.Application (apps/backplane_admin)
 └── Backplane.Admin.Endpoint (Bandit HTTP server)
 ```
 
-After supervisor start, the application initializes: native tool registration (skills, hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry, and client cache seeding.
+After supervisor start, the application initializes: native tool registration (hub and admin), fail-closed managed service reconciliation (including Skills), configured/DB upstream connections, usage collector telemetry, and client cache seeding.
 
 ### Data Storage
 
