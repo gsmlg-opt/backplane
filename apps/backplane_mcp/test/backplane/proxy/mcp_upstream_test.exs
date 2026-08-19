@@ -18,6 +18,22 @@ defmodule Backplane.Proxy.McpUpstreamTest do
       assert cs.valid?
       assert Ecto.Changeset.get_field(cs, :prefix) == "github"
     end
+
+    test "rejects the reserved skill prefix" do
+      for prefix <- ["skill", " /skill/ "] do
+        cs = changeset(%{valid_http_attrs() | prefix: prefix})
+
+        refute cs.valid?
+        assert {message, _opts} = cs.errors[:prefix]
+        assert message =~ "reserved"
+      end
+    end
+
+    test "accepts a non-reserved prefix" do
+      cs = changeset(%{valid_http_attrs() | prefix: "github"})
+
+      assert cs.valid?
+    end
   end
 
   describe "transport validation" do

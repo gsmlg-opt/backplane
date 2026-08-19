@@ -24,6 +24,32 @@ defmodule Backplane.Proxy.PoolTest do
   end
 
   describe "start_upstream/1" do
+    test "rejects a reserved prefix before starting a child" do
+      config = %{
+        name: "reserved-skill",
+        prefix: " /skill/ ",
+        transport: "http",
+        url: "http://127.0.0.1:1/mcp",
+        headers: %{}
+      }
+
+      assert Pool.start_upstream(config) == {:error, {:reserved_prefix, "skill"}}
+      assert Pool.list_upstreams() == []
+    end
+
+    test "rejects a reserved prefix from a string-keyed config before starting a child" do
+      config = %{
+        "name" => "reserved-string-skill",
+        "prefix" => " /skill/ ",
+        "transport" => "http",
+        "url" => "http://127.0.0.1:1/mcp",
+        "headers" => %{}
+      }
+
+      assert Pool.start_upstream(config) == {:error, {:reserved_prefix, "skill"}}
+      assert Pool.list_upstreams() == []
+    end
+
     test "dynamically adds new upstream connection" do
       {bandit, port} = start_mock_server()
       on_exit(fn -> stop_bandit(bandit) end)

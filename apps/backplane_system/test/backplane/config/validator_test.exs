@@ -177,6 +177,42 @@ defmodule Backplane.Config.ValidatorTest do
     refute Enum.any?(warnings, &(&1 =~ "refresh_interval"))
   end
 
+  test "validate warns about the reserved skill upstream prefix after normalization" do
+    config = [
+      backplane: %{port: 4100},
+      upstream: [
+        %{
+          name: "skills",
+          prefix: " /skill/ ",
+          transport: "http",
+          url: "http://localhost/mcp"
+        }
+      ]
+    ]
+
+    warnings = Validator.validate(config)
+
+    assert Enum.any?(warnings, &(&1 =~ "prefix 'skill'" and &1 =~ "reserved"))
+  end
+
+  test "validate does not warn that a non-reserved upstream prefix is reserved" do
+    config = [
+      backplane: %{port: 4100},
+      upstream: [
+        %{
+          name: "github",
+          prefix: "github",
+          transport: "http",
+          url: "http://localhost/mcp"
+        }
+      ]
+    ]
+
+    warnings = Validator.validate(config)
+
+    refute Enum.any?(warnings, &(&1 =~ "reserved"))
+  end
+
   describe "duplicate detection" do
     test "warns about duplicate upstream prefixes" do
       config = [

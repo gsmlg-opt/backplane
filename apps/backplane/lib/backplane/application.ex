@@ -5,10 +5,16 @@ defmodule Backplane.Application do
   require Logger
 
   alias Backplane.Config.Validator
-  alias Backplane.Registry.{Tool, ToolRegistry}
-  alias Backplane.Tools.{Admin, Hub, Skill}
+  alias Backplane.Registry.{Namespace, Tool, ToolRegistry}
+  alias Backplane.Tools.{Admin, Hub}
 
   @drain_timeout 15_000
+  @managed_services [
+    Backplane.Services.Day,
+    Backplane.Services.Web,
+    Backplane.Services.Math,
+    Backplane.Services.Skills
+  ]
 
   @impl true
   def start(_type, _args) do
@@ -20,14 +26,21 @@ defmodule Backplane.Application do
 
     with {:ok, pid} <- Supervisor.start_link(children, opts) do
       register_native_tools()
-      register_managed_services()
-      start_configured_upstreams()
-      start_db_upstreams()
-      Backplane.LLM.UsageCollector.attach()
-      Backplane.Clients.init_cache()
-      upsert_config_clients()
 
-      {:ok, pid}
+      case reconcile_managed_services() do
+        :ok ->
+          start_configured_upstreams()
+          start_db_upstreams()
+          Backplane.LLM.UsageCollector.attach()
+          Backplane.Clients.init_cache()
+          upsert_config_clients()
+
+          {:ok, pid}
+
+        {:error, _reason} = error ->
+          Supervisor.stop(pid)
+          error
+      end
     end
   end
 
@@ -43,7 +56,7 @@ defmodule Backplane.Application do
   end
 
   defp register_native_tools do
-    tool_modules = [Skill, Hub, Admin]
+    tool_modules = [Hub, Admin]
 
     for module <- tool_modules, tool_def <- module.tools() do
       tool = %Tool{
@@ -59,15 +72,67 @@ defmodule Backplane.Application do
     end
   end
 
-  defp register_managed_services do
-    services = [
-      Backplane.Services.Day,
-      Backplane.Services.Web,
-      Backplane.Services.Math
+  @doc false
+  def reconcile_managed_services(settings_module \\ Backplane.Settings) do
+    setting_keys = [
+      "services.day.enabled",
+      "services.web.enabled",
+      "services.skill.enabled"
     ]
 
-    for service <- services do
-      ToolRegistry.register_managed(service.prefix(), service.tools())
+    case settings_module.fetch_many(setting_keys) do
+      {:ok, values} ->
+        deregister_managed_services()
+
+        Enum.each(@managed_services, fn service ->
+          if managed_service_enabled?(service, values) do
+            ToolRegistry.register_managed(service.prefix(), service.tools())
+          end
+        end)
+
+      {:error, reason} ->
+        deregister_managed_services()
+        {:error, {:settings_not_loaded, reason}}
+    end
+  end
+
+  defp deregister_managed_services do
+    Enum.each(@managed_services, fn service ->
+      ToolRegistry.deregister_managed(service.prefix())
+    end)
+  end
+
+  defp managed_service_enabled?(Backplane.Services.Day, values),
+    do: values["services.day.enabled"] == true
+
+  defp managed_service_enabled?(Backplane.Services.Web, values),
+    do: values["services.web.enabled"] == true
+
+  defp managed_service_enabled?(Backplane.Services.Math, _values),
+    do: Backplane.Services.Math.enabled?()
+
+  defp managed_service_enabled?(Backplane.Services.Skills, values),
+    do: values["services.skill.enabled"] == true
+
+  @doc false
+  def start_upstream(config, pool_module \\ Backplane.Proxy.Pool) do
+    case pool_module.start_upstream(config) do
+      {:error, reason} = error ->
+        name = Map.get(config, :name, Map.get(config, "name"))
+
+        prefix =
+          config
+          |> Map.get(:prefix, Map.get(config, "prefix"))
+          |> Namespace.normalize_prefix()
+
+        Logger.warning(
+          "Failed to start upstream #{inspect(name)} with prefix #{inspect(prefix)}: #{inspect(reason)}"
+        )
+
+        error
+
+      result ->
+        result
     end
   end
 
@@ -75,7 +140,7 @@ defmodule Backplane.Application do
     upstreams = Application.get_env(:backplane, :upstreams, [])
 
     for upstream <- upstreams do
-      Backplane.Proxy.Pool.start_upstream(upstream)
+      start_upstream(upstream)
     end
   end
 
@@ -96,7 +161,7 @@ defmodule Backplane.Application do
         auth_header_name: upstream.auth_header_name
       }
 
-      Backplane.Proxy.Pool.start_upstream(config)
+      start_upstream(config)
     end
   rescue
     e ->

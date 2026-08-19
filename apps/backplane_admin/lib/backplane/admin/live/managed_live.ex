@@ -5,6 +5,8 @@ defmodule Backplane.Admin.ManagedLive do
   alias Backplane.Settings
   alias Backplane.Registry.ToolRegistry
 
+  @toggle_lock {__MODULE__, :service_toggle}
+
   @managed_services [
     %{
       module: Backplane.Services.Day,
@@ -16,6 +18,12 @@ defmodule Backplane.Admin.ManagedLive do
       module: Backplane.Services.Web,
       name: "Web",
       description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
+    },
+    %{
+      module: Backplane.Services.Skills,
+      name: "Skills",
+      description: "Search, load, download, and publish archive-backed agent skills",
+      setting_key: "services.skill.enabled"
     },
     %{
       module: Backplane.Services.Math,
@@ -36,19 +44,27 @@ defmodule Backplane.Admin.ManagedLive do
 
   @impl true
   def handle_event("toggle", %{"prefix" => prefix}, socket) do
-    service = Enum.find(@managed_services, &(&1.module.prefix() == prefix))
+    result =
+      case Enum.find(@managed_services, &(&1.module.prefix() == prefix)) do
+        nil ->
+          {:error, :unknown_service}
 
-    if service do
-      mod = service.module
-      current = mod.enabled?()
-      set_enabled(mod, !current)
-    end
+        service ->
+          toggle_enabled(service.module)
+      end
 
-    {:noreply, socket |> put_flash(:info, "Service updated") |> load_services()}
+    socket =
+      case result do
+        :ok -> put_flash(socket, :info, "Service updated")
+        {:ok, _result} -> put_flash(socket, :info, "Service updated")
+        {:error, _reason} -> put_flash(socket, :error, "Failed to update service")
+        _unexpected -> put_flash(socket, :error, "Failed to update service")
+      end
+
+    {:noreply, load_services(socket)}
   end
 
   defp load_services(socket) do
-    safe_call(fn -> refresh_managed_registry() end, :ok)
     tools = safe_call(fn -> ToolRegistry.list_all() end, [])
 
     services =
@@ -77,22 +93,30 @@ defmodule Backplane.Admin.ManagedLive do
   end
 
   defp set_enabled(Backplane.Services.Day = mod, enabled) do
-    Settings.set("services.day.enabled", enabled)
-    sync_registry(mod, enabled)
+    with :ok <- Settings.set("services.day.enabled", enabled), do: sync_registry(mod, enabled)
   end
 
   defp set_enabled(Backplane.Services.Web = mod, enabled) do
-    Settings.set("services.web.enabled", enabled)
-    sync_registry(mod, enabled)
+    with :ok <- Settings.set("services.web.enabled", enabled), do: sync_registry(mod, enabled)
   end
 
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})
 
-  defp refresh_managed_registry do
-    Enum.each(@managed_services, fn svc ->
-      mod = svc.module
-      sync_registry(mod, mod.enabled?())
-    end)
+  defp toggle_enabled(Backplane.Services.Skills = mod), do: mod.toggle_enabled()
+
+  defp toggle_enabled(mod) do
+    prefix = mod.prefix()
+
+    case :global.trans(
+           {{@toggle_lock, prefix}, self()},
+           fn -> set_enabled(mod, !mod.enabled?()) end,
+           [node()]
+         ) do
+      :aborted -> {:error, :toggle_lock_aborted}
+      result -> result
+    end
+  catch
+    :exit, reason -> {:error, {:toggle_lock_failed, reason}}
   end
 
   defp sync_registry(mod, true) do

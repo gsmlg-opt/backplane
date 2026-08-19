@@ -6,6 +6,7 @@ defmodule Backplane.Proxy.Pool do
   use DynamicSupervisor
 
   alias Backplane.Proxy.Upstream
+  alias Backplane.Registry.Namespace
 
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
@@ -19,8 +20,14 @@ defmodule Backplane.Proxy.Pool do
   @doc "Start a new upstream connection."
   @spec start_upstream(map()) :: DynamicSupervisor.on_start_child()
   def start_upstream(config) do
-    spec = {Upstream, config}
-    DynamicSupervisor.start_child(__MODULE__, spec)
+    prefix = config |> Map.get(:prefix, Map.get(config, "prefix")) |> Namespace.normalize_prefix()
+
+    if Namespace.reserved_prefix?(prefix) do
+      {:error, {:reserved_prefix, prefix}}
+    else
+      spec = {Upstream, config}
+      DynamicSupervisor.start_child(__MODULE__, spec)
+    end
   end
 
   @doc "Stop an upstream connection by pid."

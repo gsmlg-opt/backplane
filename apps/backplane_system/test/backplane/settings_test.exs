@@ -1,6 +1,10 @@
 defmodule Backplane.SettingsTest do
   use BackplaneSystem.DataCase, async: false
 
+  defmodule FailingRepo do
+    def all(_query), do: raise("database unavailable")
+  end
+
   import Ecto.Query
 
   alias Backplane.Repo
@@ -25,6 +29,44 @@ defmodule Backplane.SettingsTest do
   end
 
   describe "serialized settings operations" do
+    test "fetch_many/1 returns the requested values after the initial load succeeds" do
+      assert {:ok, values} =
+               Settings.fetch_many([
+                 "services.day.enabled",
+                 "services.web.enabled",
+                 "services.skill.enabled"
+               ])
+
+      assert values == %{
+               "services.day.enabled" => Settings.get("services.day.enabled"),
+               "services.web.enabled" => Settings.get("services.web.enabled"),
+               "services.skill.enabled" => Settings.get("services.skill.enabled")
+             }
+    end
+
+    test "load_all/1 returns the repository exception when loading fails" do
+      assert {:error, %RuntimeError{message: "database unavailable"}} =
+               Settings.load_all(FailingRepo)
+    end
+
+    test "fetch_many/1 retries a failed load and restores ready status" do
+      previous_state = :sys.get_state(Settings)
+
+      on_exit(fn ->
+        :sys.replace_state(Settings, fn _state -> previous_state end)
+      end)
+
+      :sys.replace_state(Settings, fn state ->
+        Map.put(state, :load_status, {:error, :database_unavailable})
+      end)
+
+      assert {:ok, %{"services.skill.enabled" => enabled}} =
+               Settings.fetch_many(["services.skill.enabled"])
+
+      assert is_boolean(enabled)
+      assert %{load_status: :ok} = :sys.get_state(Settings)
+    end
+
     test "get_many/1 returns the requested values from one snapshot" do
       first = unique_key("snapshot-first")
       second = unique_key("snapshot-second")

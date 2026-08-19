@@ -71,6 +71,11 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable web fetch service"
     },
+    "services.skill.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable the managed Skills MCP service"
+    },
     # Memory V2 rollout controls
     "memory.pipeline.enabled" => %{
       value: false,
@@ -309,6 +314,12 @@ defmodule Backplane.Settings do
     GenServer.call(__MODULE__, {:get_many, keys})
   end
 
+  @doc "Get several settings only after the authoritative initial load succeeds."
+  @spec fetch_many([String.t()]) :: {:ok, %{String.t() => term()}} | {:error, term()}
+  def fetch_many(keys) when is_list(keys) do
+    GenServer.call(__MODULE__, {:fetch_many, keys})
+  end
+
   @doc "Set a value only when all expected settings still match."
   @spec set_if(String.t(), term(), [expectation()]) ::
           :ok | {:error, {:condition_failed, String.t()}} | {:error, term()}
@@ -343,14 +354,14 @@ defmodule Backplane.Settings do
   def init(_opts) do
     table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
     send(self(), :seed_and_load)
-    {:ok, %{table: table}}
+    {:ok, %{table: table, load_status: :loading}}
   end
 
   @impl true
   def handle_info(:seed_and_load, state) do
     seed_defaults()
-    load_all()
-    {:noreply, state}
+    load_status = load_all()
+    {:noreply, %{state | load_status: load_status}}
   end
 
   def handle_info(_, state), do: {:noreply, state}
@@ -359,6 +370,26 @@ defmodule Backplane.Settings do
   def handle_call({:get_many, keys}, _from, state) do
     values = Map.new(keys, fn key -> {key, get(key)} end)
     {:reply, values, state}
+  end
+
+  def handle_call({:fetch_many, keys}, _from, %{load_status: :ok} = state) do
+    values = Map.new(keys, fn key -> {key, get(key)} end)
+    {:reply, {:ok, values}, state}
+  end
+
+  def handle_call({:fetch_many, keys}, _from, %{load_status: {:error, _reason}} = state) do
+    case load_all() do
+      :ok ->
+        values = Map.new(keys, fn key -> {key, get(key)} end)
+        {:reply, {:ok, values}, %{state | load_status: :ok}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | load_status: {:error, reason}}}
+    end
+  end
+
+  def handle_call({:fetch_many, _keys}, _from, %{load_status: :loading} = state) do
+    {:reply, {:error, :loading}, state}
   end
 
   def handle_call({:set, key, value}, _from, state) do
@@ -437,8 +468,10 @@ defmodule Backplane.Settings do
       Logger.warning("Settings: seed failed: #{Exception.message(e)}")
   end
 
-  defp load_all do
-    settings = Repo.all(from(s in Setting, select: {s.key, s.value}))
+  @doc false
+  @spec load_all(module()) :: :ok | {:error, Exception.t()}
+  def load_all(repo \\ Repo) do
+    settings = repo.all(from(s in Setting, select: {s.key, s.value}))
 
     for {key, wrapped} <- settings do
       value = unwrap(wrapped)
@@ -446,9 +479,11 @@ defmodule Backplane.Settings do
     end
 
     Logger.debug("Settings: loaded #{length(settings)} settings into ETS")
+    :ok
   rescue
     e ->
       Logger.warning("Settings: load failed: #{Exception.message(e)}")
+      {:error, e}
   end
 
   defp unwrap(%{"v" => value}), do: value
