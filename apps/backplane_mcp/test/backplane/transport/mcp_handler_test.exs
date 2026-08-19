@@ -95,6 +95,15 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
     end
 
+    test "falls back from a protocol version not implemented by the hub transport" do
+      resp =
+        mcp_request("initialize", %{
+          "protocolVersion" => Backplane.McpProtocol.Protocol.latest_version()
+        })
+
+      assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+    end
+
     test "accepts matching protocolVersion" do
       resp = mcp_request("initialize", %{"protocolVersion" => Backplane.protocol_version()})
       assert resp["result"]["protocolVersion"] == Backplane.protocol_version()

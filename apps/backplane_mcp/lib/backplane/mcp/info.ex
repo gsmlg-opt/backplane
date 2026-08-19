@@ -18,6 +18,14 @@ defmodule Backplane.MCP.Info do
     "2025-11-25" => 3
   }
 
+  @protocol_version "2025-11-25"
+  @supported_versions [
+    @protocol_version,
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05"
+  ]
+
   @doc "Current Backplane release version (from the :backplane app spec)."
   @spec version() :: String.t()
   def version do
@@ -29,11 +37,11 @@ defmodule Backplane.MCP.Info do
 
   @doc "Latest MCP protocol version supported by this server."
   @spec protocol_version() :: String.t()
-  def protocol_version, do: Backplane.McpProtocol.Protocol.latest_version()
+  def protocol_version, do: @protocol_version
 
   @doc "All MCP protocol versions supported by this server."
   @spec supported_versions() :: [String.t()]
-  def supported_versions, do: Backplane.McpProtocol.Protocol.supported_versions()
+  def supported_versions, do: @supported_versions
 
   @doc """
   Negotiate protocol version with client.
