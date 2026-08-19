@@ -52,6 +52,17 @@ in {
       echo "Database is ready, starting backplane..."
       exec mix backplane.run
     '';
+
+    ready = {
+      http.get = {
+        host = "127.0.0.1";
+        port = 4220;
+        path = "/";
+      };
+      period = 1;
+      probe_timeout = 5;
+      timeout = 120;
+    };
   };
 
   services.postgres = {
