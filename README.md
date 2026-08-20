@@ -155,6 +155,31 @@ Backplane supports two MCP authentication modes:
 
 If no clients and no legacy tokens are configured, MCP access is open. This is convenient for local development but should not be used for exposed deployments.
 
+## MCP Protocol Compatibility
+
+Backplane's public `POST /mcp` endpoint defaults to the legacy `2025-11-25`
+protocol. It continues to accept the complete legacy set through initialization:
+`2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`. Legacy clients
+retain initialization, session headers, the GET notification stream, and DELETE
+session cleanup.
+
+Requests explicitly marked with `MCP-Protocol-Version: 2026-07-28` use the
+modern stateless protocol. Modern clients use `server/discover` and POST-only
+requests with the required request metadata and mirrored routing headers; they
+do not initialize or create an MCP session.
+
+Each configured upstream selects its protocol independently:
+
+| Upstream preference | Behavior |
+| --- | --- |
+| `2025-11-25` | Default. Strict legacy initialization and session-era behavior. |
+| `2026-07-28` | Strict modern discovery and stateless requests; no legacy fallback. |
+| `auto` | Attempts modern discovery, then falls back once only for transport-classified legacy cases: an unrecognized HTTP 400/404 response, or a stdio discovery error classified as `parse_error`, `invalid_request`, `method_not_found`, `invalid_params`, or `request_timeout`. Other errors remain terminal. |
+
+The downstream client era and an upstream server's era are independent. A
+modern client can call a namespaced tool backed by a legacy upstream, and a
+legacy client can call a tool backed by a modern upstream.
+
 ## Tool Namespacing
 
 All MCP tools use `::` as the namespace separator:
