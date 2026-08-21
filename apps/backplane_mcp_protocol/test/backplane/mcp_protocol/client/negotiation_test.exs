@@ -643,7 +643,7 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       body =
         JSON.encode!(%{
           "jsonrpc" => "2.0",
-          "id" => "discover",
+          "id" => request.id,
           "error" => %{"code" => -32_601, "message" => "Method not found"}
         })
 
@@ -659,6 +659,40 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       assert fallback.negotiation_status == :initializing
       assert fallback.protocol_version == Protocol.fallback_version()
       assert fallback.negotiated_version == nil
+    end
+
+    for {description, response_id} <- [
+          {"a missing", :missing},
+          {"a null", nil},
+          {"a mismatched", "different-request"}
+        ] do
+      test "HTTP auto keeps method not found with #{description} response id terminal" do
+        state = state(:auto, StreamableHTTP)
+        request = request(discover_operation(@modern_version))
+
+        response = %{
+          "jsonrpc" => "2.0",
+          "error" => %{"code" => -32_601, "message" => "Method not found"}
+        }
+
+        response =
+          case unquote(response_id) do
+            :missing -> response
+            response_id -> Map.put(response, "id", response_id)
+          end
+
+        error =
+          Error.transport(:send_failure, %{
+            original_reason: {:http_error, 400, JSON.encode!(response)}
+          })
+
+        assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
+        assert failed.era == :modern
+        assert failed.negotiation_status == :failed
+        assert failed.protocol_version == @modern_version
+        assert failed.negotiated_version == nil
+        assert failed.negotiation_error == error
+      end
     end
 
     test "a pinned HTTP modern version surfaces direct method not found without downgrading" do
@@ -680,7 +714,7 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       body =
         JSON.encode!(%{
           "jsonrpc" => "2.0",
-          "id" => "discover",
+          "id" => request.id,
           "error" => %{"code" => -32_601, "message" => "Method not found"}
         })
 

@@ -180,7 +180,14 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
 
   defp handle_http_discovery_error(state, request, error) do
     case classify_http_error(error) do
-      {:json_rpc, %Error{} = json_rpc_error} ->
+      {:json_rpc, response_id, %Error{reason: :method_not_found} = json_rpc_error}
+      when not is_nil(response_id) and response_id === request.id ->
+        handle_recognized_modern_error(state, request, json_rpc_error)
+
+      {:json_rpc, _response_id, %Error{reason: :method_not_found}} ->
+        fail(state, error)
+
+      {:json_rpc, _response_id, %Error{} = json_rpc_error} ->
         handle_recognized_modern_error(state, request, json_rpc_error)
 
       :unrecognized_legacy_response when not state.protocol_pinned? ->
@@ -503,8 +510,8 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
 
   defp classify_http_response(400, body) do
     case decode_json_rpc_error(body) do
-      {:ok, error} ->
-        {:json_rpc, error}
+      {:ok, response_id, error} ->
+        {:json_rpc, response_id, error}
 
       :malformed_modern ->
         :malformed_modern
@@ -529,9 +536,9 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
        %{
          "jsonrpc" => "2.0",
          "error" => %{"code" => code, "message" => message} = json_error
-       }}
+       } = decoded}
       when is_integer(code) and is_binary(message) ->
-        {:ok, Error.from_json_rpc(json_error)}
+        {:ok, decoded["id"], Error.from_json_rpc(json_error)}
 
       {:ok, %{} = decoded} ->
         if Map.has_key?(decoded, "jsonrpc") or Map.has_key?(decoded, "error") do
