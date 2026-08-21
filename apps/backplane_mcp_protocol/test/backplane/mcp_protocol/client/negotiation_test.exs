@@ -661,6 +661,29 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       assert fallback.negotiated_version == nil
     end
 
+    test "HTTP auto keeps a hybrid result and error response terminal" do
+      state = state(:auto, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+
+      body =
+        JSON.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => request.id,
+          "result" => %{},
+          "error" => %{"code" => -32_601, "message" => "Method not found"}
+        })
+
+      error =
+        Error.transport(:send_failure, %{original_reason: {:http_error, 400, body}})
+
+      assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
+      assert failed.era == :modern
+      assert failed.negotiation_status == :failed
+      assert failed.protocol_version == @modern_version
+      assert failed.negotiated_version == nil
+      assert failed.negotiation_error == error
+    end
+
     for {description, response_id} <- [
           {"a missing", :missing},
           {"a null", nil},

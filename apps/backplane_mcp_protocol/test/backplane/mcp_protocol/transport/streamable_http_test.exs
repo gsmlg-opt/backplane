@@ -278,6 +278,50 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       assert Process.alive?(transport)
     end
 
+    test "HTTP 400 hybrid result and error response stays modern", %{bypass: bypass} do
+      test_pid = self()
+
+      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        request = JSON.decode!(body)
+        send(test_pid, {:negotiation_request, request["method"]})
+
+        conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
+
+        case request["method"] do
+          "server/discover" ->
+            Plug.Conn.resp(
+              conn,
+              400,
+              JSON.encode!(%{
+                "jsonrpc" => "2.0",
+                "id" => request["id"],
+                "result" => %{},
+                "error" => %{"code" => -32_601, "message" => "Method not found"}
+              })
+            )
+
+          _unexpected_method ->
+            Plug.Conn.resp(conn, 500, "unexpected negotiation request")
+        end
+      end)
+
+      {client, transport} = start_http_negotiation_client(bypass, :hybrid_response)
+
+      assert {:error, %Error{reason: :send_failure}} =
+               Client.await_ready(client, timeout: 2_000)
+
+      assert_receive {:negotiation_request, method}
+      assert method == "server/discover"
+      refute_receive {:negotiation_request, _other_method}, 50
+
+      assert %{negotiation_status: :failed, era: :modern, negotiated_version: nil} =
+               Client.get_protocol_info(client)
+
+      assert Process.alive?(client)
+      assert Process.alive?(transport)
+    end
+
     test "a pinned modern client surfaces method not found from HTTP 400", %{bypass: bypass} do
       test_pid = self()
 

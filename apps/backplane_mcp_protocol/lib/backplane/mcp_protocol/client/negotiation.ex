@@ -537,7 +537,7 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
          "jsonrpc" => "2.0",
          "error" => %{"code" => code, "message" => message} = json_error
        } = decoded}
-      when is_integer(code) and is_binary(message) ->
+      when is_integer(code) and is_binary(message) and not is_map_key(decoded, "result") ->
         {:ok, decoded["id"], Error.from_json_rpc(json_error)}
 
       {:ok, %{} = decoded} ->
