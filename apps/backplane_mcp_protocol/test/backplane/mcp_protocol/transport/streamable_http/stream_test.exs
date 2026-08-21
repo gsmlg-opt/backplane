@@ -200,6 +200,69 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     assert :ok = Bypass.down(bypass)
   end
 
+  test "resolves rotating provider headers for every request-scoped stream", %{
+    bypass: bypass
+  } do
+    counter = start_supervised!({Agent, fn -> 0 end})
+    test_pid = self()
+
+    provider = fn ->
+      value = Agent.get_and_update(counter, &{&1 + 1, &1 + 1})
+      {:ok, %{"authorization" => "Bearer token-#{value}"}}
+    end
+
+    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = JSON.decode!(body)
+      [authorization] = Plug.Conn.get_req_header(conn, "authorization")
+      ["one"] = Plug.Conn.get_req_header(conn, "x-static")
+      send(test_pid, {:stream_authorization, request["id"], authorization})
+
+      final = %{
+        "jsonrpc" => "2.0",
+        "id" => request["id"],
+        "result" => %{
+          "resultType" => "complete",
+          "_meta" => %{@subscription_id_key => request["id"]}
+        }
+      }
+
+      conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
+      Plug.Conn.resp(conn, 200, "data: " <> JSON.encode!(final) <> "\n\n")
+    end)
+
+    {:ok, transport} =
+      StreamableHTTP.start_link(
+        client: self(),
+        base_url: "http://localhost:#{bypass.port}",
+        mcp_path: "/mcp",
+        headers: %{"authorization" => "Bearer old", "x-static" => "one"},
+        headers_provider: provider,
+        transport_opts: @test_http_opts,
+        http_options: [receive_timeout: 5_000]
+      )
+
+    flush_negotiate()
+
+    for {id, token} <- [{"stream-one", "Bearer token-1"}, {"stream-two", "Bearer token-2"}] do
+      {encoded, context} = listen_request(id)
+
+      assert {:ok, stream} =
+               StreamableHTTP.open_stream(transport, encoded,
+                 owner: self(),
+                 request_context: context,
+                 subscription_id: id,
+                 timeout: 500
+               )
+
+      assert_receive {:stream_authorization, ^id, ^token}
+      assert_receive {:mcp_stream_message, ^stream, ^id, %{"id" => ^id}}
+      assert_receive {:mcp_stream_closed, ^stream, :normal}
+    end
+
+    stop_transport(transport)
+  end
+
   test "killing a stream controller terminates its exact Finch worker", %{bypass: bypass} do
     test_pid = self()
 

@@ -4,7 +4,7 @@ defmodule Backplane.Transport.McpPlugTest do
   import Backplane.Auth.Fixtures
 
   alias Backplane.Auth.Resources
-  alias Backplane.Transport.McpPlug
+  alias Backplane.Transport.{McpPlug, RateLimiter, Session}
 
   test "returns 404 for unknown routes" do
     conn =
@@ -22,6 +22,39 @@ defmodule Backplane.Transport.McpPlugTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 200
+  end
+
+  test "explicit modern DELETE returns 405 before deleting a legacy session" do
+    session_id = "modern-delete-keeps-legacy"
+    Session.create(session_id, "2025-11-25", %{}, %{})
+    on_exit(fn -> Session.delete(session_id) end)
+
+    conn =
+      conn(:delete, "/")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> put_req_header("mcp-session-id", session_id)
+      |> McpPlug.call(McpPlug.init([]))
+
+    assert conn.status == 405
+    assert Session.get(session_id)
+  end
+
+  test "explicit modern GET returns 405 without opening the legacy SSE stream" do
+    task =
+      Task.async(fn ->
+        conn(:get, "/")
+        |> put_req_header("mcp-protocol-version", "2026-07-28")
+        |> McpPlug.call(McpPlug.init([]))
+      end)
+
+    conn =
+      case Task.yield(task, 200) || Task.shutdown(task, :brutal_kill) do
+        {:ok, conn} -> conn
+        nil -> flunk("explicit modern GET opened the legacy SSE stream")
+      end
+
+    assert conn.status == 405
+    assert conn.state == :sent
   end
 
   test "HEAD / returns immediately without opening SSE stream" do
@@ -97,6 +130,51 @@ defmodule Backplane.Transport.McpPlugTest do
     assert conn.status == 413
     body = Jason.decode!(conn.resp_body)
     assert body["error"] =~ "too large"
+  end
+
+  test "explicit modern auth failures retain the modern protocol version" do
+    oauth_client_fixture!(resources: [:mcp], scopes: ["public::echo"])
+
+    conn =
+      conn(:post, "/", "{}")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> McpPlug.call(McpPlug.init([]))
+
+    assert conn.status == 401
+    assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+    assert get_resp_header(conn, "x-mcp-protocol-version") == ["2026-07-28"]
+  end
+
+  test "modern and malformed protocol markers retain the modern version on rate limiting" do
+    previous_rate_limit = Application.get_env(:backplane, RateLimiter)
+
+    Application.put_env(:backplane, RateLimiter,
+      max_requests: 0,
+      window_ms: 60_000,
+      trust_x_forwarded_for: false
+    )
+
+    on_exit(fn -> restore_env(RateLimiter, previous_rate_limit) end)
+
+    header_sets = [
+      [{"mcp-protocol-version", "2026-07-28"}],
+      [
+        {"MCP-Protocol-Version", "2026-07-28"},
+        {"mcp-protocol-version", "2099-01-01"}
+      ],
+      [{:mcp_protocol_version, "2026-07-28"}]
+    ]
+
+    for raw_headers <- header_sets do
+      conn = conn(:post, "/", "{}")
+      conn = %{conn | req_headers: raw_headers ++ conn.req_headers}
+      conn = McpPlug.call(conn, McpPlug.init([]))
+
+      assert conn.status == 429
+      assert Jason.decode!(conn.resp_body) == %{"error" => "Too many requests"}
+      assert get_resp_header(conn, "x-mcp-protocol-version") == ["2026-07-28"]
+    end
   end
 
   test "POST / with valid JSON-RPC returns 200" do

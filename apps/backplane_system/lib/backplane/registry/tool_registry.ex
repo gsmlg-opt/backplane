@@ -39,21 +39,21 @@ defmodule Backplane.Registry.ToolRegistry do
     original_prefix = prefix
     prefix = Namespace.normalize_prefix(prefix)
 
-    original_prefix
-    |> upstream_prefixes_to_delete()
-    |> Enum.each(&delete_upstream_prefix/1)
-
-    rows =
-      Enum.map(tools, fn tool ->
+    catalog =
+      Map.new(tools, fn tool ->
         namespaced = Namespace.prefix(prefix, tool.name)
 
         entry = %Tool{
           name: namespaced,
+          title: Map.get(tool, :title),
           description: tool.description,
           input_schema: tool.input_schema,
           output_schema: tool.output_schema,
           annotations: tool.annotations,
           icon: tool.icon,
+          icons: Map.get(tool, :icons),
+          meta: Map.get(tool, :meta),
+          execution: Map.get(tool, :execution),
           origin: {:upstream, prefix},
           upstream_pid: upstream_pid,
           original_name: tool.name,
@@ -63,8 +63,12 @@ defmodule Backplane.Registry.ToolRegistry do
         {namespaced, entry}
       end)
 
-    # Bulk insert — atomic from readers' perspective
-    :ets.insert(@table, rows)
+    :ets.insert(@table, {upstream_catalog_key(prefix), {upstream_pid, catalog}})
+
+    original_prefix
+    |> upstream_prefixes_to_delete()
+    |> Enum.each(&delete_upstream_prefix/1)
+
     Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
     :ok
   end
@@ -106,15 +110,48 @@ defmodule Backplane.Registry.ToolRegistry do
     |> upstream_prefixes_to_delete()
     |> Enum.each(&delete_upstream_prefix/1)
 
+    prefix
+    |> Namespace.normalize_prefix()
+    |> upstream_catalog_key()
+    |> then(&:ets.delete(@table, &1))
+
     Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
+    :ok
+  end
+
+  @doc "Deregister an upstream catalog only when `owner` still owns the current snapshot."
+  @spec deregister_upstream(String.t(), pid()) :: :ok
+  def deregister_upstream(prefix, owner) when is_pid(owner) do
+    prefix = Namespace.normalize_prefix(prefix)
+    direct_deleted = delete_upstream_owner_rows(prefix, owner)
+    snapshot_deleted = delete_upstream_catalog(prefix, owner)
+
+    if direct_deleted + snapshot_deleted > 0 do
+      Backplane.PubSubBroadcaster.broadcast_mcp_notification("notifications/tools/list_changed")
+    end
+
     :ok
   end
 
   @doc "List all registered tools as MCP tool definitions."
   @spec list_all() :: [Tool.t()]
   def list_all do
-    @table
-    |> :ets.tab2list()
+    rows = :ets.tab2list(@table)
+    {catalog_rows, direct_rows} = Enum.split_with(rows, &upstream_catalog_row?/1)
+
+    snapshot_prefixes =
+      MapSet.new(catalog_rows, fn {{__MODULE__, :upstream_catalog, prefix}, {_owner, _catalog}} ->
+        prefix
+      end)
+
+    snapshot_rows =
+      Enum.flat_map(catalog_rows, fn {_key, {_owner, catalog}} ->
+        Enum.map(catalog, fn {name, tool} -> {name, tool} end)
+      end)
+
+    direct_rows = Enum.reject(direct_rows, &hidden_upstream_row?(&1, snapshot_prefixes))
+
+    (snapshot_rows ++ direct_rows)
     |> Enum.map(&canonical_tool_row/1)
     |> Enum.sort_by(fn {name, rank, _tool} -> {name, rank} end)
     |> Enum.uniq_by(fn {name, _rank, _tool} -> name end)
@@ -179,19 +216,35 @@ defmodule Backplane.Registry.ToolRegistry do
   @doc "Count registered tools."
   @spec count() :: non_neg_integer()
   def count do
-    :ets.info(@table, :size)
+    length(list_all())
   end
 
   defp lookup_tool_row(name) do
+    case lookup_upstream_catalog(name) do
+      {:ok, tool} ->
+        {name, tool}
+
+      {:catalog_miss, prefix} ->
+        name
+        |> lookup_direct_tool_row()
+        |> reject_hidden_upstream_row(prefix)
+
+      :no_catalog ->
+        lookup_direct_tool_row(name)
+    end
+  end
+
+  defp lookup_direct_tool_row(name) do
     case :ets.lookup(@table, name) do
-      [{^name, tool}] -> {name, tool}
-      [] -> find_canonical_tool_row(name)
+      [{^name, %Tool{} = tool}] -> {name, tool}
+      _missing_or_private -> find_canonical_tool_row(name)
     end
   end
 
   defp find_canonical_tool_row(name) do
     @table
     |> :ets.tab2list()
+    |> Enum.reject(&upstream_catalog_row?/1)
     |> Enum.find(fn {_key, tool} -> canonical_tool(tool).name == name end)
   end
 
@@ -233,10 +286,87 @@ defmodule Backplane.Registry.ToolRegistry do
 
     # Atomic select_delete — avoids race with concurrent register_upstream
     match_spec = [
-      {{:"$1", :_}, [{:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}], [true]}
+      {{:"$1", :_},
+       [
+         {:is_binary, :"$1"},
+         {:==, {:binary_part, :"$1", 0, byte_size(pattern)}, pattern}
+       ], [true]}
     ]
 
     :ets.select_delete(@table, match_spec)
+  end
+
+  defp lookup_upstream_catalog(name) when is_binary(name) do
+    case String.split(name, Namespace.separator(), parts: 2) do
+      [prefix, _tool_name] ->
+        prefix = Namespace.normalize_prefix(prefix)
+
+        case :ets.lookup(@table, upstream_catalog_key(prefix)) do
+          [{_key, {_owner, catalog}}] ->
+            case Map.fetch(catalog, name) do
+              {:ok, tool} -> {:ok, tool}
+              :error -> {:catalog_miss, prefix}
+            end
+
+          [] ->
+            :no_catalog
+        end
+
+      [_unprefixed] ->
+        :no_catalog
+    end
+  end
+
+  defp reject_hidden_upstream_row(nil, _prefix), do: nil
+
+  defp reject_hidden_upstream_row({_key, %Tool{origin: {:upstream, prefix}}} = row, hidden_prefix)
+       when is_binary(prefix) do
+    if Namespace.normalize_prefix(prefix) == hidden_prefix, do: nil, else: row
+  end
+
+  defp reject_hidden_upstream_row(row, _prefix), do: row
+
+  defp hidden_upstream_row?({_key, %Tool{origin: {:upstream, prefix}}}, snapshot_prefixes)
+       when is_binary(prefix) do
+    MapSet.member?(snapshot_prefixes, Namespace.normalize_prefix(prefix))
+  end
+
+  defp hidden_upstream_row?(_row, _snapshot_prefixes), do: false
+
+  defp upstream_catalog_row?({{__MODULE__, :upstream_catalog, prefix}, {owner, catalog}})
+       when is_binary(prefix) and is_pid(owner) and is_map(catalog),
+       do: true
+
+  defp upstream_catalog_row?(_row), do: false
+
+  defp upstream_catalog_key(prefix), do: {__MODULE__, :upstream_catalog, prefix}
+
+  defp delete_upstream_catalog(prefix, owner) do
+    key = upstream_catalog_key(prefix)
+    :ets.select_delete(@table, [{{key, {owner, :_}}, [], [true]}])
+  end
+
+  defp delete_upstream_owner_rows(prefix, owner) do
+    @table
+    |> :ets.tab2list()
+    |> Enum.reduce(0, fn
+      {key,
+       %Tool{
+         origin: {:upstream, row_prefix},
+         upstream_pid: ^owner
+       }},
+      deleted
+      when is_binary(key) and is_binary(row_prefix) ->
+        if Namespace.normalize_prefix(row_prefix) == prefix do
+          :ets.delete(@table, key)
+          deleted + 1
+        else
+          deleted
+        end
+
+      _row, deleted ->
+        deleted
+    end)
   end
 
   # Server callbacks

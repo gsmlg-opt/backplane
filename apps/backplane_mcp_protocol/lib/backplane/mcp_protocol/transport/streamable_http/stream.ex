@@ -13,6 +13,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.SSE.Parser
   alias Backplane.McpProtocol.Transport.StreamableHTTP.Headers
+  alias Backplane.McpProtocol.Transport.StreamableHTTP.RequestHeaders
 
   @subscription_id_key "io.modelcontextprotocol/subscriptionId"
   @max_sse_buffer_bytes 1_048_576
@@ -145,8 +146,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   end
 
   defp run_stream(opts) do
-    with {:ok, headers} <-
-           Headers.build(opts.headers, opts.encoded_request, opts.request_context),
+    with {:ok, request_headers} <-
+           RequestHeaders.resolve(opts.headers, opts.headers_provider),
+         {:ok, headers} <-
+           Headers.build(request_headers, opts.encoded_request, opts.request_context),
          %Finch.Request{} = request <-
            HTTP.build(:post, URI.to_string(opts.mcp_url), headers, opts.encoded_request) do
       initial = %{

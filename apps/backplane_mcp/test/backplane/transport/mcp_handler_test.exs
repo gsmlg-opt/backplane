@@ -19,6 +19,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
   @service_setting "services.skill.enabled"
+  @legacy_versions ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 
   setup %{tmp_dir: tmp_dir} do
     previous_blob_root = Backplane.Settings.get(@blob_setting)
@@ -102,6 +103,18 @@ defmodule Backplane.Transport.McpHandlerTest do
         })
 
       assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+    end
+
+    test "falls back to the legacy endpoint default for 2026-07-28" do
+      resp = mcp_request("initialize", %{"protocolVersion" => "2026-07-28"})
+      assert resp["result"]["protocolVersion"] == "2025-11-25"
+    end
+
+    for version <- @legacy_versions do
+      test "accepts legacy protocolVersion #{version}" do
+        resp = mcp_request("initialize", %{"protocolVersion" => unquote(version)})
+        assert resp["result"]["protocolVersion"] == unquote(version)
+      end
     end
 
     test "accepts matching protocolVersion" do
@@ -1511,14 +1524,19 @@ defmodule Backplane.Transport.McpHandlerTest do
     defmodule MockUpstream do
       use GenServer
 
-      def start_link(response), do: GenServer.start_link(__MODULE__, response)
+      def start_link(response), do: GenServer.start_link(__MODULE__, {response, self()})
 
       @impl true
-      def init(response), do: {:ok, response}
+      def init(state), do: {:ok, state}
 
       @impl true
-      def handle_call({:tools_call, _name, _args}, _from, response) do
-        {:reply, response, response}
+      def handle_call(
+            {:tools_call, name, arguments, timeout},
+            _from,
+            {response, owner} = state
+          ) do
+        send(owner, {:mock_upstream_call, name, arguments, timeout})
+        {:reply, response, state}
       end
     end
 
@@ -1540,6 +1558,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       resp = mcp_request("tools/call", %{"name" => "mock-upstream::echo", "arguments" => %{}})
 
+      assert_receive {:mock_upstream_call, "echo", %{}, 5_000}
       assert resp["result"]
       content = hd(resp["result"]["content"])
       assert content["type"] == "text"
@@ -1564,6 +1583,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
       resp = mcp_request("tools/call", %{"name" => "mock-upstream::fail", "arguments" => %{}})
 
+      assert_receive {:mock_upstream_call, "fail", %{}, 5_000}
       assert resp["result"]["isError"] == true
       assert hd(resp["result"]["content"])["text"] =~ "upstream failed"
     end

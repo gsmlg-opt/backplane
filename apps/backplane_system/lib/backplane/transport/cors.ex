@@ -17,7 +17,17 @@ defmodule Backplane.Transport.CORS do
 
   @default_allowed_origins ["*"]
   @allowed_methods "GET, POST, DELETE, OPTIONS"
-  @allowed_headers "Content-Type, Authorization, Accept, Mcp-Session-Id"
+  @base_headers [
+    "Content-Type",
+    "Authorization",
+    "Accept",
+    "Mcp-Session-Id",
+    "MCP-Protocol-Version",
+    "Mcp-Method",
+    "Mcp-Name",
+    "Idempotency-Key"
+  ]
+  @param_header ~r/\Amcp-param-[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/i
 
   @impl true
   def init(opts), do: opts
@@ -43,9 +53,31 @@ defmodule Backplane.Transport.CORS do
         conn
         |> put_resp_header("access-control-allow-origin", origin)
         |> put_resp_header("access-control-allow-methods", @allowed_methods)
-        |> put_resp_header("access-control-allow-headers", @allowed_headers)
+        |> put_resp_header("access-control-allow-headers", allowed_headers(conn))
         |> put_resp_header("access-control-max-age", "86400")
     end
+  end
+
+  defp allowed_headers(conn) do
+    requested =
+      conn
+      |> get_req_header("access-control-request-headers")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&Regex.match?(@param_header, &1))
+
+    {_seen, headers} =
+      Enum.reduce(@base_headers ++ requested, {MapSet.new(), []}, fn header, {seen, headers} ->
+        normalized = String.downcase(header)
+
+        if MapSet.member?(seen, normalized) do
+          {seen, headers}
+        else
+          {MapSet.put(seen, normalized), [header | headers]}
+        end
+      end)
+
+    headers |> Enum.reverse() |> Enum.join(", ")
   end
 
   defp get_allowed_origin(conn) do

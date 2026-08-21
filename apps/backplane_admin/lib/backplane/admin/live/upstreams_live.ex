@@ -1,6 +1,7 @@
 defmodule Backplane.Admin.UpstreamsLive do
   use Backplane.Admin, :live_view
 
+  alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
   alias Backplane.Proxy.{McpUpstream, Pool, Upstreams}
   alias Backplane.PubSubBroadcaster
   alias Backplane.Settings.Credentials
@@ -249,7 +250,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
   defp start_runtime(upstream) do
     upstream
-    |> runtime_config()
+    |> Upstreams.runtime_config()
     |> Pool.start_upstream()
   end
 
@@ -265,23 +266,6 @@ defmodule Backplane.Admin.UpstreamsLive do
     Pool.list_upstream_pids()
     |> Enum.filter(fn {_pid, status} -> status.name == name end)
     |> Enum.map(fn {pid, _status} -> pid end)
-  end
-
-  defp runtime_config(upstream) do
-    %{
-      name: upstream.name,
-      prefix: upstream.prefix,
-      transport: upstream.transport,
-      url: upstream.url,
-      command: upstream.command,
-      args: upstream.args || [],
-      timeout: upstream.timeout_ms,
-      refresh_interval: upstream.refresh_interval_ms,
-      headers: upstream.headers || %{},
-      credential: upstream.credential,
-      auth_scheme: upstream.auth_scheme || "none",
-      auth_header_name: upstream.auth_header_name
-    }
   end
 
   defp prepare_params(params) do
@@ -345,6 +329,19 @@ defmodule Backplane.Admin.UpstreamsLive do
   defp auth_scheme_value(form) do
     Phoenix.HTML.Form.input_value(form, :auth_scheme) || "none"
   end
+
+  defp protocol_version_value(form) do
+    Phoenix.HTML.Form.input_value(form, :protocol_version) || "2025-11-25"
+  end
+
+  defp safe_negotiated_version(%{negotiated_version: version}) when is_binary(version) do
+    case ProtocolRegistry.profile(version) do
+      {:ok, _profile} -> version
+      :error -> nil
+    end
+  end
+
+  defp safe_negotiated_version(_status), do: nil
 
   defp args_display(args) when is_list(args), do: Enum.join(args, ", ")
   defp args_display(_), do: ""
@@ -419,7 +416,6 @@ defmodule Backplane.Admin.UpstreamsLive do
               <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
               <th scope="col" class="px-3 py-2 text-left font-semibold">Transport</th>
               <th scope="col" class="px-3 py-2 text-left font-semibold">Connection</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Credential</th>
               <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
               <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
               <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
@@ -442,19 +438,25 @@ defmodule Backplane.Admin.UpstreamsLive do
                 <span :if={upstream.command} class="text-on-surface">{upstream.command}</span>
               </td>
               <td class="px-3 py-1.5 align-middle">
-                <span :if={upstream.credential} class="text-on-surface">
-                  {upstream.credential}
-                  <span class="text-on-surface-variant">({upstream.auth_scheme})</span>
-                </span>
-                <span :if={!upstream.credential} class="text-on-surface-variant">&mdash;</span>
-              </td>
-              <td class="px-3 py-1.5 align-middle">
-                <.dm_badge
-                  :if={rs = @runtime_status[upstream.name]}
-                  variant={runtime_badge_color(rs)}
-                >
-                  {rs.status |> to_string() |> String.capitalize()}
-                </.dm_badge>
+                <div :if={rs = @runtime_status[upstream.name]} class="space-y-1">
+                  <.dm_badge variant={runtime_badge_color(rs)}>
+                    {rs.status |> to_string() |> String.capitalize()}
+                  </.dm_badge>
+                  <div class="space-y-0.5 text-xs text-on-surface-variant">
+                    <div :if={preference = Map.get(rs, :protocol_preference)}>
+                      Preference: {preference}
+                    </div>
+                    <div :if={version = safe_negotiated_version(rs)}>
+                      Negotiated: {version}
+                    </div>
+                    <div :if={era = Map.get(rs, :era)}>
+                      Era: {era |> to_string() |> String.capitalize()}
+                    </div>
+                    <div :if={status = Map.get(rs, :negotiation_status)}>
+                      Negotiation: {status |> to_string() |> String.capitalize()}
+                    </div>
+                  </div>
+                </div>
                 <span :if={!@runtime_status[upstream.name]} class="text-on-surface-variant">&mdash;</span>
               </td>
               <td class="px-3 py-1.5 align-middle">
@@ -532,7 +534,13 @@ defmodule Backplane.Admin.UpstreamsLive do
       </div>
 
       <.dm_card variant="bordered">
-        <.form for={@form} phx-change="validate" phx-submit="save" class="space-y-4">
+        <.form
+          for={@form}
+          id="upstream-form"
+          phx-change="validate"
+          phx-submit="save"
+          class="space-y-4"
+        >
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <.dm_input
@@ -609,6 +617,21 @@ defmodule Backplane.Admin.UpstreamsLive do
               placeholder="https://example.com/mcp"
             />
             <.form_error field={@form[:url]} />
+          </div>
+
+          <div>
+            <.dm_select
+              id="upstream-protocol-version"
+              name="mcp_upstream[protocol_version]"
+              label="Protocol preference"
+              options={[
+                {"2025-11-25", "2025-11-25 (legacy default)"},
+                {"2026-07-28", "2026-07-28 (strict modern)"},
+                {"auto", "Auto (modern discovery, classified legacy fallback)"}
+              ]}
+              value={protocol_version_value(@form)}
+            />
+            <.form_error field={@form[:protocol_version]} />
           </div>
 
           <div :if={transport_value(@form) == "stdio"} class="grid grid-cols-1 gap-4 sm:grid-cols-2">

@@ -10,11 +10,13 @@ defmodule Backplane.Proxy.McpUpstream do
   @timestamps_opts [type: :utc_datetime_usec]
 
   @headers_deny_list ~w(authorization proxy-authorization cookie x-api-key x-auth-token api-key)
+  @protocol_versions ~w(2025-11-25 2026-07-28 auto)
 
   schema "mcp_upstreams" do
     field :name, :string
     field :prefix, :string
     field :transport, :string
+    field :protocol_version, :string, default: "2025-11-25"
     field :url, :string
     field :command, :string
     field :args, {:array, :string}, default: []
@@ -29,10 +31,12 @@ defmodule Backplane.Proxy.McpUpstream do
     timestamps()
   end
 
-  @required ~w(name prefix transport)a
+  @required ~w(name prefix transport protocol_version)a
   @optional ~w(url command args credential timeout_ms refresh_interval_ms enabled headers auth_scheme auth_header_name)a
 
   def changeset(upstream, attrs) do
+    attrs = normalize_protocol_version(attrs)
+
     upstream
     |> cast(attrs, @required ++ @optional)
     |> normalize_prefix()
@@ -44,6 +48,7 @@ defmodule Backplane.Proxy.McpUpstream do
       message: "is reserved for a built-in service"
     )
     |> validate_inclusion(:transport, ~w(http stdio))
+    |> validate_inclusion(:protocol_version, @protocol_versions)
     |> validate_inclusion(:auth_scheme, ~w(none bearer x_api_key custom_header))
     |> validate_transport_fields()
     |> validate_headers_deny_list()
@@ -52,6 +57,14 @@ defmodule Backplane.Proxy.McpUpstream do
     |> unique_constraint(:name)
     |> unique_constraint(:prefix)
   end
+
+  defp normalize_protocol_version(%{protocol_version: ""} = attrs),
+    do: %{attrs | protocol_version: nil}
+
+  defp normalize_protocol_version(%{"protocol_version" => ""} = attrs),
+    do: %{attrs | "protocol_version" => nil}
+
+  defp normalize_protocol_version(attrs), do: attrs
 
   defp normalize_prefix(changeset) do
     update_change(changeset, :prefix, &Namespace.normalize_prefix/1)

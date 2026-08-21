@@ -16,6 +16,9 @@ defmodule Backplane.Transport.VersionHeader do
   def call(conn, _opts) do
     conn
     |> Plug.Conn.put_resp_header("x-backplane-version", @app_version)
-    |> Plug.Conn.put_resp_header("x-mcp-protocol-version", Backplane.MCP.Info.protocol_version())
+    |> Plug.Conn.register_before_send(fn conn ->
+      version = conn.assigns[:mcp_protocol_version] || Backplane.MCP.Info.protocol_version()
+      Plug.Conn.put_resp_header(conn, "x-mcp-protocol-version", version)
+    end)
   end
 end

@@ -116,6 +116,50 @@ Modern HTTP requests are stateless, POST-only, and do not create an MCP
 session. Legacy versions continue to use their existing initialization,
 session, GET notification stream, and DELETE cleanup behavior.
 
+### Streamable HTTP endpoint and dynamic headers
+
+Use `url:` when the client already has the exact MCP endpoint, including any
+non-default path:
+
+```elixir
+transport:
+  {:streamable_http,
+   url: "https://mcp.example.com/custom/mcp",
+   headers: %{"x-static" => "configured"},
+   headers_provider: fn ->
+     {:ok, %{"authorization" => "Bearer #{resolve_current_token()}"}}
+   end}
+```
+
+`url:` is mutually exclusive with `base_url:` plus `mcp_path:`. Supplying both
+forms raises `ArgumentError`, as does supplying neither. With the composed form,
+`mcp_path:` defaults to `/mcp`:
+
+```elixir
+transport:
+  {:streamable_http,
+   base_url: "https://mcp.example.com",
+   mcp_path: "/mcp"}
+```
+
+`headers_provider:` must be a zero-arity function returning either
+`{:ok, headers_map}` or `{:error, reason}`. The map must contain binary header
+names and binary values. Lists and keyword lists are not valid provider return
+values. Header names are normalized case-insensitively before dynamic values
+override static values, duplicate normalized names are rejected, and names or
+values containing invalid header syntax or CR/LF are rejected.
+
+The provider is invoked for every outbound HTTP operation: POST requests,
+legacy GET streams, legacy session DELETE, and modern request-scoped streams.
+Malformed provider results return `:invalid_headers_provider_result`; provider
+exceptions, throws, and exits become `:headers_provider_failed`; an explicit
+`{:error, reason}` is returned as a transport error. Static headers are
+validated before the provider is called.
+
+The provider executes in the transport request path, not in the original
+caller's process. Automatic propagation of caller-local Logger metadata such as
+a request ID is therefore not available through this zero-arity seam.
+
 ## Documentation
 
 For detailed guides and examples, see the files in `pages/`, including the

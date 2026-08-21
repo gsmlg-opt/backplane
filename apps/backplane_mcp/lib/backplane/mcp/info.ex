@@ -18,9 +18,9 @@ defmodule Backplane.MCP.Info do
     "2025-11-25" => 3
   }
 
-  @protocol_version "2025-11-25"
-  @supported_versions [
-    @protocol_version,
+  @legacy_default_version "2025-11-25"
+  @legacy_versions [
+    @legacy_default_version,
     "2025-06-18",
     "2025-03-26",
     "2024-11-05"
@@ -37,11 +37,11 @@ defmodule Backplane.MCP.Info do
 
   @doc "Latest MCP protocol version supported by this server."
   @spec protocol_version() :: String.t()
-  def protocol_version, do: @protocol_version
+  def protocol_version, do: @legacy_default_version
 
   @doc "All MCP protocol versions supported by this server."
   @spec supported_versions() :: [String.t()]
-  def supported_versions, do: @supported_versions
+  def supported_versions, do: @legacy_versions
 
   @doc """
   Negotiate protocol version with client.
