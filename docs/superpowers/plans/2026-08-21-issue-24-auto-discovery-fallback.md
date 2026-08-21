@@ -4,7 +4,7 @@
 
 **Goal:** Make Streamable HTTP clients using `protocol_version: :auto` fall back to the canonical legacy initialization flow when `server/discover` returns valid JSON-RPC `-32601 Method not found`, while keeping pinned clients and all other errors unchanged.
 
-**Architecture:** Keep era-selection policy inside `Backplane.McpProtocol.Client.Negotiation`. Normalize the HTTP 200 and decoded HTTP 400 representations through the existing recognized-error helper, then add one unpinned-only `method_not_found` clause that starts `initialize` with `Protocol.fallback_version()`.
+**Architecture:** Keep era-selection policy inside `Backplane.McpProtocol.Client.Negotiation`. Normalize the HTTP 200 and decoded HTTP 400 representations through the existing recognized-error helper, retain and verify the HTTP 400 JSON-RPC response ID, then add one unpinned-only `method_not_found` clause that starts `initialize` with `Protocol.fallback_version()`.
 
 **Tech Stack:** Elixir 1.18, OTP, ExUnit, Bypass, Plug, `Backplane.McpProtocol.Client`, Streamable HTTP, GitNexus.
 
@@ -62,7 +62,7 @@ test "HTTP auto falls back on a recognized HTTP 400 method-not-found error" do
   body =
     JSON.encode!(%{
       "jsonrpc" => "2.0",
-      "id" => "discover",
+      "id" => request.id,
       "error" => %{"code" => -32_601, "message" => "Method not found"}
     })
 
@@ -96,7 +96,7 @@ for envelope <- [:direct, :http_400] do
           body =
             JSON.encode!(%{
               "jsonrpc" => "2.0",
-              "id" => "discover",
+              "id" => request.id,
               "error" => %{"code" => -32_601, "message" => "Method not found"}
             })
 
@@ -132,7 +132,7 @@ for envelope <- [:direct, :http_400] do
           body =
             JSON.encode!(%{
               "jsonrpc" => "2.0",
-              "id" => "discover",
+              "id" => request.id,
               "error" => %{"code" => -32_602, "message" => "Invalid params"}
             })
 
@@ -144,6 +144,37 @@ for envelope <- [:direct, :http_400] do
     assert {:error, %Error{reason: :invalid_params}, failed} =
              Negotiation.handle_error(state, request, error)
 
+    assert failed.era == :modern
+    assert failed.negotiation_status == :failed
+  end
+end
+```
+
+Add terminal correlation guards for HTTP 400 method-not-found bodies:
+
+```elixir
+for response_id <- [:missing, nil, "different-request"] do
+  test "HTTP auto rejects method not found with response id #{inspect(response_id)}" do
+    state = state(:auto, StreamableHTTP)
+    request = request(discover_operation(@modern_version))
+
+    response = %{
+      "jsonrpc" => "2.0",
+      "error" => %{"code" => -32_601, "message" => "Method not found"}
+    }
+
+    response =
+      case unquote(response_id) do
+        :missing -> response
+        id -> Map.put(response, "id", id)
+      end
+
+    error =
+      Error.transport(:send_failure, %{
+        original_reason: {:http_error, 400, JSON.encode!(response)}
+      })
+
+    assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
     assert failed.era == :modern
     assert failed.negotiation_status == :failed
   end
@@ -241,6 +272,7 @@ for status <- [200, 400] do
     assert_receive {:negotiation_request, "initialize"}
     assert_receive {:negotiation_request, "notifications/initialized"}
     assert_receive {:negotiation_request, "tools/list"}
+    refute_receive {:negotiation_request, _unexpected}, 50
 
     assert %{
              negotiation_status: :ready,
@@ -337,6 +369,43 @@ test "pinned modern does not fall back after HTTP 400 method not found", %{bypas
 end
 ```
 
+Add an end-to-end response-correlation negative:
+
+```elixir
+test "auto does not fall back when HTTP 400 response id mismatches", %{bypass: bypass} do
+  test_pid = self()
+
+  Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    request = JSON.decode!(body)
+    send(test_pid, {:negotiation_request, request["method"]})
+
+    conn
+    |> Plug.Conn.put_resp_header("content-type", "application/json")
+    |> Plug.Conn.resp(
+      400,
+      JSON.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => "different-request",
+        "error" => %{"code" => -32_601, "message" => "Method not found"}
+      })
+    )
+  end)
+
+  {client, transport} =
+    start_http_negotiation_client(bypass, :mismatched_method_not_found)
+
+  assert {:error, %Error{reason: :send_failure}} =
+           Client.await_ready(client, timeout: 2_000)
+
+  assert_receive {:negotiation_request, "server/discover"}
+  refute_receive {:negotiation_request, "initialize"}, 50
+  assert %{negotiation_status: :failed, era: :modern} = Client.get_protocol_info(client)
+  assert Process.alive?(client)
+  assert Process.alive?(transport)
+end
+```
+
 - [ ] **Step 3: Run the focused files and verify RED**
 
 Run from the issue worktree root:
@@ -350,9 +419,9 @@ devenv shell -- bash -lc 'cd apps/backplane_mcp_protocol && \
     --seed 0'
 ```
 
-Expected: the new auto HTTP 200 and HTTP 400 fallback assertions fail because
-negotiation returns `method_not_found`; pinned and unrelated negative tests
-remain green.
+Expected: eight behavior assertions fail—four because auto negotiation remains
+terminal and four because missing/mismatched HTTP 400 response IDs still
+downgrade. Pinned and unrelated negative tests remain green.
 
 - [ ] **Step 4: Implement the minimal negotiation policy**
 
@@ -362,6 +431,48 @@ unsupported-version clause:
 ```elixir
 defp handle_http_discovery_error(state, request, %Error{reason: :method_not_found} = error) do
   handle_recognized_modern_error(state, request, error)
+end
+```
+
+Retain the decoded JSON-RPC response ID in the HTTP classifier. Update the
+valid-error branch in `decode_json_rpc_error/1` to:
+
+```elixir
+{:ok,
+ %{
+   "jsonrpc" => "2.0",
+   "error" => %{"code" => code, "message" => message} = json_error
+ } = decoded}
+when is_integer(code) and is_binary(message) ->
+  {:ok, decoded["id"], Error.from_json_rpc(json_error)}
+```
+
+Change the valid branch in `classify_http_response(400, body)` to:
+
+```elixir
+{:ok, response_id, error} ->
+  {:json_rpc, response_id, error}
+```
+
+Handle decoded JSON-RPC errors in this order:
+
+```elixir
+case classify_http_error(error) do
+  {:json_rpc, response_id, %Error{reason: :method_not_found} = json_rpc_error}
+  when response_id == request.id ->
+    handle_recognized_modern_error(state, request, json_rpc_error)
+
+  {:json_rpc, _response_id, %Error{reason: :method_not_found}} ->
+    fail(state, error)
+
+  {:json_rpc, _response_id, %Error{} = json_rpc_error} ->
+    handle_recognized_modern_error(state, request, json_rpc_error)
+
+  :unrecognized_legacy_response when not state.protocol_pinned? ->
+    initialize(state, Protocol.fallback_version())
+
+  _other ->
+    fail(state, error)
 end
 ```
 
@@ -377,8 +488,9 @@ defp handle_recognized_modern_error(
 end
 ```
 
-Do not change the generic catch-all, HTTP response classifier, stdio legacy
-error list, error decoder, or fallback version.
+Do not change the generic catch-all, stdio legacy error list, shared Error
+decoder, fallback version, or behavior for recognized errors other than the
+new response-ID guard on `method_not_found`.
 
 - [ ] **Step 5: Run the focused files and verify GREEN**
 
