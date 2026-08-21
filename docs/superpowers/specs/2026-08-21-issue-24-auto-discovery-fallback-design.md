@@ -23,6 +23,8 @@ Pinning the same peer to a legacy version succeeds through `initialize`,
   peer only supports the legacy lifecycle.
 - Require an HTTP 400 JSON-RPC response ID to match the current discovery
   request before it can trigger fallback.
+- Require a valid error response shape: an HTTP 400 object containing both
+  `result` and `error` is malformed and must remain terminal.
 - Retry negotiation with `Protocol.fallback_version()` and the normal legacy
   `initialize` flow.
 - Support both common HTTP envelopes for that JSON-RPC error:
@@ -71,9 +73,11 @@ preference and era selection already live.
 3. Permit decoded HTTP 400 `method_not_found` fallback only when that ID equals
    the current discovery request ID. A missing, null, or mismatched ID remains
    terminal and preserves the outer transport error.
-4. Add an unpinned-only `method_not_found` clause to that helper.
-5. The clause calls `initialize(state, Protocol.fallback_version())`.
-6. The existing catch-all remains terminal, so an explicit modern pin never
+4. Reject decoded bodies that contain both `result` and `error` as malformed
+   modern responses before applying any fallback policy.
+5. Add an unpinned-only `method_not_found` clause to that helper.
+6. The clause calls `initialize(state, Protocol.fallback_version())`.
+7. The existing catch-all remains terminal, so an explicit modern pin never
    downgrades.
 
 No new process, state field, retry loop, or transport policy is introduced.
@@ -97,6 +101,7 @@ cannot create repeated cross-era downgrade loops.
 | `:auto` | Valid JSON-RPC `-32601`, HTTP 200 | Legacy `initialize` fallback |
 | `:auto` | Valid JSON-RPC `-32601`, HTTP 400 | Legacy `initialize` fallback |
 | `:auto` | HTTP 400 `-32601` with missing, null, or mismatched ID | Terminal outer transport error |
+| `:auto` | HTTP 400 object containing both `result` and `error` | Terminal malformed modern response |
 | Explicit modern version | JSON-RPC `-32601`, HTTP 200 or 400 | Terminal `method_not_found` |
 | `:auto` | Valid `-32022` with a mutually supported modern version | Existing modern retry |
 | `:auto` | JSON-RPC-looking HTTP 404 | Existing terminal outer transport error |
@@ -120,6 +125,7 @@ cannot create repeated cross-era downgrade loops.
 - RED: decoded HTTP 400 JSON-RPC `method_not_found` with `:auto` sends legacy
   `initialize`.
 - Assert missing, null, and mismatched HTTP 400 response IDs never downgrade.
+- Assert an HTTP 400 hybrid `result` plus `error` object never downgrades.
 - Assert the operation uses `Protocol.fallback_version()` and the state becomes
   legacy/initializing.
 - Assert explicit modern pins remain failed/modern for both representations.
@@ -166,6 +172,8 @@ request is sent.
 - Auto clients fall back exactly once after `server/discover` returns valid
   JSON-RPC `-32601` over HTTP 200 or 400.
 - HTTP 400 fallback requires an ID matching the current discovery request.
+- Hybrid JSON-RPC response objects containing both `result` and `error` remain
+  terminal.
 - The fallback completes legacy initialization and tool listing.
 - Pinned clients and all other error classifications are unchanged.
 - Package tests and focused regressions pass without unrelated edits.

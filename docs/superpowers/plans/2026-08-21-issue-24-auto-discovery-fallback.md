@@ -31,6 +31,26 @@
 - Modify: `apps/backplane_mcp_protocol/test/backplane/mcp_protocol/transport/streamable_http_test.exs:4-7,87-170,785-816`
 - Modify: `apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/negotiation.ex:172-194`
 
+- [ ] **Step 0: Run impact analysis before editing existing symbols**
+
+Run:
+
+```text
+gitnexus_impact({
+  target: "handle_recognized_modern_error",
+  file_path: "apps/backplane_mcp_protocol/lib/backplane/mcp_protocol/client/negotiation.ex",
+  direction: "upstream",
+  includeTests: true
+})
+```
+
+Also run the same query for `handle_http_discovery_error`,
+`classify_http_response`, and `decode_json_rpc_error`. If any result is HIGH or
+CRITICAL, report the direct callers and affected flows before editing. If the
+private Elixir symbols are unindexed and return UNKNOWN, record that result and
+use direct source callers plus the focused package tests as the authoritative
+blast radius.
+
 - [ ] **Step 1: Add unit tests for direct and wrapped method-not-found errors**
 
 Add the `Protocol` alias:
@@ -178,6 +198,32 @@ for response_id <- [:missing, nil, "different-request"] do
     assert failed.era == :modern
     assert failed.negotiation_status == :failed
   end
+end
+```
+
+Add a malformed-response exclusivity guard:
+
+```elixir
+test "HTTP auto rejects a method-not-found response containing result and error" do
+  state = state(:auto, StreamableHTTP)
+  request = request(discover_operation(@modern_version))
+
+  body =
+    JSON.encode!(%{
+      "jsonrpc" => "2.0",
+      "id" => request.id,
+      "result" => %{},
+      "error" => %{"code" => -32_601, "message" => "Method not found"}
+    })
+
+  error =
+    Error.transport(:send_failure, %{
+      original_reason: {:http_error, 400, body}
+    })
+
+  assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
+  assert failed.era == :modern
+  assert failed.negotiation_status == :failed
 end
 ```
 
@@ -406,6 +452,43 @@ test "auto does not fall back when HTTP 400 response id mismatches", %{bypass: b
 end
 ```
 
+Add an end-to-end malformed hybrid negative:
+
+```elixir
+test "auto does not fall back when HTTP 400 contains result and error", %{bypass: bypass} do
+  test_pid = self()
+
+  Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    request = JSON.decode!(body)
+    send(test_pid, {:negotiation_request, request["method"]})
+
+    conn
+    |> Plug.Conn.put_resp_header("content-type", "application/json")
+    |> Plug.Conn.resp(
+      400,
+      JSON.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => request["id"],
+        "result" => %{},
+        "error" => %{"code" => -32_601, "message" => "Method not found"}
+      })
+    )
+  end)
+
+  {client, transport} = start_http_negotiation_client(bypass, :hybrid_method_not_found)
+
+  assert {:error, %Error{reason: :send_failure}} =
+           Client.await_ready(client, timeout: 2_000)
+
+  assert_receive {:negotiation_request, "server/discover"}
+  refute_receive {:negotiation_request, "initialize"}, 50
+  assert %{negotiation_status: :failed, era: :modern} = Client.get_protocol_info(client)
+  assert Process.alive?(client)
+  assert Process.alive?(transport)
+end
+```
+
 - [ ] **Step 3: Run the focused files and verify RED**
 
 Run from the issue worktree root:
@@ -419,9 +502,10 @@ devenv shell -- bash -lc 'cd apps/backplane_mcp_protocol && \
     --seed 0'
 ```
 
-Expected: eight behavior assertions fail—four because auto negotiation remains
-terminal and four because missing/mismatched HTTP 400 response IDs still
-downgrade. Pinned and unrelated negative tests remain green.
+Expected: ten behavior assertions fail—four because auto negotiation remains
+terminal, four because missing/mismatched HTTP 400 response IDs still
+downgrade, and two because hybrid `result` plus `error` bodies still downgrade.
+Pinned and unrelated negative tests remain green.
 
 - [ ] **Step 4: Implement the minimal negotiation policy**
 
@@ -443,7 +527,7 @@ valid-error branch in `decode_json_rpc_error/1` to:
    "jsonrpc" => "2.0",
    "error" => %{"code" => code, "message" => message} = json_error
  } = decoded}
-when is_integer(code) and is_binary(message) ->
+when is_integer(code) and is_binary(message) and not is_map_key(decoded, "result") ->
   {:ok, decoded["id"], Error.from_json_rpc(json_error)}
 ```
 
