@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixes Streamable HTTP `:auto` negotiation so a valid `server/discover`
+  `-32601 Method not found` response falls back to the canonical legacy
+  initialization flow while explicit version pins remain strict.
 - Adds complete MCP `2026-07-28` client and server support over Streamable HTTP and stdio.
 - Defaults new clients to `protocol_version: :auto`, using modern `server/discover` with evidence-based legacy fallback while preserving explicit version pins.
 - Adds stateless modern request execution, required metadata and HTTP headers, modern result and cache envelopes, MRTR, and request-owned subscriptions.

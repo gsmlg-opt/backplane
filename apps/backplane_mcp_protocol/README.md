@@ -102,8 +102,11 @@ children = [
 
 `:auto` is the default. It probes with modern `server/discover`, negotiates
 `2026-07-28` when available, and falls back to legacy initialization only when
-the transport provides protocol-defined evidence of a legacy peer. Pin a
-version string when cross-era fallback is not wanted:
+the transport provides protocol-defined evidence of a legacy peer. For
+Streamable HTTP, a valid JSON-RPC `-32601 Method not found` response to the
+current `server/discover` request is legacy evidence whether it arrives with
+HTTP 200 or HTTP 400. Explicit version pins never downgrade. Pin a version
+string when cross-era fallback is not wanted:
 
 ```elixir
 protocol_version: "2025-06-18"
