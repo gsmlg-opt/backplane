@@ -5,6 +5,7 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
   alias Backplane.McpProtocol.Client.Request
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.MCP.Error
+  alias Backplane.McpProtocol.Protocol
   alias Backplane.McpProtocol.Transport.STDIO
   alias Backplane.McpProtocol.Transport.StreamableHTTP
 
@@ -619,8 +620,61 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
       assert failed.negotiation_status == :failed
     end
 
-    test "HTTP treats a recognized JSON-RPC error as modern and does not fall back" do
+    test "HTTP auto falls back when discovery returns method not found directly" do
       state = state(:auto, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+      error = Error.protocol(:method_not_found)
+
+      assert {:send, operation, fallback} =
+               Negotiation.handle_error(state, request, error)
+
+      assert operation.method == "initialize"
+      assert operation.params["protocolVersion"] == Protocol.fallback_version()
+      assert fallback.era == :legacy
+      assert fallback.negotiation_status == :initializing
+      assert fallback.protocol_version == Protocol.fallback_version()
+      assert fallback.negotiated_version == nil
+    end
+
+    test "HTTP auto falls back when a 400 response contains method not found" do
+      state = state(:auto, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+
+      body =
+        JSON.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "discover",
+          "error" => %{"code" => -32_601, "message" => "Method not found"}
+        })
+
+      error =
+        Error.transport(:send_failure, %{original_reason: {:http_error, 400, body}})
+
+      assert {:send, operation, fallback} =
+               Negotiation.handle_error(state, request, error)
+
+      assert operation.method == "initialize"
+      assert operation.params["protocolVersion"] == Protocol.fallback_version()
+      assert fallback.era == :legacy
+      assert fallback.negotiation_status == :initializing
+      assert fallback.protocol_version == Protocol.fallback_version()
+      assert fallback.negotiated_version == nil
+    end
+
+    test "a pinned HTTP modern version surfaces direct method not found without downgrading" do
+      state = state(@modern_version, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+      error = Error.protocol(:method_not_found)
+
+      assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
+      assert failed.era == :modern
+      assert failed.negotiation_status == :failed
+      assert failed.protocol_version == @modern_version
+      assert failed.negotiated_version == nil
+    end
+
+    test "a pinned HTTP modern version surfaces wrapped method not found without downgrading" do
+      state = state(@modern_version, StreamableHTTP)
       request = request(discover_operation(@modern_version))
 
       body =
@@ -638,6 +692,41 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
 
       assert failed.era == :modern
       assert failed.negotiation_status == :failed
+      assert failed.protocol_version == @modern_version
+      assert failed.negotiated_version == nil
+    end
+
+    test "HTTP auto keeps direct invalid params terminal" do
+      state = state(:auto, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+      error = Error.protocol(:invalid_params)
+
+      assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
+      assert failed.era == :modern
+      assert failed.negotiation_status == :failed
+      assert failed.negotiation_error == error
+    end
+
+    test "HTTP auto keeps wrapped invalid params terminal" do
+      state = state(:auto, StreamableHTTP)
+      request = request(discover_operation(@modern_version))
+
+      body =
+        JSON.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "discover",
+          "error" => %{"code" => -32_602, "message" => "Invalid params"}
+        })
+
+      error =
+        Error.transport(:send_failure, %{original_reason: {:http_error, 400, body}})
+
+      assert {:error, %Error{reason: :invalid_params} = decoded_error, failed} =
+               Negotiation.handle_error(state, request, error)
+
+      assert failed.era == :modern
+      assert failed.negotiation_status == :failed
+      assert failed.negotiation_error == decoded_error
     end
 
     test "HTTP retries a recognized -32022 response when a mutual version exists" do

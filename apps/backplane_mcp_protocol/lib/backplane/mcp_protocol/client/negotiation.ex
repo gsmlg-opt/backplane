@@ -174,6 +174,10 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
     retry_unsupported_version(state, request, error)
   end
 
+  defp handle_http_discovery_error(state, request, %Error{reason: :method_not_found} = error) do
+    handle_recognized_modern_error(state, request, error)
+  end
+
   defp handle_http_discovery_error(state, request, error) do
     case classify_http_error(error) do
       {:json_rpc, %Error{} = json_rpc_error} ->
@@ -185,6 +189,10 @@ defmodule Backplane.McpProtocol.Client.Negotiation do
       _other ->
         fail(state, error)
     end
+  end
+
+  defp handle_recognized_modern_error(%State{protocol_pinned?: false} = state, _request, %Error{reason: :method_not_found}) do
+    initialize(state, Protocol.fallback_version())
   end
 
   defp handle_recognized_modern_error(state, request, %Error{reason: :unsupported_protocol_version} = error) do

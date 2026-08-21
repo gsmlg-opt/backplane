@@ -4,6 +4,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   alias Backplane.McpProtocol.Client
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message
+  alias Backplane.McpProtocol.MCP.Response
+  alias Backplane.McpProtocol.Protocol
   alias Backplane.McpProtocol.Transport.StreamableHTTP
 
   @moduletag capture_log: true
@@ -137,7 +139,102 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       assert Process.alive?(transport)
     end
 
-    test "a recognized JSON-RPC HTTP 400 stays modern and surfaces the error", %{bypass: bypass} do
+    for status <- [200, 400] do
+      test "method not found over HTTP #{status} falls back through tools/list", %{bypass: bypass} do
+        test_pid = self()
+        fallback_version = Protocol.fallback_version()
+
+        echo_tool = %{
+          "name" => "echo",
+          "description" => "Echo input",
+          "inputSchema" => %{"type" => "object", "additionalProperties" => true}
+        }
+
+        Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          request = JSON.decode!(body)
+          send(test_pid, {:negotiation_request, request["method"]})
+
+          conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
+
+          case request["method"] do
+            "server/discover" ->
+              Plug.Conn.resp(
+                conn,
+                unquote(status),
+                JSON.encode!(%{
+                  "jsonrpc" => "2.0",
+                  "id" => request["id"],
+                  "error" => %{"code" => -32_601, "message" => "Method not found"}
+                })
+              )
+
+            "initialize" ->
+              assert request["params"]["protocolVersion"] == fallback_version
+
+              Plug.Conn.resp(
+                conn,
+                200,
+                JSON.encode!(%{
+                  "jsonrpc" => "2.0",
+                  "id" => request["id"],
+                  "result" => %{
+                    "protocolVersion" => fallback_version,
+                    "capabilities" => %{"tools" => %{}},
+                    "serverInfo" => %{"name" => "LegacyHTTP", "version" => "1.0.0"}
+                  }
+                })
+              )
+
+            "notifications/initialized" ->
+              Plug.Conn.resp(conn, 202, "")
+
+            "tools/list" ->
+              Plug.Conn.resp(
+                conn,
+                200,
+                JSON.encode!(%{
+                  "jsonrpc" => "2.0",
+                  "id" => request["id"],
+                  "result" => %{"tools" => [echo_tool]}
+                })
+              )
+          end
+        end)
+
+        {client, transport} = start_http_negotiation_client(bypass, unquote(status))
+
+        assert :ok = Client.await_ready(client, timeout: 2_000)
+
+        assert %{
+                 negotiation_status: :ready,
+                 era: :legacy,
+                 protocol_version: ^fallback_version,
+                 negotiated_version: ^fallback_version
+               } = Client.get_protocol_info(client)
+
+        assert {:ok, %Response{result: %{"tools" => [^echo_tool]}}} =
+                 Client.list_tools(client, timeout: 2_000)
+
+        methods =
+          for _index <- 1..4 do
+            assert_receive {:negotiation_request, method}
+            method
+          end
+
+        assert methods == [
+                 "server/discover",
+                 "initialize",
+                 "notifications/initialized",
+                 "tools/list"
+               ]
+
+        assert Process.alive?(client)
+        assert Process.alive?(transport)
+      end
+    end
+
+    test "a pinned modern client surfaces method not found from HTTP 400", %{bypass: bypass} do
       test_pid = self()
 
       Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
@@ -156,14 +253,19 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         )
       end)
 
-      {client, transport} = start_http_negotiation_client(bypass, :recognized_error)
+      {client, transport} =
+        start_http_negotiation_client(bypass, :recognized_error, "2026-07-28")
 
       assert {:error, %Error{reason: :method_not_found}} =
                Client.await_ready(client, timeout: 2_000)
 
-      assert_receive {:negotiation_request, "server/discover"}
-      refute_receive {:negotiation_request, "initialize"}, 50
-      assert %{negotiation_status: :failed, era: :modern} = Client.get_protocol_info(client)
+      assert_receive {:negotiation_request, method}
+      assert method == "server/discover"
+      refute_receive {:negotiation_request, _other_method}, 50
+
+      assert %{negotiation_status: :failed, era: :modern, negotiated_version: nil} =
+               Client.get_protocol_info(client)
+
       assert Process.alive?(client)
       assert Process.alive?(transport)
     end
@@ -782,7 +884,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
     assert "text/event-stream" in media_types
   end
 
-  defp start_http_negotiation_client(bypass, suffix) do
+  defp start_http_negotiation_client(bypass, suffix, protocol_version \\ :auto) do
     client_name = Module.concat(__MODULE__, "#{suffix}Client")
     transport_name = Module.concat(__MODULE__, "#{suffix}Transport")
     server_url = "http://localhost:#{bypass.port}"
@@ -805,7 +907,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
                   ]},
                client_info: %{"name" => "HTTPNegotiation", "version" => "1.0.0"},
                capabilities: %{},
-               protocol_version: :auto,
+               protocol_version: protocol_version,
                timeout: 1_000
              ]
            ]},
