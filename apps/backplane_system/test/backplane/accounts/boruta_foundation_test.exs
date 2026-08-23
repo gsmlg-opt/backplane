@@ -32,6 +32,11 @@ defmodule Backplane.Accounts.BorutaFoundationTest do
     refute table_exists?("clients_scopes")
   end
 
+  test "oauth clients include boruta trust controls" do
+    assert column_exists?("oauth_clients", "trusted_authorities")
+    assert column_exists?("oauth_clients", "trusted_hosts")
+  end
+
   test "oauth token resource bindings have the expected columns" do
     assert table_exists?("oauth_token_resources")
 
