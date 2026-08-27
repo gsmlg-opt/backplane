@@ -13,6 +13,10 @@ defmodule Backplane.Memory.CrystalsTest do
   alias Backplane.Memory.Workers.SummaryWorker
   alias Backplane.Memory.Workers.CrystalWorker
 
+  defmodule ProductionRepo do
+    def config, do: [pool: DBConnection.ConnectionPool]
+  end
+
   setup do
     previous = Application.get_env(:backplane_memory, :crystal_task_supervisor)
     supervisor = start_supervised!({Task.Supervisor, name: unique_supervisor()})
@@ -212,10 +216,10 @@ defmodule Backplane.Memory.CrystalsTest do
       "input_revision" => input.input_revision
     }
 
-    assert {:snooze, 60} = CrystalWorker.run(args, now)
+    assert {:snooze, 60} = run_crystal_worker(args, now)
     assert repo().aggregate(Crystal, :count) == 0
 
-    assert :ok = CrystalWorker.run(args, DateTime.add(now, 60, :second))
+    assert :ok = run_crystal_worker(args, DateTime.add(now, 60, :second))
     assert repo().aggregate(Crystal, :count) == 1
   end
 
@@ -339,7 +343,7 @@ defmodule Backplane.Memory.CrystalsTest do
              } = projection_state(subject_id)
 
       assert input_revision == input.input_revision
-      assert :ok = CrystalWorker.run(worker_args(input), ~U[2026-08-12 20:00:00.000000Z])
+      assert :ok = run_crystal_worker(worker_args(input), ~U[2026-08-12 20:00:00.000000Z])
 
       assert %State{
                status: "complete",
@@ -354,6 +358,173 @@ defmodule Backplane.Memory.CrystalsTest do
     end)
   end
 
+  test "sandbox authorization bypasses production pools" do
+    assert :ok = CrystalWorker.allow_sandbox(self(), ProductionRepo)
+  end
+
+  test "sandbox authorization normalizes first and repeated allowances" do
+    sandbox_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(repo())
+
+    on_exit(fn ->
+      if Process.alive?(sandbox_owner) do
+        Ecto.Adapters.SQL.Sandbox.stop_owner(sandbox_owner)
+      end
+    end)
+
+    {task_pid, task_ref} =
+      spawn_monitor(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(task_pid), do: Process.exit(task_pid, :kill)
+    end)
+
+    assert :ok = CrystalWorker.allow_sandbox(task_pid, repo())
+    assert :ok = CrystalWorker.allow_sandbox(task_pid, repo())
+
+    send(task_pid, :stop)
+    assert_receive {:DOWN, ^task_ref, :process, ^task_pid, :normal}
+  end
+
+  test "crystal run authorizes its build task with the real sandbox callback" do
+    sandbox_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(repo())
+
+    on_exit(fn ->
+      if Process.alive?(sandbox_owner) do
+        Ecto.Adapters.SQL.Sandbox.stop_owner(sandbox_owner)
+      end
+    end)
+
+    input = closed_session("host-real-sandbox", unique("session"), "p", "sandbox outcome")
+    summarize(input)
+    subject_id = Source.subject_id!(input.host_id, input.session_id)
+
+    assert :ok =
+             CrystalWorker.run(
+               worker_args(input),
+               ~U[2026-08-12 20:00:00.000000Z],
+               enforce_feature_gate: false
+             )
+
+    assert %State{status: "complete", attempt_count: 1, last_error: nil} =
+             projection_state(subject_id)
+  end
+
+  test "sandbox authorization reports when no caller owns the sandbox" do
+    parent = self()
+
+    {caller_pid, caller_ref} =
+      spawn_monitor(fn ->
+        send(parent, {
+          :sandbox_authorization,
+          self(),
+          CrystalWorker.allow_sandbox(self(), repo())
+        })
+      end)
+
+    assert_receive {:sandbox_authorization, ^caller_pid, {:error, :sandbox_owner_not_found}}
+
+    assert_receive {:DOWN, ^caller_ref, :process, ^caller_pid, :normal}
+  end
+
+  test "sandbox authorization failure stops the waiting build and records failure" do
+    input = closed_session("host-sandbox", unique("session"), "p", "private sandbox payload")
+    summarize(input)
+    subject_id = Source.subject_id!(input.host_id, input.session_id)
+    parent = self()
+
+    assert {:error, :sandbox_owner_not_found} =
+             CrystalWorker.run(
+               worker_args(input),
+               ~U[2026-08-12 20:00:00.000000Z],
+               sandbox_allow_fn: fn task_pid ->
+                 task_ref = Process.monitor(task_pid)
+                 send(parent, {:crystal_waiting_task, task_pid, task_ref})
+                 {:error, :sandbox_owner_not_found}
+               end,
+               build_fn: fn ->
+                 send(parent, :crystal_build_ran)
+                 :ok
+               end
+             )
+
+    assert_receive {:crystal_waiting_task, task_pid, task_ref}
+    assert_receive {:DOWN, ^task_ref, :process, ^task_pid, :killed}
+    refute Process.alive?(task_pid)
+    refute_receive :crystal_build_ran
+
+    assert %State{
+             status: "failed",
+             attempt_count: 1,
+             last_error: "sandbox_owner_not_found"
+           } = projection_state(subject_id)
+  end
+
+  test "invalid sandbox authorization result stops the waiting build and records failure" do
+    input = closed_session("host-sandbox-invalid", unique("session"), "p", "invalid sandbox")
+    summarize(input)
+    subject_id = Source.subject_id!(input.host_id, input.session_id)
+    parent = self()
+
+    assert {:error, {:sandbox_allow_failed, :invalid_authorization}} =
+             CrystalWorker.run(
+               worker_args(input),
+               ~U[2026-08-12 20:00:00.000000Z],
+               sandbox_allow_fn: fn task_pid ->
+                 task_ref = Process.monitor(task_pid)
+                 send(parent, {:invalid_sandbox_task, task_pid, task_ref})
+                 :invalid_authorization
+               end,
+               build_fn: fn ->
+                 send(parent, :invalid_sandbox_build_ran)
+                 :ok
+               end
+             )
+
+    assert_receive {:invalid_sandbox_task, task_pid, task_ref}
+    assert_receive {:DOWN, ^task_ref, :process, ^task_pid, :killed}
+    refute Process.alive?(task_pid)
+    refute_receive :invalid_sandbox_build_ran
+
+    assert %State{status: "failed", attempt_count: 1, last_error: "crystallization_failed"} =
+             projection_state(subject_id)
+  end
+
+  test "sandbox authorization exceptions stop the waiting build before reraising" do
+    input = closed_session("host-sandbox-raise", unique("session"), "p", "sandbox exception")
+    summarize(input)
+    parent = self()
+
+    assert_raise RuntimeError, "forced sandbox authorization failure", fn ->
+      CrystalWorker.run(
+        worker_args(input),
+        ~U[2026-08-12 20:00:00.000000Z],
+        sandbox_allow_fn: fn task_pid ->
+          task_ref = Process.monitor(task_pid)
+          send(parent, {:raising_sandbox_task, task_pid, task_ref})
+          raise "forced sandbox authorization failure"
+        end,
+        build_fn: fn ->
+          send(parent, :raising_sandbox_build_ran)
+          :ok
+        end
+      )
+    end
+
+    assert_receive {:raising_sandbox_task, task_pid, task_ref}
+
+    try do
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, :killed}
+      refute Process.alive?(task_pid)
+      refute_receive :raising_sandbox_build_ran
+    after
+      if Process.alive?(task_pid), do: Process.exit(task_pid, :kill)
+    end
+  end
+
   test "crystal execution timeout kills the supervised crystallization and records failure" do
     input = closed_session("host-timeout", unique("session"), "p", "private timeout payload")
     summarize(input)
@@ -361,7 +532,7 @@ defmodule Backplane.Memory.CrystalsTest do
     parent = self()
 
     assert {:error, :execution_timeout} =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                timeout_ms: 10,
@@ -378,7 +549,7 @@ defmodule Backplane.Memory.CrystalsTest do
              projection_state(subject_id)
 
     assert {:error, {:provider_error, "private detail"}} =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                attempt: 5,
@@ -415,7 +586,7 @@ defmodule Backplane.Memory.CrystalsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert {:error, {:provider_error, "sk-secret-private"}} =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                job_id: 42,
@@ -458,7 +629,7 @@ defmodule Backplane.Memory.CrystalsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert :ok =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                build_session_fn: fn host_id, session_id, expected_revision ->
@@ -501,7 +672,7 @@ defmodule Backplane.Memory.CrystalsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert :ok =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                before_running: fn ->
@@ -564,7 +735,7 @@ defmodule Backplane.Memory.CrystalsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert :ok =
-             CrystalWorker.run(
+             run_crystal_worker(
                worker_args(input),
                ~U[2026-08-12 20:00:00.000000Z],
                build_session_fn: fn host_id, session_id, expected_revision ->
@@ -609,7 +780,7 @@ defmodule Backplane.Memory.CrystalsTest do
                CrystalWorker.enqueue(input.host_id, input.session_id, current.input_revision)
     end)
 
-    assert :ok = CrystalWorker.run(worker_args(current), ~U[2026-08-12 20:01:00.000000Z])
+    assert :ok = run_crystal_worker(worker_args(current), ~U[2026-08-12 20:01:00.000000Z])
 
     assert %State{
              input_revision: ^newer_revision,
@@ -667,7 +838,7 @@ defmodule Backplane.Memory.CrystalsTest do
     summarize(current)
 
     stale = worker_args(input)
-    assert :ok = CrystalWorker.run(stale, ~U[2026-08-12 20:00:00.000000Z])
+    assert :ok = run_crystal_worker(stale, ~U[2026-08-12 20:00:00.000000Z])
     assert repo().aggregate(Crystal, :count) == 0
 
     assert %State{
@@ -683,7 +854,7 @@ defmodule Backplane.Memory.CrystalsTest do
       1..4
       |> Enum.map(fn _ ->
         Task.async(fn ->
-          CrystalWorker.run(worker_args(current), ~U[2026-08-12 20:00:00.000000Z])
+          run_crystal_worker(worker_args(current), ~U[2026-08-12 20:00:00.000000Z])
         end)
       end)
       |> Task.await_many(10_000)
@@ -821,6 +992,18 @@ defmodule Backplane.Memory.CrystalsTest do
       "processing_version" => "crystal-v1",
       "input_revision" => input.input_revision
     }
+  end
+
+  defp run_crystal_worker(args, current_time) do
+    run_crystal_worker(args, current_time, enforce_feature_gate: false)
+  end
+
+  defp run_crystal_worker(args, current_time, opts) do
+    CrystalWorker.run(
+      args,
+      current_time,
+      Keyword.put_new(opts, :sandbox_allow_fn, fn _task_pid -> :ok end)
+    )
   end
 
   defp projection_state(subject_id) do
