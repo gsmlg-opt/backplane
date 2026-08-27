@@ -31,6 +31,8 @@ defmodule Backplane.Proxy.McpUpstream do
     timestamps()
   end
 
+  @type t :: %__MODULE__{}
+
   @required ~w(name prefix transport protocol_version)a
   @optional ~w(url command args credential timeout_ms refresh_interval_ms enabled headers auth_scheme auth_header_name)a
 
