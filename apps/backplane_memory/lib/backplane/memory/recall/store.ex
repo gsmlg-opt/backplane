@@ -579,10 +579,9 @@ defmodule Backplane.Memory.Recall.Store do
     allowed = [:fts, :vector, :graph, :rrf, :lifecycle, :reranker, :final]
     normalized = atomize_score_keys(value, allowed)
 
-    if normalized != :error and
-         Enum.all?(normalized, fn {_key, score} -> finite_number?(score) end),
-       do: {:ok, normalized},
-       else: {:error, {:invalid, :scores}}
+    if normalized != :error and Enum.all?(normalized, fn {_key, score} -> is_number(score) end),
+      do: {:ok, normalized},
+      else: {:error, {:invalid, :scores}}
   end
 
   defp scores(_value), do: {:error, {:invalid, :scores}}
@@ -633,10 +632,6 @@ defmodule Backplane.Memory.Recall.Store do
       if atom, do: {:cont, Map.put(acc, atom, item)}, else: {:halt, :error}
     end)
   end
-
-  defp finite_number?(value) when is_integer(value), do: true
-  defp finite_number?(value) when is_float(value), do: value == value
-  defp finite_number?(_value), do: false
 
   defp boolean(value, _key) when is_boolean(value), do: {:ok, value}
   defp boolean(_value, key), do: {:error, {:invalid, key}}

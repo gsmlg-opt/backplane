@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Recall.Reranker do
   @moduledoc "Optional bounded, failure-isolated recall reranking with exact fallback."
 
   alias Backplane.Memory.Config
+  alias Backplane.Memory.Numeric
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Recall.Candidate
 
@@ -295,10 +296,8 @@ defmodule Backplane.Memory.Recall.Reranker do
   defp trim_half(""), do: ""
   defp trim_half(content), do: String.slice(content, 0, div(String.length(content), 2))
 
-  defp unit_score?(score), do: score >= 0 and score <= 1 and finite?(score)
-  defp nonnegative_finite?(score), do: is_number(score) and score >= 0 and finite?(score)
-  defp finite?(score) when is_integer(score), do: true
-  defp finite?(score) when is_float(score), do: score == score and score <= 1.0e308
+  defp unit_score?(score), do: Numeric.unit_interval?(score)
+  defp nonnegative_finite?(score), do: Numeric.nonnegative_score?(score)
 
   defp fallback(traces, status, model), do: {:ok, traces, %{status: status, model: model}}
 end

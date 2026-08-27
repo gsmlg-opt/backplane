@@ -1,6 +1,8 @@
 defmodule Backplane.Memory.Recall.Candidate do
   @moduledoc "A channel-independent Recall V2 candidate with explicit provenance."
 
+  alias Backplane.Memory.Numeric
+
   @kinds [:memory, :lesson, :crystal, :summary, :observation]
   @memory_types [:working, :episodic, :semantic, :procedural]
   @lifecycle_states [:candidate, :active, :disputed, :superseded, :archived, :tombstoned]
@@ -183,13 +185,14 @@ defmodule Backplane.Memory.Recall.Candidate do
 
   defp normalized_string(_value, _max_bytes), do: :error
 
-  defp unit_float(value, key) when is_integer(value), do: unit_float(value / 1, key)
-
-  defp unit_float(value, _key)
-       when is_float(value) and value >= 0.0 and value <= 1.0 and value == value,
-       do: {:ok, value}
-
-  defp unit_float(_value, key), do: {:error, {:invalid, key}}
+  defp unit_float(value, key) do
+    with {:ok, value} <- Numeric.to_float(value),
+         true <- Numeric.unit_interval?(value) do
+      {:ok, value}
+    else
+      _invalid -> {:error, {:invalid, key}}
+    end
+  end
 
   defp bounded_integer(value, _key, min, max)
        when is_integer(value) and value >= min and value <= max,
@@ -279,7 +282,7 @@ defmodule Backplane.Memory.Recall.Candidate do
 
   defp channel_scores(_scores), do: {:error, {:invalid, :channel_scores}}
 
-  defp valid_channel_score?({_channel, value}) when is_number(value), do: finite?(value)
+  defp valid_channel_score?({_channel, value}) when is_number(value), do: true
 
   defp valid_channel_score?({_channel, value}) when is_map(value) do
     allowed = [:rank, :score, "rank", "score"]
@@ -287,13 +290,11 @@ defmodule Backplane.Memory.Recall.Candidate do
     Map.keys(value) -- allowed == [] and
       Enum.all?(value, fn
         {key, rank} when key in [:rank, "rank"] -> is_integer(rank) and rank > 0
-        {key, score} when key in [:score, "score"] -> is_number(score) and finite?(score)
+        {key, score} when key in [:score, "score"] -> is_number(score)
       end)
   end
 
   defp valid_channel_score?(_pair), do: false
-  defp finite?(value) when is_integer(value), do: true
-  defp finite?(value) when is_float(value), do: value == value
 
   defp timestamp(nil, _key), do: {:ok, nil}
   defp timestamp(%DateTime{} = value, _key), do: {:ok, value}
