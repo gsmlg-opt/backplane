@@ -143,8 +143,6 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
     end
   end
 
-  defp content_value(_value, _key), do: nil
-
   defp encode_json(value) do
     case Revision.encode_json(value) do
       {:ok, encoded} -> encoded

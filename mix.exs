@@ -14,6 +14,7 @@ defmodule Backplane.Umbrella.MixProject do
       aliases: aliases(),
       dialyzer: [
         ignore_warnings: ".dialyzer_ignore.exs",
+        plt_add_apps: [:mix, :ex_unit],
         plt_local_path: "priv/plts",
         plt_core_path: "priv/plts"
       ]

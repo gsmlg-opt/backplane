@@ -199,8 +199,6 @@ defmodule Backplane.Transport.Idempotency do
     end
   end
 
-  defp header_digest(_headers), do: :error
-
   defp relevant_header?(name),
     do: name in @identity_headers or String.starts_with?(name, "mcp-param-")
 

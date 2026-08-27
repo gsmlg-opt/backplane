@@ -90,7 +90,7 @@ defmodule Backplane.Memory.Recall.Store do
   @spec put_candidates(Ecto.UUID.t(), map(), [map()]) ::
           {:ok, [TraceCandidate.t()]} | {:error, term()}
   def put_candidates(run_id, partition, traces) do
-    transact(fn -> do_put_candidates(run_id, partition, traces, true) end)
+    transact(fn -> do_put_candidates(run_id, partition, traces) end)
   end
 
   @spec finalize(Ecto.UUID.t(), map(), [map()], keyword()) :: {:ok, Run.t()} | {:error, term()}
@@ -208,10 +208,9 @@ defmodule Backplane.Memory.Recall.Store do
 
   def list(_partition, _opts), do: {:error, :invalid_options}
 
-  defp do_put_candidates(run_id, partition, traces, lock?) do
+  defp do_put_candidates(run_id, partition, traces) do
     with {:ok, partition} <- partition(partition),
-         {:ok, run} <-
-           if(lock?, do: locked_run(run_id, partition), else: existing_run(run_id, partition)),
+         {:ok, run} <- locked_run(run_id, partition),
          true <- run.status == "running" or {:error, :already_finalized},
          {:ok, rows} <- normalize_bounded_traces(run, partition, traces) do
       insert_trace_rows(rows)
@@ -453,16 +452,6 @@ defmodule Backplane.Memory.Recall.Store do
     with {:ok, partition} <- partition(partition),
          {:ok, run_id} <- cast_uuid(run_id) do
       case partitioned_run_query(run_id, partition) |> lock("FOR UPDATE") |> repo().one() do
-        %Run{} = run -> {:ok, run}
-        nil -> {:error, :not_found}
-      end
-    end
-  end
-
-  defp existing_run(run_id, partition) do
-    with {:ok, partition} <- partition(partition),
-         {:ok, run_id} <- cast_uuid(run_id) do
-      case repo().one(partitioned_run_query(run_id, partition)) do
         %Run{} = run -> {:ok, run}
         nil -> {:error, :not_found}
       end
