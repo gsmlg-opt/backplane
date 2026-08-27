@@ -1,7 +1,7 @@
 defmodule Backplane.ClientsTest do
   use BackplaneSystem.DataCase, async: false
 
-  import Backplane.Fixtures
+  import BackplaneSystem.Fixtures
 
   alias Backplane.Clients
 

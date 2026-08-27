@@ -5,7 +5,7 @@ defmodule Backplane.Tools.SkillTest do
 
   alias Backplane.Skills
   alias Backplane.Skills.Registry
-  alias Backplane.Fixtures
+  alias BackplaneMcp.Fixtures
   alias Backplane.Tools.Skill, as: SkillTool
 
   @moduletag :tmp_dir

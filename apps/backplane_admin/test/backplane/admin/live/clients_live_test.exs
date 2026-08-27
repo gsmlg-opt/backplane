@@ -1,7 +1,7 @@
 defmodule Backplane.Admin.ClientsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
-  import Backplane.Fixtures
+  import Backplane.Admin.Fixtures
 
   alias Backplane.Clients
   alias Backplane.Repo
