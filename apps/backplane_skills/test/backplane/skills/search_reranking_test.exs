@@ -36,7 +36,7 @@ defmodule Backplane.Skills.SearchRerankingTest do
              file_count: 5
            ]}
         ] do
-      Backplane.Fixtures.insert_skill(
+      BackplaneSkills.Fixtures.insert_skill(
         Keyword.merge(
           [
             name: name,

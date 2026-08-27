@@ -1,4 +1,4 @@
-defmodule Backplane.Fixtures do
+defmodule BackplaneMcp.Fixtures do
   @moduledoc """
   Factory functions for test data creation.
 
@@ -9,7 +9,7 @@ defmodule Backplane.Fixtures do
   alias Backplane.Repo
   alias Backplane.Skills.Skill
 
-  @fixtures_dir Path.expand("fixtures", __DIR__)
+  @fixtures_dir Path.expand("../fixtures", __DIR__)
 
   # --- Fixture File Helpers ---
 

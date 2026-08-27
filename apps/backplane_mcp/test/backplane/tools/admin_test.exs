@@ -1,7 +1,7 @@
 defmodule Backplane.Tools.AdminTest do
   use BackplaneMcp.DataCase, async: true
 
-  import Backplane.Fixtures
+  import BackplaneMcp.Fixtures
 
   alias Backplane.Tools.Admin
   alias Backplane.Clients

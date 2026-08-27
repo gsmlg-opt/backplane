@@ -192,8 +192,9 @@ If you encounter missing features, bugs, or need functionality not yet available
 
 ## Testing Conventions
 
-- `Backplane.DataCase` — base case template for DB-backed tests (Ecto sandbox). `setup_sandbox/1` uses `shared: not tags[:async]`, so async tests get isolated sandboxes.
-- `Backplane.Admin.LiveCase` — base case template for admin LiveView tests.
+- `BackplaneDataCase` owns repository-agnostic `setup_sandbox/2`.
+- Each app owns its `DataCase`/`ConnCase`/`LiveCase` and domain helpers; no cross-app `test/support` dependencies.
+- `Backplane.DataCase` belongs only to `apps/backplane`.
 - Upstream MCP connections use custom mock modules (`MockMcpPlug`, `MockSSEMcpServer`, `MockSSEHttpPlug`) for test isolation.
 - Only mark tests `async: true` when they avoid shared state, processes, ports, and database sandbox behavior.
 

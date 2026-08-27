@@ -8,7 +8,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   alias Backplane.Auth.Resources
   alias Backplane.Audit.SkillLoadLog
-  alias Backplane.Fixtures
+  alias BackplaneMcp.Fixtures
   alias Backplane.Repo
   alias Backplane.Skills
   alias Backplane.Skills.Hosts
@@ -1591,7 +1591,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   describe "scoped tools/list" do
     test "returns all tools for scope [\"*\"]" do
-      {_client, token} = Backplane.Fixtures.insert_client(name: "all-access", scopes: ["*"])
+      {_client, token} = BackplaneMcp.Fixtures.insert_client(name: "all-access", scopes: ["*"])
       resp = mcp_request("tools/list", nil, auth_token: token)
 
       tools = resp["result"]["tools"]
@@ -1601,7 +1601,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns only docs:: tools for scope [\"docs::*\"]" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "docs-only", scopes: ["docs::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "docs-only", scopes: ["docs::*"])
 
       resp = mcp_request("tools/list", nil, auth_token: token)
 
@@ -1615,7 +1615,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns single tool for exact scope" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "single-tool", scopes: ["public::echo"])
+        BackplaneMcp.Fixtures.insert_client(name: "single-tool", scopes: ["public::echo"])
 
       resp = mcp_request("tools/list", nil, auth_token: token)
 
@@ -1626,7 +1626,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns empty list for scope with no matches" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "no-match", scopes: ["nonexistent::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "no-match", scopes: ["nonexistent::*"])
 
       resp = mcp_request("tools/list", nil, auth_token: token)
 
@@ -1656,7 +1656,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       register_memory_remember_tool!()
 
       {_client, token} =
-        Backplane.Fixtures.insert_client(
+        BackplaneMcp.Fixtures.insert_client(
           name: "memory-pat-dispatch",
           scopes: ["memory::remember"],
           metadata: %{"memory_partition_id" => "host:#{host.id}"}
@@ -1753,7 +1753,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       register_memory_remember_tool!()
 
       {_client, token} =
-        Backplane.Fixtures.insert_client(
+        BackplaneMcp.Fixtures.insert_client(
           name: "memory-sse-dispatch",
           scopes: ["memory::remember"],
           metadata: %{"memory_partition_id" => "host:#{host.id}"}
@@ -1792,7 +1792,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       register_memory_surface!()
 
       {_client, pat} =
-        Backplane.Fixtures.insert_client(
+        BackplaneMcp.Fixtures.insert_client(
           name: "memory-credential-rotation-pat",
           scopes: ["memory::*"],
           metadata: %{"memory_partition_id" => "host:#{host.id}"}
@@ -1869,7 +1869,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       register_memory_surface!()
 
       {_client, pat} =
-        Backplane.Fixtures.insert_client(
+        BackplaneMcp.Fixtures.insert_client(
           name: "memory-deleted-host-pat",
           scopes: ["memory::*"],
           metadata: %{"memory_partition_id" => "host:#{host.id}"}
@@ -1915,7 +1915,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "allows call for in-scope tool" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "skill-access", scopes: ["skill::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "skill-access", scopes: ["skill::*"])
 
       resp =
         mcp_request(
@@ -1930,7 +1930,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "returns -32001 error for out-of-scope tool" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "docs-restricted", scopes: ["docs::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "docs-restricted", scopes: ["docs::*"])
 
       resp =
         mcp_request(
@@ -1945,7 +1945,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "error message includes tool name" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "limited-client", scopes: ["docs::*"])
+        BackplaneMcp.Fixtures.insert_client(name: "limited-client", scopes: ["docs::*"])
 
       resp =
         mcp_request(
@@ -1995,7 +1995,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "single PAT tool denial remains HTTP 200 without an OAuth challenge" do
       {_client, token} =
-        Backplane.Fixtures.insert_client(name: "pat-denial", scopes: ["public::echo"])
+        BackplaneMcp.Fixtures.insert_client(name: "pat-denial", scopes: ["public::echo"])
 
       conn =
         mcp_request_conn(
