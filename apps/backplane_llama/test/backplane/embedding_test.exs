@@ -1,5 +1,5 @@
 defmodule Backplane.EmbeddingTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.Embedding
   alias Backplane.Settings.Credentials

@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.RegistryTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   alias Backplane.Repo
   alias Backplane.Skills.{Registry, Skill}

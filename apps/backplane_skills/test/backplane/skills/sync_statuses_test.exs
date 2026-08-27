@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.SyncStatusesTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   alias Backplane.Skills.{AgentManage, HostStatus, Hosts, SyncStatuses}
 

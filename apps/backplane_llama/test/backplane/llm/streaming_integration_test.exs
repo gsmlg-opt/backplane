@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.StreamingIntegrationTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   import Plug.Test
   import Plug.Conn

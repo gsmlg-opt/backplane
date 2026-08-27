@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.CredentialPlugOpenAICodexTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{CredentialPlug, Provider}
   alias Backplane.Settings.{Credentials, TokenCache}

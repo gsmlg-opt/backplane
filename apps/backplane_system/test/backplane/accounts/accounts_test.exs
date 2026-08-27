@@ -1,5 +1,5 @@
 defmodule Backplane.AccountsTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSystem.DataCase, async: false
 
   alias Backplane.Accounts
   alias Backplane.Accounts.{User, UserIdentity}
@@ -165,11 +165,4 @@ defmodule Backplane.AccountsTest do
     })
   end
 
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
 end

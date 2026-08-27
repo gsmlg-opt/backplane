@@ -1,5 +1,5 @@
 defmodule Backplane.Audit.PrunerTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSystem.DataCase, async: true
   use Oban.Testing, repo: Backplane.Repo
 
   alias Backplane.Audit.{SkillLoadLog, ToolCallLog}

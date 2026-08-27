@@ -12,7 +12,7 @@ defmodule Backplane.Admin.LiveCase do
   end
 
   setup tags do
-    Backplane.DataCase.setup_sandbox(tags)
+    BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

@@ -1,5 +1,5 @@
 defmodule Backplane.Accounts.BorutaFoundationTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSystem.DataCase, async: false
 
   alias Boruta.Ecto.Admin
   alias Boruta.Ecto.Client

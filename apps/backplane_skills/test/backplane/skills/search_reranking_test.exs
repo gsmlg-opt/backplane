@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.SearchRerankingTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSkills.DataCase, async: true
 
   alias Backplane.Skills.Search
 

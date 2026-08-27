@@ -1,5 +1,5 @@
 defmodule Backplane.Jobs.UsageRetentionTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.Jobs.UsageRetention
   alias Backplane.LLM.{Provider, UsageLog}

@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ApiRouterTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   import Plug.Conn
   import Plug.Test
