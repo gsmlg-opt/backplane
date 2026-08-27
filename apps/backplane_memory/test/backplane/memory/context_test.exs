@@ -54,6 +54,13 @@ defmodule Backplane.Memory.ContextTest do
       assert Context.build("my-project", "session") == nil
     end
 
+    test "fails closed when inject_context is enabled with an empty partition field" do
+      stub_setting("true")
+
+      assert Context.build("my-project", "session", Keyword.put(@partition, :namespace, "")) ==
+               nil
+    end
+
     test "returns a non-empty string when inject_context is 'true' and a profile exists" do
       stub_setting("true")
 

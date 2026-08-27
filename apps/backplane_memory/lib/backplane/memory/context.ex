@@ -62,16 +62,16 @@ defmodule Backplane.Memory.Context do
 
   defp partition_from_opts(opts) do
     partition = Map.new(opts)
+    keys = [:host_id, :client_id, :scope, :namespace]
 
-    if Enum.all?([:host_id, :client_id, :scope, :namespace], fn key ->
-         value = partition[key]
-         is_binary(value) and value != ""
-       end) do
-      {:ok, Map.take(partition, [:host_id, :client_id, :scope, :namespace])}
+    if Enum.all?(keys, &valid_partition_value?(partition[&1])) do
+      {:ok, Map.take(partition, keys)}
     else
       {:error, :unauthorized}
     end
   end
+
+  defp valid_partition_value?(value), do: is_binary(value) and value != ""
 
   defp recall_opts(kind, project, session_id, opts) do
     recall_opts =
