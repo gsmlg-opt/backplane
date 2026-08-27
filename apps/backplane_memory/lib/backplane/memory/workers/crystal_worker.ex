@@ -138,6 +138,7 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
   defp execute_build(args, opts, supervisor) do
     timeout = Keyword.get(opts, :timeout_ms, @execution_timeout_ms)
     build_fn = Keyword.get(opts, :build_fn, fn -> build(args, opts) end)
+    sandbox_allow_fn = Keyword.get(opts, :sandbox_allow_fn, &allow_sandbox/1)
     attempt = Keyword.get(opts, :attempt, 1)
     max_attempts = Keyword.get(opts, :max_attempts, 5)
     before_running = Keyword.get(opts, :before_running, fn -> :ok end)
@@ -172,20 +173,19 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
                   {:crystal_task_ready, pid} when pid == task.pid -> :ok
                 end
 
-                allow_sandbox(task.pid)
-                send(task.pid, :crystal_task_run)
-
                 outcome =
-                  case Task.yield(task, timeout) do
-                    {:ok, value} ->
-                      value
+                  case authorize_build_task(task, sandbox_allow_fn) do
+                    :ok ->
+                      send(task.pid, :crystal_task_run)
+                      yield_build_task(task, timeout)
 
-                    {:exit, _reason} ->
-                      {:error, :execution_exit}
-
-                    nil ->
+                    {:error, _reason} = error ->
                       Task.shutdown(task, :brutal_kill)
-                      {:error, :execution_timeout}
+                      error
+
+                    value ->
+                      Task.shutdown(task, :brutal_kill)
+                      {:error, {:sandbox_allow_failed, value}}
                   end
 
                 record_outcome(args, outcome, attempt >= max_attempts)
@@ -202,6 +202,36 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
     case result do
       {:skipped, _reason} -> :ok
       other -> other
+    end
+  end
+
+  defp authorize_build_task(task, sandbox_allow_fn) do
+    try do
+      sandbox_allow_fn.(task.pid)
+    rescue
+      exception ->
+        stacktrace = __STACKTRACE__
+        Task.shutdown(task, :brutal_kill)
+        reraise exception, stacktrace
+    catch
+      kind, reason ->
+        stacktrace = __STACKTRACE__
+        Task.shutdown(task, :brutal_kill)
+        :erlang.raise(kind, reason, stacktrace)
+    end
+  end
+
+  defp yield_build_task(task, timeout) do
+    case Task.yield(task, timeout) do
+      {:ok, value} ->
+        value
+
+      {:exit, _reason} ->
+        {:error, :execution_exit}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :execution_timeout}
     end
   end
 
@@ -228,22 +258,22 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
   defp classification({:skipped, _reason}), do: :skipped
   defp classification(_result), do: :skipped
 
-  defp allow_sandbox(task_pid) do
-    repo = Application.fetch_env!(:backplane_memory, :repo)
-
-    if function_exported?(Ecto.Adapters.SQL.Sandbox, :allow, 3) do
+  @doc false
+  def allow_sandbox(task_pid, repo \\ repo()) do
+    if repo.config()[:pool] != Ecto.Adapters.SQL.Sandbox do
+      :ok
+    else
       [self() | Process.get(:"$callers", [])]
       |> Enum.uniq()
-      |> Enum.find_value(fn parent ->
+      |> Enum.reduce_while({:error, :sandbox_owner_not_found}, fn parent, _error ->
         case Ecto.Adapters.SQL.Sandbox.allow(repo, parent, task_pid) do
-          :ok -> true
-          {:already, _status} -> true
-          :not_found -> false
+          :ok -> {:halt, :ok}
+          {:already, _status} -> {:halt, :ok}
+          :not_found -> {:cont, {:error, :sandbox_owner_not_found}}
+          value -> {:halt, {:error, {:sandbox_allow_failed, value}}}
         end
       end)
     end
-
-    :ok
   end
 
   defp record_outcome(args, {:error, reason}, terminal?) do
@@ -274,6 +304,8 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
       Backplane.Memory.Crystal.TaskSupervisor
     )
   end
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   defp task_supervisor_available?(supervisor) when is_atom(supervisor),
     do: not is_nil(Process.whereis(supervisor))
