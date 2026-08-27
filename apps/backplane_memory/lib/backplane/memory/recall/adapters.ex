@@ -241,27 +241,30 @@ defmodule Backplane.Memory.Recall.Adapters do
   defp artifact_partition(artifact, partition) when is_map(partition) do
     keys = [:host_id, :client_id, :scope, :namespace]
 
-    if Enum.all?(keys, fn key ->
-         expected = value(partition, key)
-         actual = value(artifact, key)
-
-         is_binary(expected) and String.trim(expected) != "" and
-           (is_nil(actual) or actual == expected)
-       end),
-       do: :ok,
-       else: {:error, :partition_mismatch}
+    if Enum.all?(keys, &artifact_partition_matches?(artifact, partition, &1)),
+      do: :ok,
+      else: {:error, :partition_mismatch}
   end
 
   defp artifact_partition(_artifact, _partition), do: {:error, :invalid_partition}
 
   defp validate_empty_partition(partition) do
-    if Enum.all?([:host_id, :client_id, :scope, :namespace], fn key ->
-         value = value(partition, key)
-         is_binary(value) and String.trim(value) != ""
-       end),
+    if Enum.all?(
+         [:host_id, :client_id, :scope, :namespace],
+         &valid_partition_value?(value(partition, &1))
+       ),
        do: {:ok, []},
        else: {:error, :invalid_partition}
   end
+
+  defp artifact_partition_matches?(artifact, partition, key) do
+    expected = value(partition, key)
+    actual = value(artifact, key)
+
+    valid_partition_value?(expected) and (is_nil(actual) or actual == expected)
+  end
+
+  defp valid_partition_value?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp lesson_state(status)
        when status in ["candidate", "active", "disputed", "superseded", "archived"],
