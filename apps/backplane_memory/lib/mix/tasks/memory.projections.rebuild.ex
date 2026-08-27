@@ -202,5 +202,6 @@ defmodule Mix.Tasks.Memory.Projections.Rebuild do
     Enum.map_join(gaps, ",", &"#{&1["from"]}-#{&1["to"]}")
   end
 
+  @spec usage_error() :: no_return()
   defp usage_error, do: Mix.raise(@usage)
 end

@@ -626,15 +626,16 @@ defmodule Backplane.Memory.Memories.Verification do
     end
   end
 
-  defp graph_query(sql, params) do
-    query =
-      if Mix.env() == :test do
-        Application.get_env(:backplane_memory, :verification_graph_query, &repo().query/3)
-      else
-        &repo().query/3
-      end
+  if Mix.env() == :test do
+    defp graph_query_fun do
+      Application.get_env(:backplane_memory, :verification_graph_query, &repo().query/3)
+    end
+  else
+    defp graph_query_fun, do: &repo().query/3
+  end
 
-    case query.(sql, params, timeout: @graph_query_timeout) do
+  defp graph_query(sql, params) do
+    case graph_query_fun().(sql, params, timeout: @graph_query_timeout) do
       {:ok, result} -> {:ok, result}
       {:error, _reason} -> {:error, :verification_timeout}
     end

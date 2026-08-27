@@ -190,9 +190,7 @@ defmodule Backplane.HostAgent.Memory.Import do
           _other -> {:ok, files, bytes}
         end
       else
-        {:error, %File.Error{reason: reason}} -> {:error, {:file_error, reason}}
-        {:error, reason} when is_atom(reason) -> {:error, {:file_error, reason}}
-        {:error, _reason} = error -> error
+        {:error, reason} -> {:error, {:file_error, reason}}
       end
     end
   end

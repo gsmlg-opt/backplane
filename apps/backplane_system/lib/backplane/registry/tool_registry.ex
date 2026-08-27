@@ -162,7 +162,7 @@ defmodule Backplane.Registry.ToolRegistry do
   @spec resolve(String.t()) ::
           {:native, module(), atom() | nil}
           | {:upstream, pid(), String.t(), pos_integer()}
-          | {:managed, (map() -> {:ok, term()} | {:error, term()})}
+          | {:managed, Tool.handler()}
           | :not_found
   def resolve(name) do
     case lookup_tool_row(name) do

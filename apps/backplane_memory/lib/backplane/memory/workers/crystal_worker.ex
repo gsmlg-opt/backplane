@@ -270,7 +270,6 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
           :ok -> {:halt, :ok}
           {:already, _status} -> {:halt, :ok}
           :not_found -> {:cont, {:error, :sandbox_owner_not_found}}
-          value -> {:halt, {:error, {:sandbox_allow_failed, value}}}
         end
       end)
     end
