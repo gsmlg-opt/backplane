@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ModelResolverTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{
     ModelAlias,

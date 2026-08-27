@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.AssignmentsTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   alias Backplane.Repo
   alias Backplane.Skills.{AgentManage, Assignments, Hosts, Skill}

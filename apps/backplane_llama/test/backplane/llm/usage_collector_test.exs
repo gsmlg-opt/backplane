@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.UsageCollectorTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{Provider, UsageCollector, UsageLog}
   alias Backplane.Settings.Credentials

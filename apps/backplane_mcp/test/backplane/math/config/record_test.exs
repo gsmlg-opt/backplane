@@ -1,15 +1,7 @@
 defmodule Backplane.Math.Config.RecordTest do
-  use Backplane.DataCase, async: true
+  use BackplaneMcp.DataCase, async: true
 
   alias Backplane.Math.Config.Record
-
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
 
   describe "changeset/2" do
     test "accepts valid attrs" do

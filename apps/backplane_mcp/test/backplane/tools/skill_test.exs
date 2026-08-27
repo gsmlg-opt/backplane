@@ -1,5 +1,5 @@
 defmodule Backplane.Tools.SkillTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   import Backplane.SkillArchiveCase
 

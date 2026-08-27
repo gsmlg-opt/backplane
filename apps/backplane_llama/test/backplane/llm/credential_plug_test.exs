@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.CredentialPlugTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.LLM.CredentialPlug
   alias Backplane.LLM.Provider

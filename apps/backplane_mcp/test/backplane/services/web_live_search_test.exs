@@ -1,5 +1,5 @@
 defmodule Backplane.Services.WebLiveSearchTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.LLM.{
     ModelResolver,

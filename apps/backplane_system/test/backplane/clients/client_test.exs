@@ -1,5 +1,5 @@
 defmodule Backplane.Clients.ClientTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSystem.DataCase, async: true
 
   alias Backplane.Clients.Client
 
@@ -8,14 +8,6 @@ defmodule Backplane.Clients.ClientTest do
     token_hash: "$2b$12$somehash",
     scopes: ["docs::*", "git::*"]
   }
-
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
 
   describe "changeset" do
     test "valid with name, token_hash, scopes" do

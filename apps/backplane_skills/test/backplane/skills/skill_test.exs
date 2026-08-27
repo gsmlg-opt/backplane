@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.SkillTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSkills.DataCase, async: true
 
   alias Backplane.Skills, as: SkillsContext
   alias Backplane.Skills.Skill

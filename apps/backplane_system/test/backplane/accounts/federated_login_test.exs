@@ -1,5 +1,5 @@
 defmodule Backplane.Accounts.FederatedLoginTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSystem.DataCase, async: false
 
   alias Backplane.Accounts
   alias Backplane.Accounts.FederatedLogin

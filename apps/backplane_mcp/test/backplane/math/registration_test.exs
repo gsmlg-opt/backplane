@@ -1,5 +1,5 @@
 defmodule Backplane.Math.RegistrationTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.Registry.ToolRegistry
 

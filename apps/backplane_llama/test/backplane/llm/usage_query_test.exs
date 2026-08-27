@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.UsageQueryTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.LLM.{Provider, UsageLog, UsageQuery}
   alias Backplane.Settings.Credentials

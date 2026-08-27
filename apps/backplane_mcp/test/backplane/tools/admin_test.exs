@@ -1,5 +1,5 @@
 defmodule Backplane.Tools.AdminTest do
-  use Backplane.DataCase, async: true
+  use BackplaneMcp.DataCase, async: true
 
   import Backplane.Fixtures
 

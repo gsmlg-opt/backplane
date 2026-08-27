@@ -1,5 +1,5 @@
 defmodule Backplane.Audit.ToolCallLogTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSystem.DataCase, async: true
 
   alias Backplane.Audit.ToolCallLog
 

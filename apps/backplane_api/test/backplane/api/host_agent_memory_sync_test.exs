@@ -1,5 +1,5 @@
 defmodule Backplane.Api.HostAgentMemorySyncTest do
-  use Backplane.DataCase, async: false
+  use Backplane.Api.DataCase, async: false
 
   import Ecto.Query
 
