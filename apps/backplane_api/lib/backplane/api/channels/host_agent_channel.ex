@@ -234,10 +234,18 @@ defmodule Backplane.Api.HostAgentChannel do
   def handle_in("memory_events", payload, socket) when is_map(payload) do
     case validate_and_authorize_memory_events(payload, socket) do
       :ok ->
+        host = socket.assigns.host
+
         auth_context = %{
-          host_id: socket.assigns.host.id,
+          host_id: host.id,
           auth_token_id: socket.assigns.auth_token.id,
-          scopes: host_agent_scopes()
+          scopes: host_agent_scopes(),
+          partition: %{
+            host_id: host.id,
+            partition_id: "host:#{host.id}",
+            scope: host.memory_scope,
+            namespace: "private"
+          }
         }
 
         case safe_host_event_ingest(auth_context, payload) do

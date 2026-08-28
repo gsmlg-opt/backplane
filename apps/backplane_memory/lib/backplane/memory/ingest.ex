@@ -2,9 +2,9 @@ defmodule Backplane.Memory.Ingest do
   @moduledoc """
   Authenticated, partial-ACK ingestion of canonical capture events.
 
-  The caller must provide the authenticated host token's canonical scopes.
-  The token ID is the trusted client identity persisted by this boundary; event `agent_id`,
-  `project`, and `scope` remain provenance supplied by that authenticated host.
+  The caller must provide the authenticated host token's scopes and a trusted partition.
+  Canonical host, client, scope, and namespace fields come only from that partition. Event
+  `agent_id`, `project`, `scope`, and `client_id` remain provenance supplied by the host.
   """
 
   @transient_reasons [:database_unavailable, :transaction_rolled_back, :timeout, :disconnected]
@@ -33,6 +33,9 @@ defmodule Backplane.Memory.Ingest do
     :invalid_utf8,
     :conflicting_keys
   ]
+  @v1_authority_keys ~w(memory_space_id partition_id namespace)
+  @v1_authority_atom_keys ~w(memory_space_id partition_id namespace)a
+  @prepared_partition_fields ~w(host_id client_id scope namespace integration ingest_auth_token_id)a
 
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Ingest.{EventValidator, Upcaster}
@@ -59,7 +62,17 @@ defmodule Backplane.Memory.Ingest do
         {:error, :invalid_batch}
 
       true ->
-        results = ingest_events(auth_context, events, opts)
+        results =
+          case resolve_partition(auth_context) do
+            {:ok, partition} ->
+              auth_context
+              |> Map.put(:partition, partition)
+              |> ingest_events(events, opts)
+
+            {:error, :invalid_partition} ->
+              Enum.map(events, &rejected(get(&1, :event_id), "invalid_partition"))
+          end
+
         {:ok, %{"batch_id" => batch_id, "results" => results}}
     end
   end
@@ -81,14 +94,18 @@ defmodule Backplane.Memory.Ingest do
     event_id = get(event, :event_id)
 
     try do
-      with :ok <- authorize_host(auth_context, event),
+      with :ok <- authorize_partition_claims(auth_context, event),
            {:ok, event} <- EventValidator.validate(event),
            {:ok, event} <- server_filter(event),
-           {:ok, attrs} <- Upcaster.V1.upcast(event, auth_context) do
+           {:ok, attrs} <- Upcaster.V1.upcast(event, auth_context),
+           :ok <- validate_prepared_partition(attrs) do
         {:persist, event_id, attrs}
       else
-        {:error, :host_mismatch} ->
-          {:reply, rejected(event_id, "host_mismatch")}
+        {:error, :partition_mismatch} ->
+          {:reply, rejected(event_id, "partition_mismatch")}
+
+        {:error, :invalid_partition} ->
+          {:reply, rejected(event_id, "invalid_partition")}
 
         {:error, :unsupported_schema} ->
           {:reply, rejected(event_id, "unsupported_schema")}
@@ -187,13 +204,44 @@ defmodule Backplane.Memory.Ingest do
         else: reraise(error, __STACKTRACE__)
   end
 
-  defp authorize_host(auth_context, event) do
-    authenticated = get(auth_context, :host_id)
+  defp authorize_partition_claims(auth_context, event) do
+    partition = get(auth_context, :partition)
+    authenticated = get(partition, :host_id)
     claimed = get(event, :host_id)
 
-    if is_binary(authenticated) and authenticated == claimed,
+    if authenticated == claimed and not authority_claim?(event),
       do: :ok,
-      else: {:error, :host_mismatch}
+      else: {:error, :partition_mismatch}
+  end
+
+  defp authority_claim?(event) when is_map(event) do
+    Enum.any?(@v1_authority_keys, &Map.has_key?(event, &1)) or
+      Enum.any?(@v1_authority_atom_keys, &Map.has_key?(event, &1))
+  end
+
+  defp authority_claim?(_event), do: false
+
+  defp resolve_partition(auth_context) do
+    host_id = get(auth_context, :host_id)
+    partition = get(auth_context, :partition)
+    partition_host_id = get(partition, :host_id)
+    partition_id = get(partition, :partition_id)
+    scope = get(partition, :scope)
+    namespace = get(partition, :namespace)
+
+    if non_empty_binary?(host_id) and partition_host_id == host_id and
+         partition_id == "host:#{host_id}" and non_empty_binary?(scope) and
+         namespace == "private" do
+      {:ok,
+       %{
+         host_id: host_id,
+         partition_id: partition_id,
+         scope: scope,
+         namespace: namespace
+       }}
+    else
+      {:error, :invalid_partition}
+    end
   end
 
   defp capture_authorized?(auth_context) do
@@ -205,13 +253,17 @@ defmodule Backplane.Memory.Ingest do
     do: is_binary(value) and String.trim(value) != ""
 
   defp server_filter(event) do
-    with {:ok, payload} <- Filter.apply_payload(event["payload"]) do
+    with {:ok, payload} <- Filter.apply_payload(event["payload"]),
+         {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]),
+         {:ok, source_scope} <- filter_optional_provenance(event["scope"]) do
       payload_hash = EventValidator.payload_hash(payload)
 
       {:ok,
        event
        |> Map.put("payload", payload)
        |> Map.put("payload_hash", payload_hash)
+       |> maybe_put_provenance("client_id", source_client_id)
+       |> maybe_put_provenance("scope", source_scope)
        |> Map.update(
          "privacy",
          %{"server_filtered" => true},
@@ -219,6 +271,26 @@ defmodule Backplane.Memory.Ingest do
        )}
     end
   end
+
+  defp filter_optional_provenance(nil), do: {:ok, nil}
+  defp filter_optional_provenance(value), do: Filter.apply(value)
+
+  defp maybe_put_provenance(event, _key, nil), do: event
+  defp maybe_put_provenance(event, key, value), do: Map.put(event, key, value)
+
+  defp validate_prepared_partition(attrs) when is_map(attrs) do
+    complete_fields? =
+      Enum.all?(@prepared_partition_fields, &non_empty_binary?(Map.get(attrs, &1)))
+
+    raw_envelope = Map.get(attrs, :raw_envelope)
+
+    if complete_fields? and is_map(raw_envelope) and not is_struct(raw_envelope) and
+         map_size(raw_envelope) > 0,
+       do: :ok,
+       else: {:error, :invalid_partition}
+  end
+
+  defp validate_prepared_partition(_attrs), do: {:error, :invalid_partition}
 
   defp persist(event_id, attrs, opts) do
     store = Keyword.get(opts, :store, Store)

@@ -7,7 +7,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
   test "maps the canonical envelope without collapsing its event type" do
     raw = valid_event()
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
-    assert {:ok, attrs} = V1.upcast(event, %{host_id: "host-1", auth_token_id: "token-1"})
+    assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
 
     assert attrs.id == raw["event_id"]
     assert attrs.stream_id == "capture:host-1:session-1"
@@ -20,13 +20,18 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert attrs.raw_envelope["payload"] == raw["payload"]
     assert attrs.client_id == "host:host-1"
     assert attrs.raw_envelope["client_id"] == "host:host-1"
+    assert attrs.scope == "proj_local"
+    assert attrs.raw_envelope["scope"] == "proj_local"
+    assert attrs.raw_envelope["namespace"] == "private"
+    assert attrs.raw_envelope["source_client_id"] == "codex-cli"
+    assert attrs.raw_envelope["source_scope"] == "project:backplane"
     assert attrs.ingest_auth_token_id == "token-1"
   end
 
   test "preserves optional canonical importance" do
     raw = valid_event(%{"importance" => 7})
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
-    assert {:ok, attrs} = V1.upcast(event, %{host_id: "host-1", auth_token_id: "token-1"})
+    assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
     assert attrs.importance == 7
   end
 
@@ -34,14 +39,28 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     raw = valid_event(%{"client_id" => "host:attacker"})
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
 
-    assert {:ok, first} = V1.upcast(event, %{host_id: "host-1", auth_token_id: "token-1"})
-    assert {:ok, rotated} = V1.upcast(event, %{host_id: "host-1", auth_token_id: "token-2"})
+    assert {:ok, first} = V1.upcast(event, auth_context("host-1"))
+
+    assert {:ok, rotated} =
+             V1.upcast(event, auth_context("host-1", %{auth_token_id: "token-2"}))
 
     assert first.client_id == "host:host-1"
     assert rotated.client_id == first.client_id
     assert first.ingest_auth_token_id == "token-1"
     assert rotated.ingest_auth_token_id == "token-2"
-    refute first.raw_envelope["client_id"] == "host:attacker"
+    assert first.raw_envelope["source_client_id"] == "host:attacker"
+    assert first.raw_envelope["client_id"] == "host:host-1"
+  end
+
+  test "omits provenance fields that were absent from the source envelope" do
+    raw = valid_event() |> Map.delete("client_id") |> Map.delete("scope")
+    assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
+    assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
+
+    refute Map.has_key?(attrs.raw_envelope, "source_client_id")
+    refute Map.has_key?(attrs.raw_envelope, "source_scope")
+    assert attrs.raw_envelope["client_id"] == "host:host-1"
+    assert attrs.raw_envelope["scope"] == "proj_local"
   end
 
   test "host namespaces cannot collide through delimiter ambiguity" do
@@ -50,8 +69,27 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
 
     assert {:ok, first} = Backplane.Memory.Ingest.EventValidator.validate(first)
     assert {:ok, second} = Backplane.Memory.Ingest.EventValidator.validate(second)
-    assert {:ok, first_attrs} = V1.upcast(first, %{host_id: "a:b", auth_token_id: "token-1"})
-    assert {:ok, second_attrs} = V1.upcast(second, %{host_id: "a", auth_token_id: "token-2"})
+    assert {:ok, first_attrs} = V1.upcast(first, auth_context("a:b"))
+
+    assert {:ok, second_attrs} =
+             V1.upcast(second, auth_context("a", %{auth_token_id: "token-2"}))
+
     refute first_attrs.idempotency_key == second_attrs.idempotency_key
+  end
+
+  defp auth_context(host_id, overrides \\ %{}) do
+    Map.merge(
+      %{
+        host_id: host_id,
+        auth_token_id: "token-1",
+        partition: %{
+          host_id: host_id,
+          partition_id: "host:#{host_id}",
+          scope: "proj_local",
+          namespace: "private"
+        }
+      },
+      overrides
+    )
   end
 end

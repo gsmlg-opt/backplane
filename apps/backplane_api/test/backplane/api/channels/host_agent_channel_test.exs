@@ -735,12 +735,21 @@ defmodule Backplane.Api.HostAgentChannelTest do
                        %{
                          host_id: host_id,
                          auth_token_id: auth_token_id,
-                         scopes: scopes
+                         scopes: scopes,
+                         partition: %{
+                           host_id: partition_host_id,
+                           partition_id: partition_id,
+                           scope: scope,
+                           namespace: "private"
+                         }
                        }, ^payload}
 
       assert host_id == host.id
       assert auth_token_id == auth_token.id
       assert "host_agent.capture" in scopes
+      assert partition_host_id == host.id
+      assert partition_id == "host:#{host.id}"
+      assert scope == host.memory_scope
     end
 
     test "memory_events requires capture independently from recall and import", %{
