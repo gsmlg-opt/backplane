@@ -69,6 +69,68 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     def facts(_args, _opts), do: send(self(), :unexpected_local_facts)
   end
 
+  defmodule PendingRemember do
+    def pending_overlay(_args, _opts) do
+      {:ok,
+       %{
+         "upserts" => [
+           %{
+             "id" => "local-1",
+             "canonical_id" => nil,
+             "content" => "pending insight",
+             "origin" => "host_command",
+             "authority" => "provisional",
+             "provisional" => true
+           }
+         ],
+         "delete_ids" => [],
+         "pending_operations" => 1
+       }}
+    end
+  end
+
+  defmodule PendingForget do
+    def pending_overlay(_args, _opts) do
+      {:ok, %{"upserts" => [], "delete_ids" => ["canonical-1"], "pending_operations" => 1}}
+    end
+  end
+
+  defmodule AcknowledgedRemember do
+    def pending_overlay(_args, _opts) do
+      {:ok,
+       %{
+         "upserts" => [
+           %{
+             "id" => "local-1",
+             "canonical_id" => "canonical-1",
+             "content" => "provisional duplicate",
+             "provisional" => true
+           }
+         ],
+         "delete_ids" => [],
+         "pending_operations" => 1
+       }}
+    end
+  end
+
+  defmodule MultiplePending do
+    def pending_overlay(_args, _opts) do
+      {:ok,
+       %{
+         "upserts" => [
+           %{"id" => "local-1", "content" => "first pending", "provisional" => true},
+           %{"id" => "local-2", "content" => "second pending", "provisional" => true}
+         ],
+         "delete_ids" => [],
+         "pending_operations" => 2
+       }}
+    end
+  end
+
+  defmodule OverlayFailure do
+    def pending_overlay(_args, _opts), do: {:error, {:storage_error, :overlay_unavailable}}
+  end
+
   defmodule LocalCommands do
     def remember(args, opts) do
       send(self(), {:local_call, "remember", args, opts})
@@ -207,6 +269,72 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
                "recall",
                %{"query" => "canonical"},
                %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingOnly}
+             )
+  end
+
+  test "online recall includes an unmatched pending remember exactly once" do
+    assert {:ok, %{"results" => results, "hits" => hits}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "insight"},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
+             )
+
+    assert results == hits
+    assert Enum.count(results, &(&1["id"] == "local-1")) == 1
+    assert Enum.any?(results, &(&1["id"] == "canonical-1"))
+  end
+
+  test "pending forget suppresses the matching canonical result" do
+    assert {:ok,
+            %{
+              "results" => [],
+              "hits" => [],
+              "authority" => "canonical_with_provisional",
+              "consistency" => "read_your_writes"
+            }} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "canonical"},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingForget}
+             )
+  end
+
+  test "canonical result wins after the pending remember maps a remote id" do
+    assert {:ok, %{"results" => [result], "hits" => [result]}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "canonical"},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteOK,
+                 local_adapter: AcknowledgedRemember
+               }
+             )
+
+    assert result["id"] == "canonical-1"
+    assert result["content"] == "canonical"
+    refute result["provisional"]
+  end
+
+  test "recall reapplies the requested limit after merging the overlay" do
+    assert {:ok, %{"results" => results, "hits" => hits}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "pending", "limit" => 2},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: MultiplePending}
+             )
+
+    assert results == hits
+    assert Enum.map(results, & &1["id"]) == ["local-1", "local-2"]
+  end
+
+  test "overlay read failure fails the canonical read" do
+    assert {:error, {:storage_error, :overlay_unavailable}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "canonical"},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: OverlayFailure}
              )
   end
 

@@ -68,6 +68,40 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
+  @doc "Returns unresolved host commands that may be overlaid on canonical reads."
+  def pending_overlay(args, opts \\ []) when is_map(args) do
+    store = store(opts)
+    config = memory_config(opts)
+
+    with {:ok, scope} <- resolve_read_scope(store, args, config) do
+      query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
+
+      {clauses, params} =
+        {[
+           "outbox.state IN ('pending', 'inflight')",
+           "memory.scope = ?",
+           "NOT EXISTS (SELECT 1 FROM memory_outbox newer WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq)"
+         ], [scope]}
+        |> add_optional_clause(query, "lower(memory.content) LIKE ? ESCAPE '\\'", fn value ->
+          Reducer.like_pattern(value)
+        end)
+
+      sql = """
+      SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
+             memory.metadata, memory.confidence, memory.remote_id
+      FROM memory_outbox AS outbox
+      INNER JOIN memories AS memory ON memory.id = outbox.memory_id
+      WHERE #{Enum.join(clauses, " AND ")}
+      ORDER BY outbox.seq ASC
+      """
+
+      case Store.query(store, sql, params) do
+        {:ok, %Result{rows: rows}} -> {:ok, overlay_from_rows(rows)}
+        {:error, reason} -> storage_error(reason)
+      end
+    end
+  end
+
   def recall(args, opts \\ []) when is_map(args) do
     store = store(opts)
     config = memory_config(opts)
@@ -326,6 +360,39 @@ defmodule Backplane.HostAgent.Memory do
       {:error, reason} ->
         DBConnection.rollback(conn, {:storage_error, reason})
     end
+  end
+
+  defp overlay_from_rows(rows) do
+    {upserts, delete_ids} =
+      Enum.reduce(rows, {[], []}, fn
+        %{"op" => "remember"} = row, {upserts, delete_ids} ->
+          {[provisional_item(row) | upserts], delete_ids}
+
+        %{"op" => "forget"} = row, {upserts, delete_ids} ->
+          delete_id = row["remote_id"] || row["id"]
+          {upserts, [delete_id | delete_ids]}
+      end)
+
+    %{
+      "upserts" => Enum.reverse(upserts),
+      "delete_ids" => Enum.reverse(delete_ids),
+      "pending_operations" => length(rows)
+    }
+  end
+
+  defp provisional_item(row) do
+    %{
+      "id" => row["id"],
+      "canonical_id" => row["remote_id"],
+      "content" => row["content"],
+      "scope" => row["scope"],
+      "tags" => Reducer.decode_json(row["tags"], []),
+      "metadata" => Reducer.decode_json(row["metadata"], %{}),
+      "confidence" => row["confidence"],
+      "origin" => "host_command",
+      "authority" => "provisional",
+      "provisional" => true
+    }
   end
 
   defp forget_memory(store, row) do

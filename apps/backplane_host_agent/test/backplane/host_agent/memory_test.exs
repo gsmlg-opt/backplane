@@ -125,6 +125,128 @@ defmodule Backplane.HostAgent.MemoryTest do
              Store.query(store, "SELECT COUNT(*) AS count FROM memory_outbox WHERE op = 'forget'")
   end
 
+  test "pending overlay exposes the latest pending remember as provisional", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => provisional_id}} =
+             Memory.remember(%{"content" => "pending insight"}, opts)
+
+    assert {:ok,
+            %{
+              "upserts" => [
+                %{
+                  "id" => ^provisional_id,
+                  "canonical_id" => nil,
+                  "content" => "pending insight",
+                  "origin" => "host_command",
+                  "authority" => "provisional",
+                  "provisional" => true
+                }
+              ],
+              "delete_ids" => [],
+              "pending_operations" => 1
+            }} = Memory.pending_overlay(%{"query" => "pending"}, opts)
+  end
+
+  test "pending overlay continues to expose an inflight remember", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "inflight insight"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
+               [id]
+             )
+
+    assert {:ok, %{"upserts" => [%{"id" => ^id}], "pending_operations" => 1}} =
+             Memory.pending_overlay(%{"query" => "inflight"}, opts)
+  end
+
+  test "pending overlay uses only the latest operation and prefers remote forget ids", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "forget pending"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memories SET remote_id = ? WHERE id = ?", [
+               "remote-1",
+               id
+             ])
+
+    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
+
+    assert {:ok,
+            %{
+              "upserts" => [],
+              "delete_ids" => ["remote-1"],
+              "pending_operations" => 1
+            }} = Memory.pending_overlay(%{"query" => "forget"}, opts)
+  end
+
+  test "pending overlay excludes a memory whose latest operation is done", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => done_id}} = Memory.remember(%{"content" => "done insight"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'done' WHERE memory_id = ?",
+               [done_id]
+             )
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
+             Memory.pending_overlay(%{}, opts)
+  end
+
+  test "pending overlay does not present a failed operation as pending", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => failed_id}} = Memory.remember(%{"content" => "failed insight"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'failed' WHERE memory_id = ?",
+               [failed_id]
+             )
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
+             Memory.pending_overlay(%{}, opts)
+  end
+
+  test "pending overlay enforces scope and query filters", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+    other_opts = Keyword.put(opts, :config, %{bound_scope: "other_scope"})
+
+    assert {:ok, %{"id" => expected_id}} =
+             Memory.remember(%{"content" => "matching pending"}, opts)
+
+    assert {:ok, _} = Memory.remember(%{"content" => "unmatched pending"}, opts)
+    assert {:ok, _} = Memory.remember(%{"content" => "matching other scope"}, other_opts)
+
+    assert {:ok, %{"upserts" => [%{"id" => ^expected_id}], "pending_operations" => 1}} =
+             Memory.pending_overlay(
+               %{"scope" => "proj_local", "query" => "matching pending"},
+               opts
+             )
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
+             Memory.pending_overlay(%{"scope" => "proj_local", "query" => "absent"}, opts)
+  end
+
   test "recall merges local memories and facts with source and degraded quality", %{
     tmp_dir: tmp_dir
   } do

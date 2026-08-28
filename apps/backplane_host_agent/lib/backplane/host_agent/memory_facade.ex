@@ -2,6 +2,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
   @moduledoc "Routes core host memory operations across canonical and provisional stores."
 
   alias Backplane.HostAgent.{Memory, MemoryProxy}
+  alias Backplane.HostAgent.Memory.Reducer
 
   @commands ~w(remember forget)
   @reads ~w(recall list stats)
@@ -65,13 +66,13 @@ defmodule Backplane.HostAgent.MemoryFacade do
     case remote_adapter.call(method, args, remote_opts(context)) do
       {:ok, %{} = canonical} ->
         with {:ok, %{} = overlay} <- pending_overlay(args, context) do
-          {:ok, online_result(method, canonical, overlay)}
+          {:ok, online_result(method, canonical, overlay, args)}
         end
 
       {:error, reason} = error ->
         if transport_error?(reason) do
           with {:ok, %{} = overlay} <- pending_overlay(args, context) do
-            {:ok, offline_result(method, overlay)}
+            {:ok, offline_result(method, overlay, args)}
           end
         else
           error
@@ -87,11 +88,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
     local_adapter.pending_overlay(args, local_opts(context))
   end
 
-  defp online_result(method, canonical, overlay) do
+  defp online_result(method, canonical, overlay, args) do
     pending_operations = pending_operations(overlay)
     pending? = pending_operations > 0
 
     canonical
+    |> merge_overlay(method, overlay, args)
     |> normalize_result(method)
     |> Map.merge(%{
       "mode" => "online",
@@ -106,8 +108,8 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> Map.put_new("as_of", nil)
   end
 
-  defp offline_result(method, overlay) do
-    upserts = Map.get(overlay, "upserts", [])
+  defp offline_result(method, overlay, args) do
+    upserts = limited_results(Map.get(overlay, "upserts", []), method, args)
 
     overlay
     |> normalize_offline_result(method, upserts)
@@ -147,6 +149,41 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp normalize_offline_result(result, "stats", _upserts), do: result
+
+  defp merge_overlay(canonical, "stats", _overlay, _args), do: canonical
+
+  defp merge_overlay(canonical, method, overlay, args) when method in ["recall", "list"] do
+    delete_ids = overlay |> Map.get("delete_ids", []) |> MapSet.new()
+
+    canonical_results =
+      canonical
+      |> normalized_results()
+      |> Enum.reject(&(result_identity(&1) in delete_ids))
+
+    canonical_ids = canonical_results |> Enum.map(&result_identity/1) |> MapSet.new()
+
+    provisional_results =
+      overlay
+      |> Map.get("upserts", [])
+      |> Enum.reject(fn result ->
+        identity = result_identity(result)
+        identity in delete_ids or identity in canonical_ids
+      end)
+
+    merged = limited_results(provisional_results ++ canonical_results, method, args)
+    Map.put(canonical, "results", merged)
+  end
+
+  defp limited_results(results, "recall", args), do: Enum.take(results, Reducer.limit(args))
+  defp limited_results(results, "list", args), do: Enum.take(results, Reducer.limit(args))
+  defp limited_results(results, _method, _args), do: results
+
+  defp result_identity(%{"canonical_id" => canonical_id})
+       when is_binary(canonical_id) and canonical_id != "",
+       do: canonical_id
+
+  defp result_identity(%{"id" => id}), do: id
+  defp result_identity(_result), do: nil
 
   defp normalized_results(%{"results" => results}) when is_list(results), do: results
   defp normalized_results(_result), do: []
