@@ -5,9 +5,11 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   @behaviour Backplane.HostAgent.LocalService
 
-  alias Backplane.HostAgent.Memory
+  alias Backplane.HostAgent.{Memory, MemoryFacade}
   alias Backplane.HostAgent.Memory.{ImportRunner, ImportSupervisor}
   alias Backplane.HostAgent.Memory.Store
+
+  @facade_methods ~w(remember recall list forget stats)
 
   @impl true
   def prefix, do: "memory"
@@ -23,6 +25,7 @@ defmodule Backplane.HostAgent.Services.Memory do
   def call(method, args, ctx) when is_binary(method) and is_map(args) and is_map(ctx) do
     cond do
       method == "replay_import" -> replay_import(args, ctx)
+      method in @facade_methods -> facade(ctx).call(method, args, facade_context(ctx))
       Memory.valid_method?(method) -> do_call(method, args, memory_opts(ctx[:agent_id]))
       true -> {:error, {:unknown_method, method}}
     end
@@ -32,11 +35,6 @@ defmodule Backplane.HostAgent.Services.Memory do
     :exit, reason -> {:error, {:memory_unavailable, reason}}
   end
 
-  defp do_call("remember", args, opts), do: Memory.remember(args, opts)
-  defp do_call("recall", args, opts), do: Memory.recall(args, opts)
-  defp do_call("list", args, opts), do: Memory.list(args, opts)
-  defp do_call("forget", args, opts), do: Memory.forget(args, opts)
-  defp do_call("stats", args, opts), do: Memory.stats(args, opts)
   defp do_call("slot_read", args, opts), do: Memory.slot_read(args, opts)
   defp do_call("slot_write", args, opts), do: Memory.slot_write(args, opts)
   defp do_call("slot_list", args, opts), do: Memory.slot_list(args, opts)
@@ -111,6 +109,15 @@ defmodule Backplane.HostAgent.Services.Memory do
   end
 
   defp replay_import(_args, _ctx), do: {:error, :invalid_import_request}
+
+  defp facade(ctx), do: Map.get(ctx, :memory_facade, MemoryFacade)
+
+  defp facade_context(ctx) do
+    ctx
+    |> Map.put_new(:agent_id, "local")
+    |> Map.put_new(:store, Application.get_env(:backplane_host_agent, :memory_store, Store))
+    |> Map.put_new(:config, Application.get_env(:backplane_host_agent, :memory_config, %{}))
+  end
 
   defp bounded_cap(value, maximum) when is_integer(value) and value > 0, do: min(value, maximum)
   defp bounded_cap(_value, maximum), do: maximum

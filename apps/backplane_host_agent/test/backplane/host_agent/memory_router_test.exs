@@ -43,7 +43,9 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       {:ok,
        [
-         %{"name" => "memory::hub_shadow", "description" => "must not override local memory"},
+         %{"name" => "memory::recall", "description" => "must not replace local recall"},
+         %{"name" => "memory::recall_explain", "description" => "hub-only memory tool"},
+         %{"name" => "memory::semantic_search", "description" => "hub-only memory tool"},
          %{"name" => "hub::remote", "description" => "remote hub tool"}
        ]}
     end
@@ -68,7 +70,65 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
+  defmodule FakeMemoryFacade do
+    def call("recall", args, ctx) do
+      send(self(), {:memory_facade_call, "recall", args, ctx})
+
+      {:ok,
+       %{
+         "mode" => "online",
+         "authority" => "canonical",
+         "consistency" => "canonical",
+         "history_available" => true,
+         "pending_operations" => 0,
+         "recall_run_id" => "run-router-1",
+         "hits" => [
+           %{
+             "id" => "canonical-1",
+             "content" => "canonical router result",
+             "score" => 0.97
+           }
+         ]
+       }}
+    end
+  end
+
   describe "POST /memory/:agent_id/call/:method" do
+    test "delegates direct recall to the canonical facade and preserves metadata" do
+      conn =
+        :post
+        |> conn(
+          "/memory/agt_42/call/recall",
+          Jason.encode!(%{"query" => "canonical", "limit" => 3})
+        )
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, FakeMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{
+               "ok" => true,
+               "result" => %{
+                 "mode" => "online",
+                 "authority" => "canonical",
+                 "consistency" => "canonical",
+                 "history_available" => true,
+                 "recall_run_id" => "run-router-1",
+                 "hits" => [
+                   %{
+                     "id" => "canonical-1",
+                     "content" => "canonical router result",
+                     "score" => 0.97
+                   }
+                 ]
+               }
+             } = Jason.decode!(conn.resp_body)
+
+      assert_received {:memory_facade_call, "recall", %{"query" => "canonical", "limit" => 3},
+                       %{agent_id: "agt_42", memory_facade: FakeMemoryFacade}}
+    end
+
     test "handles remember locally and stores the route agent_id", %{store: store} do
       conn =
         :post
@@ -98,7 +158,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                Jason.decode!(conn.resp_body)
     end
 
-    test "works without a channel process", %{store: store} do
+    test "does not expose historical local rows without a channel", %{store: store} do
       assert {:ok, _} =
                Store.execute(
                  store,
@@ -128,14 +188,17 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "hits" => [
-                   %{"id" => "mem_1", "content" => "offline local recall", "source" => "local"}
-                 ]
+                 "mode" => "offline",
+                 "authority" => "provisional",
+                 "consistency" => "provisional_only",
+                 "history_available" => false,
+                 "pending_operations" => 0,
+                 "hits" => []
                }
              } = Jason.decode!(conn.resp_body)
     end
 
-    test "recall accepts query and limit and returns local rows" do
+    test "recall accepts query and limit and returns pending writes during an outage" do
       remember!("hello world")
 
       conn =
@@ -148,7 +211,14 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert %{
                "ok" => true,
-               "result" => %{"hits" => [%{"content" => "hello world", "quality" => "degraded"}]}
+               "result" => %{
+                 "mode" => "offline",
+                 "authority" => "provisional",
+                 "consistency" => "provisional_only",
+                 "history_available" => false,
+                 "pending_operations" => 1,
+                 "hits" => [%{"content" => "hello world", "provisional" => true}]
+               }
              } = Jason.decode!(conn.resp_body)
     end
 
@@ -182,7 +252,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                Jason.decode!(conn.resp_body)
     end
 
-    test "stats returns local counts" do
+    test "stats reports pending commands without claiming local history" do
       remember!("stats memory")
 
       conn =
@@ -196,9 +266,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "memories" => %{"pending" => 1},
-                 "outbox" => %{"pending" => 1},
-                 "known_scopes" => ["proj_local"]
+                 "mode" => "offline",
+                 "authority" => "provisional",
+                 "consistency" => "provisional_only",
+                 "history_available" => false,
+                 "pending_operations" => 1,
+                 "upserts" => [%{"content" => "stats memory", "provisional" => true}]
                }
              } = Jason.decode!(conn.resp_body)
     end
@@ -222,7 +295,15 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 200
-      assert %{"ok" => true, "result" => %{"facts" => 0}} = Jason.decode!(conn.resp_body)
+
+      assert %{
+               "ok" => true,
+               "result" => %{
+                 "mode" => "offline",
+                 "consistency" => "provisional_only",
+                 "pending_operations" => 0
+               }
+             } = Jason.decode!(conn.resp_body)
     end
 
     test "keeps the root call path as a compatibility alias" do
@@ -233,7 +314,15 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 200
-      assert %{"ok" => true, "result" => %{"facts" => 0}} = Jason.decode!(conn.resp_body)
+
+      assert %{
+               "ok" => true,
+               "result" => %{
+                 "mode" => "offline",
+                 "consistency" => "provisional_only",
+                 "pending_operations" => 0
+               }
+             } = Jason.decode!(conn.resp_body)
     end
 
     test "unwraps JSON-RPC params when posted to the direct call endpoint" do
@@ -313,9 +402,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                |> Jason.decode!()
     end
 
-    test "routes tools/call recall through local memory" do
-      remember!("offline local recall")
-
+    test "delegates MCP recall to the canonical facade and preserves metadata" do
       body =
         Jason.encode!(%{
           "jsonrpc" => "2.0",
@@ -323,7 +410,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
           "method" => "tools/call",
           "params" => %{
             "name" => "memory::recall",
-            "arguments" => %{"query" => "offline", "limit" => 1}
+            "arguments" => %{"query" => "canonical", "limit" => 1}
           }
         })
 
@@ -331,6 +418,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         :post
         |> conn("/memory/agt_42/mcp", body)
         |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, FakeMemoryFacade)
         |> call_router()
 
       assert conn.status == 200
@@ -339,14 +427,27 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert decoded["id"] == "recall"
       assert decoded["result"]["isError"] == false
 
-      assert %{"hits" => [%{"content" => "offline local recall"}]} =
+      assert %{
+               "mode" => "online",
+               "authority" => "canonical",
+               "consistency" => "canonical",
+               "history_available" => true,
+               "recall_run_id" => "run-router-1",
+               "hits" => [%{"content" => "canonical router result", "score" => 0.97}]
+             } =
                decoded["result"]["content"]
                |> hd()
                |> Map.fetch!("text")
                |> Jason.decode!()
+
+      assert_received {:memory_facade_call, "recall", %{"query" => "canonical", "limit" => 1},
+                       %{agent_id: "agt_42", memory_facade: FakeMemoryFacade}}
     end
 
-    test "returns JSON-RPC error for unknown memory tools" do
+    test "routes Hub-only memory tools through the hub" do
+      :persistent_term.put({StubHubProxy, :owner}, self())
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
       body =
         Jason.encode!(%{
           "jsonrpc" => "2.0",
@@ -363,8 +464,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
       decoded = Jason.decode!(conn.resp_body)
-      assert decoded["error"]["code"] == -32_601
-      assert decoded["error"]["message"] == "Unknown memory method: semantic_search"
+      assert decoded["result"]["isError"] == false
+
+      assert %{"echo" => "memory::semantic_search", "arguments" => %{}} =
+               decoded["result"]["content"] |> hd() |> Map.fetch!("text") |> Jason.decode!()
+
+      assert_received {:call_tool, "memory::semantic_search", %{}}
+      _ = :persistent_term.erase({StubHubProxy, :owner})
     end
 
     test "proxies unknown service tools through the hub" do
@@ -458,7 +564,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert message == "hub unreachable: not_connected"
     end
 
-    test "merges tools/list with hub tools while filtering local prefix collisions" do
+    test "merges tools/list with hub tools by exact name" do
       :persistent_term.put({StubHubProxy, :owner}, self())
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
@@ -479,7 +585,9 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> Enum.map(& &1["name"])
 
       assert "memory::remember" in tool_names
-      refute "memory::hub_shadow" in tool_names
+      assert "memory::recall_explain" in tool_names
+      assert "memory::semantic_search" in tool_names
+      assert Enum.count(tool_names, &(&1 == "memory::recall")) == 1
       assert "hub::remote" in tool_names
       assert_received :list_tools
       _ = :persistent_term.erase({StubHubProxy, :owner})

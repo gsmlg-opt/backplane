@@ -12,8 +12,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
     `tools/list` (lists memory tools) and `tools/call` (routes to the same
     handler as `/call/:method`).
 
-  Memory operations are local-only and use the host-agent memory store. Hub-only
-  memory operations return stable local errors.
+  Core memory operations use the canonical memory facade. Host-only slot, facet,
+  and replay operations remain local, while Hub-only memory tools are forwarded.
   """
 
   use Plug.Router
@@ -390,7 +390,11 @@ defmodule Backplane.HostAgent.MemoryRouter do
         _ -> %{}
       end
 
-    case Backplane.HostAgent.Services.Memory.call(method, args, %{agent_id: agent_id}) do
+    case Backplane.HostAgent.Services.Memory.call(
+           method,
+           args,
+           memory_service_ctx(conn, agent_id, args)
+         ) do
       {:ok, result} ->
         send_json(conn, 200, %{"ok" => true, "result" => result})
 
@@ -464,7 +468,15 @@ defmodule Backplane.HostAgent.MemoryRouter do
        when is_binary(name) and is_map(args) do
     case Services.resolve(name) do
       {:ok, service, bare} ->
-        call_local_tool(conn, id, service, bare, args, tool_ctx(agent_id, args))
+        call_local_tool(
+          conn,
+          id,
+          service,
+          bare,
+          name,
+          args,
+          memory_service_ctx(conn, agent_id, args)
+        )
 
       :error ->
         route_unknown_tool(conn, id, name, args)
@@ -492,7 +504,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp direct_call_args(args, _method), do: args
 
-  defp call_local_tool(conn, id, service, method, args, ctx) do
+  defp call_local_tool(conn, id, service, method, full_name, args, ctx) do
     case service.call(method, args, ctx) do
       {:ok, result} ->
         send_json(
@@ -505,11 +517,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
         )
 
       {:error, {:unknown_method, _}} ->
-        send_json(
-          conn,
-          200,
-          jsonrpc_error(id, -32_601, unknown_method_message(service, method))
-        )
+        route_unknown_tool(conn, id, full_name, args)
 
       {:error, {:memory_unavailable, _reason}} ->
         send_json(conn, 200, jsonrpc_error(id, -32_002, "local memory is not configured"))
@@ -537,37 +545,22 @@ defmodule Backplane.HostAgent.MemoryRouter do
     local_tools = Services.list_tools()
 
     case hub_proxy().list_tools() do
-      {:ok, hub_tools} -> local_tools ++ reject_local_prefixes(hub_tools)
+      {:ok, hub_tools} -> local_tools ++ reject_local_names(hub_tools, local_tools)
       {:error, _reason} -> local_tools
     end
   end
 
-  defp reject_local_prefixes(tools) do
-    local_prefixes = Services.services() |> Enum.map(& &1.prefix()) |> MapSet.new()
+  defp reject_local_names(tools, local_tools) do
+    local_names = local_tools |> Enum.map(&tool_name/1) |> MapSet.new()
 
     Enum.reject(tools, fn tool ->
-      tool
-      |> tool_name()
-      |> local_prefix?()
-      |> case do
-        {:ok, prefix} -> MapSet.member?(local_prefixes, prefix)
-        :error -> false
-      end
+      MapSet.member?(local_names, tool_name(tool))
     end)
   end
 
   defp tool_name(%{"name" => name}) when is_binary(name), do: name
   defp tool_name(%{name: name}) when is_binary(name), do: name
   defp tool_name(_tool), do: nil
-
-  defp local_prefix?(name) when is_binary(name) do
-    case String.split(name, "::", parts: 2) do
-      [prefix, _bare] -> {:ok, prefix}
-      _ -> :error
-    end
-  end
-
-  defp local_prefix?(_name), do: :error
 
   defp tool_result(result, is_error) do
     %{
@@ -587,6 +580,18 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_ctx(nil, args), do: %{agent_id: Map.get(args, "agent_id", "local")}
   defp tool_ctx(agent_id, _args), do: %{agent_id: agent_id}
+
+  defp memory_service_ctx(conn, agent_id, args) do
+    context = tool_ctx(agent_id, args)
+
+    case conn.private[:backplane_memory_facade] do
+      facade when is_atom(facade) and not is_nil(facade) ->
+        Map.put(context, :memory_facade, facade)
+
+      _other ->
+        context
+    end
+  end
 
   defp trace_context(conn) do
     conn
@@ -630,12 +635,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_name_from_params(%{"name" => name}) when is_binary(name), do: name
   defp tool_name_from_params(_params), do: nil
-
-  defp unknown_method_message(Backplane.HostAgent.Services.Memory, method),
-    do: "Unknown memory method: #{method}"
-
-  defp unknown_method_message(service, method),
-    do: "Unknown #{service.prefix()} method: #{method}"
 
   defp jsonrpc_result(id, result), do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}
 
