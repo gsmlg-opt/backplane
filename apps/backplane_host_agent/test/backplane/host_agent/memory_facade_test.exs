@@ -262,6 +262,20 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert items == results
   end
 
+  test "list reapplies an explicit string or atom limit after merging pending upserts" do
+    for args <- [%{"limit" => 1}, %{limit: 1}] do
+      assert {:ok, %{"results" => results, "items" => items}} =
+               MemoryFacade.call(
+                 "list",
+                 args,
+                 %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
+               )
+
+      assert Enum.map(results, & &1["id"]) == ["local-1"]
+      assert items == results
+    end
+  end
+
   test "healthy stats preserves canonical fields and receives consistency metadata" do
     assert {:ok,
             %{
