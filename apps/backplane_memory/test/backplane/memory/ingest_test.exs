@@ -325,23 +325,44 @@ defmodule Backplane.Memory.IngestTest do
     refute Map.has_key?(stored.raw_envelope, "source_scope")
   end
 
-  test "accepts a real hook-derived project scope as provenance under the host scope" do
+  test "accepts a normalized Claude Code hook project scope as provenance under the host scope" do
     cwd = "/home/gao/Workspace/gsmlg-opt/backplane"
+    occurred_at = "2026-08-04T01:00:00.000Z"
+
+    payload = %{
+      "hook" => "user-prompt-submit",
+      "source" => %{
+        "session_id" => "session-1",
+        "agent_id" => "claude-main",
+        "source_event_id" => "source-user-prompt-submit",
+        "occurred_at" => occurred_at,
+        "cwd" => cwd,
+        "prompt" => "implement the capture boundary"
+      }
+    }
 
     event =
       valid_event(%{
+        "agent_id" => "claude-main",
+        "client_id" => "claude_code",
         "integration" => "claude_code",
         "project" => cwd,
         "scope" => "project:#{cwd}",
         "event_type" => "agent.prompt.submitted",
-        "payload" => %{
-          "hook_event_name" => "UserPromptSubmit",
-          "cwd" => cwd,
-          "prompt" => "implement the capture boundary"
-        }
+        "occurred_at" => occurred_at,
+        "idempotency_key" =>
+          "claude_code:session-1:user-prompt-submit:" <> String.duplicate("a", 64),
+        "privacy" => %{
+          "filtered" => false,
+          "filter_version" => "pending",
+          "redaction_count" => 0,
+          "private_blocks_removed" => 0
+        },
+        "trace" => %{},
+        "payload" => payload
       })
 
-    event = Map.put(event, "payload_hash", EventValidator.payload_hash(event["payload"]))
+    event = Map.put(event, "payload_hash", EventValidator.payload_hash(payload))
 
     assert {:ok, %{"results" => [%{"status" => "accepted", "server_event_id" => id}]}} =
              Ingest.ingest_batch(auth_context("host-1"), %{
@@ -354,6 +375,8 @@ defmodule Backplane.Memory.IngestTest do
     assert stored.integration == "claude_code"
     assert stored.scope == "proj_local"
     assert stored.raw_envelope["source_scope"] == "project:#{cwd}"
+    assert stored.payload["hook"] == "user-prompt-submit"
+    assert stored.payload["source"]["cwd"] == cwd
   end
 
   test "rejects explicit v1 authority fields before persistence" do
