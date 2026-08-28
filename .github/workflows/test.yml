@@ -6,14 +6,46 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  RUST_VERSION: "1.95.0"
+  MIX_ENV: test
+  PGHOST: /var/run/postgresql
+
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.app }})
+    runs-on: ubuntu-24.04
 
-    env:
-      MIX_ENV: test
-      PGHOST: /var/run/postgresql
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - backplane
+          - backplane_admin
+          - backplane_api
+          - backplane_auth
+          - backplane_data_case
+          - backplane_host_agent
+          - backplane_llama
+          - backplane_mcp
+          - backplane_mcp_protocol
+          - backplane_memory
+          - backplane_monitor
+          - backplane_skills
+          - backplane_system
+          - backplane_telemetry
+          - day_ex
+          - math_ex
+          - relayixir
 
     steps:
       - name: Checkout code
@@ -22,12 +54,18 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18"
-          otp-version: "28"
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          bun-version: latest
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
@@ -35,24 +73,29 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-
 
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Start PostgreSQL with pgvector
+      - name: Start PostgreSQL 17 with pgvector
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error \
+            --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
-          # PGDG repo is pre-configured; use versioned packages to avoid conflicts with Ubuntu's postgresql-server-dev-all
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 build-essential
-          # Build pgvector 0.8.0 from source (halfvec requires >= 0.7.0)
+          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
           git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
-          # Disable LLVM JIT: PGDG pg16 expects llvm-lto-19 which is not available on this runner
           make -C /tmp/pgvector with_llvm=no
           sudo make -C /tmp/pgvector with_llvm=no install
-          sudo systemctl start postgresql
+          sudo pg_ctlcluster 16 main stop || true
+          sudo pg_dropcluster --stop 17 main || true
+          sudo pg_createcluster 17 main --start --port 5432
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
 
@@ -60,8 +103,4 @@ jobs:
         run: mix ecto.setup
 
       - name: Run tests
-        run: |
-          mix do --app backplane_mcp cmd mix test test/backplane/services/web_fetch_test.exs
-          mix do --app day_ex cmd mix test
-          mix do --app relayixir cmd mix test
-          mix do --app backplane_memory cmd mix test
+        run: mix do --app ${{ matrix.app }} cmd mix test
