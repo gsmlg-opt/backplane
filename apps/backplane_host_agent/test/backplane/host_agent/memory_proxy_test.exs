@@ -187,6 +187,26 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     assert_receive {:push_timeout, "memory_call", _payload, 5_000}
   end
 
+  test "can omit path-agent filtering while retaining agent telemetry context" do
+    MemoryProxy.set_channel(self())
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("recall", %{"query" => "canonical"},
+               agent_id: "codex",
+               inject_agent_id: false,
+               channel_module: FakeChannel
+             )
+
+    assert_receive {:push, channel, "memory_call",
+                    %{
+                      "method" => "recall",
+                      "arguments" => arguments
+                    }}
+
+    assert channel == self()
+    assert arguments == %{"query" => "canonical"}
+  end
+
   test "reconnects with stored config when the cached channel pid is dead" do
     config = %{hub_url: "http://localhost:4220", token: "host-token", machine_name: "t430"}
 

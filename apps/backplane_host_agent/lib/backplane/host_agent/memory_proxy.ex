@@ -84,7 +84,8 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   @doc """
   Invoke a memory method with `args`. `agent_id` is required and is injected
-  into the arguments before being forwarded to the hub.
+  into the arguments before being forwarded to the hub unless
+  `inject_agent_id: false` is passed.
   """
   @spec call(String.t(), map(), keyword()) :: {:ok, term()} | {:error, term()}
   def call(method, args, opts \\ []) when is_binary(method) and is_map(args) do
@@ -101,10 +102,15 @@ defmodule Backplane.HostAgent.MemoryProxy do
         {:error, {:unknown_method, method}}
 
       true ->
+        arguments =
+          if Keyword.get(opts, :inject_agent_id, true),
+            do: Map.put(args, "agent_id", agent_id),
+            else: args
+
         payload =
           %{
             "method" => method,
-            "arguments" => Map.put(args, "agent_id", agent_id)
+            "arguments" => arguments
           }
           |> trace_payload()
 
