@@ -568,8 +568,36 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert_offline_pending(RemoteSocketClosed)
   end
 
+  test "offline recall bounds public upserts to the same requested result limit" do
+    assert {:ok,
+            %{
+              "upserts" => [upsert],
+              "results" => [result],
+              "hits" => [hit],
+              "pending_operations" => 2
+            }} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "pending", "limit" => 1},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteNotConnected,
+                 local_adapter: MultiplePending
+               }
+             )
+
+    assert result == upsert
+    assert hit == upsert
+  end
+
   test "offline list paginates the complete provisional overlay with canonical list defaults" do
-    assert {:ok, %{"results" => results, "items" => results, "pending_operations" => 60}} =
+    assert {:ok,
+            %{
+              "upserts" => results,
+              "results" => results,
+              "items" => results,
+              "pending_operations" => 60
+            }} =
              MemoryFacade.call(
                "list",
                %{},
@@ -590,7 +618,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
           {%{"limit" => 0}, 0},
           {%{limit: 200}, 60}
         ] do
-      assert {:ok, %{"results" => results, "items" => results}} =
+      assert {:ok, %{"upserts" => results, "results" => results, "items" => results}} =
                MemoryFacade.call(
                  "list",
                  args,
@@ -607,7 +635,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
   test "offline list supports string and atom offset pagination keys" do
     for args <- [%{"limit" => 2, "offset" => 10}, %{limit: 2, offset: 10}] do
-      assert {:ok, %{"results" => results, "items" => results}} =
+      assert {:ok, %{"upserts" => results, "results" => results, "items" => results}} =
                MemoryFacade.call(
                  "list",
                  args,

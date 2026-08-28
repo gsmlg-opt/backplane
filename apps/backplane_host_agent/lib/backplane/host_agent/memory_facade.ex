@@ -138,12 +138,14 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   defp normalize_offline_result(result, "recall", upserts) do
     result
+    |> Map.put("upserts", upserts)
     |> Map.put("results", upserts)
     |> Map.put("hits", upserts)
   end
 
   defp normalize_offline_result(result, "list", upserts) do
     result
+    |> Map.put("upserts", upserts)
     |> Map.put("results", upserts)
     |> Map.put("items", upserts)
   end
