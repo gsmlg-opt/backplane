@@ -23,9 +23,28 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   @impl true
   def call(method, args, ctx) when is_binary(method) and is_map(args) and is_map(ctx) do
+    if method in @facade_methods do
+      call_facade(method, args, ctx)
+    else
+      call_legacy(method, args, ctx)
+    end
+  end
+
+  defp call_facade(method, args, ctx) do
+    case facade(ctx).call(method, args, facade_context(ctx)) do
+      {:ok, _result} = ok -> ok
+      {:error, _reason} = error -> error
+      other -> {:error, {:memory_facade_unavailable, {:unexpected_reply, other}}}
+    end
+  rescue
+    error -> {:error, {:memory_facade_unavailable, {:exception, error}}}
+  catch
+    kind, reason -> {:error, {:memory_facade_unavailable, {kind, reason}}}
+  end
+
+  defp call_legacy(method, args, ctx) do
     cond do
       method == "replay_import" -> replay_import(args, ctx)
-      method in @facade_methods -> facade(ctx).call(method, args, facade_context(ctx))
       Memory.valid_method?(method) -> do_call(method, args, memory_opts(ctx[:agent_id]))
       true -> {:error, {:unknown_method, method}}
     end

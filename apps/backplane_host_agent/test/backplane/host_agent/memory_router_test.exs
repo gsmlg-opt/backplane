@@ -45,8 +45,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
        [
          %{"name" => "memory::recall", "description" => "must not replace local recall"},
          %{"name" => "memory::recall_explain", "description" => "hub-only memory tool"},
+         %{"name" => "memory::recall_explain", "description" => "duplicate must be dropped"},
          %{"name" => "memory::semantic_search", "description" => "hub-only memory tool"},
-         %{"name" => "hub::remote", "description" => "remote hub tool"}
+         %{"name" => "hub::remote", "description" => "remote hub tool"},
+         %{"description" => "missing name"},
+         %{"name" => "", "description" => "empty name"},
+         %{"name" => "   ", "description" => "blank name"},
+         "not a tool descriptor"
        ]}
     end
 
@@ -93,6 +98,32 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
+  defmodule RaisingMemoryFacade do
+    def call(_method, _args, _ctx), do: raise("canonical facade crashed")
+  end
+
+  defmodule ExitingMemoryFacade do
+    def call(_method, _args, _ctx), do: exit(:canonical_facade_down)
+  end
+
+  defmodule ContextProbeService do
+    @behaviour Backplane.HostAgent.LocalService
+
+    @impl true
+    def prefix, do: "probe"
+
+    @impl true
+    def tools, do: [%{"name" => "probe::context", "description" => "reports call context"}]
+
+    @impl true
+    def call("context", _args, ctx) do
+      send(self(), {:probe_context, ctx})
+      {:ok, %{"has_memory_facade" => Map.has_key?(ctx, :memory_facade)}}
+    end
+
+    def call(method, _args, _ctx), do: {:error, {:unknown_method, method}}
+  end
+
   describe "POST /memory/:agent_id/call/:method" do
     test "delegates direct recall to the canonical facade and preserves metadata" do
       conn =
@@ -127,6 +158,20 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert_received {:memory_facade_call, "recall", %{"query" => "canonical", "limit" => 3},
                        %{agent_id: "agt_42", memory_facade: FakeMemoryFacade}}
+    end
+
+    test "returns a stable canonical-facade error when the facade raises" do
+      conn =
+        :post
+        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "canonical"}))
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, RaisingMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 503
+
+      assert %{"ok" => false, "error" => "canonical memory facade is unavailable"} =
+               Jason.decode!(conn.resp_body)
     end
 
     test "handles remember locally and stores the route agent_id", %{store: store} do
@@ -444,6 +489,67 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                        %{agent_id: "agt_42", memory_facade: FakeMemoryFacade}}
     end
 
+    test "returns a stable canonical-facade MCP error when the facade exits" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "facade-down",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "memory::recall",
+            "arguments" => %{"query" => "canonical"}
+          }
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, ExitingMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{
+               "jsonrpc" => "2.0",
+               "id" => "facade-down",
+               "error" => %{
+                 "code" => -32_003,
+                 "message" => "canonical memory facade is unavailable"
+               }
+             } = Jason.decode!(conn.resp_body)
+    end
+
+    test "does not inject the memory facade into other local services" do
+      Application.put_env(:backplane_host_agent, :local_services, [
+        Backplane.HostAgent.Services.Memory,
+        ContextProbeService
+      ])
+
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "probe-context",
+          "method" => "tools/call",
+          "params" => %{"name" => "probe::context", "arguments" => %{}}
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, FakeMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{"result" => %{"isError" => false, "content" => [%{"text" => text}]}} =
+               Jason.decode!(conn.resp_body)
+
+      assert %{"has_memory_facade" => false} = Jason.decode!(text)
+      assert_received {:probe_context, %{agent_id: "agt_42"}}
+    end
+
     test "routes Hub-only memory tools through the hub" do
       :persistent_term.put({StubHubProxy, :owner}, self())
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
@@ -578,17 +684,33 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      tool_names =
+      tools =
         conn.resp_body
         |> Jason.decode!()
         |> get_in(["result", "tools"])
-        |> Enum.map(& &1["name"])
+
+      tool_names = Enum.map(tools, & &1["name"])
 
       assert "memory::remember" in tool_names
       assert "memory::recall_explain" in tool_names
       assert "memory::semantic_search" in tool_names
       assert Enum.count(tool_names, &(&1 == "memory::recall")) == 1
+      assert Enum.count(tool_names, &(&1 == "memory::recall_explain")) == 1
       assert "hub::remote" in tool_names
+
+      assert Enum.all?(tools, fn tool ->
+               is_map(tool) and is_binary(tool["name"]) and String.trim(tool["name"]) != ""
+             end)
+
+      assert %{"description" => "hub-only memory tool"} =
+               Enum.find(tools, &(&1["name"] == "memory::recall_explain"))
+
+      assert Enum.find_index(tool_names, &(&1 == "memory::recall_explain")) <
+               Enum.find_index(tool_names, &(&1 == "memory::semantic_search"))
+
+      assert Enum.find_index(tool_names, &(&1 == "memory::semantic_search")) <
+               Enum.find_index(tool_names, &(&1 == "hub::remote"))
+
       assert_received :list_tools
       _ = :persistent_term.erase({StubHubProxy, :owner})
     end

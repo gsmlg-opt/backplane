@@ -24,6 +24,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
   alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.Services
+  alias Backplane.HostAgent.Services.Memory, as: MemoryService
   alias Backplane.HostAgent.Trace
 
   @mcp_protocol_version "2025-11-25"
@@ -404,6 +405,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
       {:error, {:memory_unavailable, _reason}} ->
         send_json(conn, 503, %{"ok" => false, "error" => "local memory is not configured"})
 
+      {:error, {:memory_facade_unavailable, _reason}} ->
+        send_json(conn, 503, %{
+          "ok" => false,
+          "error" => "canonical memory facade is unavailable"
+        })
+
       {:error, reason} ->
         send_json(conn, 400, %{"ok" => false, "error" => format_error(reason)})
     end
@@ -475,7 +482,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
           bare,
           name,
           args,
-          memory_service_ctx(conn, agent_id, args)
+          local_service_ctx(service, conn, agent_id, args)
         )
 
       :error ->
@@ -522,6 +529,13 @@ defmodule Backplane.HostAgent.MemoryRouter do
       {:error, {:memory_unavailable, _reason}} ->
         send_json(conn, 200, jsonrpc_error(id, -32_002, "local memory is not configured"))
 
+      {:error, {:memory_facade_unavailable, _reason}} ->
+        send_json(
+          conn,
+          200,
+          jsonrpc_error(id, -32_003, "canonical memory facade is unavailable")
+        )
+
       {:error, reason} ->
         send_json(conn, 200, jsonrpc_error(id, -32_000, format_error(reason)))
     end
@@ -545,22 +559,51 @@ defmodule Backplane.HostAgent.MemoryRouter do
     local_tools = Services.list_tools()
 
     case hub_proxy().list_tools() do
-      {:ok, hub_tools} -> local_tools ++ reject_local_names(hub_tools, local_tools)
+      {:ok, hub_tools} when is_list(hub_tools) -> merge_hub_tools(local_tools, hub_tools)
       {:error, _reason} -> local_tools
+      _other -> local_tools
     end
   end
 
-  defp reject_local_names(tools, local_tools) do
-    local_names = local_tools |> Enum.map(&tool_name/1) |> MapSet.new()
+  defp merge_hub_tools(local_tools, hub_tools) do
+    seen =
+      Enum.reduce(local_tools, MapSet.new(), fn tool, names ->
+        case valid_tool_name(tool) do
+          {:ok, name} -> MapSet.put(names, name)
+          :error -> names
+        end
+      end)
 
-    Enum.reject(tools, fn tool ->
-      MapSet.member?(local_names, tool_name(tool))
-    end)
+    {_seen, accepted} =
+      Enum.reduce(hub_tools, {seen, []}, fn tool, {names, accepted} ->
+        case valid_tool_name(tool) do
+          {:ok, name} ->
+            if MapSet.member?(names, name) do
+              {names, accepted}
+            else
+              {MapSet.put(names, name), [tool | accepted]}
+            end
+
+          :error ->
+            {names, accepted}
+        end
+      end)
+
+    local_tools ++ Enum.reverse(accepted)
   end
 
   defp tool_name(%{"name" => name}) when is_binary(name), do: name
   defp tool_name(%{name: name}) when is_binary(name), do: name
   defp tool_name(_tool), do: nil
+
+  defp valid_tool_name(tool) when is_map(tool) do
+    case tool_name(tool) do
+      name when is_binary(name) -> if(String.trim(name) == "", do: :error, else: {:ok, name})
+      _other -> :error
+    end
+  end
+
+  defp valid_tool_name(_tool), do: :error
 
   defp tool_result(result, is_error) do
     %{
@@ -580,6 +623,11 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_ctx(nil, args), do: %{agent_id: Map.get(args, "agent_id", "local")}
   defp tool_ctx(agent_id, _args), do: %{agent_id: agent_id}
+
+  defp local_service_ctx(MemoryService, conn, agent_id, args),
+    do: memory_service_ctx(conn, agent_id, args)
+
+  defp local_service_ctx(_service, _conn, agent_id, args), do: tool_ctx(agent_id, args)
 
   defp memory_service_ctx(conn, agent_id, args) do
     context = tool_ctx(agent_id, args)
