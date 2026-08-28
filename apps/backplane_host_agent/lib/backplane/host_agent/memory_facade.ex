@@ -182,10 +182,15 @@ defmodule Backplane.HostAgent.MemoryFacade do
       |> normalized_results()
       |> Enum.reject(&(result_identity(&1) in delete_ids))
 
+    canonical_ids = canonical_results |> Enum.map(&result_identity/1) |> MapSet.new()
+
     provisional_results =
       overlay
       |> Map.get("upserts", [])
-      |> Enum.reject(&(result_identity(&1) in delete_ids))
+      |> Enum.reject(fn result ->
+        identity = result_identity(result)
+        identity in delete_ids or identity in canonical_ids
+      end)
 
     canonical
     |> Map.put("results", canonical_results)

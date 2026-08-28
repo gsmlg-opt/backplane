@@ -312,6 +312,24 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
              )
   end
 
+  test "online list removes a provisional duplicate after it maps to a canonical id" do
+    assert {:ok,
+            %{
+              "results" => [%{"id" => "canonical-1", "content" => "canonical"}],
+              "items" => [%{"id" => "canonical-1", "content" => "canonical"}],
+              "provisional_results" => []
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteOK,
+                 local_adapter: AcknowledgedRemember
+               }
+             )
+  end
+
   test "online list suppresses pending forgets without filling the canonical page" do
     assert {:ok,
             %{
