@@ -11,7 +11,8 @@ defmodule Backplane.McpProtocol.Application do
 
     children =
       [
-        {Finch, name: Backplane.McpProtocol.Finch, pools: %{default: [size: 15]}}
+        {Finch, name: Backplane.McpProtocol.Finch, pools: %{default: [size: 15]}},
+        {Task.Supervisor, name: Backplane.McpProtocol.Client.ValidatorSupervisor}
       ] ++ maybe_start_session_store()
 
     # See https://hexdocs.pm/elixir/Supervisor.html

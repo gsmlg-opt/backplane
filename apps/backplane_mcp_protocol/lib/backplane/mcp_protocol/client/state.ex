@@ -36,6 +36,7 @@ defmodule Backplane.McpProtocol.Client.State do
             | nil,
           roots: %{String.t() => Client.root()},
           ready_waiters: [GenServer.from()],
+          tool_validator_task: Task.t() | nil,
           transport_parse_state: map | nil
         }
 
@@ -63,6 +64,7 @@ defmodule Backplane.McpProtocol.Client.State do
     peer_versions: [],
     unsupported_version_retries: MapSet.new(),
     ready_waiters: [],
+    tool_validator_task: nil,
     transport_parse_state: nil
   ]
 
