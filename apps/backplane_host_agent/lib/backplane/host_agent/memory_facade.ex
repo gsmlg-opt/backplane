@@ -109,7 +109,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp offline_result(method, overlay, args) do
-    upserts = limited_results(Map.get(overlay, "upserts", []), method, args)
+    upserts = offline_results(Map.get(overlay, "upserts", []), method, args)
 
     overlay
     |> normalize_offline_result(method, upserts)
@@ -152,7 +152,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   defp merge_overlay(canonical, "stats", _overlay, _args), do: canonical
 
-  defp merge_overlay(canonical, method, overlay, args) when method in ["recall", "list"] do
+  defp merge_overlay(canonical, "recall", overlay, args) do
     delete_ids = overlay |> Map.get("delete_ids", []) |> MapSet.new()
 
     canonical_results =
@@ -170,21 +170,47 @@ defmodule Backplane.HostAgent.MemoryFacade do
         identity in delete_ids or identity in canonical_ids
       end)
 
-    merged = limited_results(provisional_results ++ canonical_results, method, args)
+    merged = offline_results(provisional_results ++ canonical_results, "recall", args)
     Map.put(canonical, "results", merged)
   end
 
-  defp limited_results(results, "recall", args), do: Enum.take(results, Reducer.limit(args))
+  defp merge_overlay(canonical, "list", overlay, _args) do
+    delete_ids = overlay |> Map.get("delete_ids", []) |> MapSet.new()
 
-  defp limited_results(results, "list", args) do
-    if Map.has_key?(args, "limit") or Map.has_key?(args, :limit) do
-      Enum.take(results, Reducer.limit(args))
-    else
-      results
-    end
+    canonical_results =
+      canonical
+      |> normalized_results()
+      |> Enum.reject(&(result_identity(&1) in delete_ids))
+
+    provisional_results =
+      overlay
+      |> Map.get("upserts", [])
+      |> Enum.reject(&(result_identity(&1) in delete_ids))
+
+    canonical
+    |> Map.put("results", canonical_results)
+    |> Map.put("provisional_results", provisional_results)
   end
 
-  defp limited_results(results, _method, _args), do: results
+  defp offline_results(results, "recall", args), do: Enum.take(results, Reducer.limit(args))
+
+  defp offline_results(results, "list", args) do
+    offset = nonnegative_integer(args, "offset", 0)
+    limit = nonnegative_integer(args, "limit", 50)
+
+    results
+    |> Enum.drop(offset)
+    |> Enum.take(limit)
+  end
+
+  defp offline_results(results, _method, _args), do: results
+
+  defp nonnegative_integer(args, key, default) do
+    case Reducer.value(args, key, default) do
+      value when is_integer(value) and value >= 0 -> value
+      _value -> default
+    end
+  end
 
   defp result_identity(%{"canonical_id" => canonical_id})
        when is_binary(canonical_id) and canonical_id != "",

@@ -74,33 +74,30 @@ defmodule Backplane.HostAgent.Memory do
     config = memory_config(opts)
 
     with {:ok, scope} <- resolve_read_scope(store, args, config) do
-      query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
-
-      {clauses, params} =
-        {[
-           "outbox.state IN ('pending', 'inflight')",
-           "memory.sync_state != 'synced'",
-           "memory.scope = ?",
-           "NOT EXISTS (SELECT 1 FROM memory_outbox newer WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq)"
-         ], [scope]}
-        |> add_optional_clause(
-          query,
-          "(outbox.op = 'forget' OR lower(memory.content) LIKE ? ESCAPE '\\')",
-          fn value -> Reducer.like_pattern(value) end
-        )
-
       sql = """
       SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
-             memory.metadata, memory.confidence, memory.remote_id
+             memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
+             memory.agent_id
       FROM memory_outbox AS outbox
       INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-      WHERE #{Enum.join(clauses, " AND ")}
+      WHERE outbox.state IN ('pending', 'inflight')
+        AND memory.sync_state != 'synced'
+        AND memory.scope = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM memory_outbox AS newer
+          WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
+        )
       ORDER BY outbox.seq ASC
       """
 
-      case Store.query(store, sql, params) do
-        {:ok, %Result{rows: rows}} -> {:ok, overlay_from_rows(rows)}
-        {:error, reason} -> storage_error(reason)
+      case Store.query(store, sql, [scope]) do
+        {:ok, %Result{rows: rows}} ->
+          rows = Enum.filter(rows, &overlay_visible?(&1, args))
+          {:ok, overlay_from_rows(rows)}
+
+        {:error, reason} ->
+          storage_error(reason)
       end
     end
   end
@@ -383,6 +380,41 @@ defmodule Backplane.HostAgent.Memory do
     }
   end
 
+  defp overlay_visible?(%{"op" => "forget"}, _args), do: true
+
+  defp overlay_visible?(%{"op" => "remember"} = row, args) do
+    not unsupported_recall_facets?(args) and
+      matches_overlay_query?(row, args) and
+      matches_overlay_value?(row, "memory_type", Reducer.optional_string(args, "type")) and
+      matches_overlay_value?(row, "agent_id", Reducer.optional_string(args, "agent_id")) and
+      matches_overlay_tag?(row, Reducer.optional_string(args, "tag"))
+  end
+
+  defp unsupported_recall_facets?(args) do
+    is_binary(Reducer.optional_string(args, "query")) and
+      nonempty_collection?(Reducer.value(args, "facets"))
+  end
+
+  defp nonempty_collection?(value) when is_map(value), do: map_size(value) > 0
+  defp nonempty_collection?(value) when is_list(value), do: value != []
+  defp nonempty_collection?(_value), do: false
+
+  defp matches_overlay_query?(row, args) do
+    query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
+
+    is_nil(query) or
+      String.contains?(String.downcase(row["content"] || ""), String.downcase(query))
+  end
+
+  defp matches_overlay_value?(_row, _key, nil), do: true
+  defp matches_overlay_value?(row, key, value), do: row[key] == value
+
+  defp matches_overlay_tag?(_row, nil), do: true
+
+  defp matches_overlay_tag?(row, tag) do
+    tag in Reducer.decode_json(row["tags"], [])
+  end
+
   defp provisional_item(row) do
     %{
       "id" => row["id"],
@@ -392,6 +424,8 @@ defmodule Backplane.HostAgent.Memory do
       "tags" => Reducer.decode_json(row["tags"], []),
       "metadata" => Reducer.decode_json(row["metadata"], %{}),
       "confidence" => row["confidence"],
+      "memory_type" => row["memory_type"],
+      "agent_id" => row["agent_id"],
       "origin" => "host_command",
       "authority" => "provisional",
       "provisional" => true

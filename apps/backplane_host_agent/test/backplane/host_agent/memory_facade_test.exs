@@ -53,6 +53,15 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     end
   end
 
+  defmodule RemotePagedList do
+    def call("list", args, _opts) do
+      case Map.get(args, "offset", Map.get(args, :offset, 0)) do
+        0 -> {:ok, %{"results" => [%{"id" => "canonical-1"}], "cursor" => "page-2"}}
+        1 -> {:ok, %{"results" => [%{"id" => "canonical-2"}], "cursor" => nil}}
+      end
+    end
+  end
+
   defmodule EmptyOverlay do
     def pending_overlay(args, opts) do
       send(self(), {:pending_overlay, args, opts})
@@ -136,6 +145,17 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
          "delete_ids" => [],
          "pending_operations" => 2
        }}
+    end
+  end
+
+  defmodule ManyPending do
+    def pending_overlay(_args, _opts) do
+      upserts =
+        Enum.map(1..60, fn index ->
+          %{"id" => "local-#{index}", "content" => "pending #{index}", "provisional" => true}
+        end)
+
+      {:ok, %{"upserts" => upserts, "delete_ids" => [], "pending_operations" => 60}}
     end
   end
 
@@ -241,7 +261,8 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               "consistency" => "canonical",
               "cursor" => "next-1",
               "results" => [%{"id" => "canonical-1"}],
-              "items" => [%{"id" => "canonical-1"}]
+              "items" => [%{"id" => "canonical-1"}],
+              "provisional_results" => []
             }} =
              MemoryFacade.call(
                "list",
@@ -262,18 +283,84 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert items == results
   end
 
-  test "list reapplies an explicit string or atom limit after merging pending upserts" do
-    for args <- [%{"limit" => 1}, %{limit: 1}] do
+  test "online list preserves canonical results for explicit edge limits" do
+    for args <- [%{"limit" => 0}, %{limit: 200}] do
       assert {:ok, %{"results" => results, "items" => items}} =
                MemoryFacade.call(
                  "list",
                  args,
-                 %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
+                 %{agent_id: "codex", remote_adapter: RemoteManyList, local_adapter: EmptyOverlay}
                )
 
-      assert Enum.map(results, & &1["id"]) == ["local-1"]
+      assert length(results) == 12
       assert items == results
     end
+  end
+
+  test "online list exposes pending remembers as a sideband without changing canonical rows" do
+    assert {:ok,
+            %{
+              "results" => [%{"id" => "canonical-1"}],
+              "items" => [%{"id" => "canonical-1"}],
+              "provisional_results" => [%{"id" => "local-1"}],
+              "pending_operations" => 1
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 1},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
+             )
+  end
+
+  test "online list suppresses pending forgets without filling the canonical page" do
+    assert {:ok,
+            %{
+              "results" => [],
+              "items" => [],
+              "provisional_results" => [],
+              "cursor" => "next-1"
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 1},
+               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingForget}
+             )
+  end
+
+  test "consecutive online list pages preserve traversal and repeat the provisional sideband" do
+    assert {:ok,
+            %{
+              "results" => [%{"id" => "canonical-1"}],
+              "items" => [%{"id" => "canonical-1"}],
+              "provisional_results" => provisional,
+              "cursor" => "page-2"
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 1, "offset" => 0},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemotePagedList,
+                 local_adapter: PendingRemember
+               }
+             )
+
+    assert {:ok,
+            %{
+              "results" => [%{"id" => "canonical-2"}],
+              "items" => [%{"id" => "canonical-2"}],
+              "provisional_results" => ^provisional,
+              "cursor" => nil
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 1, "offset" => 1},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemotePagedList,
+                 local_adapter: PendingRemember
+               }
+             )
   end
 
   test "healthy stats preserves canonical fields and receives consistency metadata" do
@@ -461,6 +548,60 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
   test "a normal socket close returns pending commands only" do
     assert_offline_pending(RemoteSocketClosed)
+  end
+
+  test "offline list paginates the complete provisional overlay with canonical list defaults" do
+    assert {:ok, %{"results" => results, "items" => results, "pending_operations" => 60}} =
+             MemoryFacade.call(
+               "list",
+               %{},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteNotConnected,
+                 local_adapter: ManyPending
+               }
+             )
+
+    assert length(results) == 50
+    assert List.first(results)["id"] == "local-1"
+    assert List.last(results)["id"] == "local-50"
+  end
+
+  test "offline list honors zero and uncapped explicit limits" do
+    for {args, expected_count} <- [
+          {%{"limit" => 0}, 0},
+          {%{limit: 200}, 60}
+        ] do
+      assert {:ok, %{"results" => results, "items" => results}} =
+               MemoryFacade.call(
+                 "list",
+                 args,
+                 %{
+                   agent_id: "codex",
+                   remote_adapter: RemoteNotConnected,
+                   local_adapter: ManyPending
+                 }
+               )
+
+      assert length(results) == expected_count
+    end
+  end
+
+  test "offline list supports string and atom offset pagination keys" do
+    for args <- [%{"limit" => 2, "offset" => 10}, %{limit: 2, offset: 10}] do
+      assert {:ok, %{"results" => results, "items" => results}} =
+               MemoryFacade.call(
+                 "list",
+                 args,
+                 %{
+                   agent_id: "codex",
+                   remote_adapter: RemoteNotConnected,
+                   local_adapter: ManyPending
+                 }
+               )
+
+      assert Enum.map(results, & &1["id"]) == ["local-11", "local-12"]
+    end
   end
 
   test "recognized nested transport, socket, reconnect, and channel exits enter offline mode" do

@@ -190,7 +190,7 @@ defmodule Backplane.HostAgent.MemoryTest do
             }} = Memory.pending_overlay(%{"query" => "forget"}, opts)
   end
 
-  test "pending overlay keeps in-scope forgets when the lexical query does not match", %{
+  test "pending overlay keeps in-scope forgets regardless of canonical list filters", %{
     tmp_dir: tmp_dir
   } do
     store = start_memory!(tmp_dir)
@@ -200,7 +200,15 @@ defmodule Backplane.HostAgent.MemoryTest do
     assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
 
     assert {:ok, %{"upserts" => [], "delete_ids" => [^id], "pending_operations" => 1}} =
-             Memory.pending_overlay(%{"query" => "semantic recall hit"}, opts)
+             Memory.pending_overlay(
+               %{
+                 "q" => "semantic recall hit",
+                 "type" => "semantic",
+                 "agent_id" => "other-agent",
+                 "tag" => "other-tag"
+               },
+               opts
+             )
   end
 
   test "pending overlay excludes synced memories even with an unresolved outbox row", %{
@@ -273,6 +281,58 @@ defmodule Backplane.HostAgent.MemoryTest do
 
     assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
              Memory.pending_overlay(%{"scope" => "proj_local", "query" => "absent"}, opts)
+  end
+
+  test "pending overlay applies canonical list filters to remember upserts", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+    agent_2_opts = Keyword.put(opts, :agent_id, "agent_2")
+
+    assert {:ok, %{"id" => expected_id}} =
+             Memory.remember(%{"content" => "alpha target", "tags" => ["ops"]}, opts)
+
+    assert {:ok, _} = Memory.remember(%{"content" => "beta target", "tags" => ["ops"]}, opts)
+    assert {:ok, _} = Memory.remember(%{"content" => "alpha ui", "tags" => ["ui"]}, opts)
+
+    assert {:ok, _} =
+             Memory.remember(%{"content" => "alpha other agent", "tags" => ["ops"]}, agent_2_opts)
+
+    for args <- [
+          %{"q" => "alpha", "type" => "episodic", "agent_id" => "agent_1", "tag" => "ops"},
+          %{q: "alpha", type: "episodic", agent_id: "agent_1", tag: "ops"}
+        ] do
+      assert {:ok,
+              %{
+                "upserts" => [
+                  %{
+                    "id" => ^expected_id,
+                    "memory_type" => "episodic",
+                    "agent_id" => "agent_1"
+                  }
+                ],
+                "pending_operations" => 1
+              }} = Memory.pending_overlay(args, opts)
+    end
+
+    assert {:ok, %{"upserts" => [], "pending_operations" => 0}} =
+             Memory.pending_overlay(%{"type" => "semantic"}, opts)
+  end
+
+  test "pending overlay omits recall upserts for nonempty canonical facets but keeps forgets", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, _} = Memory.remember(%{"content" => "facet candidate"}, opts)
+    assert {:ok, %{"id" => deleted_id}} = Memory.remember(%{"content" => "facet deletion"}, opts)
+    assert {:ok, _} = Memory.forget(%{"id" => deleted_id}, opts)
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [^deleted_id], "pending_operations" => 1}} =
+             Memory.pending_overlay(
+               %{"query" => "facet", "facets" => %{"kind" => ["decision"]}},
+               opts
+             )
   end
 
   test "recall merges local memories and facts with source and degraded quality", %{
