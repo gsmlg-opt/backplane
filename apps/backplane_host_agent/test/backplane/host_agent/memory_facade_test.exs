@@ -41,6 +41,18 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     end
   end
 
+  defmodule RemoteManyList do
+    def call("list", _args, _opts) do
+      {:ok,
+       %{
+         "results" =>
+           Enum.map(1..12, fn index ->
+             %{"id" => "canonical-#{index}", "content" => "canonical #{index}"}
+           end)
+       }}
+    end
+  end
+
   defmodule EmptyOverlay do
     def pending_overlay(args, opts) do
       send(self(), {:pending_overlay, args, opts})
@@ -236,6 +248,18 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
                %{"limit" => 10},
                %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
              )
+  end
+
+  test "list without an explicit limit preserves all canonical results" do
+    assert {:ok, %{"results" => results, "items" => items}} =
+             MemoryFacade.call(
+               "list",
+               %{},
+               %{agent_id: "codex", remote_adapter: RemoteManyList, local_adapter: EmptyOverlay}
+             )
+
+    assert length(results) == 12
+    assert items == results
   end
 
   test "healthy stats preserves canonical fields and receives consistency metadata" do

@@ -79,12 +79,15 @@ defmodule Backplane.HostAgent.Memory do
       {clauses, params} =
         {[
            "outbox.state IN ('pending', 'inflight')",
+           "memory.sync_state != 'synced'",
            "memory.scope = ?",
            "NOT EXISTS (SELECT 1 FROM memory_outbox newer WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq)"
          ], [scope]}
-        |> add_optional_clause(query, "lower(memory.content) LIKE ? ESCAPE '\\'", fn value ->
-          Reducer.like_pattern(value)
-        end)
+        |> add_optional_clause(
+          query,
+          "(outbox.op = 'forget' OR lower(memory.content) LIKE ? ESCAPE '\\')",
+          fn value -> Reducer.like_pattern(value) end
+        )
 
       sql = """
       SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,

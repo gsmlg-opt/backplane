@@ -190,6 +190,34 @@ defmodule Backplane.HostAgent.MemoryTest do
             }} = Memory.pending_overlay(%{"query" => "forget"}, opts)
   end
 
+  test "pending overlay keeps in-scope forgets when the lexical query does not match", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "deleted wording"}, opts)
+    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [^id], "pending_operations" => 1}} =
+             Memory.pending_overlay(%{"query" => "semantic recall hit"}, opts)
+  end
+
+  test "pending overlay excludes synced memories even with an unresolved outbox row", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "already canonical"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memories SET sync_state = 'synced' WHERE id = ?", [id])
+
+    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
+             Memory.pending_overlay(%{}, opts)
+  end
+
   test "pending overlay excludes a memory whose latest operation is done", %{
     tmp_dir: tmp_dir
   } do

@@ -175,7 +175,6 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp limited_results(results, "recall", args), do: Enum.take(results, Reducer.limit(args))
-  defp limited_results(results, "list", args), do: Enum.take(results, Reducer.limit(args))
   defp limited_results(results, _method, _args), do: results
 
   defp result_identity(%{"canonical_id" => canonical_id})
