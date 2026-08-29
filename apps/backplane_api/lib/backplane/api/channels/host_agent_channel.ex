@@ -7,7 +7,7 @@ defmodule Backplane.Api.HostAgentChannel do
   alias Backplane.Clients
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
-  alias Backplane.Skills.{AgentManage, DesiredState, SyncStatuses}
+  alias Backplane.Skills.{AgentManage, DesiredState, Hosts, SyncStatuses}
   alias Backplane.Transport.McpHandler
 
   @max_memory_event_batch_size 100
@@ -234,29 +234,9 @@ defmodule Backplane.Api.HostAgentChannel do
   def handle_in("memory_events", payload, socket) when is_map(payload) do
     case validate_and_authorize_memory_events(payload, socket) do
       :ok ->
-        host = socket.assigns.host
-
-        auth_context = %{
-          host_id: host.id,
-          auth_token_id: socket.assigns.auth_token.id,
-          scopes: host_agent_scopes(),
-          partition: %{
-            host_id: host.id,
-            partition_id: "host:#{host.id}",
-            scope: host.memory_scope,
-            namespace: "private"
-          }
-        }
-
-        case safe_host_event_ingest(auth_context, payload) do
-          {:ok, reply} when is_map(reply) ->
-            {:reply, {:ok, reply}, socket}
-
-          {:error, :host_mismatch} ->
-            {:reply, {:error, %{"reason" => "host_mismatch"}}, socket}
-
-          {:error, :invalid_batch} ->
-            invalid_payload(socket)
+        case safe_memory_event_host(socket.assigns.host.id) do
+          {:ok, host} ->
+            ingest_memory_events(host, socket, payload)
 
           {:error, :ingest_unavailable} ->
             {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
@@ -620,6 +600,57 @@ defmodule Backplane.Api.HostAgentChannel do
       :host_event_ingest_adapter,
       Backplane.Memory.Ingest
     )
+  end
+
+  defp safe_memory_event_host(host_id) do
+    case Hosts.get_host(host_id) do
+      %{id: ^host_id, memory_scope: memory_scope} = host when is_binary(memory_scope) ->
+        {:ok, host}
+
+      _missing_or_invalid ->
+        unavailable_host_registration(host_id)
+    end
+  rescue
+    error ->
+      log_host_event_ingest_failure(host_id, {:host_refresh_exception, error.__struct__})
+      {:error, :ingest_unavailable}
+  catch
+    kind, _reason ->
+      log_host_event_ingest_failure(host_id, {:host_refresh_caught, kind})
+      {:error, :ingest_unavailable}
+  end
+
+  defp unavailable_host_registration(host_id) do
+    log_host_event_ingest_failure(host_id, :host_registration_unavailable)
+    {:error, :ingest_unavailable}
+  end
+
+  defp ingest_memory_events(host, socket, payload) do
+    auth_context = %{
+      host_id: host.id,
+      auth_token_id: socket.assigns.auth_token.id,
+      scopes: host_agent_scopes(),
+      partition: %{
+        host_id: host.id,
+        partition_id: "host:#{host.id}",
+        scope: host.memory_scope,
+        namespace: "private"
+      }
+    }
+
+    case safe_host_event_ingest(auth_context, payload) do
+      {:ok, reply} when is_map(reply) ->
+        {:reply, {:ok, reply}, socket}
+
+      {:error, :host_mismatch} ->
+        {:reply, {:error, %{"reason" => "host_mismatch"}}, socket}
+
+      {:error, :invalid_batch} ->
+        invalid_payload(socket)
+
+      {:error, :ingest_unavailable} ->
+        {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
+    end
   end
 
   defp safe_host_event_ingest(auth_context, %{"batch_id" => expected_batch_id} = payload) do

@@ -752,6 +752,64 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert scope == host.memory_scope
     end
 
+    test "memory_events refreshes the durable host partition after a scope change", %{
+      host: host,
+      socket: socket
+    } do
+      old_scope = host.memory_scope
+      new_scope = "team_shared"
+
+      assert {:ok, updated_host} = Hosts.update_agent(host, %{"memory_scope" => new_scope})
+      assert updated_host.memory_scope == new_scope
+
+      payload = %{
+        "protocol" => "host_events.v1",
+        "batch_id" => "batch-refreshed-scope",
+        "host_id" => host.id,
+        "events" => [%{"event_id" => "event-old-payload-scope", "scope" => old_scope}]
+      }
+
+      reply = %{"batch_id" => "batch-refreshed-scope", "results" => []}
+      :persistent_term.put({StubHostEventIngest, :reply}, {:ok, reply})
+
+      ref = push(socket, "memory_events", payload)
+      assert_reply(ref, :ok, ^reply)
+
+      assert_received {:host_event_ingest,
+                       %{
+                         host_id: host_id,
+                         partition: %{
+                           host_id: partition_host_id,
+                           partition_id: partition_id,
+                           scope: ^new_scope,
+                           namespace: "private"
+                         }
+                       }, ^payload}
+
+      assert host_id == host.id
+      assert partition_host_id == host.id
+      assert partition_id == "host:#{host.id}"
+      refute new_scope == old_scope
+    end
+
+    test "memory_events fails closed when the durable host registration disappears", %{
+      host: host,
+      socket: socket
+    } do
+      assert {:ok, _deleted_host} = Repo.delete(host)
+
+      ref =
+        push(socket, "memory_events", %{
+          "protocol" => "host_events.v1",
+          "batch_id" => "batch-missing-host",
+          "host_id" => host.id,
+          "events" => []
+        })
+
+      assert_reply(ref, :error, %{"reason" => "ingest_unavailable"})
+      refute_received {:host_event_ingest, _, _}
+    end
+
     test "memory_events requires capture independently from recall and import", %{
       host: host,
       socket: socket
