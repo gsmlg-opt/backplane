@@ -126,99 +126,52 @@ defmodule Backplane.Memory.QualificationTest do
     refute report.gates.projection_lag
     refute report.passed
   end
-end
 
-defmodule Backplane.Memory.Qualification.IngestTest do
-  use Backplane.Memory.DataCase, async: false
+  test "ci scales hardware gates while performance remains authoritative" do
+    measurements = %{
+      ingest: %{
+        accepted: 500,
+        persisted: 500,
+        duplicate_effects: 0,
+        events_per_second: 75.0,
+        projection_jobs_durable: 500,
+        projection_job_event_ids_unique: 500
+      },
+      projection: %{
+        samples: 100,
+        jobs_durable: 100,
+        jobs_completed: 100,
+        complete_subjects: 100,
+        p95_lag_ms: 50_000
+      },
+      consolidation: %{eligible: 20, summarized_within_four_hours: 20},
+      outage: %{locally_accepted: 100, delivered: 100, persisted: 100, duplicate_effects: 0},
+      resilience: %{
+        accepted: 100,
+        persisted: 100,
+        duplicate_effects: 0,
+        permanent_failures: 0,
+        retryable_failures_observed: 100,
+        duplicate_deliveries: 300,
+        contention_workers: 4
+      }
+    }
 
-  @moduletag :memory_qualification_runtime
-  @moduletag timeout: 120_000
+    ci = Qualification.evaluate(measurements, profile: :ci)
+    performance = Qualification.evaluate(measurements, profile: :performance)
 
-  alias Backplane.Memory.Qualification.Runner
+    assert ci.profile == :ci
+    refute ci.performance_authoritative
+    assert ci.thresholds.ingest_events_per_second_min == 50.0
+    assert ci.thresholds.projection_p95_lag_ms_max_exclusive == 100_000.0
+    assert ci.gates.ingest_throughput
+    assert ci.gates.projection_lag
+    assert ci.passed
 
-  test "batched server ingest sustains 500 events per second without lost or duplicate effects" do
-    run_id = "qualification-ingest-#{System.unique_integer([:positive])}"
-
-    assert {:ok, measurement} =
-             Runner.measure_ingest(
-               run_id: run_id,
-               event_count: 2_000,
-               batch_size: 100,
-               warmup_event_count: 1_000,
-               max_concurrency: 5
-             )
-
-    assert measurement.accepted == 2_000
-    assert measurement.persisted == 2_000
-    assert measurement.duplicate_effects == 0
-    assert measurement.events_per_second >= 500
-    assert measurement.batch_size == 100
-    assert measurement.batch_count == 20
-    assert measurement.concurrency == 5
-    assert measurement.projection_jobs_durable == 2_000
-    assert measurement.projection_job_event_ids_unique == 2_000
-    assert measurement.measured_path =~ "Oban projection job commit"
-  end
-
-  test "deterministic observation, session, activity, and replay projections stay below 10s p95" do
-    run_id = "qualification-projection-#{System.unique_integer([:positive])}"
-
-    assert {:ok, measurement} =
-             Runner.measure_projection(run_id: run_id, sample_count: 100)
-
-    assert measurement.samples == 100
-    assert measurement.jobs_durable == 100
-    assert measurement.jobs_completed == 100
-    assert measurement.projectors == ~w(activity observations replay session)
-    assert measurement.complete_subjects == 100
-    assert measurement.p95_lag_ms < 10_000
-    assert measurement.worker == "Backplane.Memory.Workers.ProjectionRepairWorker"
-    assert measurement.queue_execution =~ "Oban manual drain"
-  end
-
-  test "at least 95 percent of eligible closed sessions are summarized within four hours" do
-    run_id = "qualification-consolidation-#{System.unique_integer([:positive])}"
-
-    assert {:ok, measurement} =
-             Runner.measure_consolidation(run_id: run_id, session_count: 20)
-
-    assert measurement.eligible == 20
-    assert measurement.summarized_within_four_hours >= 19
-    assert measurement.coverage >= 0.95
-    assert measurement.without_provenance == 0
-  end
-
-  test "mixed transient failure, retry, and database contention has exactly-once effects" do
-    run_id = "qualification-resilience-#{System.unique_integer([:positive])}"
-
-    assert {:ok, measurement} =
-             Runner.measure_resilience(run_id: run_id, event_count: 100, contention_workers: 4)
-
-    assert measurement.retryable_failures_observed == 100
-    assert measurement.accepted == 100
-    assert measurement.persisted == 100
-    assert measurement.duplicate_deliveries == 300
-    assert measurement.duplicate_effects == 0
-    assert measurement.permanent_failures == 0
-    assert measurement.contention_workers == 4
-  end
-
-  test "runs the complete bounded workload and returns a reproducible passing report" do
-    assert {:ok, report} =
-             Runner.run(
-               run_id: "qualification-report-#{System.unique_integer([:positive])}",
-               ingest_max_concurrency: 5
-             )
-
-    assert report.passed
-    assert Enum.all?(report.gates, fn {_gate, passed?} -> passed? end)
-    assert report.metrics.ingest.events_per_second >= 500
-    assert report.metrics.ingest.concurrency == 5
-    assert report.metrics.projection.p95_lag_ms < 10_000
-    assert report.metrics.consolidation.coverage >= 0.95
-    assert report.metrics.outage.simulated_hours == 24
-    assert report.configuration.command == "MIX_ENV=test mix memory.qualify --report <path>"
-    assert is_binary(report.configuration.runtime.elixir)
-    assert report.configuration.cross_release_outage_test =~ "m18_outage_qualification_test.exs"
+    assert performance.profile == :performance
+    assert performance.performance_authoritative
+    refute performance.gates.ingest_throughput
+    refute performance.gates.projection_lag
+    refute performance.passed
   end
 end

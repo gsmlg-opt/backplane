@@ -17,6 +17,7 @@ defmodule Backplane.Memory.Qualification.Runner do
 
   def run(opts \\ []) do
     run_id = Keyword.get(opts, :run_id, "m18-#{System.unique_integer([:positive])}")
+    profile = Keyword.get(opts, :profile, :performance)
 
     with {:ok, ingest} <-
            measure_ingest(
@@ -48,8 +49,9 @@ defmodule Backplane.Memory.Qualification.Runner do
 
       {:ok,
        Qualification.evaluate(measurements,
+         profile: profile,
          configuration: %{
-           command: "MIX_ENV=test mix memory.qualify --report <path>",
+           command: "MIX_ENV=test mix memory.qualify --profile #{profile} --report <path>",
            runtime: %{
              elixir: System.version(),
              otp: List.to_string(:erlang.system_info(:otp_release)),
@@ -516,20 +518,21 @@ defmodule Backplane.Memory.Qualification.Runner do
 
   defp execute_projection_jobs(jobs, event_by_id, acknowledged_at) do
     Enum.reduce_while(jobs, {:ok, [], 0, MapSet.new(), 0}, fn job,
-                                                                     {:ok, lags, complete,
-                                                                      projectors, completed} ->
+                                                              {:ok, lags, complete, projectors,
+                                                               completed} ->
       event = Map.fetch!(event_by_id, job.args["event_id"])
       drain = Oban.drain_queue(queue: :memory, with_limit: 1)
       stored_job = repo().get!(Oban.Job, job.id)
       states = projection_states(event["host_id"], event["session_id"])
 
       if drain.success == 1 and drain.failure == 0 and stored_job.state == "completed" and
-           map_size(states) == 4 and Enum.all?(states, fn {_name, state} -> state == "complete" end) do
+           map_size(states) == 4 and
+           Enum.all?(states, fn {_name, state} -> state == "complete" end) do
         lag = %{lag_ms: elapsed_ms(acknowledged_at), session_id: event["session_id"]}
 
         {:cont,
-         {:ok, [lag | lags], complete + 1,
-          MapSet.union(projectors, MapSet.new(Map.keys(states))), completed + 1}}
+         {:ok, [lag | lags], complete + 1, MapSet.union(projectors, MapSet.new(Map.keys(states))),
+          completed + 1}}
       else
         {:halt,
          {:error,
