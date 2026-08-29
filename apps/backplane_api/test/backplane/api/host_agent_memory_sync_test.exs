@@ -236,7 +236,9 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert fact_id == durable_fact.id
     assert {:full, []} = HostAgentMemorySync.facts_for_scope(second_host, scope, nil)
     assert [] = HostAgentMemorySync.active_wipes(first_host, scope)
-    assert [] = HostAgentMemorySync.active_wipes(second_host, scope)
+
+    assert [%{"remote_id" => ^second_canonical_id}] =
+             HostAgentMemorySync.active_wipes(second_host, scope)
   end
 
   test "forget binds remote id to the authenticated host local mapping" do
@@ -262,6 +264,15 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
       "scope" => "scope:binding"
     }
 
+    assert {:error, :validation, "remote_id does not match local mapping"} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               forget
+               | "remote_id" => Ecto.UUID.generate()
+             })
+
+    assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, canonical_id)
+    assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
+
     assert {:ok, %{canonical_id: ^canonical_id}} =
              HostAgentMemorySync.apply_sync_item(host, forget)
 
@@ -273,13 +284,6 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                host,
                remember_item("local_b", "scope:binding", content)
              )
-
-    assert {:error, :validation, "remote_id does not match local mapping"} =
-             HostAgentMemorySync.apply_sync_item(host, %{
-               forget
-               | "id" => "local_b",
-                 "remote_id" => Ecto.UUID.generate()
-             })
   end
 
   test "reloads the current registered scope instead of trusting a stale host struct" do
@@ -296,7 +300,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert MapSet.new(["scope:new"]) == HostAgentMemorySync.entitled_scopes(current_host)
   end
 
-  test "forget acknowledges a host local id without tombstoning the canonical memory" do
+  test "forget tombstones the canonical mapped memory and remains idempotent" do
     scope = "scope:same-batch"
     host = create_host!("same-batch", scope)
 
@@ -306,25 +310,19 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                remember_item("local_2", scope, "remember then forget")
              )
 
-    assert {:ok, %{status: :ok, canonical_id: ^canonical_id}} =
-             HostAgentMemorySync.apply_sync_item(host, %{
-               "id" => "local_2",
-               "op" => "forget",
-               "scope" => scope
-             })
-
-    assert [%MemorySchema{id: ^canonical_id, deleted_at: nil}] =
-             memories_for(host, scope, include_deleted: true)
-
-    assert [] = HostAgentMemorySync.active_wipes(host, scope)
-    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
+    forget = %{"id" => "local_2", "op" => "forget", "scope" => scope}
 
     assert {:ok, %{status: :ok, canonical_id: ^canonical_id}} =
-             HostAgentMemorySync.apply_sync_item(host, %{
-               "id" => "local_2",
-               "op" => "forget",
-               "scope" => scope
-             })
+             HostAgentMemorySync.apply_sync_item(host, forget)
+
+    assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert [%{"remote_id" => ^canonical_id}] =
+             HostAgentMemorySync.active_wipes(host, scope)
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, forget)
 
     assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
 
@@ -353,6 +351,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
     assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, canonical_id)
     assert [] = HostAgentMemorySync.active_wipes(host, "scope:owned")
+    assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
   end
 
   test "forget rejects remote ids owned by another host" do
@@ -369,6 +368,73 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
              })
 
     assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, foreign.id)
+    assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
+  end
+
+  test "canonical lifecycle failure rolls back the revocation" do
+    scope = "scope:atomic-forget"
+    host = create_host!("atomic-forget", scope)
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_atomic", scope, "atomically forgotten")
+             )
+
+    Repo.query!("""
+    CREATE FUNCTION bpm_test_fail_host_tombstone() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected host tombstone failure' USING ERRCODE = '23514';
+    END; $$
+    """)
+
+    Repo.query!("""
+    CREATE TRIGGER bpm_test_fail_host_tombstone
+    BEFORE UPDATE ON bpm_memories
+    FOR EACH ROW
+    WHEN (NEW.id = '#{canonical_id}'::uuid AND NEW.lifecycle_state = 'tombstoned')
+    EXECUTE FUNCTION bpm_test_fail_host_tombstone()
+    """)
+
+    assert_raise Postgrex.Error, fn ->
+      HostAgentMemorySync.apply_sync_item(host, %{
+        "id" => "local_atomic",
+        "op" => "forget",
+        "scope" => scope
+      })
+    end
+
+    assert %MemorySchema{deleted_at: nil, lifecycle_state: "active"} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
+  end
+
+  test "host forget remains a soft tombstone when global hard delete is enabled" do
+    previous = Backplane.Settings.get("memory.hard_delete_enabled")
+    :ok = Backplane.Settings.set("memory.hard_delete_enabled", "true")
+    on_exit(fn -> Backplane.Settings.set("memory.hard_delete_enabled", previous) end)
+
+    scope = "scope:always-soft"
+    host = create_host!("always-soft", scope)
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_soft", scope, "retain the canonical tombstone")
+             )
+
+    assert {:ok, %{status: :ok, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               "id" => "local_soft",
+               "op" => "forget",
+               "scope" => scope
+             })
+
+    assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
   end
 
   test "facts_for_scope returns canonical hub facts and recognizes matching hashes" do

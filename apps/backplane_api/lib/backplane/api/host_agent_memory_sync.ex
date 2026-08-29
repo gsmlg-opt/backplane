@@ -29,11 +29,8 @@ defmodule Backplane.Api.HostAgentMemorySync do
   end
 
   def apply_sync_item(host, %{"op" => "forget"} = item) do
-    with {:ok, host} <- reload_host(host),
-         :ok <- validate_host_scope(host, scope_for(item)),
-         {:ok, mapping} <- resolve_forget_mapping(host, item),
-         {:ok, _revocation} <- revoke_mapping(host, mapping) do
-      {:ok, %{status: :ok, canonical_id: mapping.memory.id}}
+    with {:ok, local_id} <- required_binary(item, "id") do
+      forget_host_item(host, item, local_id, scope_for(item))
     else
       {:error, reason} -> {:error, :validation, reason}
     end
@@ -155,6 +152,50 @@ defmodule Backplane.Api.HostAgentMemorySync do
     end
   end
 
+  defp forget_host_item(%{id: host_id} = host, item, local_id, scope) when is_binary(host_id) do
+    case Repo.transaction(fn ->
+           advisory_lock!(host_id, local_id)
+
+           with {:ok, current_host} <- reload_host(host),
+                :ok <- validate_host_scope(current_host, scope),
+                {:ok, mapping} <- resolve_forget_mapping(current_host, item),
+                {:ok, status} <- reconcile_forget(current_host, mapping) do
+             %{status: status, canonical_id: mapping.memory.id}
+           else
+             {:error, reason} -> Repo.rollback(reason)
+           end
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, :validation, reason}
+    end
+  end
+
+  defp forget_host_item(_host, _item, _local_id, _scope),
+    do: {:error, :validation, "host is not registered"}
+
+  defp reconcile_forget(
+         _host,
+         %{
+           revoked?: true,
+           memory: %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"}
+         }
+       ),
+       do: {:ok, :duplicate}
+
+  defp reconcile_forget(host, mapping) do
+    partition = %{
+      host_id: host.id,
+      client_id: host_partition_id(host),
+      scope: host.memory_scope,
+      namespace: "private"
+    }
+
+    with :ok <- Memories.tombstone(mapping.memory.id, partition),
+         {:ok, _revocation} <- revoke_mapping(host, mapping) do
+      {:ok, :ok}
+    end
+  end
+
   defp resolve_forget_mapping(host, item) do
     with {:ok, local_id} <- required_binary(item, "id"),
          scope = scope_for(item),
@@ -188,7 +229,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
     case request_memory do
       {%MemorySchema{scope: ^scope} = memory, request} ->
-        %{memory: memory, request: request, local_id: local_id}
+        %{memory: memory, request: request, local_id: local_id, revoked?: false}
 
       {%MemorySchema{}, _request} ->
         nil
@@ -196,7 +237,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
       nil ->
         case find_legacy_local_mapping(host_id, scope, local_id) do
           nil -> nil
-          memory -> %{memory: memory, request: nil, local_id: local_id}
+          memory -> %{memory: memory, request: nil, local_id: local_id, revoked?: false}
         end
     end
   end
@@ -211,7 +252,12 @@ defmodule Backplane.Api.HostAgentMemorySync do
       revocation.host_id == ^host_id and revocation.local_id == ^local_id
     )
     |> where([revocation, _memory], revocation.scope == ^scope)
-    |> select([revocation, memory], %{memory: memory, request: nil, local_id: revocation.local_id})
+    |> select([revocation, memory], %{
+      memory: memory,
+      request: nil,
+      local_id: revocation.local_id,
+      revoked?: true
+    })
     |> limit(1)
     |> Repo.one()
   end

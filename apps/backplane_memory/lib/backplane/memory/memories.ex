@@ -244,6 +244,15 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
+  @doc "Always soft-delete a memory in an exact partition. Writes the ordinary forget audit."
+  @spec tombstone(String.t(), map() | keyword()) ::
+          :ok | {:error, :not_found | :unauthorized}
+  def tombstone(id, partition) do
+    with {:ok, partition} <- exact_partition(partition) do
+      tombstone_partitioned(id, partition)
+    end
+  end
+
   if Mix.env() == :test do
     @doc false
     def trusted_forget(id), do: forget_unpartitioned(id)
@@ -271,6 +280,26 @@ defmodule Backplane.Memory.Memories do
     end)
   end
 
+  defp tombstone_partitioned(id, partition) do
+    metadata = %{action: "forget", memory_id: id}
+
+    :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+      result =
+        case repo().transaction(fn -> tombstone_locked!(id, partition) end) do
+          {:ok, :ok} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      status =
+        case result do
+          :ok -> %{status: :ok}
+          {:error, :not_found} -> %{status: :not_found}
+        end
+
+      {result, Map.merge(metadata, status)}
+    end)
+  end
+
   if Mix.env() == :test do
     defp forget_unpartitioned(id) do
       case repo().transaction(fn -> forget_locked!(id, nil) end) do
@@ -282,17 +311,7 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp forget_locked!(id, partition) do
-    query =
-      from(m in MemorySchema,
-        where: m.id == ^id and is_nil(m.deleted_at),
-        select: struct(m, ^@non_vector_fields),
-        lock: "FOR UPDATE"
-      )
-
-    query = apply_exact_partition(query, partition)
-
-    memory =
-      repo().one(query)
+    memory = lock_active_memory(id, partition)
 
     hard_delete? = hard_delete_enabled?()
 
@@ -330,28 +349,48 @@ defmodule Backplane.Memory.Memories do
         :ok
 
       true ->
-        memory
-        |> MemorySchema.lifecycle_changeset(%{
-          deleted_at: DateTime.utc_now(),
-          lifecycle_state: "tombstoned",
-          superseded_by: nil
-        })
-        |> repo().update!()
-
-        Backplane.Memory.Audit.log(
-          "forget",
-          "system",
-          [memory.id],
-          memory_audit_metadata(memory, %{
-            request_id: Ecto.UUID.generate(),
-            from: memory.lifecycle_state,
-            to: "tombstoned",
-            result: "deleted"
-          })
-        )
-
-        :ok
+        soft_tombstone_locked!(memory)
     end
+  end
+
+  defp tombstone_locked!(id, partition) do
+    case lock_active_memory(id, partition) do
+      nil -> repo().rollback(:not_found)
+      memory -> soft_tombstone_locked!(memory)
+    end
+  end
+
+  defp lock_active_memory(id, partition) do
+    MemorySchema
+    |> where([m], m.id == ^id and is_nil(m.deleted_at))
+    |> select([m], struct(m, ^@non_vector_fields))
+    |> lock("FOR UPDATE")
+    |> apply_exact_partition(partition)
+    |> repo().one()
+  end
+
+  defp soft_tombstone_locked!(memory) do
+    memory
+    |> MemorySchema.lifecycle_changeset(%{
+      deleted_at: DateTime.utc_now(),
+      lifecycle_state: "tombstoned",
+      superseded_by: nil
+    })
+    |> repo().update!()
+
+    Backplane.Memory.Audit.log(
+      "forget",
+      "system",
+      [memory.id],
+      memory_audit_metadata(memory, %{
+        request_id: Ecto.UUID.generate(),
+        from: memory.lifecycle_state,
+        to: "tombstoned",
+        result: "deleted"
+      })
+    )
+
+    :ok
   end
 
   defp provenance_retained?(memory_id) do
