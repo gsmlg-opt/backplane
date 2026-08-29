@@ -1,6 +1,13 @@
 defmodule Backplane.Memory.Ingest.Upcaster.V1 do
   @moduledoc "Maps canonical capture envelope version 1 into event-store attributes."
 
+  @reserved_provenance_aliases [
+    "source_client_id",
+    :source_client_id,
+    "source_scope",
+    :source_scope
+  ]
+
   def upcast(%{"schema_version" => 1} = event, auth_context) do
     partition = fetch(auth_context, :partition)
     host_id = fetch(partition, :host_id)
@@ -12,6 +19,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
 
     raw_envelope =
       event
+      |> Map.drop(@reserved_provenance_aliases)
       |> maybe_put("source_client_id", event["client_id"])
       |> maybe_put("source_scope", event["scope"])
       |> Map.put("client_id", partition_id)

@@ -63,6 +63,28 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert attrs.raw_envelope["scope"] == "proj_local"
   end
 
+  test "drops untrusted provenance aliases when the actual source fields are absent" do
+    raw = valid_event() |> Map.delete("client_id") |> Map.delete("scope")
+    assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
+
+    event =
+      event
+      |> Map.put("source_client_id", "password=string-client-secret")
+      |> Map.put(:source_client_id, "password=atom-client-secret")
+      |> Map.put("source_scope", "token=string-scope-secret")
+      |> Map.put(:source_scope, "token=atom-scope-secret")
+
+    assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
+
+    for key <- ["source_client_id", :source_client_id, "source_scope", :source_scope] do
+      refute Map.has_key?(attrs.raw_envelope, key)
+    end
+
+    encoded = Jason.encode!(attrs.raw_envelope)
+    refute encoded =~ "client-secret"
+    refute encoded =~ "scope-secret"
+  end
+
   test "host namespaces cannot collide through delimiter ambiguity" do
     first = valid_event(%{"host_id" => "a:b", "idempotency_key" => "c"})
     second = valid_event(%{"host_id" => "a", "idempotency_key" => "b:c"})

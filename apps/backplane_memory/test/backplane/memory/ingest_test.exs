@@ -401,6 +401,79 @@ defmodule Backplane.Memory.IngestTest do
     assert repo().aggregate(Event, :count) == 0
   end
 
+  test "accepts atom-only and matching dual host claims" do
+    atom_only =
+      valid_event(%{
+        "event_id" => Ecto.UUID.generate(),
+        "idempotency_key" => "atom-only-host"
+      })
+      |> Map.delete("host_id")
+      |> Map.put(:host_id, "host-1")
+
+    matching_dual =
+      valid_event(%{
+        "event_id" => Ecto.UUID.generate(),
+        "sequence" => 2,
+        "idempotency_key" => "matching-dual-host"
+      })
+      |> Map.put(:host_id, "host-1")
+
+    assert {:ok, %{"results" => results}} =
+             Ingest.ingest_batch(auth_context("host-1"), %{
+               "batch_id" => "compatible-host-claims",
+               "host_id" => "host-1",
+               "events" => [atom_only, matching_dual]
+             })
+
+    assert Enum.map(results, & &1["status"]) == ["accepted", "accepted"]
+
+    for result <- results do
+      stored = repo().get!(Event, result["server_event_id"])
+      assert stored.host_id == "host-1"
+      assert stored.raw_envelope["host_id"] == "host-1"
+      refute Map.has_key?(stored.raw_envelope, :host_id)
+    end
+  end
+
+  test "rejects every conflicting dual host claim before spoofed provenance persists" do
+    atom_trusted_string_spoofed =
+      valid_event(%{
+        "event_id" => Ecto.UUID.generate(),
+        "host_id" => "host-spoofed-string",
+        "idempotency_key" => "atom-trusted-string-spoofed"
+      })
+      |> Map.put(:host_id, "host-1")
+
+    string_trusted_atom_spoofed =
+      valid_event(%{
+        "event_id" => Ecto.UUID.generate(),
+        "idempotency_key" => "string-trusted-atom-spoofed"
+      })
+      |> Map.put(:host_id, "host-spoofed-atom")
+
+    assert {:ok, %{"results" => results}} =
+             Ingest.ingest_batch(auth_context("host-1"), %{
+               "batch_id" => "conflicting-host-claims",
+               "host_id" => "host-1",
+               "events" => [atom_trusted_string_spoofed, string_trusted_atom_spoofed]
+             })
+
+    assert Enum.map(results, &Map.take(&1, ["status", "retryable", "reason"])) == [
+             %{
+               "status" => "rejected",
+               "retryable" => false,
+               "reason" => "partition_mismatch"
+             },
+             %{
+               "status" => "rejected",
+               "retryable" => false,
+               "reason" => "partition_mismatch"
+             }
+           ]
+
+    assert repo().aggregate(Event, :count) == 0
+  end
+
   test "missing or malformed trusted partitions cannot produce accepted events" do
     event = valid_event()
 

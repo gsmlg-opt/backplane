@@ -207,12 +207,25 @@ defmodule Backplane.Memory.Ingest do
   defp authorize_partition_claims(auth_context, event) do
     partition = get(auth_context, :partition)
     authenticated = get(partition, :host_id)
-    claimed = get(event, :host_id)
+    host_claims = present_claims(event, :host_id)
 
-    if authenticated == claimed and not authority_claim?(event),
-      do: :ok,
-      else: {:error, :partition_mismatch}
+    if host_claims != [] and Enum.all?(host_claims, &(&1 == authenticated)) and
+         not authority_claim?(event),
+       do: :ok,
+       else: {:error, :partition_mismatch}
   end
+
+  defp present_claims(map, key) when is_map(map) do
+    [key, Atom.to_string(key)]
+    |> Enum.flat_map(fn candidate ->
+      case Map.fetch(map, candidate) do
+        {:ok, value} -> [value]
+        :error -> []
+      end
+    end)
+  end
+
+  defp present_claims(_map, _key), do: []
 
   defp authority_claim?(event) when is_map(event) do
     Enum.any?(@v1_authority_keys, &Map.has_key?(event, &1)) or
