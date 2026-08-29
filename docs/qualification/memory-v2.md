@@ -1,12 +1,17 @@
 # Memory V2 Qualification and Evaluation
 
-The release workflow runs the reproducible qualification lane on Ubuntu with
-Elixir 1.18, OTP 28, PostgreSQL 17, and pgvector. Its downloadable artifact is
-named `memory-v2-qualification` and contains:
+The release workflow runs the reproducible `ci` smoke profile on Ubuntu with
+Elixir 1.18, OTP 28, PostgreSQL 17, and pgvector. GitHub-hosted hardware is not
+an authoritative performance baseline: minimum throughput gates use 10% of the
+`performance` requirement and maximum latency gates use 10 times its ceiling.
+All correctness, durability, quality, outage, provenance, and migration gates
+remain unchanged. The downloadable artifact is named
+`memory-v2-qualification` and contains:
 
-- `memory-v2-m18-qualification.json`: measured ingest, projection,
-  consolidation, outage, and retry/contention gates;
-- `memory-v2-eval.json`: Backplane's coding-corpus metrics and threshold data;
+- `memory-v2-m18-ci-smoke.json`: measured ingest, projection, consolidation,
+  outage, and retry/contention smoke gates;
+- `memory-v2-eval-ci-smoke.json`: Backplane's coding-corpus metrics and CI
+  threshold data;
 - `memory-v2-longmemeval.jsonl`: LongMemEval-shaped, explicitly non-comparable
   retrieval export;
 - `memory-v2-longmemeval-sidecar.json`: Backplane provenance/format metadata;
@@ -17,6 +22,11 @@ named `memory-v2-qualification` and contains:
 
 These are Backplane results. Agentmemory's published numbers are reference
 targets and must not be reported as Backplane evidence.
+
+Every report records `profile` and `performance_authoritative`. A `ci` report
+has `performance_authoritative=false` and must not be represented as hardware
+performance evidence. Direct commands default to the authoritative
+`performance` profile.
 
 ## Reproduce locally
 
@@ -50,10 +60,16 @@ MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
     apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
     apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs
 
+MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
+  devenv shell -- mix test \
+    apps/backplane_memory/test/backplane/memory/qualification_performance_test.exs \
+    --include memory_qualification_runtime
+
 MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true \
   MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.qualify \
-    --report artifacts/memory-v2/memory-v2-m18-qualification.json
+    --profile performance \
+    --report artifacts/memory-v2/memory-v2-m18-performance.json
 
 MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.replay.browser_qualify \
@@ -64,16 +80,18 @@ MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
 
 MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.eval \
-    --report artifacts/memory-v2/memory-v2-eval.json \
+    --profile performance \
+    --report artifacts/memory-v2/memory-v2-eval-performance.json \
     --longmemeval artifacts/memory-v2/memory-v2-longmemeval.jsonl \
     --sidecar artifacts/memory-v2/memory-v2-longmemeval-sidecar.json
 ```
 
 The evaluator exits non-zero if its guarded thresholds fail. Inspect the report
-rather than relying only on exit status. Required PRD targets include top-5 hit
-rate at least 95%, 100% provenance for returned auto-derived records, FTS-only
-availability during provider outage, and retrieval/fusion p95 below 300 ms
-(excluding query embedding and LLM latency).
+rather than relying only on exit status. The `performance` profile retains the
+required top-5 hit rate of at least 95%, 100% provenance for returned
+auto-derived records, FTS-only availability during provider outage, and
+retrieval/fusion p95 below 300 ms (excluding query embedding and LLM latency).
+The `ci` profile changes only hardware-dependent latency ceilings.
 
 The replay browser gate starts the routed admin LiveView on loopback, seeds 121
 events to exercise multi-page loading, drives playback through Chrome DevTools
@@ -95,8 +113,10 @@ all four deterministic projection states are `complete`.
 
 ## Production qualification record
 
-Attach the workflow artifact and installed-release smoke result to the release.
-Also record:
+Attach the workflow CI-smoke artifact and installed-release smoke result to the
+release. Record authoritative `performance` reports separately when they are
+run on controlled hardware; their absence does not block GitHub artifact
+publication and a CI-smoke report is not a substitute. Also record:
 
 - release tag, commit, OTP/Elixir/PostgreSQL/pgvector versions, and artifact
   checksums;

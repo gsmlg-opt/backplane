@@ -13,13 +13,20 @@ container, and GitHub release target must use that same gated SHA.
 Do not publish until the release workflow has produced both:
 
 - `memory-v2-qualification`: focused migration, outage, privacy, adapter, and
-  Recall V2 evaluation artifacts; and
+  Recall V2 CI-smoke artifacts whose reports declare `profile=ci` and
+  `performance_authoritative=false`; and
 - `installed-release-migration-smoke`: a Linux x64 release extracted from its
   tarball and used to migrate a fresh PostgreSQL/pgvector database twice (apply
   and idempotent no-op).
 
 Follow `docs/operations/memory-v2.md` for backup, preflight, consistency, and
 host-spool checks.
+
+GitHub-hosted performance smoke gates use 10% of the authoritative hardware
+requirements. They do not replace `profile=performance` reports produced on
+controlled hardware. Keep those reports as separate release evidence when
+available; they are not required for GitHub artifact publication and must not
+be inferred from CI-smoke results.
 
 ## Installed-release migration command
 
