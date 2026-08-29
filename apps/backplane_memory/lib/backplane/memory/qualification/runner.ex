@@ -467,7 +467,17 @@ defmodule Backplane.Memory.Qualification.Runner do
   end
 
   defp auth_context(host_id) do
-    %{host_id: host_id, auth_token_id: "qualification-token", scopes: ["host_agent.capture"]}
+    %{
+      host_id: host_id,
+      auth_token_id: "qualification-token",
+      scopes: ["host_agent.capture"],
+      partition: %{
+        host_id: host_id,
+        partition_id: "host:#{host_id}",
+        scope: "proj_local",
+        namespace: "private"
+      }
+    }
   end
 
   defp validate_count(value) when is_integer(value) and value > 0, do: :ok
