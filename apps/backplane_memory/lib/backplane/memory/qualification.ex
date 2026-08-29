@@ -1,20 +1,22 @@
 defmodule Backplane.Memory.Qualification do
   @moduledoc "Machine-readable M18 non-functional qualification verdicts."
 
-  @thresholds %{
-    ingest_events_per_second_min: 500,
-    projection_p95_lag_ms_max_exclusive: 10_000,
-    consolidation_coverage_min: 0.95
-  }
+  alias Backplane.Memory.Qualification.Profile
 
   def evaluate(measurements, opts \\ []) when is_map(measurements) do
     generated_at = Keyword.get(opts, :generated_at, DateTime.utc_now())
+    profile = Keyword.get(opts, :profile, :performance)
+    thresholds = Profile.thresholds(profile).qualification
     measurements = put_consolidation_coverage(measurements)
 
     gates = %{
       ingest_throughput:
         positive_count?(measurements, [:ingest, :accepted]) and
-          number_at_least?(measurements, [:ingest, :events_per_second], 500) and
+          number_at_least?(
+            measurements,
+            [:ingest, :events_per_second],
+            thresholds.ingest_events_per_second_min
+          ) and
           equal_positive_counts?(
             measurements,
             [:ingest, :accepted],
@@ -45,7 +47,11 @@ defmodule Backplane.Memory.Qualification do
             [:projection, :samples],
             [:projection, :complete_subjects]
           ) and
-          number_below?(measurements, [:projection, :p95_lag_ms], 10_000),
+          number_below?(
+            measurements,
+            [:projection, :p95_lag_ms],
+            thresholds.projection_p95_lag_ms_max_exclusive
+          ),
       consolidation_coverage:
         positive_count?(measurements, [:consolidation, :eligible]) and
           number_at_least?(measurements, [:consolidation, :coverage], 0.95),
@@ -75,9 +81,11 @@ defmodule Backplane.Memory.Qualification do
     %{
       schema_version: 1,
       suite: "memory-v2-m18-qualification",
+      profile: profile,
+      performance_authoritative: Profile.authoritative?(profile),
       generated_at: DateTime.to_iso8601(generated_at),
       configuration: configuration,
-      thresholds: @thresholds,
+      thresholds: thresholds,
       metrics: measurements,
       gates: gates,
       passed: Enum.all?(gates, fn {_gate, passed?} -> passed? end)

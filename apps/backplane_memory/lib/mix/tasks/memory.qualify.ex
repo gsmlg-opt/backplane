@@ -2,23 +2,32 @@ defmodule Mix.Tasks.Memory.Qualify do
   @shortdoc "Run the reproducible M18 Memory V2 qualification suite"
   use Mix.Task
 
+  alias Backplane.Memory.Qualification.{Profile, Runner}
+
+  @usage "usage: mix memory.qualify --profile performance|ci --report <path>"
+
   @impl Mix.Task
   def run(args) do
-    {opts, positional, invalid} = OptionParser.parse(args, strict: [report: :string])
+    {opts, positional, invalid} =
+      OptionParser.parse(args, strict: [report: :string, profile: :string])
 
-    if positional != [] or invalid != [],
-      do: Mix.raise("usage: mix memory.qualify --report <path>")
+    profile = opts |> Keyword.get(:profile, "performance") |> Profile.parse()
+
+    if positional != [] or invalid != [] or match?({:error, :invalid_profile}, profile),
+      do: Mix.raise(@usage)
 
     if Mix.env() != :test,
       do: Mix.raise("memory.qualify is restricted to MIX_ENV=test")
 
     Mix.Task.run("app.start")
+    {:ok, profile} = profile
+    runner_opts = [profile: profile]
 
     result =
       if real_pool?() do
-        Backplane.Memory.Qualification.Runner.run()
+        Runner.run(runner_opts)
       else
-        Backplane.Memory.Qualification.Runner.sandboxed_run()
+        Runner.sandboxed_run(runner_opts)
       end
 
     case result do
