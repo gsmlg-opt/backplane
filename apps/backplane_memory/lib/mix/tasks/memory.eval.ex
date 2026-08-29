@@ -2,22 +2,35 @@ defmodule Mix.Tasks.Memory.Eval do
   @shortdoc "Run the guarded M15 Recall V2 evaluation"
   use Mix.Task
 
+  alias Backplane.Memory.Eval
+  alias Backplane.Memory.Eval.Runner
+  alias Backplane.Memory.Qualification.Profile
+
+  @usage "usage: mix memory.eval --profile performance|ci [--report PATH] [--longmemeval PATH] [--sidecar PATH]"
+
   @impl Mix.Task
   def run(args) do
-    {opts, _, invalid} =
-      OptionParser.parse(args, strict: [report: :string, longmemeval: :string, sidecar: :string])
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [report: :string, longmemeval: :string, sidecar: :string, profile: :string]
+      )
 
-    if invalid != [], do: Mix.raise("invalid options: #{inspect(invalid)}")
+    profile = opts |> Keyword.get(:profile, "performance") |> Profile.parse()
+
+    if positional != [] or invalid != [] or match?({:error, :invalid_profile}, profile),
+      do: Mix.raise(@usage)
+
     guard_database!(opts)
     Mix.Task.run("app.start")
+    {:ok, profile} = profile
 
-    case Backplane.Memory.Eval.Runner.sandboxed_run() do
+    case Runner.sandboxed_run(profile: profile) do
       {:ok, report, export} ->
-        write(opts[:report], Backplane.Memory.Eval.encode_report(report))
+        write(opts[:report], Eval.encode_report(report))
         write(opts[:longmemeval], export.jsonl)
         write(opts[:sidecar], Jason.encode!(export.sidecar, pretty: true) <> "\n")
-        Mix.shell().info(Backplane.Memory.Eval.encode_report(report))
-        Backplane.Memory.Eval.ensure_thresholds!(report)
+        Mix.shell().info(Eval.encode_report(report))
+        Eval.ensure_thresholds!(report, profile: profile)
 
       {:error, reason} ->
         Mix.raise("M15 evaluation failed: #{inspect(reason)}")

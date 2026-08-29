@@ -1,6 +1,8 @@
 defmodule Backplane.Memory.Eval do
   @moduledoc "Pure evaluation metrics, fixture validation, thresholds, and report serialization."
 
+  alias Backplane.Memory.Qualification.Profile
+
   @default_fixture Path.expand("../../../priv/memory_fixtures/coding_corpus_v2.json", __DIR__)
   @partition_keys ~w(host_id client_id scope namespace)
 
@@ -70,9 +72,11 @@ defmodule Backplane.Memory.Eval do
   end
 
   def thresholds_pass?(report, opts \\ []) do
-    quality_min = Keyword.get(opts, :recall_any_at_5, 0.95)
-    retrieval_max = Keyword.get(opts, :retrieval_fusion_p95_ms, 300)
-    e2e_max = Keyword.get(opts, :e2e_p95_ms, 800)
+    profile = Keyword.get(opts, :profile, :performance)
+    thresholds = Profile.thresholds(profile).eval
+    quality_min = thresholds.recall_any_at_5_min
+    retrieval_max = thresholds.retrieval_fusion_p95_ms_max_exclusive
+    e2e_max = thresholds.e2e_p95_ms_max_exclusive
 
     get_in(report, [:quality, :recall_any_at_5]) >= quality_min and
       get_in(report, [:outage, :availability]) == 1.0 and
@@ -85,12 +89,12 @@ defmodule Backplane.Memory.Eval do
     _ -> false
   end
 
-  def ensure_thresholds!(report) do
+  def ensure_thresholds!(report, opts \\ []) do
     runner_verdicts_pass? =
       Map.get(report, :passed, true) and
         Enum.all?(Map.get(report, :thresholds, %{}), fn {_gate, passed} -> passed == true end)
 
-    if thresholds_pass?(report) and runner_verdicts_pass?,
+    if thresholds_pass?(report, opts) and runner_verdicts_pass?,
       do: :ok,
       else: raise("M15 evaluation thresholds failed")
   end
