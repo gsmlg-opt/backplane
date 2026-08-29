@@ -299,7 +299,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   A non-empty overlay changes online consistency to `read_your_writes` and authority to `canonical_with_provisional`. During a transport outage, return only the same pending overlay with `consistency=provisional_only`, `authority=provisional`, and `history_available=false`; do not invoke or expose legacy synced memories or facts.
 
-  For online `list`, preserve Backplane's canonical `limit`/`offset` page in `results`/`items` (minus pending-forget suppressions) and expose filtered pending remembers separately as unpaginated `provisional_results`. Exact merged offset pagination cannot be reconstructed from one remote page without a second canonical read. Offline `list` paginates the provisional-only set locally.
+  For online `list`, preserve Backplane's canonical `limit`/`offset` page in `results`/`items` (minus pending-forget suppressions) and expose filtered pending remembers separately as unpaginated `provisional_results`. Exact merged offset pagination cannot be reconstructed from one remote page without a second canonical read. Offline `list` paginates the provisional-only set locally. Query and response overlays are hard-capped at 100 newest unresolved operations and expose `overlay_truncated`; `stats` uses an aggregate-only overlay query and never selects pending content.
 
 - [x] **Step 6: Run host-agent Memory tests and verify GREEN**
 
@@ -455,7 +455,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
 - [x] **Step 4: Add the trusted compatibility partition at the Channel**
 
-  Build it only from `socket.assigns.host`:
+  Use the authenticated `socket.assigns.host.id` to reload the current durable host registration immediately before ingest, then build the partition only from that current host record:
 
   ```elixir
   partition = %{
@@ -466,7 +466,7 @@ The selected module has one external seam, plain injected modules for tests, and
   }
   ```
 
-  Include it in the ingest auth context. Do not derive authority from event project, scope, integration, agent, or source client.
+  Include it in the ingest auth context. Do not derive authority from the stale socket copy or from event project, scope, integration, agent, or source client. If the durable host cannot be reloaded, fail closed with `ingest_unavailable` and do not call ingest or ACK.
 
 - [x] **Step 5: Validate the trusted partition and source claims in ingest**
 
