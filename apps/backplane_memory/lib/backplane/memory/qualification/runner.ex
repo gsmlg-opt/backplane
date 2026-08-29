@@ -12,6 +12,8 @@ defmodule Backplane.Memory.Qualification.Runner do
   alias Backplane.Memory.Workers.{ProjectionRepairWorker, SummaryWorker}
 
   @max_batch_size 100
+  @default_ingest_concurrency 20
+  @sandbox_ingest_concurrency 5
 
   def run(opts \\ []) do
     run_id = Keyword.get(opts, :run_id, "m18-#{System.unique_integer([:positive])}")
@@ -21,7 +23,9 @@ defmodule Backplane.Memory.Qualification.Runner do
              run_id: "#{run_id}-ingest",
              event_count: 2_000,
              batch_size: 100,
-             warmup_event_count: 1_000
+             warmup_event_count: 1_000,
+             max_concurrency:
+               Keyword.get(opts, :ingest_max_concurrency, @default_ingest_concurrency)
            ),
          {:ok, projection} <-
            measure_projection(run_id: "#{run_id}-projection", sample_count: 100),
@@ -72,6 +76,7 @@ defmodule Backplane.Memory.Qualification.Runner do
   def sandboxed_run(opts \\ []) do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(repo())
     Ecto.Adapters.SQL.Sandbox.mode(repo(), {:shared, self()})
+    opts = Keyword.put(opts, :ingest_max_concurrency, @sandbox_ingest_concurrency)
 
     try do
       run(opts)
@@ -105,7 +110,11 @@ defmodule Backplane.Memory.Qualification.Runner do
       started_at = System.monotonic_time()
 
       batches = Enum.chunk_every(events, batch_size)
-      concurrency = length(batches)
+
+      concurrency =
+        opts
+        |> Keyword.get(:max_concurrency, @default_ingest_concurrency)
+        |> min(length(batches))
 
       results =
         with_projection_repair(fn ->
@@ -179,12 +188,15 @@ defmodule Backplane.Memory.Qualification.Runner do
     if Keyword.get(opts, :warmup, true) do
       warmup_event_count = Keyword.get(opts, :warmup_event_count, event_count)
 
-      case measure_ingest(
-             run_id: "#{run_id}-warmup",
-             event_count: warmup_event_count,
-             batch_size: batch_size,
-             warmup: false
-           ) do
+      warmup_opts =
+        [
+          run_id: "#{run_id}-warmup",
+          event_count: warmup_event_count,
+          batch_size: batch_size,
+          warmup: false
+        ] ++ Keyword.take(opts, [:max_concurrency])
+
+      case measure_ingest(warmup_opts) do
         {:ok, _measurement} -> :ok
         {:error, reason} -> {:error, {:ingest_warmup_failed, reason}}
       end

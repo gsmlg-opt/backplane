@@ -75,6 +75,9 @@ defmodule Backplane.Memory.Recall.QueryPlanTest do
              QueryPlan.new(Map.put(valid, :channel_weights, %{fts: -1}))
 
     assert {:error, {:invalid, :channel_weights}} =
+             QueryPlan.new(Map.put(valid, :channel_weights, %{fts: "1"}))
+
+    assert {:error, {:invalid, :channel_weights}} =
              QueryPlan.new(Map.put(valid, :channel_weights, %{unknown: 1}))
 
     assert {:error, {:invalid, :token_budget}} = QueryPlan.new(Map.put(valid, :token_budget, 0))

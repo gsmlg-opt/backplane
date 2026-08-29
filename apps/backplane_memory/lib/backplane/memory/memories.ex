@@ -572,7 +572,9 @@ defmodule Backplane.Memory.Memories do
 
   defp apply_list_filter(_, q), do: q
 
-  defp apply_exact_partition(query, nil), do: query
+  if Mix.env() == :test do
+    defp apply_exact_partition(query, nil), do: query
+  end
 
   defp apply_exact_partition(query, partition) do
     where(

@@ -77,9 +77,6 @@ defmodule Backplane.Transport.McpHandler do
 
       params when is_map(params) ->
         handle_message(conn, params)
-
-      _ ->
-        json_rpc_error(conn, nil, -32_600, "Invalid Request")
     end
   end
 

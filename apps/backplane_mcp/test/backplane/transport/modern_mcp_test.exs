@@ -240,7 +240,7 @@ defmodule Backplane.Transport.ModernMcpTest do
 
   test "enforces scoped modern tool listing and calls" do
     {_client, token} =
-      Backplane.Fixtures.insert_client(
+      BackplaneMcp.Fixtures.insert_client(
         token: "modern-scoped-token",
         scopes: ["public::echo", "fixture::*"]
       )

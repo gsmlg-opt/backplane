@@ -14,7 +14,7 @@ defmodule Backplane.Proxy.ClientPool do
 
   @lease_table :backplane_client_leases
 
-  @spec start_link(keyword()) :: DynamicSupervisor.on_start()
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end

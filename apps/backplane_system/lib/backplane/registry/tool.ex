@@ -30,6 +30,10 @@ defmodule Backplane.Registry.Tool do
     timeout: 30_000
   ]
 
+  @type handler ::
+          (map() -> {:ok, term()} | {:error, term()})
+          | (map(), map() -> {:ok, term()} | {:error, term()})
+
   @type t :: %__MODULE__{
           name: String.t(),
           title: String.t() | nil,
@@ -37,7 +41,7 @@ defmodule Backplane.Registry.Tool do
           input_schema: map(),
           origin: :native | {:upstream, String.t()} | {:managed, String.t()},
           module: module() | nil,
-          handler: atom() | (map() -> {:ok, term()} | {:error, term()}) | nil,
+          handler: atom() | handler() | nil,
           upstream_pid: pid() | nil,
           original_name: String.t() | nil,
           output_schema: map() | nil,

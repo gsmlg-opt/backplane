@@ -1,7 +1,7 @@
 defmodule Backplane.Api.HostAgentSyncE2ETest do
   use Backplane.Api.ChannelCase, async: false
 
-  alias Backplane.Fixtures
+  alias Backplane.Api.Fixtures
   alias Backplane.Skills.{Assignments, DesiredState, Hosts}
 
   test "host receives desired state for an assigned archive-backed skill" do

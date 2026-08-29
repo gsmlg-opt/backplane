@@ -250,6 +250,4 @@ defmodule Backplane.Proxy.ToolCatalog do
   catch
     _kind, _reason -> false
   end
-
-  defp valid_absolute_uri?(_value), do: false
 end

@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ResourceAuthorizationTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   import Plug.Conn
   import Plug.Test

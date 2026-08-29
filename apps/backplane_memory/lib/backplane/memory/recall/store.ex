@@ -90,7 +90,7 @@ defmodule Backplane.Memory.Recall.Store do
   @spec put_candidates(Ecto.UUID.t(), map(), [map()]) ::
           {:ok, [TraceCandidate.t()]} | {:error, term()}
   def put_candidates(run_id, partition, traces) do
-    transact(fn -> do_put_candidates(run_id, partition, traces, true) end)
+    transact(fn -> do_put_candidates(run_id, partition, traces) end)
   end
 
   @spec finalize(Ecto.UUID.t(), map(), [map()], keyword()) :: {:ok, Run.t()} | {:error, term()}
@@ -208,10 +208,9 @@ defmodule Backplane.Memory.Recall.Store do
 
   def list(_partition, _opts), do: {:error, :invalid_options}
 
-  defp do_put_candidates(run_id, partition, traces, lock?) do
+  defp do_put_candidates(run_id, partition, traces) do
     with {:ok, partition} <- partition(partition),
-         {:ok, run} <-
-           if(lock?, do: locked_run(run_id, partition), else: existing_run(run_id, partition)),
+         {:ok, run} <- locked_run(run_id, partition),
          true <- run.status == "running" or {:error, :already_finalized},
          {:ok, rows} <- normalize_bounded_traces(run, partition, traces) do
       insert_trace_rows(rows)
@@ -459,16 +458,6 @@ defmodule Backplane.Memory.Recall.Store do
     end
   end
 
-  defp existing_run(run_id, partition) do
-    with {:ok, partition} <- partition(partition),
-         {:ok, run_id} <- cast_uuid(run_id) do
-      case repo().one(partitioned_run_query(run_id, partition)) do
-        %Run{} = run -> {:ok, run}
-        nil -> {:error, :not_found}
-      end
-    end
-  end
-
   defp partitioned_run_query(run_id, partition) do
     from(run in Run,
       where:
@@ -579,10 +568,9 @@ defmodule Backplane.Memory.Recall.Store do
     allowed = [:fts, :vector, :graph, :rrf, :lifecycle, :reranker, :final]
     normalized = atomize_score_keys(value, allowed)
 
-    if normalized != :error and
-         Enum.all?(normalized, fn {_key, score} -> finite_number?(score) end),
-       do: {:ok, normalized},
-       else: {:error, {:invalid, :scores}}
+    if normalized != :error and Enum.all?(normalized, fn {_key, score} -> is_number(score) end),
+      do: {:ok, normalized},
+      else: {:error, {:invalid, :scores}}
   end
 
   defp scores(_value), do: {:error, {:invalid, :scores}}
@@ -633,10 +621,6 @@ defmodule Backplane.Memory.Recall.Store do
       if atom, do: {:cont, Map.put(acc, atom, item)}, else: {:halt, :error}
     end)
   end
-
-  defp finite_number?(value) when is_integer(value), do: true
-  defp finite_number?(value) when is_float(value), do: value == value
-  defp finite_number?(_value), do: false
 
   defp boolean(value, _key) when is_boolean(value), do: {:ok, value}
   defp boolean(_value, key), do: {:error, {:invalid, key}}

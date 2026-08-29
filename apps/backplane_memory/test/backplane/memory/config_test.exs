@@ -54,6 +54,9 @@ defmodule Backplane.Memory.ConfigTest do
   @independent_children Enum.drop(@flags, 3)
 
   setup do
+    send(Settings, :seed_and_load)
+    :sys.get_state(Settings)
+
     snapshot =
       (@flags ++
          @recall_flags ++

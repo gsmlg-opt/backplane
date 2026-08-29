@@ -33,7 +33,6 @@ defmodule Backplane.Memory.Crystals do
     else
       false -> {:error, :crystal_action_disabled}
       {:error, _reason} = error -> error
-      _ -> {:error, :invalid_arguments}
     end
   end
 

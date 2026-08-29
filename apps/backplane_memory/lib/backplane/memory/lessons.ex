@@ -213,7 +213,6 @@ defmodule Backplane.Memory.Lessons do
     else
       :error -> {:error, :invalid_strengthening}
       {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_arguments}
     end
   end
 

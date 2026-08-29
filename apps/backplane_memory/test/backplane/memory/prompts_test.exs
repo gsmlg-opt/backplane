@@ -589,7 +589,7 @@ defmodule Backplane.Memory.PromptsTest do
 
     repo().update_all(
       from(row in Crystal, where: row.id == ^crystal_id),
-      set: [updated_at: ~N[2026-08-13 23:59:59]]
+      set: [updated_at: NaiveDateTime.utc_now()]
     )
 
     assert {:ok, prompt} =

@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Recall.Packer do
   @moduledoc "Deterministic token-budget packing by marginal score per token."
 
   alias Backplane.Memory.Config
+  alias Backplane.Memory.Numeric
   alias Backplane.Memory.Recall.Candidate
 
   @rejection_reasons ~w(diversity token_budget lifecycle duplicate below_threshold superseded disputed archived channel_error review)
@@ -128,7 +129,7 @@ defmodule Backplane.Memory.Recall.Packer do
          scores: %{final: score},
          token_estimate: tokens
        }) do
-    valid_selection?(selected, reason) and nonnegative_finite?(score) and
+    valid_selection?(selected, reason) and Numeric.nonnegative_score?(score) and
       is_integer(tokens) and tokens >= 0 and tokens == candidate.token_estimate
   end
 
@@ -137,7 +138,4 @@ defmodule Backplane.Memory.Recall.Packer do
   defp valid_selection?(true, nil), do: true
   defp valid_selection?(false, reason), do: reason in @rejection_reasons
   defp valid_selection?(_selected, _reason), do: false
-  defp nonnegative_finite?(score), do: is_number(score) and score >= 0 and finite?(score)
-  defp finite?(score) when is_integer(score), do: true
-  defp finite?(score) when is_float(score), do: score == score and score <= 1.0e308
 end

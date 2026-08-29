@@ -11,7 +11,7 @@ defmodule Backplane.Api.ChannelCase do
   end
 
   setup tags do
-    Backplane.DataCase.setup_sandbox(tags)
+    BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
     :ok
   end
 end

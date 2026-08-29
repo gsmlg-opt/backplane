@@ -201,8 +201,6 @@ defmodule Backplane.Api.HostAgentMemorySync do
     end
   end
 
-  defp find_local_mapping(_host_id, _scope, _local_id), do: nil
-
   defp find_revoked_mapping(host_id, scope, local_id) when is_binary(local_id) do
     HostMemoryRevocation
     |> join(:inner, [revocation], memory in MemorySchema, on: memory.id == revocation.memory_id)
@@ -215,8 +213,6 @@ defmodule Backplane.Api.HostAgentMemorySync do
     |> limit(1)
     |> Repo.one()
   end
-
-  defp find_revoked_mapping(_host_id, _scope, _local_id), do: nil
 
   defp find_legacy_local_mapping(host_id, scope, local_id) do
     from(memory in MemorySchema, as: :memory)

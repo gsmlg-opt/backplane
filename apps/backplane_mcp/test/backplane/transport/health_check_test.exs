@@ -1,5 +1,5 @@
 defmodule Backplane.Transport.HealthCheckTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
   import Plug.Test
 
   alias Backplane.Proxy.Pool

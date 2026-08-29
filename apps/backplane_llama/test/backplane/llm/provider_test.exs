@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ProviderTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.LLM.{
     AutoModel,
@@ -13,14 +13,6 @@ defmodule Backplane.LLM.ProviderTest do
   }
 
   alias Backplane.Settings.Credentials
-
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
 
   defp credential_name do
     "test-key-#{System.unique_integer([:positive])}"

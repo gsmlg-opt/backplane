@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.ApiRouterTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   import Backplane.SkillArchiveCase
   import Plug.Conn

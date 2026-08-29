@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.IngestTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   import Backplane.SkillArchiveCase
 

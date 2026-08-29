@@ -1,5 +1,5 @@
 defmodule Backplane.Jobs.UsageWriterTest do
-  use Backplane.DataCase, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.Jobs.UsageWriter
   alias Backplane.LLM.{Provider, UsageLog}

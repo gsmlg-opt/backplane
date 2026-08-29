@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Memory.QualifyTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.Memory.Qualification.Runner
+
   @moduletag :tmp_dir
   @moduletag timeout: 120_000
 
@@ -20,6 +22,7 @@ defmodule Mix.Tasks.Memory.QualifyTest do
     assert report["configuration"]["workload"]["ingest_warmup_events"] == 1_000
     assert report["configuration"]["workload"]["ingest_batch_size"] == 100
     assert report["metrics"]["ingest"]["events_per_second"] >= 500
+    assert report["metrics"]["ingest"]["concurrency"] == 5
     assert report["metrics"]["ingest"]["projection_jobs_durable"] == 2_000
     assert report["metrics"]["ingest"]["projection_job_event_ids_unique"] == 2_000
     assert report["metrics"]["projection"]["jobs_durable"] == 100
@@ -28,5 +31,11 @@ defmodule Mix.Tasks.Memory.QualifyTest do
 
     assert report["metrics"]["projection"]["worker"] ==
              "Backplane.Memory.Workers.ProjectionRepairWorker"
+  end
+
+  test "sandboxed qualification cannot exceed its safe ingest concurrency" do
+    assert {:ok, report} = Runner.sandboxed_run(ingest_max_concurrency: 20)
+    assert report.metrics.ingest.concurrency == 5
+    assert report.metrics.ingest.projection_jobs_durable == 2_000
   end
 end

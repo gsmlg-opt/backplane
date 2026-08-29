@@ -1,5 +1,5 @@
 defmodule Backplane.Accounts.ResourceOwnersTest do
-  use Backplane.DataCase, async: true
+  use BackplaneSystem.DataCase, async: true
 
   alias Backplane.Accounts
   alias Backplane.Accounts.ResourceOwners

@@ -58,9 +58,7 @@ defmodule Backplane.Memory.Coordination.Lease do
         )
       )
 
-    if not action_owned do
-      {:error, :not_found}
-    else
+    if action_owned do
       {:ok, result} =
         repo().transaction(fn ->
           expired_query =
@@ -126,6 +124,8 @@ defmodule Backplane.Memory.Coordination.Lease do
         end)
 
       result
+    else
+      {:error, :not_found}
     end
   end
 

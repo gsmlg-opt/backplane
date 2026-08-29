@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Workers.PipelineTelemetryTest do
-  use Backplane.DataCase, async: false
+  use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Workers.{
     AccessWritebackWorker,
