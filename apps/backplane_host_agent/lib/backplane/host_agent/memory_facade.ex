@@ -6,6 +6,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   @commands ~w(remember forget)
   @reads ~w(recall list stats)
+  @overlay_cap 100
 
   @transport_errors [
     :not_connected,
@@ -55,8 +56,14 @@ defmodule Backplane.HostAgent.MemoryFacade do
            "consistency" => "pending_canonical_ack"
          })}
 
+      {:ok, other} ->
+        {:error, {:local_protocol_error, {:unexpected_reply, other}}}
+
+      {:error, _reason} = error ->
+        error
+
       other ->
-        other
+        {:error, {:local_protocol_error, {:unexpected_reply, other}}}
     end
   end
 
@@ -65,13 +72,16 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     case remote_adapter.call(method, args, remote_opts(context)) do
       {:ok, %{} = canonical} ->
-        with {:ok, %{} = overlay} <- pending_overlay(args, context) do
+        with {:ok, %{} = overlay} <- pending_overlay(method, args, context) do
           {:ok, online_result(method, canonical, overlay, args)}
         end
 
+      {:ok, other} ->
+        {:error, {:canonical_protocol_error, {:unexpected_reply, other}}}
+
       {:error, reason} = error ->
         if transport_error?(reason) do
-          with {:ok, %{} = overlay} <- pending_overlay(args, context) do
+          with {:ok, %{} = overlay} <- pending_overlay(method, args, context) do
             {:ok, offline_result(method, overlay, args)}
           end
         else
@@ -79,13 +89,19 @@ defmodule Backplane.HostAgent.MemoryFacade do
         end
 
       other ->
-        other
+        {:error, {:canonical_protocol_error, {:unexpected_reply, other}}}
     end
   end
 
-  defp pending_overlay(args, context) do
+  defp pending_overlay(method, args, context) do
     local_adapter = Map.get(context, :local_adapter, Memory)
-    local_adapter.pending_overlay(args, local_opts(context))
+
+    case local_adapter.pending_overlay(args, Keyword.put(local_opts(context), :method, method)) do
+      {:ok, %{} = overlay} -> bound_overlay(overlay)
+      {:ok, other} -> {:error, {:local_protocol_error, {:unexpected_reply, other}}}
+      {:error, _reason} = error -> error
+      other -> {:error, {:local_protocol_error, {:unexpected_reply, other}}}
+    end
   end
 
   defp online_result(method, canonical, overlay, args) do
@@ -103,6 +119,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "partition_revision" => nil,
       "last_sync_age_seconds" => nil,
       "pending_operations" => pending_operations,
+      "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => true
     })
     |> Map.put_new("as_of", nil)
@@ -122,6 +139,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "partition_revision" => nil,
       "last_sync_age_seconds" => nil,
       "pending_operations" => pending_operations(overlay),
+      "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => false
     })
   end
@@ -236,6 +254,37 @@ defmodule Backplane.HostAgent.MemoryFacade do
   defp pending_operations(overlay) do
     length(Map.get(overlay, "upserts", [])) + length(Map.get(overlay, "delete_ids", []))
   end
+
+  defp bound_overlay(overlay) do
+    upserts = Map.get(overlay, "upserts", [])
+    delete_ids = Map.get(overlay, "delete_ids", [])
+
+    if is_list(upserts) and is_list(delete_ids) do
+      bounded_upserts = Enum.take(upserts, @overlay_cap)
+      remaining = @overlay_cap - length(bounded_upserts)
+      bounded_delete_ids = Enum.take(delete_ids, remaining)
+
+      bounded =
+        overlay
+        |> maybe_put_bounded("upserts", bounded_upserts)
+        |> maybe_put_bounded("delete_ids", bounded_delete_ids)
+        |> Map.put(
+          "overlay_truncated",
+          overlay_truncated?(overlay) or length(upserts) + length(delete_ids) > @overlay_cap
+        )
+
+      {:ok, bounded}
+    else
+      {:error, {:local_protocol_error, {:unexpected_reply, overlay}}}
+    end
+  end
+
+  defp maybe_put_bounded(overlay, key, value) do
+    if Map.has_key?(overlay, key), do: Map.put(overlay, key, value), else: overlay
+  end
+
+  defp overlay_truncated?(%{"overlay_truncated" => true}), do: true
+  defp overlay_truncated?(_overlay), do: false
 
   defp remote_opts(context) do
     context

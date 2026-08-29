@@ -159,6 +159,17 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     end
   end
 
+  defmodule OversizedPending do
+    def pending_overlay(_args, _opts) do
+      upserts =
+        Enum.map(1..150, fn index ->
+          %{"id" => "local-#{index}", "content" => "pending #{index}", "provisional" => true}
+        end)
+
+      {:ok, %{"upserts" => upserts, "delete_ids" => [], "pending_operations" => 150}}
+    end
+  end
+
   defmodule OverlayFailure do
     def pending_overlay(_args, _opts), do: {:error, {:storage_error, :overlay_unavailable}}
   end
@@ -173,6 +184,14 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
       send(self(), {:local_call, "forget", args, opts})
       {:ok, %{"id" => args["id"], "status" => "pending"}}
     end
+  end
+
+  defmodule LocalMalformedSuccess do
+    def remember(_args, _opts), do: {:ok, nil}
+  end
+
+  defmodule LocalBareReply do
+    def remember(_args, _opts), do: :ok
   end
 
   defmodule RemoteNotConnected do
@@ -219,6 +238,14 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     def call(_method, _args, _opts), do: {:error, {:unexpected_reply, %{"ok" => false}}}
   end
 
+  defmodule RemoteMalformedSuccess do
+    def call(_method, _args, _opts), do: {:ok, nil}
+  end
+
+  defmodule RemoteBareReply do
+    def call(_method, _args, _opts), do: :ok
+  end
+
   test "healthy recall preserves canonical metadata and adds the hits alias" do
     assert {:ok,
             %{
@@ -230,6 +257,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               "partition_revision" => nil,
               "last_sync_age_seconds" => nil,
               "pending_operations" => 0,
+              "overlay_truncated" => false,
               "history_available" => true,
               "status" => "ok",
               "recall_run_id" => "run-1",
@@ -249,6 +277,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert remote_opts[:inject_agent_id] == false
     assert_received {:pending_overlay, %{"query" => "canonical"}, local_opts}
     assert local_opts[:agent_id] == "codex"
+    assert local_opts[:method] == "recall"
     refute_received :unexpected_local_recall
     refute_received :unexpected_local_facts
   end
@@ -262,7 +291,8 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               "cursor" => "next-1",
               "results" => [%{"id" => "canonical-1"}],
               "items" => [%{"id" => "canonical-1"}],
-              "provisional_results" => []
+              "provisional_results" => [],
+              "overlay_truncated" => false
             }} =
              MemoryFacade.call(
                "list",
@@ -310,6 +340,29 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
                %{"limit" => 1},
                %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
              )
+  end
+
+  test "online list preserves a canonical page while hard-capping its provisional sideband" do
+    assert {:ok,
+            %{
+              "results" => canonical,
+              "items" => canonical,
+              "provisional_results" => provisional,
+              "pending_operations" => 150,
+              "overlay_truncated" => true
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 200},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteManyList,
+                 local_adapter: OversizedPending
+               }
+             )
+
+    assert length(canonical) == 12
+    assert length(provisional) == 100
   end
 
   test "online list removes a provisional duplicate after it maps to a canonical id" do
@@ -390,6 +443,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               "stale" => false,
               "history_available" => true,
               "pending_operations" => 0,
+              "overlay_truncated" => false,
               "total" => 7
             }} =
              MemoryFacade.call(
@@ -397,6 +451,9 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
                %{},
                %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
              )
+
+    assert_received {:pending_overlay, %{}, opts}
+    assert opts[:method] == "stats"
   end
 
   test "non-empty pending state decorates an online result as read-your-writes" do
@@ -505,6 +562,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert remote_opts[:inject_agent_id] == false
     assert_received {:pending_overlay, _args, local_opts}
     assert local_opts[:agent_id] == "codex"
+    assert local_opts[:method] == "recall"
     assert local_opts[:store] == store
     assert local_opts[:config] == config
   end
@@ -532,6 +590,24 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert opts[:agent_id] == "codex"
     assert opts[:store] == store
     assert opts[:config] == config
+  end
+
+  test "malformed local command successes fail closed with a local protocol error" do
+    assert {:error, {:local_protocol_error, {:unexpected_reply, nil}}} =
+             MemoryFacade.call(
+               "remember",
+               %{"content" => "pending insight"},
+               %{agent_id: "codex", local_adapter: LocalMalformedSuccess}
+             )
+  end
+
+  test "bare local command replies fail closed with a local protocol error" do
+    assert {:error, {:local_protocol_error, {:unexpected_reply, :ok}}} =
+             MemoryFacade.call(
+               "remember",
+               %{"content" => "pending insight"},
+               %{agent_id: "codex", local_adapter: LocalBareReply}
+             )
   end
 
   test "forget uses the local transaction and marks the result pending canonical acknowledgement" do
@@ -631,6 +707,28 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
       assert length(results) == expected_count
     end
+  end
+
+  test "offline list never serializes more than the hard overlay cap" do
+    assert {:ok,
+            %{
+              "upserts" => results,
+              "results" => results,
+              "items" => results,
+              "pending_operations" => 150,
+              "overlay_truncated" => true
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"limit" => 200},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteNotConnected,
+                 local_adapter: OversizedPending
+               }
+             )
+
+    assert length(results) == 100
   end
 
   test "offline list supports string and atom offset pagination keys" do
@@ -740,6 +838,36 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert_canonical_error(RemoteUnexpectedReply, reason)
   end
 
+  test "malformed canonical successes fail closed without reading the pending overlay" do
+    assert {:error, {:canonical_protocol_error, {:unexpected_reply, nil}}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "canonical"},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteMalformedSuccess,
+                 local_adapter: PendingOnly
+               }
+             )
+
+    refute_received :pending_overlay
+  end
+
+  test "bare canonical replies fail closed without reading the pending overlay" do
+    assert {:error, {:canonical_protocol_error, {:unexpected_reply, :ok}}} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "canonical"},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteBareReply,
+                 local_adapter: PendingOnly
+               }
+             )
+
+    refute_received :pending_overlay
+  end
+
   test "known methods require an agent identity in the context" do
     assert_raise KeyError, fn ->
       MemoryFacade.call(
@@ -768,6 +896,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               "last_sync_age_seconds" => nil,
               "history_available" => false,
               "pending_operations" => 1,
+              "overlay_truncated" => false,
               "upserts" => [%{"id" => "local-1", "provisional" => true}],
               "delete_ids" => [],
               "results" => [%{"id" => "local-1", "provisional" => true}],

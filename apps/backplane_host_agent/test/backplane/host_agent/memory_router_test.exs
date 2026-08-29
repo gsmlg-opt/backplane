@@ -106,6 +106,10 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     def call(_method, _args, _ctx), do: exit(:canonical_facade_down)
   end
 
+  defmodule MalformedMemoryFacade do
+    def call(_method, _args, _ctx), do: {:ok, nil}
+  end
+
   defmodule ContextProbeService do
     @behaviour Backplane.HostAgent.LocalService
 
@@ -166,6 +170,20 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "canonical"}))
         |> put_req_header("content-type", "application/json")
         |> put_private(:backplane_memory_facade, RaisingMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 503
+
+      assert %{"ok" => false, "error" => "canonical memory facade is unavailable"} =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "returns a stable canonical-facade error for a malformed successful result" do
+      conn =
+        :post
+        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "canonical"}))
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, MalformedMemoryFacade)
         |> call_router()
 
       assert conn.status == 503
@@ -310,15 +328,19 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert %{
                "ok" => true,
-               "result" => %{
-                 "mode" => "offline",
-                 "authority" => "provisional",
-                 "consistency" => "provisional_only",
-                 "history_available" => false,
-                 "pending_operations" => 1,
-                 "upserts" => [%{"content" => "stats memory", "provisional" => true}]
-               }
+               "result" =>
+                 %{
+                   "mode" => "offline",
+                   "authority" => "provisional",
+                   "consistency" => "provisional_only",
+                   "history_available" => false,
+                   "pending_operations" => 1,
+                   "overlay_truncated" => false
+                 } = result
              } = Jason.decode!(conn.resp_body)
+
+      refute Map.has_key?(result, "upserts")
+      refute inspect(result) =~ "stats memory"
     end
 
     test "returns validation errors as 400" do
@@ -513,6 +535,37 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "jsonrpc" => "2.0",
                "id" => "facade-down",
+               "error" => %{
+                 "code" => -32_003,
+                 "message" => "canonical memory facade is unavailable"
+               }
+             } = Jason.decode!(conn.resp_body)
+    end
+
+    test "returns a stable canonical-facade MCP error for a malformed successful result" do
+      body =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "facade-malformed",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "memory::recall",
+            "arguments" => %{"query" => "canonical"}
+          }
+        })
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:backplane_memory_facade, MalformedMemoryFacade)
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert %{
+               "jsonrpc" => "2.0",
+               "id" => "facade-malformed",
                "error" => %{
                  "code" => -32_003,
                  "message" => "canonical memory facade is unavailable"

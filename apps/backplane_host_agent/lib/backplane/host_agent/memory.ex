@@ -10,6 +10,8 @@ defmodule Backplane.HostAgent.Memory do
 
   @default_agent_id "local"
   @default_scope "proj_local"
+  @overlay_cap 100
+  @overlay_query_limit @overlay_cap + 1
   @methods ~w(remember recall list forget stats slot_read slot_write slot_list facet_tag facet_query)
 
   @doc "List of local memory methods exposed by the host-agent router."
@@ -74,30 +76,9 @@ defmodule Backplane.HostAgent.Memory do
     config = memory_config(opts)
 
     with {:ok, scope} <- resolve_read_scope(store, args, config) do
-      sql = """
-      SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
-             memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
-             memory.agent_id
-      FROM memory_outbox AS outbox
-      INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-      WHERE outbox.state IN ('pending', 'inflight')
-        AND memory.sync_state != 'synced'
-        AND memory.scope = ?
-        AND NOT EXISTS (
-          SELECT 1
-          FROM memory_outbox AS newer
-          WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
-        )
-      ORDER BY outbox.seq ASC
-      """
-
-      case Store.query(store, sql, [scope]) do
-        {:ok, %Result{rows: rows}} ->
-          rows = Enum.filter(rows, &overlay_visible?(&1, args))
-          {:ok, overlay_from_rows(rows)}
-
-        {:error, reason} ->
-          storage_error(reason)
+      case Keyword.get(opts, :method) do
+        "stats" -> pending_overlay_stats(store, scope)
+        _method -> pending_overlay_rows(store, scope, args)
       end
     end
   end
@@ -362,7 +343,70 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
-  defp overlay_from_rows(rows) do
+  defp pending_overlay_rows(store, scope, args) do
+    sql = """
+    SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
+           memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
+           memory.agent_id
+    FROM memory_outbox AS outbox
+    INNER JOIN memories AS memory ON memory.id = outbox.memory_id
+    WHERE outbox.state IN ('pending', 'inflight')
+      AND memory.sync_state != 'synced'
+      AND memory.scope = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM memory_outbox AS newer
+        WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
+      )
+    ORDER BY outbox.seq DESC
+    LIMIT ?
+    """
+
+    case Store.query(store, sql, [scope, @overlay_query_limit]) do
+      {:ok, %Result{rows: rows}} ->
+        truncated? = length(rows) > @overlay_cap
+
+        visible_rows =
+          rows
+          |> Enum.take(@overlay_cap)
+          |> Enum.filter(&overlay_visible?(&1, args))
+
+        {:ok, overlay_from_rows(visible_rows, truncated?)}
+
+      {:error, reason} ->
+        storage_error(reason)
+    end
+  end
+
+  defp pending_overlay_stats(store, scope) do
+    sql = """
+    SELECT COUNT(*) AS count
+    FROM memory_outbox AS outbox
+    INNER JOIN memories AS memory ON memory.id = outbox.memory_id
+    WHERE outbox.state IN ('pending', 'inflight')
+      AND memory.sync_state != 'synced'
+      AND memory.scope = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM memory_outbox AS newer
+        WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
+      )
+    """
+
+    case Store.query(store, sql, [scope]) do
+      {:ok, %Result{rows: [%{"count" => count}]}} ->
+        {:ok,
+         %{
+           "pending_operations" => count,
+           "overlay_truncated" => count > @overlay_cap
+         }}
+
+      {:error, reason} ->
+        storage_error(reason)
+    end
+  end
+
+  defp overlay_from_rows(rows, truncated?) do
     {upserts, delete_ids} =
       Enum.reduce(rows, {[], []}, fn
         %{"op" => "remember"} = row, {upserts, delete_ids} ->
@@ -376,7 +420,8 @@ defmodule Backplane.HostAgent.Memory do
     %{
       "upserts" => Enum.reverse(upserts),
       "delete_ids" => Enum.reverse(delete_ids),
-      "pending_operations" => length(rows)
+      "pending_operations" => length(rows),
+      "overlay_truncated" => truncated?
     }
   end
 

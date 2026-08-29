@@ -32,7 +32,8 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   defp call_facade(method, args, ctx) do
     case facade(ctx).call(method, args, facade_context(ctx)) do
-      {:ok, _result} = ok -> ok
+      {:ok, %{} = result} -> {:ok, result}
+      {:ok, other} -> {:error, {:memory_facade_unavailable, {:unexpected_reply, {:ok, other}}}}
       {:error, _reason} = error -> error
       other -> {:error, {:memory_facade_unavailable, {:unexpected_reply, other}}}
     end

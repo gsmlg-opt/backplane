@@ -335,6 +335,56 @@ defmodule Backplane.HostAgent.MemoryTest do
              )
   end
 
+  test "pending overlay bounds real outbox content independently of caller limits", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    for index <- 1..102 do
+      assert {:ok, _result} =
+               Memory.remember(%{"content" => "bounded pending #{index}"}, opts)
+    end
+
+    assert {:ok,
+            %{
+              "upserts" => upserts,
+              "delete_ids" => [],
+              "pending_operations" => 100,
+              "overlay_truncated" => true
+            }} =
+             Memory.pending_overlay(
+               %{"limit" => 200},
+               Keyword.put(opts, :method, "list")
+             )
+
+    assert length(upserts) == 100
+    assert List.first(upserts)["content"] == "bounded pending 102"
+    assert List.last(upserts)["content"] == "bounded pending 3"
+  end
+
+  test "stats overlay counts pending operations without loading pending content", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    for index <- 1..102 do
+      assert {:ok, _result} =
+               Memory.remember(%{"content" => "private pending #{index}"}, opts)
+    end
+
+    assert {:ok,
+            %{
+              "pending_operations" => 102,
+              "overlay_truncated" => true
+            } = overlay} = Memory.pending_overlay(%{}, Keyword.put(opts, :method, "stats"))
+
+    refute Map.has_key?(overlay, "upserts")
+    refute Map.has_key?(overlay, "delete_ids")
+    refute inspect(overlay) =~ "private pending"
+  end
+
   test "recall merges local memories and facts with source and degraded quality", %{
     tmp_dir: tmp_dir
   } do
