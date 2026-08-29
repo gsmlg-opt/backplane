@@ -705,7 +705,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: no Admin UI changes, no `host_memory.v2`, no edge revision/cursor tables, no encryption implementation, no slot/facet namespace change, no projection-coalescing work, and no unrelated baseline cleanup.
 
-- [ ] **Step 5: Request final spec and quality review**
+- [x] **Step 5: Request final spec and quality review**
 
   Review the complete branch against:
 
