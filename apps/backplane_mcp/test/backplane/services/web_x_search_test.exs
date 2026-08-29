@@ -1,5 +1,5 @@
 defmodule Backplane.Services.WebXSearchTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.Services.Web
   alias Backplane.Settings

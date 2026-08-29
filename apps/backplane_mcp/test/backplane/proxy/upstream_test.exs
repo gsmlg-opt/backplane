@@ -1,5 +1,5 @@
 defmodule Backplane.Proxy.UpstreamTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.Proxy.{ClientPool, Upstream}
   alias Backplane.Registry.ToolRegistry

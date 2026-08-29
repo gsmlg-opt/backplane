@@ -332,6 +332,25 @@ defmodule Backplane.MCP.DispatchTest do
     assert message =~ "Unknown tool"
   end
 
+  test "passes the exact auth context to two-arity managed handlers" do
+    auth = %{
+      kind: :client_token,
+      client_id: "client-123",
+      scopes: ["fixture::*"],
+      subject: "subject-123",
+      principal_metadata: %{"host_id" => "host-123"}
+    }
+
+    assert {:ok, %{"content" => [%{"type" => "text", "text" => "authenticated"}]}} =
+             Dispatch.execute(
+               "tools/call",
+               %{"name" => "fixture::auth_context", "arguments" => %{"value" => "accepted"}},
+               %{context() | auth: auth}
+             )
+
+    assert_receive {:managed_auth, %{"value" => "accepted"}, ^auth}
+  end
+
   test "opens the legacy SSE response before executing a slow tool" do
     test_pid = self()
     handler_id = "dispatch-sse-order-#{System.unique_integer([:positive])}"
@@ -434,6 +453,20 @@ defmodule Backplane.MCP.DispatchTest do
           "properties" => %{"echo" => %{"type" => "string"}}
         },
         handler: fn arguments -> {:ok, %{"echo" => arguments["value"]}} end
+      },
+      %{
+        name: "fixture::auth_context",
+        description: "Receive the trusted auth context",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"value" => %{"type" => "string"}},
+          "required" => ["value"],
+          "additionalProperties" => false
+        },
+        handler: fn arguments, auth ->
+          send(test_pid, {:managed_auth, arguments, auth})
+          {:ok, "authenticated"}
+        end
       },
       %{
         name: "fixture::structured_false",

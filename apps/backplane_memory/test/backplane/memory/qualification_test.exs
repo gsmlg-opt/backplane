@@ -140,17 +140,23 @@ defmodule Backplane.Memory.Qualification.IngestTest do
     run_id = "qualification-ingest-#{System.unique_integer([:positive])}"
 
     assert {:ok, measurement} =
-             Runner.measure_ingest(run_id: run_id, event_count: 500, batch_size: 100)
+             Runner.measure_ingest(
+               run_id: run_id,
+               event_count: 2_000,
+               batch_size: 100,
+               warmup_event_count: 1_000,
+               max_concurrency: 5
+             )
 
-    assert measurement.accepted == 500
-    assert measurement.persisted == 500
+    assert measurement.accepted == 2_000
+    assert measurement.persisted == 2_000
     assert measurement.duplicate_effects == 0
     assert measurement.events_per_second >= 500
     assert measurement.batch_size == 100
-    assert measurement.batch_count == 5
+    assert measurement.batch_count == 20
     assert measurement.concurrency == 5
-    assert measurement.projection_jobs_durable == 500
-    assert measurement.projection_job_event_ids_unique == 500
+    assert measurement.projection_jobs_durable == 2_000
+    assert measurement.projection_job_event_ids_unique == 2_000
     assert measurement.measured_path =~ "Oban projection job commit"
   end
 
@@ -199,11 +205,15 @@ defmodule Backplane.Memory.Qualification.IngestTest do
 
   test "runs the complete bounded workload and returns a reproducible passing report" do
     assert {:ok, report} =
-             Runner.run(run_id: "qualification-report-#{System.unique_integer([:positive])}")
+             Runner.run(
+               run_id: "qualification-report-#{System.unique_integer([:positive])}",
+               ingest_max_concurrency: 5
+             )
 
     assert report.passed
     assert Enum.all?(report.gates, fn {_gate, passed?} -> passed? end)
     assert report.metrics.ingest.events_per_second >= 500
+    assert report.metrics.ingest.concurrency == 5
     assert report.metrics.projection.p95_lag_ms < 10_000
     assert report.metrics.consolidation.coverage >= 0.95
     assert report.metrics.outage.simulated_hours == 24

@@ -75,7 +75,7 @@ defmodule Backplane.Proxy.Upstreams do
     McpUpstream.changeset(upstream, attrs)
   end
 
-  @spec runtime_config(%McpUpstream{}) :: map()
+  @spec runtime_config(McpUpstream.t()) :: map()
   def runtime_config(%McpUpstream{} = upstream) do
     %{
       name: upstream.name,

@@ -1892,7 +1892,83 @@ defmodule Backplane.McpProtocol.ClientTest do
   end
 
   describe "tool output schema validation caching" do
+    @recursive_schema %{
+      "$defs" => %{
+        "node" => %{
+          "anyOf" => [
+            %{"type" => "null"},
+            %{"type" => "array", "items" => %{"$ref" => "#/$defs/node"}}
+          ]
+        }
+      },
+      "$ref" => "#/$defs/node"
+    }
+
     setup :initialized_client
+
+    test "keeps the client responsive while tool output validators compile", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      list_task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      list_request_id = get_request_id(client, "tools/list")
+
+      tools = [%{"name" => "recursive", "outputSchema" => @recursive_schema}]
+      send_response(client, tools_list_response(list_request_id, tools))
+
+      assert {:ok, %Response{result: %{"tools" => ^tools}}} = Task.await(list_task, 500)
+
+      %{tool_validator_task: %Task{pid: validator_pid}} = :sys.get_state(client)
+      assert Process.alive?(validator_pid)
+      validator_ref = Process.monitor(validator_pid)
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      ping_task = Task.async(fn -> Backplane.McpProtocol.Client.ping(client) end)
+      ping_request_id = get_request_id(client, "ping")
+      send_response(client, ping_response(ping_request_id))
+
+      assert :pong = Task.await(ping_task, 500)
+
+      assert_receive {:DOWN, ^validator_ref, :process, ^validator_pid, _reason}, 1_000
+      assert %{tool_validator_task: nil} = :sys.get_state(client)
+    end
+
+    test "bounds tool validator compilation after the client crashes", %{client: client} do
+      test_pid = self()
+
+      expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
+        send(test_pid, {:mcp_send, message})
+        :ok
+      end)
+
+      list_task = Task.async(fn -> Backplane.McpProtocol.Client.list_tools(client) end)
+      list_request_id = get_request_id(client, "tools/list")
+      tools = [%{"name" => "recursive", "outputSchema" => @recursive_schema}]
+      send_response(client, tools_list_response(list_request_id, tools))
+
+      assert {:ok, %Response{result: %{"tools" => ^tools}}} = Task.await(list_task, 500)
+
+      %{tool_validator_task: %Task{pid: validator_pid}} = :sys.get_state(client)
+      validator_ref = Process.monitor(validator_pid)
+      client_ref = Process.monitor(client)
+
+      on_exit(fn ->
+        if Process.alive?(validator_pid), do: Process.exit(validator_pid, :kill)
+      end)
+
+      Process.exit(client, :kill)
+
+      assert_receive {:DOWN, ^client_ref, :process, ^client, :killed}, 500
+      assert_receive {:DOWN, ^validator_ref, :process, ^validator_pid, _reason}, 1_000
+    end
 
     test "validates tool call output when structuredContent is present", %{client: client} do
       test_pid = self()

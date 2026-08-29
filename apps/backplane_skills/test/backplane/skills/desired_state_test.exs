@@ -1,5 +1,5 @@
 defmodule Backplane.Skills.DesiredStateTest do
-  use Backplane.DataCase, async: false
+  use BackplaneSkills.DataCase, async: false
 
   alias Backplane.Repo
   alias Backplane.Skills.{AgentManage, Assignments, DesiredState, Hosts, Skill}

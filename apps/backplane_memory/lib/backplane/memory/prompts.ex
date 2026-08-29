@@ -347,8 +347,6 @@ defmodule Backplane.Memory.Prompts do
     |> exact_summary_project(project)
   end
 
-  defp exact_summary_project(query, nil), do: query
-
   defp exact_summary_project(query, project) do
     where(
       query,
@@ -485,8 +483,7 @@ defmodule Backplane.Memory.Prompts do
       memory_partition? or
         Enum.any?(~w(source_session_id session_id), &MapSet.member?(columns, &1))
 
-    project_filterable? =
-      is_nil(project) or memory_partition? or MapSet.member?(columns, "project")
+    project_filterable? = memory_partition? or MapSet.member?(columns, "project")
 
     if (direct_partition? or memory_partition?) and session_filterable? and project_filterable? do
       {from_sql, identity_filters} =
@@ -506,7 +503,7 @@ defmodule Backplane.Memory.Prompts do
              {"memory.scope", partition.scope},
              {"memory.namespace", @namespace},
              {"memory.session_id", session_id},
-             if(project, do: {"memory.metadata->>'project'", project})
+             {"memory.metadata->>'project'", project}
            ]}
         end
 
@@ -568,8 +565,6 @@ defmodule Backplane.Memory.Prompts do
         nil
     end
   end
-
-  defp optional_capability_filter(_columns, _column, nil), do: nil
 
   defp optional_capability_filter(columns, column, value) do
     if MapSet.member?(columns, column), do: {"capability.#{column}", value}, else: nil
@@ -1176,15 +1171,12 @@ defmodule Backplane.Memory.Prompts do
   defp maybe_event_project(query, project), do: where(query, [e], e.project == ^project)
   defp maybe_event_session(query, nil), do: query
   defp maybe_event_session(query, session), do: where(query, [e], e.session_id == ^session)
-  defp maybe_memory_project(query, nil), do: query
 
   defp maybe_memory_project(query, project) do
     where(query, [m], fragment("?->>'project'", m.metadata) == ^project)
   end
 
-  defp maybe_summary_project(query, nil), do: query
   defp maybe_summary_project(query, project), do: where(query, [s], s.project == ^project)
-  defp maybe_action_project(query, nil), do: query
   defp maybe_action_project(query, project), do: where(query, [a], a.project == ^project)
 
   defp maybe_put(opts, _key, nil), do: opts

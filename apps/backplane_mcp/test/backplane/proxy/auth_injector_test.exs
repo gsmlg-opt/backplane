@@ -1,5 +1,5 @@
 defmodule Backplane.Proxy.AuthInjectorTest do
-  use Backplane.DataCase, async: true
+  use BackplaneMcp.DataCase, async: true
 
   alias Backplane.Proxy.AuthInjector
   alias Backplane.Settings.Credentials

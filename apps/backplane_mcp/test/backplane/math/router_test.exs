@@ -1,5 +1,5 @@
 defmodule Backplane.Math.RouterTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.Math.Config
   alias Backplane.Math.Router

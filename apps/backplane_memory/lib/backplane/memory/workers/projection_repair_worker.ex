@@ -66,7 +66,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
       case rebuild_and_audit(event, rebuild) do
         {:ok, result} -> maybe_enqueue_summary(event, result, enqueue_summary)
         {:error, reason} -> {:error, reason}
-        other -> {:error, {:unexpected_rebuild_result, other}}
       end
     else
       :ok

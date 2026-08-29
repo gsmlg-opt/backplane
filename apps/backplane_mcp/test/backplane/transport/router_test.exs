@@ -213,7 +213,7 @@ defmodule Backplane.Transport.McpPlugTest do
     end
 
     test "PAT-only protection preserves the compatibility response" do
-      Backplane.Fixtures.insert_client(token: "pat-only")
+      BackplaneMcp.Fixtures.insert_client(token: "pat-only")
 
       conn = endpoint_mcp_request("/mcp")
 

@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.QueryLogPrivacyTest do
-  use Backplane.DataCase, async: false
+  use Backplane.Memory.DataCase, async: false
 
   import ExUnit.CaptureLog
 

@@ -1,5 +1,5 @@
 defmodule Backplane.Proxy.ProtocolClientTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   alias Backplane.MCP.Info
   alias Backplane.McpProtocol.MCP.Error

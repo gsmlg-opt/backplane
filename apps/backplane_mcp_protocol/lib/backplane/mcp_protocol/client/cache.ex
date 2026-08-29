@@ -30,29 +30,58 @@ defmodule Backplane.McpProtocol.Client.Cache do
         ) :: :ok
   def put_tool_validators(client, tools, protocol_version)
       when is_binary(client) and is_list(tools) and is_binary(protocol_version) do
-    validator_builder =
-      if Protocol.modern?(protocol_version) do
-        &JSONSchemaConverter.validator_2020_12/1
-      else
-        &JSONSchemaConverter.validator/1
-      end
-
-    store_tool_validators(client, tools, validator_builder)
+    store_tool_validators(client, tools, validator_builder(protocol_version))
   end
 
-  defp store_tool_validators(client, tools, validator_builder) do
+  @doc false
+  @spec compile_tool_validators(
+          client_name :: String.t(),
+          tools :: list(map()),
+          protocol_version :: Protocol.version()
+        ) :: list({String.t(), JSONSchemaConverter.validator()})
+  def compile_tool_validators(client, tools, protocol_version)
+      when is_binary(client) and is_list(tools) and is_binary(protocol_version) do
+    build_tool_validators(client, tools, validator_builder(protocol_version))
+  end
+
+  @doc false
+  @spec replace_tool_validators(
+          client_name :: String.t(),
+          list({String.t(), JSONSchemaConverter.validator()})
+        ) :: :ok
+  def replace_tool_validators(client, validators)
+      when is_binary(client) and is_list(validators) do
     table = ensure_table(client)
     :ets.delete_all_objects(table)
-
-    tools
-    |> Enum.filter(& &1["outputSchema"])
-    |> Enum.flat_map(&fetch_tool_validator(client, &1, validator_builder))
-    |> then(&:ets.insert(table, &1))
-
+    :ets.insert(table, validators)
     :ok
   end
 
-  defp fetch_tool_validator(client, %{"outputSchema" => schema, "name" => name}, validator_builder) when is_map(schema) do
+  defp store_tool_validators(client, tools, validator_builder) do
+    validators = build_tool_validators(client, tools, validator_builder)
+    replace_tool_validators(client, validators)
+  end
+
+  defp build_tool_validators(client, tools, validator_builder) do
+    tools
+    |> Enum.filter(& &1["outputSchema"])
+    |> Enum.flat_map(&fetch_tool_validator(client, &1, validator_builder))
+  end
+
+  defp validator_builder(protocol_version) do
+    if Protocol.modern?(protocol_version) do
+      &JSONSchemaConverter.validator_2020_12/1
+    else
+      &JSONSchemaConverter.validator/1
+    end
+  end
+
+  defp fetch_tool_validator(
+         client,
+         %{"outputSchema" => schema, "name" => name},
+         validator_builder
+       )
+       when is_map(schema) do
     case validator_builder.(schema) do
       {:ok, validator} ->
         [{name, validator}]

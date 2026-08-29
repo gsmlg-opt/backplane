@@ -1,6 +1,7 @@
 defmodule Backplane.Memory.Recall.QueryPlan do
   @moduledoc "Typed, partition-complete input to the Recall V2 pipeline."
 
+  alias Backplane.Memory.Numeric
   alias Backplane.Memory.Privacy.Filter
 
   @channels [:fts, :vector, :graph]
@@ -268,9 +269,12 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     end)
   end
 
-  defp numeric(value) when is_integer(value), do: value / 1
-  defp numeric(value) when is_float(value) and value == value, do: value
-  defp numeric(_value), do: raise(ArgumentError)
+  defp numeric(value) do
+    case Numeric.to_float(value) do
+      {:ok, value} -> value
+      :error -> raise ArgumentError
+    end
+  end
 
   defp token_budget(value) when is_integer(value) and value in 1..100_000, do: {:ok, value}
   defp token_budget(_value), do: {:error, {:invalid, :token_budget}}

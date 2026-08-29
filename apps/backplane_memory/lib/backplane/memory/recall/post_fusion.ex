@@ -59,7 +59,7 @@ defmodule Backplane.Memory.Recall.PostFusion do
        when is_map(ranks) and is_map(scores) do
     rrf = scores[:rrf]
 
-    if is_number(rrf) and rrf >= 0 and finite?(rrf) and map_size(ranks) > 0 and
+    if is_number(rrf) and rrf >= 0 and map_size(ranks) > 0 and
          Enum.all?(ranks, fn {_channel, rank} -> is_integer(rank) and rank > 0 end) do
       rejection = lifecycle_rejection(candidate, now)
       multiplier = if rejection, do: 0.0, else: multiplier(candidate, now)
@@ -168,7 +168,4 @@ defmodule Backplane.Memory.Recall.PostFusion do
       {-trace.scores.final, best_rank, @kind_order[trace.candidate.kind], trace.candidate.id}
     end)
   end
-
-  defp finite?(value) when is_integer(value), do: true
-  defp finite?(value) when is_float(value), do: value == value
 end

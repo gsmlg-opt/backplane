@@ -1,7 +1,7 @@
 defmodule Backplane.Transport.ManagedPromptTest do
   use Backplane.ConnCase, async: false
 
-  alias Backplane.Fixtures
+  alias BackplaneMcp.Fixtures
   alias Backplane.Registry.{PromptCatalog, PromptRegistry}
   alias Backplane.Transport.McpHandler
 

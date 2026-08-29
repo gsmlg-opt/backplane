@@ -1,11 +1,11 @@
 defmodule Backplane.Tools.SkillTest do
-  use Backplane.DataCase, async: false
+  use BackplaneMcp.DataCase, async: false
 
   import Backplane.SkillArchiveCase
 
   alias Backplane.Skills
   alias Backplane.Skills.Registry
-  alias Backplane.Fixtures
+  alias BackplaneMcp.Fixtures
   alias Backplane.Tools.Skill, as: SkillTool
 
   @moduletag :tmp_dir

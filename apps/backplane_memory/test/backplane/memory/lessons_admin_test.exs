@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.LessonsAdminTest do
-  use Backplane.DataCase, async: true
+  use Backplane.Memory.DataCase, async: true
 
   alias Backplane.Memory.Lessons
 

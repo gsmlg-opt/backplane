@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.RouteLoaderTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{Provider, ProviderApi, RouteLoader}
   alias Backplane.Settings.Credentials

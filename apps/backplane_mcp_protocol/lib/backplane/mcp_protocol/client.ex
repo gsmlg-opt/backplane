@@ -119,6 +119,8 @@ defmodule Backplane.McpProtocol.Client do
   @cancellation_worker_timeout to_timeout(second: 1)
   @subscription_call_buffer to_timeout(second: 1)
   @subscription_cleanup_timeout 100
+  @tool_validator_compile_timeout 500
+  @tool_validator_supervisor Backplane.McpProtocol.Client.ValidatorSupervisor
 
   @type t :: GenServer.server()
 
@@ -1545,6 +1547,48 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
+  def handle_info(
+        {task_ref, {:ok, validators}},
+        %{tool_validator_task: %Task{ref: task_ref}} = state
+      )
+      when is_reference(task_ref) and is_list(validators) do
+    Process.demonitor(task_ref, [:flush])
+
+    client = state.client_info["name"]
+    Cache.replace_tool_validators(client, validators)
+
+    {:noreply, clear_tool_validator_task(state)}
+  end
+
+  def handle_info(
+        {task_ref, {:error, reason}},
+        %{tool_validator_task: %Task{ref: task_ref}} = state
+      )
+      when is_reference(task_ref) do
+    Process.demonitor(task_ref, [:flush])
+    client = state.client_info["name"]
+
+    Logging.client_event("schema_validation_disabled", %{
+      client: client,
+      reason: reason
+    })
+
+    {:noreply, clear_tool_validator_task(state)}
+  end
+
+  def handle_info(
+        {:DOWN, task_ref, :process, _pid, reason},
+        %{tool_validator_task: %Task{ref: task_ref}} = state
+      )
+      when is_reference(task_ref) do
+    Logging.client_event("schema_validation_disabled", %{
+      client: state.client_info["name"],
+      reason: reason
+    })
+
+    {:noreply, clear_tool_validator_task(state)}
+  end
+
   def handle_info({task_ref, resolution}, state) when is_reference(task_ref) do
     case find_request_by_task_ref(state, task_ref) do
       nil ->
@@ -1626,6 +1670,7 @@ defmodule Backplane.McpProtocol.Client do
     end
 
     Subscription.client_closing_all(reason)
+    stop_tool_validator_task(state)
     Catalog.cleanup(catalog_key(state))
     Cache.cleanup(state.client_info["name"])
 
@@ -2035,18 +2080,74 @@ defmodule Backplane.McpProtocol.Client do
     method = request.method
     from = request.from
 
-    if method == "tools/list" do
-      tools = response.result["tools"]
-      client = state.client_info["name"]
-      Cache.clear_tool_validators(client)
-      Cache.put_tool_validators(client, tools, state.protocol_version)
-    end
-
     if method == "ping",
       do: GenServer.reply(from, :pong),
       else: GenServer.reply(from, {:ok, response})
 
-    state
+    if method == "tools/list" do
+      refresh_tool_validators(state, response.result["tools"])
+    else
+      state
+    end
+  end
+
+  defp refresh_tool_validators(state, tools) do
+    state = stop_tool_validator_task(state)
+    client = state.client_info["name"]
+    Cache.clear_tool_validators(client)
+
+    task =
+      Task.Supervisor.async_nolink(@tool_validator_supervisor, fn ->
+        validator_task =
+          Task.async(fn ->
+            Cache.compile_tool_validators(client, tools, state.protocol_version)
+          end)
+
+        case Task.yield(validator_task, @tool_validator_compile_timeout) ||
+               Task.shutdown(validator_task, :brutal_kill) do
+          {:ok, validators} -> {:ok, validators}
+          {:exit, reason} -> {:error, reason}
+          nil -> {:error, :compile_timeout}
+        end
+      end)
+
+    %{state | tool_validator_task: task}
+  rescue
+    error ->
+      Logging.client_event("schema_validation_disabled", %{
+        client: state.client_info["name"],
+        reason: Exception.message(error)
+      })
+
+      clear_tool_validator_task(state)
+  catch
+    :exit, reason ->
+      Logging.client_event("schema_validation_disabled", %{
+        client: state.client_info["name"],
+        reason: reason
+      })
+
+      clear_tool_validator_task(state)
+  end
+
+  defp stop_tool_validator_task(%{tool_validator_task: %Task{} = task} = state) do
+    Process.demonitor(task.ref, [:flush])
+
+    if Process.alive?(task.pid) do
+      Task.Supervisor.terminate_child(@tool_validator_supervisor, task.pid)
+    end
+
+    clear_tool_validator_task(state)
+  rescue
+    _error -> clear_tool_validator_task(state)
+  catch
+    :exit, _reason -> clear_tool_validator_task(state)
+  end
+
+  defp stop_tool_validator_task(state), do: clear_tool_validator_task(state)
+
+  defp clear_tool_validator_task(state) do
+    %{state | tool_validator_task: nil}
   end
 
   defp log_success_response(request, id, elapsed_ms) do

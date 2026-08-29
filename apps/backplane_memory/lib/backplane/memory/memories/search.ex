@@ -13,6 +13,7 @@ defmodule Backplane.Memory.Memories.Search do
 
   alias Backplane.Memory.Embedding.Client
   alias Backplane.Memory.Memories.Memory, as: M
+  alias Backplane.Memory.Numeric
   alias Backplane.Memory.Privacy.Filter
   alias Pgvector.HalfVector
 
@@ -243,9 +244,11 @@ defmodule Backplane.Memory.Memories.Search do
     parsed =
       Enum.reduce_while(rows, {:ok, []}, fn
         %{token: token, score: score} = row, {:ok, acc}
-        when map_size(row) == 2 and is_integer(token) and is_number(score) and token >= 0 and
-               token < length(top_k) and score >= 0 and score <= 1 and score == score ->
-          {:cont, {:ok, [{token, score / 1} | acc]}}
+        when map_size(row) == 2 and is_integer(token) and token >= 0 and
+               token < length(top_k) ->
+          if Numeric.unit_interval?(score),
+            do: {:cont, {:ok, [{token, score / 1} | acc]}},
+            else: {:halt, :error}
 
         _row, _acc ->
           {:halt, :error}

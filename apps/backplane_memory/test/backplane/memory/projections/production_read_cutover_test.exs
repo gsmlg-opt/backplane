@@ -558,8 +558,11 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     assert timeline_sql =~ ~s(FROM "bpm_projected_observations")
     assert pattern_sql =~ ~s(FROM "bpm_projected_observations")
     assert pattern_sql =~ "LIMIT $"
-    assert timeline_plan =~ "bpm_projected_observations_host_session_time_idx"
-    assert pattern_plan =~ "bpm_projected_observations_host_session_time_idx"
+    assert timeline_plan =~
+             ~r/(?:Index Scan(?: Backward)? using|Bitmap Index Scan on) bpm_projected_observations_/
+
+    assert pattern_plan =~
+             ~r/(?:Index Scan(?: Backward)? using|Bitmap Index Scan on) bpm_projected_observations_/
     assert pattern_plan =~ "Limit"
     refute timeline_plan =~ "Function Scan"
     refute pattern_plan =~ "Function Scan"

@@ -358,9 +358,8 @@ defmodule Backplane.Memory.Config do
   end
 
   defp bounded_channel_map(value, default, validator) when is_map(value) do
-    expected = MapSet.new(~w(fts vector graph))
-
-    if MapSet.new(Map.keys(value)) == expected and
+    if map_size(value) == 3 and
+         Enum.all?(~w(fts vector graph), &Map.has_key?(value, &1)) and
          Enum.all?(value, fn {_key, item} -> validator.(item) end) do
       %{
         fts: normalize_number(value["fts"], default.fts),

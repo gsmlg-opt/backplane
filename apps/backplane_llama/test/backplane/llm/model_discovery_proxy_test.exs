@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ModelDiscoveryProxyTest do
-  use Backplane.DataCase, async: false
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{ModelDiscovery, Provider, ProviderApi, ProviderModel}
   alias Backplane.Settings.Credentials
