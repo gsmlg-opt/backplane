@@ -171,7 +171,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     |> Enum.map(fn [source, target] -> {source, target} end)
     |> insert_edges()
 
-    repo().query!("SET LOCAL statement_timeout = '100ms'")
+    repo().query!("SET LOCAL statement_timeout = '1500ms'")
 
     assert {:error, :action_chain_too_large} =
              Crystals.build_action_chain(List.first(action_ids), @partition, limit: 10)

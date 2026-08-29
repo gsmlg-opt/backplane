@@ -110,6 +110,9 @@ defmodule Backplane.Memory.GeneratedSkills do
       Logger.warning("Memory generated skill reconcile failed",
         reason: Exception.message(exception)
       )
+  catch
+    :exit, reason ->
+      Logger.warning("Memory generated skill reconcile failed", reason: inspect(reason))
   end
 
   defp reconcile_skill(spec, :ok, visible_tools) do
