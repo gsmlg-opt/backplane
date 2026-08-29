@@ -345,10 +345,21 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
-  defp pending_overlay_rows(store, scope, args, method, opts) do
+  defp pending_overlay_rows(store, scope, args, "list", opts) do
+    if Keyword.get(opts, :overlay_mode) == :offline do
+      pending_overlay_offline_list(store, scope, args)
+    else
+      pending_overlay_combined_rows(store, scope, args)
+    end
+  end
+
+  defp pending_overlay_rows(store, scope, args, _method, _opts) do
+    pending_overlay_combined_rows(store, scope, args)
+  end
+
+  defp pending_overlay_combined_rows(store, scope, args) do
     {remember_clauses, remember_params} = overlay_remember_filters(args)
     remember_filter = Enum.join(remember_clauses, " AND ")
-    {offset, offset_applied?} = overlay_offset(args, method, opts)
 
     sql = """
     SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
@@ -370,10 +381,9 @@ defmodule Backplane.HostAgent.Memory do
     )
     ORDER BY outbox.seq DESC
     LIMIT ?
-    OFFSET ?
     """
 
-    params = [scope] ++ remember_params ++ [@overlay_query_limit, offset]
+    params = [scope] ++ remember_params ++ [@overlay_query_limit]
 
     case Store.query(store, sql, params) do
       {:ok, %Result{rows: rows}} ->
@@ -384,30 +394,84 @@ defmodule Backplane.HostAgent.Memory do
           |> Enum.take(@overlay_cap)
           |> Enum.filter(&overlay_visible?(&1, args))
 
-        overlay =
-          visible_rows
-          |> overlay_from_rows(truncated?)
-          |> maybe_mark_offset_applied(offset_applied?)
-
-        {:ok, overlay}
+        {:ok, overlay_from_rows(visible_rows, truncated?)}
 
       {:error, reason} ->
         storage_error(reason)
     end
   end
 
-  defp overlay_offset(args, "list", opts) do
-    if Keyword.get(opts, :overlay_mode) == :offline do
-      {Reducer.offset(args), true}
+  defp pending_overlay_offline_list(store, scope, args) do
+    {remember_clauses, remember_params} = overlay_remember_filters(args)
+    remember_filter = Enum.join(remember_clauses, " AND ")
+
+    remember_sql = """
+    SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
+           memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
+           memory.agent_id
+    FROM memory_outbox AS outbox
+    INNER JOIN memories AS memory ON memory.id = outbox.memory_id
+    WHERE outbox.state IN ('pending', 'inflight')
+      AND memory.sync_state != 'synced'
+      AND memory.scope = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM memory_outbox AS newer
+        WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
+      )
+      AND outbox.op = 'remember'
+      AND #{remember_filter}
+    ORDER BY outbox.seq DESC
+    LIMIT ?
+    OFFSET ?
+    """
+
+    remember_params =
+      [scope] ++ remember_params ++ [@overlay_query_limit, Reducer.offset(args)]
+
+    with {:ok, %Result{rows: remember_rows}} <- Store.query(store, remember_sql, remember_params),
+         bounded_remembers =
+           remember_rows
+           |> Enum.take(@overlay_cap)
+           |> Enum.filter(&overlay_visible?(&1, args)),
+         remaining = @overlay_cap - length(bounded_remembers),
+         {:ok, %Result{rows: forget_rows}} <- pending_overlay_forget_rows(store, scope, remaining) do
+      truncated? =
+        length(remember_rows) > @overlay_cap or length(forget_rows) > remaining
+
+      overlay =
+        (bounded_remembers ++ Enum.take(forget_rows, remaining))
+        |> overlay_from_rows(truncated?)
+        |> maybe_mark_offset_applied(true)
+
+      {:ok, overlay}
     else
-      {0, false}
+      {:error, reason} -> storage_error(reason)
     end
   end
 
-  defp overlay_offset(_args, _method, _opts), do: {0, false}
+  defp pending_overlay_forget_rows(store, scope, remaining) do
+    sql = """
+    SELECT outbox.seq, 'forget' AS op, memory.id, memory.remote_id
+    FROM memory_outbox AS outbox
+    INNER JOIN memories AS memory ON memory.id = outbox.memory_id
+    WHERE outbox.state IN ('pending', 'inflight')
+      AND memory.sync_state != 'synced'
+      AND memory.scope = ?
+      AND outbox.op = 'forget'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM memory_outbox AS newer
+        WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
+      )
+    ORDER BY outbox.seq DESC
+    LIMIT ?
+    """
+
+    Store.query(store, sql, [scope, remaining + 1])
+  end
 
   defp maybe_mark_offset_applied(overlay, true), do: Map.put(overlay, :offset_applied, true)
-  defp maybe_mark_offset_applied(overlay, false), do: overlay
 
   defp overlay_remember_filters(args) do
     if unsupported_recall_facets?(args) do

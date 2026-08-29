@@ -439,6 +439,43 @@ defmodule Backplane.HostAgent.MemoryTest do
              )
   end
 
+  test "offline list forget metadata does not consume provisional item offsets", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => forgotten_id}} =
+             Memory.remember(%{"content" => "pending A"}, opts)
+
+    assert {:ok, %{"id" => remaining_id}} =
+             Memory.remember(%{"content" => "pending B"}, opts)
+
+    assert {:ok, _result} = Memory.forget(%{"id" => forgotten_id}, opts)
+
+    context = %{
+      agent_id: "agent_1",
+      remote_adapter: RemoteDisconnected,
+      local_adapter: Memory,
+      store: store,
+      config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
+    }
+
+    assert {:ok,
+            %{
+              "items" => [%{"id" => ^remaining_id}],
+              "delete_ids" => [^forgotten_id],
+              "overlay_truncated" => false
+            }} = MemoryFacade.call("list", %{"offset" => 0, "limit" => 1}, context)
+
+    assert {:ok,
+            %{
+              "items" => [],
+              "delete_ids" => [^forgotten_id],
+              "overlay_truncated" => false
+            }} = MemoryFacade.call("list", %{"offset" => 1, "limit" => 1}, context)
+  end
+
   test "stats overlay counts pending operations without loading pending content", %{
     tmp_dir: tmp_dir
   } do
