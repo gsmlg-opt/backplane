@@ -72,7 +72,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     case remote_adapter.call(method, args, remote_opts(context)) do
       {:ok, %{} = canonical} ->
-        with {:ok, %{} = overlay} <- pending_overlay(method, args, context) do
+        with {:ok, %{} = overlay} <- pending_overlay(method, args, context, :online) do
           {:ok, online_result(method, canonical, overlay, args)}
         end
 
@@ -81,7 +81,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
       {:error, reason} = error ->
         if transport_error?(reason) do
-          with {:ok, %{} = overlay} <- pending_overlay(method, args, context) do
+          with {:ok, %{} = overlay} <- pending_overlay(method, args, context, :offline) do
             {:ok, offline_result(method, overlay, args)}
           end
         else
@@ -93,10 +93,11 @@ defmodule Backplane.HostAgent.MemoryFacade do
     end
   end
 
-  defp pending_overlay(method, args, context) do
+  defp pending_overlay(method, args, context, mode) do
     local_adapter = Map.get(context, :local_adapter, Memory)
+    opts = local_opts(context) |> Keyword.put(:method, method) |> Keyword.put(:overlay_mode, mode)
 
-    case local_adapter.pending_overlay(args, Keyword.put(local_opts(context), :method, method)) do
+    case local_adapter.pending_overlay(args, opts) do
       {:ok, %{} = overlay} -> bound_overlay(overlay)
       {:ok, other} -> {:error, {:local_protocol_error, {:unexpected_reply, other}}}
       {:error, _reason} = error -> error
@@ -126,9 +127,16 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp offline_result(method, overlay, args) do
-    upserts = offline_results(Map.get(overlay, "upserts", []), method, args)
+    upserts =
+      offline_results(
+        Map.get(overlay, "upserts", []),
+        method,
+        args,
+        Map.get(overlay, :offset_applied, false)
+      )
 
     overlay
+    |> Map.delete(:offset_applied)
     |> normalize_offline_result(method, upserts)
     |> Map.merge(%{
       "mode" => "offline",
@@ -190,7 +198,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
         identity in delete_ids or identity in canonical_ids
       end)
 
-    merged = offline_results(provisional_results ++ canonical_results, "recall", args)
+    merged = offline_results(provisional_results ++ canonical_results, "recall", args, false)
     Map.put(canonical, "results", merged)
   end
 
@@ -217,10 +225,11 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> Map.put("provisional_results", provisional_results)
   end
 
-  defp offline_results(results, "recall", args), do: Enum.take(results, Reducer.limit(args))
+  defp offline_results(results, "recall", args, _offset_applied?),
+    do: Enum.take(results, Reducer.limit(args))
 
-  defp offline_results(results, "list", args) do
-    offset = nonnegative_integer(args, "offset", 0)
+  defp offline_results(results, "list", args, offset_applied?) do
+    offset = if offset_applied?, do: 0, else: nonnegative_integer(args, "offset", 0)
     limit = nonnegative_integer(args, "limit", 50)
 
     results
@@ -228,7 +237,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> Enum.take(limit)
   end
 
-  defp offline_results(results, _method, _args), do: results
+  defp offline_results(results, _method, _args, _offset_applied?), do: results
 
   defp nonnegative_integer(args, key, default) do
     case Reducer.value(args, key, default) do

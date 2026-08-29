@@ -73,8 +73,9 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
   end
 
   defmodule PendingOnly do
-    def pending_overlay(_args, _opts) do
+    def pending_overlay(_args, opts) do
       send(self(), :pending_overlay)
+      send(self(), {:pending_overlay_opts, opts})
 
       {:ok,
        %{
@@ -278,6 +279,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert_received {:pending_overlay, %{"query" => "canonical"}, local_opts}
     assert local_opts[:agent_id] == "codex"
     assert local_opts[:method] == "recall"
+    assert local_opts[:overlay_mode] == :online
     refute_received :unexpected_local_recall
     refute_received :unexpected_local_facts
   end
@@ -454,6 +456,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
     assert_received {:pending_overlay, %{}, opts}
     assert opts[:method] == "stats"
+    assert opts[:overlay_mode] == :online
   end
 
   test "non-empty pending state decorates an online result as read-your-writes" do
@@ -909,6 +912,8 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
              )
 
     assert_received :pending_overlay
+    assert_received {:pending_overlay_opts, opts}
+    assert opts[:overlay_mode] == :offline
     refute_received :unexpected_local_recall
     refute_received :unexpected_local_facts
   end

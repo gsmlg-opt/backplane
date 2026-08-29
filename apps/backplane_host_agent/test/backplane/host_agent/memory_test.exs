@@ -1,11 +1,15 @@
 defmodule Backplane.HostAgent.MemoryTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory
+  alias Backplane.HostAgent.{Memory, MemoryFacade}
   alias Backplane.HostAgent.Memory.{Migrator, Reducer, Store}
   alias Turso.Result
 
   @moduletag :tmp_dir
+
+  defmodule RemoteDisconnected do
+    def call(_method, _args, _opts), do: {:error, :not_connected}
+  end
 
   test "remember inserts one local row and one outbox row, then deduplicates", %{
     tmp_dir: tmp_dir
@@ -361,6 +365,78 @@ defmodule Backplane.HostAgent.MemoryTest do
     assert length(upserts) == 100
     assert List.first(upserts)["content"] == "bounded pending 102"
     assert List.last(upserts)["content"] == "bounded pending 3"
+  end
+
+  test "pending overlay filters remembers before applying the hard cap", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => expected_id}} =
+             Memory.remember(
+               %{"content" => "older needle", "tags" => ["ops"]},
+               opts
+             )
+
+    for index <- 1..101 do
+      assert {:ok, _result} =
+               Memory.remember(
+                 %{"content" => "newer unrelated #{index}", "tags" => ["ui"]},
+                 opts
+               )
+    end
+
+    assert {:ok,
+            %{
+              "upserts" => [%{"id" => ^expected_id}],
+              "delete_ids" => [],
+              "pending_operations" => 1,
+              "overlay_truncated" => false
+            }} =
+             Memory.pending_overlay(
+               %{
+                 "q" => "needle",
+                 "type" => "episodic",
+                 "agent_id" => "agent_1",
+                 "tag" => "ops"
+               },
+               Keyword.put(opts, :method, "list")
+             )
+  end
+
+  test "offline list pages the filtered provisional set beyond offset 100 exactly once", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    for index <- 1..105 do
+      assert {:ok, _result} =
+               Memory.remember(
+                 %{"content" => "paged match #{index}", "tags" => ["ops"]},
+                 opts
+               )
+    end
+
+    assert {:ok,
+            %{
+              "items" => [
+                %{"content" => "paged match 5"},
+                %{"content" => "paged match 4"}
+              ],
+              "pending_operations" => 5,
+              "overlay_truncated" => false
+            }} =
+             MemoryFacade.call(
+               "list",
+               %{"q" => "paged match", "tag" => "ops", "offset" => 100, "limit" => 2},
+               %{
+                 agent_id: "agent_1",
+                 remote_adapter: RemoteDisconnected,
+                 local_adapter: Memory,
+                 store: store,
+                 config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
+               }
+             )
   end
 
   test "stats overlay counts pending operations without loading pending content", %{

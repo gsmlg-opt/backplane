@@ -76,9 +76,11 @@ defmodule Backplane.HostAgent.Memory do
     config = memory_config(opts)
 
     with {:ok, scope} <- resolve_read_scope(store, args, config) do
-      case Keyword.get(opts, :method) do
+      method = Keyword.get(opts, :method)
+
+      case method do
         "stats" -> pending_overlay_stats(store, scope)
-        _method -> pending_overlay_rows(store, scope, args)
+        _method -> pending_overlay_rows(store, scope, args, method, opts)
       end
     end
   end
@@ -343,7 +345,11 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
-  defp pending_overlay_rows(store, scope, args) do
+  defp pending_overlay_rows(store, scope, args, method, opts) do
+    {remember_clauses, remember_params} = overlay_remember_filters(args)
+    remember_filter = Enum.join(remember_clauses, " AND ")
+    {offset, offset_applied?} = overlay_offset(args, method, opts)
+
     sql = """
     SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
            memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
@@ -358,11 +364,18 @@ defmodule Backplane.HostAgent.Memory do
         FROM memory_outbox AS newer
         WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
       )
+      AND (
+        outbox.op = 'forget'
+        OR (outbox.op = 'remember' AND #{remember_filter})
+    )
     ORDER BY outbox.seq DESC
     LIMIT ?
+    OFFSET ?
     """
 
-    case Store.query(store, sql, [scope, @overlay_query_limit]) do
+    params = [scope] ++ remember_params ++ [@overlay_query_limit, offset]
+
+    case Store.query(store, sql, params) do
       {:ok, %Result{rows: rows}} ->
         truncated? = length(rows) > @overlay_cap
 
@@ -371,10 +384,55 @@ defmodule Backplane.HostAgent.Memory do
           |> Enum.take(@overlay_cap)
           |> Enum.filter(&overlay_visible?(&1, args))
 
-        {:ok, overlay_from_rows(visible_rows, truncated?)}
+        overlay =
+          visible_rows
+          |> overlay_from_rows(truncated?)
+          |> maybe_mark_offset_applied(offset_applied?)
+
+        {:ok, overlay}
 
       {:error, reason} ->
         storage_error(reason)
+    end
+  end
+
+  defp overlay_offset(args, "list", opts) do
+    if Keyword.get(opts, :overlay_mode) == :offline do
+      {Reducer.offset(args), true}
+    else
+      {0, false}
+    end
+  end
+
+  defp overlay_offset(_args, _method, _opts), do: {0, false}
+
+  defp maybe_mark_offset_applied(overlay, true), do: Map.put(overlay, :offset_applied, true)
+  defp maybe_mark_offset_applied(overlay, false), do: overlay
+
+  defp overlay_remember_filters(args) do
+    if unsupported_recall_facets?(args) do
+      {["0 = 1"], []}
+    else
+      query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
+      memory_type = Reducer.optional_string(args, "type")
+      agent_id = Reducer.optional_string(args, "agent_id")
+      tag = Reducer.optional_string(args, "tag")
+
+      {[], []}
+      |> add_optional_clause(query, "lower(memory.content) LIKE ? ESCAPE '\\'", fn value ->
+        Reducer.like_pattern(value)
+      end)
+      |> add_optional_clause(memory_type, "memory.memory_type = ?", & &1)
+      |> add_optional_clause(agent_id, "memory.agent_id = ?", & &1)
+      |> add_optional_clause(
+        tag,
+        "EXISTS (SELECT 1 FROM json_each(COALESCE(memory.tags, '[]')) WHERE value = ?)",
+        & &1
+      )
+      |> then(fn
+        {[], []} -> {["1 = 1"], []}
+        filters -> filters
+      end)
     end
   end
 
