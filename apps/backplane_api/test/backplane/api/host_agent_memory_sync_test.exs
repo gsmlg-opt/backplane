@@ -7,6 +7,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   alias Backplane.Skills.Hosts
   alias Backplane.Api.HostAgentMemorySync
   alias Backplane.Api.HostMemoryRevocation
+  alias Backplane.Memory.Audit
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
@@ -276,14 +277,59 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert {:ok, %{canonical_id: ^canonical_id}} =
              HostAgentMemorySync.apply_sync_item(host, forget)
 
-    assert {:ok, %{canonical_id: ^canonical_id}} =
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id}} =
              HostAgentMemorySync.apply_sync_item(host, forget)
 
-    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id}} =
+    assert {:error, :validation, :mapping_revoked} =
              HostAgentMemorySync.apply_sync_item(
                host,
                remember_item("local_b", "scope:binding", content)
              )
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               "id" => "local_b",
+               "op" => "forget",
+               "remote_id" => canonical_id,
+               "scope" => "scope:binding"
+             })
+
+    assert 2 == Repo.aggregate(HostMemoryRevocation, :count)
+
+    assert ["local_a", "local_b"] ==
+             HostMemoryRevocation
+             |> order_by([revocation], asc: revocation.local_id)
+             |> select([revocation], revocation.local_id)
+             |> Repo.all()
+  end
+
+  test "forget rejects malformed supplied remote ids but accepts explicit nil" do
+    scope = "scope:remote-id-shape"
+    host = create_host!("remote-id-shape", scope)
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_remote_shape", scope, "remote id shape")
+             )
+
+    forget = %{"id" => "local_remote_shape", "op" => "forget", "scope" => scope}
+
+    for malformed <- [123, "", "   ", "not-a-uuid", %{"uuid" => canonical_id}] do
+      assert {:error, :validation, "remote_id must be a UUID"} =
+               HostAgentMemorySync.apply_sync_item(
+                 host,
+                 Map.put(forget, "remote_id", malformed)
+               )
+
+      assert %MemorySchema{deleted_at: nil, lifecycle_state: "active"} =
+               Repo.get!(MemorySchema, canonical_id)
+
+      assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
+    end
+
+    assert {:ok, %{status: :ok, canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(host, Map.put(forget, "remote_id", nil))
   end
 
   test "reloads the current registered scope instead of trusting a stale host struct" do
@@ -408,6 +454,94 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
              Repo.get!(MemorySchema, canonical_id)
 
     assert 0 == Repo.aggregate(HostMemoryRevocation, :count)
+  end
+
+  test "conflicting alias revocation rolls back the tombstone and prior alias revocations" do
+    scope = "scope:revocation-conflict"
+    host = create_host!("revocation-conflict", scope)
+    content = "requested memory"
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_a", scope, content)
+             )
+
+    assert {:ok, %{canonical_id: ^canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_b", scope, content)
+             )
+
+    foreign = insert_memory!(host, scope, "conflicting memory", memory_type: "episodic")
+
+    assert {:ok, conflict} =
+             %HostMemoryRevocation{}
+             |> HostMemoryRevocation.changeset(%{
+               host_id: host.id,
+               local_id: "local_b",
+               memory_id: foreign.id,
+               scope: scope,
+               content_hash: foreign.content_hash
+             })
+             |> Repo.insert()
+
+    assert {:error, :validation, :revocation_conflict} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               "id" => "local_a",
+               "op" => "forget",
+               "remote_id" => canonical_id,
+               "scope" => scope
+             })
+
+    assert %MemorySchema{deleted_at: nil, lifecycle_state: "active"} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert [%HostMemoryRevocation{id: conflict_id, memory_id: foreign_id}] =
+             Repo.all(HostMemoryRevocation)
+
+    assert conflict_id == conflict.id
+    assert foreign_id == foreign.id
+
+    refute Repo.exists?(
+             from(revocation in HostMemoryRevocation,
+               where: revocation.memory_id == ^canonical_id
+             )
+           )
+  end
+
+  test "concurrent same-local forget has one winner and deterministic duplicates" do
+    scope = "scope:concurrent-forget"
+    host = create_host!("concurrent-forget", scope)
+
+    assert {:ok, %{canonical_id: canonical_id}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("local_concurrent_forget", scope, "concurrent forget")
+             )
+
+    forget = %{"id" => "local_concurrent_forget", "op" => "forget", "scope" => scope}
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn _ -> HostAgentMemorySync.apply_sync_item(host, forget) end,
+        max_concurrency: 8,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert 1 == Enum.count(results, &match?({:ok, %{status: :ok}}, &1))
+    assert 7 == Enum.count(results, &match?({:ok, %{status: :duplicate}}, &1))
+
+    assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
+             Repo.get!(MemorySchema, canonical_id)
+
+    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
+
+    assert 1 ==
+             Audit.list_for_target(canonical_id)
+             |> Enum.count(&(&1.operation == "forget"))
   end
 
   test "host forget remains a soft tombstone when global hard delete is enabled" do

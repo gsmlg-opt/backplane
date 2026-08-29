@@ -191,9 +191,35 @@ defmodule Backplane.Api.HostAgentMemorySync do
     }
 
     with :ok <- Memories.tombstone(mapping.memory.id, partition),
-         {:ok, _revocation} <- revoke_mapping(host, mapping) do
+         :ok <- revoke_canonical_mappings(host, mapping) do
       {:ok, :ok}
     end
+  end
+
+  defp revoke_canonical_mappings(host, mapping) do
+    host
+    |> canonical_mappings(mapping)
+    |> Enum.reduce_while(:ok, fn canonical_mapping, :ok ->
+      case revoke_mapping(host, canonical_mapping) do
+        {:ok, _revocation} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp canonical_mappings(host, mapping) do
+    request_mappings =
+      RememberRequest
+      |> where([request], request.idempotency_scope == ^host_request_scope(host.id))
+      |> where([request], request.memory_id == ^mapping.memory.id)
+      |> order_by([request], asc: request.idempotency_key, asc: request.id)
+      |> Repo.all()
+      |> Enum.map(fn request ->
+        %{memory: mapping.memory, request: request, local_id: request.idempotency_key}
+      end)
+
+    (request_mappings ++ [mapping])
+    |> Enum.uniq_by(& &1.local_id)
   end
 
   defp resolve_forget_mapping(host, item) do
@@ -349,15 +375,22 @@ defmodule Backplane.Api.HostAgentMemorySync do
   defp reload_host(_host), do: {:error, "host is not registered"}
 
   defp validate_remote_id(item, memory_id) do
-    case optional_binary(item, "remote_id") do
-      nil ->
+    case Map.fetch(item, "remote_id") do
+      :error ->
         :ok
 
-      remote_id ->
+      {:ok, nil} ->
+        :ok
+
+      {:ok, remote_id} when is_binary(remote_id) ->
         case Ecto.UUID.cast(remote_id) do
           {:ok, ^memory_id} -> :ok
-          _ -> {:error, "remote_id does not match local mapping"}
+          {:ok, _other_id} -> {:error, "remote_id does not match local mapping"}
+          :error -> {:error, "remote_id must be a UUID"}
         end
+
+      {:ok, _malformed} ->
+        {:error, "remote_id must be a UUID"}
     end
   end
 
@@ -386,8 +419,59 @@ defmodule Backplane.Api.HostAgentMemorySync do
       content_hash: mapping.memory.content_hash
     }
 
-    Repo.insert(HostMemoryRevocation.changeset(%HostMemoryRevocation{}, attrs),
-      on_conflict: :nothing
+    changeset = HostMemoryRevocation.changeset(%HostMemoryRevocation{}, attrs)
+
+    case Repo.insert(changeset, mode: :savepoint) do
+      {:ok, revocation} ->
+        {:ok, revocation}
+
+      {:error, failed_changeset} ->
+        reconcile_revocation_conflict(failed_changeset, attrs)
+    end
+  end
+
+  defp reconcile_revocation_conflict(changeset, attrs) do
+    if unique_constraint_error?(changeset) do
+      case existing_revocations(attrs) do
+        [revocation] ->
+          if revocation_matches?(revocation, attrs),
+            do: {:ok, revocation},
+            else: {:error, :revocation_conflict}
+
+        _mismatch ->
+          {:error, :revocation_conflict}
+      end
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp unique_constraint_error?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn {_field, {_message, metadata}} ->
+      metadata[:constraint] == :unique
+    end)
+  end
+
+  defp existing_revocations(attrs) do
+    query =
+      from(revocation in HostMemoryRevocation,
+        where: revocation.host_id == ^attrs.host_id and revocation.local_id == ^attrs.local_id
+      )
+
+    query =
+      if attrs.source_request_id do
+        or_where(query, [revocation], revocation.source_request_id == ^attrs.source_request_id)
+      else
+        query
+      end
+
+    Repo.all(query)
+  end
+
+  defp revocation_matches?(revocation, attrs) do
+    Enum.all?(
+      [:host_id, :local_id, :memory_id, :source_request_id, :scope, :content_hash],
+      &(Map.fetch!(revocation, &1) == Map.fetch!(attrs, &1))
     )
   end
 
