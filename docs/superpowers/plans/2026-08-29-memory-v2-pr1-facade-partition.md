@@ -40,7 +40,7 @@ The selected module has one external seam, plain injected modules for tests, and
 - Modify: `apps/backplane_host_agent/lib/backplane/host_agent/memory_proxy.ex`
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_proxy_test.exs`
 
-- [ ] **Step 1: Write RED tests for canonical remote recall**
+- [x] **Step 1: Write RED tests for canonical remote recall**
 
   Add plain fake adapters and assert the wished-for interface:
 
@@ -85,7 +85,7 @@ The selected module has one external seam, plain injected modules for tests, and
   end
   ```
 
-- [ ] **Step 2: Run the facade test and verify RED**
+- [x] **Step 2: Run the facade test and verify RED**
 
   Run:
 
@@ -95,7 +95,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: compilation failure because `Backplane.HostAgent.MemoryFacade` does not exist.
 
-- [ ] **Step 3: Write RED tests for the strict fallback allowlist**
+- [x] **Step 3: Write RED tests for the strict fallback allowlist**
 
   Define deterministic fake adapters:
 
@@ -134,7 +134,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Write separate tests for `RemoteNotConnected`, `RemoteTimeout`, `RemoteUnauthorized`, and `RemoteInvalid`. Add named fakes for `:econnrefused`, `{:socket_closed, :normal}`, `"partition_mismatch"`, and `"memory not found"`. Transport cases must return `mode=offline`, `authority=provisional`, `consistency=provisional_only`, `history_available=false`, and only the pending upsert. Canonical-error cases must prove `:pending_overlay` was not received.
 
-- [ ] **Step 4: Implement the minimal deep facade**
+- [x] **Step 4: Implement the minimal deep facade**
 
   Create one public interface and private routing policy:
 
@@ -164,7 +164,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Production adapters default to `MemoryProxy` and `Memory`. Adapter overrides live only in the context passed by tests. Do not create a GenServer, ETS table, behaviour, public policy function, or result struct.
 
-- [ ] **Step 5: Add explicit consistency decoration**
+- [x] **Step 5: Add explicit consistency decoration**
 
   Use exactly these JSON keys:
 
@@ -184,7 +184,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Preserve all canonical Recall V2 fields and add `"hits"` as an alias of normalized `"results"`. For list, add `"items"` as the compatibility alias. Do not discard `recall_run_id`, channel status, token counts, or provenance. Online results set `history_available=true`; outage results set `as_of`, `partition_revision`, and `last_sync_age_seconds` to `nil` and `history_available=false`.
 
-- [ ] **Step 6: Let facade reads omit path-agent filtering remotely**
+- [x] **Step 6: Let facade reads omit path-agent filtering remotely**
 
   Add an opt-in `inject_agent_id: false` option to `MemoryProxy.call/3` and prove the payload omits `agent_id` for facade reads while existing direct callers retain the current default:
 
@@ -197,7 +197,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   `MemoryFacade` passes `inject_agent_id: false` for `recall`, `list`, and `stats`. Local `remember` continues receiving the path agent through local options.
 
-- [ ] **Step 7: Run focused facade/proxy tests and verify GREEN**
+- [x] **Step 7: Run focused facade/proxy tests and verify GREEN**
 
   Run:
 
@@ -209,7 +209,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures.
 
-- [ ] **Step 8: Commit the facade seam**
+- [x] **Step 8: Commit the facade seam**
 
   ```bash
   git add \
@@ -228,7 +228,7 @@ The selected module has one external seam, plain injected modules for tests, and
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_test.exs`
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_facade_test.exs`
 
-- [ ] **Step 1: Write RED store tests for pending overlay state**
+- [x] **Step 1: Write RED store tests for pending overlay state**
 
   Use the real test Turso store to assert:
 
@@ -249,7 +249,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Add separate tests proving a latest pending `forget` appears in `delete_ids`, `remote_id` is preferred when present, `done` outbox rows disappear, `failed` rows are not presented as pending, and scope/query filtering is enforced.
 
-- [ ] **Step 2: Run the real-store tests and verify RED**
+- [x] **Step 2: Run the real-store tests and verify RED**
 
   Run:
 
@@ -259,7 +259,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: undefined `Memory.pending_overlay/2` or assertion failure.
 
-- [ ] **Step 3: Implement one latest-operation query per memory**
+- [x] **Step 3: Implement one latest-operation query per memory**
 
   Add `Memory.pending_overlay/2`. Select only latest outbox rows in `pending` or `inflight` state, join their memory row, and return:
 
@@ -273,7 +273,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Never merge `synced` memories, `done` rows, `failed` rows, or `facts` into the provisional overlay. Do not use content hash as canonical identity.
 
-- [ ] **Step 4: Write RED facade merge tests**
+- [x] **Step 4: Write RED facade merge tests**
 
   Prove:
 
@@ -283,7 +283,7 @@ The selected module has one external seam, plain injected modules for tests, and
   - requested recall limit is reapplied after overlay;
   - overlay read failure fails the canonical read rather than falsely claiming canonical consistency.
 
-- [ ] **Step 5: Implement minimal overlay merge**
+- [x] **Step 5: Implement minimal overlay merge**
 
   Merge by canonical `remote_id` when present and local ID otherwise. Pending upserts are marked:
 
@@ -299,7 +299,9 @@ The selected module has one external seam, plain injected modules for tests, and
 
   A non-empty overlay changes online consistency to `read_your_writes` and authority to `canonical_with_provisional`. During a transport outage, return only the same pending overlay with `consistency=provisional_only`, `authority=provisional`, and `history_available=false`; do not invoke or expose legacy synced memories or facts.
 
-- [ ] **Step 6: Run host-agent Memory tests and verify GREEN**
+  For online `list`, preserve Backplane's canonical `limit`/`offset` page in `results`/`items` (minus pending-forget suppressions) and expose filtered pending remembers separately as unpaginated `provisional_results`. Exact merged offset pagination cannot be reconstructed from one remote page without a second canonical read. Offline `list` paginates the provisional-only set locally.
+
+- [x] **Step 6: Run host-agent Memory tests and verify GREEN**
 
   Run:
 
@@ -312,7 +314,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures.
 
-- [ ] **Step 7: Commit provisional overlay support**
+- [x] **Step 7: Commit provisional overlay support**
 
   ```bash
   git add \
@@ -330,11 +332,11 @@ The selected module has one external seam, plain injected modules for tests, and
 - Modify: `apps/backplane_host_agent/lib/backplane/host_agent/memory_router.ex`
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_router_test.exs`
 
-- [ ] **Step 1: Write RED router tests for remote-first recall**
+- [x] **Step 1: Write RED router tests for remote-first recall**
 
   Configure a fake facade through the service call context and assert both direct HTTP and MCP `memory::recall` delegate to it rather than calling local `Memory.recall/2`. Assert canonical metadata and `hits` survive JSON encoding.
 
-- [ ] **Step 2: Write RED tool-discovery and unknown-memory dispatch tests**
+- [x] **Step 2: Write RED tool-discovery and unknown-memory dispatch tests**
 
   Assert:
 
@@ -345,7 +347,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Calling Hub-only `memory::semantic_search` must reach `HubProxy.call_tool/2`. Exact local tool names remain single entries; this task does not rename slots/facets or let Hub duplicates replace them.
 
-- [ ] **Step 3: Run router tests and verify RED**
+- [x] **Step 3: Run router tests and verify RED**
 
   Run:
 
@@ -356,7 +358,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: recall still uses local memory, Hub memory tools are filtered by prefix, and unknown memory calls return local unknown-method errors.
 
-- [ ] **Step 4: Delegate only core methods to the facade**
+- [x] **Step 4: Delegate only core methods to the facade**
 
   In `Services.Memory.call/3`:
 
@@ -369,11 +371,11 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Keep slot/facet methods and replay import on their current handlers.
 
-- [ ] **Step 5: Merge Hub discovery by exact name, not prefix**
+- [x] **Step 5: Merge Hub discovery by exact name, not prefix**
 
   Retain local tools and append only Hub tools whose exact names are absent locally. Do not reject all `memory::*` tools. When a resolved local service returns `{:unknown_method, _}` for an MCP call, forward the original full tool name to HubProxy.
 
-- [ ] **Step 6: Run router and host-agent tests and verify GREEN**
+- [x] **Step 6: Run router and host-agent tests and verify GREEN**
 
   Run:
 
@@ -383,7 +385,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures.
 
-- [ ] **Step 7: Commit router integration**
+- [x] **Step 7: Commit router integration**
 
   ```bash
   git add \
@@ -400,10 +402,11 @@ The selected module has one external seam, plain injected modules for tests, and
 - Modify: `apps/backplane_api/test/backplane/api/channels/host_agent_channel_test.exs`
 - Modify: `apps/backplane_memory/lib/backplane/memory/ingest.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/ingest/upcaster/v1.ex`
+- Modify: `apps/backplane_memory/lib/backplane/memory/qualification/runner.ex` (approved scope expansion after fail-closed caller audit)
 - Modify: `apps/backplane_memory/test/backplane/memory/ingest_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/ingest/upcaster_v1_test.exs`
 
-- [ ] **Step 1: Write RED Channel tests for trusted partition context**
+- [x] **Step 1: Write RED Channel tests for trusted partition context**
 
   Extend the existing `host_event_ingest` assertion:
 
@@ -424,7 +427,7 @@ The selected module has one external seam, plain injected modules for tests, and
   assert scope == host.memory_scope
   ```
 
-- [ ] **Step 2: Write RED ingest tests for derive-or-reject semantics**
+- [x] **Step 2: Write RED ingest tests for derive-or-reject semantics**
 
   Add tests proving:
 
@@ -437,7 +440,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Add an integration fixture using an actual Codex/Claude-style hook envelope whose source scope is `project:<cwd>` and a host registered with the default `proj_local`; it must be accepted under canonical `proj_local` while retaining the project-derived source scope as provenance.
 
-- [ ] **Step 3: Run Channel/ingest/upcaster/schema tests and verify RED**
+- [x] **Step 3: Run Channel/ingest/upcaster/schema tests and verify RED**
 
   Run:
 
@@ -450,7 +453,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: current auth context lacks `partition`, source scope is persisted as canonical authority, and prepared capture attributes are not checked for completeness before Store append.
 
-- [ ] **Step 4: Add the trusted compatibility partition at the Channel**
+- [x] **Step 4: Add the trusted compatibility partition at the Channel**
 
   Build it only from `socket.assigns.host`:
 
@@ -465,7 +468,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Include it in the ingest auth context. Do not derive authority from event project, scope, integration, agent, or source client.
 
-- [ ] **Step 5: Validate the trusted partition and source claims in ingest**
+- [x] **Step 5: Validate the trusted partition and source claims in ingest**
 
   Resolve the compatibility partition once per batch from the trusted auth context. Source `scope` and `client_id` are provenance in v1, not target claims. Reject only conflicting authority-bearing fields that v1 does not permit (`memory_space_id`, `partition_id`, or `namespace`) and the existing spoofed `host_id`. Rejected authority claims receive:
 
@@ -480,7 +483,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Missing or different source scope never changes the canonical scope. A supplied v1 source scope is privacy-filtered and retained as provenance. It is not consistency-checked against the host registration because existing hooks derive project scopes independently; it never grants access.
 
-- [ ] **Step 6: Upcast from the trusted partition and preserve provenance**
+- [x] **Step 6: Upcast from the trusted partition and preserve provenance**
 
   `Upcaster.V1.upcast/2` reads the trusted partition and sets canonical fields from it. Preserve provenance in `raw_envelope`:
 
@@ -499,11 +502,11 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Omit `source_client_id`/`source_scope` when the source value is absent; never invent historical provenance.
 
-- [ ] **Step 7: Validate prepared capture attributes before Store append**
+- [x] **Step 7: Validate prepared capture attributes before Store append**
 
   In `Ingest`, after upcasting and before returning `{:persist, ...}`, require non-empty canonical `host_id`, `client_id`, `scope`, `namespace`, `integration`, and `ingest_auth_token_id`, plus a non-empty `raw_envelope`. Return a permanent per-event `invalid_partition` rejection when these are incomplete. Do not change the general `Event.changeset/2`: replay, evaluation, qualification, and legacy writers may carry `schema_version` without capture authentication fields.
 
-- [ ] **Step 8: Run scoped ingest tests and verify GREEN**
+- [x] **Step 8: Run scoped ingest tests and verify GREEN**
 
   Run:
 
@@ -512,12 +515,13 @@ The selected module has one external seam, plain injected modules for tests, and
     apps/backplane_memory/test/backplane/memory/ingest \
     apps/backplane_memory/test/backplane/memory/ingest_test.exs \
     apps/backplane_memory/test/backplane/memory/events/store_test.exs \
+    apps/backplane_memory/test/backplane/memory/qualification_test.exs \
     apps/backplane_api/test/backplane/api/channels/host_agent_channel_test.exs
   ```
 
   Expected: zero failures.
 
-- [ ] **Step 9: Commit partition safety**
+- [x] **Step 9: Commit partition safety**
 
   ```bash
   git add \
@@ -525,6 +529,7 @@ The selected module has one external seam, plain injected modules for tests, and
     apps/backplane_api/test/backplane/api/channels/host_agent_channel_test.exs \
     apps/backplane_memory/lib/backplane/memory/ingest.ex \
     apps/backplane_memory/lib/backplane/memory/ingest/upcaster/v1.ex \
+    apps/backplane_memory/lib/backplane/memory/qualification/runner.ex \
     apps/backplane_memory/test/backplane/memory/ingest_test.exs \
     apps/backplane_memory/test/backplane/memory/ingest/upcaster_v1_test.exs
   git commit -m "fix(memory): derive capture partition before ack"
@@ -538,7 +543,7 @@ The selected module has one external seam, plain injected modules for tests, and
 - Modify: `apps/backplane_memory/lib/backplane/memory/memories.ex`
 - Modify: `apps/backplane_memory/test/backplane/memory/memories/memory_test.exs`
 
-- [ ] **Step 1: Change the existing characterization test to RED**
+- [x] **Step 1: Change the existing characterization test to RED**
 
   Replace “acknowledges ... without tombstoning” with the desired contract:
 
@@ -572,7 +577,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Also assert wrong scope/foreign remote IDs leave canonical rows active, a forced canonical lifecycle failure writes no revocation, and host forget remains a soft tombstone even when global hard-delete mode is enabled.
 
-- [ ] **Step 2: Run the sync adapter test and verify RED**
+- [x] **Step 2: Run the sync adapter test and verify RED**
 
   Run:
 
@@ -582,7 +587,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: canonical memory remains active and no wipe is returned.
 
-- [ ] **Step 3: Add an explicit always-soft canonical lifecycle operation**
+- [x] **Step 3: Add an explicit always-soft canonical lifecycle operation**
 
   Add `Memories.tombstone/2` as the narrow canonical operation for host command reconciliation. It must use the same exact-partition row lock, lifecycle changeset, and audit metadata as ordinary soft forget, but it must never consult or perform global hard-delete mode:
 
@@ -597,16 +602,17 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Keep ordinary `Memories.forget/2` governance behavior unchanged for direct canonical callers. Add focused tests under both hard-delete settings.
 
-- [ ] **Step 4: Implement one atomic host-sync transaction**
+- [x] **Step 4: Implement one atomic host-sync transaction**
 
   Under the existing host/local advisory lock:
 
   1. reload and validate host scope;
   2. resolve the host-bound mapping and optional remote ID;
-  3. if the mapping is already revoked and canonical memory is tombstoned, return `:duplicate`;
-  4. otherwise call `Memories.tombstone/2` with the exact compatibility partition;
-  5. insert the immutable `HostMemoryRevocation` in the same outer Repo transaction;
-  6. return `:ok` only after both lifecycle and revocation writes commit.
+  3. acquire a canonical-memory advisory lock and re-resolve the mapping so different local aliases serialize;
+  4. if the mapping is already revoked and canonical memory is tombstoned, return `:duplicate`;
+  5. otherwise call `Memories.tombstone/2` with the exact compatibility partition;
+  6. insert immutable `HostMemoryRevocation` rows for every accepted same-host alias of that canonical memory in the same outer Repo transaction, verifying any unique conflict matches the expected immutable identity exactly;
+  7. return `:ok` only after the lifecycle transition and all revocation writes commit.
 
   Exact partition:
 
@@ -619,7 +625,7 @@ The selected module has one external seam, plain injected modules for tests, and
   }
   ```
 
-- [ ] **Step 5: Run sync/API tests and verify GREEN**
+- [x] **Step 5: Run sync/API tests and verify GREEN**
 
   Run:
 
@@ -633,7 +639,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures.
 
-- [ ] **Step 6: Commit canonical forget**
+- [x] **Step 6: Commit canonical forget**
 
   ```bash
   git add \
@@ -650,7 +656,7 @@ The selected module has one external seam, plain injected modules for tests, and
 - Review all files changed by Tasks 1–5
 - Update plan checkboxes only after each RED/GREEN cycle is evidenced
 
-- [ ] **Step 1: Run scoped application suites**
+- [x] **Step 1: Run scoped application suites**
 
   ```bash
   devenv shell -- mix test apps/backplane_host_agent/test
@@ -662,7 +668,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures in every in-scope command. If an out-of-scope suite fails, list it and stop rather than fixing it.
 
-- [ ] **Step 2: Run static scoped verification**
+- [x] **Step 2: Run static scoped verification**
 
   ```bash
   devenv shell -- mix format --check-formatted
@@ -672,7 +678,7 @@ The selected module has one external seam, plain injected modules for tests, and
 
   Expected: zero failures.
 
-- [ ] **Step 3: Verify PR1 invariants from tests**
+- [x] **Step 3: Verify PR1 invariants from tests**
 
   Confirm automated coverage for:
 
@@ -689,7 +695,7 @@ The selected module has one external seam, plain injected modules for tests, and
   - source runtime/scope remain provenance, not authority;
   - host forget atomically tombstones the canonical memory and is idempotent.
 
-- [ ] **Step 4: Verify scope and untouched surfaces**
+- [x] **Step 4: Verify scope and untouched surfaces**
 
   ```bash
   git status --short
