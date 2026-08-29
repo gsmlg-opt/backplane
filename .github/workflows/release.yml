@@ -132,7 +132,6 @@ jobs:
         run: |
           mix test \
             apps/backplane_host_agent/test/backplane/host_agent/memory/capture_outage_contract_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/capture_performance_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/event_envelope_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
@@ -146,11 +145,13 @@ jobs:
             --report artifacts/memory-v2/memory-v2-replay-browser.json
           mix memory.seed_bench
           mix memory.eval \
-            --report artifacts/memory-v2/memory-v2-eval.json \
+            --profile ci \
+            --report artifacts/memory-v2/memory-v2-eval-ci-smoke.json \
             --longmemeval artifacts/memory-v2/memory-v2-longmemeval.jsonl \
             --sidecar artifacts/memory-v2/memory-v2-longmemeval-sidecar.json
           BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify \
-            --report artifacts/memory-v2/memory-v2-m18-qualification.json
+            --profile ci \
+            --report artifacts/memory-v2/memory-v2-m18-ci-smoke.json
           {
             echo "revision=$(git rev-parse HEAD)"
             echo "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs"

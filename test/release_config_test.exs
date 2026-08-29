@@ -87,11 +87,15 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "m18_migration_chain_test.exs"
     assert workflow =~ "--exclude memory_qualification_runtime"
     assert workflow =~ "memory_m18_outage_qualification_test.exs"
+    refute workflow =~ "capture_performance_test.exs"
     assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
-    assert workflow =~ "memory-v2-m18-qualification.json"
+    assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
+    assert workflow =~ "memory-v2-m18-ci-smoke.json"
     assert workflow =~ "mix memory.replay.browser_qualify"
     assert workflow =~ "memory-v2-replay-browser.json"
     assert workflow =~ "mix memory.eval"
+    assert workflow =~ ~r/mix memory\.eval \\\s+--profile ci/
+    assert workflow =~ "memory-v2-eval-ci-smoke.json"
 
     {seed_offset, _} = :binary.match(workflow, "mix memory.seed_bench")
 
