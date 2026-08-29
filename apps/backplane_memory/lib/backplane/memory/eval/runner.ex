@@ -8,6 +8,7 @@ defmodule Backplane.Memory.Eval.Runner do
   alias Backplane.Memory.Events.Stream, as: EventStream
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Projections.ProjectedSession
+  alias Backplane.Memory.Qualification.Profile
   alias Backplane.Memory.Recall.Pipeline
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
 
@@ -92,6 +93,8 @@ defmodule Backplane.Memory.Eval.Runner do
 
   defp evaluate_validated(fixture, opts, warmups, samples) do
     pipeline = Keyword.get(opts, :pipeline, &Pipeline.run/2)
+    profile = Keyword.get(opts, :profile, :performance)
+    thresholds = Profile.thresholds(profile).eval
     content_ids = Map.new(fixture["memories"], &{&1["content"], &1["fixture_memory_id"]})
 
     Enum.each(Enum.take(Stream.cycle(fixture["queries"]), warmups), fn query ->
@@ -117,6 +120,9 @@ defmodule Backplane.Memory.Eval.Runner do
 
     report = %{
       schema_version: 2,
+      profile: profile,
+      performance_authoritative: Profile.authoritative?(profile),
+      effective_thresholds: thresholds,
       fixture_id: fixture["fixture_id"],
       label: "Backplane coding-corpus retrieval evaluation",
       directly_comparable_to_longmemeval: false,
@@ -140,7 +146,7 @@ defmodule Backplane.Memory.Eval.Runner do
       }
     }
 
-    report = Map.put(report, :thresholds, threshold_verdicts(report))
+    report = Map.put(report, :thresholds, threshold_verdicts(report, thresholds))
 
     report =
       Map.put(report, :passed, Enum.all?(report.thresholds, fn {_gate, passed} -> passed end))
@@ -419,7 +425,7 @@ defmodule Backplane.Memory.Eval.Runner do
     }
   end
 
-  defp threshold_verdicts(report) do
+  defp threshold_verdicts(report, thresholds) do
     %{
       recall_any_at_5: report.quality.recall_any_at_5 >= 0.95,
       fts_outage_availability:
@@ -429,8 +435,11 @@ defmodule Backplane.Memory.Eval.Runner do
       derived_provenance: report.provenance.denominator > 0 and report.provenance.coverage == 1.0,
       retrieval_fusion_p95:
         report.latency.retrieval_fusion.samples >= 100 and
-          report.latency.retrieval_fusion.p95_ms < 300,
-      e2e_p95: report.latency.e2e.samples >= 100 and report.latency.e2e.p95_ms < 800
+          report.latency.retrieval_fusion.p95_ms <
+            thresholds.retrieval_fusion_p95_ms_max_exclusive,
+      e2e_p95:
+        report.latency.e2e.samples >= 100 and
+          report.latency.e2e.p95_ms < thresholds.e2e_p95_ms_max_exclusive
     }
   end
 

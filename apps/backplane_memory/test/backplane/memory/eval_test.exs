@@ -69,6 +69,21 @@ defmodule Backplane.Memory.EvalTest do
     end
   end
 
+  test "ci scales latency gates while performance remains authoritative" do
+    report = %{
+      quality: %{recall_any_at_5: 1.0},
+      outage: %{availability: 1.0, samples: 20},
+      provenance: %{coverage: 1.0, denominator: 2},
+      latency: %{
+        retrieval_fusion: %{p95_ms: 1_000, samples: 100},
+        e2e: %{p95_ms: 4_000, samples: 100}
+      }
+    }
+
+    assert Eval.thresholds_pass?(report, profile: :ci)
+    refute Eval.thresholds_pass?(report, profile: :performance)
+  end
+
   test "LongMemEval export is explicitly retrieval-only and not directly comparable" do
     fixture = %{
       "fixture_id" => "fixture",

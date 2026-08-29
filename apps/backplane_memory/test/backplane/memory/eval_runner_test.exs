@@ -33,8 +33,12 @@ defmodule Backplane.Memory.Eval.RunnerTest do
   test "runs every M15 gate through Recall Pipeline inside the rollback sandbox" do
     assert {:ok, fixture} = Eval.load_fixture()
     assert {:error, :insufficient_warmups} = Runner.evaluate(fixture, warmups: 4, samples: 100)
-    assert {:ok, report, export} = Runner.run(warmups: 5, samples: 100)
+    assert {:ok, report, export} = Runner.run(warmups: 5, samples: 100, profile: :ci)
 
+    assert report.profile == :ci
+    refute report.performance_authoritative
+    assert report.effective_thresholds.retrieval_fusion_p95_ms_max_exclusive == 3_000.0
+    assert report.effective_thresholds.e2e_p95_ms_max_exclusive == 8_000.0
     assert report.quality.queries == 20
     assert report.quality.recall_any_at_5 >= 0.95
 
@@ -52,7 +56,7 @@ defmodule Backplane.Memory.Eval.RunnerTest do
     assert report.configuration.sample_semantics =~ "not samples per query"
     assert report.passed
     assert Enum.all?(report.thresholds, fn {_gate, passed} -> passed end)
-    assert Eval.thresholds_pass?(report)
+    assert Eval.thresholds_pass?(report, profile: :ci)
     assert export.sidecar["directly_comparable"] == false
     assert export.sidecar["evaluation_mode"] == "retrieval-only"
 
