@@ -4,10 +4,23 @@ on:
   push:
     branches: ["**"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  RUST_VERSION: "1.95.0"
+  MIX_ENV: dev
+
 jobs:
   compile:
     name: Compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -16,11 +29,13 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18"
-          otp-version: "28"
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
 
       - name: Install native build dependencies
         run: |
@@ -33,8 +48,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -44,7 +59,7 @@ jobs:
 
   format:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -53,8 +68,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18"
-          otp-version: "28"
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
@@ -62,8 +77,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -73,7 +88,7 @@ jobs:
 
   credo:
     name: Credo
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -82,8 +97,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18"
-          otp-version: "28"
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
@@ -91,8 +106,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -102,7 +117,7 @@ jobs:
 
   dialyzer:
     name: Dialyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -111,11 +126,13 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18"
-          otp-version: "28"
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
 
       - name: Install native build dependencies
         run: |
@@ -128,8 +145,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -139,9 +156,8 @@ jobs:
         id: dialyzer-cache
         with:
           path: priv/plts
-          key: ${{ runner.os }}-otp28-elixir1.18-dialyzer-${{ hashFiles('**/mix.lock', 'apps/*/mix.exs', 'mix.exs') }}
-          restore-keys: |
-            ${{ runner.os }}-otp28-elixir1.18-dialyzer-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-dialyzer-${{ hashFiles('**/mix.lock', 'apps/*/mix.exs', 'mix.exs') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-dialyzer-
 
       - name: Create PLT directory
         run: mkdir -p priv/plts
