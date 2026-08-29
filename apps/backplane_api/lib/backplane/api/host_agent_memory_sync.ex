@@ -158,6 +158,8 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
            with {:ok, current_host} <- reload_host(host),
                 :ok <- validate_host_scope(current_host, scope),
+                {:ok, initial_mapping} <- resolve_forget_mapping(current_host, item),
+                :ok <- canonical_advisory_lock!(host_id, initial_mapping.memory.id),
                 {:ok, mapping} <- resolve_forget_mapping(current_host, item),
                 {:ok, status} <- reconcile_forget(current_host, mapping) do
              %{status: status, canonical_id: mapping.memory.id}
@@ -476,10 +478,18 @@ defmodule Backplane.Api.HostAgentMemorySync do
   end
 
   defp advisory_lock!(host_id, local_id) do
+    transaction_advisory_lock!(["host-memory", host_id, local_id])
+  end
+
+  defp canonical_advisory_lock!(host_id, memory_id) do
+    transaction_advisory_lock!(["host-memory-canonical", host_id, memory_id])
+  end
+
+  defp transaction_advisory_lock!(identity) do
     <<key::signed-64, _::binary>> =
       :crypto.hash(
         :sha256,
-        :erlang.term_to_binary(["host-memory", host_id, local_id], [:deterministic])
+        :erlang.term_to_binary(identity, [:deterministic])
       )
 
     Repo.query!("SELECT pg_advisory_xact_lock($1::bigint)", [key])

@@ -7,7 +7,6 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   alias Backplane.Skills.Hosts
   alias Backplane.Api.HostAgentMemorySync
   alias Backplane.Api.HostMemoryRevocation
-  alias Backplane.Memory.Audit
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
 
@@ -510,40 +509,6 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
            )
   end
 
-  test "concurrent same-local forget has one winner and deterministic duplicates" do
-    scope = "scope:concurrent-forget"
-    host = create_host!("concurrent-forget", scope)
-
-    assert {:ok, %{canonical_id: canonical_id}} =
-             HostAgentMemorySync.apply_sync_item(
-               host,
-               remember_item("local_concurrent_forget", scope, "concurrent forget")
-             )
-
-    forget = %{"id" => "local_concurrent_forget", "op" => "forget", "scope" => scope}
-
-    results =
-      1..8
-      |> Task.async_stream(
-        fn _ -> HostAgentMemorySync.apply_sync_item(host, forget) end,
-        max_concurrency: 8,
-        ordered: false
-      )
-      |> Enum.map(fn {:ok, result} -> result end)
-
-    assert 1 == Enum.count(results, &match?({:ok, %{status: :ok}}, &1))
-    assert 7 == Enum.count(results, &match?({:ok, %{status: :duplicate}}, &1))
-
-    assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
-             Repo.get!(MemorySchema, canonical_id)
-
-    assert 1 == Repo.aggregate(HostMemoryRevocation, :count)
-
-    assert 1 ==
-             Audit.list_for_target(canonical_id)
-             |> Enum.count(&(&1.operation == "forget"))
-  end
-
   test "host forget remains a soft tombstone when global hard delete is enabled" do
     previous = Backplane.Settings.get("memory.hard_delete_enabled")
     :ok = Backplane.Settings.set("memory.hard_delete_enabled", "true")
@@ -698,4 +663,299 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   defp sha256_hex(content) do
     :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
   end
+end
+
+defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
+  use ExUnit.Case, async: false
+
+  import Ecto.Query
+
+  alias Backplane.Api.{HostAgentMemorySync, HostMemoryRevocation}
+  alias Backplane.Memory.Audit
+  alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.Repo
+  alias Backplane.Skills.Host
+  alias Ecto.Adapters.SQL.Sandbox
+
+  @timeout 30_000
+
+  test "independent connections serialize concurrent same-local forgets" do
+    scope = unique("scope:same-local")
+    host = create_host!("same-local", scope)
+    cleanup_on_exit(host.id)
+
+    canonical_id =
+      remember!(host, "local_same", scope, "concurrent same-local forget #{host.id}")
+
+    forget = %{"id" => "local_same", "op" => "forget", "scope" => scope}
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn _ -> unboxed(fn -> HostAgentMemorySync.apply_sync_item(host, forget) end) end,
+        max_concurrency: 8,
+        timeout: @timeout,
+        on_timeout: :kill_task,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert 1 == Enum.count(results, &match?({:ok, %{status: :ok}}, &1))
+    assert 7 == Enum.count(results, &match?({:ok, %{status: :duplicate}}, &1))
+
+    unboxed(fn ->
+      assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
+               Repo.get!(MemorySchema, canonical_id)
+
+      assert 1 ==
+               Repo.aggregate(
+                 from(revocation in HostMemoryRevocation,
+                   where: revocation.host_id == ^host.id
+                 ),
+                 :count
+               )
+
+      assert 1 == forget_audit_count(canonical_id)
+    end)
+  end
+
+  test "different aliases converge under one canonical lock" do
+    scope = unique("scope:aliases")
+    host = create_host!("aliases", scope)
+    cleanup_on_exit(host.id)
+    content = "concurrent alias forget #{host.id}"
+
+    canonical_id = remember!(host, "local_a", scope, content)
+    assert canonical_id == remember!(host, "local_b", scope, content)
+
+    gate = hold_memory_row_lock(canonical_id)
+
+    forgets = [
+      %{"id" => "local_a", "op" => "forget", "scope" => scope},
+      %{"id" => "local_b", "op" => "forget", "scope" => scope}
+    ]
+
+    lock_tag = unique("host-memory-alias-race")
+    tasks = concurrent_forget_tasks(host, forgets, lock_tag)
+    wait_for_lock_waiters!(lock_tag, 2, 100)
+    send(gate.pid, :release)
+    assert {:ok, :ok} = Task.await(gate, @timeout)
+    results = Enum.map(tasks, &Task.await(&1, @timeout))
+
+    assert 1 == Enum.count(results, &match?({:ok, %{status: :ok}}, &1))
+    assert 1 == Enum.count(results, &match?({:ok, %{status: :duplicate}}, &1))
+
+    unboxed(fn ->
+      assert %MemorySchema{deleted_at: %DateTime{}, lifecycle_state: "tombstoned"} =
+               Repo.get!(MemorySchema, canonical_id)
+
+      assert ["local_a", "local_b"] ==
+               HostMemoryRevocation
+               |> where([revocation], revocation.host_id == ^host.id)
+               |> order_by([revocation], asc: revocation.local_id)
+               |> select([revocation], revocation.local_id)
+               |> Repo.all()
+
+      assert 1 == forget_audit_count(canonical_id)
+
+      assert {:error, :validation, :mapping_revoked} =
+               HostAgentMemorySync.apply_sync_item(
+                 host,
+                 remember_item("local_b", scope, content)
+               )
+    end)
+  end
+
+  defp concurrent_forget_tasks(host, forgets, lock_tag) do
+    parent = self()
+
+    tasks =
+      Enum.map(forgets, fn forget ->
+        Task.async(fn ->
+          send(parent, {:forget_ready, self()})
+
+          receive do
+            :forget ->
+              tagged_unboxed(lock_tag, fn ->
+                HostAgentMemorySync.apply_sync_item(host, forget)
+              end)
+          after
+            @timeout -> raise "timed out waiting to start concurrent forget"
+          end
+        end)
+      end)
+
+    pids =
+      Enum.map(tasks, fn _task ->
+        assert_receive {:forget_ready, pid}, @timeout
+        pid
+      end)
+
+    Enum.each(pids, &send(&1, :forget))
+    tasks
+  end
+
+  defp hold_memory_row_lock(memory_id) do
+    parent = self()
+
+    gate =
+      Task.async(fn ->
+        unboxed(fn ->
+          Repo.transaction(fn ->
+            Repo.query!("SELECT id FROM bpm_memories WHERE id = $1::uuid FOR UPDATE", [
+              Ecto.UUID.dump!(memory_id)
+            ])
+
+            send(parent, {:memory_row_locked, self()})
+
+            receive do
+              :release -> :ok
+            after
+              @timeout -> Repo.rollback(:gate_timeout)
+            end
+          end)
+        end)
+      end)
+
+    assert_receive {:memory_row_locked, gate_pid}, @timeout
+    assert gate_pid == gate.pid
+    gate
+  end
+
+  defp wait_for_lock_waiters!(_lock_tag, _expected, 0),
+    do: flunk("concurrent forget workers did not reach their database locks")
+
+  defp wait_for_lock_waiters!(lock_tag, expected, attempts) do
+    count =
+      unboxed(fn ->
+        %{rows: [[count]]} =
+          Repo.query!(
+            """
+            SELECT count(*)::integer
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock'
+              AND application_name = $1
+            """,
+            [lock_tag]
+          )
+
+        count
+      end)
+
+    if count >= expected do
+      :ok
+    else
+      Process.sleep(20)
+      wait_for_lock_waiters!(lock_tag, expected, attempts - 1)
+    end
+  end
+
+  defp create_host!(suffix, memory_scope) do
+    unboxed(fn ->
+      %Host{}
+      |> Host.changeset(%{
+        "name" => unique("host-memory-sync-concurrency:#{suffix}"),
+        "memory_scope" => memory_scope
+      })
+      |> Repo.insert!()
+    end)
+  end
+
+  defp remember!(host, local_id, scope, content) do
+    unboxed(fn ->
+      {:ok, %{canonical_id: canonical_id}} =
+        HostAgentMemorySync.apply_sync_item(host, remember_item(local_id, scope, content))
+
+      canonical_id
+    end)
+  end
+
+  defp remember_item(local_id, scope, content) do
+    %{
+      "id" => local_id,
+      "op" => "remember",
+      "content" => content,
+      "content_hash" => sha256_hex(content),
+      "scope" => scope,
+      "agent_id" => "agent_1",
+      "tags" => ["local"],
+      "metadata" => %{"source" => "concurrency-test"}
+    }
+  end
+
+  defp forget_audit_count(memory_id) do
+    Audit.list_for_target(memory_id)
+    |> Enum.count(&(&1.operation == "forget"))
+  end
+
+  defp cleanup_on_exit(host_id) do
+    on_exit(fn ->
+      unboxed(fn ->
+        tables = [
+          "bpm_host_memory_revocations",
+          "memory_audit_log",
+          "bpm_memory_evidence",
+          "bpm_memory_remember_requests"
+        ]
+
+        Enum.each(tables, &Repo.query!("ALTER TABLE #{&1} DISABLE TRIGGER USER"))
+
+        try do
+          Repo.query!("DELETE FROM bpm_host_memory_revocations WHERE host_id = $1", [host_id])
+          Repo.query!("DELETE FROM memory_audit_log WHERE metadata->>'host_id' = $1", [host_id])
+
+          Repo.query!(
+            """
+            DELETE FROM bpm_memory_evidence
+            WHERE memory_id IN (SELECT id FROM bpm_memories WHERE host_id = $1)
+            """,
+            [host_id]
+          )
+
+          Repo.query!(
+            """
+            DELETE FROM bpm_memory_remember_requests
+            WHERE idempotency_scope = $1
+            """,
+            ["host-memory.v1:#{host_id}"]
+          )
+
+          Repo.query!("DELETE FROM bpm_memories WHERE host_id = $1", [host_id])
+          Repo.query!("DELETE FROM skill_hosts WHERE id = $1::uuid", [Ecto.UUID.dump!(host_id)])
+        after
+          Enum.each(Enum.reverse(tables), &Repo.query!("ALTER TABLE #{&1} ENABLE TRIGGER USER"))
+        end
+      end)
+    end)
+  end
+
+  defp unboxed(fun) do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+
+    try do
+      fun.()
+    after
+      :ok = Sandbox.checkin(Repo)
+    end
+  end
+
+  defp tagged_unboxed(lock_tag, fun) do
+    unboxed(fn ->
+      Repo.query!("SELECT set_config('application_name', $1, false)", [lock_tag])
+
+      try do
+        fun.()
+      after
+        Repo.query!("RESET application_name")
+      end
+    end)
+  end
+
+  defp sha256_hex(content) do
+    :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+  end
+
+  defp unique(prefix), do: "#{prefix}:#{Ecto.UUID.generate()}"
 end
