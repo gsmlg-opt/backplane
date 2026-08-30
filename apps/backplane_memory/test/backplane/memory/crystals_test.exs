@@ -968,7 +968,6 @@ defmodule Backplane.Memory.CrystalsTest do
       "host_id" => host,
       "client_id" => "client-#{host}",
       "scope" => "private",
-      "namespace" => "default",
       "session_id" => session,
       "project" => project,
       "sequence" => sequence,
@@ -1019,11 +1018,9 @@ defmodule Backplane.Memory.CrystalsTest do
   defp ingest!(event) do
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(
-               %{
-                 host_id: event["host_id"],
-                 auth_token_id: "token-#{event["host_id"]}",
-                 scopes: ["host_agent.capture"]
-               },
+               ingest_auth_context(event["host_id"], %{
+                 partition: %{scope: event["scope"]}
+               }),
                %{
                  "batch_id" => Ecto.UUID.generate(),
                  "host_id" => event["host_id"],

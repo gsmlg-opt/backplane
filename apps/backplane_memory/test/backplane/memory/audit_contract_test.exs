@@ -79,11 +79,11 @@ defmodule Backplane.Memory.AuditContractTest do
         "payload" => %{"message" => "source text must not enter audit"}
       })
 
-    auth = %{
-      host_id: "audit-host",
-      auth_token_id: Ecto.UUID.generate(),
-      scopes: ["host_agent.capture"]
-    }
+    auth =
+      Backplane.Memory.IngestFixtures.ingest_auth_context("audit-host", %{
+        auth_token_id: Ecto.UUID.generate(),
+        partition: %{scope: captured["scope"]}
+      })
 
     assert {:ok, %{"results" => [%{"server_event_id" => event_id}]}} =
              Backplane.Memory.Ingest.ingest_batch(auth, %{

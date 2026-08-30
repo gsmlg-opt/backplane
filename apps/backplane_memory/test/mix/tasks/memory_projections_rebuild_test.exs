@@ -122,11 +122,7 @@ defmodule Mix.Tasks.Memory.Projections.RebuildTest do
   end
 
   defp ingest!(event) do
-    auth = %{
-      host_id: event["host_id"],
-      auth_token_id: "token-#{event["host_id"]}",
-      scopes: ["host_agent.capture"]
-    }
+    auth = ingest_auth_context(event["host_id"], %{partition: %{scope: event["scope"]}})
 
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(auth, %{

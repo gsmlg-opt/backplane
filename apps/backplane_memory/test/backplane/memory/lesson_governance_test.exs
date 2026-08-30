@@ -416,7 +416,6 @@ defmodule Backplane.Memory.LessonGovernanceTest do
         "host_id" => host_id,
         "client_id" => @partition.client_id,
         "scope" => @partition.scope,
-        "namespace" => @partition.namespace,
         "session_id" => session_id,
         "idempotency_key" => "lesson-governance:#{host_id}:#{session_id}",
         "payload" => %{"message" => "independent verified evidence"}
@@ -424,7 +423,10 @@ defmodule Backplane.Memory.LessonGovernanceTest do
 
     assert {:ok, %{"results" => [%{"status" => "accepted", "server_event_id" => event_id}]}} =
              Ingest.ingest_batch(
-               %{host_id: host_id, auth_token_id: "lesson-token", scopes: ["host_agent.capture"]},
+               ingest_auth_context(host_id, %{
+                 auth_token_id: "lesson-token",
+                 partition: %{scope: @partition.scope}
+               }),
                %{"batch_id" => Ecto.UUID.generate(), "host_id" => host_id, "events" => [event]}
              )
 

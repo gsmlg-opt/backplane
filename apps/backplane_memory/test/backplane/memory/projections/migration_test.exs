@@ -275,7 +275,10 @@ defmodule Backplane.Memory.Projections.MigrationTest do
 
     assert {:ok, %{"results" => [%{"status" => "accepted", "server_event_id" => id}]}} =
              Ingest.ingest_batch(
-               %{host_id: "host-1", auth_token_id: "token-1", scopes: ["host_agent.capture"]},
+               ingest_auth_context("host-1", %{
+                 auth_token_id: "token-1",
+                 partition: %{scope: event["scope"]}
+               }),
                %{"batch_id" => "immutable", "host_id" => "host-1", "events" => [event]}
              )
 

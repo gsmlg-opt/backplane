@@ -118,11 +118,11 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       session_id = "session-correlation"
       correlation_id = Ecto.UUID.generate()
 
-      auth = %{
-        host_id: host_id,
-        auth_token_id: Ecto.UUID.generate(),
-        scopes: ["host_agent.capture"]
-      }
+      auth =
+        ingest_auth_context(host_id, %{
+          auth_token_id: Ecto.UUID.generate(),
+          partition: %{scope: "project:correlation"}
+        })
 
       events =
         [

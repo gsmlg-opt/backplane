@@ -144,7 +144,11 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
             "payload" => %{"message" => "port #{value}"}
           })
 
-        auth = %{host_id: "host", auth_token_id: "token", scopes: ["host_agent.capture"]}
+        auth =
+          ingest_auth_context("host", %{
+            auth_token_id: "token",
+            partition: %{scope: captured["scope"]}
+          })
 
         assert {:ok, %{"results" => [%{"server_event_id" => event_id}]}} =
                  Ingest.ingest_batch(auth, %{

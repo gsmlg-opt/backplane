@@ -280,7 +280,6 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
         "host_id" => partition.host_id,
         "client_id" => partition.client_id,
         "scope" => partition.scope,
-        "namespace" => partition.namespace,
         "session_id" => session_id,
         "sequence" => sequence,
         "event_type" => event_type,
@@ -291,11 +290,10 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
 
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(
-               %{
-                 host_id: partition.host_id,
+               ingest_auth_context(partition.host_id, %{
                  auth_token_id: "surface-token",
-                 scopes: ["host_agent.capture"]
-               },
+                 partition: %{scope: partition.scope}
+               }),
                %{
                  "batch_id" => Ecto.UUID.generate(),
                  "host_id" => partition.host_id,

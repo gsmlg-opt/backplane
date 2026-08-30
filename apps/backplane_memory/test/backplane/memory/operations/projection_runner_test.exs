@@ -191,7 +191,7 @@ defmodule Backplane.Memory.Operations.ProjectionRunnerTest do
         "idempotency_key" => "#{host_id}:#{session_id}:1"
       })
 
-    auth = %{host_id: host_id, auth_token_id: "token-#{host_id}", scopes: ["host_agent.capture"]}
+    auth = ingest_auth_context(host_id, %{partition: %{scope: event["scope"]}})
 
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(auth, %{

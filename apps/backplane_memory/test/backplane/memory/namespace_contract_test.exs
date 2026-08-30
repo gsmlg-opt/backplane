@@ -28,6 +28,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     team_feed: 3,
     team_share: 2,
     team_share: 3,
+    tombstone: 2,
     trusted_count: 0,
     trusted_count: 1,
     trusted_forget: 1,

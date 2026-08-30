@@ -1,6 +1,27 @@
 defmodule Backplane.Memory.IngestFixtures do
   alias Backplane.Memory.Ingest.EventValidator
 
+  def ingest_auth_context(host_id, overrides \\ %{}) do
+    partition =
+      Map.merge(
+        %{
+          host_id: host_id,
+          partition_id: "host:#{host_id}",
+          scope: "proj_local",
+          namespace: "private"
+        },
+        Map.get(overrides, :partition, %{})
+      )
+
+    %{
+      host_id: host_id,
+      auth_token_id: "token-#{host_id}",
+      scopes: ["host_agent.capture"],
+      partition: partition
+    }
+    |> Map.merge(Map.delete(overrides, :partition))
+  end
+
   def valid_event(overrides \\ %{}) do
     payload = Map.get(overrides, "payload", %{"message" => "hello"})
 
