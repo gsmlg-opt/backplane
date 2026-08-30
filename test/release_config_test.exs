@@ -131,6 +131,13 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
+  test "GitHub test workflow excludes the authoritative local performance suite" do
+    workflow = File.read!(".github/workflows/test.yml")
+
+    assert workflow =~
+             "mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime"
+  end
+
   test "release qualification pins one main-branch SHA and validates semver before builds" do
     workflow = File.read!(".github/workflows/release.yml")
 

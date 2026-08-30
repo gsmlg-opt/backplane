@@ -85,4 +85,4 @@ jobs:
           mix do --app backplane_mcp cmd mix test test/backplane/services/web_fetch_test.exs
           mix do --app day_ex cmd mix test
           mix do --app relayixir cmd mix test
-          mix do --app backplane_memory cmd mix test
+          mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
