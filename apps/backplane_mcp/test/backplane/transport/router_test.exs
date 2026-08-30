@@ -3,7 +3,6 @@ defmodule Backplane.Transport.McpPlugTest do
 
   import Backplane.Auth.Fixtures
 
-  alias Backplane.Auth.Resources
   alias Backplane.Transport.{McpPlug, RateLimiter, Session}
 
   test "returns 404 for unknown routes" do
@@ -186,83 +185,6 @@ defmodule Backplane.Transport.McpPlugTest do
       |> McpPlug.call(McpPlug.init([]))
 
     assert conn.status == 200
-  end
-
-  describe "protected resource authentication" do
-    test "OAuth activation challenges the canonical MCP resource" do
-      oauth_client_fixture!(resources: [:mcp], scopes: ["public::echo"])
-
-      conn = endpoint_mcp_request("/mcp")
-
-      assert conn.status == 401
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
-
-      assert get_resp_header(conn, "www-authenticate") == [
-               ~s(Bearer resource_metadata="#{Resources.metadata_uri(:mcp)}")
-             ]
-    end
-
-    test "query-bearing MCP challenges omit resource metadata" do
-      oauth_client_fixture!(resources: [:mcp], scopes: ["public::echo"])
-
-      conn = endpoint_mcp_request("/mcp?x=1")
-
-      assert conn.status == 401
-      assert [challenge] = get_resp_header(conn, "www-authenticate")
-      refute challenge =~ "resource_metadata"
-    end
-
-    test "PAT-only protection preserves the compatibility response" do
-      BackplaneMcp.Fixtures.insert_client(token: "pat-only")
-
-      conn = endpoint_mcp_request("/mcp")
-
-      assert conn.status == 401
-      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
-      assert get_resp_header(conn, "www-authenticate") == []
-    end
-
-    test "accepts an MCP resource token and assigns its normalized identity" do
-      token = resource_token!(:mcp, ["public::echo"], [:mcp])
-
-      conn = endpoint_mcp_request("/mcp", token.value)
-
-      assert conn.status == 200
-      assert conn.assigns.resource_auth.kind == :oauth
-      assert conn.assigns.resource_auth.resource == :mcp
-      assert conn.assigns.tool_scopes == ["public::echo"]
-    end
-
-    test "rejects a v1-audience token without opaque fallback" do
-      token = resource_token!(:v1, ["llm::invoke"], [:mcp, :v1])
-
-      conn = endpoint_mcp_request("/mcp", token.value)
-
-      assert conn.status == 401
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
-
-      assert [challenge] = get_resp_header(conn, "www-authenticate")
-      assert challenge =~ ~s(error="invalid_token")
-      assert challenge =~ Resources.metadata_uri(:mcp)
-    end
-  end
-
-  defp endpoint_mcp_request(path, token \\ nil) do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "ping", "id" => 1})
-
-    conn =
-      conn(:post, path, body)
-      |> put_req_header("content-type", "application/json")
-
-    conn = if token, do: put_req_header(conn, "authorization", "Bearer #{token}"), else: conn
-
-    Backplane.Api.Endpoint.call(conn, Backplane.Api.Endpoint.init([]))
-  end
-
-  defp resource_token!(resource, scopes, resources) do
-    user = auth_user_fixture!()
-    client = oauth_client_fixture!(resources: resources, scopes: scopes)
-    resource_access_token_fixture!(user, client, scopes, resource)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)

@@ -41,6 +41,83 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     :ok
   end
 
+  describe "protected MCP resource authentication" do
+    test "OAuth activation challenges the canonical MCP resource" do
+      oauth_client_fixture!(resources: [:mcp], scopes: ["compat::allowed"])
+
+      conn = post_mcp(nil, "ping", %{})
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+
+      assert get_resp_header(conn, "www-authenticate") == [
+               ~s(Bearer resource_metadata="#{Resources.metadata_uri(:mcp)}")
+             ]
+    end
+
+    test "query-bearing MCP challenges omit resource metadata" do
+      oauth_client_fixture!(resources: [:mcp], scopes: ["compat::allowed"])
+
+      conn = post_mcp(nil, "ping", %{}, "/mcp?x=1")
+
+      assert conn.status == 401
+      assert [challenge] = get_resp_header(conn, "www-authenticate")
+      refute challenge =~ "resource_metadata"
+    end
+
+    test "PAT-only protection preserves the compatibility response" do
+      pat_fixture!(scopes: ["compat::allowed"])
+
+      conn = post_mcp(nil, "ping", %{})
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == %{"error" => "Unauthorized"}
+      assert get_resp_header(conn, "www-authenticate") == []
+    end
+
+    test "accepts an MCP resource token and assigns its normalized identity" do
+      token = resource_token!(:mcp, ["compat::allowed"], [:mcp])
+
+      conn = post_mcp(token.value, "ping", %{})
+
+      assert conn.status == 200
+      assert conn.assigns.resource_auth.kind == :oauth
+      assert conn.assigns.resource_auth.resource == :mcp
+      assert conn.assigns.tool_scopes == ["compat::allowed"]
+    end
+
+    test "rejects a v1-audience token without opaque fallback" do
+      token = resource_token!(:v1, ["llm::invoke"], [:mcp, :v1])
+
+      conn = post_mcp(token.value, "ping", %{})
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+
+      assert [challenge] = get_resp_header(conn, "www-authenticate")
+      assert challenge =~ ~s(error="invalid_token")
+      assert challenge =~ Resources.metadata_uri(:mcp)
+    end
+
+    test "single OAuth tool denial keeps JSON-RPC body and adds a 403 challenge" do
+      token = resource_token!(:mcp, ["compat::allowed"], [:mcp])
+
+      conn =
+        post_mcp(token.value, "tools/call", %{
+          "name" => "compat::blocked",
+          "arguments" => %{}
+        })
+
+      assert conn.status == 403
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
+
+      assert [challenge] = get_resp_header(conn, "www-authenticate")
+      assert challenge =~ ~s(error="insufficient_scope")
+      assert challenge =~ ~s(scope="compat::blocked")
+      assert challenge =~ Resources.metadata_uri(:mcp)
+    end
+  end
+
   test "PAT scopes still filter MCP tools without restricting v1" do
     {client, pat} = pat_fixture!(scopes: ["compat::allowed"])
 
@@ -193,6 +270,12 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     {client, token}
   end
 
+  defp resource_token!(resource, scopes, resources) do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: resources, scopes: scopes)
+    resource_access_token_fixture!(user, client, scopes, resource)
+  end
+
   defp update_resources!(client, resources) do
     current = Auth.OAuth.get_client(client.id)
     assert {:ok, updated} = Auth.OAuth.update_client_resources(current, resources)
@@ -227,11 +310,11 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     end
   end
 
-  defp post_mcp(token, method, params) do
+  defp post_mcp(token, method, params, path \\ "/mcp") do
     conn =
       Plug.Test.conn(
         :post,
-        "/mcp",
+        path,
         Jason.encode!(%{
           "jsonrpc" => "2.0",
           "method" => method,

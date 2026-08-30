@@ -6,8 +6,8 @@ defmodule Backplane.Transport.McpHandlerTest do
   import Ecto.Query
   import ExUnit.CaptureLog
 
-  alias Backplane.Auth.Resources
   alias Backplane.Audit.SkillLoadLog
+  alias Backplane.MCP.Info
   alias BackplaneMcp.Fixtures
   alias Backplane.Repo
   alias Backplane.Skills
@@ -93,7 +93,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "accepts unsupported protocolVersion and returns server version" do
       resp = mcp_request("initialize", %{"protocolVersion" => "1999-01-01"})
-      assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+      assert resp["result"]["protocolVersion"] == Info.protocol_version()
     end
 
     test "falls back from a protocol version not implemented by the hub transport" do
@@ -102,7 +102,7 @@ defmodule Backplane.Transport.McpHandlerTest do
           "protocolVersion" => Backplane.McpProtocol.Protocol.latest_version()
         })
 
-      assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+      assert resp["result"]["protocolVersion"] == Info.protocol_version()
     end
 
     test "falls back to the legacy endpoint default for 2026-07-28" do
@@ -118,8 +118,8 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
 
     test "accepts matching protocolVersion" do
-      resp = mcp_request("initialize", %{"protocolVersion" => Backplane.protocol_version()})
-      assert resp["result"]["protocolVersion"] == Backplane.protocol_version()
+      resp = mcp_request("initialize", %{"protocolVersion" => Info.protocol_version()})
+      assert resp["result"]["protocolVersion"] == Info.protocol_version()
     end
 
     test "returns Mcp-Session-Id header" do
@@ -1970,29 +1970,6 @@ defmodule Backplane.Transport.McpHandlerTest do
       refute resp["error"]
     end
 
-    test "single OAuth tool denial keeps JSON-RPC body and adds a 403 challenge" do
-      token = oauth_token!(["public::echo"])
-
-      conn =
-        endpoint_mcp_conn(
-          %{
-            "jsonrpc" => "2.0",
-            "method" => "tools/call",
-            "id" => 1,
-            "params" => %{"name" => "skill::search", "arguments" => %{"query" => "test"}}
-          },
-          token.value
-        )
-
-      assert conn.status == 403
-      assert Jason.decode!(conn.resp_body)["error"]["code"] == -32_001
-
-      assert [challenge] = get_resp_header(conn, "www-authenticate")
-      assert challenge =~ ~s(error="insufficient_scope")
-      assert challenge =~ ~s(scope="skill::search")
-      assert challenge =~ Resources.metadata_uri(:mcp)
-    end
-
     test "single PAT tool denial remains HTTP 200 without an OAuth challenge" do
       {_client, token} =
         BackplaneMcp.Fixtures.insert_client(name: "pat-denial", scopes: ["public::echo"])
@@ -2095,15 +2072,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     |> put_req_header("accept", "text/event-stream")
     |> put_req_header("authorization", "Bearer #{token}")
     |> McpPlug.call(McpPlug.init([]))
-  end
-
-  defp endpoint_mcp_conn(body, token) do
-    conn =
-      conn(:post, "/mcp", Jason.encode!(body))
-      |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer #{token}")
-
-    Backplane.Api.Endpoint.call(conn, Backplane.Api.Endpoint.init([]))
   end
 
   defp direct_mcp_conn(body, token) do
