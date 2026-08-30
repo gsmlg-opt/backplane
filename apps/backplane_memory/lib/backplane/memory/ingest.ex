@@ -303,8 +303,6 @@ defmodule Backplane.Memory.Ingest do
        else: {:error, :invalid_partition}
   end
 
-  defp validate_prepared_partition(_attrs), do: {:error, :invalid_partition}
-
   defp persist(event_id, attrs, opts) do
     store = Keyword.get(opts, :store, Store)
     store_opts = Keyword.take(opts, [:repo, :telemetry])
