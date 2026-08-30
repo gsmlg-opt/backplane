@@ -33,6 +33,7 @@ defmodule BackplaneMcp.MixProject do
       {:backplane_mcp_protocol, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},
+      {:backplane_memory, in_umbrella: true, only: [:dev, :test], runtime: false},
       {:day_ex, in_umbrella: true},
       {:math_ex, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},

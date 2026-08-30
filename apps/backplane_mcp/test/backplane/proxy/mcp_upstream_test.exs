@@ -86,7 +86,7 @@ defmodule Backplane.Proxy.McpUpstreamTest do
     end
 
     test "runtime config preserves all runtime fields and the selected preference" do
-      assert function_exported?(Upstreams, :runtime_config, 1)
+      assert Code.ensure_loaded?(Upstreams)
 
       upstream =
         struct!(McpUpstream,
@@ -123,7 +123,7 @@ defmodule Backplane.Proxy.McpUpstreamTest do
     end
 
     test "runtime config falls back to legacy defaults for nullable historical values" do
-      assert function_exported?(Upstreams, :runtime_config, 1)
+      assert Code.ensure_loaded?(Upstreams)
 
       upstream =
         struct!(McpUpstream,
