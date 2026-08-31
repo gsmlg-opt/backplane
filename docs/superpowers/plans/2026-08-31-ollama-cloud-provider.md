@@ -51,8 +51,33 @@ assert has_element?(view, "button[phx-value-preset='ollama-cloud']", "Ollama Clo
 
 - [ ] Run `devenv shell -- mix test apps/backplane_llama/test/backplane/llm/provider_preset_test.exs apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs`. RED must show the missing auth type and OAuth options still present.
 - [ ] Add `credential_auth_type: "api_key"` immediately after `credential_kind` in the cloud map.
-- [ ] Rerun the same command; GREEN must be 11 + 19 = 30 tests, 0 failures. Run exact-file formatting for these three files and `git diff --check`.
-- [ ] Commit only these three files as `fix(llm): constrain Ollama Cloud credentials`.
+- [ ] Run the exact scoped GREEN test, format, checks, review, and commit commands:
+
+```bash
+devenv shell -- mix test \
+  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
+  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
+devenv shell -- mix format \
+  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
+  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
+  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
+devenv shell -- mix format --check-formatted \
+  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
+  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
+  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
+git diff --check
+git diff -- \
+  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
+  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
+  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
+git add \
+  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
+  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
+  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
+git commit -m "fix(llm): constrain Ollama Cloud credentials"
+```
+
+  Expected: 11 + 19 = 30 tests, formatting and checks exit 0, `git diff --check` is quiet, and the commit contains exactly the three scoped paths.
 
 ### Task 3: Preserve renamed Ollama Cloud Bearer auth test-first
 
@@ -82,8 +107,28 @@ end
 
 - [ ] Run `devenv shell -- mix test apps/backplane_llama/test/backplane/llm/credential_plug_test.exs`. RED must show `x-api-key` instead of the expected Bearer header.
 - [ ] Add exactly `defp anthropic_api?(%Provider{preset_key: "ollama-cloud"}), do: false` before the existing name heuristic, leaving all other behavior unchanged.
-- [ ] Rerun the focused command; GREEN must be 17 tests, 0 failures. Run exact-file formatting for both files and `git diff --check`.
-- [ ] Commit only these two files as `fix(llm): preserve Ollama Cloud bearer auth`.
+- [ ] Run the exact scoped GREEN test, format, checks, review, and commit commands:
+
+```bash
+devenv shell -- mix test \
+  apps/backplane_llama/test/backplane/llm/credential_plug_test.exs
+devenv shell -- mix format \
+  apps/backplane_llama/lib/backplane/llm/credential_plug.ex \
+  apps/backplane_llama/test/backplane/llm/credential_plug_test.exs
+devenv shell -- mix format --check-formatted \
+  apps/backplane_llama/lib/backplane/llm/credential_plug.ex \
+  apps/backplane_llama/test/backplane/llm/credential_plug_test.exs
+git diff --check
+git diff -- \
+  apps/backplane_llama/lib/backplane/llm/credential_plug.ex \
+  apps/backplane_llama/test/backplane/llm/credential_plug_test.exs
+git add \
+  apps/backplane_llama/lib/backplane/llm/credential_plug.ex \
+  apps/backplane_llama/test/backplane/llm/credential_plug_test.exs
+git commit -m "fix(llm): preserve Ollama Cloud bearer auth"
+```
+
+  Expected: 17 tests, formatting and checks exit 0, `git diff --check` is quiet, and the commit contains exactly the two scoped paths.
 
 ### Task 4: Record project knowledge and final evidence
 
