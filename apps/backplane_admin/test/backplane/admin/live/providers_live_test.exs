@@ -60,6 +60,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "OpenCode Go"
       assert html =~ "OpenRouter"
       assert html =~ "Ollama"
+      assert html =~ "Ollama Cloud"
       assert html =~ "Custom"
       assert html =~ "OpenAI"
       assert html =~ "OpenAI Codex"
@@ -135,6 +136,24 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert moonshot_html =~ "moonshot-cn"
       assert moonshot_html =~ "https://api.moonshot.cn/v1"
       refute moonshot_html =~ "http://localhost:11434/v1"
+    end
+
+    test "ollama cloud preset populates hosted compatibility defaults", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='ollama-cloud']")
+      |> render_click()
+
+      assert has_element?(view, "#provider-name[value='ollama-cloud']")
+      assert has_element?(view, "#provider-base-url[value='https://ollama.com']")
+      assert has_element?(view, "#provider-openai-base-url[value='https://ollama.com/v1']")
+      assert has_element?(view, "#provider-anthropic-base-url[value='https://ollama.com']")
+
+      refute has_element?(
+               view,
+               "#provider-openai-base-url[value='http://localhost:11434/v1']"
+             )
     end
 
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do

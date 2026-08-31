@@ -11,6 +11,7 @@ defmodule Backplane.LLM.ProviderPresetTest do
              "opencode",
              "openrouter",
              "ollama",
+             "ollama-cloud",
              "custom",
              "openai",
              "openai-codex",
@@ -71,6 +72,21 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert preset.openai.discovery_path == "/models"
     assert preset.anthropic.enabled
     assert preset.anthropic.base_url == "http://localhost:11434"
+    assert preset.anthropic.discovery_path == "/v1/models"
+  end
+
+  test "ollama cloud uses hosted openai and anthropic compatibility defaults" do
+    preset = ProviderPreset.fetch!("ollama-cloud")
+
+    assert preset.name == "Ollama Cloud"
+    assert preset.default_name == "ollama-cloud"
+    assert preset.credential_kind == "llm"
+    assert preset.default_base_url == "https://ollama.com"
+    assert preset.openai.enabled
+    assert preset.openai.base_url == "https://ollama.com/v1"
+    assert preset.openai.discovery_path == "/models"
+    assert preset.anthropic.enabled
+    assert preset.anthropic.base_url == "https://ollama.com"
     assert preset.anthropic.discovery_path == "/v1/models"
   end
 
