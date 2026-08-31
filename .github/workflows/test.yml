@@ -22,8 +22,30 @@ env:
 
 jobs:
   test:
-    name: Test
+    name: Test (${{ matrix.app }})
     runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - backplane
+          - backplane_admin
+          - backplane_api
+          - backplane_auth
+          - backplane_data_case
+          - backplane_host_agent
+          - backplane_llama
+          - backplane_mcp
+          - backplane_mcp_protocol
+          - backplane_memory
+          - backplane_monitor
+          - backplane_skills
+          - backplane_system
+          - backplane_telemetry
+          - day_ex
+          - math_ex
+          - relayixir
 
     steps:
       - name: Checkout code
@@ -51,8 +73,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -82,7 +104,8 @@ jobs:
 
       - name: Run tests
         run: |
-          mix do --app backplane_mcp cmd mix test test/backplane/services/web_fetch_test.exs
-          mix do --app day_ex cmd mix test
-          mix do --app relayixir cmd mix test
-          mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+          if [ "${{ matrix.app }}" = "backplane_memory" ]; then
+            mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+          else
+            mix do --app ${{ matrix.app }} cmd mix test
+          fi

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+  pull_request:
 
 permissions:
   contents: read
@@ -85,6 +85,45 @@ jobs:
 
       - name: Check code formatting
         run: mix format --check-formatted
+
+  workflow-contract:
+    name: Workflow Contract
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Verify CI workflow contract
+        run: mix run --no-start test/ci_workflow_test.exs
 
   credo:
     name: Credo

@@ -588,6 +588,11 @@ defmodule Backplane.Memory.PromptsTest do
       end
 
     repo().update_all(
+      from(row in Crystal, where: row.id in ^extra_crystal_ids),
+      set: [updated_at: ~N[2026-08-13 00:00:00]]
+    )
+
+    repo().update_all(
       from(row in Crystal, where: row.id == ^crystal_id),
       set: [updated_at: NaiveDateTime.utc_now()]
     )

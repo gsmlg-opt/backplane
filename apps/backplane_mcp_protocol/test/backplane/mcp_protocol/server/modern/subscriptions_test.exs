@@ -204,32 +204,33 @@ defmodule Backplane.McpProtocol.Server.Modern.SubscriptionsTest do
   end
 
   test "removes all subscriptions when a monitored subscriber exits", %{hub: hub} do
-    parent = self()
-
     subscriber =
       spawn(fn ->
-        {:ok, ref} =
-          Subscriptions.subscribe(
-            hub,
-            self(),
-            subscription_context("monitored", %{"toolsListChanged" => true})
-          )
-
-        send(parent, {:subscribed, ref})
-
         receive do
           :stop -> :ok
         end
       end)
 
-    assert_receive {:subscribed, ref}
-    monitor = Process.monitor(subscriber)
+    on_exit(fn ->
+      if Process.alive?(subscriber), do: Process.exit(subscriber, :kill)
+    end)
+
+    assert {:ok, ref} =
+             Subscriptions.subscribe(
+               hub,
+               subscriber,
+               subscription_context("monitored", %{"toolsListChanged" => true})
+             )
+
+    assert %{subscriptions: %{^ref => %{subscriber: ^subscriber}}} = :sys.get_state(hub)
+
     send(subscriber, :stop)
-    assert_receive {:DOWN, ^monitor, :process, ^subscriber, :normal}
     await_subscription_count(hub, 0)
 
-    assert :ok = Subscriptions.publish(hub, notification("notifications/tools/list_changed", %{}))
-    refute_receive {:mcp_subscription, ^ref, _}
+    state = :sys.get_state(hub)
+    assert state.subscriptions == %{}
+    assert state.subscribers == %{}
+    assert state.monitor_refs == %{}
   end
 
   test "graceful close sends one stamped complete result and clears every subscription", %{hub: hub} do

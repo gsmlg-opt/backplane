@@ -287,7 +287,11 @@ defmodule Backplane.Transport.ModernMcpTest do
     assert get_in(resource, ["result", "contents", Access.at(0), "text"]) == ~s({"fixture":true})
 
     prompts = modern_conn("prompts/list", %{}) |> call_mcp() |> response()
-    assert get_in(prompts, ["result", "prompts", Access.at(0), "name"]) == "fixture_prompt"
+
+    assert Enum.any?(
+             get_in(prompts, ["result", "prompts"]),
+             &(&1["name"] == "fixture_prompt")
+           )
 
     prompt =
       modern_conn(

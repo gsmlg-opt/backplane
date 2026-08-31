@@ -37,6 +37,7 @@ defmodule BackplaneAuth.MixProject do
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
       {:jason, "~> 1.4"},
+      {:tzdata, "~> 1.1"},
       {:plug, "~> 1.16"}
     ]
   end
