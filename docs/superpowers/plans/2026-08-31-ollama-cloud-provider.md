@@ -4,7 +4,7 @@
 
 **Goal:** Add a dedicated Ollama Cloud choice to the Add LLM Provider page without changing the existing local Ollama preset.
 
-**Architecture:** Extend the static `Backplane.LLM.ProviderPreset` catalog with one `ollama-cloud` entry. The existing LiveView renders and selects catalog entries automatically, so implementation code stays in the catalog while focused unit and LiveView tests protect the visible option and exact form defaults.
+**Architecture:** Add a static `Backplane.LLM.ProviderPreset` `ollama-cloud` entry with an API-key credential constraint, plus a narrow `CredentialPlug` `ollama-cloud` clause that keeps Anthropic-surface Bearer auth independent of the editable provider display name. The existing LiveView remains catalog-driven and focused tests protect the visible option, exact form defaults, and both auth safeguards.
 
 **Tech Stack:** Elixir 1.18, Phoenix LiveView, ExUnit, PostgreSQL through devenv
 
@@ -264,7 +264,7 @@ Call `mcp__agent_note__save_note` with:
 ```json
 {
   "title": "Backplane adds a dedicated Ollama Cloud LLM provider preset",
-  "content": "Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. Both surfaces reuse Backplane's existing Bearer credential handling. Verification: provider preset and provider LiveView scoped tests pass, formatting passes, and `git diff --check` passes.",
+  "content": "Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. The preset enforces API-key-only credential selection, and the narrow CredentialPlug clause preserves Bearer auth for renamed providers. Verification: ProviderPreset, provider LiveView, and CredentialPlug scoped suites pass (47 tests), formatting passes, and `git diff --check` passes.",
   "labels": [["project", "backplane"]]
 }
 ```
@@ -275,4 +275,4 @@ Expected: the tool returns a new note id and revision.
 
 ## Scope Guard
 
-Stop when the preset, the two focused test files, the final scoped checks, and the Agent Note are complete. Report but do not fix unrelated dependency advisories, the pre-existing LiveView missing-form-id warnings, or failures outside these scoped files.
+Stop when the preset, the three focused test files, the final scoped checks, and the Agent Note are complete. Report but do not fix unrelated dependency advisories, the pre-existing LiveView missing-form-id warnings, or failures outside these scoped files.
