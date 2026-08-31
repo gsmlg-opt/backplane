@@ -21,214 +21,69 @@
 
 ### Task 1: Add the Ollama Cloud preset test-first
 
-**Files:**
+**Files:** `provider_preset_test.exs`, `providers_live_test.exs`, and `provider_preset.ex`
 
-- Modify: `apps/backplane_llama/test/backplane/llm/provider_preset_test.exs:6-75`
-- Modify: `apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs:53-138`
-- Modify: `apps/backplane_llama/lib/backplane/llm/provider_preset.ex:154-176`
-
-- [ ] **Step 1: Add the failing preset catalog expectations**
-
-Add `"ollama-cloud"` immediately after `"ollama"` in the expected `ProviderPreset.keys/0` list. Add this test after the existing local Ollama test:
-
-```elixir
-test "ollama cloud uses hosted openai and anthropic compatibility defaults" do
-  preset = ProviderPreset.fetch!("ollama-cloud")
-
-  assert preset.name == "Ollama Cloud"
-  assert preset.default_name == "ollama-cloud"
-  assert preset.credential_kind == "llm"
-  assert preset.credential_auth_type == "api_key"
-  assert preset.default_base_url == "https://ollama.com"
-  assert preset.openai.enabled
-  assert preset.openai.base_url == "https://ollama.com/v1"
-  assert preset.openai.discovery_path == "/models"
-  assert preset.anthropic.enabled
-  assert preset.anthropic.base_url == "https://ollama.com"
-  assert preset.anthropic.discovery_path == "/v1/models"
-end
-```
-
-- [ ] **Step 2: Add the failing Add Provider page expectations**
-
-Change the dedicated new-provider-page test to retain `view`, then assert separate cards with `has_element?(view, "button[phx-value-preset='ollama']", "Ollama")` and `has_element?(view, "button[phx-value-preset='ollama-cloud']", "Ollama Cloud")` (alongside the text assertion). Add this separate selection test after the existing provider-preset selection test:
-
-```elixir
-test "ollama cloud preset populates hosted compatibility defaults", %{conn: conn} do
-  {:ok, view, _html} = live(conn, "/llama/providers/new")
-
-  view
-  |> element("button[phx-value-preset='ollama-cloud']")
-  |> render_click()
-
-  assert has_element?(view, "#provider-name[value='ollama-cloud']")
-  assert has_element?(view, "#provider-base-url[value='https://ollama.com']")
-  assert has_element?(view, "#provider-openai-base-url[value='https://ollama.com/v1']")
-  assert has_element?(view, "#provider-anthropic-base-url[value='https://ollama.com']")
-  assert has_element?(view, "#provider-credential option[value='test-cred']")
-  refute has_element?(view, "#provider-credential option[value='openai-codex']")
-  refute has_element?(view, "#provider-credential option[value='google-antigravity']")
-
-  refute has_element?(
-           view,
-           "#provider-openai-base-url[value='http://localhost:11434/v1']"
-         )
-end
-```
-
-- [ ] **Step 3: Run the scoped tests and verify RED**
-
-Run:
-
-```bash
-devenv shell -- mix test \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-```
-
-Expected: FAIL because `ollama-cloud` is absent from `ProviderPreset.keys/0`, `ProviderPreset.fetch!/1` raises for the unknown key, and the LiveView has no `ollama-cloud` preset button.
-
-- [ ] **Step 4: Add the minimal static preset**
-
-Insert this map immediately after the existing `ollama` preset and before `custom` in `Backplane.LLM.ProviderPreset`:
-
-```elixir
-%{
-  key: "ollama-cloud",
-  name: "Ollama Cloud",
-  default_name: "ollama-cloud",
-  credential_kind: "llm",
-  credential_auth_type: "api_key",
-  default_base_url: "https://ollama.com",
-  openai: %{
-    enabled: true,
-    base_url: "https://ollama.com/v1",
-    discovery_path: "/models"
-  },
-  anthropic: %{
-    enabled: true,
-    base_url: "https://ollama.com",
-    discovery_path: "/v1/models"
-  },
-  notes:
-    "Ollama Cloud exposes hosted OpenAI-compatible and Anthropic-compatible endpoints using an Ollama API key.",
-  docs_urls: [
-    "https://docs.ollama.com/cloud",
-    "https://docs.ollama.com/api/authentication",
-    "https://docs.ollama.com/api/openai-compatibility",
-    "https://docs.ollama.com/api/anthropic-compatibility"
-  ]
-},
-```
-
-- [ ] **Step 5: Format the changed Elixir files**
-
-Run:
-
-```bash
-devenv shell -- mix format \
-  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-```
-
-Expected: command exits 0.
-
-- [ ] **Step 6: Run the scoped tests and verify GREEN**
-
-Run:
-
-```bash
-devenv shell -- mix test \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-```
-
-Expected: 11 + 19 = 30 tests, 0 failures. Existing LiveView missing-form-id warnings may remain; do not widen scope to fix them.
-
-- [ ] **Step 7: Run static scoped checks**
-
-Run:
-
-```bash
-devenv shell -- mix format --check-formatted \
-  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-git diff --check
-```
-
-Expected: both commands exit 0 with no output from `git diff --check`.
-
-- [ ] **Step 8: Review and commit the implementation**
-
-Inspect only the approved files:
-
-```bash
-git diff -- \
-  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-```
-
-Stage and commit them:
-
-```bash
-git add \
-  apps/backplane_llama/lib/backplane/llm/provider_preset.ex \
-  apps/backplane_llama/test/backplane/llm/provider_preset_test.exs \
-  apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs
-git commit -m "feat(llm): add Ollama Cloud provider preset"
-```
-
-Expected: one feature commit containing only the preset and its focused tests.
+- [ ] Add `"ollama-cloud"` after `"ollama"`, and add the cloud preset test with exact name, default name, credential kind, URLs, enabled surfaces, and discovery paths (without an auth-type assertion).
+- [ ] Add `assert html =~ "Ollama Cloud"` and the cloud selection test asserting the four cloud form values plus the local OpenAI URL is absent. Do not add OAuth filtering or exact local/cloud button selectors in this task.
+- [ ] Run the two scoped files. RED must show the missing key, unknown preset, and missing cloud button.
+- [ ] Add the static preset map after local Ollama and before custom, without `credential_auth_type`.
+- [ ] Run `devenv shell -- mix format` on the three files, then rerun the two files. GREEN must be 11 + 19 = 30 tests, 0 failures.
+- [ ] Run exact-file `mix format --check-formatted` and `git diff --check`; commit only the three files as `feat(llm): add Ollama Cloud provider preset`.
 
 ### Task 2: Constrain Ollama Cloud credentials test-first
 
-**Files:**
+**Files:** the same preset/UI files as Task 1.
 
-- Modify: `apps/backplane_llama/test/backplane/llm/provider_preset_test.exs`
-- Modify: `apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs`
-- Modify: `apps/backplane_llama/lib/backplane/llm/provider_preset.ex`
+- [ ] Add `assert preset.credential_auth_type == "api_key"` to the cloud unit test. In the existing cloud LiveView selection test, add:
 
-- [ ] **Step 1: Add failing API-key expectations**
+```elixir
+assert has_element?(view, "#provider-credential option[value='test-cred']")
+refute has_element?(view, "#provider-credential option[value='openai-codex']")
+refute has_element?(view, "#provider-credential option[value='google-antigravity']")
+```
 
-Assert `preset.credential_auth_type == "api_key"` and verify the API-key credential remains available while `openai-codex` and `google-antigravity` are absent after selecting Ollama Cloud.
+  In the dedicated new-provider-page test, retain `view` and add:
 
-- [ ] **Step 2: Run the two scoped files and verify RED**
+```elixir
+assert has_element?(view, "button[phx-value-preset='ollama']", "Ollama")
+assert has_element?(view, "button[phx-value-preset='ollama-cloud']", "Ollama Cloud")
+```
 
-Expected: the new auth-type assertion fails and OAuth credential options remain visible.
-
-- [ ] **Step 3: Add `credential_auth_type: "api_key"`**
-
-Insert it immediately after `credential_kind` in the Ollama Cloud preset. The existing provider form filtering then enforces API-key-only selection.
-
-- [ ] **Step 4: Run the two scoped files and verify GREEN**
-
-Expected: 11 + 19 tests, 0 failures.
+- [ ] Run `devenv shell -- mix test apps/backplane_llama/test/backplane/llm/provider_preset_test.exs apps/backplane_admin/test/backplane/admin/live/providers_live_test.exs`. RED must show the missing auth type and OAuth options still present.
+- [ ] Add `credential_auth_type: "api_key"` immediately after `credential_kind` in the cloud map.
+- [ ] Rerun the same command; GREEN must be 11 + 19 = 30 tests, 0 failures. Run exact-file formatting for these three files and `git diff --check`.
+- [ ] Commit only these three files as `fix(llm): constrain Ollama Cloud credentials`.
 
 ### Task 3: Preserve renamed Ollama Cloud Bearer auth test-first
 
-**Files:**
+**Files:** `apps/backplane_llama/test/backplane/llm/credential_plug_test.exs` and `apps/backplane_llama/lib/backplane/llm/credential_plug.ex`
 
-- Modify: `apps/backplane_llama/test/backplane/llm/credential_plug_test.exs`
-- Modify: `apps/backplane_llama/lib/backplane/llm/credential_plug.ex`
+- [ ] Add this complete regression test under `describe "build_auth_headers/1"`:
 
-- [ ] **Step 1: Add the failing regression test**
+```elixir
+test "preserves bearer auth for a renamed Ollama Cloud provider" do
+  Credentials.store("ollama-cloud-cred", "ollama-cloud-test-token", "llm")
 
-Create an API-key credential and an Anthropic-surface provider named `anthropic-via-ollama` with `preset_key: "ollama-cloud"`; assert `build_auth_headers/1` returns `{"authorization", "Bearer <test token>"}` and not `{"x-api-key", "<test token>"}`.
+  {:ok, provider} =
+    Provider.create(%{
+      name: "anthropic-via-ollama",
+      preset_key: "ollama-cloud",
+      api_type: :anthropic,
+      api_url: "https://ollama.com",
+      credential: "ollama-cloud-cred",
+      models: ["llama3.2"]
+    })
 
-- [ ] **Step 2: Run the focused test and verify RED**
+  assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+  assert {"authorization", "Bearer ollama-cloud-test-token"} in headers
+  refute {"x-api-key", "ollama-cloud-test-token"} in headers
+end
+```
 
-Expected: the current name heuristic emits `x-api-key`.
-
-- [ ] **Step 3: Add the narrow preset override**
-
-Add `defp anthropic_api?(%Provider{preset_key: "ollama-cloud"}), do: false` before the existing name heuristic. Preserve all other preset and legacy behavior.
-
-- [ ] **Step 4: Run the focused test and verify GREEN**
-
-Expected: 17 tests, 0 failures.
+- [ ] Run `devenv shell -- mix test apps/backplane_llama/test/backplane/llm/credential_plug_test.exs`. RED must show `x-api-key` instead of the expected Bearer header.
+- [ ] Add exactly `defp anthropic_api?(%Provider{preset_key: "ollama-cloud"}), do: false` before the existing name heuristic, leaving all other behavior unchanged.
+- [ ] Rerun the focused command; GREEN must be 17 tests, 0 failures. Run exact-file formatting for both files and `git diff --check`.
+- [ ] Commit only these two files as `fix(llm): preserve Ollama Cloud bearer auth`.
 
 ### Task 4: Record project knowledge and final evidence
 
@@ -263,7 +118,7 @@ First call `mcp__agent_note__read_note_lines` with the exact existing note id `a
 
 Use the returned `revision` and `tag` unchanged in `mcp__agent_note__edit_note`. Submit one `swap` edit spanning line 1 through the final numbered body line, replacing the full body with this refreshed body:
 
-> Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. The preset enforces API-key-only credential selection, and the narrow CredentialPlug clause preserves Bearer auth for renamed providers. Verification: ProviderPreset, provider LiveView, and CredentialPlug scoped suites pass (47 tests), formatting passes, and `git diff --check` passes.
+> Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. The preset only accepts API-key credentials, excluding unrelated OAuth tokens, and renamed Ollama Cloud providers retain `Authorization: Bearer` on the Anthropic-compatible surface. Verification: 28 scoped Backplane Llama tests and 19 provider LiveView tests pass, formatting passes, and `git diff --check` passes.
 
 The expected title (`Backplane adds a dedicated Ollama Cloud LLM provider preset`) and `project: backplane` label are invariants; `edit_note` changes only the body.
 
