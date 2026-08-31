@@ -178,6 +178,7 @@ defmodule Backplane.LLM.ProviderPreset do
       name: "Ollama Cloud",
       default_name: "ollama-cloud",
       credential_kind: "llm",
+      credential_auth_type: "api_key",
       default_base_url: "https://ollama.com",
       openai: %{
         enabled: true,

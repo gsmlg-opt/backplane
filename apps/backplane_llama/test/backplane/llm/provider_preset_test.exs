@@ -81,6 +81,7 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert preset.name == "Ollama Cloud"
     assert preset.default_name == "ollama-cloud"
     assert preset.credential_kind == "llm"
+    assert preset.credential_auth_type == "api_key"
     assert preset.default_base_url == "https://ollama.com"
     assert preset.openai.enabled
     assert preset.openai.base_url == "https://ollama.com/v1"
