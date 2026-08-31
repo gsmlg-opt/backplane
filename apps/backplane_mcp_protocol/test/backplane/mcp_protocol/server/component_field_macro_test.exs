@@ -13,6 +13,7 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
   describe "field macro with nested do blocks" do
     test "generates correct JSON Schema with nested fields" do
       json_schema = NestedFieldTool.input_schema()
+      json_schema = update_in(json_schema["properties"]["address"]["required"], &Enum.sort/1)
 
       assert json_schema == %{
                "type" => "object",
@@ -33,7 +34,7 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
                        "format" => "postal-code"
                      }
                    },
-                   "required" => ["street", "city"]
+                   "required" => ["city", "street"]
                  },
                  "contact" => %{
                    "type" => "object",
@@ -102,6 +103,7 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
       alias TestTools.EnumWithTypeTool
 
       json_schema = EnumWithTypeTool.input_schema()
+      json_schema = update_in(json_schema["required"], &Enum.sort/1)
 
       assert json_schema == %{
                "type" => "object",
@@ -135,9 +137,14 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
     test "supports deeply nested fields" do
       json_schema = DeeplyNestedTool.input_schema()
 
-      assert json_schema["properties"]["organization"]["properties"]["admin"][
-               "properties"
-             ]["permissions"] == %{
+      permissions_schema =
+        json_schema["properties"]["organization"]["properties"]["admin"]["properties"][
+          "permissions"
+        ]
+
+      permissions_schema = update_in(permissions_schema["required"], &Enum.sort/1)
+
+      assert permissions_schema == %{
                "type" => "object",
                "properties" => %{
                  "read" => %{"type" => "boolean"},
@@ -369,7 +376,7 @@ defmodule Backplane.McpProtocol.Server.ComponentFieldMacroTest do
       assert features_props["config"]["maxLength"] == 200
 
       # Test nested required fields
-      assert json_schema["required"] == ["title", "settings"]
+      assert Enum.sort(json_schema["required"]) == ["settings", "title"]
       assert json_schema["properties"]["settings"]["required"] == ["environment"]
       # Required fields order doesn't matter, just check both are present
       required_fields = json_schema["properties"]["features"]["items"]["required"]
