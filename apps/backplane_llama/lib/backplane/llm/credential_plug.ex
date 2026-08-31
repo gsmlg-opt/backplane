@@ -149,6 +149,8 @@ defmodule Backplane.LLM.CredentialPlug do
   defp base_headers(_provider, :openai, _auth_type, token),
     do: [{"authorization", "Bearer #{token}"}]
 
+  defp anthropic_api?(%Provider{preset_key: "ollama-cloud"}), do: false
+
   defp anthropic_api?(%Provider{} = provider) do
     preset_key = provider.preset_key
     name = provider.name || ""

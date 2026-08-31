@@ -174,6 +174,32 @@ defmodule Backplane.LLM.ProviderPreset do
       ]
     },
     %{
+      key: "ollama-cloud",
+      name: "Ollama Cloud",
+      default_name: "ollama-cloud",
+      credential_kind: "llm",
+      credential_auth_type: "api_key",
+      default_base_url: "https://ollama.com",
+      openai: %{
+        enabled: true,
+        base_url: "https://ollama.com/v1",
+        discovery_path: "/models"
+      },
+      anthropic: %{
+        enabled: true,
+        base_url: "https://ollama.com",
+        discovery_path: "/v1/models"
+      },
+      notes:
+        "Ollama Cloud exposes hosted OpenAI-compatible and Anthropic-compatible endpoints using an Ollama API key.",
+      docs_urls: [
+        "https://docs.ollama.com/cloud",
+        "https://docs.ollama.com/api/authentication",
+        "https://docs.ollama.com/api/openai-compatibility",
+        "https://docs.ollama.com/api/anthropic-compatibility"
+      ]
+    },
+    %{
       key: "custom",
       name: "Custom",
       default_name: "custom",

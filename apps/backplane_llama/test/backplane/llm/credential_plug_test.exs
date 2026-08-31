@@ -162,32 +162,55 @@ defmodule Backplane.LLM.CredentialPlugTest do
 
     test "returns authorization bearer header for third-party anthropic-compatible provider" do
       Credentials.store("minimax-cred", "sk-minimax-key-9999", "llm")
-      {:ok, provider} = Provider.create(%{
-        name: "cred-plug-minimax",
-        preset_key: "minimax",
-        api_type: :anthropic,
-        api_url: "https://api.minimaxi.com/anthropic",
-        credential: "minimax-cred",
-        models: ["minimax-m2.7"]
-      })
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "cred-plug-minimax",
+          preset_key: "minimax",
+          api_type: :anthropic,
+          api_url: "https://api.minimaxi.com/anthropic",
+          credential: "minimax-cred",
+          models: ["minimax-m2.7"]
+        })
 
       assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
       assert {"authorization", "Bearer sk-minimax-key-9999"} in headers
       refute {"x-api-key", "sk-minimax-key-9999"} in headers
+    end
+
+    test "preserves bearer auth for a renamed Ollama Cloud provider" do
+      Credentials.store("ollama-cloud-cred", "ollama-cloud-test-token", "llm")
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "anthropic-via-ollama",
+          preset_key: "ollama-cloud",
+          api_type: :anthropic,
+          api_url: "https://ollama.com",
+          credential: "ollama-cloud-cred",
+          models: ["llama3.2"]
+        })
+
+      assert {:ok, headers} = CredentialPlug.build_auth_headers(provider)
+      assert {"authorization", "Bearer ollama-cloud-test-token"} in headers
+      refute {"x-api-key", "ollama-cloud-test-token"} in headers
     end
   end
 
   describe "inject/2 with third-party anthropic-compatible provider" do
     setup do
       Credentials.store("minimax-cred", "sk-minimax-key-9999", "llm")
-      {:ok, provider} = Provider.create(%{
-        name: "cred-plug-minimax",
-        preset_key: "minimax",
-        api_type: :anthropic,
-        api_url: "https://api.minimaxi.com/anthropic",
-        credential: "minimax-cred",
-        models: ["minimax-m2.7"]
-      })
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "cred-plug-minimax",
+          preset_key: "minimax",
+          api_type: :anthropic,
+          api_url: "https://api.minimaxi.com/anthropic",
+          credential: "minimax-cred",
+          models: ["minimax-m2.7"]
+        })
+
       {:ok, provider: provider}
     end
 
