@@ -227,7 +227,10 @@ defmodule Backplane.McpProtocol.Server.Modern.SubscriptionsTest do
     send(subscriber, :stop)
     await_subscription_count(hub, 0)
 
-    assert %{subscriptions: %{}, subscribers: %{}, monitor_refs: %{}} = :sys.get_state(hub)
+    state = :sys.get_state(hub)
+    assert state.subscriptions == %{}
+    assert state.subscribers == %{}
+    assert state.monitor_refs == %{}
   end
 
   test "graceful close sends one stamped complete result and clears every subscription", %{hub: hub} do
