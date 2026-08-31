@@ -257,19 +257,17 @@ git status --short --branch
 
 Expected: 11 + 19 + 17 = 47 tests, 0 failures; formatting and diff checks pass; the branch is clean.
 
-- [ ] **Step 2: Save the required Agent Note**
+- [ ] **Step 2: Update the required Agent Note in place**
 
-Call `mcp__agent_note__save_note` with:
+First call `mcp__agent_note__read_note_lines` with the exact existing note id `a3c8b5fe-d602-40c1-8097-300115439bea`.
 
-```json
-{
-  "title": "Backplane adds a dedicated Ollama Cloud LLM provider preset",
-  "content": "Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. The preset enforces API-key-only credential selection, and the narrow CredentialPlug clause preserves Bearer auth for renamed providers. Verification: ProviderPreset, provider LiveView, and CredentialPlug scoped suites pass (47 tests), formatting passes, and `git diff --check` passes.",
-  "labels": [["project", "backplane"]]
-}
-```
+Use the returned `revision` and `tag` unchanged in `mcp__agent_note__edit_note`. Submit one `swap` edit spanning line 1 through the final numbered body line, replacing the full body with this refreshed body:
 
-Expected: the tool returns a new note id and revision.
+> Added the `ollama-cloud` provider preset beside the unchanged local `ollama` preset. Ollama Cloud defaults to `https://ollama.com/v1` for OpenAI compatibility and `https://ollama.com` for Anthropic Messages, with `/models` and `/v1/models` discovery paths respectively. The preset enforces API-key-only credential selection, and the narrow CredentialPlug clause preserves Bearer auth for renamed providers. Verification: ProviderPreset, provider LiveView, and CredentialPlug scoped suites pass (47 tests), formatting passes, and `git diff --check` passes.
+
+The expected title (`Backplane adds a dedicated Ollama Cloud LLM provider preset`) and `project: backplane` label are invariants; `edit_note` changes only the body.
+
+Then call `mcp__agent_note__get_note` with the exact same note id and verify the expected title, exact refreshed body, and `project: backplane` label. The expected result is the same note id with its revision incremented by one and no duplicate note created.
 
 ---
 
