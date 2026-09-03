@@ -34,6 +34,7 @@ defmodule Backplane.Api.Endpoint do
   end
 
   plug(Plug.RequestId)
+  plug(Backplane.Observability.ContextPlug)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 
   plug(Backplane.LLM.ProxyPlug)

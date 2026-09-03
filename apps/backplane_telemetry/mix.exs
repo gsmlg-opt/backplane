@@ -31,7 +31,8 @@ defmodule BackplaneTelemetry.MixProject do
   defp deps do
     [
       {:telemetry, "~> 1.2"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:plug, "~> 1.16"}
     ]
   end
 end

@@ -1,22 +1,37 @@
 defmodule BackplaneTelemetry.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc false
 
   use Application
 
+  alias Backplane.Observability.Flags
+
   @impl true
   def start(_type, _args) do
     children =
-      if Application.get_env(:backplane_telemetry, :start_logger, true) do
-        [BackplaneTelemetry.TelemetryLogger]
-      else
-        []
-      end
+      []
+      |> maybe_runtime_sink()
+      |> maybe_legacy_logger()
+      |> Enum.reverse()
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: BackplaneTelemetry.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children, strategy: :one_for_one, name: BackplaneTelemetry.Supervisor)
+  end
+
+  defp maybe_runtime_sink(children) do
+    if Flags.runtime_sink?() do
+      [Backplane.Observability.RuntimeSink | children]
+    else
+      children
+    end
+  end
+
+  defp maybe_legacy_logger(children) do
+    start_logger? =
+      Application.get_env(:backplane_telemetry, :start_logger, true) and not Flags.runtime_sink?()
+
+    if start_logger? do
+      [BackplaneTelemetry.TelemetryLogger | children]
+    else
+      children
+    end
   end
 end
