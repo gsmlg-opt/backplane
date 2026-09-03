@@ -32,6 +32,16 @@ defmodule Backplane.LLM.LogWriterTest do
     assert log.raw_response == nil
   end
 
+  test "writer applies dynamic batch and flush settings", %{} do
+    send(LogWriter, {:observability_setting_changed, "observability.writer.batch_size", 1})
+    send(LogWriter, {:observability_setting_changed, "observability.writer.flush_interval_ms", 60_000})
+    :sys.get_state(LogWriter)
+
+    health = LogWriter.health()
+    assert health.batch_size == 1
+    assert health.flush_interval_ms == 60_000
+  end
+
   test "health reflects buffer and insert totals", %{} do
     assert :ok = Buffer.try_enqueue(:llm_proxy, sample_row("evt-health-001"))
     flush_logs!()

@@ -47,7 +47,13 @@ config :backplane, Oban,
        # Durable Activity retention: daily bounded purge with continuation jobs
        {"45 3 * * *", Backplane.Memory.Workers.ActivityRetentionWorker},
        # OAuth credential refresh: every 10 minutes
-       {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker}
+       {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
+       # Observability retention workers
+       {"0 4 * * *", Backplane.Jobs.LlmProxyRetention},
+       {"15 4 * * *", Backplane.Jobs.McpProxyRetention},
+       {"30 4 * * *", Backplane.Jobs.McpToolRetention},
+       {"45 4 * * *", Backplane.Jobs.UsageRetention},
+       {"0 5 * * *", Backplane.Audit.Pruner}
      ]}
   ]
 
@@ -157,7 +163,7 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_file: nil
 
 # Observability v2 feature flags (PR-00). Safe defaults keep legacy behavior.
-# Dynamic system_settings land in a later PR; tests may override these keys.
+# Operational dynamic settings are managed via system_settings (PR-04).
 config :backplane_telemetry,
   observability_v2_enabled: false,
   observability_v2_llm_write: false,

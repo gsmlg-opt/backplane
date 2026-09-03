@@ -53,10 +53,12 @@ defmodule Backplane.Observability.RuntimeSink do
   @impl true
   def init(opts) do
     config = Application.get_env(:backplane_telemetry, __MODULE__, [])
+    merged = Backplane.Observability.RuntimeConfig.runtime_sink_opts(config)
+
     state = %{
-      log_to_logger: Keyword.get(opts, :log_to_logger, Keyword.get(config, :log_to_logger, true)),
-      log_to_console: Keyword.get(opts, :log_to_console, Keyword.get(config, :log_to_console, false)),
-      log_to_file: Keyword.get(opts, :log_to_file, Keyword.get(config, :log_to_file)),
+      log_to_logger: Keyword.get(opts, :log_to_logger, Keyword.fetch!(merged, :log_to_logger)),
+      log_to_console: Keyword.get(opts, :log_to_console, Keyword.fetch!(merged, :log_to_console)),
+      log_to_file: Keyword.get(opts, :log_to_file, Keyword.fetch!(merged, :log_to_file)),
       accepted: 0,
       dropped: 0,
       failures: 0,

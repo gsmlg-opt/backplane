@@ -53,6 +53,26 @@ defmodule Backplane.Observability.Buffer do
     end
   end
 
+  @doc "Updates the bounded capacity for a named buffer."
+  @spec update_capacity(atom(), pos_integer()) :: :ok
+  def update_capacity(name, capacity) when is_atom(name) and is_integer(capacity) and capacity > 0 do
+    case meta(name) do
+      nil ->
+        :ok
+
+      %{atomic: atomic, pid: pid} = meta ->
+        :persistent_term.put(meta_key(name), %{meta | capacity: capacity})
+
+        if :atomics.get(atomic, 1) > capacity do
+          GenServer.call(pid, {:trim_reserved, capacity}, 5_000)
+        else
+          :ok
+        end
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
   @doc "Returns health information for a named buffer."
   @spec health(atom()) :: map()
   def health(name) when is_atom(name) do
@@ -110,6 +130,21 @@ defmodule Backplane.Observability.Buffer do
   @impl true
   def handle_info({:enqueue, event}, state) do
     {:noreply, %{state | queue: :queue.in(event, state.queue)}}
+  end
+
+  @impl true
+  def handle_call({:trim_reserved, capacity}, _from, state) do
+    meta = meta(state.name)
+
+    if meta do
+      current = :atomics.get(meta.atomic, 1)
+
+      if current > capacity do
+        :atomics.sub(meta.atomic, 1, current - capacity)
+      end
+    end
+
+    {:reply, :ok, state}
   end
 
   @impl true

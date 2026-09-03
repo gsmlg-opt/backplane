@@ -4,7 +4,7 @@ defmodule BackplaneLlama.Application do
   use Application
 
   alias Backplane.LLM.{LogWriter, UsageCollector}
-  alias Backplane.Observability.{Buffer, Flags}
+  alias Backplane.Observability.{Buffer, Flags, Settings}
 
   @impl true
   def start(_type, _args) do
@@ -34,7 +34,7 @@ defmodule BackplaneLlama.Application do
     if Flags.llm_write?() do
       children ++
         [
-          {Buffer, [name: :llm_proxy, capacity: Buffer.default_capacity(:llm_proxy)]},
+          {Buffer, [name: :llm_proxy, capacity: Settings.queue_capacity(:llm_proxy)]},
           {LogWriter, llm_log_writer_opts()}
         ]
     else

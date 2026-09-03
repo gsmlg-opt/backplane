@@ -139,6 +139,14 @@ defmodule Backplane.Metrics do
         [:backplane, :memory, :event, :append],
         [:backplane, :memory, :event, :duplicate],
         [:backplane, :memory, :event, :error],
+        [:backplane, :llm_proxy, :request, :stop],
+        [:backplane, :mcp_proxy, :request, :stop],
+        [:backplane, :mcp_proxy, :tool_call, :stop],
+        [:backplane, :observability, :events, :accepted],
+        [:backplane, :observability, :events, :persisted],
+        [:backplane, :observability, :events, :duplicate],
+        [:backplane, :observability, :events, :dropped],
+        [:backplane, :observability, :writer, :failure],
         [:oban, :job, :stop],
         [:oban, :job, :exception]
       ],
@@ -217,6 +225,112 @@ defmodule Backplane.Metrics do
     inc("memory_events_errors")
   end
 
+  def handle_event([:backplane, :llm_proxy, :request, :stop], measurements, metadata, _config) do
+    inc("llm_proxy.requests.total")
+
+    case metadata[:outcome] || get_in(metadata, [:attributes, :outcome]) do
+      "success" -> inc("llm_proxy.requests.success")
+      "error" -> inc("llm_proxy.requests.error")
+      _ -> :ok
+    end
+
+    if provider = metadata[:provider_name] || get_in(metadata, [:attributes, :provider_name]) do
+      inc("llm_proxy.requests.#{provider}")
+    end
+
+    record_timing("llm_proxy.duration", milliseconds_to_microseconds(measurements[:duration_ms]))
+
+    if ttft = measurements[:ttft_ms] do
+      record_timing("llm_proxy.ttft", milliseconds_to_microseconds(ttft))
+    end
+
+    inc("llm_proxy.tokens.input", measurements[:input_tokens] || 0)
+    inc("llm_proxy.tokens.output", measurements[:output_tokens] || 0)
+  end
+
+  def handle_event([:backplane, :mcp_proxy, :request, :stop], measurements, metadata, _config) do
+    inc("mcp_proxy.requests.total")
+
+    if method = metadata[:rpc_method] || get_in(metadata, [:attributes, :rpc_method]) do
+      inc("mcp_proxy.requests.#{method}")
+    end
+
+    if (metadata[:outcome] || get_in(metadata, [:attributes, :outcome])) == "error" do
+      inc("mcp_proxy.requests.error")
+    end
+
+    record_timing(
+      "mcp_proxy.duration",
+      milliseconds_to_microseconds(measurements[:duration_ms])
+    )
+  end
+
+  def handle_event([:backplane, :mcp_proxy, :tool_call, :stop], measurements, metadata, _config) do
+    inc("mcp_proxy.tool_calls.total")
+
+    if tool = metadata[:tool_name] || get_in(metadata, [:attributes, :tool_name]) do
+      inc("mcp_proxy.tool_calls.#{tool}")
+    end
+
+    if (metadata[:outcome] || get_in(metadata, [:attributes, :outcome])) == "error" do
+      inc("mcp_proxy.tool_calls.error")
+    end
+
+    record_timing(
+      "mcp_proxy.upstream.duration",
+      milliseconds_to_microseconds(measurements[:duration_ms])
+    )
+  end
+
+  def handle_event(
+        [:backplane, :observability, :events, :accepted],
+        measurements,
+        metadata,
+        _config
+      ) do
+    inc("observability.events.accepted.#{metadata.domain}", measurements[:count] || 1)
+  end
+
+  def handle_event(
+        [:backplane, :observability, :events, :persisted],
+        measurements,
+        metadata,
+        _config
+      ) do
+    inc("observability.events.persisted.#{metadata.domain}", measurements[:count] || 1)
+
+    if lag_ms = measurements[:persistence_lag_ms] do
+      record_timing("observability.writer.persistence_lag_ms.#{metadata.domain}", lag_ms * 1_000)
+    end
+  end
+
+  def handle_event(
+        [:backplane, :observability, :events, :duplicate],
+        measurements,
+        metadata,
+        _config
+      ) do
+    inc("observability.events.duplicate.#{metadata.domain}", measurements[:count] || 1)
+  end
+
+  def handle_event(
+        [:backplane, :observability, :events, :dropped],
+        measurements,
+        metadata,
+        _config
+      ) do
+    inc("observability.events.dropped.#{metadata.domain}", measurements[:count] || 1)
+  end
+
+  def handle_event(
+        [:backplane, :observability, :writer, :failure],
+        measurements,
+        metadata,
+        _config
+      ) do
+    inc("observability.writer.failures.#{metadata.domain}", measurements[:count] || 1)
+  end
+
   def handle_event([:oban, :job, :stop], measurements, metadata, _config) do
     queue = to_string(metadata.queue)
     worker = to_string(metadata.worker)
@@ -237,4 +351,9 @@ defmodule Backplane.Metrics do
     do: System.convert_time_unit(duration, :native, :microsecond)
 
   defp native_to_microseconds(_duration), do: 0
+
+  defp milliseconds_to_microseconds(duration) when is_integer(duration) and duration >= 0,
+    do: duration * 1_000
+
+  defp milliseconds_to_microseconds(_duration), do: 0
 end

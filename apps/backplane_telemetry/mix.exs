@@ -30,6 +30,8 @@ defmodule BackplaneTelemetry.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:backplane_system, in_umbrella: true},
+      {:backplane_data_case, in_umbrella: true, only: :test},
       {:telemetry, "~> 1.2"},
       {:jason, "~> 1.4"},
       {:plug, "~> 1.16"}

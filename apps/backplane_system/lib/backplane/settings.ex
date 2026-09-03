@@ -282,6 +282,82 @@ defmodule Backplane.Settings do
       value: true,
       type: "boolean",
       desc: "Enable action-chain crystallization"
+    },
+    # Observability v2 policy (PR-04)
+    "observability.llm_proxy.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable LLM proxy observability event emission"
+    },
+    "observability.llm_proxy.persist" => %{
+      value: false,
+      type: "boolean",
+      desc: "Persist LLM proxy access records via the v2 writer"
+    },
+    "observability.llm_proxy.retention_days" => %{
+      value: 90,
+      type: "integer",
+      desc: "LLM proxy access record retention in days (1..3660)"
+    },
+    "observability.llm_proxy.payload_mode" => %{
+      value: "none",
+      type: "string",
+      desc: "LLM payload capture mode: none, hash, sampled, or full"
+    },
+    "observability.llm_proxy.sample_rate" => %{
+      value: 1.0,
+      type: "float",
+      desc: "LLM observability sampling rate (0.0..1.0)"
+    },
+    "observability.mcp_proxy.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable MCP proxy observability event emission"
+    },
+    "observability.mcp_proxy.persist" => %{
+      value: false,
+      type: "boolean",
+      desc: "Persist MCP proxy access records via the v2 writer"
+    },
+    "observability.mcp_proxy.retention_days" => %{
+      value: 30,
+      type: "integer",
+      desc: "MCP proxy access record retention in days (1..3660)"
+    },
+    "observability.mcp_proxy.payload_mode" => %{
+      value: "none",
+      type: "string",
+      desc: "MCP payload capture mode: none, hash, sampled, or full"
+    },
+    "observability.mcp_proxy.sample_rate" => %{
+      value: 1.0,
+      type: "float",
+      desc: "MCP observability sampling rate (0.0..1.0)"
+    },
+    "observability.audit.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable audit log retention and pruning"
+    },
+    "observability.audit.retention_days" => %{
+      value: 180,
+      type: "integer",
+      desc: "Audit log retention in days (1..3660)"
+    },
+    "observability.writer.batch_size" => %{
+      value: nil,
+      type: "integer",
+      desc: "Shared writer batch size override (1..5000); nil uses domain defaults"
+    },
+    "observability.writer.flush_interval_ms" => %{
+      value: 250,
+      type: "integer",
+      desc: "Writer flush interval in milliseconds (50..60000)"
+    },
+    "observability.writer.queue_capacity" => %{
+      value: nil,
+      type: "integer",
+      desc: "Shared writer queue capacity override (100..1000000); nil uses domain defaults"
     }
   }
 
@@ -290,6 +366,10 @@ defmodule Backplane.Settings do
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
+
+  @doc "Returns the seeded default for a known setting key."
+  @spec default_value(String.t()) :: term()
+  def default_value(key) when is_binary(key), do: get_default(key)
 
   @doc "Get a setting value by key. Reads from ETS (fast)."
   @spec get(String.t()) :: term()

@@ -3,12 +3,14 @@ defmodule BackplaneTelemetry.Application do
 
   use Application
 
-  alias Backplane.Observability.Flags
+  alias Backplane.Observability.{Flags, RuntimeConfig, Settings}
 
   @impl true
   def start(_type, _args) do
     children =
-      []
+      [
+        Settings
+      ]
       |> maybe_runtime_sink()
       |> maybe_legacy_logger()
       |> Enum.reverse()
@@ -18,7 +20,7 @@ defmodule BackplaneTelemetry.Application do
 
   defp maybe_runtime_sink(children) do
     if Flags.runtime_sink?() do
-      [Backplane.Observability.RuntimeSink | children]
+      [{Backplane.Observability.RuntimeSink, RuntimeConfig.runtime_sink_opts()} | children]
     else
       children
     end

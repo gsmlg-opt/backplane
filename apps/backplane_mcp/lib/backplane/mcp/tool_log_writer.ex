@@ -11,10 +11,11 @@ defmodule Backplane.MCP.ToolLogWriter do
   require Logger
 
   alias Backplane.MCP.ToolCall
-  alias Backplane.Observability.Buffer
+  alias Backplane.Observability.{Buffer, WriterPolicy}
   alias Backplane.Repo
 
   @telemetry_event [:backplane, :mcp_proxy, :tool_call, :stop]
+  @domain :mcp_tool_calls
   @buffer_name :mcp_tool_calls
 
   @handler_id "backplane-mcp-tool-log-writer"
@@ -36,6 +37,7 @@ defmodule Backplane.MCP.ToolLogWriter do
         inserted_total: 0,
         dropped_total: 0,
         failed_total: 0,
+        duplicate_total: 0,
         last_error: nil
       }
   end
@@ -67,10 +69,14 @@ defmodule Backplane.MCP.ToolLogWriter do
 
   @doc false
   def handle_event(_event, _measurements, metadata, _config) do
-    row = row_from_metadata(metadata)
+    row =
+      metadata
+      |> row_from_metadata()
+      |> Map.put(:_enqueued_at_mono, System.monotonic_time(:millisecond))
 
     case Buffer.try_enqueue(@buffer_name, row) do
       :ok ->
+        WriterPolicy.emit_accepted(@domain, row)
         :ok
 
       {:error, reason} ->
@@ -82,41 +88,51 @@ defmodule Backplane.MCP.ToolLogWriter do
   @impl true
   def init(opts) do
     _ = attach()
+    WriterPolicy.subscribe()
 
-    state = %{
-      batch_size: Keyword.get(opts, :batch_size, config(:batch_size, 500)),
-      flush_interval_ms: Keyword.get(opts, :flush_interval_ms, config(:flush_interval_ms, 250)),
-      inserted_total: 0,
-      dropped_total: 0,
-      failed_total: 0,
-      last_error: nil
-    }
+    state =
+      WriterPolicy.init_state(@domain, opts)
+      |> WriterPolicy.schedule_flush()
 
-    schedule_flush(state.flush_interval_ms)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:flush, state) do
-    state = persist_batch(state)
-    schedule_flush(state.flush_interval_ms)
+    state =
+      state
+      |> persist_batch()
+      |> Map.put(:last_flush_at, DateTime.utc_now())
+      |> WriterPolicy.schedule_flush()
+
     {:noreply, state}
+  end
+
+  def handle_info(message, state) do
+    {:noreply, WriterPolicy.apply_settings_change(state, message)}
   end
 
   @impl true
   def handle_call(:flush, _from, state) do
     state = persist_batch(state)
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | last_flush_at: DateTime.utc_now()}}
   end
 
   @impl true
   def handle_call(:health, _from, state) do
-    {:reply, health_snapshot(state), state}
+    {:reply, WriterPolicy.health_snapshot(state, @buffer_name), state}
   end
 
   @impl true
   def handle_cast({:dropped, reason}, state) do
-    {:noreply, %{state | dropped_total: state.dropped_total + 1, last_error: inspect(reason)}}
+    WriterPolicy.emit_dropped(@domain, reason)
+
+    {:noreply,
+     %{
+       state
+       | dropped_total: state.dropped_total + 1,
+         last_error: inspect(reason)
+     }}
   end
 
   defp persist_batch(state) do
@@ -125,14 +141,29 @@ defmodule Backplane.MCP.ToolLogWriter do
     if events == [] do
       state
     else
+      now_mono = System.monotonic_time(:millisecond)
+
       case insert_rows(events) do
-        {:ok, count} ->
+        {:ok, inserted, duplicate} ->
           Buffer.release(@buffer_name, length(events))
 
-          %{state | inserted_total: state.inserted_total + count}
+          lag_ms =
+            events
+            |> Enum.map(&Map.get(&1, :_enqueued_at_mono, now_mono))
+            |> Enum.max()
+            |> then(&max(now_mono - &1, 0))
+
+          WriterPolicy.emit_persisted(@domain, inserted, duplicate, persistence_lag_ms: lag_ms)
+
+          %{
+            state
+            | inserted_total: state.inserted_total + inserted,
+              duplicate_total: state.duplicate_total + duplicate
+          }
 
         {:error, reason} ->
           Buffer.release(@buffer_name, length(events))
+          WriterPolicy.emit_failure(@domain, length(events), reason)
 
           Logger.warning("MCP ToolLogWriter batch insert failed: #{inspect(reason)}")
 
@@ -152,11 +183,14 @@ defmodule Backplane.MCP.ToolLogWriter do
       Enum.map(rows, fn row ->
         row
         |> atomize_keys()
+        |> Map.drop([:_enqueued_at_mono])
         |> cast_field_types()
         |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "nil" end)
         |> Map.new()
         |> Map.put_new(:inserted_at, now)
       end)
+
+    attempted = length(entries)
 
     {count, _} =
       Repo.insert_all(ToolCall, entries,
@@ -164,7 +198,7 @@ defmodule Backplane.MCP.ToolLogWriter do
         conflict_target: [:event_id]
       )
 
-    {:ok, count}
+    {:ok, count, attempted - count}
   rescue
     exception ->
       {:error, exception}
@@ -227,25 +261,5 @@ defmodule Backplane.MCP.ToolLogWriter do
       _ ->
         row
     end
-  end
-
-  defp health_snapshot(state) do
-    %{
-      status: :ok,
-      buffer: Buffer.health(@buffer_name),
-      inserted_total: state.inserted_total,
-      dropped_total: state.dropped_total,
-      failed_total: state.failed_total,
-      last_error: state.last_error
-    }
-  end
-
-  defp schedule_flush(interval_ms) when interval_ms > 0 do
-    Process.send_after(self(), :flush, interval_ms)
-  end
-
-  defp config(key, default) do
-    Application.get_env(:backplane_mcp, :mcp_tool_log_writer, [])
-    |> Keyword.get(key, default)
   end
 end

@@ -52,6 +52,13 @@ defmodule Backplane.Admin.LogsSinksLive do
 
       <div :if={!@loading} class="space-y-6">
         <section>
+          <h2 class="mb-3 text-lg font-semibold">Policy settings</h2>
+          <.dm_card variant="bordered">
+            <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.settings, pretty: true)}</pre>
+          </.dm_card>
+        </section>
+
+        <section>
           <h2 class="mb-3 text-lg font-semibold">Feature flags</h2>
           <.dm_card variant="bordered">
             <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.flags, pretty: true)}</pre>
@@ -89,10 +96,24 @@ defmodule Backplane.Admin.LogsSinksLive do
 
         <section>
           <h2 class="mb-3 text-lg font-semibold">Runtime counters (since restart)</h2>
-          <.dm_stat
-            title="Tool calls total"
-            value={to_string(get_in(@metrics, [:counters, "tool_calls_total"]) || 0)}
-          />
+          <div class="grid gap-4 md:grid-cols-2">
+            <.dm_stat
+              title="Tool calls total"
+              value={to_string(get_in(@metrics, [:counters, "tool_calls_total"]) || 0)}
+            />
+            <.dm_stat
+              title="LLM proxy accepted"
+              value={to_string(get_in(@metrics, [:counters, "observability.events.accepted.llm_proxy"]) || 0)}
+            />
+            <.dm_stat
+              title="MCP proxy accepted"
+              value={to_string(get_in(@metrics, [:counters, "observability.events.accepted.mcp_proxy_root"]) || 0)}
+            />
+            <.dm_stat
+              title="Writer drops (LLM)"
+              value={to_string(get_in(@metrics, [:counters, "observability.events.dropped.llm_proxy"]) || 0)}
+            />
+          </div>
         </section>
       </div>
     </div>
