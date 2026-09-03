@@ -8,6 +8,8 @@ defmodule Backplane.Audit do
 
   require Logger
 
+  import Ecto.Query
+
   alias Backplane.Audit.{SkillLoadLog, ToolCallLog}
   alias Backplane.Repo
 
@@ -85,6 +87,55 @@ defmodule Backplane.Audit do
   end
 
   def hash_arguments(_), do: nil
+
+  @doc "Lists persisted tool-call audit rows with optional filters."
+  @spec list_tool_call_logs(map(), keyword()) :: [ToolCallLog.t()]
+  def list_tool_call_logs(filters \\ %{}, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    from(t in ToolCallLog)
+    |> maybe_filter_audit_since(filters[:since])
+    |> maybe_filter_audit_until(filters[:until])
+    |> maybe_filter_audit_tool_name(filters[:tool_name])
+    |> maybe_filter_audit_status(filters[:status])
+    |> maybe_filter_audit_client(filters[:client_id])
+    |> order_by([t], desc: t.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc "Lists persisted skill-load audit rows with optional filters."
+  @spec list_skill_load_logs(map(), keyword()) :: [SkillLoadLog.t()]
+  def list_skill_load_logs(filters \\ %{}, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    from(s in SkillLoadLog)
+    |> maybe_filter_audit_since(filters[:since])
+    |> maybe_filter_audit_until(filters[:until])
+    |> maybe_filter_audit_skill_name(filters[:skill_name])
+    |> maybe_filter_audit_client(filters[:client_id])
+    |> order_by([s], desc: s.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  defp maybe_filter_audit_since(query, nil), do: query
+  defp maybe_filter_audit_since(query, since), do: where(query, [r], r.inserted_at >= ^since)
+
+  defp maybe_filter_audit_until(query, nil), do: query
+  defp maybe_filter_audit_until(query, until), do: where(query, [r], r.inserted_at <= ^until)
+
+  defp maybe_filter_audit_tool_name(query, nil), do: query
+  defp maybe_filter_audit_tool_name(query, name), do: where(query, [t], t.tool_name == ^name)
+
+  defp maybe_filter_audit_skill_name(query, nil), do: query
+  defp maybe_filter_audit_skill_name(query, name), do: where(query, [s], s.skill_name == ^name)
+
+  defp maybe_filter_audit_status(query, nil), do: query
+  defp maybe_filter_audit_status(query, status), do: where(query, [t], t.status == ^status)
+
+  defp maybe_filter_audit_client(query, nil), do: query
+  defp maybe_filter_audit_client(query, client_id), do: where(query, [r], r.client_id == ^client_id)
 
   defp audit_enabled? do
     Application.get_env(:backplane, :audit_enabled, true)

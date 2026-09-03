@@ -154,6 +154,31 @@ defmodule Backplane.Admin.Layouts do
                 icon: "text-box-search"
               },
               %{
+                label: "LLM Logs",
+                path: "/system/logs/llm",
+                icon: "chart-line"
+              },
+              %{
+                label: "MCP Logs",
+                path: "/system/logs/mcp",
+                icon: "chart-bar"
+              },
+              %{
+                label: "Audit",
+                path: "/system/logs/audit",
+                icon: "text-box-search-outline"
+              },
+              %{
+                label: "Jobs",
+                path: "/system/logs/jobs",
+                icon: "cog-clockwise"
+              },
+              %{
+                label: "Sinks",
+                path: "/system/logs/sinks",
+                icon: "pipe"
+              },
+              %{
                 label: "Plan Usage",
                 path: "/system/monitor/plans",
                 icon: "chart-donut"

@@ -26,7 +26,7 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
       output_tokens: 50
     })
 
-    {:ok, _view, html} = live(conn, "/dashboard/usage/llm")
+    {:ok, _view, html} = live_with_sandbox(conn, "/dashboard/usage/llm")
 
     assert html =~ "LLM Usage"
     assert html =~ "Total Requests"
@@ -38,15 +38,12 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     assert html =~ ~s(href="/dashboard/usage/mcp")
   end
 
-  test "renders MCP usage page from runtime metrics", %{conn: conn} do
-    :telemetry.execute([:backplane, :mcp_request, :start], %{}, %{method: "tools/list"})
+  test "renders MCP usage page from persisted MCP logs", %{conn: conn} do
+    import Backplane.Admin.ObservabilityCase
 
-    :telemetry.execute([:backplane, :tool_call, :stop], %{duration: 1_000}, %{
-      tool: "math::add",
-      result: :ok
-    })
+    insert_mcp_log(%{rpc_method: "tools/list", outcome: "success"})
 
-    {:ok, _view, html} = live(conn, "/dashboard/usage/mcp")
+    {:ok, _view, html} = live_with_sandbox(conn, "/dashboard/usage/mcp")
 
     assert html =~ "MCP Usage"
     assert html =~ "Total MCP Requests"

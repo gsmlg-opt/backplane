@@ -5,7 +5,7 @@ defmodule Backplane.MCP.LogQuery do
 
   import Ecto.Query
 
-  alias Backplane.MCP.ProxyRequest
+  alias Backplane.MCP.{ProxyRequest, ToolCall}
   alias Backplane.Repo
 
   @type filters :: %{
@@ -62,6 +62,32 @@ defmodule Backplane.MCP.LogQuery do
   @spec list_by_trace_id(String.t(), list_opts()) :: [ProxyRequest.t()]
   def list_by_trace_id(trace_id, opts \\ %{}) do
     list(%{trace_id: trace_id}, opts)
+  end
+
+  @doc "Lists child tool-call records with optional filters and keyset pagination."
+  @spec list_tool_calls(map(), list_opts()) :: [ToolCall.t()]
+  def list_tool_calls(filters \\ %{}, opts \\ %{}) do
+    limit = Map.get(opts, :limit, 50)
+    cursor = Map.get(opts, :cursor)
+
+    filters
+    |> tool_call_base_query()
+    |> apply_tool_call_cursor(cursor)
+    |> order_by([t], desc: t.inserted_at, desc: t.id)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc "Lists tool-call child records for an MCP root request ID."
+  @spec list_tool_calls_for_request(String.t(), list_opts()) :: [ToolCall.t()]
+  def list_tool_calls_for_request(mcp_request_id, opts \\ %{}) do
+    list_tool_calls(%{mcp_request_id: mcp_request_id}, opts)
+  end
+
+  @doc "Lists tool-call child records for a trace ID."
+  @spec list_tool_calls_for_trace(String.t(), list_opts()) :: [ToolCall.t()]
+  def list_tool_calls_for_trace(trace_id, opts \\ %{}) do
+    list_tool_calls(%{trace_id: trace_id}, opts)
   end
 
   @doc "Aggregates MCP root request usage with optional filters."
@@ -161,6 +187,52 @@ defmodule Backplane.MCP.LogQuery do
 
   defp maybe_filter_auth_kind(query, nil), do: query
   defp maybe_filter_auth_kind(query, kind), do: where(query, [r], r.auth_kind == ^kind)
+
+  defp tool_call_base_query(filters) do
+    from(t in ToolCall)
+    |> maybe_filter_tool_request(filters[:mcp_request_id])
+    |> maybe_filter_tool_trace(filters[:trace_id])
+    |> maybe_filter_tool_name(filters[:tool_name])
+    |> maybe_filter_upstream_name(filters[:upstream_name])
+    |> maybe_filter_tool_since(filters[:since])
+    |> maybe_filter_tool_until(filters[:until])
+    |> maybe_filter_tool_outcome(filters[:outcome])
+  end
+
+  defp apply_tool_call_cursor(query, nil), do: query
+
+  defp apply_tool_call_cursor(query, {inserted_at, id}) do
+    where(
+      query,
+      [t],
+      t.inserted_at < ^inserted_at or (t.inserted_at == ^inserted_at and t.id < ^id)
+    )
+  end
+
+  defp maybe_filter_tool_request(query, nil), do: query
+
+  defp maybe_filter_tool_request(query, request_id),
+    do: where(query, [t], t.mcp_request_id == ^request_id)
+
+  defp maybe_filter_tool_trace(query, nil), do: query
+  defp maybe_filter_tool_trace(query, trace_id), do: where(query, [t], t.trace_id == ^trace_id)
+
+  defp maybe_filter_tool_name(query, nil), do: query
+  defp maybe_filter_tool_name(query, name), do: where(query, [t], t.tool_name == ^name)
+
+  defp maybe_filter_upstream_name(query, nil), do: query
+
+  defp maybe_filter_upstream_name(query, name),
+    do: where(query, [t], t.upstream_name == ^name)
+
+  defp maybe_filter_tool_since(query, nil), do: query
+  defp maybe_filter_tool_since(query, since), do: where(query, [t], t.inserted_at >= ^since)
+
+  defp maybe_filter_tool_until(query, nil), do: query
+  defp maybe_filter_tool_until(query, until), do: where(query, [t], t.inserted_at <= ^until)
+
+  defp maybe_filter_tool_outcome(query, nil), do: query
+  defp maybe_filter_tool_outcome(query, outcome), do: where(query, [t], t.outcome == ^outcome)
 
   defp round_or_zero(nil), do: 0
 

@@ -209,6 +209,10 @@ liveSocket.connect()
 
 window.liveSocket = liveSocket
 
+window.addEventListener("phx:copy-to-clipboard", (e) => {
+  if (e.detail?.text) navigator.clipboard.writeText(e.detail.text)
+})
+
 window.addEventListener("phx:download", (e) => {
   const {content, filename, content_type} = e.detail
   const blob = new Blob([content], {type: content_type || "application/octet-stream"})
