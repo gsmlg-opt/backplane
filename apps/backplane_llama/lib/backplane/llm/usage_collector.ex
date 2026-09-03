@@ -1,9 +1,9 @@
 defmodule Backplane.LLM.UsageCollector do
   @moduledoc """
-  Telemetry handler that listens for [:backplane, :llm, :request] events
-  and enqueues an Oban UsageWriter job to persist the usage data.
+  Legacy telemetry handler that enqueues Oban `UsageWriter` jobs (deprecated).
 
-  Disabled when Observability v2 LLM writes are active.
+  Disabled automatically when Observability v2 LLM durable writes are active via
+  `Backplane.Observability.Flags.llm_write?/0`.
   """
 
   alias Backplane.Observability

@@ -95,6 +95,11 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_console: true,
   log_to_file: "/tmp/backplane-telemetry.jsonl"
 
+config :backplane_telemetry, Backplane.Observability.RuntimeSink,
+  log_to_logger: true,
+  log_to_console: true,
+  log_to_file: "/tmp/backplane-telemetry.jsonl"
+
 # Enable MCP protocol session persistence in development
 if System.get_env("ENABLE_SESSION_STORE") == "true" do
   config :backplane_mcp_protocol, :session_store,

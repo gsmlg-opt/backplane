@@ -285,12 +285,12 @@ defmodule Backplane.Settings do
     },
     # Observability v2 policy (PR-04)
     "observability.llm_proxy.enabled" => %{
-      value: false,
+      value: true,
       type: "boolean",
       desc: "Enable LLM proxy observability event emission"
     },
     "observability.llm_proxy.persist" => %{
-      value: false,
+      value: true,
       type: "boolean",
       desc: "Persist LLM proxy access records via the v2 writer"
     },
@@ -310,12 +310,12 @@ defmodule Backplane.Settings do
       desc: "LLM observability sampling rate (0.0..1.0)"
     },
     "observability.mcp_proxy.enabled" => %{
-      value: false,
+      value: true,
       type: "boolean",
       desc: "Enable MCP proxy observability event emission"
     },
     "observability.mcp_proxy.persist" => %{
-      value: false,
+      value: true,
       type: "boolean",
       desc: "Persist MCP proxy access records via the v2 writer"
     },

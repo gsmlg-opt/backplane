@@ -21,11 +21,11 @@ defmodule Backplane.Observability.SettingsTest do
     :ok
   end
 
-  test "defaults keep observability writers disabled" do
-    assert Settings.llm_proxy_enabled?() == false
-    assert Settings.llm_proxy_persist?() == false
-    assert Settings.mcp_proxy_enabled?() == false
-    assert Settings.mcp_proxy_persist?() == false
+  test "defaults enable observability writers for new installs" do
+    assert SystemSettings.default_value("observability.llm_proxy.enabled") == true
+    assert SystemSettings.default_value("observability.llm_proxy.persist") == true
+    assert SystemSettings.default_value("observability.mcp_proxy.enabled") == true
+    assert SystemSettings.default_value("observability.mcp_proxy.persist") == true
     assert Settings.llm_proxy_retention_days() == 90
     assert Settings.mcp_proxy_retention_days() == 30
     assert Settings.audit_enabled?() == true
@@ -47,6 +47,21 @@ defmodule Backplane.Observability.SettingsTest do
 
     assert Settings.llm_proxy_enabled?() == true
     assert Settings.llm_proxy_persist?() == true
+  end
+
+  test "settings enable runtime sink policy via Flags" do
+    alias Backplane.Observability.Flags
+
+    Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
+    Application.put_env(:backplane_telemetry, :observability_v2_runtime_sink, false)
+
+    assert :ok = SystemSettings.set("observability.llm_proxy.enabled", true)
+
+    Settings.refresh_key("observability.llm_proxy.enabled")
+    :sys.get_state(Settings)
+
+    assert Flags.enabled?()
+    assert Flags.runtime_sink?()
   end
 
   test "invalid values retain the last valid configuration" do

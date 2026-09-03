@@ -38,7 +38,8 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 
 This is an umbrella project. Key apps include:
 
-- **`apps/backplane`** (`:backplane`) — Core business logic: MCP transport, tool registry, upstream proxy, managed services (skills, day, webfetch, math), LLM proxy, clients, settings, credentials, DB (Ecto/Oban)
+- **`apps/backplane`** (`:backplane`) — Core orchestrator: Oban jobs, native/managed tool registration, upstream boot
+- **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Observability v2: event envelopes, runtime sink, bounded writers, retention, admin health/metrics
 - **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint on its own port with routes rooted at `/`; dev port 4221.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM providers.
 - **`apps/day_ex`** (`:day_ex`) — Date/time utility library providing the `day::` managed service tools.
@@ -85,7 +86,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
 - `Backplane.Services.Skills` — Managed service adapter for archive-backed skill tools (`skill::*`)
 - `Backplane.Tools.*` — Native Hub/Admin modules plus the Skills implementation delegated by `Backplane.Services.Skills`
-- `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector
+- `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, LogWriter, AccessEvent
+- `Backplane.Observability.*` — Observability v2 flags, settings, runtime sink, buffers, retention (in `backplane_telemetry`)
 - `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
 - `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
 - `Backplane.Clients` — Client access control (bearer tokens, scopes, ETS-cached)
@@ -113,9 +115,23 @@ Backplane.Application (apps/backplane)
 
 Backplane.Admin.Application (apps/backplane_admin)
 └── Backplane.Admin.Endpoint (Bandit HTTP server)
+
+BackplaneTelemetry.Supervisor (apps/backplane_telemetry)
+├── Backplane.Observability.Settings
+└── Backplane.Observability.RuntimeSink (when v2 policy active)
 ```
 
-After supervisor start, the application initializes: native tool registration (hub and admin), fail-closed managed service reconciliation (including Skills), configured/DB upstream connections, usage collector telemetry, and client cache seeding.
+After supervisor start, the application initializes: native tool registration (hub and admin), fail-closed managed service reconciliation (including Skills), configured/DB upstream connections, Observability v2 writers when `system_settings` policy enables persistence, and client cache seeding.
+
+### Observability v2
+
+Operational policy lives in `system_settings` keys under `observability.*` (LLM/MCP proxy enable+persist, audit, writer tuning). Boot-time app env flags under `:backplane_telemetry` remain for tests and emergency rollback (`:use_legacy_telemetry_logger` forces the deprecated `BackplaneTelemetry.TelemetryLogger`).
+
+- **Runtime sink** — `Backplane.Observability.RuntimeSink` replaces the legacy catch-all logger when v2 is active.
+- **LLM persistence** — `Backplane.LLM.LogWriter` (+ `AccessEvent`); legacy `UsageCollector`/`UsageWriter` Oban path disabled when persist is on.
+- **MCP persistence** — `Backplane.MCP.LogWriter`, `Backplane.MCP.ToolLogWriter`, `Backplane.Transport.McpObservability`.
+- **Audit** — `Backplane.Audit.Writer` for `tool_call_log` / `skill_load_log` (hash-only arguments).
+- **Admin** — `/system/logs` (records) and `/system/logs/sinks` (writer/buffer health).
 
 ### Data Storage
 
@@ -128,7 +144,7 @@ PostgreSQL. Core tables:
 - `clients` — MCP client access tokens and scopes
 - `llm_providers` — LLM provider definitions (references credential by name)
 - `llm_model_aliases` — Global model alias → provider/model mapping
-- `llm_usage_logs` — Insert-only LLM request usage records
+- `llm_logs` — Insert-only LLM proxy access records (Observability v2 durable writes)
 
 Removed tables (no longer present): `projects`, `doc_chunks`, `reindex_state`.
 
@@ -160,7 +176,7 @@ Six top-level modules:
 - **MCP Hub** (`/mcp/managed`) — Manage upstream servers, managed services (skills/day/docs), tool browser
 - **LLM Providers** (`/llama/providers`) — Provider CRUD, model aliases, usage panel, health status
 - **Clients** (`/system/clients`) — MCP client token and scope management
-- **Logs** (`/system/logs`) — Tool call log, LLM request log, Oban job history
+- **Logs** (`/system/logs`) — LLM/MCP access records, audit trails, Oban job history; `/system/logs/sinks` shows Observability v2 writer/buffer health
 - **Settings** (`/system/credentials`) — System settings editor, credentials vault, managed service toggles
 
 ### Key Dependencies

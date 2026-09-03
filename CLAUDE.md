@@ -110,7 +110,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Memory.Service` — `memory::*` tools (in `backplane_memory`)
 
 **LLM Proxy (backplane_llama)**
-- `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, UsageCollector, and routing modules
+- `Backplane.LLM.*` — Provider, ModelResolver, CredentialPlug, RateLimiter, UsageLog, LogWriter, AccessEvent, and routing modules
+- `Backplane.Observability.*` — Observability v2 flags, settings, runtime sink, buffers, writers health (in `backplane_telemetry`)
 - `Backplane.Embedding` — Embedding provider/model context
 
 **System Infrastructure (backplane_system)**
@@ -167,7 +168,8 @@ BackplaneSkills.Supervisor (apps/backplane_skills)
 
 Backplane.Memory.Supervisor (apps/backplane_memory) — registers memory::* tools
 BackplaneTelemetry.Supervisor (apps/backplane_telemetry)
-└── BackplaneTelemetry.TelemetryLogger
+├── Backplane.Observability.Settings
+└── Backplane.Observability.RuntimeSink (when Observability v2 policy active; legacy TelemetryLogger opt-in only)
 
 BackplaneMonitor.Supervisor (apps/backplane_monitor)
 ├── Registry (Backplane.Monitor.PlanRegistry)
@@ -181,7 +183,21 @@ BackplaneWeb.Application (apps/backplane_web)
 └── BackplaneWeb.Endpoint (Bandit HTTP server)
 ```
 
-After `Backplane.Supervisor` starts: native tool registration (hub, admin), managed service tool registration, configured/DB upstream connections, usage collector telemetry attachment, and client cache seeding.
+After `Backplane.Supervisor` starts: native tool registration (hub, admin), managed service tool registration, configured/DB upstream connections, Observability v2 writers when `system_settings` enables persistence, and client cache seeding.
+
+### Observability v2
+
+Policy is stored in `system_settings` under `observability.*` (LLM/MCP enable+persist, audit, writer batch/queue tuning). Boot-time `:backplane_telemetry` app env flags remain for tests and rollback; set `:use_legacy_telemetry_logger` to force the deprecated `BackplaneTelemetry.TelemetryLogger`.
+
+| Component | Module | Role |
+|-----------|--------|------|
+| Runtime sink | `Backplane.Observability.RuntimeSink` | Structured runtime diagnostics (replaces legacy catch-all logger) |
+| LLM writes | `Backplane.LLM.LogWriter`, `AccessEvent` | Durable `llm_logs` records |
+| MCP writes | `Backplane.MCP.LogWriter`, `ToolLogWriter`, `McpObservability` | Root/tool MCP access records |
+| Audit | `Backplane.Audit.Writer` | Async `tool_call_log` / `skill_load_log` (arguments hashed only) |
+| Legacy (deprecated) | `UsageCollector`, `UsageWriter`, `TelemetryLogger` | Disabled when v2 persist is active |
+
+Admin: `/admin/system/logs` (records), `/admin/system/logs/sinks` (writer/buffer health).
 
 ### Data Storage
 
@@ -251,7 +267,7 @@ The admin UI is organized into five sections under `/admin`:
 - **MCP** (`/admin/mcp/*`) — Upstream servers, managed services, managed service settings, tool detail, MCP inspector, agent MCP servers
 - **Memory** (`/admin/memory/*`) — Overview, observations, sessions, knowledge graph, actions, audit, config, browse, stats
 - **Skills** (`/admin/skills/*`) — Browse, metadata, upstream sources, drafts, uploads
-- **System** (`/admin/system/*`) — Clients, logs, monitor plans, credentials vault, host agents, OAuth callbacks
+- **System** (`/admin/system/*`) — Clients, logs (LLM/MCP access + audit + Oban), observability sinks health, monitor plans, credentials vault, host agents, OAuth callbacks
 
 ### Key Dependencies
 

@@ -77,9 +77,14 @@ if config_env() == :prod do
         cache_max_entries: cache.max_entries
     end
 
-    # Telemetry settings
+    # Telemetry settings (deprecated: prefer RuntimeSink; legacy key honored one release)
     if telemetry = backplane_config[:telemetry] do
       config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
+        log_to_logger: telemetry.log_to_logger,
+        log_to_console: telemetry.log_to_console,
+        log_to_file: telemetry.log_to_file
+
+      config :backplane_telemetry, Backplane.Observability.RuntimeSink,
         log_to_logger: telemetry.log_to_logger,
         log_to_console: telemetry.log_to_console,
         log_to_file: telemetry.log_to_file

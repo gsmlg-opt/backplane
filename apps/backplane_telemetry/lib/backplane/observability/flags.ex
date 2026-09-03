@@ -13,7 +13,8 @@ defmodule Backplane.Observability.Flags do
     :observability_v2_enabled,
     :observability_v2_llm_write,
     :observability_v2_mcp_write,
-    :observability_v2_runtime_sink
+    :observability_v2_runtime_sink,
+    :use_legacy_telemetry_logger
   ]
 
   @doc "Returns true when the Observability v2 master switch is enabled."
@@ -34,10 +35,20 @@ defmodule Backplane.Observability.Flags do
     app_override?(:observability_v2_mcp_write) or mcp_persist_from_settings?()
   end
 
-  @doc "Returns true when the v2 runtime sink should replace legacy logger routing."
+  @doc """
+  Returns true when the v2 runtime sink should replace legacy logger routing.
+
+  Defaults to the active Observability v2 policy from settings. Boot-time app env
+  flags remain available for tests and explicit overrides.
+  """
   @spec runtime_sink?() :: boolean()
   def runtime_sink? do
-    app_override?(:observability_v2_runtime_sink)
+    cond do
+      legacy_runtime_logger_forced?() -> false
+      app_override?(:observability_v2_runtime_sink) -> true
+      enabled?() -> true
+      true -> false
+    end
   end
 
   @doc "Returns a map of raw flag values (ignores master-switch gating)."
@@ -77,5 +88,9 @@ defmodule Backplane.Observability.Flags do
   defp settings_available? do
     Code.ensure_loaded?(Backplane.Observability.Settings) and
       Process.whereis(Backplane.Observability.Settings) != nil
+  end
+
+  defp legacy_runtime_logger_forced? do
+    Application.get_env(@app, :use_legacy_telemetry_logger, false) == true
   end
 end

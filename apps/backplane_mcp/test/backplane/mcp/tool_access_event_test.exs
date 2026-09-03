@@ -123,12 +123,12 @@ defmodule Backplane.MCP.ToolAccessEventTest do
     refute log =~ "Tool call completed"
   end
 
-  test "ToolAccessEvent emits legacy telemetry for metrics" do
+  test "ToolAccessEvent emits v2 telemetry for metrics consumers" do
     handler_id = "tool-access-test-#{System.unique_integer()}"
 
     :telemetry.attach(
       handler_id,
-      [:backplane, :tool_call, :stop],
+      [:backplane, :mcp_proxy, :tool_call, :stop],
       fn _event, _measurements, metadata, _config ->
         send(self(), {:tool_stop, metadata})
       end,
@@ -143,6 +143,9 @@ defmodule Backplane.MCP.ToolAccessEventTest do
       {:ok, "ok", %{execution_kind: "managed"}}
     end)
 
-    assert_receive {:tool_stop, %{tool: "fixture::echo", result: :ok}}
+    assert_receive {:tool_stop, metadata}
+
+    attrs = Map.get(metadata, :attributes, %{})
+    assert Map.get(attrs, :tool_name) == "fixture::echo" or Map.get(attrs, "tool_name") == "fixture::echo"
   end
 end

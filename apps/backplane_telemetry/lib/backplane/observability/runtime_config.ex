@@ -1,5 +1,10 @@
 defmodule Backplane.Observability.RuntimeConfig do
-  @moduledoc false
+  @moduledoc """
+  Maps runtime sink boot configuration.
+
+  Legacy `BackplaneTelemetry.TelemetryLogger` keys are still honored for one
+  release; prefer `Backplane.Observability.RuntimeSink` in new configuration.
+  """
 
   @legacy_module BackplaneTelemetry.TelemetryLogger
   @runtime_module Backplane.Observability.RuntimeSink

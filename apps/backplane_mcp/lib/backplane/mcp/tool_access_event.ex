@@ -257,29 +257,35 @@ defmodule Backplane.MCP.ToolAccessEvent do
   defp parent_context(%{context: context}), do: context
 
   defp emit_legacy_start(tool_name, parent_context) do
-    :telemetry.execute(
-      [:backplane, :tool_call, :start],
-      %{system_time: System.system_time()},
-      %{tool: tool_name, request_id: parent_context.request_id}
-    )
+    if Observability.enabled?() do
+      :ok
+    else
+      :telemetry.execute(
+        [:backplane, :tool_call, :start],
+        %{system_time: System.system_time()},
+        %{tool: tool_name, request_id: parent_context.request_id}
+      )
+    end
   end
 
   defp emit_legacy_stop(tool_name, parent_context, outcome, duration_ms, _result) do
-    result_status =
-      case outcome do
-        :success -> :ok
-        :error -> :error
-      end
+    if Observability.enabled?() do
+      :ok
+    else
+      result_status =
+        case outcome do
+          :success -> :ok
+          :error -> :error
+        end
 
-    duration_native = duration_ms * 1_000_000
+      duration_native = duration_ms * 1_000_000
 
-    :telemetry.execute(
-      [:backplane, :tool_call, :stop],
-      %{duration: duration_native},
-      %{tool: tool_name, request_id: parent_context.request_id, result: result_status}
-    )
+      :telemetry.execute(
+        [:backplane, :tool_call, :stop],
+        %{duration: duration_native},
+        %{tool: tool_name, request_id: parent_context.request_id, result: result_status}
+      )
 
-    unless Observability.enabled?() do
       level = if outcome == :error, do: :error, else: :info
 
       Logger.log(level, fn ->

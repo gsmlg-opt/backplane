@@ -1,7 +1,9 @@
 defmodule Backplane.Jobs.UsageWriter do
   @moduledoc """
-  Oban worker that inserts a UsageLog record from job args.
-  Enqueued by the UsageCollector telemetry handler on each LLM request.
+  Legacy Oban worker for per-request LLM usage inserts (deprecated).
+
+  Replaced by `Backplane.LLM.LogWriter` when Observability v2 LLM persistence is
+  enabled. Retained for installations that have not yet switched writers.
   """
 
   use Oban.Worker, queue: :llm

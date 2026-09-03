@@ -1,14 +1,10 @@
 defmodule BackplaneTelemetry.TelemetryLogger do
   @moduledoc """
-  A unified telemetry logging service that collects, sanitizes, and logs events for:
-  - LLM API requests
-  - MCP requests & tool calls
-  - Memory database access & host agent memory calls
-  - Skills context operations
-  - Host agent WebSocket connection status changes
+  Legacy all-domain telemetry logger (deprecated).
 
-  It runs as a GenServer to perform file writing and JSON encoding asynchronously
-  in its own process, avoiding blocking the request path.
+  Replaced by `Backplane.Observability.RuntimeSink` when Observability v2 is
+  active. The module remains available for tests and explicit opt-in via
+  `:use_legacy_telemetry_logger`.
   """
 
   use GenServer

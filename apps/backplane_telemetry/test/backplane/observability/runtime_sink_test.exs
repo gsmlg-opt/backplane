@@ -45,4 +45,32 @@ defmodule Backplane.Observability.RuntimeSinkTest do
     assert File.exists?(log_file)
     assert File.read!(log_file) =~ "tools/list"
   end
+
+  test "passes through v2 domain telemetry envelopes", %{log_file: log_file} do
+    :telemetry.execute(
+      [:backplane, :mcp_proxy, :tool_call, :stop],
+      %{duration_ms: 12, system_time: System.system_time()},
+      %{
+        event_id: "evt-test-1",
+        occurred_at: DateTime.utc_now(),
+        domain: :mcp_proxy,
+        operation: "tool_call",
+        phase: :stop,
+        severity: :info,
+        context: %{request_id: "req-1", trace_id: "trace-1"},
+        attributes: %{tool_name: "math::add", outcome: "success"},
+        error: nil,
+        payload_ref: nil
+      }
+    )
+
+    :sys.get_state(RuntimeSink)
+    Process.sleep(20)
+
+    assert {:ok, decoded} = log_file |> File.read!() |> String.trim() |> Jason.decode()
+    assert decoded["domain"] == "mcp_proxy"
+    assert decoded["operation"] == "tool_call"
+    assert decoded["event_id"] == "evt-test-1"
+    assert decoded["attributes"]["tool_name"] == "math::add"
+  end
 end

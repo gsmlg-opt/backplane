@@ -162,13 +162,20 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_console: false,
   log_to_file: nil
 
-# Observability v2 feature flags (PR-00). Safe defaults keep legacy behavior.
-# Operational dynamic settings are managed via system_settings (PR-04).
+# Runtime sink inherits legacy logger keys via RuntimeConfig for one release.
+config :backplane_telemetry, Backplane.Observability.RuntimeSink,
+  log_to_logger: true,
+  log_to_console: false,
+  log_to_file: nil
+
+# Boot-time Observability v2 overrides (tests and emergency rollback).
+# Operational policy defaults come from system_settings observability.* keys.
 config :backplane_telemetry,
   observability_v2_enabled: false,
   observability_v2_llm_write: false,
   observability_v2_mcp_write: false,
-  observability_v2_runtime_sink: false
+  observability_v2_runtime_sink: false,
+  use_legacy_telemetry_logger: false
 
 config :backplane_mcp_protocol,
   compile_cli?: System.get_env("BACKPLANE_MCP_PROTOCOL_COMPILE_CLI") in ["1", "true"]

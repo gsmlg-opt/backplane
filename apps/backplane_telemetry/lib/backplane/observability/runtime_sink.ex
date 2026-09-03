@@ -28,6 +28,18 @@ defmodule Backplane.Observability.RuntimeSink do
     [:backplane, :host_agent, :disconnect]
   ]
 
+  @v2_events [
+    [:backplane, :llm_proxy, :request, :start],
+    [:backplane, :llm_proxy, :request, :stop],
+    [:backplane, :llm_proxy, :request, :exception],
+    [:backplane, :mcp_proxy, :request, :start],
+    [:backplane, :mcp_proxy, :request, :stop],
+    [:backplane, :mcp_proxy, :request, :exception],
+    [:backplane, :mcp_proxy, :tool_call, :start],
+    [:backplane, :mcp_proxy, :tool_call, :stop],
+    [:backplane, :mcp_proxy, :tool_call, :exception]
+  ]
+
   @doc false
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -133,6 +145,45 @@ defmodule Backplane.Observability.RuntimeSink do
   end
 
   defp build_event(event_name, measurements, metadata, occurred_at) do
+    if v2_metadata?(metadata) do
+      build_v2_event(measurements, metadata)
+    else
+      build_legacy_event(event_name, measurements, metadata, occurred_at)
+    end
+  end
+
+  defp v2_metadata?(%{domain: domain, event_id: event_id})
+       when is_atom(domain) and is_binary(event_id),
+       do: true
+
+  defp v2_metadata?(%{"domain" => domain, "event_id" => event_id})
+       when is_binary(domain) and is_binary(event_id),
+       do: true
+
+  defp v2_metadata?(_metadata), do: false
+
+  defp build_v2_event(measurements, metadata) do
+    domain = metadata[:domain] || metadata["domain"]
+    operation = metadata[:operation] || metadata["operation"]
+    phase = metadata[:phase] || metadata["phase"]
+
+    %{
+      schema_version: 1,
+      event_id: metadata[:event_id] || metadata["event_id"],
+      occurred_at: metadata[:occurred_at] || metadata["occurred_at"] || DateTime.utc_now(),
+      domain: domain,
+      operation: to_string(operation),
+      phase: phase,
+      severity: metadata[:severity] || metadata["severity"] || severity_for_phase(phase),
+      context: metadata[:context] || metadata["context"] || %{},
+      measurements: measurements,
+      attributes: metadata[:attributes] || metadata["attributes"] || %{},
+      error: metadata[:error] || metadata["error"],
+      payload_ref: metadata[:payload_ref] || metadata["payload_ref"]
+    }
+  end
+
+  defp build_legacy_event(event_name, measurements, metadata, occurred_at) do
     {domain, operation, phase} = classify_event(event_name)
 
     %{
@@ -150,6 +201,9 @@ defmodule Backplane.Observability.RuntimeSink do
       payload_ref: nil
     }
   end
+
+  defp severity_for_phase(:exception), do: :error
+  defp severity_for_phase(_), do: :info
 
   defp classify_event([:backplane, :llm, :request]), do: {:llm_proxy, "request", :stop}
   defp classify_event([:backplane, :mcp_request, :start]), do: {:mcp_proxy, "request", :start}
@@ -180,7 +234,7 @@ defmodule Backplane.Observability.RuntimeSink do
 
   defp attach do
     detach()
-    :telemetry.attach_many(@handler_id, @legacy_events, &__MODULE__.handle_event/4, nil)
+    :telemetry.attach_many(@handler_id, @legacy_events ++ @v2_events, &__MODULE__.handle_event/4, nil)
   end
 
   defp detach do

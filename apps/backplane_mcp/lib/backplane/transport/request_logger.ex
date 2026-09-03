@@ -1,9 +1,8 @@
 defmodule Backplane.Transport.RequestLogger do
   @moduledoc """
-  Compatibility plug that delegates to `Backplane.Transport.McpObservability`.
+  Deprecated alias for `Backplane.Transport.McpObservability`.
 
-  Legacy callers and tests may still reference this module; observability v2
-  behavior lives in `McpObservability`.
+  Kept for backward-compatible plug references and tests.
   """
 
   defdelegate init(opts), to: Backplane.Transport.McpObservability

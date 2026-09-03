@@ -71,10 +71,16 @@ defmodule Backplane.MCP.AccessEvent do
 
   defp emit_runtime_only(%__MODULE__{} = state, record, measurements) do
     if Observability.runtime_sink?() do
-      Event.emit_stop(:mcp_proxy, "request", state.context,
-        event_id: state.event_id,
-        measurements: measurements,
-        attributes: compact_record(record)
+      :telemetry.execute(
+        [:backplane, :mcp_request, :start],
+        measurements,
+        %{
+          method: state.operation,
+          request_id: state.context.request_id,
+          runtime_only: true,
+          http_method: record.http_method,
+          path: record.path
+        }
       )
     end
 

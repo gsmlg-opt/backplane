@@ -22,7 +22,7 @@ defmodule Backplane.Telemetry do
     request_id = Logger.metadata()[:request_id]
     metadata = %{tool: tool_name, request_id: request_id}
     start_time = System.monotonic_time()
-    v2_enabled = Application.get_env(:backplane_telemetry, :observability_v2_enabled, false)
+    v2_enabled = observability_enabled?()
     arguments_hash = Backplane.Audit.hash_arguments(args)
 
     :telemetry.execute(
@@ -126,7 +126,7 @@ defmodule Backplane.Telemetry do
       Map.put(metadata, :method, method)
     )
 
-    unless Application.get_env(:backplane_telemetry, :observability_v2_enabled, false) do
+    unless observability_enabled?() do
       Logger.info("MCP request", method: method, request_id: Logger.metadata()[:request_id])
     end
 
@@ -151,5 +151,14 @@ defmodule Backplane.Telemetry do
       %{duration: duration},
       %{tool: tool_name}
     )
+  end
+
+  defp observability_enabled? do
+    if Code.ensure_loaded?(Backplane.Observability) and
+         function_exported?(Backplane.Observability, :enabled?, 0) do
+      apply(Backplane.Observability, :enabled?, [])
+    else
+      Application.get_env(:backplane_telemetry, :observability_v2_enabled, false)
+    end
   end
 end

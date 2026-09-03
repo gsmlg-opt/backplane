@@ -103,10 +103,10 @@ defmodule Backplane.Observability.Settings do
   end
 
   @spec llm_proxy_enabled?() :: boolean()
-  def llm_proxy_enabled?, do: cached_boolean(@llm_enabled, false)
+  def llm_proxy_enabled?, do: cached_boolean(@llm_enabled, true)
 
   @spec llm_proxy_persist?() :: boolean()
-  def llm_proxy_persist?, do: cached_boolean(@llm_persist, false)
+  def llm_proxy_persist?, do: cached_boolean(@llm_persist, true)
 
   @spec llm_proxy_retention_days() :: pos_integer()
   def llm_proxy_retention_days, do: cached_integer(@llm_retention_days, 90, 1, 3_660)
@@ -118,10 +118,10 @@ defmodule Backplane.Observability.Settings do
   def llm_proxy_sample_rate, do: cached_float(@llm_sample_rate, 1.0, 0.0, 1.0)
 
   @spec mcp_proxy_enabled?() :: boolean()
-  def mcp_proxy_enabled?, do: cached_boolean(@mcp_enabled, false)
+  def mcp_proxy_enabled?, do: cached_boolean(@mcp_enabled, true)
 
   @spec mcp_proxy_persist?() :: boolean()
-  def mcp_proxy_persist?, do: cached_boolean(@mcp_persist, false)
+  def mcp_proxy_persist?, do: cached_boolean(@mcp_persist, true)
 
   @spec mcp_proxy_retention_days() :: pos_integer()
   def mcp_proxy_retention_days, do: cached_integer(@mcp_retention_days, 30, 1, 3_660)
