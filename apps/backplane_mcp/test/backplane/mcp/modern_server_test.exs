@@ -248,15 +248,15 @@ defmodule Backplane.MCP.ModernServerTest do
 
     assert {:ok, frame} = ModernServer.init_request(context, Frame.new(context.assigns))
 
-    assert frame.assigns.dispatch_context == %{
-             protocol_version: @version,
-             scopes: ["public::echo"],
-             auth: auth(["public::echo"]),
-             client: client
-           }
+    assert frame.assigns.dispatch_context.protocol_version == @version
+    assert frame.assigns.dispatch_context.scopes == ["public::echo"]
+    assert frame.assigns.dispatch_context.auth == auth(["public::echo"])
+    assert frame.assigns.dispatch_context.client == client
+    assert %{context: %Backplane.Observability.Context{}, mcp_request_id: nil} =
+             frame.assigns.dispatch_context.observability
 
     assert Map.keys(frame.assigns.dispatch_context) |> Enum.sort() ==
-             [:auth, :client, :protocol_version, :scopes]
+             [:auth, :client, :observability, :protocol_version, :scopes]
 
     assert %{
              "public::echo" => %{
@@ -286,12 +286,13 @@ defmodule Backplane.MCP.ModernServerTest do
 
     assert {:ok, frame} = ModernServer.init_request(context, Frame.new(context.assigns))
 
-    assert frame.assigns.dispatch_context == %{
-             protocol_version: @version,
-             scopes: ["*"],
-             auth: %{kind: :open, client_id: nil, scopes: ["*"]},
-             client: nil
-           }
+    assert frame.assigns.dispatch_context.protocol_version == @version
+    assert frame.assigns.dispatch_context.scopes == ["*"]
+    assert frame.assigns.dispatch_context.auth == %{kind: :open, client_id: nil, scopes: ["*"]}
+    assert frame.assigns.dispatch_context.client == nil
+
+    assert %{context: %Backplane.Observability.Context{}, mcp_request_id: nil} =
+             frame.assigns.dispatch_context.observability
   end
 
   test "uses restricted transport auth when Backplane assigns are absent", %{

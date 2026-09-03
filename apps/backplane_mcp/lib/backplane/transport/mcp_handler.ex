@@ -18,7 +18,7 @@ defmodule Backplane.Transport.McpHandler do
   require Logger
 
   alias Backplane.Clients
-  alias Backplane.MCP.{Dispatch, Info, JsonRpc}
+  alias Backplane.MCP.{Dispatch, Info, JsonRpc, ObservabilityContext}
   alias Backplane.Registry.{InputValidator, ToolRegistry}
   alias Backplane.Telemetry
   alias Backplane.Transport.{Extensions, Session, SSE, TaskManager}
@@ -190,7 +190,10 @@ defmodule Backplane.Transport.McpHandler do
     method
     |> Dispatch.execute(
       params,
-      application_context(Info.protocol_version(), scopes, auth, client)
+      application_context(Info.protocol_version(), scopes, auth, client, %{
+        context: Backplane.Observability.Context.root(),
+        mcp_request_id: nil
+      })
     )
     |> application_json_rpc_response(id)
   end
@@ -472,16 +475,18 @@ defmodule Backplane.Transport.McpHandler do
       session_version(conn),
       conn.assigns[:tool_scopes] || ["*"],
       trusted_auth_context(conn),
-      conn.assigns[:client]
+      conn.assigns[:client],
+      ObservabilityContext.from_conn(conn)
     )
   end
 
-  defp application_context(protocol_version, scopes, auth, client) do
+  defp application_context(protocol_version, scopes, auth, client, observability) do
     %{
       protocol_version: protocol_version,
       scopes: scopes,
       auth: auth,
-      client: client
+      client: client,
+      observability: observability
     }
   end
 

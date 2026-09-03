@@ -129,7 +129,10 @@ defmodule Backplane.Transport.McpPlug do
   end
 
   defp dispatch_modern(conn) do
-    assigns = Map.take(conn.assigns, [:resource_auth, :tool_scopes, :client])
+    assigns =
+      conn.assigns
+      |> Map.take([:resource_auth, :tool_scopes, :client])
+      |> Map.put(:observability, Backplane.MCP.ObservabilityContext.from_conn(conn))
 
     transport_context = %{
       type: :http,

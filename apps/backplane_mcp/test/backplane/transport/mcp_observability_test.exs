@@ -55,14 +55,43 @@ defmodule Backplane.Transport.McpObservabilityTest do
     end
 
     test "tools/call success" do
+      :ets.delete_all_objects(:backplane_tools)
+
+      Backplane.Registry.ToolRegistry.register_managed("fixture", [
+        %{
+          name: "fixture::echo",
+          description: "Echo",
+          input_schema: %{"type" => "object"},
+          handler: fn args -> {:ok, %{"echo" => args["value"] || "ok"}} end
+        }
+      ])
+
       conn =
         mcp_conn("tools/call", %{
-          "name" => "skill::list",
-          "arguments" => %{}
+          "name" => "fixture::echo",
+          "arguments" => %{"value" => "observability"}
         })
 
       assert conn.status == 200
       flush_and_assert_rpc!("tools/call", "success")
+
+      import Ecto.Query
+
+      tool_call =
+        Backplane.Repo.one(
+          from(t in Backplane.MCP.ToolCall,
+            where: t.tool_name == "fixture::echo",
+            order_by: [desc: t.inserted_at],
+            limit: 1
+          )
+        )
+
+      assert tool_call != nil
+      assert tool_call.outcome == "success"
+      assert tool_call.execution_kind == "managed"
+      assert is_binary(tool_call.arguments_hash)
+      assert is_binary(tool_call.mcp_request_id)
+      refute inspect(tool_call) =~ "observability"
     end
 
     test "method not found" do
@@ -91,6 +120,13 @@ defmodule Backplane.Transport.McpObservabilityTest do
       flush_and_assert_rpc!("tools/call", "error", fn log ->
         assert log.jsonrpc_error_code == -32_001
       end)
+
+      import Ecto.Query
+
+      assert Repo.aggregate(
+               from(t in Backplane.MCP.ToolCall, where: t.tool_name == "skill::list"),
+               :count
+             ) == 0
     end
 
     test "malformed JSON" do
@@ -376,6 +412,15 @@ defmodule Backplane.Transport.McpObservabilityTest do
         end)
 
       refute log =~ "MCP request"
+    end
+
+    test "span_tool_call skips duplicate Logger output when v2 is enabled" do
+      log =
+        capture_log(fn ->
+          Backplane.Telemetry.span_tool_call("skill::list", fn -> {:ok, "ok"} end)
+        end)
+
+      refute log =~ "Tool call completed"
     end
   end
 

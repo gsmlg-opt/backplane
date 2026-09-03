@@ -64,13 +64,15 @@ defmodule Backplane.MCP.ModernServer do
          {:ok, assigned_scopes} <- fetch_assign(assigns, :tool_scopes, &normalize_scopes/1),
          {:ok, client} <- fetch_assign(assigns, :client, &normalize_client/1),
          {:ok, auth} <- resolve_auth(transport_auth, assigned_auth, assigned_scopes),
-         {:ok, scopes} <- resolve_scopes(auth, assigned_scopes) do
+         {:ok, scopes} <- resolve_scopes(auth, assigned_scopes),
+         {:ok, observability} <- fetch_observability(assigns) do
       {:ok,
        %{
          protocol_version: @protocol_version,
          scopes: scopes,
          auth: auth,
-         client: present_value(client)
+         client: present_value(client),
+         observability: observability
        }}
     else
       _invalid -> :error
@@ -182,6 +184,20 @@ defmodule Backplane.MCP.ModernServer do
 
   defp normalize_scopes(_scopes), do: :error
   defp normalize_client(client), do: {:ok, client}
+
+  defp fetch_observability(assigns) do
+    case Backplane.MCP.ObservabilityContext.from_assigns(assigns) do
+      nil ->
+        {:ok,
+         %{
+           context: Backplane.Observability.Context.root(),
+           mcp_request_id: nil
+         }}
+
+      observability ->
+        {:ok, observability}
+    end
+  end
 
   defp present_value(:absent), do: nil
   defp present_value({:present, value}), do: value

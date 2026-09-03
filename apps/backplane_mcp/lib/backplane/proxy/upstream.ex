@@ -14,6 +14,8 @@ defmodule Backplane.Proxy.Upstream do
   alias Backplane.McpProtocol.Client
   alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Protocol.Registry, as: ProtocolRegistry
+  alias Backplane.Observability.Event
+  alias Backplane.Observability.{Context, Error, Id}
   alias Backplane.Proxy.{ClientLeaseManager, ClientPool, ProtocolClient, ToolCatalog}
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
@@ -40,10 +42,32 @@ defmodule Backplane.Proxy.Upstream do
   """
   @spec forward(pid(), String.t(), map(), pos_integer()) :: {:ok, term()} | {:error, term()}
   def forward(pid, tool_name, arguments, timeout \\ @default_timeout) do
-    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout}, timeout)
+    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout, nil}, timeout)
+    |> normalize_reply()
   catch
     :exit, {:timeout, _} -> {:error, "Upstream timeout after #{timeout}ms"}
     :exit, _reason -> {:error, "Upstream connection error"}
+  end
+
+  @doc """
+  Forward a tool call with parent observability context for child span recording.
+  """
+  @spec forward(pid(), String.t(), map(), pos_integer(), map()) ::
+          {:ok, term(), map()} | {:error, term(), map()}
+  def forward(pid, tool_name, arguments, timeout, %{context: %Context{}} = observability)
+      when is_integer(timeout) and timeout > 0 do
+    GenServer.call(pid, {:tools_call, tool_name, arguments, timeout, observability}, timeout)
+    |> normalize_observability_reply()
+  catch
+    :exit, {:timeout, _} ->
+      meta = timeout_meta(timeout)
+      emit_upstream_exception(observability, tool_name, timeout, meta, "timeout")
+      {:error, "Upstream timeout after #{timeout}ms", meta}
+
+    :exit, _reason ->
+      meta = %{attempt_count: 1, outcome: "error", error_kind: "upstream"}
+      emit_upstream_exception(observability, tool_name, timeout, meta, "connection")
+      {:error, "Upstream connection error", meta}
   end
 
   @doc "Get the status of this upstream connection."
@@ -149,25 +173,49 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   def handle_call(
-        {:tools_call, _tool_name, _arguments, _timeout},
+        {:tools_call, tool_name, _arguments, timeout, observability},
         _from,
         %{stopping: true} = state
       ) do
-    {:reply, {:error, "Upstream connection error"}, state}
+    reply =
+      if observability do
+        {:error, "Upstream connection error", upstream_meta(state, tool_name, timeout, "error", observability)}
+      else
+        {:error, "Upstream connection error"}
+      end
+
+    {:reply, reply, state}
   end
 
-  def handle_call({:tools_call, tool_name, arguments, timeout}, _from, state) do
+  def handle_call({:tools_call, tool_name, arguments, timeout}, from, state) do
+    handle_call({:tools_call, tool_name, arguments, timeout, nil}, from, state)
+  end
+
+  def handle_call({:tools_call, tool_name, arguments, timeout, observability}, _from, state) do
+    started_ms = System.monotonic_time(:millisecond)
+
     case call_tool(state, tool_name, arguments, timeout) do
       {:ok, result} ->
-        {:reply, {:ok, result}, track_call_result(state, {:ok, result})}
+        meta = upstream_meta(state, tool_name, timeout, "success", observability, started_ms)
+        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, nil)
+        reply = if observability, do: {:ok, result, meta}, else: {:ok, result}
+        {:reply, reply, track_call_result(state, {:ok, result})}
 
       {:error, reason, :protocol} ->
-        result = {:error, ProtocolClient.error_message(reason)}
-        {:reply, result, track_call_result(state, result)}
+        message = ProtocolClient.error_message(reason)
+        result = {:error, message}
+        meta = upstream_meta(state, tool_name, timeout, "error", observability, started_ms, reason, :protocol)
+        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
+        reply = if observability, do: {:error, message, meta}, else: result
+        {:reply, reply, track_call_result(state, result)}
 
       {:error, reason, :connection} ->
-        result = {:error, ProtocolClient.error_message(reason)}
-        {:reply, result, disconnect(state, reason)}
+        message = ProtocolClient.error_message(reason)
+        result = {:error, message}
+        meta = upstream_meta(state, tool_name, timeout, "error", observability, started_ms, reason, :connection)
+        maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
+        reply = if observability, do: {:error, message, meta}, else: result
+        {:reply, reply, disconnect(state, reason)}
     end
   end
 
@@ -696,5 +744,93 @@ defmodule Backplane.Proxy.Upstream do
     |> cancel_timer(:reconnect_timer)
     |> cancel_timer(:refresh_timer)
     |> cancel_timer(:health_timer)
+  end
+
+  defp normalize_reply({:ok, result}), do: {:ok, result}
+  defp normalize_reply({:error, reason}), do: {:error, reason}
+  defp normalize_reply(other), do: other
+
+  defp normalize_observability_reply({:ok, result, meta}), do: {:ok, result, meta}
+  defp normalize_observability_reply({:error, reason, meta}), do: {:error, reason, meta}
+  defp normalize_observability_reply(other), do: other
+
+  defp upstream_meta(state, original_tool_name, timeout, outcome, observability, started_ms \\ nil, reason \\ nil, category \\ nil) do
+    {negotiated_version, _, _} = safe_negotiation_status(state)
+
+    duration_ms =
+      if is_integer(started_ms) do
+        System.monotonic_time(:millisecond) - started_ms
+      else
+        nil
+      end
+
+    %{
+      upstream_name: state.name,
+      upstream_prefix: state.prefix,
+      upstream_transport: state.transport,
+      upstream_protocol_version: negotiated_version,
+      original_tool_name: original_tool_name,
+      timeout_ms: timeout,
+      attempt_count: 1,
+      duration_ms: duration_ms,
+      outcome: outcome,
+      error_kind: upstream_error_kind(category, reason)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+    |> maybe_put_observability(observability)
+  end
+
+  defp maybe_put_observability(meta, nil), do: meta
+  defp maybe_put_observability(meta, _observability), do: meta
+
+  defp upstream_error_kind(:protocol, _reason), do: "protocol"
+  defp upstream_error_kind(:connection, _reason), do: "upstream"
+  defp upstream_error_kind("timeout", _reason), do: "timeout"
+  defp upstream_error_kind(_category, _reason), do: nil
+
+  defp maybe_emit_upstream_stop(nil, _tool_name, _timeout, _meta, _error_message), do: :ok
+
+  defp maybe_emit_upstream_stop(%{context: parent_context}, tool_name, _timeout, meta, error_message) do
+    upstream_context = Context.child(parent_context)
+    event_id = Id.generator().event_id()
+
+    _error =
+      if meta[:outcome] == "success" do
+        nil
+      else
+        Error.normalize(error_message || "upstream error",
+          kind: meta[:error_kind] || "upstream",
+          source: "mcp_upstream"
+        )
+      end
+
+    Event.emit_stop(:mcp_proxy, "upstream", upstream_context,
+      event_id: event_id,
+      measurements: %{duration_ms: meta[:duration_ms]},
+      attributes: Map.put(meta, :original_tool_name, tool_name)
+    )
+  end
+
+  defp emit_upstream_exception(%{context: parent_context}, tool_name, timeout, meta, kind) do
+    upstream_context = Context.child(parent_context)
+    message = if kind == "timeout", do: "Upstream timeout after #{timeout}ms", else: "Upstream connection error"
+
+    Event.emit_stop(:mcp_proxy, "upstream", upstream_context,
+      event_id: Id.generator().event_id(),
+      measurements: %{duration_ms: meta[:duration_ms]},
+      attributes: Map.merge(meta, %{original_tool_name: tool_name, outcome: "error"}),
+      error: Error.normalize(message, kind: meta[:error_kind] || kind, source: "mcp_upstream")
+    )
+  end
+
+  defp timeout_meta(timeout) do
+    %{
+      attempt_count: 1,
+      outcome: "error",
+      error_kind: "timeout",
+      timeout_ms: timeout,
+      duration_ms: timeout
+    }
   end
 end

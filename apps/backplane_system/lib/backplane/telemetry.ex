@@ -19,6 +19,7 @@ defmodule Backplane.Telemetry do
     request_id = Logger.metadata()[:request_id]
     metadata = %{tool: tool_name, request_id: request_id}
     start_time = System.monotonic_time()
+    v2_enabled = Application.get_env(:backplane_telemetry, :observability_v2_enabled, false)
 
     :telemetry.execute(
       [:backplane, :tool_call, :start],
@@ -43,14 +44,16 @@ defmodule Backplane.Telemetry do
         Map.put(metadata, :result, result_status)
       )
 
-      duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+      unless v2_enabled do
+        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
-      Logger.info("Tool call completed",
-        tool: tool_name,
-        result: result_status,
-        duration_ms: duration_ms,
-        request_id: request_id
-      )
+        Logger.info("Tool call completed",
+          tool: tool_name,
+          result: result_status,
+          duration_ms: duration_ms,
+          request_id: request_id
+        )
+      end
 
       result
     rescue
@@ -63,14 +66,16 @@ defmodule Backplane.Telemetry do
           Map.merge(metadata, %{kind: :error, reason: e})
         )
 
-        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+        unless v2_enabled do
+          duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
-        Logger.error("Tool call exception",
-          tool: tool_name,
-          error: Exception.message(e),
-          duration_ms: duration_ms,
-          request_id: request_id
-        )
+          Logger.error("Tool call exception",
+            tool: tool_name,
+            error: Exception.message(e),
+            duration_ms: duration_ms,
+            request_id: request_id
+          )
+        end
 
         reraise e, __STACKTRACE__
     end

@@ -3,7 +3,7 @@ defmodule BackplaneMcp.Application do
 
   use Application
 
-  alias Backplane.MCP.LogWriter
+  alias Backplane.MCP.{LogWriter, ToolLogWriter}
   alias Backplane.Observability.{Buffer, Flags}
 
   @impl true
@@ -34,11 +34,17 @@ defmodule BackplaneMcp.Application do
       children ++
         [
           {Buffer, [name: :mcp_proxy_root, capacity: Buffer.default_capacity(:mcp_proxy_root)]},
-          {LogWriter, mcp_log_writer_opts()}
+          {Buffer, [name: :mcp_tool_calls, capacity: Buffer.default_capacity(:mcp_tool_calls)]},
+          {LogWriter, mcp_log_writer_opts()},
+          {ToolLogWriter, mcp_tool_log_writer_opts()}
         ]
     else
       children
     end
+  end
+
+  defp mcp_tool_log_writer_opts do
+    Application.get_env(:backplane_mcp, :mcp_tool_log_writer, [])
   end
 
   defp mcp_log_writer_opts do

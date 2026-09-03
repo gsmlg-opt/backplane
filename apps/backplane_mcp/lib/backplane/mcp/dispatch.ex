@@ -10,18 +10,20 @@ defmodule Backplane.MCP.Dispatch do
   require Logger
 
   alias Backplane.Clients
-  alias Backplane.MCP.Info
+  alias Backplane.MCP.{Info, ObservabilityContext, ToolAccessEvent}
   alias Backplane.McpProtocol.Protocol
   alias Backplane.Proxy.Upstream
   alias Backplane.Registry.{InputValidator, PromptRegistry, Tool, ToolRegistry}
   alias Backplane.Skills.Registry, as: SkillsRegistry
+  alias Backplane.Observability
   alias Backplane.Telemetry
 
   @type context :: %{
           required(:protocol_version) => String.t(),
           required(:scopes) => [String.t()],
           required(:auth) => map(),
-          required(:client) => term()
+          required(:client) => term(),
+          optional(:observability) => ObservabilityContext.t()
         }
 
   @type error_reason ::
@@ -71,11 +73,25 @@ defmodule Backplane.MCP.Dispatch do
   def visible_tools(_context), do: internal_error()
 
   @doc "Executes a raw tool call without transport-level scope or argument validation."
-  @spec call_tool(String.t(), map(), map()) :: {:ok, term()} | {:error, term()}
-  def call_tool(name, args, auth \\ %{}) when is_binary(name) and is_map(auth) do
-    Telemetry.span_tool_call(name, fn ->
-      name |> ToolRegistry.resolve() |> execute_tool(name, args, auth)
-    end)
+  @spec call_tool(String.t(), map(), map(), ObservabilityContext.t() | nil) ::
+          {:ok, term()} | {:error, term()}
+  def call_tool(name, args, auth \\ %{}, observability \\ nil)
+      when is_binary(name) and is_map(auth) do
+  cond do
+      Observability.mcp_write?() and not is_nil(observability) ->
+        ToolAccessEvent.span(name, args, observability, fn tool_context ->
+          observability = Map.put(observability, :tool_context, tool_context)
+          name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability)
+        end)
+
+      true ->
+        Telemetry.span_tool_call(name, fn ->
+          case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil) do
+            {:ok, result, _meta} -> {:ok, result}
+            {:error, reason, _meta} -> {:error, reason}
+          end
+        end)
+    end
   end
 
   @doc false
@@ -162,7 +178,7 @@ defmodule Backplane.MCP.Dispatch do
     arguments = params["arguments"] || %{}
     Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
 
-    case call_tool(name, arguments, context.auth) do
+    case call_tool(name, arguments, context.auth, Map.get(context, :observability)) do
       {:ok, result} ->
         maybe_log_skill_load(context.client, name, result)
         Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
@@ -201,9 +217,15 @@ defmodule Backplane.MCP.Dispatch do
 
   defp validate_context(_context), do: internal_error()
 
-  defp execute_tool({:native, module, handler}, name, args, _auth) do
+  defp execute_tool({:native, module, handler}, name, args, _auth, _observability) do
     call_args = if handler, do: Map.put(args, "_handler", to_string(handler)), else: args
-    module.call(call_args)
+    meta = base_meta("native", name, nil)
+
+    case module.call(call_args) do
+      {:ok, result} -> {:ok, result, meta}
+      {:error, reason} -> {:error, reason, meta}
+      result -> {:ok, result, meta}
+    end
   rescue
     exception ->
       Logger.error("Native tool crashed",
@@ -213,44 +235,92 @@ defmodule Backplane.MCP.Dispatch do
         failure: failure_category(exception)
       )
 
-      {:error, "Tool #{name} failed: #{Exception.message(exception)}"}
+      {:error, "Tool #{name} failed: #{Exception.message(exception)}",
+       base_meta("native", name, nil)}
   end
 
-  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args, _auth) do
+  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args, _auth, observability) do
+    upstream_prefix = upstream_prefix(name)
+
     case upstream_cache_ttl(name) do
       nil ->
-        forward_upstream(upstream_pid, original_tool_name, name, args, timeout)
+        forward_upstream(
+          upstream_pid,
+          original_tool_name,
+          name,
+          args,
+          timeout,
+          upstream_prefix,
+          "bypass",
+          observability
+        )
 
       ttl_ms ->
-        key = Backplane.Cache.KeyBuilder.upstream(upstream_prefix(name), name, args)
+        key = Backplane.Cache.KeyBuilder.upstream(upstream_prefix, name, args)
 
         case Backplane.Cache.get(key) do
           {:ok, cached} ->
-            cached
+            {:ok, cached,
+             base_meta("upstream", name, timeout,
+               original_tool_name: original_tool_name,
+               cache_status: "hit",
+               upstream_prefix: upstream_prefix,
+               upstream_pid: upstream_pid
+             )}
 
           :miss ->
-            result = forward_upstream(upstream_pid, original_tool_name, name, args, timeout)
+            case forward_upstream(
+                   upstream_pid,
+                   original_tool_name,
+                   name,
+                   args,
+                   timeout,
+                   upstream_prefix,
+                   "miss",
+                   observability
+                 ) do
+              {:ok, result, meta} ->
+                if match?({:ok, _result}, {:ok, result}),
+                  do: Backplane.Cache.put(key, result, ttl_ms)
 
-            if match?({:ok, _result}, result), do: Backplane.Cache.put(key, result, ttl_ms)
-            result
+                {:ok, result, meta}
+
+              other ->
+                other
+            end
         end
     end
   end
 
-  defp execute_tool({:managed, handler}, name, args, auth) when is_function(handler, 2) do
-    managed_tool_result(handler.(args, auth), name)
+  defp execute_tool({:managed, handler}, name, args, auth, _observability) when is_function(handler, 2) do
+    meta = base_meta("managed", name, nil)
+
+    case managed_tool_result(handler.(args, auth), name) do
+      {:ok, result} -> {:ok, result, meta}
+      {:error, reason} -> {:error, reason, meta}
+    end
   rescue
-    exception -> {:error, "Managed tool #{name} failed: #{Exception.message(exception)}"}
+    exception ->
+      {:error, "Managed tool #{name} failed: #{Exception.message(exception)}",
+       base_meta("managed", name, nil)}
   end
 
-  defp execute_tool({:managed, handler}, name, args, _auth) when is_function(handler, 1) do
-    managed_tool_result(handler.(args), name)
+  defp execute_tool({:managed, handler}, name, args, _auth, _observability) when is_function(handler, 1) do
+    meta = base_meta("managed", name, nil)
+
+    case managed_tool_result(handler.(args), name) do
+      {:ok, result} -> {:ok, result, meta}
+      {:error, reason} -> {:error, reason, meta}
+    end
   rescue
-    exception -> {:error, "Managed tool #{name} failed: #{Exception.message(exception)}"}
+    exception ->
+      {:error, "Managed tool #{name} failed: #{Exception.message(exception)}",
+       base_meta("managed", name, nil)}
   end
 
-  defp execute_tool(:not_found, name, _args, _auth) do
-    {:error, "Unknown tool: #{name}. Use tools/list to see available tools."}
+  defp execute_tool(:not_found, name, _args, _auth, _observability) do
+    {:error, "Unknown tool: #{name}. Use tools/list to see available tools.",
+     base_meta("unknown", name, nil)}
   end
 
   defp managed_tool_result({:ok, result}, _name), do: {:ok, result}
@@ -264,10 +334,55 @@ defmodule Backplane.MCP.Dispatch do
   defp managed_tool_result({:error, reason}, name),
     do: {:error, "Managed tool #{name} failed: #{inspect(reason)}"}
 
-  defp forward_upstream(upstream_pid, original_tool_name, name, args, timeout) do
-    case Upstream.forward(upstream_pid, original_tool_name, args, timeout) do
+  defp forward_upstream(
+         upstream_pid,
+         original_tool_name,
+         name,
+         args,
+         timeout,
+         upstream_prefix,
+         cache_status,
+         observability
+       ) do
+    meta =
+      base_meta("upstream", name, timeout,
+        original_tool_name: original_tool_name,
+        cache_status: cache_status,
+        upstream_prefix: upstream_prefix,
+        upstream_pid: upstream_pid
+      )
+
+    result =
+      if observability && Map.get(observability, :tool_context) do
+        Upstream.forward(
+          upstream_pid,
+          original_tool_name,
+          args,
+          timeout,
+          %{
+            context: observability.tool_context,
+            tool_event_id: observability.mcp_request_id
+          }
+        )
+      else
+        Upstream.forward(upstream_pid, original_tool_name, args, timeout)
+      end
+
+    case result do
+      {:ok, result, upstream_meta} ->
+        {:ok, result, Map.merge(meta, upstream_meta)}
+
       {:ok, result} ->
-        {:ok, result}
+        {:ok, result, enrich_upstream_meta(meta, upstream_pid)}
+
+      {:error, reason, upstream_meta} ->
+        Logger.warning("Upstream tool call failed",
+          tool: name,
+          original_tool: original_tool_name,
+          failure: failure_category(reason)
+        )
+
+        {:error, "Tool #{name} failed: #{reason}", Map.merge(meta, upstream_meta)}
 
       {:error, reason} ->
         Logger.warning("Upstream tool call failed",
@@ -276,7 +391,39 @@ defmodule Backplane.MCP.Dispatch do
           failure: failure_category(reason)
         )
 
-        {:error, "Tool #{name} failed: #{reason}"}
+        {:error, "Tool #{name} failed: #{reason}", enrich_upstream_meta(meta, upstream_pid)}
+    end
+  end
+
+  defp base_meta(execution_kind, name, timeout, extra \\ []) do
+    {namespace, _} =
+      case String.split(name, "::", parts: 2) do
+        [ns, _rest] -> {ns, name}
+        _other -> {name, name}
+      end
+
+    [
+      execution_kind: execution_kind,
+      tool_namespace: namespace,
+      timeout_ms: timeout
+    ]
+    |> Keyword.merge(extra)
+    |> Enum.into(%{})
+  end
+
+  defp enrich_upstream_meta(meta, upstream_pid) do
+    case Upstream.status(upstream_pid) do
+      %{name: name, prefix: prefix, transport: transport, negotiated_version: version} ->
+        Map.merge(meta, %{
+          upstream_name: name,
+          upstream_prefix: prefix,
+          upstream_transport: transport,
+          upstream_protocol_version: version,
+          attempt_count: 1
+        })
+
+      _ ->
+        Map.put(meta, :attempt_count, 1)
     end
   end
 
