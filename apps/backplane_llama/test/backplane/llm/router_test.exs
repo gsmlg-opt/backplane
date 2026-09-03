@@ -481,7 +481,7 @@ defmodule Backplane.LLM.RouterTest do
       assert is_binary(body["error"]["message"])
     end
 
-    test "returns 404 for OpenAI-only model on anthropic endpoint" do
+    test "returns 400 for OpenAI-only model on anthropic endpoint" do
       create_provider_model("openai-prod", :openai, "gpt-4o", "router-openai-cred")
 
       conn =
@@ -491,9 +491,9 @@ defmodule Backplane.LLM.RouterTest do
           "max_tokens" => 100
         })
 
-      assert conn.status == 404
+      assert conn.status == 400
       body = json_body(conn)
-      assert body["error"]["type"] == "not_found_error"
+      assert body["error"]["type"] == "invalid_request_error"
     end
 
     test "returns 400 when model field is missing" do
@@ -525,7 +525,7 @@ defmodule Backplane.LLM.RouterTest do
       assert body["error"]["code"] == "model_not_found"
     end
 
-    test "returns 404 for Anthropic-only model on OpenAI endpoint" do
+    test "returns 400 for Anthropic-only model on OpenAI endpoint" do
       create_provider_model(
         "anthropic-prod",
         :anthropic,
@@ -539,10 +539,10 @@ defmodule Backplane.LLM.RouterTest do
           "messages" => [%{"role" => "user", "content" => "hi"}]
         })
 
-      assert conn.status == 404
+      assert conn.status == 400
       body = json_body(conn)
       assert is_map(body["error"])
-      assert body["error"]["code"] == "model_not_found"
+      assert body["error"]["code"] == "api_type_mismatch"
     end
 
     test "omits disabled thinking for Moonshot K2.7 code models" do

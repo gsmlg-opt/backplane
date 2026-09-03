@@ -20,6 +20,7 @@ defmodule Backplane.LLM.Router do
   import Plug.Conn
 
   alias Backplane.LLM.{
+    AccessEvent,
     AutoModel,
     CredentialPlug,
     ModelAlias,
@@ -29,8 +30,7 @@ defmodule Backplane.LLM.Router do
     OpenAICodexCompat,
     Provider,
     ProviderApi,
-    RateLimiter,
-    UsageAccumulator
+    RateLimiter
   }
 
   alias Backplane.Embedding
@@ -117,13 +117,24 @@ defmodule Backplane.LLM.Router do
   end
 
   defp proxy_request(conn, api_type) do
+    access = AccessEvent.start(conn, operation_for_path(conn.request_path), api_type)
     raw_body = conn.assigns[:raw_body] || ""
 
     case ModelExtractor.extract(raw_body) do
       {:error, reason} ->
-        send_model_error(conn, api_type, reason)
+        conn = send_model_error(conn, api_type, reason)
+
+        finalize_access(access, conn, :error,
+          error_kind: :validation,
+          error_code: error_code_for_model_error(reason),
+          error_reason: reason
+        )
+
+        conn
 
       {:ok, model_string} ->
+        access = AccessEvent.put_requested_model(access, model_string)
+
         with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
@@ -136,6 +147,9 @@ defmodule Backplane.LLM.Router do
                  raw_model,
                  rewritten_body
                ) do
+          access =
+            AccessEvent.put_resolution(access, provider, raw_model, provider_api)
+
           codex_backend? = OpenAICodexCompat.enabled?(provider, provider_api)
           provider_api = OpenAICodexCompat.effective_api(provider_api, codex_backend?)
 
@@ -147,54 +161,134 @@ defmodule Backplane.LLM.Router do
               provider,
               raw_model,
               rewritten_body,
-              api_type
+              api_type,
+              access
             )
           else
             conn = upstream_request_conn(conn, api_type, provider_api, codex_backend?)
             upstream = build_upstream(provider_api, auth_headers)
-            do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type)
+            do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access)
           end
         else
           {:error, :no_provider} ->
-            send_not_found(conn, api_type, model_string)
+            conn = send_not_found(conn, api_type, model_string)
+
+            finalize_access(access, conn, :error,
+              error_kind: :routing,
+              error_code: "model_not_found",
+              error_reason: :no_provider
+            )
+
+            conn
 
           {:error, :api_type_mismatch, provider} ->
-            send_api_type_mismatch(conn, api_type, model_string, provider)
+            conn = send_api_type_mismatch(conn, api_type, model_string, provider)
+
+            finalize_access(access, conn, :error,
+              error_kind: :routing,
+              error_code: "api_type_mismatch",
+              error_reason: :api_type_mismatch,
+              provider: provider
+            )
+
+            conn
 
           {:error, retry_after} when is_integer(retry_after) ->
-            send_rate_limit_error(conn, api_type, retry_after)
+            conn = send_rate_limit_error(conn, api_type, retry_after)
+
+            finalize_access(access, conn, :error,
+              error_kind: :rate_limit,
+              error_code: "rate_limit_exceeded",
+              error_reason: "rate_limited"
+            )
+
+            conn
 
           {:error, :invalid_json} ->
-            send_model_error(conn, api_type, :invalid_json)
+            conn = send_model_error(conn, api_type, :invalid_json)
+
+            finalize_access(access, conn, :error,
+              error_kind: :validation,
+              error_code: "invalid_json",
+              error_reason: :invalid_json
+            )
+
+            conn
 
           {:error, _} ->
-            send_error(conn, api_type, 503, "Provider credential not configured")
+            conn = send_error(conn, api_type, 503, "Provider credential not configured")
+
+            finalize_access(access, conn, :error,
+              error_kind: :auth,
+              error_code: "credential_missing",
+              error_reason: "credential_missing"
+            )
+
+            conn
         end
     end
   end
 
   defp proxy_embedding_request(conn) do
+    access = AccessEvent.start(conn, "embeddings", :openai)
     raw_body = conn.assigns[:raw_body] || ""
 
     case ModelExtractor.extract(raw_body) do
       {:error, reason} ->
-        send_model_error(conn, :openai, reason)
+        conn = send_model_error(conn, :openai, reason)
+
+        finalize_access(access, conn, :error,
+          error_kind: :validation,
+          error_code: error_code_for_model_error(reason),
+          error_reason: reason
+        )
+
+        conn
 
       {:ok, model_string} ->
+        access = AccessEvent.put_requested_model(access, model_string)
+
         with {:ok, provider, raw_model} <- Embedding.resolve_model(model_string),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
              {:ok, auth_headers} <- Embedding.build_auth_headers(provider) do
+          access =
+            AccessEvent.put_resolution(access, provider, raw_model, nil)
+
           upstream = build_embedding_upstream(provider, auth_headers)
-          do_embedding_proxy(conn, upstream, rewritten_body)
+          do_embedding_proxy(conn, upstream, rewritten_body, access)
         else
           {:error, :no_provider} ->
-            send_not_found(conn, :openai, model_string)
+            conn = send_not_found(conn, :openai, model_string)
+
+            finalize_access(access, conn, :error,
+              error_kind: :routing,
+              error_code: "model_not_found",
+              error_reason: :no_provider
+            )
+
+            conn
 
           {:error, :invalid_json} ->
-            send_model_error(conn, :openai, :invalid_json)
+            conn = send_model_error(conn, :openai, :invalid_json)
+
+            finalize_access(access, conn, :error,
+              error_kind: :validation,
+              error_code: "invalid_json",
+              error_reason: :invalid_json
+            )
+
+            conn
 
           {:error, _} ->
-            send_error(conn, :openai, 503, "Provider credential not configured")
+            conn = send_error(conn, :openai, 503, "Provider credential not configured")
+
+            finalize_access(access, conn, :error,
+              error_kind: :auth,
+              error_code: "credential_missing",
+              error_reason: "credential_missing"
+            )
+
+            conn
         end
     end
   end
@@ -293,7 +387,8 @@ defmodule Backplane.LLM.Router do
          provider,
          raw_model,
          rewritten_body,
-         api_type
+         api_type,
+         access
        ) do
     with {:ok, responses_body} <-
            OpenAICodexCompat.chat_completions_to_responses_body(rewritten_body) do
@@ -314,23 +409,36 @@ defmodule Backplane.LLM.Router do
         end
 
       try do
-        do_proxy(conn, upstream, provider, raw_model, responses_body, api_type, extra_opts)
+        do_proxy(conn, upstream, provider, raw_model, responses_body, api_type, access, extra_opts)
       after
         cleanup_mapper.()
       end
     else
-      {:error, reason} -> send_model_error(conn, api_type, reason)
+      {:error, reason} ->
+        conn = send_model_error(conn, api_type, reason)
+
+        finalize_access(access, conn, :error,
+          error_kind: :validation,
+          error_code: error_code_for_model_error(reason),
+          error_reason: reason
+        )
+
+        conn
     end
   end
 
-  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, extra_opts \\ []) do
+  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access, extra_opts \\ []) do
     stream? = is_stream_request?(rewritten_body)
-    usage_acc = if stream?, do: UsageAccumulator.new(), else: nil
-    start_ms = System.monotonic_time(:millisecond)
+
+    access =
+      access
+      |> AccessEvent.put_resolution(provider, raw_model, provider_api_from_upstream(upstream))
+      |> then(fn acc -> if stream?, do: AccessEvent.mark_stream(acc), else: acc end)
+      |> AccessEvent.mark_upstream_start()
 
     on_chunk =
       if stream? do
-        fn chunk -> UsageAccumulator.scan_chunk(usage_acc, chunk) end
+        fn chunk -> AccessEvent.scan_stream_chunk(access, chunk) end
       end
 
     opts =
@@ -345,93 +453,30 @@ defmodule Backplane.LLM.Router do
 
     result_conn = HttpPlug.call(conn, upstream, opts)
 
-    latency_ms = System.monotonic_time(:millisecond) - start_ms
-
-    {input_tokens, output_tokens} =
-      if stream? do
-        UsageAccumulator.get_tokens(usage_acc)
-      else
-        extract_tokens_from_resp(result_conn, api_type)
-      end
-
-    emit_telemetry(provider, raw_model, result_conn, %{
-      status: result_conn.status,
-      stream?: stream?,
-      input_tokens: input_tokens,
-      output_tokens: output_tokens,
-      error_reason: nil,
-      latency_ms: latency_ms
-    })
+    finalize_access(access, result_conn, outcome_for_status(result_conn.status),
+      api_surface: api_type,
+      status: result_conn.status
+    )
 
     result_conn
   end
 
-  defp do_embedding_proxy(conn, upstream, rewritten_body) do
+  defp do_embedding_proxy(conn, upstream, rewritten_body, access) do
+    access = AccessEvent.mark_upstream_start(access)
+
     conn =
       conn
       |> delete_req_header("authorization")
       |> delete_req_header("x-api-key")
 
-    HttpPlug.call(conn, upstream, body: rewritten_body)
-  end
+    result_conn = HttpPlug.call(conn, upstream, body: rewritten_body)
 
-  defp extract_tokens_from_resp(conn, :anthropic) do
-    body = conn.resp_body
-
-    with true <- is_binary(body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(body),
-         input when is_integer(input) <- Map.get(usage, "input_tokens"),
-         output when is_integer(output) <- Map.get(usage, "output_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  defp extract_tokens_from_resp(conn, :openai) do
-    body = conn.resp_body
-
-    with true <- is_binary(body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(body),
-         input when is_integer(input) <- Map.get(usage, "prompt_tokens"),
-         output when is_integer(output) <- Map.get(usage, "completion_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  # ── Telemetry helpers ─────────────────────────────────────────────────────────
-
-  defp emit_telemetry(provider, raw_model, conn, %{
-         status: status,
-         stream?: stream?,
-         input_tokens: input_tokens,
-         output_tokens: output_tokens,
-         error_reason: error_reason,
-         latency_ms: latency_ms
-       }) do
-    :telemetry.execute(
-      [:backplane, :llm, :request],
-      %{latency_ms: latency_ms, system_time: System.system_time()},
-      %{
-        provider_id: provider.id,
-        model: raw_model,
-        status: status,
-        stream: stream?,
-        input_tokens: input_tokens,
-        output_tokens: output_tokens,
-        client_ip: client_ip(conn),
-        error_reason: error_reason
-      }
+    finalize_access(access, result_conn, outcome_for_status(result_conn.status),
+      api_surface: :openai,
+      status: result_conn.status
     )
-  end
 
-  defp client_ip(conn) do
-    case get_req_header(conn, "x-forwarded-for") do
-      [ip | _] -> ip
-      [] -> conn.remote_ip |> :inet.ntoa() |> to_string()
-    end
+    result_conn
   end
 
   defp is_stream_request?(body) when is_binary(body) do
@@ -440,6 +485,44 @@ defmodule Backplane.LLM.Router do
       _ -> false
     end
   end
+
+  defp operation_for_path("/v1/messages"), do: "messages"
+  defp operation_for_path("/v1/chat/completions"), do: "chat_completions"
+  defp operation_for_path("/v1/responses"), do: "responses"
+  defp operation_for_path("/v1/embeddings"), do: "embeddings"
+  defp operation_for_path(_), do: "proxy"
+
+  defp outcome_for_status(status) when status in 200..299, do: :success
+  defp outcome_for_status(_), do: :error
+
+  defp error_code_for_model_error(:no_model), do: "missing_required_parameter"
+  defp error_code_for_model_error(:invalid_json), do: "invalid_json"
+  defp error_code_for_model_error(reason), do: to_string(reason)
+
+  defp finalize_access(access, conn, outcome, opts) do
+    access =
+      case Keyword.get(opts, :provider) do
+        %Provider{} = provider ->
+          AccessEvent.put_resolution(
+            access,
+            provider,
+            access.resolved_model || access.requested_model,
+            nil
+          )
+
+        _ ->
+          access
+      end
+
+    status = Keyword.get(opts, :status, conn.status)
+    AccessEvent.finalize(access, conn, outcome, Keyword.put(opts, :status, status))
+  end
+
+  defp provider_api_from_upstream(%Upstream{metadata: %{provider_api_id: id}}) when is_binary(id) do
+    %ProviderApi{id: id}
+  end
+
+  defp provider_api_from_upstream(_), do: nil
 
   # ── Model listing ─────────────────────────────────────────────────────────────
 

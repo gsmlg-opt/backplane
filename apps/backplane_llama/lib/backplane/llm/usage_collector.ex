@@ -3,8 +3,10 @@ defmodule Backplane.LLM.UsageCollector do
   Telemetry handler that listens for [:backplane, :llm, :request] events
   and enqueues an Oban UsageWriter job to persist the usage data.
 
-  Call `attach/0` during application startup to activate the handler.
+  Disabled when Observability v2 LLM writes are active.
   """
+
+  alias Backplane.Observability
 
   @handler_id "backplane-llm-usage-collector"
 
@@ -25,18 +27,22 @@ defmodule Backplane.LLM.UsageCollector do
 
   @doc false
   def handle_event([:backplane, :llm, :request], measurements, metadata, _config) do
-    args = %{
-      "provider_id" => metadata.provider_id,
-      "model" => metadata.model,
-      "status" => metadata.status,
-      "latency_ms" => measurements.latency_ms,
-      "input_tokens" => metadata[:input_tokens],
-      "output_tokens" => metadata[:output_tokens],
-      "stream" => metadata[:stream] || false,
-      "client_ip" => metadata[:client_ip],
-      "error_reason" => metadata[:error_reason]
-    }
+    if Observability.llm_write?() do
+      :ok
+    else
+      args = %{
+        "provider_id" => metadata.provider_id,
+        "model" => metadata.model,
+        "status" => metadata.status,
+        "latency_ms" => measurements.latency_ms,
+        "input_tokens" => metadata[:input_tokens],
+        "output_tokens" => metadata[:output_tokens],
+        "stream" => metadata[:stream] || false,
+        "client_ip" => metadata[:client_ip],
+        "error_reason" => metadata[:error_reason]
+      }
 
-    Backplane.Jobs.UsageWriter.new(args) |> Oban.insert()
+      Backplane.Jobs.UsageWriter.new(args) |> Oban.insert()
+    end
   end
 end

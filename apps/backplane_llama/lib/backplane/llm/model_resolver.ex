@@ -46,6 +46,7 @@ defmodule Backplane.LLM.ModelResolver do
   @spec resolve(atom(), String.t()) ::
           {:ok, Provider.t(), String.t()}
           | {:error, :no_provider}
+          | {:error, :api_type_mismatch, Provider.t()}
   def resolve(api_type, model_string) when is_atom(api_type) and is_binary(model_string) do
     cache_key = {api_type, model_string}
 
@@ -109,12 +110,28 @@ defmodule Backplane.LLM.ModelResolver do
       not provider.enabled ->
         {:error, :no_provider}
 
+      provider_model_exists_on_other_surface?(provider, raw_model, api_type) ->
+        {:error, :api_type_mismatch, provider}
+
       not provider_model_available?(provider, api_type, raw_model) ->
         {:error, :no_provider}
 
       true ->
         {:ok, provider, raw_model}
     end
+  end
+
+  defp provider_model_exists_on_other_surface?(provider, raw_model, api_type) do
+    ProviderModelSurface
+    |> join(:inner, [surface], model in ProviderModel, on: surface.provider_model_id == model.id)
+    |> join(:inner, [surface, _model], api in ProviderApi, on: surface.provider_api_id == api.id)
+    |> where(
+      [surface, model, api],
+      model.provider_id == ^provider.id and model.model == ^raw_model and
+        model.enabled == true and surface.enabled == true and api.enabled == true and
+        api.api_surface != ^api_type
+    )
+    |> Repo.exists?()
   end
 
   defp resolve_alias(api_type, alias_name) do

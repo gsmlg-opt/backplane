@@ -30,6 +30,7 @@ defmodule BackplaneLlama.MixProject do
     [
       {:backplane_system, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
+      {:backplane_telemetry, in_umbrella: true},
       {:relayixir, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:phoenix, "~> 1.8"},

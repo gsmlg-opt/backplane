@@ -43,10 +43,10 @@ defmodule Backplane.LLM.ModelResolverTest do
                ModelResolver.resolve(:anthropic, "anthropic-provider/unknown-model")
     end
 
-    test "returns :no_provider when API surface differs" do
-      create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
+    test "returns :api_type_mismatch when API surface differs" do
+      provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
 
-      assert {:error, :no_provider} =
+      assert {:error, :api_type_mismatch, ^provider} =
                ModelResolver.resolve(:openai, "anthropic-provider/claude-sonnet")
     end
 

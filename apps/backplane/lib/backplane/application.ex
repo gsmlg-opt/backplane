@@ -31,7 +31,6 @@ defmodule Backplane.Application do
         :ok ->
           start_configured_upstreams()
           start_db_upstreams()
-          Backplane.LLM.UsageCollector.attach()
           Backplane.Clients.init_cache()
           upsert_config_clients()
 
