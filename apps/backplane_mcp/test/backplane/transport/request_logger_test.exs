@@ -8,7 +8,20 @@ defmodule Backplane.Transport.RequestLoggerTest do
   setup do
     prev_level = Logger.level()
     Logger.configure(level: :debug)
-    on_exit(fn -> Logger.configure(level: prev_level) end)
+
+    prev_disabled = Application.get_env(:backplane_telemetry, :observability_v2_test_disabled)
+
+    # Settings defaults keep Observability v2 on; force legacy Logger path for these tests.
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
+
+    on_exit(fn ->
+      Logger.configure(level: prev_level)
+
+      case prev_disabled do
+        nil -> Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
+        value -> Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, value)
+      end
+    end)
   end
 
   describe "init/1" do

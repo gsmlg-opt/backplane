@@ -97,6 +97,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
     test "method not found" do
       conn = mcp_conn("definitely/missing", %{})
       assert conn.status == 200
+
       flush_and_assert_rpc!("definitely/missing", "error", fn log ->
         assert log.jsonrpc_error_code == -32_601
       end)
@@ -105,6 +106,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
     test "invalid params" do
       conn = mcp_conn("tools/call", %{"arguments" => %{}})
       assert conn.status == 200
+
       flush_and_assert_rpc!("tools/call", "error", fn log ->
         assert log.jsonrpc_error_code == -32_602
       end)
@@ -117,6 +119,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
         mcp_conn("tools/call", %{"name" => "skill::list", "arguments" => %{}}, auth_token: token)
 
       assert conn.status == 200
+
       flush_and_assert_rpc!("tools/call", "error", fn log ->
         assert log.jsonrpc_error_code == -32_001
       end)
@@ -195,6 +198,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
 
       conn = mcp_conn("ping")
       assert conn.status == 429
+
       flush_and_assert_latest!("jsonrpc", "error", fn log ->
         assert log.http_status == 429
         assert log.error_kind == "rate_limit"
@@ -211,6 +215,7 @@ defmodule Backplane.Transport.McpObservabilityTest do
         |> call_mcp()
 
       assert conn.status == 401
+
       flush_and_assert_latest!("jsonrpc", "error", fn log ->
         assert log.http_status == 401
         assert log.error_kind == "auth"
@@ -373,6 +378,8 @@ defmodule Backplane.Transport.McpObservabilityTest do
   describe "legacy logger compatibility" do
     setup do
       disable_observability_v2!()
+
+      on_exit(fn -> reset_observability_v2!() end)
       :ok
     end
 

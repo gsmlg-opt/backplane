@@ -13,35 +13,36 @@ defmodule Backplane.MCP.ObservabilityCase do
       alias Backplane.MCP.{LogWriter, ProxyRequest, ToolCall, ToolLogWriter}
       alias Backplane.Observability.Buffer
 
-  setup tags do
-    if tags[:observability_v2] do
-      enable_observability_v2!()
-      start_observability_v2!(tags)
+      setup tags do
+        if tags[:observability_v2] do
+          enable_observability_v2!()
+          start_observability_v2!(tags)
 
-      on_exit(fn ->
-        Backplane.MCP.LogWriter.detach()
-        Backplane.MCP.ToolLogWriter.detach()
-        disable_observability_v2!()
-      end)
-    end
+          on_exit(fn ->
+            Backplane.MCP.LogWriter.detach()
+            Backplane.MCP.ToolLogWriter.detach()
+            disable_observability_v2!()
+          end)
+        end
 
-    if :ets.info(Backplane.Transport.RateLimiter) != :undefined do
-      :ets.delete_all_objects(Backplane.Transport.RateLimiter)
-    end
+        if :ets.info(Backplane.Transport.RateLimiter) != :undefined do
+          :ets.delete_all_objects(Backplane.Transport.RateLimiter)
+        end
 
-    Application.put_env(:backplane, Backplane.Transport.RateLimiter,
-      max_requests: 100,
-      window_ms: 60_000,
-      trust_x_forwarded_for: false
-    )
+        Application.put_env(:backplane, Backplane.Transport.RateLimiter,
+          max_requests: 100,
+          window_ms: 60_000,
+          trust_x_forwarded_for: false
+        )
 
-    :ok
-  end
+        :ok
+      end
     end
   end
 
   @doc false
   def enable_observability_v2! do
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, true)
     Application.put_env(:backplane_telemetry, :observability_v2_mcp_write, true)
   end
@@ -50,6 +51,14 @@ defmodule Backplane.MCP.ObservabilityCase do
   def disable_observability_v2! do
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_mcp_write, false)
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
+  end
+
+  @doc false
+  def reset_observability_v2! do
+    Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
+    Application.put_env(:backplane_telemetry, :observability_v2_mcp_write, false)
+    Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
   end
 
   @doc false

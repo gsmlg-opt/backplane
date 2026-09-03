@@ -18,7 +18,7 @@ defmodule Backplane.LLM.ObservabilityCase do
 
           on_exit(fn ->
             Backplane.LLM.LogWriter.detach()
-            disable_observability_v2!()
+            reset_observability_v2!()
           end)
         end
 
@@ -29,6 +29,7 @@ defmodule Backplane.LLM.ObservabilityCase do
 
   @doc false
   def enable_observability_v2! do
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, true)
     Application.put_env(:backplane_telemetry, :observability_v2_llm_write, true)
   end
@@ -37,6 +38,14 @@ defmodule Backplane.LLM.ObservabilityCase do
   def disable_observability_v2! do
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_llm_write, false)
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
+  end
+
+  @doc false
+  def reset_observability_v2! do
+    Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
+    Application.put_env(:backplane_telemetry, :observability_v2_llm_write, false)
+    Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
   end
 
   @doc false
@@ -45,7 +54,9 @@ defmodule Backplane.LLM.ObservabilityCase do
 
     case Process.whereis(:llm_proxy) do
       nil ->
-        start_supervised!({Backplane.Observability.Buffer, [name: :llm_proxy, capacity: capacity]})
+        start_supervised!(
+          {Backplane.Observability.Buffer, [name: :llm_proxy, capacity: capacity]}
+        )
 
       _ ->
         :ok

@@ -20,19 +20,28 @@ defmodule Backplane.Observability.Flags do
   @doc "Returns true when the Observability v2 master switch is enabled."
   @spec enabled?() :: boolean()
   def enabled? do
-    app_override?(:observability_v2_enabled) or domain_settings_enabled?()
+    cond do
+      test_disabled?() -> false
+      true -> app_override?(:observability_v2_enabled) or domain_settings_enabled?()
+    end
   end
 
   @doc "Returns true when LLM v2 durable writers should persist records."
   @spec llm_write?() :: boolean()
   def llm_write? do
-    app_override?(:observability_v2_llm_write) or llm_persist_from_settings?()
+    cond do
+      test_disabled?() -> false
+      true -> app_override?(:observability_v2_llm_write) or llm_persist_from_settings?()
+    end
   end
 
   @doc "Returns true when MCP v2 durable writers should persist records."
   @spec mcp_write?() :: boolean()
   def mcp_write? do
-    app_override?(:observability_v2_mcp_write) or mcp_persist_from_settings?()
+    cond do
+      test_disabled?() -> false
+      true -> app_override?(:observability_v2_mcp_write) or mcp_persist_from_settings?()
+    end
   end
 
   @doc """
@@ -44,6 +53,7 @@ defmodule Backplane.Observability.Flags do
   @spec runtime_sink?() :: boolean()
   def runtime_sink? do
     cond do
+      test_disabled?() -> false
       legacy_runtime_logger_forced?() -> false
       app_override?(:observability_v2_runtime_sink) -> true
       enabled?() -> true
@@ -92,5 +102,11 @@ defmodule Backplane.Observability.Flags do
 
   defp legacy_runtime_logger_forced? do
     Application.get_env(@app, :use_legacy_telemetry_logger, false) == true
+  end
+
+  # Explicit test-only override so Settings defaults (enabled=true) do not mask
+  # legacy-path exercises when app env flags alone are set to false.
+  defp test_disabled? do
+    Application.get_env(@app, :observability_v2_test_disabled, false) == true
   end
 end

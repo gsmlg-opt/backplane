@@ -360,6 +360,12 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "successful tool call" do
+    setup do
+      start_audit_writer_for_tests!()
+      on_exit(fn -> stop_audit_writer_for_tests!() end)
+      :ok
+    end
+
     test "calls skill::list and returns results" do
       resp = mcp_request("tools/call", %{"name" => "skill::list", "arguments" => %{}})
 
@@ -1530,13 +1536,27 @@ defmodule Backplane.Transport.McpHandlerTest do
       def init(state), do: {:ok, state}
 
       @impl true
+      def handle_call({:tools_call, name, arguments, timeout}, from, state) do
+        handle_call({:tools_call, name, arguments, timeout, nil}, from, state)
+      end
+
       def handle_call(
-            {:tools_call, name, arguments, timeout},
+            {:tools_call, name, arguments, timeout, _observability},
             _from,
             {response, owner} = state
           ) do
         send(owner, {:mock_upstream_call, name, arguments, timeout})
         {:reply, response, state}
+      end
+
+      def handle_call(:status, _from, state) do
+        {:reply,
+         %{
+           name: "mock-upstream",
+           prefix: "mock-upstream",
+           transport: :stdio,
+           negotiated_version: "2025-11-25"
+         }, state}
       end
     end
 
@@ -2117,6 +2137,8 @@ defmodule Backplane.Transport.McpHandlerTest do
   defp eventually(fun, 0), do: fun.()
 
   defp eventually(fun, attempts) do
+    if Process.whereis(Backplane.Audit.Writer), do: Backplane.Audit.Writer.flush()
+
     case fun.() do
       nil ->
         Process.sleep(25)
@@ -2125,6 +2147,34 @@ defmodule Backplane.Transport.McpHandlerTest do
       value ->
         value
     end
+  end
+
+  defp start_audit_writer_for_tests! do
+    stop_audit_writer_for_tests!()
+
+    {:ok, _} =
+      GenServer.start_link(Backplane.Audit.Buffer, [name: :audit, capacity: 100], name: :audit)
+
+    {:ok, _} =
+      Backplane.Audit.Writer.start_link(
+        batch_size: 50,
+        flush_interval_ms: 60_000,
+        subscribe_settings: false
+      )
+
+    :ok
+  end
+
+  defp stop_audit_writer_for_tests! do
+    for name <- [Backplane.Audit.Writer, :audit] do
+      case Process.whereis(name) do
+        nil -> :ok
+        pid -> GenServer.stop(pid, :normal, 5_000)
+      end
+    end
+
+    :persistent_term.erase({Backplane.Audit.Buffer, :audit})
+    :ok
   end
 
   describe "management tools filtering" do
