@@ -51,7 +51,8 @@ defmodule Backplane.Observability do
     %{
       llm: writer_health(Backplane.LLM.LogWriter),
       mcp: writer_health(Backplane.MCP.LogWriter),
-      mcp_tool: writer_health(Backplane.MCP.ToolLogWriter)
+      mcp_tool: writer_health(Backplane.MCP.ToolLogWriter),
+      audit: writer_health(Backplane.Audit.Writer)
     }
   end
 

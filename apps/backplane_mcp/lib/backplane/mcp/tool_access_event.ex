@@ -123,9 +123,42 @@ defmodule Backplane.MCP.ToolAccessEvent do
       error: error
     )
 
+    maybe_log_tool_audit(record, observability, outcome, error_reason)
     emit_legacy_stop(tool_name, parent_context(observability), outcome, duration_ms, result)
     :ok
   end
+
+  defp maybe_log_tool_audit(record, observability, outcome, _error_reason) do
+    status =
+      case outcome do
+        :success -> "ok"
+        :error -> "error"
+      end
+
+    attrs =
+      %{
+        event_id: record.event_id,
+        request_id: observability.context.request_id,
+        trace_id: record.trace_id,
+        mcp_request_id: record.mcp_request_id,
+        tool_name: record.tool_name,
+        duration_us: record.duration_ms * 1_000,
+        status: status,
+        error_message: record.error_message,
+        arguments_hash: record.arguments_hash
+      }
+      |> maybe_put_client(observability[:client])
+
+    Audit.log_tool_call(attrs)
+  end
+
+  defp maybe_put_client(attrs, %{id: id, name: name}) do
+    attrs
+    |> Map.put(:client_id, id)
+    |> Map.put(:client_name, name)
+  end
+
+  defp maybe_put_client(attrs, _client), do: attrs
 
   defp build_record(
          tool_name,

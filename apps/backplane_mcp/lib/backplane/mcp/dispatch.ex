@@ -85,7 +85,7 @@ defmodule Backplane.MCP.Dispatch do
         end)
 
       true ->
-        Telemetry.span_tool_call(name, fn ->
+        Telemetry.span_tool_call(name, args, fn ->
           case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil) do
             {:ok, result, _meta} -> {:ok, result}
             {:error, reason, _meta} -> {:error, reason}
@@ -178,9 +178,11 @@ defmodule Backplane.MCP.Dispatch do
     arguments = params["arguments"] || %{}
     Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: name})
 
-    case call_tool(name, arguments, context.auth, Map.get(context, :observability)) do
+    observability = observability_with_client(context)
+
+    case call_tool(name, arguments, context.auth, observability) do
       {:ok, result} ->
-        maybe_log_skill_load(context.client, name, result)
+        maybe_log_skill_load(context.client, name, result, observability)
         Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: name})
         {:ok, build_tool_call_result(name, result)}
 
@@ -468,11 +470,11 @@ defmodule Backplane.MCP.Dispatch do
 
   defp parse_ttl(_ttl), do: nil
 
-  defp maybe_log_skill_load(client, "skill::load", result) when is_map(result) do
+  defp maybe_log_skill_load(client, "skill::load", result, observability) when is_map(result) do
     case result[:name] || result["name"] do
       skill_name when is_binary(skill_name) ->
         result
-        |> skill_load_attrs(client, skill_name)
+        |> skill_load_attrs(client, skill_name, observability)
         |> Backplane.Audit.log_skill_load()
 
       _other ->
@@ -480,15 +482,33 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
-  defp maybe_log_skill_load(_client, _name, _result), do: :ok
+  defp maybe_log_skill_load(_client, _name, _result, _observability), do: :ok
 
-  defp skill_load_attrs(result, client, skill_name) do
+  defp skill_load_attrs(result, client, skill_name, observability) do
     %{
       skill_name: skill_name,
       loaded_deps: result[:loaded_deps] || result["loaded_deps"] || []
     }
     |> maybe_put_client(client)
+    |> maybe_put_observability(observability)
   end
+
+  defp maybe_put_observability(attrs, %{context: context, mcp_request_id: mcp_request_id}) do
+    attrs
+    |> Map.put(:request_id, context.request_id)
+    |> Map.put(:trace_id, context.trace_id)
+    |> Map.put(:mcp_request_id, mcp_request_id)
+  end
+
+  defp maybe_put_observability(attrs, _observability), do: attrs
+
+  defp observability_with_client(%{observability: observability, client: client})
+       when is_map(observability) do
+    Map.put(observability, :client, client)
+  end
+
+  defp observability_with_client(%{observability: observability}), do: observability
+  defp observability_with_client(_context), do: nil
 
   defp maybe_put_client(attrs, %{id: id, name: name}) do
     attrs

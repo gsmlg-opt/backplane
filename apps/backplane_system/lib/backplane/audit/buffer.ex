@@ -1,9 +1,11 @@
-defmodule Backplane.Observability.Buffer do
+defmodule Backplane.Audit.Buffer do
   @moduledoc false
 
   use GenServer
 
-  @doc "Starts a named bounded buffer."
+  @default_capacity 10_000
+
+  @doc "Starts a named bounded audit buffer."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = Keyword.fetch!(opts, :name)
@@ -78,7 +80,7 @@ defmodule Backplane.Observability.Buffer do
   def health(name) when is_atom(name) do
     case meta(name) do
       nil ->
-        %{status: :unavailable, capacity: default_capacity(name), reserved: 0, queued: 0}
+        %{status: :unavailable, capacity: default_capacity(), reserved: 0, queued: 0}
 
       %{atomic: atomic, capacity: capacity, pid: pid} ->
         %{
@@ -90,34 +92,19 @@ defmodule Backplane.Observability.Buffer do
     end
   end
 
-  @doc "Lists started buffer names."
-  @spec list() :: [atom()]
-  def list do
-    :persistent_term.get({__MODULE__, :names}, [])
-  end
-
-  @doc false
-  def default_capacity(:llm_proxy), do: 10_000
-  def default_capacity(:mcp_proxy_root), do: 20_000
-  def default_capacity(:mcp_tool_calls), do: 50_000
-  def default_capacity(:audit), do: 10_000
-  def default_capacity(_), do: 10_000
+  @doc "Default queue capacity for audit events."
+  @spec default_capacity() :: pos_integer()
+  def default_capacity, do: @default_capacity
 
   @impl true
   def init(opts) do
     name = Keyword.fetch!(opts, :name)
-    capacity = Keyword.get(opts, :capacity, default_capacity(name))
+    capacity = Keyword.get(opts, :capacity, default_capacity())
     atomic = :atomics.new(1, signed: false)
     :atomics.put(atomic, 1, 0)
 
     meta = %{atomic: atomic, capacity: capacity, pid: self()}
     :persistent_term.put(meta_key(name), meta)
-
-    names =
-      :persistent_term.get({__MODULE__, :names}, [])
-      |> then(fn names -> if name in names, do: names, else: [name | names] end)
-
-    :persistent_term.put({__MODULE__, :names}, names)
 
     {:ok, %{name: name, queue: :queue.new()}}
   end

@@ -15,11 +15,15 @@ defmodule Backplane.Telemetry do
 
   @doc "Execute a tool call with telemetry instrumentation."
   @spec span_tool_call(String.t(), (-> term())) :: term()
-  def span_tool_call(tool_name, fun) do
+  @spec span_tool_call(String.t(), map(), (-> term())) :: term()
+  def span_tool_call(tool_name, fun), do: span_tool_call(tool_name, %{}, fun)
+
+  def span_tool_call(tool_name, args, fun) when is_map(args) and is_function(fun, 0) do
     request_id = Logger.metadata()[:request_id]
     metadata = %{tool: tool_name, request_id: request_id}
     start_time = System.monotonic_time()
     v2_enabled = Application.get_env(:backplane_telemetry, :observability_v2_enabled, false)
+    arguments_hash = Backplane.Audit.hash_arguments(args)
 
     :telemetry.execute(
       [:backplane, :tool_call, :start],
@@ -44,6 +48,8 @@ defmodule Backplane.Telemetry do
         Map.put(metadata, :result, result_status)
       )
 
+      maybe_log_legacy_tool_audit(tool_name, args, request_id, duration, result_status, arguments_hash)
+
       unless v2_enabled do
         duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
@@ -66,6 +72,16 @@ defmodule Backplane.Telemetry do
           Map.merge(metadata, %{kind: :error, reason: e})
         )
 
+        maybe_log_legacy_tool_audit(
+          tool_name,
+          args,
+          request_id,
+          duration,
+          :error,
+          arguments_hash,
+          Exception.message(e)
+        )
+
         unless v2_enabled do
           duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
@@ -79,6 +95,26 @@ defmodule Backplane.Telemetry do
 
         reraise e, __STACKTRACE__
     end
+  end
+
+  defp maybe_log_legacy_tool_audit(tool_name, _args, request_id, duration, result_status, arguments_hash, error_message \\ nil) do
+    status =
+      case result_status do
+        :ok -> "ok"
+        :error -> "error"
+        _ -> "ok"
+      end
+
+    duration_us = System.convert_time_unit(duration, :native, :microsecond)
+
+    Backplane.Audit.log_tool_call(%{
+      tool_name: tool_name,
+      request_id: request_id,
+      duration_us: duration_us,
+      status: status,
+      error_message: error_message,
+      arguments_hash: arguments_hash
+    })
   end
 
   @doc "Emit an MCP request telemetry event."

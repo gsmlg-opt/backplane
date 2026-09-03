@@ -55,7 +55,8 @@ defmodule Backplane.Observability.Settings do
   @default_batch_sizes %{
     llm_proxy: 100,
     mcp_proxy_root: 200,
-    mcp_tool_calls: 500
+    mcp_tool_calls: 500,
+    audit: 200
   }
 
   @doc false

@@ -162,5 +162,6 @@ defmodule Backplane.Observability.WriterPolicy do
   defp buffer_name(:llm_proxy), do: :llm_proxy
   defp buffer_name(:mcp_proxy_root), do: :mcp_proxy_root
   defp buffer_name(:mcp_tool_calls), do: :mcp_tool_calls
+  defp buffer_name(:audit), do: :audit
   defp buffer_name(_), do: nil
 end

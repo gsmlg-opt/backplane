@@ -6,7 +6,7 @@ defmodule Backplane.Audit.PrunerTest do
 
   describe "perform/1" do
     test "deletes tool_call_log rows older than retention" do
-      old_time = DateTime.utc_now() |> DateTime.add(-31 * 86_400, :second)
+      old_time = DateTime.utc_now() |> DateTime.add(-181 * 86_400, :second)
 
       Repo.insert!(%ToolCallLog{
         tool_name: "old-tool",
@@ -28,7 +28,7 @@ defmodule Backplane.Audit.PrunerTest do
     end
 
     test "deletes skill_load_log rows older than retention" do
-      old_time = DateTime.utc_now() |> DateTime.add(-31 * 86_400, :second)
+      old_time = DateTime.utc_now() |> DateTime.add(-181 * 86_400, :second)
 
       Repo.insert!(%SkillLoadLog{
         skill_name: "old-skill",

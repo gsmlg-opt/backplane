@@ -3,6 +3,7 @@ defmodule Backplane.Admin.LogsSinksLive do
 
   import Backplane.Admin.LogsComponents
 
+  alias Backplane.Audit.Writer
   alias Backplane.LLM.LogWriter, as: LlmLogWriter
   alias Backplane.MCP.{LogWriter, ToolLogWriter}
   alias Backplane.Metrics
@@ -18,6 +19,7 @@ defmodule Backplane.Admin.LogsSinksLive do
        llm_writer: nil,
        mcp_writer: nil,
        mcp_tool_writer: nil,
+       audit_writer: nil,
        metrics: %{}
      )}
   end
@@ -31,6 +33,7 @@ defmodule Backplane.Admin.LogsSinksLive do
        llm_writer: safe_call(&LlmLogWriter.health/0),
        mcp_writer: safe_call(&LogWriter.health/0),
        mcp_tool_writer: safe_call(&ToolLogWriter.health/0),
+       audit_writer: safe_call(&Writer.health/0),
        metrics: safe_call(&Metrics.snapshot/0, %{})
      )}
   end
@@ -67,10 +70,11 @@ defmodule Backplane.Admin.LogsSinksLive do
 
         <section>
           <h2 class="mb-3 text-lg font-semibold">Writers</h2>
-          <div class="grid gap-4 md:grid-cols-3">
+          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <.writer_card title="LLM LogWriter" health={@llm_writer} />
             <.writer_card title="MCP LogWriter" health={@mcp_writer} />
             <.writer_card title="MCP ToolLogWriter" health={@mcp_tool_writer} />
+            <.writer_card title="Audit Writer" health={@audit_writer} />
           </div>
         </section>
 
