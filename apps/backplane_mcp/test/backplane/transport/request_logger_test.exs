@@ -81,5 +81,47 @@ defmodule Backplane.Transport.RequestLoggerTest do
 
       assert log =~ "GET /test"
     end
+
+    test "includes structured metadata for MCP JSON-RPC requests" do
+      parent = self()
+      handler_id = :"request_logger_metadata_baseline_#{System.unique_integer([:positive])}"
+
+      :ok = :logger.add_handler(handler_id, __MODULE__.MetadataHandler, %{parent: parent})
+      on_exit(fn -> :logger.remove_handler(handler_id) end)
+
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 7})
+
+      capture_log(fn ->
+        Plug.Test.conn(:post, "/mcp", body)
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Parsers.call(
+          Plug.Parsers.init(parsers: [:json], json_decoder: Jason, pass: ["application/json"])
+        )
+        |> RequestLogger.call([])
+        |> Plug.Conn.send_resp(200, "{}")
+      end)
+
+      assert_receive {:request_logger_meta, meta}, 500
+      assert Map.get(meta, :method) == "POST"
+      assert Map.get(meta, :path) == "/mcp"
+      assert Map.get(meta, :status) == 200
+      assert Map.get(meta, :rpc_method) == "tools/call"
+      assert is_integer(Map.get(meta, :duration_us))
+      assert is_binary(Map.get(meta, :remote_ip))
+    end
+  end
+
+  defmodule MetadataHandler do
+    @moduledoc false
+
+    def log(%{meta: meta}, %{parent: parent}) do
+      if Map.get(meta, :rpc_method) || Map.get(meta, :path) == "/mcp" do
+        send(parent, {:request_logger_meta, meta})
+      end
+
+      :ok
+    end
+
+    def log(_event, _config), do: :ok
   end
 end

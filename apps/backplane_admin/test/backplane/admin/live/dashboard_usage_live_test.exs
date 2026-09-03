@@ -41,6 +41,11 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
   test "renders MCP usage page from runtime metrics", %{conn: conn} do
     :telemetry.execute([:backplane, :mcp_request, :start], %{}, %{method: "tools/list"})
 
+    :telemetry.execute([:backplane, :tool_call, :stop], %{duration: 1_000}, %{
+      tool: "math::add",
+      result: :ok
+    })
+
     {:ok, _view, html} = live(conn, "/dashboard/usage/mcp")
 
     assert html =~ "MCP Usage"

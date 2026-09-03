@@ -21,6 +21,19 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ "Events appear in real-time"
   end
 
+  test "renders transient PubSub tool call events on the Tool Calls tab", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/system/logs")
+    view |> element("el-dm-button", "Tool Calls") |> render_click()
+
+    Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: "baseline::tool"})
+    Backplane.PubSubBroadcaster.broadcast_tools_call(:completed, %{tool: "baseline::tool"})
+
+    html = render(view)
+    assert html =~ "baseline::tool"
+    assert html =~ "dispatched"
+    assert html =~ "completed"
+  end
+
   test "loads an exact failed job and renders only a sanitized bounded error", %{conn: conn} do
     job =
       GraphExtractWorker.new(%{"memory_id" => Ecto.UUID.generate()})

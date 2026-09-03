@@ -153,6 +153,14 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
   log_to_console: false,
   log_to_file: nil
 
+# Observability v2 feature flags (PR-00). Safe defaults keep legacy behavior.
+# Dynamic system_settings land in a later PR; tests may override these keys.
+config :backplane_telemetry,
+  observability_v2_enabled: false,
+  observability_v2_llm_write: false,
+  observability_v2_mcp_write: false,
+  observability_v2_runtime_sink: false
+
 config :backplane_mcp_protocol,
   compile_cli?: System.get_env("BACKPLANE_MCP_PROTOCOL_COMPILE_CLI") in ["1", "true"]
 

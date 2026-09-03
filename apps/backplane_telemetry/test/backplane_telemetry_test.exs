@@ -134,4 +134,73 @@ defmodule BackplaneTelemetryTest do
 
     assert Enum.map(events, & &1["metadata"]["status"]) == ["inserted", "duplicate", "error"]
   end
+
+  test "captures LLM request events used by UsageCollector baseline", %{log_file: log_file} do
+    # Root application may have attached UsageCollector; keep this test focused on
+    # TelemetryLogger capture and avoid inline Oban inserts with a fake provider id.
+    if Code.ensure_loaded?(Backplane.LLM.UsageCollector) and
+         function_exported?(Backplane.LLM.UsageCollector, :detach, 0) do
+      Backplane.LLM.UsageCollector.detach()
+
+      on_exit(fn ->
+        if function_exported?(Backplane.LLM.UsageCollector, :attach, 0) do
+          Backplane.LLM.UsageCollector.attach()
+        end
+      end)
+    end
+
+    :telemetry.execute(
+      [:backplane, :llm, :request],
+      %{latency_ms: 42, system_time: System.system_time()},
+      %{
+        provider_id: "00000000-0000-4000-8000-000000000001",
+        model: "baseline-model",
+        status: 200,
+        stream: false,
+        input_tokens: 3,
+        output_tokens: 5,
+        client_ip: "127.0.0.1",
+        error_reason: nil
+      }
+    )
+
+    :sys.get_state(TelemetryLogger)
+
+    assert File.exists?(log_file)
+    assert {:ok, decoded} = Jason.decode(File.read!(log_file))
+    assert decoded["event"] == "backplane.llm.request"
+    assert decoded["measurements"]["latency_ms"] == 42
+    assert decoded["metadata"]["model"] == "baseline-model"
+    assert decoded["metadata"]["status"] == 200
+  end
+
+  test "captures MCP request and tool_call terminal events", %{log_file: log_file} do
+    :telemetry.execute(
+      [:backplane, :mcp_request, :start],
+      %{system_time: System.system_time()},
+      %{method: "tools/list"}
+    )
+
+    :telemetry.execute(
+      [:backplane, :tool_call, :stop],
+      %{duration: 1_000},
+      %{tool: "math::add", result: :ok, request_id: "req-1"}
+    )
+
+    :sys.get_state(TelemetryLogger)
+
+    events =
+      log_file
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!/1)
+
+    assert Enum.map(events, & &1["event"]) == [
+             "backplane.mcp_request.start",
+             "backplane.tool_call.stop"
+           ]
+
+    assert hd(events)["metadata"]["method"] == "tools/list"
+    assert List.last(events)["metadata"]["tool"] == "math::add"
+  end
 end

@@ -5,24 +5,21 @@ defmodule Backplane.TelemetryTest do
 
   describe "tool_call events" do
     test "emits [:backplane, :tool_call, :start] on dispatch" do
-      ref = make_ref()
-      self_pid = self()
+      handler_id =
+        Backplane.TelemetryCapture.attach(self(), [
+          [:backplane, :tool_call, :start],
+          [:backplane, :tool_call, :stop]
+        ])
 
-      :telemetry.attach(
-        "test-start-#{inspect(ref)}",
-        [:backplane, :tool_call, :start],
-        fn event, measurements, metadata, _config ->
-          send(self_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
-      )
+      on_exit(fn -> Backplane.TelemetryCapture.detach(handler_id) end)
 
       Telemetry.span_tool_call("test::tool", fn -> :ok end)
 
-      assert_receive {:telemetry, [:backplane, :tool_call, :start], %{system_time: _},
+      assert_receive {:telemetry_capture, [:backplane, :tool_call, :start], %{system_time: _},
                       %{tool: "test::tool"}}
 
-      :telemetry.detach("test-start-#{inspect(ref)}")
+      assert_receive {:telemetry_capture, [:backplane, :tool_call, :stop], %{duration: _},
+                      %{tool: "test::tool", result: :ok}}
     end
 
     test "emits [:backplane, :tool_call, :stop] on success" do

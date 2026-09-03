@@ -55,4 +55,10 @@ config :backplane_telemetry, BackplaneTelemetry.TelemetryLogger,
 
 config :backplane_telemetry, start_logger: false
 
+config :backplane_telemetry,
+  observability_v2_enabled: false,
+  observability_v2_llm_write: false,
+  observability_v2_mcp_write: false,
+  observability_v2_runtime_sink: false
+
 config :logger, level: :warning
