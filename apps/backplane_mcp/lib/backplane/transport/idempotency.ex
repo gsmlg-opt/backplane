@@ -25,14 +25,25 @@ defmodule Backplane.Transport.Idempotency do
 
   @impl true
   def call(conn, _opts) do
-    with false <- event_stream_requested?(conn),
-         [external_key] when byte_size(external_key) > 0 <-
-           get_req_header(conn, "idempotency-key"),
-         {:ok, key} <- cache_key(conn, external_key) do
-      ensure_table()
-      check_cache(conn, key)
-    else
-      _not_cacheable -> conn
+    cond do
+      event_stream_requested?(conn) ->
+        assign(conn, :mcp_idempotency_status, "bypass")
+
+      true ->
+        case get_req_header(conn, "idempotency-key") do
+          [external_key | _] when byte_size(external_key) > 0 ->
+            case cache_key(conn, external_key) do
+              {:ok, key} ->
+                ensure_table()
+                check_cache(conn, key)
+
+              :error ->
+                assign(conn, :mcp_idempotency_status, "bypass")
+            end
+
+          _ ->
+            conn
+        end
     end
   end
 
@@ -211,6 +222,7 @@ defmodule Backplane.Transport.Idempotency do
         case validate_cached_entry(entry, now, ttl) do
           {:ok, body, status, headers, version} ->
             conn
+            |> assign(:mcp_idempotency_status, "hit")
             |> maybe_assign_protocol_version(version)
             |> replace_resp_headers(headers)
             |> send_resp(status, body)
@@ -277,6 +289,8 @@ defmodule Backplane.Transport.Idempotency do
   defp cache_miss(conn, key, now, ttl) do
     :ets.delete(@table, key)
     maybe_sweep(now, ttl)
+
+    conn = assign(conn, :mcp_idempotency_status, "miss")
 
     register_before_send(conn, fn response ->
       if cacheable_response?(response) do

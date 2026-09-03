@@ -85,7 +85,11 @@ defmodule Backplane.Telemetry do
       Map.put(metadata, :method, method)
     )
 
-    Logger.info("MCP request", method: method, request_id: Logger.metadata()[:request_id])
+    unless Application.get_env(:backplane_telemetry, :observability_v2_enabled, false) do
+      Logger.info("MCP request", method: method, request_id: Logger.metadata()[:request_id])
+    end
+
+    :ok
   end
 
   @doc "Emit an SSE stream start event."

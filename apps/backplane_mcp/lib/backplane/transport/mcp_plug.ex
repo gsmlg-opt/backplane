@@ -10,7 +10,15 @@ defmodule Backplane.Transport.McpPlug do
 
   alias Backplane.MCP.{Info, ModernServer, SSE}
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernRequest
-  alias Backplane.Transport.{CacheBodyReader, McpEraRouter, McpHandler, Session, VersionHeader}
+  alias Backplane.MCP.AccessEvent
+  alias Backplane.Transport.{
+    CacheBodyReader,
+    McpEraRouter,
+    McpHandler,
+    McpObservability,
+    Session,
+    VersionHeader
+  }
 
   @modern_protocol_version "2026-07-28"
   @modern_request_timeout 30_000
@@ -21,7 +29,6 @@ defmodule Backplane.Transport.McpPlug do
   plug :short_circuit_head_root
   plug :match
   plug Backplane.Transport.Compression
-  plug Backplane.Transport.RequestLogger
   plug Backplane.Transport.RateLimiter
   plug Backplane.Auth.ResourceAuthPlug, resource: :mcp
 
@@ -177,24 +184,60 @@ defmodule Backplane.Transport.McpPlug do
 
   @doc false
   def call(conn, opts) do
+    conn = McpObservability.call(conn, McpObservability.init([]))
     super(conn, opts)
   rescue
     e in Plug.Parsers.ParseError ->
       Logger.warning("Malformed request body: #{Exception.message(e)}")
-      conn = conn |> VersionHeader.call([]) |> assign_protocol_version_hint([])
 
-      if McpEraRouter.modern_header?(conn.req_headers) do
-        ModernRequest.parse_error(conn)
-      else
-        send_resp(conn, 400, Jason.encode!(%{error: "Malformed request body"}))
-      end
+      conn =
+        conn
+        |> VersionHeader.call([])
+        |> assign_protocol_version_hint([])
+        |> put_resp_content_type("application/json")
+
+      body = Jason.encode!(%{error: "Malformed request body"})
+
+      conn =
+        if McpEraRouter.modern_header?(conn.req_headers) do
+          ModernRequest.parse_error(conn)
+        else
+          finalize_parser_error(conn, 400, body, :error,
+            error_kind: "validation",
+            error_message: "Malformed request body"
+          )
+        end
+
+      conn
 
     e in Plug.Parsers.RequestTooLargeError ->
       Logger.warning("Request body too large: #{Exception.message(e)}")
 
+      body = Jason.encode!(%{error: "Request body too large"})
+
       conn
       |> VersionHeader.call([])
       |> assign_protocol_version_hint([])
-      |> send_resp(413, Jason.encode!(%{error: "Request body too large"}))
+      |> put_resp_content_type("application/json")
+      |> finalize_parser_error(413, body, :error,
+        error_kind: "validation",
+        error_message: "Request body too large"
+      )
+  end
+
+  defp finalize_parser_error(conn, status, body, outcome, opts) do
+    access = Map.get(conn.assigns, :mcp_access_event) || AccessEvent.start(conn)
+
+    :ok =
+      AccessEvent.finalize(
+        access,
+        %{conn | status: status, resp_body: body},
+        outcome,
+        Keyword.merge([status: status], opts)
+      )
+
+    conn
+    |> Plug.Conn.assign(:mcp_access_finalized, true)
+    |> send_resp(status, body)
   end
 end
