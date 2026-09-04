@@ -132,13 +132,13 @@ defmodule Backplane.Monitor.PlanSupervisor do
     @name
     |> DynamicSupervisor.which_children()
     |> Enum.each(fn {_, pid, _, _} ->
-      case PlanServer.state(pid) do
-        %{plan: %{id: id}} ->
+      case Registry.keys(@registry, pid) do
+        [id | _rest] ->
           unless MapSet.member?(plan_ids, id) do
             DynamicSupervisor.terminate_child(@name, pid)
           end
 
-        _ ->
+        [] ->
           :ok
       end
     end)

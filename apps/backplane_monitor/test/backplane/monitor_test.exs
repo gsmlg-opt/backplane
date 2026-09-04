@@ -2,7 +2,7 @@ defmodule Backplane.MonitorTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Monitor
-  alias Backplane.Monitor.PlanServer
+  alias Backplane.Monitor.{PlanServer, PlanSupervisor}
 
   setup tags do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
@@ -26,6 +26,28 @@ defmodule Backplane.MonitorTest do
 
     assert {:ok, _deleted_plan} = Monitor.delete_plan(paused_plan)
     assert_process_stopped(plan.id)
+  end
+
+  test "plan synchronization does not wait for a busy plan server" do
+    {:ok, plan} =
+      Monitor.create_plan(%{
+        name: unique_name("busy-plan"),
+        provider: "minimax",
+        credential_name: "unused",
+        active: false
+      })
+
+    pid = PlanServer.whereis(plan.id)
+    :ok = :sys.suspend(pid)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: :sys.resume(pid)
+    end)
+
+    task = Task.async(&PlanSupervisor.sync_plans/0)
+    result = Task.yield(task, 100) || Task.shutdown(task, :brutal_kill)
+
+    assert result == {:ok, :ok}
   end
 
   defp unique_name(prefix) do
