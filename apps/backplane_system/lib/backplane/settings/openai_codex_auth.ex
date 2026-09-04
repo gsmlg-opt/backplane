@@ -437,12 +437,14 @@ defmodule Backplane.Settings.OpenAICodexAuth do
     :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
   end
 
+  @request_timeout_ms 30_000
+
   defp post_json(url, body) do
-    Req.post(url, Keyword.merge(req_options(url), json: body, receive_timeout: 15_000))
+    Req.post(url, Keyword.merge(req_options(url), json: body, receive_timeout: @request_timeout_ms))
   end
 
   defp post_form(url, body) do
-    Req.post(url, Keyword.merge(req_options(url), form: body, receive_timeout: 15_000))
+    Req.post(url, Keyword.merge(req_options(url), form: body, receive_timeout: @request_timeout_ms))
   end
 
   defp req_options(url) do

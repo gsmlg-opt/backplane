@@ -1344,7 +1344,7 @@ defmodule Backplane.Admin.SettingsLive do
           </p>
           <div class="flex justify-end gap-2">
             <.dm_btn phx-click="cancel_delete">Cancel</.dm_btn>
-            <.dm_btn variant="error" phx-click="confirm_delete">Delete</.dm_btn>
+            <.dm_btn variant="error" phx-click="confirm_delete" phx-disable-with="Deleting...">Delete</.dm_btn>
           </div>
         </div>
       </div>
@@ -1361,7 +1361,7 @@ defmodule Backplane.Admin.SettingsLive do
           <% :edit -> %>Edit Credential: {@cred_editing_name}
         <% end %>
       </:title>
-      <form phx-submit="save_credential" class="space-y-4">
+      <form phx-submit="save_credential" class="space-y-4" autocomplete="off">
         <%= if @cred_form_mode == :add do %>
           <.dm_input
             id="cred-name"
@@ -1369,6 +1369,7 @@ defmodule Backplane.Admin.SettingsLive do
             label="Name"
             value={@cred_name}
             placeholder="e.g. anthropic-prod-key"
+            autocomplete="off"
             required
           />
         <% end %>
@@ -1400,6 +1401,7 @@ defmodule Backplane.Admin.SettingsLive do
                 label="Client ID"
                 value={@cred_client_id}
                 placeholder="OAuth2 client identifier"
+                autocomplete="off"
                 required
               />
               <.dm_input
@@ -1408,6 +1410,7 @@ defmodule Backplane.Admin.SettingsLive do
                 label="Token URL"
                 value={@cred_token_url}
                 placeholder="https://auth.example.com/oauth/token"
+                autocomplete="off"
                 required
               />
               <.dm_input
@@ -1416,6 +1419,7 @@ defmodule Backplane.Admin.SettingsLive do
                 label="Scope (optional)"
                 value={@cred_scope}
                 placeholder="e.g. read write"
+                autocomplete="off"
               />
             <% end %>
           <% end %>
@@ -1440,6 +1444,7 @@ defmodule Backplane.Admin.SettingsLive do
             value={@cred_secret}
             label={cred_secret_label(@cred_form_mode, @cred_auth_type, @cred_kind)}
             placeholder={cred_secret_placeholder(@cred_form_mode, @cred_auth_type, @cred_kind)}
+            autocomplete="off"
             {if @cred_form_mode == :add, do: [required: true], else: []}
           />
         <% end %>
@@ -1448,7 +1453,16 @@ defmodule Backplane.Admin.SettingsLive do
         </p>
 
         <div class="flex gap-2 pt-2">
-          <.dm_btn type="submit" variant="primary">
+          <.dm_btn
+            type="submit"
+            variant="primary"
+            phx-disable-with={
+              case @cred_form_mode do
+                :add -> "Storing..."
+                :edit -> "Saving..."
+              end
+            }
+          >
             <%= case @cred_form_mode do %>
               <% :add -> %>Store Credential
               <% :edit -> %>Save Changes
@@ -1505,10 +1519,20 @@ defmodule Backplane.Admin.SettingsLive do
         </div>
 
         <div class="flex flex-wrap gap-2 pt-1">
-          <.dm_btn type="button" variant="primary" phx-click="reconnect_oauth">
+          <.dm_btn
+            type="button"
+            variant="primary"
+            phx-click="reconnect_oauth"
+            phx-disable-with="Connecting..."
+          >
             Reconnect
           </.dm_btn>
-          <.dm_btn type="button" variant="secondary" phx-click="renew_oauth_token">
+          <.dm_btn
+            type="button"
+            variant="secondary"
+            phx-click="renew_oauth_token"
+            phx-disable-with="Renewing Token..."
+          >
             Renew Token
           </.dm_btn>
           <.dm_btn
@@ -1555,7 +1579,7 @@ defmodule Backplane.Admin.SettingsLive do
           </button>
         </div>
 
-        <form id="claude-auth-json-form" phx-submit="update_cli_auth" class="space-y-4">
+        <form id="claude-auth-json-form" phx-submit="update_cli_auth" class="space-y-4" autocomplete="off">
           <.dm_textarea
             id="edit-claude-code-auth-json"
             name="auth_json"
@@ -1570,7 +1594,14 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_btn type="button" variant="outline" size="sm" phx-click="close_auth_json_modal">
               Cancel
             </.dm_btn>
-            <.dm_btn type="submit" variant="primary" size="sm">Update Auth JSON</.dm_btn>
+            <.dm_btn
+              type="submit"
+              variant="primary"
+              size="sm"
+              phx-disable-with="Updating..."
+            >
+              Update Auth JSON
+            </.dm_btn>
           </div>
         </form>
       </div>
@@ -1594,30 +1625,32 @@ defmodule Backplane.Admin.SettingsLive do
         >
           This credential authorizes one shared Figma account for every Backplane caller.
         </p>
-        <form phx-submit="start_device_auth" class="space-y-4">
+        <form phx-submit="start_device_auth" class="space-y-4" autocomplete="off">
           <.dm_input
             id="device-cred-name"
             name="cred_name"
             label="Credential Name"
             value={@device_flow_cred_name}
             placeholder={@device_flow_cred_name || "oauth-cred"}
+            autocomplete="off"
             required
           />
           <div class="flex gap-2 pt-2">
-            <.dm_btn type="submit" variant="primary">Connect</.dm_btn>
+            <.dm_btn type="submit" variant="primary" phx-disable-with="Connecting...">Connect</.dm_btn>
             <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
           </div>
         </form>
 
         <div :if={@device_flow_vendor == "anthropic_oauth"} class="mt-6 border-t border-outline-variant pt-5">
           <h3 class="mb-3 text-sm font-semibold text-on-surface">Claude Code Auth JSON</h3>
-          <form phx-submit="import_cli_auth" class="space-y-4">
+          <form phx-submit="import_cli_auth" class="space-y-4" autocomplete="off">
             <.dm_input
               id="cli-auth-cred-name"
               name="cred_name"
               label="Credential Name"
               value={@device_flow_cred_name}
               placeholder={@device_flow_cred_name || "claude-plan"}
+              autocomplete="off"
               required
             />
             <.dm_textarea
@@ -1631,7 +1664,7 @@ defmodule Backplane.Admin.SettingsLive do
               required
             />
             <div class="flex gap-2 pt-2">
-              <.dm_btn type="submit" variant="primary">Import JSON</.dm_btn>
+              <.dm_btn type="submit" variant="primary" phx-disable-with="Importing...">Import JSON</.dm_btn>
               <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
             </div>
           </form>
@@ -1644,17 +1677,18 @@ defmodule Backplane.Admin.SettingsLive do
             Complete authorization in the browser window that just opened,
             then paste the code below.
           </p>
-          <form phx-submit="submit_auth_code" class="space-y-4">
+          <form phx-submit="submit_auth_code" class="space-y-4" autocomplete="off">
             <.dm_input
               id="oauth-code-input"
               name="code"
               label="Authorization Code"
               value=""
               placeholder="Paste code#state or the callback URL"
+              autocomplete="off"
               required
             />
             <div class="flex gap-2 pt-2">
-              <.dm_btn type="submit" variant="primary">Submit Code</.dm_btn>
+              <.dm_btn type="submit" variant="primary" phx-disable-with="Receiving Token...">Submit Code</.dm_btn>
               <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
             </div>
           </form>
@@ -1705,6 +1739,7 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_btn
               variant="primary"
               phx-click="retry_device_auth"
+              phx-disable-with="Retrying..."
             >
               Try Again
             </.dm_btn>

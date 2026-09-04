@@ -2,6 +2,8 @@ defmodule Backplane.Settings.OAuthClient do
   @moduledoc "OAuth2 client_credentials token exchange via Req."
   require Logger
 
+  @request_timeout_ms 30_000
+
   @spec exchange(map()) :: {:ok, String.t(), non_neg_integer()} | {:error, term()}
   def exchange(
         %{"client_id" => client_id, "token_url" => token_url, "client_secret" => client_secret} =
@@ -16,7 +18,9 @@ defmodule Backplane.Settings.OAuthClient do
     body = if params["scope"], do: Map.put(body, "scope", params["scope"]), else: body
     body = if params["audience"], do: Map.put(body, "audience", params["audience"]), else: body
 
-    case Req.post(token_url, form: body, receive_timeout: 10_000) do
+    receive_timeout = Map.get(params, "receive_timeout", @request_timeout_ms)
+
+    case Req.post(token_url, form: body, receive_timeout: receive_timeout) do
       {:ok, %{status: 200, body: %{"access_token" => token} = resp}} ->
         {:ok, token, resp["expires_in"] || 3600}
 

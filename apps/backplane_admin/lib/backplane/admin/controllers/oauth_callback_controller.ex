@@ -18,6 +18,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
   @openai_client_id "app_EMoamEEZ73f0CkXaXp7hrann"
   @google_token_url "https://oauth2.googleapis.com/token"
+  @request_timeout_ms 30_000
 
   def callback(conn, %{"code" => code, "state" => state}) do
     case OAuthStateStore.pop(state) do
@@ -102,7 +103,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
     case Req.post(@anthropic_token_url,
            json: body,
            headers: OAuthRefresher.anthropic_oauth_token_headers(),
-           receive_timeout: 15_000
+           receive_timeout: @request_timeout_ms
          ) do
       {:ok, %{status: 200, body: resp}} ->
         access = resp["access_token"] || resp["api_key"]
@@ -131,7 +132,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
       "code_verifier" => code_verifier
     }
 
-    case Req.post(@openai_token_url, form: body, receive_timeout: 15_000) do
+    case Req.post(@openai_token_url, form: body, receive_timeout: @request_timeout_ms) do
       {:ok, %{status: 200, body: resp}} ->
         access = resp["access_token"]
         refresh = resp["refresh_token"] || ""
@@ -162,7 +163,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
         }
         |> maybe_put("client_secret", client_secret)
 
-      case Req.post(google_token_url(), form: body, receive_timeout: 15_000) do
+      case Req.post(google_token_url(), form: body, receive_timeout: @request_timeout_ms) do
         {:ok, %{status: 200, body: resp}} ->
           access = resp["access_token"]
           refresh = resp["refresh_token"] || ""
@@ -197,7 +198,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
       request_options =
         token_url
         |> OAuthRefresher.request_options()
-        |> Keyword.merge(form: body, headers: headers, receive_timeout: 15_000)
+        |> Keyword.merge(form: body, headers: headers, receive_timeout: @request_timeout_ms)
 
       case Req.post(token_url, request_options) do
         {:ok, %{status: 200, body: response}} ->

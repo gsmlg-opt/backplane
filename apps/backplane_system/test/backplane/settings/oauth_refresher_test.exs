@@ -274,8 +274,8 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       assert {:http, "proxy.example", 3128, proxy_options} =
                Keyword.fetch!(connect_options, :proxy)
 
-      assert Keyword.fetch!(proxy_options, :tunnel_timeout) == 10_000
-      assert Keyword.fetch!(proxy_options, :transport_opts)[:timeout] == 10_000
+      assert Keyword.fetch!(proxy_options, :tunnel_timeout) == 30_000
+      assert Keyword.fetch!(proxy_options, :transport_opts)[:timeout] == 30_000
     end
 
     test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do

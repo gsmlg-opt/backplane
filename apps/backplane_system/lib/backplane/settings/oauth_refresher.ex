@@ -37,7 +37,7 @@ defmodule Backplane.Settings.OAuthRefresher do
   @figma_authorize_url "https://www.figma.com/oauth/mcp"
   @figma_resource "https://mcp.figma.com/mcp"
   @figma_scope "mcp:connect"
-  @request_timeout_ms 10_000
+  @request_timeout_ms 30_000
 
   @type vendor ::
           :anthropic_oauth
@@ -207,10 +207,10 @@ defmodule Backplane.Settings.OAuthRefresher do
   end
 
   defp req_body_options(encoding, body, []),
-    do: [{encoding, body}, {:receive_timeout, @request_timeout_ms}]
+    do: [{encoding, body}, {:receive_timeout, request_timeout_ms()}]
 
   defp req_body_options(encoding, body, headers) do
-    [{encoding, body}, {:headers, headers}, {:receive_timeout, @request_timeout_ms}]
+    [{encoding, body}, {:headers, headers}, {:receive_timeout, request_timeout_ms()}]
   end
 
   defp url(:anthropic_token_url) do
@@ -286,6 +286,10 @@ defmodule Backplane.Settings.OAuthRefresher do
     |> Keyword.get(key)
   end
 
+  defp request_timeout_ms do
+    cfg(:request_timeout_ms) || @request_timeout_ms
+  end
+
   defp default_req_options(url) do
     case proxy_connect_options(url) do
       [] -> [inet6: true]
@@ -340,9 +344,11 @@ defmodule Backplane.Settings.OAuthRefresher do
   end
 
   defp proxy_tuple(scheme, uri) do
+    timeout = request_timeout_ms()
+
     options = [
-      transport_opts: [timeout: @request_timeout_ms],
-      tunnel_timeout: @request_timeout_ms
+      transport_opts: [timeout: timeout],
+      tunnel_timeout: timeout
     ]
 
     {scheme, uri.host, uri.port || default_proxy_port(scheme), options}

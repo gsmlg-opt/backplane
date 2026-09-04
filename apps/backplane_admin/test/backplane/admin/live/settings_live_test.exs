@@ -1137,6 +1137,39 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert {:ok, "echo 'hello world'"} = Credentials.fetch("my-script-key")
       assert {:ok, _, %{auth_type: "api_key"}} = Credentials.fetch_with_meta("my-script-key")
     end
+
+    test "disables submit buttons during form submit, connect, and receive token", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/system/credentials/new")
+      assert html =~ ~s(phx-disable-with="Storing...")
+
+      {:ok, view, html} = live(conn, "/system/credentials/new/anthropic_oauth")
+      assert html =~ ~s(phx-disable-with="Connecting...")
+      assert html =~ ~s(phx-disable-with="Importing...")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{
+        "cred_name" => "test-plan"
+      })
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ ~s(phx-disable-with="Receiving Token...")
+    end
+
+    test "renders autocomplete=off on credential forms and inputs", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/system/credentials/new")
+      assert html =~ ~s(form phx-submit="save_credential")
+      assert html =~ ~s(autocomplete="off")
+      assert has_element?(view, ~s(form[phx-submit="save_credential"][autocomplete="off"]))
+      assert has_element?(view, ~s(#cred-name[autocomplete="off"]))
+      assert has_element?(view, ~s(#cred-secret[autocomplete="off"]))
+
+      {:ok, view, _html} = live(conn, "/system/credentials/new/anthropic_oauth")
+      assert has_element?(view, ~s(form[phx-submit="start_device_auth"][autocomplete="off"]))
+      assert has_element?(view, ~s(#device-cred-name[autocomplete="off"]))
+      assert has_element?(view, ~s(form[phx-submit="import_cli_auth"][autocomplete="off"]))
+      assert has_element?(view, ~s(#cli-auth-cred-name[autocomplete="off"]))
+    end
   end
 end
 
