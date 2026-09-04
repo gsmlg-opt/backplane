@@ -1,7 +1,17 @@
 defmodule Backplane.Observability.Buffer do
   @moduledoc false
 
-  use GenServer
+  use GenServer, restart: :permanent
+
+  @doc false
+  def child_spec(opts) do
+    name = Keyword.get(opts, :name, __MODULE__)
+
+    %{
+      id: {__MODULE__, name},
+      start: {__MODULE__, :start_link, [opts]}
+    }
+  end
 
   @doc "Starts a named bounded buffer."
   @spec start_link(keyword()) :: GenServer.on_start()
