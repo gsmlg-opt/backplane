@@ -33,8 +33,14 @@ defmodule BackplaneMcp.Application do
     if Flags.mcp_write?() do
       children ++
         [
-          {Buffer, [name: :mcp_proxy_root, capacity: Settings.queue_capacity(:mcp_proxy_root)]},
-          {Buffer, [name: :mcp_tool_calls, capacity: Settings.queue_capacity(:mcp_tool_calls)]},
+          Supervisor.child_spec(
+            {Buffer, [name: :mcp_proxy_root, capacity: Settings.queue_capacity(:mcp_proxy_root)]},
+            id: :mcp_proxy_root_buffer
+          ),
+          Supervisor.child_spec(
+            {Buffer, [name: :mcp_tool_calls, capacity: Settings.queue_capacity(:mcp_tool_calls)]},
+            id: :mcp_tool_calls_buffer
+          ),
           {LogWriter, mcp_log_writer_opts()},
           {ToolLogWriter, mcp_tool_log_writer_opts()}
         ]
