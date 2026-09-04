@@ -352,3 +352,15 @@ el-dm-dialog div[slot="footer"] form {
   display: inline-block !important;
   margin: 0 !important;
 }
+
+/* Form submission loading state & disabled buttons in admin */
+form.phx-submit-loading el-dm-button,
+form.phx-submit-loading button[type="submit"],
+form.phx-submit-loading input[type="submit"],
+el-dm-button[disabled],
+el-dm-button[aria-disabled="true"],
+el-dm-button.phx-click-loading {
+  cursor: not-allowed !important;
+  opacity: 0.5 !important;
+  pointer-events: none !important;
+}
