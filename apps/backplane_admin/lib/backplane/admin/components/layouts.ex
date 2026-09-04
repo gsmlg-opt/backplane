@@ -142,6 +142,7 @@ defmodule Backplane.Admin.Layouts do
 
       :system ->
         [
+          %{label: "Appearance", path: "/system/appearance", icon: "palette-outline"},
           %{label: "Clients", path: "/system/clients", icon: "account-group"},
           %{label: "Credentials", path: "/system/credentials", icon: "key-variant"},
           %{

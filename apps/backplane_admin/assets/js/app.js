@@ -185,10 +185,94 @@ window.addEventListener("phx:open_external_oauth", (e) => {
   window.open(e.detail.url, "_blank");
 })
 
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)")
+
+function resolveAutoTheme() {
+  return darkQuery.matches ? "moonlight" : "sunshine"
+}
+
+function applyAdminTheme(theme) {
+  const resolved = (!theme || theme === "default") ? resolveAutoTheme() : theme
+  document.documentElement.setAttribute("data-theme", resolved)
+}
+
+// Restore theme from localStorage on page load
+applyAdminTheme(localStorage.getItem("theme") || "default")
+darkQuery.addEventListener("change", () => {
+  const current = localStorage.getItem("theme") || "default"
+  if (current === "default") applyAdminTheme("default")
+})
+
+const ThemeSegmentControl = {
+  mounted() {
+    let theme = localStorage.getItem("theme") || "default"
+    applyAdminTheme(theme)
+
+    const buttons = this.el.querySelectorAll("button[data-theme-value]")
+
+    const updateActive = (activeTheme) => {
+      buttons.forEach(btn => {
+        const isActive = btn.dataset.themeValue === activeTheme
+        btn.classList.toggle("segment-item-active", isActive)
+        btn.setAttribute("aria-checked", isActive ? "true" : "false")
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false")
+      })
+    }
+
+    updateActive(theme)
+
+    this._mediaListener = () => {
+      const current = localStorage.getItem("theme") || "default"
+      if (current === "default") applyAdminTheme("default")
+    }
+    darkQuery.addEventListener("change", this._mediaListener)
+
+    this._buttonListeners = []
+    buttons.forEach(btn => {
+      const listener = (event) => {
+        event.preventDefault()
+        theme = btn.dataset.themeValue
+        requestAnimationFrame(() => {
+          applyAdminTheme(theme)
+          localStorage.setItem("theme", theme)
+          updateActive(theme)
+          this.pushEvent("theme_changed", {theme: theme})
+        })
+      }
+      btn.addEventListener("click", listener)
+      this._buttonListeners.push({element: btn, listener})
+    })
+  },
+
+  updated() {
+    const currentTheme = localStorage.getItem("theme") || "default"
+    const buttons = this.el.querySelectorAll("button[data-theme-value]")
+    buttons.forEach(btn => {
+      const isActive = btn.dataset.themeValue === currentTheme
+      btn.classList.toggle("segment-item-active", isActive)
+      btn.setAttribute("aria-checked", isActive ? "true" : "false")
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false")
+    })
+  },
+
+  destroyed() {
+    if (this._buttonListeners) {
+      this._buttonListeners.forEach(({element, listener}) => {
+        element.removeEventListener("click", listener)
+      })
+      this._buttonListeners = null
+    }
+    if (this._mediaListener) {
+      darkQuery.removeEventListener("change", this._mediaListener)
+      this._mediaListener = null
+    }
+  }
+}
+
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
-  hooks: {...DuskmoonHooks, ReplayKeyboard}
+  hooks: {...DuskmoonHooks, ReplayKeyboard, ThemeSegmentControl}
 })
 
 // Close dialogs when buttons inside dialog forms are clicked

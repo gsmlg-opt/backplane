@@ -64,6 +64,7 @@ defmodule Backplane.Admin.Router do
     live("/skills/draft/:id/edit", SkillDraftLive, :edit)
     live("/skills/upload", SkillUploadLive, :index)
     live("/skills/upload/:id", SkillUploadLive, :show)
+    live("/system/appearance", AppearanceLive, :index)
     live("/system/clients", ClientsLive, :index)
     live("/system/logs", LogsOverviewLive, :index)
     live("/system/logs/llm", LogsLlmLive, :index)

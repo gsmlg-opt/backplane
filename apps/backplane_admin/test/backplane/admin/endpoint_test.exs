@@ -75,7 +75,7 @@ defmodule Backplane.Admin.EndpointTest do
   test "admin theme state is owned by the DuskMoon hook" do
     app_js = File.read!(Path.expand("../../../assets/js/app.js", __DIR__))
 
-    assert app_js =~ "hooks: {...DuskmoonHooks, ReplayKeyboard}"
+    assert app_js =~ "hooks: {...DuskmoonHooks, ReplayKeyboard, ThemeSegmentControl}"
     refute app_js =~ ".theme-controller-dropdown"
     refute app_js =~ ~s|removeAttribute("data-theme")|
     assert app_js =~ "new MutationObserver(syncThemeColor)"

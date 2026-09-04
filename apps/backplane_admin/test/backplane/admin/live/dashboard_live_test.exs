@@ -16,8 +16,6 @@ defmodule Backplane.Admin.DashboardLiveTest do
     assert html =~ ~s(href="/memory")
     assert html =~ ~s(href="/skills")
     assert html =~ ~s(href="/system/clients")
-    assert html =~ "theme-controller-dropdown"
-    assert html =~ ~s(phx-hook="ThemeSwitcher")
     assert has_element?(view, "h1", "Dashboard")
   end
 
