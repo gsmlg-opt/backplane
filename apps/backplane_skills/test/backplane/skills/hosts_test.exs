@@ -1,6 +1,9 @@
 defmodule Backplane.Skills.HostsTest do
   use BackplaneSkills.DataCase, async: false
 
+  alias Backplane.MemorySpaces
+  alias Backplane.MemorySpaces.{Entitlement, LegacyAlias, MemorySpace}
+  alias Backplane.Repo
   alias Backplane.Skills.{AgentManage, Hosts}
 
   setup do
@@ -79,6 +82,23 @@ defmodule Backplane.Skills.HostsTest do
       assert host.name == "t430"
       assert Hosts.auth_token_ids_for_host(host) == []
       assert [%{name: "t430", auth_tokens: []}] = Hosts.list_hosts_with_auth_tokens()
+
+      assert {:ok, %{scope: "proj_local", namespace: "private"}} =
+               MemorySpaces.resolve_host_partition(host.id, nil, "private")
+    end
+
+    test "creates registry ownership in the create-with-token transaction" do
+      assert {:ok, host, auth_token, plaintext} =
+               Hosts.create_agent_with_token(%{
+                 "name" => "tokenized-host",
+                 "memory_scope" => "project:tokenized"
+               })
+
+      assert {:ok, verified, ^auth_token} = Hosts.verify_token(plaintext)
+      assert verified.id == host.id
+
+      assert {:ok, %{scope: "project:tokenized", namespace: "private"}} =
+               MemorySpaces.resolve_host_partition(host.id, nil, "private")
     end
 
     test "assigns multiple auth tokens to one agent" do
@@ -131,6 +151,37 @@ defmodule Backplane.Skills.HostsTest do
       assert verified.id == host.id
     end
 
+    test "moves the memory default only when memory_scope changes" do
+      assert {:ok, host} =
+               Hosts.create_agent(%{"name" => "scope-owner", "memory_scope" => "scope:old"})
+
+      [original_entitlement] =
+        Repo.all(from(entitlement in Entitlement, where: entitlement.host_id == ^host.id))
+
+      assert {:ok, renamed} = Hosts.update_agent(host, %{"name" => "renamed-owner"})
+
+      [unchanged_entitlement] =
+        Repo.all(from(entitlement in Entitlement, where: entitlement.host_id == ^host.id))
+
+      assert unchanged_entitlement.updated_at == original_entitlement.updated_at
+
+      assert {:ok, updated} =
+               Hosts.update_agent(renamed, %{"memory_scope" => "scope:new"})
+
+      assert updated.memory_scope == "scope:new"
+
+      entitlements =
+        Entitlement
+        |> where([entitlement], entitlement.host_id == ^host.id)
+        |> order_by(:scope)
+        |> Repo.all()
+
+      assert Enum.map(entitlements, &{&1.scope, &1.status, &1.default_capture}) == [
+               {"scope:new", "active", true},
+               {"scope:old", "active", false}
+             ]
+    end
+
     test "does not let one token belong to multiple agents" do
       assert {:ok, auth_token, _token} = Hosts.create_auth_token(%{"name" => "workstations"})
 
@@ -155,6 +206,22 @@ defmodule Backplane.Skills.HostsTest do
       refute Hosts.get_auth_token(auth_token.id)
       assert :error = Hosts.verify_token(token)
       assert [] = Hosts.list_auth_tokens_with_assignments()
+
+      space_id = MemorySpaces.private_host_space_id(host.id)
+      alias_value = "host:#{host.id}"
+      assert %MemorySpace{status: "active"} = Repo.get!(MemorySpace, space_id)
+
+      assert %LegacyAlias{memory_space_id: ^space_id} =
+               Repo.one!(
+                 from(alias_row in LegacyAlias, where: alias_row.alias_value == ^alias_value)
+               )
+
+      assert [%Entitlement{host_id: nil, status: "revoked", default_capture: false}] =
+               Repo.all(
+                 from(entitlement in Entitlement,
+                   where: entitlement.memory_space_id == ^space_id
+                 )
+               )
     end
 
     test "rejects an invalid token" do

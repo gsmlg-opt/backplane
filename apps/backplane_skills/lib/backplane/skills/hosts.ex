@@ -6,6 +6,7 @@ defmodule Backplane.Skills.Hosts do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias Backplane.MemorySpaces
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
   alias Backplane.Skills.{AgentManage, Host, HostAgentToken, HostAuthToken}
@@ -170,7 +171,8 @@ defmodule Backplane.Skills.Hosts do
     result =
       Repo.transaction(fn ->
         with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
-             :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs) do
+             :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs),
+             :ok <- provision_memory_space(host, host_attrs) do
           host
         else
           {:error, changeset} -> Repo.rollback(changeset)
@@ -200,7 +202,8 @@ defmodule Backplane.Skills.Hosts do
       Repo.transaction(fn ->
         with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
              {:ok, auth_token} <- insert_auth_token(%{"name" => token_name}, plaintext),
-             :ok <- replace_auth_tokens(host, [auth_token.id]) do
+             :ok <- replace_auth_tokens(host, [auth_token.id]),
+             :ok <- provision_memory_space(host, host_attrs) do
           {host, auth_token}
         else
           {:error, changeset} -> Repo.rollback(changeset)
@@ -239,7 +242,8 @@ defmodule Backplane.Skills.Hosts do
     result =
       Repo.transaction(fn ->
         with {:ok, updated_host} <- host |> Host.changeset(host_attrs) |> Repo.update(),
-             :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs) do
+             :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs),
+             :ok <- update_memory_space_scope(host, updated_host, host_attrs) do
           updated_host
         else
           {:error, changeset} -> Repo.rollback(changeset)
@@ -259,26 +263,69 @@ defmodule Backplane.Skills.Hosts do
   @doc "Delete a host agent and revoke its assigned auth tokens."
   @spec delete_agent(Host.t()) :: {:ok, Host.t()} | {:error, Ecto.Changeset.t()}
   def delete_agent(%Host{} = host) do
-    AgentManage.stop_agent(host.id)
+    result =
+      Repo.transaction(fn ->
+        auth_token_ids = auth_token_ids_for_host(host)
 
-    Repo.transaction(fn ->
-      auth_token_ids = auth_token_ids_for_host(host)
+        with :ok <- revoke_memory_space(host) do
+          HostAgentToken
+          |> where([agent_token], agent_token.host_id == ^host.id)
+          |> Repo.delete_all()
 
-      HostAgentToken
-      |> where([agent_token], agent_token.host_id == ^host.id)
-      |> Repo.delete_all()
+          if auth_token_ids != [] do
+            HostAuthToken
+            |> where([auth_token], auth_token.id in ^auth_token_ids)
+            |> Repo.delete_all()
+          end
 
-      if auth_token_ids != [] do
-        HostAuthToken
-        |> where([auth_token], auth_token.id in ^auth_token_ids)
-        |> Repo.delete_all()
+          case Repo.delete(host) do
+            {:ok, deleted} -> deleted
+            {:error, changeset} -> Repo.rollback(changeset)
+          end
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, deleted} = success ->
+        AgentManage.stop_agent(deleted.id)
+        success
+
+      error ->
+        error
+    end
+  end
+
+  defp provision_memory_space(%Host{} = host, attrs) do
+    case MemorySpaces.provision_private_host(host.id, host.memory_scope) do
+      {:ok, _partition} -> :ok
+      {:error, reason} -> {:error, memory_space_changeset(host, attrs, reason)}
+    end
+  end
+
+  defp update_memory_space_scope(%Host{} = previous, %Host{} = updated, attrs) do
+    if previous.memory_scope == updated.memory_scope do
+      :ok
+    else
+      case MemorySpaces.update_default_scope(updated.id, updated.memory_scope) do
+        :ok -> :ok
+        {:error, reason} -> {:error, memory_space_changeset(updated, attrs, reason)}
       end
+    end
+  end
 
-      case Repo.delete(host) do
-        {:ok, deleted} -> deleted
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
+  defp revoke_memory_space(%Host{} = host) do
+    case MemorySpaces.revoke_host(host.id) do
+      :ok -> :ok
+      {:error, reason} -> {:error, memory_space_changeset(host, %{}, reason)}
+    end
+  end
+
+  defp memory_space_changeset(host, attrs, reason) do
+    host
+    |> Host.changeset(attrs)
+    |> add_error(:memory_scope, "could not update memory ownership", reason: inspect(reason))
   end
 
   @doc "List assigned auth token IDs for a host."
