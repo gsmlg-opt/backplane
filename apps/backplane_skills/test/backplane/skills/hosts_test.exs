@@ -209,6 +209,7 @@ defmodule Backplane.Skills.HostsTest do
 
       space_id = MemorySpaces.private_host_space_id(host.id)
       alias_value = "host:#{host.id}"
+      original_host_id = host.id
       assert %MemorySpace{status: "active"} = Repo.get!(MemorySpace, space_id)
 
       assert %LegacyAlias{memory_space_id: ^space_id} =
@@ -216,12 +217,29 @@ defmodule Backplane.Skills.HostsTest do
                  from(alias_row in LegacyAlias, where: alias_row.alias_value == ^alias_value)
                )
 
-      assert [%Entitlement{host_id: nil, status: "revoked", default_capture: false}] =
+      assert [
+               %Entitlement{
+                 host_id: ^original_host_id,
+                 status: "revoked",
+                 default_capture: false
+               }
+             ] =
                Repo.all(
                  from(entitlement in Entitlement,
                    where: entitlement.memory_space_id == ^space_id
                  )
                )
+
+      assert Repo.aggregate(
+               from(entitlement in Entitlement,
+                 where:
+                   entitlement.memory_space_id == ^space_id and
+                     entitlement.host_id == ^original_host_id and
+                     entitlement.scope == "proj_local" and
+                     entitlement.namespace == "private"
+               ),
+               :count
+             ) == 1
     end
 
     test "rejects an invalid token" do

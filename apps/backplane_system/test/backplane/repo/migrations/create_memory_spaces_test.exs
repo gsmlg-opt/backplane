@@ -52,6 +52,8 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistryTest do
 
     assert counts(prefix) == first_rows
     assert registry_rows(prefix) == expected_rows
+
+    assert host_id_column(prefix) == {false, nil}
   end
 
   test "database constraints reject invalid enum and blank partition values", %{prefix: prefix} do
@@ -75,6 +77,26 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistryTest do
       Repo.transaction(
         fn ->
           Repo.query!(
+            """
+            INSERT INTO "#{prefix}".bpm_memory_space_entitlements
+              (memory_space_id, host_id, scope, namespace, default_capture, status,
+               inserted_at, updated_at)
+            SELECT memory_space_id, host_id, 'second-scope', namespace, true, 'active',
+                   now(), now()
+            FROM "#{prefix}".bpm_memory_space_entitlements
+            WHERE host_id = $1
+            """,
+            [Ecto.UUID.dump!(host_id)]
+          )
+        end,
+        mode: :savepoint
+      )
+    end
+
+    assert_raise Postgrex.Error, fn ->
+      Repo.transaction(
+        fn ->
+          Repo.query!(
             ~s|UPDATE "#{prefix}".bpm_memory_space_entitlements SET scope = ' ' WHERE host_id = $1|,
             [Ecto.UUID.dump!(host_id)]
           )
@@ -93,6 +115,13 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistryTest do
         mode: :savepoint
       )
     end
+  end
+
+  test "migration is explicitly forward-only", %{prefix: prefix} do
+    source = File.read!(@migration_path)
+
+    refute source =~ "def down"
+    run_migration(prefix)
   end
 
   defp run_migration(prefix) do
@@ -143,5 +172,26 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistryTest do
     rows
     |> Enum.map(fn [host_id, scope, space_id] -> {host_id, scope, space_id} end)
     |> Enum.sort()
+  end
+
+  defp host_id_column(prefix) do
+    %{rows: [[nullable, foreign_key_name]]} =
+      Repo.query!(
+        """
+        SELECT column_info.is_nullable = 'YES', constraint_info.constraint_name
+        FROM information_schema.columns AS column_info
+        LEFT JOIN information_schema.key_column_usage AS constraint_info
+          ON constraint_info.table_schema = column_info.table_schema
+         AND constraint_info.table_name = column_info.table_name
+         AND constraint_info.column_name = column_info.column_name
+         AND constraint_info.position_in_unique_constraint IS NOT NULL
+        WHERE column_info.table_schema = $1
+          AND column_info.table_name = 'bpm_memory_space_entitlements'
+          AND column_info.column_name = 'host_id'
+        """,
+        [prefix]
+      )
+
+    {nullable, foreign_key_name}
   end
 end

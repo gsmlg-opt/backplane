@@ -44,9 +44,11 @@ defmodule Backplane.MemorySpaces.Entitlement do
     ])
     |> validate_inclusion(:status, ["active", "revoked"])
     |> foreign_key_constraint(:memory_space_id)
-    |> foreign_key_constraint(:host_id)
     |> unique_constraint([:memory_space_id, :host_id, :scope, :namespace],
       name: :bpm_memory_space_entitlements_partition_index
+    )
+    |> unique_constraint(:default_capture,
+      name: :bpm_memory_space_entitlements_active_default_index
     )
   end
 end

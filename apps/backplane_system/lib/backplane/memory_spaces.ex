@@ -22,7 +22,11 @@ defmodule Backplane.MemorySpaces do
   def provision_private_host(host_id, scope) do
     with {:ok, host_id} <- normalize_host_id(host_id),
          {:ok, scope} <- normalize_required(scope) do
-      transaction(fn -> do_provision_private_host(host_id, scope) end)
+      transaction(fn ->
+        with :ok <- lock_host_authority(host_id) do
+          do_provision_private_host(host_id, scope)
+        end
+      end)
     end
   end
 
@@ -30,7 +34,14 @@ defmodule Backplane.MemorySpaces do
   def update_default_scope(host_id, scope) do
     with {:ok, host_id} <- normalize_host_id(host_id),
          {:ok, scope} <- normalize_required(scope) do
-      case transaction(fn -> do_update_default_scope(host_id, scope) end) do
+      result =
+        transaction(fn ->
+          with :ok <- lock_host_authority(host_id) do
+            do_update_default_scope(host_id, scope)
+          end
+        end)
+
+      case result do
         {:ok, :ok} -> :ok
         {:error, reason} -> {:error, reason}
       end
@@ -40,13 +51,23 @@ defmodule Backplane.MemorySpaces do
   @spec revoke_host(Ecto.UUID.t()) :: :ok | {:error, term()}
   def revoke_host(host_id) do
     with {:ok, host_id} <- normalize_host_id(host_id) do
-      now = now()
+      result =
+        transaction(fn ->
+          with :ok <- lock_host_authority(host_id) do
+            now = now()
 
-      Entitlement
-      |> where([entitlement], entitlement.host_id == ^host_id)
-      |> Repo.update_all(set: [status: "revoked", default_capture: false, updated_at: now])
+            Entitlement
+            |> where([entitlement], entitlement.host_id == ^host_id)
+            |> Repo.update_all(set: [status: "revoked", default_capture: false, updated_at: now])
 
-      :ok
+            {:ok, :ok}
+          end
+        end)
+
+      case result do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -144,14 +165,41 @@ defmodule Backplane.MemorySpaces do
       status: "active"
     }
 
-    %Entitlement{}
-    |> Entitlement.changeset(attrs)
-    |> Repo.insert(
-      on_conflict: [
-        set: [default_capture: true, status: "active", updated_at: now]
-      ],
-      conflict_target: [:memory_space_id, :host_id, :scope, :namespace]
-    )
+    result =
+      %Entitlement{}
+      |> Entitlement.changeset(attrs)
+      |> Repo.insert(
+        on_conflict: [
+          set: [default_capture: true, status: "active", updated_at: now]
+        ],
+        conflict_target: [:memory_space_id, :host_id, :scope, :namespace]
+      )
+
+    case result do
+      {:ok, entitlement} -> {:ok, entitlement}
+      {:error, changeset} -> {:error, entitlement_error(changeset)}
+    end
+  end
+
+  defp lock_host_authority(host_id) do
+    case Repo.query(
+           "SELECT id FROM skill_hosts WHERE id = $1 FOR UPDATE",
+           [Ecto.UUID.dump!(host_id)]
+         ) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> {:error, :partition_not_ready}
+      {:error, _reason} -> {:error, :partition_not_ready}
+    end
+  end
+
+  defp entitlement_error(changeset) do
+    active_default_conflict? =
+      Enum.any?(changeset.errors, fn {_field, {_message, metadata}} ->
+        metadata[:constraint_name] ==
+          "bpm_memory_space_entitlements_active_default_index"
+      end)
+
+    if active_default_conflict?, do: :ambiguous_partition, else: :partition_not_ready
   end
 
   defp host_memory_space_id(host_id) do

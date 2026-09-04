@@ -36,14 +36,7 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistry do
         null: false
       )
 
-      add(
-        :host_id,
-        references(:skill_hosts,
-          type: :binary_id,
-          on_delete: :nilify_all,
-          prefix: prefix()
-        )
-      )
+      add(:host_id, :binary_id, null: false)
 
       add(:scope, :text, null: false)
       add(:namespace, :text, null: false, default: "private")
@@ -64,6 +57,14 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistry do
     create(
       index(:bpm_memory_space_entitlements, [:host_id, :status],
         name: :bpm_memory_space_entitlements_host_status_index,
+        prefix: prefix()
+      )
+    )
+
+    create(
+      unique_index(:bpm_memory_space_entitlements, [:host_id, :namespace],
+        name: :bpm_memory_space_entitlements_active_default_index,
+        where: "status = 'active' AND default_capture = true",
         prefix: prefix()
       )
     )
@@ -167,13 +168,6 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistry do
     execute(space_backfill_sql(prefix()))
     execute(alias_backfill_sql(prefix()))
     execute(entitlement_backfill_sql(prefix()))
-  end
-
-  def down do
-    drop(table(:bpm_memory_space_backfill_issues, prefix: prefix()))
-    drop(table(:bpm_memory_space_legacy_aliases, prefix: prefix()))
-    drop(table(:bpm_memory_space_entitlements, prefix: prefix()))
-    drop(table(:bpm_memory_spaces, prefix: prefix()))
   end
 
   @doc false
