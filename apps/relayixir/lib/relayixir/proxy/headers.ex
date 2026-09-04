@@ -33,6 +33,22 @@ defmodule Relayixir.Proxy.Headers do
   end
 
   @doc """
+  Case-insensitively replaces matching pass-through headers and applies default
+  headers only when no replacement or existing value is present. A replacement
+  with a `nil` value removes the matching header without adding a new one.
+  """
+  @spec merge_request_headers(
+          [{String.t(), String.t()}],
+          [{String.t(), String.t() | nil}],
+          [{String.t(), String.t()}]
+        ) :: [{String.t(), String.t()}]
+  def merge_request_headers(headers, replace, defaults \\ []) do
+    headers
+    |> merge_replacements(replace)
+    |> merge_defaults(defaults)
+  end
+
+  @doc """
   Strips hop-by-hop headers from response headers.
   """
   @spec prepare_response_headers([{String.t(), String.t()}]) :: [{String.t(), String.t()}]
@@ -101,6 +117,40 @@ defmodule Relayixir.Proxy.Headers do
     |> put_or_append_header("x-forwarded-for", client_ip)
     |> put_header("x-forwarded-proto", scheme)
     |> put_header("x-forwarded-host", host)
+  end
+
+  defp merge_replacements(headers, []), do: headers
+
+  defp merge_replacements(headers, replacements) do
+    replacements
+    |> Enum.reverse()
+    |> Enum.reduce(headers, fn {name, value}, acc ->
+      key = String.downcase(name)
+
+      remaining =
+        Enum.reject(acc, fn {existing_name, _existing_value} ->
+          String.downcase(existing_name) == key
+        end)
+
+      case value do
+        nil -> remaining
+        value -> [{name, value} | remaining]
+      end
+    end)
+  end
+
+  defp merge_defaults(headers, []), do: headers
+
+  defp merge_defaults(headers, defaults) do
+    Enum.reduce(defaults, headers, fn {name, value}, acc ->
+      key = String.downcase(name)
+
+      if Enum.any?(acc, &(String.downcase(elem(&1, 0)) == key)) do
+        acc
+      else
+        acc ++ [{name, value}]
+      end
+    end)
   end
 
   defp put_header(headers, name, value) do

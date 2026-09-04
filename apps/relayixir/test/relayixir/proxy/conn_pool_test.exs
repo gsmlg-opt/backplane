@@ -94,6 +94,34 @@ defmodule Relayixir.Proxy.ConnPoolTest do
 
       :gen_tcp.close(listen)
     end
+
+    test "transfers connection ownership across request processes" do
+      {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+      us = upstream(port)
+      {:ok, pool_pid} = ConnPool.ensure_started(us)
+      parent = self()
+
+      spawn_link(fn ->
+        {:ok, conn} = Relayixir.Proxy.HttpClient.connect(us)
+        :ok = ConnPool.checkin(us, conn)
+        :sys.get_state(pool_pid)
+        send(parent, :connection_checked_in)
+      end)
+
+      assert_receive :connection_checked_in
+      assert {:ok, conn} = ConnPool.checkout(us)
+
+      assert {:ok, conn, _request_ref} =
+               Relayixir.Proxy.HttpClient.send_request(conn, "GET", "/ok", [])
+
+      assert {:ok, conn, parts} = Relayixir.Proxy.HttpClient.recv_response(conn, 5_000)
+      assert {:status, 200} in parts
+      assert {:data, "OK"} in parts
+
+      Relayixir.Proxy.HttpClient.close(conn)
+      ThousandIsland.stop(server_pid)
+    end
   end
 
   describe "checkin/2 without pool" do

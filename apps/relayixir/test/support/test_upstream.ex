@@ -25,6 +25,18 @@ defmodule Relayixir.TestUpstream do
     conn
   end
 
+  get "/delayed-chunked" do
+    conn =
+      conn
+      |> put_resp_content_type("text/plain")
+      |> send_chunked(200)
+
+    {:ok, conn} = chunk(conn, "chunk1")
+    Process.sleep(100)
+    _ = chunk(conn, "chunk2")
+    conn
+  end
+
   get "/empty" do
     send_resp(conn, 204, "")
   end

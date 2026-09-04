@@ -10,13 +10,72 @@ defmodule Relayixir.Proxy.HttpClient do
   """
   @spec connect(Relayixir.Proxy.Upstream.t()) :: {:ok, Mint.HTTP.t()} | {:error, term()}
   def connect(%Relayixir.Proxy.Upstream{} = upstream) do
-    scheme = upstream.scheme || :http
-    transport_opts = [timeout: upstream.connect_timeout]
+    connect(upstream, &Mint.HTTP.connect/4, System.get_env())
+  end
 
-    Mint.HTTP.connect(scheme, upstream.host, upstream.port,
+  @doc false
+  @spec connect(Relayixir.Proxy.Upstream.t(), function(), map()) :: {:ok, term()} | {:error, term()}
+  def connect(%Relayixir.Proxy.Upstream{} = upstream, connector, env)
+      when is_function(connector, 4) and is_map(env) do
+    options = connect_options(upstream, env)
+    attempts = if Keyword.has_key?(options, :proxy), do: 3, else: 1
+
+    connect_with_retry(upstream, options, connector, attempts)
+  end
+
+  @doc false
+  @spec connect_options(Relayixir.Proxy.Upstream.t(), map()) :: keyword()
+  def connect_options(%Relayixir.Proxy.Upstream{} = upstream, env \\ System.get_env()) do
+    base_options = [
       protocols: [:http1],
-      transport_opts: transport_opts
-    )
+      transport_opts: [timeout: upstream.connect_timeout]
+    ]
+
+    proxy_options =
+      case upstream.proxy do
+        :environment ->
+          Relayixir.Proxy.EnvironmentProxy.connect_options(
+            upstream.scheme || :http,
+            upstream.host,
+            upstream.port,
+            env
+          )
+
+        nil ->
+          []
+      end
+      |> add_proxy_timeouts(upstream.connect_timeout)
+
+    Keyword.merge(base_options, proxy_options)
+  end
+
+  defp add_proxy_timeouts(options, connect_timeout) do
+    case Keyword.fetch(options, :proxy) do
+      {:ok, {scheme, host, port, proxy_options}} ->
+        proxy_options =
+          Keyword.merge(
+            [transport_opts: [timeout: connect_timeout], tunnel_timeout: connect_timeout],
+            proxy_options
+          )
+
+        Keyword.put(options, :proxy, {scheme, host, port, proxy_options})
+
+      :error ->
+        options
+    end
+  end
+
+  defp connect_with_retry(upstream, options, connector, attempts_left) do
+    result =
+      connector.(upstream.scheme || :http, upstream.host, upstream.port, options)
+
+    case result do
+      {:error, _reason} when attempts_left > 1 ->
+        connect_with_retry(upstream, options, connector, attempts_left - 1)
+
+      result ->
+        result
+    end
   end
 
   @doc """

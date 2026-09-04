@@ -115,6 +115,7 @@ defmodule Relayixir.Proxy.HttpPlugTest do
 
     assert conn.status == 502
     assert conn.resp_body == "Bad Gateway"
+    assert conn.private[:relayixir_proxy_error] == :upstream_connect_failed
   end
 
   test "streams large request body without buffering" do

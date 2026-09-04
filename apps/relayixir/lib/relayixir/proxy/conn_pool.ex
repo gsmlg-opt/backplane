@@ -3,7 +3,7 @@ defmodule Relayixir.Proxy.ConnPool do
   Per-upstream Mint HTTP connection pool.
 
   Each pool is a GenServer holding a bounded set of idle Mint connections keyed
-  by `{scheme, host, port}`. When a caller checks out a connection, it is
+  by `{scheme, host, port, proxy fingerprint}`. When a caller checks out a connection, it is
   removed from the idle set. After the request finishes, the caller checks the
   connection back in (if still open) or discards it.
 
@@ -28,7 +28,7 @@ defmodule Relayixir.Proxy.ConnPool do
 
   alias Relayixir.Proxy.Upstream
 
-  @type pool_key :: {atom(), String.t(), non_neg_integer()}
+  @type pool_key :: {atom(), String.t(), non_neg_integer(), binary()}
 
   defstruct [:key, :max_size, :connect_timeout, idle: :queue.new(), idle_count: 0]
 
@@ -64,7 +64,10 @@ defmodule Relayixir.Proxy.ConnPool do
     case Registry.lookup(Relayixir.Proxy.ConnPool.Registry, key) do
       [{pid, _}] ->
         if Process.alive?(pid) do
-          GenServer.cast(pid, {:checkin, conn})
+          case Mint.HTTP.controlling_process(conn, pid) do
+            {:ok, conn} -> GenServer.call(pid, {:checkin, conn})
+            {:error, _reason} -> Mint.HTTP.close(conn)
+          end
         else
           Mint.HTTP.close(conn)
         end
@@ -130,30 +133,40 @@ defmodule Relayixir.Proxy.ConnPool do
   end
 
   @impl true
-  def handle_call(:checkout, _from, state) do
-    case take_idle(state) do
-      {:ok, conn, new_state} ->
-        if Mint.HTTP.open?(conn) do
-          {:reply, {:ok, conn}, new_state}
-        else
-          Mint.HTTP.close(conn)
-          # Try the next one recursively
-          handle_call(:checkout, nil, new_state)
-        end
-
-      :empty ->
-        {:reply, {:error, :empty}, state}
-    end
+  def handle_call(:checkout, {caller, _tag}, state) do
+    {reply, state} = checkout_idle(state, caller)
+    {:reply, reply, state}
   end
 
   @impl true
-  def handle_cast({:checkin, conn}, state) do
+  def handle_call({:checkin, conn}, _from, state) do
     if Mint.HTTP.open?(conn) && state.idle_count < state.max_size do
-      new_state = put_idle(state, conn)
-      {:noreply, new_state}
+      {:reply, :ok, put_idle(state, conn)}
     else
       Mint.HTTP.close(conn)
-      {:noreply, state}
+      {:reply, :ok, state}
+    end
+  end
+
+  defp checkout_idle(state, caller) do
+    case take_idle(state) do
+      {:ok, conn, new_state} ->
+        if Mint.HTTP.open?(conn) do
+          case Mint.HTTP.controlling_process(conn, caller) do
+            {:ok, conn} ->
+              {{:ok, conn}, new_state}
+
+            {:error, _reason} ->
+              Mint.HTTP.close(conn)
+              checkout_idle(new_state, caller)
+          end
+        else
+          Mint.HTTP.close(conn)
+          checkout_idle(new_state, caller)
+        end
+
+      :empty ->
+        {{:error, :empty}, state}
     end
   end
 
@@ -182,7 +195,14 @@ defmodule Relayixir.Proxy.ConnPool do
   end
 
   defp pool_key(%Upstream{} = upstream) do
-    {upstream.scheme || :http, upstream.host, upstream.port}
+    proxy_fingerprint =
+      upstream
+      |> Relayixir.Proxy.HttpClient.connect_options()
+      |> Keyword.take([:proxy, :proxy_headers])
+      |> :erlang.term_to_binary()
+      |> then(&:crypto.hash(:sha256, &1))
+
+    {upstream.scheme || :http, upstream.host, upstream.port, proxy_fingerprint}
   end
 
   defp via_registry(key) do

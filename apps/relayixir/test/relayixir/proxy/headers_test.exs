@@ -256,4 +256,68 @@ defmodule Relayixir.Proxy.HeadersTest do
       assert Headers.format_ip("10.0.0.1") == "10.0.0.1"
     end
   end
+
+  describe "merge_request_headers/3" do
+    test "preserves duplicate pass-through headers unrelated to replacements" do
+      headers =
+        Headers.merge_request_headers(
+          [
+            {"x-multi-value", "first"},
+            {"X-Multi-Value", "second"},
+            {"authorization", "Bearer client"}
+          ],
+          [{"authorization", "Bearer upstream"}]
+        )
+
+      assert {"x-multi-value", "first"} in headers
+      assert {"X-Multi-Value", "second"} in headers
+    end
+
+    test "removes every casing of a replaced header and emits only the replacement" do
+      headers =
+        Headers.merge_request_headers(
+          [
+            {"Authorization", "Bearer first client"},
+            {"AUTHORIZATION", "Bearer second client"},
+            {"session-id", "session"}
+          ],
+          [{"authorization", "Bearer upstream"}]
+        )
+
+      assert Enum.filter(headers, fn {name, _value} ->
+               String.downcase(name) == "authorization"
+             end) == [{"authorization", "Bearer upstream"}]
+
+      assert {"session-id", "session"} in headers
+    end
+
+    test "adds defaults only when the header is entirely absent" do
+      headers =
+        Headers.merge_request_headers(
+          [{"Originator", "client"}],
+          [],
+          [{"originator", "default"}, {"user-agent", "relayixir"}]
+        )
+
+      assert Enum.filter(headers, fn {name, _value} ->
+               String.downcase(name) == "originator"
+             end) == [{"Originator", "client"}]
+
+      assert {"user-agent", "relayixir"} in headers
+    end
+
+    test "nil replacements remove every casing without emitting a header" do
+      headers =
+        Headers.merge_request_headers(
+          [{"X-API-Key", "first"}, {"x-api-key", "second"}, {"accept", "application/json"}],
+          [{"x-api-key", nil}]
+        )
+
+      refute Enum.any?(headers, fn {name, _value} ->
+               String.downcase(name) == "x-api-key"
+             end)
+
+      assert {"accept", "application/json"} in headers
+    end
+  end
 end

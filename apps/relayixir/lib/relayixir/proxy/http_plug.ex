@@ -63,6 +63,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
       {:error, reason, conn} ->
         duration = System.monotonic_time() - start_time
+        conn = Plug.Conn.put_private(conn, :relayixir_proxy_error, reason)
 
         :telemetry.execute(
           [:relayixir, :http, :request, :exception],
@@ -80,12 +81,16 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp do_proxy(conn, upstream, opts) do
     # Strip content-length so Mint uses chunked transfer encoding for streaming.
-    # Then append any route-level injected headers (overriding earlier values if same name).
+    # Replace route-level injected headers case-insensitively, then apply defaults
+    # for provider metadata headers only when absent.
     request_headers =
       conn
       |> Headers.prepare_request_headers(upstream)
       |> Enum.reject(fn {name, _} -> String.downcase(name) == "content-length" end)
-      |> Kernel.++(upstream.inject_request_headers)
+      |> Headers.merge_request_headers(
+        upstream.inject_request_headers,
+        upstream.default_request_headers
+      )
 
     request = Request.from_conn(conn, request_headers, "#{upstream.host}:#{upstream.port}")
     path = build_upstream_path(conn, upstream)
@@ -102,7 +107,8 @@ defmodule Relayixir.Proxy.HttpPlug do
       {:error, reason} ->
         {:error, map_error(reason, "connect_or_send", upstream, path), conn}
 
-      {:error, _mint_conn, reason} ->
+      {:error, mint_conn, reason} ->
+        HttpClient.close(mint_conn)
         {:error, map_error(reason, "send", upstream, path), conn}
     end
   end
@@ -137,7 +143,7 @@ defmodule Relayixir.Proxy.HttpPlug do
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, :request_too_large}
+          {:error, mint_conn, :request_too_large}
         else
           with {:ok, mint_conn} <- HttpClient.stream_body_chunk(mint_conn, request_ref, chunk) do
             HttpClient.stream_body_chunk(mint_conn, request_ref, :eof)
@@ -148,7 +154,7 @@ defmodule Relayixir.Proxy.HttpPlug do
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, :request_too_large}
+          {:error, mint_conn, :request_too_large}
         else
           with {:ok, mint_conn} <- HttpClient.stream_body_chunk(mint_conn, request_ref, chunk) do
             stream_request_body(conn, mint_conn, request_ref, max_size, total)
@@ -375,7 +381,8 @@ defmodule Relayixir.Proxy.HttpPlug do
 
       {:error, :closed} ->
         HttpClient.close(mint_conn)
-        {:ok, conn}
+        emit_downstream_disconnect()
+        {:ok, Plug.Conn.put_private(conn, :relayixir_downstream_disconnected, true)}
     end
   end
 
@@ -399,13 +406,7 @@ defmodule Relayixir.Proxy.HttpPlug do
             :ok
 
           {:error, :closed} ->
-            :telemetry.execute(
-              [:relayixir, :http, :downstream, :disconnect],
-              %{system_time: System.system_time()},
-              %{}
-            )
-
-            Logger.info("Downstream client disconnected during chunked response")
+            emit_downstream_disconnect()
             :stop
         end
       end
@@ -423,7 +424,13 @@ defmodule Relayixir.Proxy.HttpPlug do
         {:stop, mint_conn} ->
           # Downstream disconnected — don't return to pool (request may be incomplete)
           HttpClient.close(mint_conn)
-          {:ok, Process.get(conn_key, conn)}
+
+          disconnected_conn =
+            conn_key
+            |> Process.get(conn)
+            |> Plug.Conn.put_private(:relayixir_downstream_disconnected, true)
+
+          {:ok, disconnected_conn}
 
         {:error, reason} ->
           final_conn = Process.get(conn_key, conn)
@@ -489,6 +496,16 @@ defmodule Relayixir.Proxy.HttpPlug do
     Enum.reduce(headers, conn, fn {name, value}, conn ->
       Plug.Conn.put_resp_header(conn, String.downcase(name), value)
     end)
+  end
+
+  defp emit_downstream_disconnect do
+    :telemetry.execute(
+      [:relayixir, :http, :downstream, :disconnect],
+      %{system_time: System.system_time()},
+      %{}
+    )
+
+    Logger.info("Downstream client disconnected during chunked response")
   end
 
   defp invoke_hook(request, response) do

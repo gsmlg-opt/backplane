@@ -98,6 +98,34 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       result = HttpPlug.call(conn, upstream)
       assert result.status == 200
     end
+
+    test "marks and reports downstream disconnects while closing the upstream stream", %{
+      port: port
+    } do
+      parent = self()
+      handler_id = "relayixir-downstream-disconnect-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:relayixir, :http, :downstream, :disconnect],
+        fn _event, _measurements, _metadata, _config ->
+          send(parent, :downstream_disconnected)
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      upstream = build_upstream(port)
+      conn = conn(:get, "/delayed-chunked")
+      {_adapter, adapter_state} = conn.adapter
+      conn = %{conn | adapter: {Relayixir.ClosedChunkAdapter, adapter_state}}
+
+      result = HttpPlug.call(conn, upstream)
+
+      assert result.private[:relayixir_downstream_disconnected] == true
+      assert_receive :downstream_disconnected, 1_000
+    end
   end
 
   describe "map_response_body: opt" do
@@ -147,4 +175,22 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       assert result.resp_body == "combined body"
     end
   end
+end
+
+defmodule Relayixir.ClosedChunkAdapter do
+  @behaviour Plug.Conn.Adapter
+
+  defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+  defdelegate send_file(state, status, headers, path, offset, length), to: Plug.Adapters.Test.Conn
+  defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
+  defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+  defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
+  defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
+  defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
+  defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
+  defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
+  defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
+  defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
+
+  def chunk(_state, _body), do: {:error, :closed}
 end
