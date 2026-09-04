@@ -367,7 +367,7 @@ jobs:
                 Ecto.Adapters.SQL.query!(repo, "SELECT max(version) FROM schema_migrations", [])
               %Postgrex.Result{rows: [[event_table, import_table]]} =
                 Ecto.Adapters.SQL.query!(repo, "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL", ["public.bpm_events", "public.memory_import_batches"])
-              unless last_version == 20260823000002 and event_table and import_table,
+              unless last_version == 20260904000003 and event_table and import_table,
                 do: raise("installed migration inventory is incomplete")
               :verified
             end)

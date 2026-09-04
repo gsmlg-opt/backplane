@@ -7,15 +7,15 @@ defmodule Backplane.Repo.Migrations.NormalizeOpenaiCodexProviderModelsTest do
 
   @canonical_base_url "https://chatgpt.com/backend-api/codex"
   @migration_path Path.expand(
-                    "../../../../priv/repo/migrations/20260904000001_normalize_openai_codex_provider_models.exs",
+                    "../../../../priv/repo/migrations/20260904000002_normalize_openai_codex_provider_models.exs",
                     __DIR__
                   )
-  @migration_version 20_260_904_000_001
+  @migration_version 20_260_904_000_002
   @followup_path Path.expand(
-                   "../../../../priv/repo/migrations/20260904000002_backfill_openai_codex_discovery_stale_markers.exs",
+                   "../../../../priv/repo/migrations/20260904000003_backfill_openai_codex_discovery_stale_markers.exs",
                    __DIR__
                  )
-  @followup_version 20_260_904_000_002
+  @followup_version 20_260_904_000_003
   @stale_models [
     "gpt-5.5",
     "gpt-5.4",
