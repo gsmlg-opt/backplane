@@ -382,6 +382,88 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     assert html =~ "Activity"
   end
 
+  test "renders Google Antigravity multi-window quota summary with Weekly and 5-Hour limits", %{
+    conn: conn
+  } do
+    Req.Test.stub(MiniMax, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    end)
+
+    Req.Test.stub(GoogleAntigravity, fn conn ->
+      body = %{
+        "plan_type" => "Google AI Pro",
+        "credits" => [
+          %{
+            "id" => "gemini-models",
+            "label" => "Gemini Models",
+            "used_percent" => 15,
+            "buckets" => [
+              %{
+                "label" => "Weekly Limit",
+                "used_percent" => 14,
+                "reset_time" => "2026-09-11T12:00:00Z"
+              },
+              %{
+                "label" => "5-Hour Limit",
+                "used_percent" => 1,
+                "reset_time" => "2026-09-04T18:00:00Z"
+              }
+            ]
+          },
+          %{
+            "id" => "claude-and-gpt-models",
+            "label" => "Claude and GPT models",
+            "used_percent" => 55,
+            "buckets" => [
+              %{
+                "label" => "Weekly Limit",
+                "used_percent" => 55,
+                "reset_time" => "2026-09-11T12:00:00Z"
+              }
+            ]
+          }
+        ],
+        "links" => %{"upgrade" => "https://one.google.com/explore-plan/ai-pro"}
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    {:ok, credential} =
+      Credentials.store_device_token(
+        "google-antigravity-window-cred",
+        "google_oauth",
+        google_token_set("google-access-2", "google-refresh-2"),
+        %{"auth_mode" => "antigravity"}
+      )
+
+    Backplane.Settings.Credentials.Vault.put(credential)
+
+    {:ok, _plan} =
+      Backplane.Monitor.create_plan(%{
+        name: "Google Pro Live Plan",
+        provider: "google_ai",
+        credential_name: "google-antigravity-window-cred",
+        config: %{"project" => "projects/test-project"},
+        active: true
+      })
+
+    {:ok, _view, html} = live(conn, "/dashboard/usage/plans")
+    assert html =~ "Google Pro Live Plan"
+    assert html =~ "Google AI Pro"
+    assert html =~ "Gemini Models"
+    assert html =~ "Weekly Limit"
+    assert html =~ "5-Hour Limit"
+    assert html =~ "14% used"
+    assert html =~ "1% used"
+    assert html =~ "Claude and GPT models"
+    assert html =~ "55% used"
+  end
+
   defp openai_token_set(access_token, refresh_token, account_id) do
     %{
       "type" => "codex_device_oauth",

@@ -374,25 +374,49 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
           >
             <div class="mb-3 flex items-start justify-between gap-3">
               <div>
-                <div class="text-sm font-semibold">{credit.label}</div>
-                <div :if={credit.description} class="text-xs text-on-surface-variant">
-                  {credit.description}
+                <div class="text-sm font-semibold">{map_value(credit, "label")}</div>
+                <div :if={map_value(credit, "description")} class="text-xs text-on-surface-variant">
+                  {map_value(credit, "description")}
                 </div>
               </div>
               <.dm_badge
-                :if={not is_nil(credit.used_percent)}
-                variant={percentage_variant(credit.used_percent)}
+                :if={not is_nil(map_value(credit, "used_percent"))}
+                variant={percentage_variant(map_value(credit, "used_percent"))}
                 size="sm"
               >
-                {credit.used_percent}% used
+                {map_value(credit, "used_percent")}% used
               </.dm_badge>
             </div>
 
-            <div :if={not is_nil(credit.used_percent)} class="mb-3">
-              <.usage_bar percentage={credit.used_percent} />
+            <div :if={not is_nil(map_value(credit, "used_percent"))} class="mb-3">
+              <.usage_bar percentage={map_value(credit, "used_percent")} />
             </div>
 
-            <div :if={is_nil(credit.used_percent)} class="text-xs text-on-surface-variant">
+            <div
+              :if={map_value(credit, "buckets") && map_value(credit, "buckets") != []}
+              class="mt-3 space-y-2 border-t border-outline-variant/60 pt-3"
+            >
+              <div
+                :for={sub <- map_value(credit, "buckets")}
+                class="flex flex-col gap-1 text-xs"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="font-medium text-on-surface">{map_value(sub, "label")}</span>
+                  <span class="text-on-surface-variant font-medium">
+                    {map_value(sub, "used_percent")}% used
+                  </span>
+                </div>
+                <.usage_bar percentage={map_value(sub, "used_percent")} />
+                <div :if={map_value(sub, "reset_time")} class="text-[10px] text-on-surface-variant">
+                  Resets {format_reset_at(map_value(sub, "reset_time"))}
+                </div>
+              </div>
+            </div>
+
+            <div
+              :if={is_nil(map_value(credit, "used_percent")) && (!map_value(credit, "buckets") || map_value(credit, "buckets") == [])}
+              class="text-xs text-on-surface-variant"
+            >
               Usage not reported
             </div>
           </div>
@@ -707,8 +731,9 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp google_antigravity_model_credit?(credit) do
     id = map_value(credit, "id")
+    has_sub_buckets = is_list(map_value(credit, "buckets")) and map_value(credit, "buckets") != []
 
-    id not in ["prompt", "flow", "flex"] and
+    not has_sub_buckets and id not in ["prompt", "flow", "flex"] and
       (not is_nil(map_value(credit, "remaining_fraction")) or
          not is_nil(map_value(credit, "reset_time")) or
          map_value(credit, "label") in ["Requests", "Wtus"])
@@ -732,7 +757,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp google_antigravity_gemini_model?(id) do
     String.starts_with?(id, "gemini-3.5-flash") or
-      String.starts_with?(id, "gemini-3.1-pro")
+      String.starts_with?(id, "gemini-3.1-pro") or
+      String.starts_with?(id, "gemini-3.6-flash") or
+      String.starts_with?(id, "gemini-3.7-flash") or
+      String.starts_with?(id, "gemini-3.8-flash")
   end
 
   defp google_antigravity_claude_gpt_oss_model?(id) do
@@ -797,7 +825,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     plan_type
     |> String.replace("_", " ")
     |> String.split(" ", trim: true)
-    |> Enum.map_join(" ", &String.capitalize/1)
+    |> Enum.map_join(" ", fn
+      word when word in ["ai", "Ai", "AI"] -> "AI"
+      word -> String.capitalize(word)
+    end)
   end
 
   defp format_plan_type(plan_type), do: to_string(plan_type)

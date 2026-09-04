@@ -8,7 +8,9 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   import Bitwise
 
   @provider "google_ai"
-  @default_url "https://cloudcode-pa.googleapis.com/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
+  @default_endpoint "https://daily-cloudcode-pa.googleapis.com"
+  @fallback_endpoint "https://cloudcode-pa.googleapis.com"
+  @default_url "#{@default_endpoint}/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
   @default_user_agent "antigravity-cli"
   @default_receive_timeout 15_000
   @credits_url "https://antigravity.google/g1-credits"
@@ -48,6 +50,13 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     plan_type = plan_type(raw, plan_status, plan_info)
     status = first_nonblank([value(raw, "status"), value(plan_status, "status")]) || "ok"
 
+    links =
+      %{
+        credits: @credits_url,
+        activity: @activity_url
+      }
+      |> maybe_put_upgrade_link(raw)
+
     if response_has_usage?(plan_type, credits, period) do
       %{
         provider: @provider,
@@ -55,10 +64,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
         plan_type: plan_type,
         credits: credits,
         period: period,
-        links: %{
-          credits: @credits_url,
-          activity: @activity_url
-        }
+        links: links
       }
     else
       {:error, :invalid_usage_response}
@@ -68,6 +74,177 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   def normalize_usage_response(_), do: {:error, :invalid_usage_response}
 
   defp request_usage(access_token, config) do
+    if test_env?() or not is_nil(config_value(config, "api_url")) do
+      request_usage_legacy(access_token, config)
+    else
+      request_usage_rest(access_token, config)
+    end
+  end
+
+  defp request_usage_rest(access_token, config) do
+    endpoint = config_value(config, "endpoint") || @default_endpoint
+    project = config_value(config, "project") || config_value(config, "cloudaicompanion_project") || ""
+
+    case request_rest_quota(access_token, endpoint, project, config) do
+      {:ok, raw} ->
+        code_assist = fetch_code_assist(access_token, endpoint, config)
+
+        raw =
+          raw
+          |> Map.put_new("paid_tier", code_assist["paidTier"] || code_assist["paid_tier"])
+          |> Map.put_new("current_tier", code_assist["currentTier"] || code_assist["current_tier"])
+          |> maybe_put_upgrade_link_in_raw(code_assist)
+
+        case normalize_usage_response(raw) do
+          {:error, reason} -> {:error, reason}
+          normalized -> {:ok, normalized}
+        end
+
+      {:error, {:rate_limited, _}} = err ->
+        err
+
+      {:error, :unauthorized} = err ->
+        err
+
+      _error ->
+        if endpoint == @default_endpoint do
+          case request_rest_quota(access_token, @fallback_endpoint, project, config) do
+            {:ok, raw} ->
+              code_assist = fetch_code_assist(access_token, @fallback_endpoint, config)
+
+              raw =
+                raw
+                |> Map.put_new("paid_tier", code_assist["paidTier"] || code_assist["paid_tier"])
+                |> Map.put_new("current_tier", code_assist["currentTier"] || code_assist["current_tier"])
+                |> maybe_put_upgrade_link_in_raw(code_assist)
+
+              case normalize_usage_response(raw) do
+                {:error, reason} -> {:error, reason}
+                normalized -> {:ok, normalized}
+              end
+
+            _ ->
+              request_usage_legacy(access_token, config)
+          end
+        else
+          request_usage_legacy(access_token, config)
+        end
+    end
+  end
+
+  defp request_rest_quota(access_token, endpoint, project, config) do
+    url = "#{endpoint}/v1internal:retrieveUserQuotaSummary"
+
+    headers = [
+      {"authorization", "Bearer #{access_token}"},
+      {"user-agent", config_value(config, "user_agent") || @default_user_agent},
+      {"content-type", "application/json"},
+      {"accept", "application/json"}
+    ]
+
+    body = Jason.encode!(%{"project" => project})
+
+    case Req.post(
+           url,
+           [
+             headers: headers,
+             body: body,
+             receive_timeout: receive_timeout(config),
+             retry: false
+           ] ++ req_options(url)
+         ) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        decode_json_body(body)
+
+      {:ok, %Req.Response{status: 401}} ->
+        {:error, :unauthorized}
+
+      {:ok, %Req.Response{status: 429} = response} ->
+        {:error, {:rate_limited, retry_after(response)}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, {:api_error, status, body}}
+
+      {:error, reason} ->
+        {:error, {:request_failed, reason}}
+    end
+  end
+
+  defp fetch_code_assist(access_token, endpoint, config) do
+    url = "#{endpoint}/v1internal:loadCodeAssist"
+
+    headers = [
+      {"authorization", "Bearer #{access_token}"},
+      {"user-agent", config_value(config, "user_agent") || @default_user_agent},
+      {"content-type", "application/json"},
+      {"accept", "application/json"}
+    ]
+
+    case Req.post(
+           url,
+           [
+             headers: headers,
+             body: "{}",
+             receive_timeout: receive_timeout(config),
+             retry: false
+           ] ++ req_options(url)
+         ) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        case decode_json_body(body) do
+          {:ok, map} -> map
+          _ -> %{}
+        end
+
+      _ ->
+        %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp decode_json_body(%{} = map), do: {:ok, map}
+
+  defp decode_json_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, map} when is_map(map) -> {:ok, map}
+      _ -> {:error, :invalid_usage_response}
+    end
+  end
+
+  defp decode_json_body(_), do: {:error, :invalid_usage_response}
+
+  defp maybe_put_upgrade_link(links, raw) do
+    upgrade_uri =
+      get_in(raw, ["paid_tier", "upgradeSubscriptionUri"]) ||
+        get_in(raw, ["paidTier", "upgradeSubscriptionUri"]) ||
+        get_in(raw, ["links", "upgrade"])
+
+    if is_binary(upgrade_uri) and upgrade_uri != "" do
+      Map.put(links, :upgrade, upgrade_uri)
+    else
+      links
+    end
+  end
+
+  defp maybe_put_upgrade_link_in_raw(raw, code_assist) do
+    upgrade_uri =
+      get_in(code_assist, ["paidTier", "upgradeSubscriptionUri"]) ||
+        get_in(code_assist, ["paid_tier", "upgradeSubscriptionUri"])
+
+    if is_binary(upgrade_uri) and upgrade_uri != "" do
+      Map.update(raw, "links", %{"upgrade" => upgrade_uri}, fn links ->
+        Map.put(links, "upgrade", upgrade_uri)
+      end)
+    else
+      raw
+    end
+  end
+
+  defp test_env? do
+    Application.fetch_env(:backplane, :google_antigravity_monitor_req_options) != :error
+  end
+
+  defp request_usage_legacy(access_token, config) do
     with {:ok, body} <- request_body(config) do
       url = config_value(config, "api_url") || @default_url
 
@@ -127,6 +304,8 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   end
 
   defp normalized_credits(raw, plan_status, plan_info, user_status, user_tier) do
+    group_credits = groups_credit_buckets(value(raw, "groups"))
+
     direct_credits =
       [
         direct_credit_buckets(value(raw, "credits")),
@@ -140,6 +319,9 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     quota_credits = quota_credit_buckets(value(raw, "buckets"))
 
     cond do
+      group_credits != [] ->
+        group_credits
+
       direct_credits != [] ->
         direct_credits
 
@@ -211,22 +393,51 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
     id = id || "credit_#{index || System.unique_integer([:positive])}"
     label = first_nonblank([value(credit, "label"), value(credit, "name")]) || credit_label(id)
+    sub_buckets = value(credit, "buckets")
+    used_pct = value(credit, "used_percent")
 
-    credit_bucket(
-      id,
-      label,
-      first_non_nil([
-        value(credit, "available"),
-        value(credit, "remaining"),
-        value(credit, "credit_amount"),
-        value(credit, "amount")
-      ]),
-      value(credit, "used"),
-      first_non_nil([value(credit, "monthly"), value(credit, "limit"), value(credit, "total")])
-    )
+    base =
+      credit_bucket(
+        id,
+        label,
+        first_non_nil([
+          value(credit, "available"),
+          value(credit, "remaining"),
+          value(credit, "credit_amount"),
+          value(credit, "amount")
+        ]),
+        value(credit, "used"),
+        first_non_nil([value(credit, "monthly"), value(credit, "limit"), value(credit, "total")])
+      )
+
+    cond do
+      base != nil ->
+        base
+        |> maybe_put_field(:buckets, sub_buckets)
+        |> maybe_put_field(:used_percent, used_pct)
+
+      is_list(sub_buckets) or not is_nil(used_pct) ->
+        %{
+          id: to_string(id),
+          label: label,
+          available: nil,
+          used: nil,
+          monthly: nil,
+          remaining_fraction: nil,
+          reset_time: value(credit, "reset_time"),
+          used_percent: used_pct,
+          buckets: sub_buckets || []
+        }
+
+      true ->
+        nil
+    end
   end
 
   defp direct_credit_bucket(_, _index), do: nil
+
+  defp maybe_put_field(map, _key, nil), do: map
+  defp maybe_put_field(map, key, value), do: Map.put(map, key, value)
 
   defp quota_credit_buckets(buckets) when is_list(buckets) do
     buckets
@@ -313,8 +524,105 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     }
   end
 
+  defp groups_credit_buckets(groups) when is_list(groups) do
+    groups
+    |> Enum.with_index(1)
+    |> Enum.map(fn {group, index} -> group_credit_bucket(group, index) end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp groups_credit_buckets(_), do: []
+
+  defp group_credit_bucket(%{} = group, index) do
+    display_name = first_nonblank([value(group, "display_name"), value(group, "name")])
+
+    id =
+      if display_name do
+        display_name
+        |> to_string()
+        |> String.downcase()
+        |> String.replace(~r/[^a-z0-9]+/i, "-")
+        |> String.trim("-")
+      else
+        "group_#{index}"
+      end
+
+    sub_buckets =
+      group
+      |> value("buckets")
+      |> List.wrap()
+      |> Enum.filter(&is_map/1)
+      |> Enum.map(&group_sub_bucket/1)
+
+    min_remaining_fraction =
+      sub_buckets
+      |> Enum.map(& &1.remaining_fraction)
+      |> Enum.filter(&is_number/1)
+      |> Enum.min(fn -> nil end)
+
+    used_percent =
+      if is_number(min_remaining_fraction) do
+        used_percent_from_remaining_fraction(min_remaining_fraction)
+      end
+
+    earliest_reset =
+      sub_buckets
+      |> Enum.map(& &1.reset_time)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.min(fn -> nil end)
+
+    %{
+      id: to_string(id),
+      label: display_name || titleize(id),
+      available: nil,
+      used: nil,
+      monthly: nil,
+      used_percent: used_percent,
+      remaining_fraction: min_remaining_fraction,
+      reset_time: earliest_reset,
+      buckets: sub_buckets
+    }
+  end
+
+  defp group_credit_bucket(_, _index), do: nil
+
+  defp group_sub_bucket(%{} = bucket) do
+    duration_str = to_string(value(bucket, "window_duration") || "")
+    duration_seconds = parse_duration_seconds(duration_str)
+
+    label =
+      cond do
+        duration_seconds >= 500_000 -> "Weekly Limit"
+        duration_seconds >= 14_000 -> "5-Hour Limit"
+        duration_seconds > 0 -> "#{div(duration_seconds, 3600)}h Limit"
+        true -> "Limit"
+      end
+
+    remaining_fraction = number_or_nil(value(bucket, "remaining_fraction"))
+    used_percent = used_percent_from_remaining_fraction(remaining_fraction)
+
+    %{
+      label: label,
+      used_percent: used_percent,
+      remaining_fraction: remaining_fraction,
+      reset_time: value(bucket, "reset_time")
+    }
+  end
+
+  defp parse_duration_seconds(duration_str) do
+    case Integer.parse(String.trim_trailing(duration_str, "s")) do
+      {seconds, _} -> seconds
+      :error -> 0
+    end
+  end
+
   defp plan_type(raw, plan_status, plan_info) do
+    paid_tier = first_map(raw, ["paid_tier", "paidTier"])
+    current_tier = first_map(raw, ["current_tier", "currentTier"])
+
     first_nonblank([
+      value(paid_tier, "name"),
+      value(current_tier, "name"),
       value(plan_info, "plan_name"),
       value(raw, "plan_name"),
       value(plan_status, "plan_name"),
@@ -472,7 +780,14 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   end
 
   defp decode_success_body(%{} = body), do: {:ok, body}
-  defp decode_success_body(body) when is_binary(body), do: decode_grpc_body(body)
+
+  defp decode_success_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{} = map} -> {:ok, map}
+      _ -> decode_grpc_body(body)
+    end
+  end
+
   defp decode_success_body(_), do: {:error, :invalid_usage_response}
 
   defp decode_grpc_body(body) do

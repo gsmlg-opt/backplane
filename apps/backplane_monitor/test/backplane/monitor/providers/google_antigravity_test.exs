@@ -100,6 +100,88 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
            } = GoogleAntigravity.normalize_usage_response(raw)
   end
 
+  test "normalize_usage_response/1 accepts retrieveUserQuotaSummary with groups and buckets" do
+    raw = %{
+      "paidTier" => %{
+        "name" => "Google AI Pro",
+        "upgradeSubscriptionUri" => "https://one.google.com/explore-plan/ai-pro"
+      },
+      "groups" => [
+        %{
+          "displayName" => "Gemini Models",
+          "buckets" => [
+            %{
+              "remainingFraction" => 0.85,
+              "resetTime" => "2026-09-11T12:00:00Z",
+              "windowDuration" => "604800s"
+            },
+            %{
+              "remainingFraction" => 0.99,
+              "resetTime" => "2026-09-04T18:00:00Z",
+              "windowDuration" => "18000s"
+            }
+          ]
+        },
+        %{
+          "displayName" => "Claude and GPT models",
+          "buckets" => [
+            %{
+              "remainingFraction" => 0.45,
+              "resetTime" => "2026-09-11T12:00:00Z",
+              "windowDuration" => "604800s"
+            }
+          ]
+        }
+      ]
+    }
+
+    assert %{
+             provider: "google_ai",
+             plan_type: "Google AI Pro",
+             credits: [
+               %{
+                 id: "gemini-models",
+                 label: "Gemini Models",
+                 used_percent: 15,
+                 remaining_fraction: 0.85,
+                 reset_time: "2026-09-04T18:00:00Z",
+                 buckets: [
+                   %{
+                     label: "Weekly Limit",
+                     used_percent: 15,
+                     remaining_fraction: 0.85,
+                     reset_time: "2026-09-11T12:00:00Z"
+                   },
+                   %{
+                     label: "5-Hour Limit",
+                     used_percent: 1,
+                     remaining_fraction: 0.99,
+                     reset_time: "2026-09-04T18:00:00Z"
+                   }
+                 ]
+               },
+               %{
+                 id: "claude-and-gpt-models",
+                 label: "Claude and GPT models",
+                 used_percent: 55,
+                 remaining_fraction: 0.45,
+                 reset_time: "2026-09-11T12:00:00Z",
+                 buckets: [
+                   %{
+                     label: "Weekly Limit",
+                     used_percent: 55,
+                     remaining_fraction: 0.45,
+                     reset_time: "2026-09-11T12:00:00Z"
+                   }
+                 ]
+               }
+             ],
+             links: %{
+               upgrade: "https://one.google.com/explore-plan/ai-pro"
+             }
+           } = GoogleAntigravity.normalize_usage_response(raw)
+  end
+
   test "normalize_usage_response/1 rejects unrecognized bodies" do
     assert {:error, :invalid_usage_response} = GoogleAntigravity.normalize_usage_response(%{})
   end
