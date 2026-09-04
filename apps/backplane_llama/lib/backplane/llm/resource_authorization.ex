@@ -18,6 +18,12 @@ defmodule Backplane.LLM.ResourceAuthorization do
   def required_scope(%Plug.Conn{method: "GET", request_path: "/v1/models"}),
     do: "llm::models"
 
+  def required_scope(%Plug.Conn{
+        method: "GET",
+        path_info: ["v1", "providers", _provider_name, "models"]
+      }),
+      do: "llm::models"
+
   def required_scope(%Plug.Conn{method: "POST", path_info: ["v1" | _rest]}),
     do: "llm::invoke"
 

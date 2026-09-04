@@ -50,6 +50,27 @@ defmodule Backplane.Services.WebLiveSearchTest do
     assert tool.input_schema["additionalProperties"] == false
   end
 
+  test "OpenAI Codex support follows enabled discovered model surfaces" do
+    {provider, api} = create_codex_model("codex-catalog", "gpt-future-discovered")
+
+    {:ok, disabled_model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: "gpt-disabled",
+        source: :discovered,
+        enabled: false
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: disabled_model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    assert WebLiveSearch.default_supported_models(provider, api) == ["gpt-future-discovered"]
+  end
+
   test "web::live_search calls the resolved OpenAI-compatible Responses API with web_search" do
     create_openai_model("openai-live", "gpt-5.5", preset_key: "openai")
     Settings.set("services.web_live_search.models", ["openai-live/gpt-5.5"])
@@ -151,11 +172,25 @@ defmodule Backplane.Services.WebLiveSearchTest do
         preset_key: "openai-codex"
       })
 
-    {:ok, _api} =
+    {:ok, api} =
       ProviderApi.create(%{
         provider_id: provider.id,
         api_surface: :openai,
         base_url: "https://api.openai.com/v1"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: "gpt-5.5",
+        source: :discovered
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
       })
 
     Settings.set("services.web_live_search.models", ["openai-codex-live/gpt-5.5"])
@@ -549,6 +584,55 @@ defmodule Backplane.Services.WebLiveSearchTest do
       })
 
     provider
+  end
+
+  defp create_codex_model(provider_name, model_id) do
+    credential_name = "#{provider_name}-cred"
+    expires_at = System.system_time(:millisecond) + 60 * 60 * 1000
+
+    {:ok, _credential} =
+      Credentials.store_device_token(
+        credential_name,
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "id_token" => "codex-id-token",
+          "access_token" => "codex-oauth-token",
+          "refresh_token" => "refresh-token",
+          "expires_at" => expires_at
+        },
+        %{"account_id" => "acc-live"}
+      )
+
+    {:ok, provider} =
+      Provider.create(%{
+        name: provider_name,
+        credential: credential_name,
+        preset_key: "openai-codex"
+      })
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "https://chatgpt.com/backend-api/codex"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{
+        provider_id: provider.id,
+        model: model_id,
+        source: :discovered
+      })
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    {provider, api}
   end
 
   defp create_openai_provider(provider_name, opts) do

@@ -11,9 +11,10 @@ defmodule Backplane.Services.WebLiveSearch do
   alias Backplane.LLM.{
     CredentialPlug,
     ModelResolver,
-    OpenAICodexCompat,
+    OpenAICodex,
     Provider,
     ProviderApi,
+    ProviderModel,
     RateLimiter
   }
 
@@ -26,7 +27,6 @@ defmodule Backplane.Services.WebLiveSearch do
   @hosted_web_search_provider_presets ~w(openai openai-codex x-ai)
   @hosted_web_search_hosts ~w(api.openai.com api.x.ai chatgpt.com)
   @default_openai_models ~w(gpt-5.5)
-  @default_openai_codex_models ~w(gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex)
   @default_xai_models ~w(grok-4.3)
   @default_tool_type "web_search"
   @default_codex_instructions "Answer the user's query using hosted web search. Include citations when available."
@@ -55,11 +55,7 @@ defmodule Backplane.Services.WebLiveSearch do
         []
 
       provider.preset_key == "openai-codex" or base_host(provider_api.base_url) == "chatgpt.com" ->
-        configured_model_catalog(
-          :web_live_search_openai_codex_models,
-          Application.get_env(:backplane, :openai_codex_model_catalog) ||
-            @default_openai_codex_models
-        )
+        enabled_provider_models(provider, provider_api)
 
       provider.preset_key == "x-ai" or base_host(provider_api.base_url) == "api.x.ai" ->
         configured_model_catalog(:web_live_search_xai_models, @default_xai_models)
@@ -73,6 +69,19 @@ defmodule Backplane.Services.WebLiveSearch do
   end
 
   def default_supported_models(_provider, _provider_api), do: []
+
+  defp enabled_provider_models(%Provider{id: provider_id}, %ProviderApi{id: api_id})
+       when is_binary(provider_id) and is_binary(api_id) do
+    provider_id
+    |> ProviderModel.list_for_provider()
+    |> Enum.filter(fn model ->
+      model.enabled and
+        Enum.any?(model.surfaces, &(&1.provider_api_id == api_id and &1.enabled))
+    end)
+    |> Enum.map(& &1.model)
+  end
+
+  defp enabled_provider_models(_provider, _provider_api), do: []
 
   def handle_live_search(%{"query" => query}) when is_binary(query) do
     with :ok <- ensure_enabled(),
@@ -249,11 +258,12 @@ defmodule Backplane.Services.WebLiveSearch do
          query,
          auth_headers
        ) do
-    codex_backend? = OpenAICodexCompat.enabled?(provider, provider_api)
+    codex_backend? = OpenAICodex.enabled?(provider, provider_api)
 
     provider_api =
-      provider_api
-      |> OpenAICodexCompat.effective_api(codex_backend?)
+      if codex_backend?,
+        do: %{provider_api | base_url: OpenAICodex.backend_base_url()},
+        else: provider_api
 
     body =
       %{

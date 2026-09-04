@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ProviderTest do
-  use BackplaneLlama.DataCase, async: true
+  use BackplaneLlama.DataCase, async: false
 
   alias Backplane.LLM.{
     AutoModel,
@@ -347,7 +347,54 @@ defmodule Backplane.LLM.ProviderTest do
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end
 
+    test "records the actual API surface in discovered model metadata" do
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.request_path == "/v1/models"
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"data" => [%{"id" => "claude-test"}]}))
+      end)
+
+      provider = create_provider()
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :anthropic,
+          base_url: "https://provider.test",
+          model_discovery_path: "/v1/models"
+        })
+
+      assert %{discovered: 1, created: 1, errors: []} =
+               ModelDiscovery.reload_provider(Provider.get(provider.id))
+
+      model = ProviderModel.get_by_provider_and_model(provider.id, "claude-test")
+      assert model.metadata["api_surface"] == "anthropic"
+
+      assert %{metadata: %{"api_surface" => "anthropic"}} =
+               ProviderModelSurface.get_by_model_and_api(model.id, api.id)
+    end
+
     test "reloads x.ai models with JSON content type and bearer authorization" do
+      parent = self()
+      handler_id = "non-codex-discovery-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:backplane, :codex, :models, :discovery, :started],
+          [:backplane, :codex, :models, :discovery, :completed],
+          [:backplane, :codex, :models, :discovery, :failed]
+        ],
+        fn event, _measurements, _metadata, _config ->
+          send(parent, {:codex_discovery_event, event})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
       Req.Test.stub(__MODULE__, fn conn ->
         assert conn.request_path == "/v1/models"
         assert ["Bearer sk-test-value"] = Plug.Conn.get_req_header(conn, "authorization")
@@ -381,15 +428,33 @@ defmodule Backplane.LLM.ProviderTest do
                ModelDiscovery.reload_provider(provider)
 
       assert [%{model: "grok-4.3"}] = ProviderModel.list_for_provider(provider.id)
+      refute_receive {:codex_discovery_event, _event}
     end
 
-    test "loads OpenAI Codex OAuth models from local catalog instead of provider API" do
-      Req.Test.stub(__MODULE__, fn _conn ->
-        flunk("OpenAI Codex OAuth discovery should not call the provider /models endpoint")
+    test "discovers OpenAI Codex OAuth models from the provider API" do
+      Req.Test.stub(__MODULE__, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(
+          200,
+          Jason.encode!(%{"models" => [%{"slug" => "gpt-5.3-codex-spark"}]})
+        )
       end)
 
       credential = credential_name()
-      Credentials.store(credential, "{}", "llm", %{"auth_type" => "openai_oauth"})
+      expires_at = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      Credentials.store_device_token(
+        credential,
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "access_token" => "chatgpt-access-token",
+          "refresh_token" => "refresh-token",
+          "expires_at" => expires_at
+        },
+        %{"account_id" => "acc-123"}
+      )
 
       {:ok, provider} =
         Provider.create(%{
@@ -402,7 +467,7 @@ defmodule Backplane.LLM.ProviderTest do
         ProviderApi.create(%{
           provider_id: provider.id,
           api_surface: :openai,
-          base_url: "https://api.openai.com/v1",
+          base_url: "https://chatgpt.com/backend-api/codex",
           model_discovery_path: "/models"
         })
 
@@ -411,9 +476,9 @@ defmodule Backplane.LLM.ProviderTest do
       assert %{discovered: discovered, created: created, updated: 0, errors: []} =
                ModelDiscovery.reload_provider(provider)
 
-      assert discovered > 0
-      assert created == discovered
-      assert ProviderModel.get_by_provider_and_model(provider.id, "gpt-5.3-codex")
+      assert discovered == 1
+      assert created == 1
+      assert ProviderModel.get_by_provider_and_model(provider.id, "gpt-5.3-codex-spark")
 
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end

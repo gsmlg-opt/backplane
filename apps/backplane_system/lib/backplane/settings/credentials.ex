@@ -375,13 +375,21 @@ defmodule Backplane.Settings.Credentials do
   defp extra_headers_for("openai_oauth", meta) do
     []
     |> maybe_header("chatgpt-account-id", meta["account_id"])
-    |> maybe_header("originator", "codex_cli_rs")
+    |> maybe_default_header("originator", "codex_cli_rs")
   end
 
   defp extra_headers_for(_, _meta), do: []
 
   defp maybe_header(headers, _name, value) when value in [nil, ""], do: headers
   defp maybe_header(headers, name, value), do: [{name, to_string(value)} | headers]
+
+  defp maybe_default_header(headers, name, value) do
+    if Enum.any?(headers, fn {header, _} -> String.downcase(header) == name end) do
+      headers
+    else
+      [{name, to_string(value)} | headers]
+    end
+  end
 
   defp decode_json(raw) do
     case Jason.decode(raw) do
@@ -753,8 +761,9 @@ defmodule Backplane.Settings.Credentials do
     do_refresh_and_persist(cred, vendor, parsed)
   end
 
-  # Wrapped in a transaction with FOR UPDATE so concurrent fetches on an expired
-  # credential don't both hit the refresh endpoint and race on the rotated token.
+  # Serialize refreshes per credential without holding a database connection while
+  # the remote token endpoint is in flight. Persistence uses a separate, short row
+  # lock and refuses to overwrite a refresh token changed during the request.
   defp do_refresh_and_persist(
          cred,
          vendor,
@@ -764,45 +773,52 @@ defmodule Backplane.Settings.Credentials do
          force? \\ false
        ) do
     result =
-      Repo.transaction(fn ->
-        locked =
-          Credential
-          |> from(where: [name: ^cred.name], lock: "FOR UPDATE")
-          |> Repo.one!()
-
-        case do_refresh_inner(locked, vendor, refresh_window_ms, refresh_interval_ms, force?) do
-          {:ok, access} -> access
-          {:error, reason} -> Repo.rollback(reason)
+      :global.trans({{__MODULE__, :oauth_refresh, cred.name}, self()}, fn ->
+        case Repo.get_by(Credential, name: cred.name) do
+          nil -> {:error, :not_found}
+          current ->
+            do_refresh_inner(current, vendor, refresh_window_ms, refresh_interval_ms, force?)
         end
       end)
 
     case result do
-      {:ok, access} -> {:ok, access}
-      {:error, reason} -> {:error, reason}
+      {:ok, _access} = success -> success
+      {:error, reason} -> refresh_failed(cred.name, reason)
+      :aborted -> refresh_failed(cred.name, :refresh_lock_unavailable)
     end
   end
 
-  defp do_refresh_inner(locked, vendor, refresh_window_ms, refresh_interval_ms, force?) do
-    with {:ok, blob} <- Encryption.decrypt(locked.encrypted_value),
-         {:ok, locked_parsed} <- Jason.decode(blob) do
+  defp refresh_failed(credential_name, reason) do
+    :telemetry.execute(
+      [:backplane, :codex, :oauth, :refresh, :failed],
+      %{},
+      %{credential_name: credential_name, error_class: reason}
+    )
+
+    {:error, reason}
+  end
+
+  defp do_refresh_inner(current, vendor, refresh_window_ms, refresh_interval_ms, force?) do
+    with {:ok, blob} <- Encryption.decrypt(current.encrypted_value),
+         {:ok, current_parsed} <- Jason.decode(blob) do
       now_ms = System.system_time(:millisecond)
 
       if force? or
            oauth_refresh_due?(
              vendor,
-             locked_parsed,
+             current_parsed,
              now_ms,
              refresh_window_ms,
              refresh_interval_ms
            ) do
         with refresh_token when is_binary(refresh_token) <-
-               extract_refresh_token(vendor, locked_parsed) do
-          refresh_and_persist_locked(locked, vendor, locked_parsed, refresh_token)
+               extract_refresh_token(vendor, current_parsed) do
+          refresh_and_persist(current.name, vendor, refresh_token)
         else
           _ -> {:error, :missing_refresh_token}
         end
       else
-        return_existing_token(locked.name, vendor, locked_parsed, refresh_interval_ms)
+        return_existing_token(current.name, vendor, current_parsed, refresh_interval_ms)
       end
     end
   end
@@ -851,20 +867,46 @@ defmodule Backplane.Settings.Credentials do
     end
   end
 
-  defp refresh_and_persist_locked(locked, vendor, parsed, refresh_token) do
+  defp refresh_and_persist(name, vendor, refresh_token) do
     alias Backplane.Settings.OAuthRefresher
 
     with {:ok, refreshed} <- OAuthRefresher.refresh(vendor, refresh_token),
-         updated = update_blob(vendor, parsed, refreshed),
-         encoded = Jason.encode!(updated),
-         encrypted = Encryption.encrypt(encoded),
          {:ok, updated_cred} <-
-           locked
-           |> Credential.changeset(%{encrypted_value: encrypted})
-           |> Repo.update() do
+           persist_refreshed_tokens(name, vendor, refresh_token, refreshed) do
       notify_changed({:ok, updated_cred})
-      cache_and_return(locked.name, refreshed.access_token, refreshed.expires_at)
+      cache_and_return(name, refreshed.access_token, refreshed.expires_at)
     end
+  end
+
+  defp persist_refreshed_tokens(name, vendor, refresh_token, refreshed) do
+    Repo.transaction(fn ->
+      current =
+        Credential
+        |> from(where: [name: ^name], lock: "FOR UPDATE")
+        |> Repo.one()
+
+      with %Credential{} <- current,
+           {:ok, current_parsed} <- decode_credential_blob(current),
+           current_refresh_token when current_refresh_token == refresh_token <-
+             extract_refresh_token(vendor, current_parsed) do
+        encrypted =
+          vendor
+          |> update_blob(current_parsed, refreshed)
+          |> Jason.encode!()
+          |> Encryption.encrypt()
+
+        case current
+             |> Credential.changeset(%{encrypted_value: encrypted})
+             |> Repo.update() do
+          {:ok, updated_cred} -> updated_cred
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      else
+        nil -> Repo.rollback(:not_found)
+        {:error, reason} -> Repo.rollback(reason)
+        _changed_token -> Repo.rollback(:credential_changed_during_refresh)
+      end
+    end)
   end
 
   # Anthropic CLI import format

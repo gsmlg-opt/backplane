@@ -678,39 +678,7 @@ defmodule Backplane.LLM.RouterTest do
       refute Map.has_key?(request.body, "thinking")
     end
 
-    test "adapts OpenAI Codex OAuth chat completions to the Codex Responses backend" do
-      {:ok, store} = Agent.start_link(fn -> nil end)
-      {:ok, server_pid} = Bandit.start_link(plug: CodexUpstream, port: 0)
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
-
-      previous_backend = Application.get_env(:backplane, :openai_codex_backend_base_url)
-      previous_store = Application.get_env(:backplane, :router_test_codex_store)
-
-      Application.put_env(
-        :backplane,
-        :openai_codex_backend_base_url,
-        "http://localhost:#{port}/backend-api/codex"
-      )
-
-      Application.put_env(:backplane, :router_test_codex_store, store)
-
-      on_exit(fn ->
-        restore_env(:openai_codex_backend_base_url, previous_backend)
-        restore_env(:router_test_codex_store, previous_store)
-
-        try do
-          ThousandIsland.stop(server_pid)
-        catch
-          :exit, _ -> :ok
-        end
-
-        try do
-          Agent.stop(store)
-        catch
-          :exit, _ -> :ok
-        end
-      end)
-
+    test "rejects OpenAI Codex OAuth chat completions without upstream" do
       credential = "router-codex-cred-#{System.unique_integer([:positive])}"
       expires_at = System.system_time(:millisecond) + 60 * 60 * 1000
 
@@ -740,22 +708,23 @@ defmodule Backplane.LLM.RouterTest do
         ProviderApi.create(%{
           provider_id: provider.id,
           api_surface: :openai,
-          base_url: "https://api.openai.com/v1"
+          base_url: "https://api.example.invalid/v1"
         })
 
       {:ok, model} =
         ProviderModel.create(%{
           provider_id: provider.id,
           model: "gpt-5.5",
-          source: :manual
+          source: :discovered
         })
 
-      {:ok, _surface} =
-        ProviderModelSurface.create(%{
-          provider_model_id: model.id,
-          provider_api_id: api.id,
-          enabled: true
-        })
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+      ModelResolver.clear_cache()
 
       resource_token = resource_token!(:v1, ["llm::invoke"], [:v1])
 
@@ -772,22 +741,11 @@ defmodule Backplane.LLM.RouterTest do
           }
         )
 
-      assert conn.status == 200
-      assert conn.resp_body =~ "chat.completion.chunk"
-      assert conn.resp_body =~ "Hello"
-      assert conn.resp_body =~ " from Codex"
-      assert conn.resp_body =~ "data: [DONE]"
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
 
-      request = Agent.get(store, & &1)
-      assert request.path == "/backend-api/codex/responses"
-      assert {"authorization", "Bearer chatgpt-access-token"} in request.headers
-      refute {"authorization", "Bearer #{resource_token.value}"} in request.headers
-      assert {"chatgpt-account-id", "acc-123"} in request.headers
-      assert {"originator", "codex_cli_rs"} in request.headers
-      assert request.body["model"] == "gpt-5.5"
-      assert request.body["stream"] == true
-      refute Map.has_key?(request.body, "max_output_tokens")
-      assert [%{"role" => "user", "content" => "hi"}] = request.body["input"]
+      assert body["error"]["type"] == "unsupported_api_surface"
+      assert body["error"]["code"] == "codex_requires_responses_api"
     end
   end
 
@@ -935,6 +893,24 @@ defmodule Backplane.LLM.RouterTest do
     test "returns 404 for unknown route" do
       conn = llm_request(:get, "/v1/unknown")
       assert conn.status == 404
+    end
+
+    test "only includes entries that resolve on their enabled API surface" do
+      create_provider_model("openai-listed", :openai, "gpt-listed", "router-openai-cred")
+
+      provider = create_provider_model("openai-hidden", :openai, "gpt-hidden", "router-openai-cred")
+
+      provider = Provider.get(provider.id)
+      model = Enum.find(provider.models, &(&1.model == "gpt-hidden"))
+      {:ok, _} = ProviderModel.update(model, %{enabled: false})
+      ModelResolver.clear_cache()
+
+      conn = llm_request(:get, "/v1/models")
+      body = json_body(conn)
+      ids = Enum.map(body["data"], & &1["id"])
+
+      assert "openai-listed/gpt-listed" in ids
+      refute "openai-hidden/gpt-hidden" in ids
     end
   end
 

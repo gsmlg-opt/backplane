@@ -10,12 +10,19 @@ defmodule Backplane.LLM.ProxyPlug do
 
   @impl true
   def call(%Plug.Conn{path_info: ["v1" | rest]} = conn, _opts) do
-    forward_to_llm_router(conn, ["v1" | rest])
+    forward_to_llm_router(conn, ["v1" | rest], rest)
   end
 
   def call(conn, _opts), do: conn
 
-  defp forward_to_llm_router(conn, path_info) do
+  defp forward_to_llm_router(conn, path_info, ["providers", _provider_name | _rest]) do
+    conn
+    |> Map.put(:path_info, path_info)
+    |> Backplane.LLM.OpenAICodexProxyPlug.call(Backplane.LLM.OpenAICodexProxyPlug.init([]))
+    |> Plug.Conn.halt()
+  end
+
+  defp forward_to_llm_router(conn, path_info, _rest) do
     conn
     |> Map.put(:path_info, path_info)
     |> Backplane.LLM.Router.call(Backplane.LLM.Router.init([]))

@@ -9,9 +9,21 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
   test "maps routes to their least operation scope" do
     assert ResourceAuthorization.required_scope(conn(:get, "/v1")) == nil
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/models")) == "llm::models"
+
+    assert ResourceAuthorization.required_scope(conn(:get, "/v1/providers/openai-codex/models")) ==
+             "llm::models"
+
     assert ResourceAuthorization.required_scope(conn(:post, "/v1/responses")) == "llm::invoke"
     assert ResourceAuthorization.required_scope(conn(:post, "/v1/messages")) == "llm::invoke"
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/unknown")) == nil
+  end
+
+  test "requires model scope for provider-scoped model discovery" do
+    conn = authorize(:get, "/v1/providers/openai-codex/models", :oauth, ["llm::invoke"])
+
+    assert conn.halted
+    assert conn.status == 403
+    assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
   end
 
   test "accepts exact and wildcard model scopes" do

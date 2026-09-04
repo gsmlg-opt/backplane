@@ -42,4 +42,49 @@ defmodule Backplane.LLM.CredentialPlugOpenAICodexTest do
     assert {"chatgpt-account-id", "acc-123"} in headers
     assert {"originator", "codex_cli_rs"} in headers
   end
+
+  test "reads account and FedRAMP metadata from the fetch_with_meta wrapper" do
+    meta = %{
+      auth_type: "openai_oauth",
+      extra_headers: [],
+      metadata: %{"account_id" => "wrapped-account", "x-openai-fedramp" => true}
+    }
+
+    {replace, _defaults} = CredentialPlug.codex_headers("wrapped-token", meta)
+
+    assert {"chatgpt-account-id", "wrapped-account"} in replace
+    assert {"x-openai-fedramp", "true"} in replace
+  end
+
+  test "provider-owned replacements are case insensitive" do
+    {replace, defaults} =
+      CredentialPlug.codex_headers("wrapped-token", %{
+        auth_type: "openai_oauth",
+        extra_headers: [],
+        metadata: %{}
+      })
+
+    headers =
+      Relayixir.Proxy.Headers.merge_request_headers(
+        [
+          {"Authorization", "client-auth"},
+          {"X-API-KEY", "client-key"},
+          {"ChatGPT-Account-ID", "client-account"},
+          {"X-OpenAI-FedRAMP", "client-fedramp"}
+        ],
+        replace,
+        defaults
+      )
+
+    assert Enum.count(headers, fn {name, _} -> String.downcase(name) == "authorization" end) == 1
+    assert Enum.count(headers, fn {name, _} -> String.downcase(name) == "x-api-key" end) == 0
+
+    assert Enum.count(headers, fn {name, _} -> String.downcase(name) == "chatgpt-account-id" end) ==
+             0
+
+    assert Enum.count(headers, fn {name, _} -> String.downcase(name) == "x-openai-fedramp" end) ==
+             0
+
+    assert {"authorization", "Bearer wrapped-token"} in headers
+  end
 end

@@ -27,7 +27,6 @@ defmodule Backplane.LLM.Router do
     ModelExtractor,
     ModelResolver,
     MoonshotCompat,
-    OpenAICodexCompat,
     Provider,
     ProviderApi,
     RateLimiter
@@ -137,6 +136,7 @@ defmodule Backplane.LLM.Router do
 
         with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
+             :ok <- reject_codex_chat_completions(conn, provider),
              :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
              {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type),
@@ -147,28 +147,9 @@ defmodule Backplane.LLM.Router do
                  raw_model,
                  rewritten_body
                ) do
-          access =
-            AccessEvent.put_resolution(access, provider, raw_model, provider_api)
-
-          codex_backend? = OpenAICodexCompat.enabled?(provider, provider_api)
-          provider_api = OpenAICodexCompat.effective_api(provider_api, codex_backend?)
-
-          if codex_backend? and OpenAICodexCompat.chat_completions_request?(conn) do
-            proxy_codex_chat_completion(
-              conn,
-              provider_api,
-              auth_headers,
-              provider,
-              raw_model,
-              rewritten_body,
-              api_type,
-              access
-            )
-          else
-            conn = upstream_request_conn(conn, api_type, provider_api, codex_backend?)
-            upstream = build_upstream(provider_api, auth_headers)
-            do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access)
-          end
+          conn = upstream_request_conn(conn, api_type, provider_api)
+          upstream = build_upstream(provider_api, auth_headers)
+          do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access)
         else
           {:error, :no_provider} ->
             conn = send_not_found(conn, api_type, model_string)
@@ -180,6 +161,9 @@ defmodule Backplane.LLM.Router do
             )
 
             conn
+
+          {:error, :codex_requires_responses_api} ->
+            send_codex_rejection(conn)
 
           {:error, :api_type_mismatch, provider} ->
             conn = send_api_type_mismatch(conn, api_type, model_string, provider)
@@ -228,6 +212,14 @@ defmodule Backplane.LLM.Router do
         end
     end
   end
+
+  defp reject_codex_chat_completions(
+         %Plug.Conn{request_path: "/v1/chat/completions"},
+         %Provider{preset_key: "openai-codex"}
+       ),
+       do: {:error, :codex_requires_responses_api}
+
+  defp reject_codex_chat_completions(_conn, _provider), do: :ok
 
   defp proxy_embedding_request(conn) do
     access = AccessEvent.start(conn, "embeddings", :openai)
@@ -303,11 +295,7 @@ defmodule Backplane.LLM.Router do
     end
   end
 
-  defp upstream_request_conn(conn, _api_type, _provider_api, true) do
-    OpenAICodexCompat.rewrite_conn_path(conn, true)
-  end
-
-  defp upstream_request_conn(conn, :openai, %ProviderApi{} = provider_api, false) do
+  defp upstream_request_conn(conn, :openai, %ProviderApi{} = provider_api) do
     if base_url_has_path?(provider_api.base_url) do
       strip_repeated_request_prefix(conn, "v1")
     else
@@ -315,7 +303,7 @@ defmodule Backplane.LLM.Router do
     end
   end
 
-  defp upstream_request_conn(conn, _api_type, _provider_api, _codex_backend?), do: conn
+  defp upstream_request_conn(conn, _api_type, _provider_api), do: conn
 
   defp base_url_has_path?(base_url) do
     case URI.parse(base_url).path do
@@ -378,53 +366,6 @@ defmodule Backplane.LLM.Router do
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{embedding_provider_id: provider.id}
     }
-  end
-
-  defp proxy_codex_chat_completion(
-         conn,
-         provider_api,
-         auth_headers,
-         provider,
-         raw_model,
-         rewritten_body,
-         api_type,
-         access
-       ) do
-    with {:ok, responses_body} <-
-           OpenAICodexCompat.chat_completions_to_responses_body(rewritten_body) do
-      conn = OpenAICodexCompat.responses_conn(conn)
-      upstream = build_upstream(provider_api, auth_headers)
-      stream? = is_stream_request?(responses_body)
-      {chunk_mapper, cleanup_mapper} = OpenAICodexCompat.chat_completion_stream_mapper(raw_model)
-
-      extra_opts =
-        if stream? do
-          [map_response_chunk: chunk_mapper]
-        else
-          [
-            map_response_body: fn body ->
-              OpenAICodexCompat.response_body_to_chat_completion(body, raw_model)
-            end
-          ]
-        end
-
-      try do
-        do_proxy(conn, upstream, provider, raw_model, responses_body, api_type, access, extra_opts)
-      after
-        cleanup_mapper.()
-      end
-    else
-      {:error, reason} ->
-        conn = send_model_error(conn, api_type, reason)
-
-        finalize_access(access, conn, :error,
-          error_kind: :validation,
-          error_code: error_code_for_model_error(reason),
-          error_reason: reason
-        )
-
-        conn
-    end
   end
 
   defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access, extra_opts \\ []) do
@@ -534,12 +475,18 @@ defmodule Backplane.LLM.Router do
     provider_entries =
       for provider <- providers,
           model <- provider.models,
-          model.enabled do
+          model.enabled,
+          surface <- model.surfaces,
+          surface.enabled,
+          api_surface = enabled_surface_api_type(provider, surface.provider_api_id),
+          match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_surface, "#{provider.name}/#{model.model}")) do
         %{
           "id" => "#{provider.name}/#{model.model}",
           "object" => "model",
           "created" => 1_700_000_000,
-          "owned_by" => provider.name
+          "owned_by" => provider.name,
+          "provider" => provider.name,
+          "canonical_id" => model.model
         }
       end
 
@@ -566,7 +513,18 @@ defmodule Backplane.LLM.Router do
         }
       end
 
-    provider_entries ++ auto_model_entries ++ custom_alias_entries
+    (provider_entries ++ auto_model_entries ++ custom_alias_entries)
+    |> Enum.uniq_by(& &1["id"])
+    |> Enum.sort_by(& &1["id"])
+  end
+
+  defp enabled_surface_api_type(provider, surface_provider_api_id) do
+    provider.apis
+    |> Enum.find(fn api -> api.id == surface_provider_api_id and api.enabled end)
+    |> case do
+      nil -> nil
+      api -> api.api_surface
+    end
   end
 
   defp custom_alias_available?(%ModelAlias{} = model_alias) do
@@ -663,6 +621,16 @@ defmodule Backplane.LLM.Router do
           "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /v1/messages instead.",
         "type" => "invalid_request_error",
         "code" => "api_type_mismatch"
+      }
+    })
+  end
+
+  defp send_codex_rejection(conn) do
+    send_json(conn, 400, %{
+      "error" => %{
+        "type" => "unsupported_api_surface",
+        "code" => "codex_requires_responses_api",
+        "message" => "OpenAI Codex providers support the Responses API only."
       }
     })
   end

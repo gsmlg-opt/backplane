@@ -4,6 +4,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
   import Phoenix.LiveViewTest
 
   alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
+  alias Backplane.LLM.OpenAICodex
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
 
@@ -315,11 +316,11 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         "provider" => %{
           "name" => "openai-codex-test",
           "credential" => "openai-codex",
-          "base_url" => "https://chatgpt.com/backend-api/codex",
+          "base_url" => OpenAICodex.default_backend_base_url(),
           "rpm_limit" => "",
           "default_headers" => "{}",
           "openai_enabled" => "true",
-          "openai_base_url" => "https://chatgpt.com/backend-api/codex",
+          "openai_base_url" => OpenAICodex.default_backend_base_url(),
           "openai_model_discovery_enabled" => "true",
           "openai_model_discovery_path" => "/models",
           "openai_default_headers" => "{}",
@@ -338,8 +339,10 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert provider.preset_key == "openai-codex"
       assert provider.credential == "openai-codex"
 
-      assert [%{api_surface: :openai, base_url: "https://chatgpt.com/backend-api/codex"}] =
+      assert [%{api_surface: :openai, base_url: base_url}] =
                ProviderApi.list_for_provider(provider.id)
+
+      assert base_url == OpenAICodex.default_backend_base_url()
     end
 
     test "creates google ai studio provider with antigravity oauth credential", %{conn: conn} do
@@ -576,18 +579,20 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert html =~ "provider-api-model"
       assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-api-model")
-      refute Repo.get_by(ProviderModel, provider_id: provider.id, model: "provider-stale-model")
+
+      stale_model =
+        Repo.get_by!(ProviderModel, provider_id: provider.id, model: "provider-stale-model")
+
+      refute stale_model.enabled
+      refute ProviderModelSurface.get_by_model_and_api(stale_model.id, api.id)
     end
 
-    test "provider detail loads openai codex oauth models from local catalog", %{conn: conn} do
+    test "provider detail loads openai codex oauth models from api", %{conn: conn} do
       previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
-      previous_catalog = Application.get_env(:backplane, :openai_codex_model_catalog)
 
       Application.put_env(:backplane, :llm_model_discovery_req_options,
         plug: {Req.Test, __MODULE__}
       )
-
-      Application.put_env(:backplane, :openai_codex_model_catalog, ["gpt-codex-live-test"])
 
       on_exit(fn ->
         if previous do
@@ -595,17 +600,38 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         else
           Application.delete_env(:backplane, :llm_model_discovery_req_options)
         end
-
-        if previous_catalog do
-          Application.put_env(:backplane, :openai_codex_model_catalog, previous_catalog)
-        else
-          Application.delete_env(:backplane, :openai_codex_model_catalog)
-        end
       end)
 
-      Req.Test.stub(__MODULE__, fn _conn ->
-        flunk("OpenAI Codex OAuth discovery should not call the provider /models endpoint")
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.request_path == "/backend-api/codex/models"
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer oauth-token"]
+        assert Plug.Conn.get_req_header(conn, "chatgpt-account-id") == ["codex-account"]
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(
+          200,
+          Jason.encode!(%{
+            "models" => [%{"slug" => "gpt-codex-live-test", "capabilities" => %{}}]
+          })
+        )
       end)
+
+      expires_at = System.system_time(:millisecond) + 60 * 60 * 1000
+
+      {:ok, _credential} =
+        Credentials.store_device_token(
+          "openai-codex",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "id_token" => "codex-id-token",
+            "access_token" => "oauth-token",
+            "refresh_token" => "refresh-token",
+            "expires_at" => expires_at
+          },
+          %{"account_id" => "codex-account"}
+        )
 
       {:ok, provider} =
         Provider.create(%{
@@ -618,7 +644,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
         ProviderApi.create(%{
           provider_id: provider.id,
           api_surface: :openai,
-          base_url: "https://api.openai.com/v1",
+          base_url: OpenAICodex.default_backend_base_url(),
+          model_discovery_enabled: true,
           model_discovery_path: "/models"
         })
 

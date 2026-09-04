@@ -2,6 +2,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
+  alias Backplane.LLM.OpenAICodex
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
   alias Backplane.Services.WebFetch
@@ -116,14 +117,14 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
            )
   end
 
-  test "renders default live search model options for supported providers without discovered models",
+  test "does not invent Codex live search models when discovery has no models",
        %{conn: conn} do
-    create_provider_api("openai-codex", "openai-codex", "https://chatgpt.com/backend-api/codex")
+    create_provider_api("openai-codex", "openai-codex", OpenAICodex.default_backend_base_url())
     create_provider_api("x-ai", "x-ai", "https://api.x.ai/v1")
 
     {:ok, _view, html} = live(conn, "/mcp/managed/web")
 
-    assert html =~ "openai-codex/gpt-5.5"
+    refute html =~ "openai-codex/gpt-5.5"
     assert html =~ "x-ai/grok-4.3"
     refute html =~ "No supported OpenAI-compatible models are enabled."
   end

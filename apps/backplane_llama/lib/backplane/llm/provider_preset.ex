@@ -244,10 +244,10 @@ defmodule Backplane.LLM.ProviderPreset do
       default_credential: "openai-codex",
       credential_kind: "llm",
       credential_auth_type: "openai_oauth",
-      default_base_url: "https://chatgpt.com/backend-api/codex",
+      default_base_url: Backplane.LLM.OpenAICodex.default_backend_base_url(),
       openai: %{
         enabled: true,
-        base_url: "https://chatgpt.com/backend-api/codex",
+        base_url: Backplane.LLM.OpenAICodex.default_backend_base_url(),
         discovery_path: "/models"
       },
       anthropic: %{

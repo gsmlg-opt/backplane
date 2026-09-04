@@ -19,6 +19,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
     {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
 
     prior = Application.get_env(:backplane, OAuthRefresher, [])
+    prior_refresh_test_pid = Application.get_env(:backplane, :oauth_refresh_test_pid)
 
     Application.put_env(:backplane, OAuthRefresher,
       anthropic_token_url: "http://localhost:#{port}/anthropic/token",
@@ -29,6 +30,12 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
     on_exit(fn ->
       Application.put_env(:backplane, OAuthRefresher, prior)
+
+      if prior_refresh_test_pid do
+        Application.put_env(:backplane, :oauth_refresh_test_pid, prior_refresh_test_pid)
+      else
+        Application.delete_env(:backplane, :oauth_refresh_test_pid)
+      end
 
       try do
         ThousandIsland.stop(pid)
@@ -75,6 +82,8 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
     end
 
     post "/openai/token" do
+      maybe_pause_openai_refresh(conn.body_params["refresh_token"])
+
       resp = %{
         "access_token" => "oai-REFRESHED",
         "refresh_token" => "oai-NEWREFRESH",
@@ -87,6 +96,20 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       |> put_resp_content_type("application/json")
       |> send_resp(200, Jason.encode!(resp))
     end
+
+    defp maybe_pause_openai_refresh("slow-refresh-token") do
+      if test_pid = Application.get_env(:backplane, :oauth_refresh_test_pid) do
+        send(test_pid, {:slow_oauth_refresh_started, self()})
+
+        receive do
+          :continue_slow_oauth_refresh -> :ok
+        after
+          5_000 -> :ok
+        end
+      end
+    end
+
+    defp maybe_pause_openai_refresh(_refresh_token), do: :ok
 
     post "/google/token" do
       if conn.body_params["client_id"] ==
@@ -389,6 +412,125 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       assert stored["refresh_token"] == "oai-NEWREFRESH"
       assert stored["id_token"] == "oai-NEWID"
       assert is_binary(stored["last_refresh"])
+    end
+
+    test "refresh does not hold a database row lock during the token request" do
+      now_ms = System.system_time(:millisecond)
+      Application.put_env(:backplane, :oauth_refresh_test_pid, self())
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-slow-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "slow-refresh-token",
+            "expires_at" => now_ms - 60_000,
+            "last_refresh" => iso_days_ago(8)
+          },
+          %{"account_id" => "acc-before"}
+        )
+
+      refresh_task =
+        Task.async(fn ->
+          Credentials.refresh_oauth_token("oai-slow-refresh", force: true, now_ms: now_ms)
+        end)
+
+      assert_receive {:slow_oauth_refresh_started, endpoint_pid}, 1_000
+
+      update_task =
+        Task.async(fn ->
+          Credentials.update("oai-slow-refresh", %{
+            metadata: %{"auth_type" => "openai_oauth", "account_id" => "acc-during-refresh"}
+          })
+        end)
+
+      update_result = Task.yield(update_task, 500)
+      send(endpoint_pid, :continue_slow_oauth_refresh)
+      refresh_result = Task.yield(refresh_task, 2_000)
+
+      if is_nil(update_result), do: Task.yield(update_task, 2_000)
+
+      assert {:ok, {:ok, %Backplane.Settings.Credential{}}} = update_result
+      assert {:ok, {:ok, :refreshed}} = refresh_result
+
+      stored = Backplane.Repo.get_by!(Backplane.Settings.Credential, name: "oai-slow-refresh")
+      assert stored.metadata["account_id"] == "acc-during-refresh"
+      assert decrypt_credential_json("oai-slow-refresh")["access_token"] == "oai-REFRESHED"
+    end
+
+    test "refresh does not overwrite a credential rotated during the token request" do
+      now_ms = System.system_time(:millisecond)
+      Application.put_env(:backplane, :oauth_refresh_test_pid, self())
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-rotated-during-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "slow-refresh-token",
+            "expires_at" => now_ms - 60_000
+          }
+        )
+
+      refresh_task =
+        Task.async(fn ->
+          Credentials.refresh_oauth_token("oai-rotated-during-refresh",
+            force: true,
+            now_ms: now_ms
+          )
+        end)
+
+      assert_receive {:slow_oauth_refresh_started, endpoint_pid}, 1_000
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-rotated-during-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-MANUALLY-ROTATED",
+            "refresh_token" => "manual-refresh-token",
+            "expires_at" => now_ms + 60 * 60 * 1_000
+          }
+        )
+
+      send(endpoint_pid, :continue_slow_oauth_refresh)
+
+      assert {:error, :credential_changed_during_refresh} = Task.await(refresh_task, 2_000)
+      stored = decrypt_credential_json("oai-rotated-during-refresh")
+      assert stored["access_token"] == "oai-MANUALLY-ROTATED"
+      assert stored["refresh_token"] == "manual-refresh-token"
+    end
+
+    test "refresh_oauth_token/2 preserves a Codex credential account id" do
+      now_ms = System.system_time(:millisecond)
+
+      {:ok, _} =
+        Credentials.store_device_token(
+          "oai-account-refresh",
+          "openai_oauth",
+          %{
+            "type" => "codex_device_oauth",
+            "access_token" => "oai-OLD",
+            "refresh_token" => "rt",
+            "expires_at" => now_ms + 10 * 24 * 60 * 60 * 1000,
+            "last_refresh" => iso_days_ago(8)
+          },
+          %{"account_id" => "acc-123"}
+        )
+
+      assert {:ok, :refreshed} =
+               Credentials.refresh_oauth_token("oai-account-refresh",
+                 now_ms: now_ms,
+                 refresh_interval_ms: 7 * 24 * 60 * 60 * 1000
+               )
+
+      {:ok, _token, %{metadata: metadata}} = Credentials.fetch_with_meta("oai-account-refresh")
+      assert metadata["account_id"] == "acc-123"
     end
 
     test "refresh_oauth_token/2 refreshes a Google Antigravity token with default client id" do

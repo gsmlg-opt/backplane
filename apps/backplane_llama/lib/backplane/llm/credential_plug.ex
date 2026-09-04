@@ -12,7 +12,7 @@ defmodule Backplane.LLM.CredentialPlug do
   - api_type `:openai` (any auth_type): sets `Authorization: Bearer …`.
   """
 
-  alias Backplane.LLM.Provider
+  alias Backplane.LLM.{OpenAICodex, Provider}
   alias Backplane.Settings.Credentials
   import Plug.Conn
 
@@ -86,6 +86,50 @@ defmodule Backplane.LLM.CredentialPlug do
       do: build_auth_headers(provider, api_type)
 
   def build_auth_headers(%Provider{}), do: {:error, :api_surface_required}
+
+  @doc """
+  Builds provider-owned and default headers for a Codex OAuth credential.
+
+  Provider-owned client headers are replaced by Relayixir's case-insensitive
+  merge. Metadata defaults are supplied for absent headers only.
+  """
+  @spec codex_headers(String.t(), map(), map() | nil) ::
+          {[{String.t(), String.t() | nil}], [{String.t(), String.t()}]}
+  def codex_headers(token, meta, provider_default_headers \\ %{})
+      when is_binary(token) and is_map(meta) do
+    metadata = Map.get(meta, :metadata, meta)
+
+    replace =
+      [
+        {"authorization", "Bearer " <> token},
+        {"x-api-key", nil},
+        {"chatgpt-account-id", account_id(metadata)},
+        {"x-openai-fedramp", fedramp(metadata)}
+      ]
+
+    defaults =
+      provider_default_headers
+      |> default_header_pairs()
+      |> Enum.reject(fn {name, _value} ->
+        String.downcase(name) in OpenAICodex.provider_owned_headers()
+      end)
+      |> Kernel.++(codex_default_headers())
+
+    {replace, defaults}
+  end
+
+  defp account_id(meta), do: metadata_value(meta, ["account_id"])
+
+  defp fedramp(meta) do
+    case metadata_value(meta, ["x_openai_fedramp", "x-openai-fedramp", "fedramp"]) do
+      value when value in [true, false] -> to_string(value)
+      value -> value
+    end
+  end
+
+  defp metadata_value(meta, keys) do
+    Enum.find_value(keys, fn key -> Map.get(meta, key) || Map.get(meta, String.downcase(key)) end)
+  end
 
   # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -176,4 +220,11 @@ defmodule Backplane.LLM.CredentialPlug do
   end
 
   defp merge_default_headers(conn, _), do: conn
+
+  defp codex_default_headers do
+    case OpenAICodex.default_header("originator") do
+      nil -> []
+      value -> [{"originator", value}]
+    end
+  end
 end

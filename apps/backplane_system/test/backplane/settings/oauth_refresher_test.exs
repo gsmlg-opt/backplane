@@ -262,6 +262,22 @@ defmodule Backplane.Settings.OAuthRefresherTest do
               }} = OAuthRefresher.refresh(:openai_oauth, "good-openai")
     end
 
+    test "bounds proxy connection and CONNECT tunnel waits" do
+      System.put_env("HTTPS_PROXY", "http://proxy.example:3128")
+      System.delete_env("https_proxy")
+      System.delete_env("NO_PROXY")
+      System.delete_env("no_proxy")
+
+      options = OAuthRefresher.request_options("https://auth.openai.invalid/oauth/token")
+      connect_options = Keyword.fetch!(options, :connect_options)
+
+      assert {:http, "proxy.example", 3128, proxy_options} =
+               Keyword.fetch!(connect_options, :proxy)
+
+      assert Keyword.fetch!(proxy_options, :tunnel_timeout) == 10_000
+      assert Keyword.fetch!(proxy_options, :transport_opts)[:timeout] == 10_000
+    end
+
     test "returns {:error, {:refresh_failed, 401}} on bad refresh token" do
       assert {:error, {:refresh_failed, 401}} =
                OAuthRefresher.refresh(:openai_oauth, "wrong")
