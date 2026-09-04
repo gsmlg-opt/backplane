@@ -26,6 +26,12 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   @default_google_antigravity_models ~w(
+    gemini-3.8-flash
+    gemini-3.8-flash-cyber
+    gemini-3.7-flash-tiered
+    gemini-3.6-flash-high
+    gemini-3.6-flash-medium
+    gemini-3.6-flash-low
     gemini-3.1-pro-high
     gemini-3.1-pro-low
     gemini-3.1-flash-lite
@@ -38,7 +44,7 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   @discovery_stale_key "backplane_discovery_stale"
   @default_openai_codex_client_version "0.0.0"
-  @request_timeout_ms 10_000
+  @request_timeout_ms 30_000
 
   @type discovery_result :: %{
           discovered: non_neg_integer(),
