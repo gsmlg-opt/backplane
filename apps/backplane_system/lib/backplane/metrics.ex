@@ -234,14 +234,16 @@ defmodule Backplane.Metrics do
       _ -> :ok
     end
 
-    if provider = metadata[:provider_name] || get_in(metadata, [:attributes, :provider_name]) do
-      inc("llm_proxy.requests.#{provider}")
+    case metadata[:provider_name] || get_in(metadata, [:attributes, :provider_name]) do
+      nil -> :ok
+      provider -> inc("llm_proxy.requests.#{provider}")
     end
 
     record_timing("llm_proxy.duration", milliseconds_to_microseconds(measurements[:duration_ms]))
 
-    if ttft = measurements[:ttft_ms] do
-      record_timing("llm_proxy.ttft", milliseconds_to_microseconds(ttft))
+    case measurements[:ttft_ms] do
+      nil -> :ok
+      ttft -> record_timing("llm_proxy.ttft", milliseconds_to_microseconds(ttft))
     end
 
     inc("llm_proxy.tokens.input", measurements[:input_tokens] || 0)
@@ -251,8 +253,9 @@ defmodule Backplane.Metrics do
   def handle_event([:backplane, :mcp_proxy, :request, :stop], measurements, metadata, _config) do
     inc("mcp_proxy.requests.total")
 
-    if method = metadata[:rpc_method] || get_in(metadata, [:attributes, :rpc_method]) do
-      inc("mcp_proxy.requests.#{method}")
+    case metadata[:rpc_method] || get_in(metadata, [:attributes, :rpc_method]) do
+      nil -> :ok
+      method -> inc("mcp_proxy.requests.#{method}")
     end
 
     if (metadata[:outcome] || get_in(metadata, [:attributes, :outcome])) == "error" do
@@ -268,8 +271,9 @@ defmodule Backplane.Metrics do
   def handle_event([:backplane, :mcp_proxy, :tool_call, :stop], measurements, metadata, _config) do
     inc("mcp_proxy.tool_calls.total")
 
-    if tool = metadata[:tool_name] || get_in(metadata, [:attributes, :tool_name]) do
-      inc("mcp_proxy.tool_calls.#{tool}")
+    case metadata[:tool_name] || get_in(metadata, [:attributes, :tool_name]) do
+      nil -> :ok
+      tool -> inc("mcp_proxy.tool_calls.#{tool}")
     end
 
     if (metadata[:outcome] || get_in(metadata, [:attributes, :outcome])) == "error" do

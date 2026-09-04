@@ -179,7 +179,8 @@ defmodule Backplane.Proxy.Upstream do
       ) do
     reply =
       if observability do
-        {:error, "Upstream connection error", upstream_meta(state, tool_name, timeout, "error", observability)}
+        {:error, "Upstream connection error",
+         upstream_meta(state, tool_name, timeout, "error", observability)}
       else
         {:error, "Upstream connection error"}
       end
@@ -204,7 +205,19 @@ defmodule Backplane.Proxy.Upstream do
       {:error, reason, :protocol} ->
         message = ProtocolClient.error_message(reason)
         result = {:error, message}
-        meta = upstream_meta(state, tool_name, timeout, "error", observability, started_ms, reason, :protocol)
+
+        meta =
+          upstream_meta(
+            state,
+            tool_name,
+            timeout,
+            "error",
+            observability,
+            started_ms,
+            reason,
+            :protocol
+          )
+
         maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
         reply = if observability, do: {:error, message, meta}, else: result
         {:reply, reply, track_call_result(state, result)}
@@ -212,7 +225,19 @@ defmodule Backplane.Proxy.Upstream do
       {:error, reason, :connection} ->
         message = ProtocolClient.error_message(reason)
         result = {:error, message}
-        meta = upstream_meta(state, tool_name, timeout, "error", observability, started_ms, reason, :connection)
+
+        meta =
+          upstream_meta(
+            state,
+            tool_name,
+            timeout,
+            "error",
+            observability,
+            started_ms,
+            reason,
+            :connection
+          )
+
         maybe_emit_upstream_stop(observability, tool_name, timeout, meta, message)
         reply = if observability, do: {:error, message, meta}, else: result
         {:reply, reply, disconnect(state, reason)}
@@ -754,7 +779,16 @@ defmodule Backplane.Proxy.Upstream do
   defp normalize_observability_reply({:error, reason, meta}), do: {:error, reason, meta}
   defp normalize_observability_reply(other), do: other
 
-  defp upstream_meta(state, original_tool_name, timeout, outcome, observability, started_ms \\ nil, reason \\ nil, category \\ nil) do
+  defp upstream_meta(
+         state,
+         original_tool_name,
+         timeout,
+         outcome,
+         observability,
+         started_ms \\ nil,
+         reason \\ nil,
+         category \\ nil
+       ) do
     {negotiated_version, _, _} = safe_negotiation_status(state)
 
     duration_ms =
@@ -786,12 +820,17 @@ defmodule Backplane.Proxy.Upstream do
 
   defp upstream_error_kind(:protocol, _reason), do: "protocol"
   defp upstream_error_kind(:connection, _reason), do: "upstream"
-  defp upstream_error_kind("timeout", _reason), do: "timeout"
   defp upstream_error_kind(_category, _reason), do: nil
 
   defp maybe_emit_upstream_stop(nil, _tool_name, _timeout, _meta, _error_message), do: :ok
 
-  defp maybe_emit_upstream_stop(%{context: parent_context}, tool_name, _timeout, meta, error_message) do
+  defp maybe_emit_upstream_stop(
+         %{context: parent_context},
+         tool_name,
+         _timeout,
+         meta,
+         error_message
+       ) do
     upstream_context = Context.child(parent_context)
     event_id = Id.generator().event_id()
 
@@ -814,7 +853,11 @@ defmodule Backplane.Proxy.Upstream do
 
   defp emit_upstream_exception(%{context: parent_context}, tool_name, timeout, meta, kind) do
     upstream_context = Context.child(parent_context)
-    message = if kind == "timeout", do: "Upstream timeout after #{timeout}ms", else: "Upstream connection error"
+
+    message =
+      if kind == "timeout",
+        do: "Upstream timeout after #{timeout}ms",
+        else: "Upstream connection error"
 
     Event.emit_stop(:mcp_proxy, "upstream", upstream_context,
       event_id: Id.generator().event_id(),

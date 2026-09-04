@@ -11,6 +11,8 @@ defmodule Backplane.LLM.ProxyRequest do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
+  @type t :: %__MODULE__{}
+
   schema "llm_logs" do
     field(:event_id, :string)
     field(:request_id, :string)
@@ -28,9 +30,7 @@ defmodule Backplane.LLM.ProxyRequest do
     belongs_to(:provider_api, Backplane.LLM.ProviderApi, type: :binary_id)
     belongs_to(:provider_model, Backplane.LLM.ProviderModel, type: :binary_id)
 
-    belongs_to(:provider_model_surface, Backplane.LLM.ProviderModelSurface,
-      type: :binary_id
-    )
+    belongs_to(:provider_model_surface, Backplane.LLM.ProviderModelSurface, type: :binary_id)
 
     field(:requested_model, :string)
     field(:resolved_model, :string)

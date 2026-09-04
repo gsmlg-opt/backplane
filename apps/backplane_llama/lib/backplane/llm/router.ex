@@ -368,7 +368,16 @@ defmodule Backplane.LLM.Router do
     }
   end
 
-  defp do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access, extra_opts \\ []) do
+  defp do_proxy(
+         conn,
+         upstream,
+         provider,
+         raw_model,
+         rewritten_body,
+         api_type,
+         access,
+         extra_opts \\ []
+       ) do
     stream? = is_stream_request?(rewritten_body)
 
     access =
@@ -438,7 +447,6 @@ defmodule Backplane.LLM.Router do
 
   defp error_code_for_model_error(:no_model), do: "missing_required_parameter"
   defp error_code_for_model_error(:invalid_json), do: "invalid_json"
-  defp error_code_for_model_error(reason), do: to_string(reason)
 
   defp finalize_access(access, conn, outcome, opts) do
     access =
@@ -459,7 +467,8 @@ defmodule Backplane.LLM.Router do
     AccessEvent.finalize(access, conn, outcome, Keyword.put(opts, :status, status))
   end
 
-  defp provider_api_from_upstream(%Upstream{metadata: %{provider_api_id: id}}) when is_binary(id) do
+  defp provider_api_from_upstream(%Upstream{metadata: %{provider_api_id: id}})
+       when is_binary(id) do
     %ProviderApi{id: id}
   end
 
@@ -479,7 +488,10 @@ defmodule Backplane.LLM.Router do
           surface <- model.surfaces,
           surface.enabled,
           api_surface = enabled_surface_api_type(provider, surface.provider_api_id),
-          match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_surface, "#{provider.name}/#{model.model}")) do
+          match?(
+            {:ok, _provider, _raw_model},
+            ModelResolver.resolve(api_surface, "#{provider.name}/#{model.model}")
+          ) do
         %{
           "id" => "#{provider.name}/#{model.model}",
           "object" => "model",

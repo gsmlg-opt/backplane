@@ -48,7 +48,14 @@ defmodule Backplane.Telemetry do
         Map.put(metadata, :result, result_status)
       )
 
-      maybe_log_legacy_tool_audit(tool_name, args, request_id, duration, result_status, arguments_hash)
+      maybe_log_legacy_tool_audit(
+        tool_name,
+        args,
+        request_id,
+        duration,
+        result_status,
+        arguments_hash
+      )
 
       unless v2_enabled do
         duration_ms = System.convert_time_unit(duration, :native, :millisecond)
@@ -97,12 +104,19 @@ defmodule Backplane.Telemetry do
     end
   end
 
-  defp maybe_log_legacy_tool_audit(tool_name, _args, request_id, duration, result_status, arguments_hash, error_message \\ nil) do
+  defp maybe_log_legacy_tool_audit(
+         tool_name,
+         _args,
+         request_id,
+         duration,
+         result_status,
+         arguments_hash,
+         error_message \\ nil
+       ) do
     status =
       case result_status do
         :ok -> "ok"
         :error -> "error"
-        _ -> "ok"
       end
 
     duration_us = System.convert_time_unit(duration, :native, :microsecond)

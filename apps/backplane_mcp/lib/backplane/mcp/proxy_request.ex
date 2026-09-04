@@ -10,6 +10,8 @@ defmodule Backplane.MCP.ProxyRequest do
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
+  @type t :: %__MODULE__{}
+
   schema "mcp_proxy_requests" do
     field(:event_id, :string)
     field(:request_id, :string)

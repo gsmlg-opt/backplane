@@ -272,7 +272,6 @@ defmodule Backplane.MCP.AccessEvent do
   end
 
   defp format_ip(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
-  defp format_ip(ip), do: inspect(ip)
 
   defp idempotency_status(conn) do
     case conn.assigns[:mcp_idempotency_status] do
@@ -346,7 +345,9 @@ defmodule Backplane.MCP.AccessEvent do
   defp error_code(:cancelled, _, _, _opts), do: "client_disconnect"
   defp error_code(_, _, code, _opts) when is_integer(code) and code < 0, do: to_string(code)
   defp error_code(_, status, _, _opts) when is_integer(status), do: to_string(status)
-  defp error_code(_, _, _, opts), do: Keyword.get(opts, :error_code) && to_string(Keyword.get(opts, :error_code))
+
+  defp error_code(_, _, _, opts),
+    do: Keyword.get(opts, :error_code) && to_string(Keyword.get(opts, :error_code))
 
   defp error_message(:success, _opts), do: nil
 

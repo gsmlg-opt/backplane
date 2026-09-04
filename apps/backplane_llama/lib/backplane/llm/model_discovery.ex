@@ -423,6 +423,12 @@ defmodule Backplane.LLM.ModelDiscovery do
     end
   end
 
+  defp model_detail(model) when is_binary(model) do
+    if blank?(model), do: nil, else: %ModelDetail{id: model, metadata: %{}}
+  end
+
+  defp model_detail(_model), do: nil
+
   defp codex_model_detail(%{"slug" => slug} = model) when is_binary(slug) do
     if blank?(slug) do
       nil
@@ -436,13 +442,10 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp model_id(%{"slug" => slug}) when is_binary(slug), do: slug
   defp model_id(%{"id" => id}) when is_binary(id), do: id
   defp model_id(%{"name" => name}) when is_binary(name), do: name
-  defp model_id(model) when is_binary(model), do: model
   defp model_id(_), do: nil
 
   defp normalize_metadata(model) when is_map(model),
     do: Map.new(model, fn {key, value} -> {to_string(key), value} end)
-
-  defp normalize_metadata(_model), do: %{}
 
   defp persist_models(provider, api, model_details) do
     Enum.reduce(model_details, empty_result(), fn %ModelDetail{} = detail, result ->

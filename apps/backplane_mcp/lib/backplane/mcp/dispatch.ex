@@ -77,21 +77,25 @@ defmodule Backplane.MCP.Dispatch do
           {:ok, term()} | {:error, term()}
   def call_tool(name, args, auth \\ %{}, observability \\ nil)
       when is_binary(name) and is_map(auth) do
-  cond do
-      Observability.mcp_write?() and not is_nil(observability) ->
+    case {Observability.mcp_write?(), observability} do
+      {true, %{}} ->
         ToolAccessEvent.span(name, args, observability, fn tool_context ->
           observability = Map.put(observability, :tool_context, tool_context)
           name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, observability)
         end)
 
-      true ->
-        Telemetry.span_tool_call(name, args, fn ->
-          case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil) do
-            {:ok, result, _meta} -> {:ok, result}
-            {:error, reason, _meta} -> {:error, reason}
-          end
-        end)
+      _legacy ->
+        call_legacy_tool(name, args, auth)
     end
+  end
+
+  defp call_legacy_tool(name, args, auth) do
+    Telemetry.span_tool_call(name, args, fn ->
+      case name |> ToolRegistry.resolve() |> execute_tool(name, args, auth, nil) do
+        {:ok, result, _meta} -> {:ok, result}
+        {:error, reason, _meta} -> {:error, reason}
+      end
+    end)
   end
 
   @doc false
@@ -241,7 +245,13 @@ defmodule Backplane.MCP.Dispatch do
        base_meta("native", name, nil)}
   end
 
-  defp execute_tool({:upstream, upstream_pid, original_tool_name, timeout}, name, args, _auth, observability) do
+  defp execute_tool(
+         {:upstream, upstream_pid, original_tool_name, timeout},
+         name,
+         args,
+         _auth,
+         observability
+       ) do
     upstream_prefix = upstream_prefix(name)
 
     case upstream_cache_ttl(name) do
@@ -282,9 +292,7 @@ defmodule Backplane.MCP.Dispatch do
                    observability
                  ) do
               {:ok, result, meta} ->
-                if match?({:ok, _result}, {:ok, result}),
-                  do: Backplane.Cache.put(key, result, ttl_ms)
-
+                Backplane.Cache.put(key, result, ttl_ms)
                 {:ok, result, meta}
 
               other ->
@@ -294,7 +302,8 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
-  defp execute_tool({:managed, handler}, name, args, auth, _observability) when is_function(handler, 2) do
+  defp execute_tool({:managed, handler}, name, args, auth, _observability)
+       when is_function(handler, 2) do
     meta = base_meta("managed", name, nil)
 
     case managed_tool_result(handler.(args, auth), name) do
@@ -307,7 +316,8 @@ defmodule Backplane.MCP.Dispatch do
        base_meta("managed", name, nil)}
   end
 
-  defp execute_tool({:managed, handler}, name, args, _auth, _observability) when is_function(handler, 1) do
+  defp execute_tool({:managed, handler}, name, args, _auth, _observability)
+       when is_function(handler, 1) do
     meta = base_meta("managed", name, nil)
 
     case managed_tool_result(handler.(args), name) do
@@ -493,21 +503,19 @@ defmodule Backplane.MCP.Dispatch do
     |> maybe_put_observability(observability)
   end
 
-  defp maybe_put_observability(attrs, %{context: context, mcp_request_id: mcp_request_id}) do
-    attrs
-    |> Map.put(:request_id, context.request_id)
-    |> Map.put(:trace_id, context.trace_id)
-    |> Map.put(:mcp_request_id, mcp_request_id)
+  defp maybe_put_observability(attrs, observability) do
+    Map.merge(attrs, %{
+      request_id: get_in(observability, [:context, :request_id]),
+      trace_id: get_in(observability, [:context, :trace_id]),
+      mcp_request_id: get_in(observability, [:mcp_request_id])
+    })
   end
-
-  defp maybe_put_observability(attrs, _observability), do: attrs
 
   defp observability_with_client(%{observability: observability, client: client})
        when is_map(observability) do
     Map.put(observability, :client, client)
   end
 
-  defp observability_with_client(%{observability: observability}), do: observability
   defp observability_with_client(_context), do: nil
 
   defp maybe_put_client(attrs, %{id: id, name: name}) do

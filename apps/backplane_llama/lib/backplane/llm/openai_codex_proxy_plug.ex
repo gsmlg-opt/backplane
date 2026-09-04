@@ -249,8 +249,6 @@ defmodule Backplane.LLM.OpenAICodexProxyPlug do
   defp send_local_error(conn, :unsupported_provider),
     do: send_json(conn, 503, :unsupported_provider)
 
-  defp send_local_error(conn, :invalid_model_list), do: send_json(conn, 502, :invalid_model_list)
-
   defp send_local_error(conn, reason), do: send_json(conn, 503, reason)
 
   defp send_rate_limit_error(conn, retry_after) do

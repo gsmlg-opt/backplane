@@ -35,41 +35,27 @@ defmodule Backplane.MCP.ToolAccessEvent do
     {namespace, _} = split_tool(tool_name)
     arguments_hash = Audit.hash_arguments(args)
 
+    span = %{
+      tool_name: tool_name,
+      namespace: namespace,
+      arguments_hash: arguments_hash,
+      observability: observability,
+      tool_context: tool_context,
+      event_id: event_id,
+      started_mono: started_mono
+    }
+
     emit_legacy_start(tool_name, parent_context)
 
     try do
       case fun.(tool_context) do
         {:ok, result, %{} = meta} ->
-          finalize(
-            tool_name,
-            namespace,
-            arguments_hash,
-            observability,
-            tool_context,
-            event_id,
-            started_mono,
-            meta,
-            :success,
-            result,
-            nil
-          )
+          finalize(span, meta, :success, result, nil)
 
           {:ok, result}
 
         {:error, reason, %{} = meta} ->
-          finalize(
-            tool_name,
-            namespace,
-            arguments_hash,
-            observability,
-            tool_context,
-            event_id,
-            started_mono,
-            meta,
-            :error,
-            reason,
-            reason
-          )
+          finalize(span, meta, :error, reason, reason)
 
           {:error, reason}
 
@@ -80,51 +66,35 @@ defmodule Backplane.MCP.ToolAccessEvent do
       exception ->
         meta = %{execution_kind: "unknown"}
 
-        finalize(
-          tool_name,
-          namespace,
-          arguments_hash,
-          observability,
-          tool_context,
-          event_id,
-          started_mono,
-          meta,
-          :error,
-          exception,
-          exception
-        )
+        finalize(span, meta, :error, exception, exception)
 
         reraise exception, __STACKTRACE__
     end
   end
 
-  defp finalize(
-         tool_name,
-         namespace,
-         arguments_hash,
-         observability,
-         tool_context,
-         event_id,
-         started_mono,
-         meta,
-         outcome,
-         result,
-         error_reason
-       ) do
-    duration_ms = System.monotonic_time(:millisecond) - started_mono
-    record = build_record(tool_name, namespace, arguments_hash, observability, tool_context, event_id, duration_ms, meta, outcome, result, error_reason)
+  defp finalize(span, meta, outcome, result, error_reason) do
+    duration_ms = System.monotonic_time(:millisecond) - span.started_mono
+    record = build_record(span, duration_ms, meta, outcome, result, error_reason)
     measurements = %{duration_ms: duration_ms, system_time: System.system_time()}
     error = build_error(record, error_reason)
 
-    Event.emit_stop(:mcp_proxy, "tool_call", tool_context,
-      event_id: event_id,
+    Event.emit_stop(:mcp_proxy, "tool_call", span.tool_context,
+      event_id: span.event_id,
       measurements: measurements,
       attributes: compact_record(record),
       error: error
     )
 
-    maybe_log_tool_audit(record, observability, outcome, error_reason)
-    emit_legacy_stop(tool_name, parent_context(observability), outcome, duration_ms, result)
+    maybe_log_tool_audit(record, span.observability, outcome, error_reason)
+
+    emit_legacy_stop(
+      span.tool_name,
+      parent_context(span.observability),
+      outcome,
+      duration_ms,
+      result
+    )
+
     :ok
   end
 
@@ -160,36 +130,24 @@ defmodule Backplane.MCP.ToolAccessEvent do
 
   defp maybe_put_client(attrs, _client), do: attrs
 
-  defp build_record(
-         tool_name,
-         namespace,
-         arguments_hash,
-         observability,
-         tool_context,
-         event_id,
-         duration_ms,
-         meta,
-         outcome,
-         result,
-         error_reason
-       ) do
+  defp build_record(span, duration_ms, meta, outcome, result, error_reason) do
     outcome_string = outcome_string(outcome, result, error_reason)
 
     %{
-      event_id: event_id,
-      mcp_request_id: observability.mcp_request_id,
-      trace_id: tool_context.trace_id,
-      span_id: tool_context.span_id,
-      parent_span_id: tool_context.parent_span_id,
-      tool_name: tool_name,
-      tool_namespace: meta[:tool_namespace] || namespace,
+      event_id: span.event_id,
+      mcp_request_id: span.observability.mcp_request_id,
+      trace_id: span.tool_context.trace_id,
+      span_id: span.tool_context.span_id,
+      parent_span_id: span.tool_context.parent_span_id,
+      tool_name: span.tool_name,
+      tool_namespace: meta[:tool_namespace] || span.namespace,
       original_tool_name: meta[:original_tool_name],
       execution_kind: meta[:execution_kind],
       upstream_name: meta[:upstream_name],
       upstream_prefix: meta[:upstream_prefix],
       upstream_transport: meta[:upstream_transport],
       upstream_protocol_version: meta[:upstream_protocol_version],
-      arguments_hash: arguments_hash,
+      arguments_hash: span.arguments_hash,
       cache_status: meta[:cache_status],
       timeout_ms: meta[:timeout_ms],
       attempt_count: meta[:attempt_count] || 1,
@@ -288,9 +246,11 @@ defmodule Backplane.MCP.ToolAccessEvent do
 
       level = if outcome == :error, do: :error, else: :info
 
-      Logger.log(level, fn ->
-        "Tool call completed tool=#{tool_name} result=#{result_status} duration_ms=#{duration_ms}"
-      end,
+      Logger.log(
+        level,
+        fn ->
+          "Tool call completed tool=#{tool_name} result=#{result_status} duration_ms=#{duration_ms}"
+        end,
         tool: tool_name,
         result: result_status,
         duration_ms: duration_ms,
