@@ -55,6 +55,22 @@ defmodule Backplane.MemorySpacesTest do
                from(alias_row in LegacyAlias, where: alias_row.alias_value == ^alias_value)
              )
     end
+
+    test "rejects a unique host alias that points to a different active space" do
+      host_id = insert_host("alias-mismatch", "scope:a")
+      different_space = Repo.insert!(%MemorySpace{kind: "private", status: "active"})
+
+      Repo.insert!(%LegacyAlias{
+        alias_type: "host",
+        alias_value: "host:#{host_id}",
+        memory_space_id: different_space.id
+      })
+
+      assert {:error, :ambiguous_partition} =
+               MemorySpaces.provision_private_host(host_id, "scope:a")
+
+      refute Repo.get(MemorySpace, MemorySpaces.private_host_space_id(host_id))
+    end
   end
 
   describe "partition resolution" do

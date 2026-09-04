@@ -188,7 +188,7 @@ defmodule Backplane.MemorySpaces do
          ) do
       {:ok, %{num_rows: 1}} -> :ok
       {:ok, %{num_rows: 0}} -> {:error, :partition_not_ready}
-      {:error, _reason} -> {:error, :partition_not_ready}
+      {:error, reason} -> {:error, reason}
     end
   end
 

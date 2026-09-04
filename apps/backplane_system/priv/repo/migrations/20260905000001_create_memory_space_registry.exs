@@ -165,6 +165,7 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistry do
       )
     )
 
+    execute(legacy_host_lock_sql(prefix()))
     execute(space_backfill_sql(prefix()))
     execute(alias_backfill_sql(prefix()))
     execute(entitlement_backfill_sql(prefix()))
@@ -172,10 +173,21 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistry do
 
   @doc false
   def provision_existing_hosts(repo, migration_prefix) do
-    repo.query!(space_backfill_sql(migration_prefix))
-    repo.query!(alias_backfill_sql(migration_prefix))
-    repo.query!(entitlement_backfill_sql(migration_prefix))
+    {:ok, :ok} =
+      repo.transaction(fn ->
+        repo.query!(legacy_host_lock_sql(migration_prefix))
+        repo.query!(space_backfill_sql(migration_prefix))
+        repo.query!(alias_backfill_sql(migration_prefix))
+        repo.query!(entitlement_backfill_sql(migration_prefix))
+        :ok
+      end)
+
     :ok
+  end
+
+  @doc false
+  def legacy_host_lock_sql(migration_prefix) do
+    "LOCK TABLE #{qualified(migration_prefix, "skill_hosts")} IN SHARE ROW EXCLUSIVE MODE"
   end
 
   defp space_backfill_sql(migration_prefix) do

@@ -124,6 +124,31 @@ defmodule Backplane.Repo.Migrations.CreateMemorySpaceRegistryTest do
     run_migration(prefix)
   end
 
+  test "prefix-qualified host lock precedes every backfill statement", %{prefix: prefix} do
+    source = File.read!(@migration_path)
+
+    assert apply(Migration, :legacy_host_lock_sql, [prefix]) ==
+             ~s|LOCK TABLE "#{prefix}"."skill_hosts" IN SHARE ROW EXCLUSIVE MODE|
+
+    assert {lock_offset, _length} =
+             :binary.match(source, "execute(legacy_host_lock_sql(prefix()))")
+
+    assert {space_offset, _length} =
+             :binary.match(source, "execute(space_backfill_sql(prefix()))")
+
+    assert {alias_offset, _length} =
+             :binary.match(source, "execute(alias_backfill_sql(prefix()))")
+
+    assert {entitlement_offset, _length} =
+             :binary.match(source, "execute(entitlement_backfill_sql(prefix()))")
+
+    assert lock_offset < space_offset
+    assert lock_offset < alias_offset
+    assert lock_offset < entitlement_offset
+
+    run_migration(prefix)
+  end
+
   defp run_migration(prefix) do
     Ecto.Migration.Runner.run(
       Repo,
