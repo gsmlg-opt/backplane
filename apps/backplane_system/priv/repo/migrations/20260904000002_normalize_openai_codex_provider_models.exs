@@ -6,10 +6,14 @@ defmodule Backplane.Repo.Migrations.NormalizeOpenaiCodexProviderModels do
   @base_url "https://chatgpt.com/backend-api/codex"
 
   def up do
+    provider_apis = qualified("llm_provider_apis")
+    providers = qualified("llm_providers")
+    provider_models = qualified("llm_provider_models")
+
     execute("""
-    UPDATE llm_provider_apis AS api
+    UPDATE #{provider_apis} AS api
     SET base_url = '#{@base_url}'
-    FROM llm_providers AS provider
+    FROM #{providers} AS provider
     WHERE provider.id = api.provider_id
       AND provider.preset_key = 'openai-codex'
       AND api.api_surface = 'openai'
@@ -17,9 +21,9 @@ defmodule Backplane.Repo.Migrations.NormalizeOpenaiCodexProviderModels do
     """)
 
     execute("""
-    UPDATE llm_provider_models AS model
+    UPDATE #{provider_models} AS model
     SET metadata = model.metadata || '{"backplane_discovery_stale": true}'::jsonb
-    FROM llm_providers AS provider
+    FROM #{providers} AS provider
     WHERE provider.id = model.provider_id
       AND provider.preset_key = 'openai-codex'
       AND model.source = 'discovered'
@@ -35,4 +39,14 @@ defmodule Backplane.Repo.Migrations.NormalizeOpenaiCodexProviderModels do
   end
 
   def down, do: :ok
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", &quote_identifier/1)
+  end
+
+  defp quote_identifier(identifier) do
+    ~s("#{String.replace(identifier, "\"", "\"\"")}")
+  end
 end

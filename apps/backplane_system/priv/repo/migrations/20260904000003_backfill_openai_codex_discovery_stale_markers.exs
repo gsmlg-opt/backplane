@@ -4,10 +4,13 @@ defmodule Backplane.Repo.Migrations.BackfillOpenaiCodexDiscoveryStaleMarkers do
   use Ecto.Migration
 
   def up do
+    provider_models = qualified("llm_provider_models")
+    providers = qualified("llm_providers")
+
     execute("""
-    UPDATE llm_provider_models AS model
+    UPDATE #{provider_models} AS model
     SET metadata = model.metadata || '{"backplane_discovery_stale": true}'::jsonb
-    FROM llm_providers AS provider
+    FROM #{providers} AS provider
     WHERE provider.id = model.provider_id
       AND provider.preset_key = 'openai-codex'
       AND model.source = 'discovered'
@@ -23,4 +26,14 @@ defmodule Backplane.Repo.Migrations.BackfillOpenaiCodexDiscoveryStaleMarkers do
   end
 
   def down, do: :ok
+
+  defp qualified(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", &quote_identifier/1)
+  end
+
+  defp quote_identifier(identifier) do
+    ~s("#{String.replace(identifier, "\"", "\"\"")}")
+  end
 end
