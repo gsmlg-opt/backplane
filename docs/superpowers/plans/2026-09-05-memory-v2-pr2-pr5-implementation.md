@@ -50,7 +50,10 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   Final review regressions: migration 4/4 (NULL scope/namespace INSERT and UPDATE
   rejection across all 24 roots) and imports 4/4 (exact partition authorization).
   Changed-file formatting, warnings-as-errors compilation, and diff checks passed.
-- Task 4: in progress. Tasks 5–20 remain outstanding; PR2–PR5 is not complete.
+- Task 4: committed as `98636248` with notification-bound fix `1fbe5e9f`;
+  specification and quality reviews approved. Real PostgreSQL storage/capture
+  tests: 13/13; formatting, warnings-as-errors compilation, and diff checks passed.
+- Task 5: in progress. Tasks 6–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
