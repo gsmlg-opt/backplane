@@ -259,6 +259,31 @@ defmodule Backplane.Memory.EdgeSync.ChangeCaptureTest do
     assert changes(ctx) == []
   end
 
+  test "oversized optional wakeup cannot abort canonical and feed commits", ctx do
+    scope = String.duplicate("s", 9000)
+
+    Repo.query!(
+      ~s|INSERT INTO "#{ctx.prefix}".bpm_memory_space_entitlements (memory_space_id,host_id,scope,namespace,status,inserted_at,updated_at) VALUES ($1,$2,$3,'private','active',now(),now())|,
+      [Ecto.UUID.dump!(ctx.space), Ecto.UUID.dump!(ctx.host), scope]
+    )
+
+    listener =
+      start_supervised!(
+        {Postgrex.Notifications, Application.fetch_env!(:backplane_memory, :repo).config()}
+      )
+
+    {:ok, ref} = Postgrex.Notifications.listen(listener, "bpm_memory_edge_available")
+    id = insert(ctx, "long partition fact", scope)
+    assert [[1, "upsert", %{"canonical_id" => ^id}]] = changes(ctx, scope)
+
+    assert [[1]] =
+             Repo.query!(~s|SELECT count(*) FROM "#{ctx.prefix}".bpm_memories WHERE id=$1|, [
+               Ecto.UUID.dump!(id)
+             ]).rows
+
+    refute_receive {:notification, ^listener, ^ref, _, _}, 50
+  end
+
   defp insert(ctx, content, scope \\ "a") do
     id = Ecto.UUID.generate()
 

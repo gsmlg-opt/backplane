@@ -53,7 +53,7 @@ defmodule Backplane.Repo.Migrations.InstallMemoryEdgeChangeCapture do
     DECLARE
       old_payload jsonb; new_payload jsonb;
       old_eligible boolean := false; new_eligible boolean := false;
-      moved boolean := false; part record; rev bigint; body jsonb;
+      moved boolean := false; part record; rev bigint; body jsonb; hint text;
     BEGIN
       IF TG_OP <> 'INSERT' THEN
         old_payload := #{p}.bpm_memory_edge_payload(OLD);
@@ -117,9 +117,13 @@ defmodule Backplane.Repo.Migrations.InstallMemoryEdgeChangeCapture do
           (memory_space_id, scope, namespace, revision, op, memory_id, payload, payload_bytes)
           VALUES (part.memory_space_id, part.scope, part.namespace, rev, part.op, part.memory_id, body, octet_length(body::text));
         -- PostgreSQL delivers NOTIFY only if the containing transaction commits.
-        PERFORM pg_notify('bpm_memory_edge_available',
-          jsonb_build_object('memory_space_id', part.memory_space_id, 'scope', part.scope,
-            'namespace', part.namespace, 'current_revision', rev)::text);
+        hint := jsonb_build_object('memory_space_id', part.memory_space_id, 'scope', part.scope,
+          'namespace', part.namespace, 'current_revision', rev)::text;
+        -- Valid partition identifiers can exceed NOTIFY's payload ceiling.
+        -- Polling reads durable revisions, so an oversized hint is dispensable.
+        IF octet_length(hint) < 8000 THEN
+          PERFORM pg_notify('bpm_memory_edge_available', hint);
+        END IF;
       END LOOP;
       RETURN NULL;
     END
