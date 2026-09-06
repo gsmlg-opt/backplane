@@ -63,6 +63,44 @@ defmodule Backplane.Api.HostAgentChannelTest do
              subscribe_and_join(socket, "host_agent:00000000-0000-0000-0000-000000000000", %{})
   end
 
+  test "memory negotiation rejects malformed offers explicitly", %{host: host, socket: socket} do
+    for payload <- [
+          %{"memory_v2" => 42},
+          %{"memory" => %{"protocol" => "host_memory.v1", "scopes" => "bad"}},
+          %{"memory" => %{"protocol" => "host_memory.v1", "scopes" => [%{"scope" => 42}]}}
+        ] do
+      assert {:error, %{"code" => "invalid_request", "retryable" => false}} =
+               subscribe_and_join(socket, "host_agent:#{host.id}", payload)
+    end
+  end
+
+  test "v2 disabled can select an offered v1 protocol but never downgrades a pinned v2 offer", %{
+    host: host,
+    socket: socket
+  } do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", false})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+
+    offer = %{
+      "memory" => %{"protocol" => "host_memory.v1", "scopes" => []},
+      "memory_v2" => %{"offers" => ["host_memory.v2"], "partitions" => []}
+    }
+
+    assert {:error, %{"code" => "protocol_disabled"}} =
+             subscribe_and_join(
+               socket,
+               "host_agent:#{host.id}",
+               Map.put(offer, "selected", "host_memory.v2")
+             )
+
+    assert {:ok, %{"selected" => "host_memory.v1"}, socket} =
+             subscribe_and_join(socket, "host_agent:#{host.id}", offer)
+
+    ref = push(socket, "memory_next", %{})
+    assert_reply(ref, :error, %{"code" => "unsupported_protocol"})
+  end
+
   test "real channel capture keeps the host partition across assigned token rotation", %{
     host: host,
     auth_token: token_a_record,
@@ -1231,7 +1269,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       refute_received {:host_memory_sync, {:apply_sync_item, _, _}}
     end
 
-    test "facts and wipe acks are accepted", %{host: host, socket: socket} do
+    test "unissued facts and wipe acks fail closed", %{host: host, socket: socket} do
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
       facts_ref =
@@ -1247,8 +1285,8 @@ defmodule Backplane.Api.HostAgentChannelTest do
           "items" => [%{"content_hash" => "hash_wipe", "status" => "ok"}]
         })
 
-      assert_reply(facts_ref, :ok, %{"ok" => true})
-      assert_reply(wipe_ref, :ok, %{"ok" => true})
+      assert_reply(facts_ref, :error, %{"code" => "unsupported_protocol"})
+      assert_reply(wipe_ref, :error, %{"code" => "unsupported_protocol"})
     end
 
     test "memory_sync rejects malformed payloads", %{host: host, socket: socket} do

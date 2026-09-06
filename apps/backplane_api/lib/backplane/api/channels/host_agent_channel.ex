@@ -6,6 +6,8 @@ defmodule Backplane.Api.HostAgentChannel do
   alias Backplane.AgentTraces
   alias Backplane.Clients
   alias Backplane.MemorySpaces
+  alias Backplane.Memory.{Config, EdgeSync}
+  alias Backplane.Api.HostAgentMemorySync
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, Hosts, SyncStatuses}
@@ -23,6 +25,7 @@ defmodule Backplane.Api.HostAgentChannel do
   def join("host_agent:" <> host_id, payload, socket) do
     with true <- socket.assigns.host.id == host_id,
          {:ok, partition} <- MemorySpaces.resolve_host_partition(host_id, nil, "private"),
+         {:ok, negotiation} <- negotiate_memory(host_id, payload),
          metadata = Map.get(socket.assigns, :connection_metadata, %{}),
          :ok <-
            AgentManage.register_connection(
@@ -32,6 +35,10 @@ defmodule Backplane.Api.HostAgentChannel do
              metadata
            ) do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
+
+      if negotiation.selected == "host_memory.v2",
+        do: Backplane.Memory.EdgeSync.Notifier.subscribe()
+
       send(self(), {:memory_reconcile, payload})
 
       partition =
@@ -41,21 +48,70 @@ defmodule Backplane.Api.HostAgentChannel do
           source_client_id: host_id
         })
 
-      socket = assign(socket, :memory_partition, partition)
+      socket =
+        socket
+        |> assign(:memory_partition, partition)
+        |> assign(:memory_protocol, negotiation.selected)
+        |> assign(:memory_limits, Map.get(negotiation, :limits, %{}))
 
-      {:ok,
-       %{
-         "memory_partition" => %{
-           "memory_space_id" => partition.memory_space_id,
-           "scope" => partition.scope,
-           "namespace" => partition.namespace
-         }
-       }, socket}
+      reply =
+        if negotiation.selected == "host_memory.v2" do
+          json_shape(negotiation)
+        else
+          Map.merge(json_shape(negotiation), %{
+            "memory_partition" => %{
+              "memory_space_id" => partition.memory_space_id,
+              "scope" => partition.scope,
+              "namespace" => partition.namespace
+            }
+          })
+        end
+
+      {:ok, reply, socket}
     else
       false -> {:error, %{reason: "unauthorized"}}
       {:error, :not_started} -> {:error, %{reason: "registry_unavailable"}}
+      {:error, %{code: _} = error} -> {:error, json_shape(error)}
       {:error, reason} -> {:error, %{reason: format_memory_error(reason)}}
     end
+  end
+
+  defp negotiate_memory(host_id, payload) when is_map(payload) do
+    cond do
+      not Map.has_key?(payload, "memory") and not Map.has_key?(payload, "memory_v2") and
+          not Map.has_key?(payload, "selected") ->
+        {:ok, %{selected: nil}}
+
+      not authorized?("host_agent.recall", host_agent_scopes()) ->
+        {:error, %{code: :unauthorized, retryable: false}}
+
+      not valid_memory_offer?(payload) ->
+        {:error, %{code: :invalid_request, retryable: false}}
+
+      true ->
+        EdgeSync.negotiate(host_id, payload)
+    end
+  end
+
+  defp negotiate_memory(_, _), do: {:error, %{code: :invalid_request, retryable: false}}
+
+  defp valid_memory_offer?(payload) do
+    scopes =
+      case payload["memory"] do
+        memory when is_map(memory) -> Map.get(memory, "scopes", [])
+        nil -> []
+        _ -> :invalid
+      end
+
+    is_list(scopes) and length(scopes) <= 1000 and
+      Enum.all?(scopes, fn
+        %{"scope" => scope} = entry ->
+          is_binary(scope) and byte_size(scope) > 0 and
+            (is_nil(entry["fact_set_hash"]) or is_binary(entry["fact_set_hash"]))
+
+        _ ->
+          false
+      end) and validate_encoded_payload(payload, @max_memory_sync_payload_bytes) == :ok
   end
 
   @impl true
@@ -288,23 +344,17 @@ defmodule Backplane.Api.HostAgentChannel do
     invalid_payload(socket)
   end
 
-  def handle_in("memory_facts_ack", payload, socket) when is_map(payload) do
-    {:reply, {:ok, %{"ok" => true}}, socket}
-  end
-
-  def handle_in("memory_facts_ack", _payload, socket) do
-    invalid_payload(socket)
-  end
-
-  def handle_in("memory_wipe_ack", payload, socket) when is_map(payload) do
-    {:reply, {:ok, %{"ok" => true}}, socket}
-  end
-
-  def handle_in("memory_wipe_ack", _payload, socket) do
-    invalid_payload(socket)
-  end
+  def handle_in("memory_next", payload, socket), do: edge_request(:next, payload, socket)
+  def handle_in("memory_ack", payload, socket), do: edge_request(:ack, payload, socket)
+  def handle_in("memory_facts_ack", payload, socket), do: compat_ack("facts", payload, socket)
+  def handle_in("memory_wipe_ack", payload, socket), do: compat_ack("wipe", payload, socket)
 
   @impl true
+  def handle_info({:memory_available, hint}, socket) do
+    if valid_memory_hint?(hint, socket), do: push(socket, "memory_available", hint)
+    {:noreply, socket}
+  end
+
   def handle_info({:memory_reconcile, payload}, socket) do
     safe_push_memory_reconcile(payload, socket)
     {:noreply, socket}
@@ -323,6 +373,26 @@ defmodule Backplane.Api.HostAgentChannel do
   def handle_info(:disconnect, socket) do
     {:stop, :normal, socket}
   end
+
+  defp valid_memory_hint?(hint, socket) when is_map(hint) do
+    with :ok <- selected_memory_protocol(socket, "host_memory.v2"),
+         true <- Config.host_sync_v2_enabled?(),
+         true <-
+           Enum.sort(Map.keys(hint)) == ~w(current_revision memory_space_id namespace scope),
+         true <- is_integer(hint["current_revision"]) and hint["current_revision"] >= 0,
+         :ok <- validate_encoded_payload(hint, 8000),
+         {:ok, inventory} <-
+           EdgeSync.safe(fn -> MemorySpaces.host_entitlements(socket.assigns.host.id) end) do
+      Enum.any?(inventory, fn p ->
+        p.memory_space_id == hint["memory_space_id"] and p.scope == hint["scope"] and
+          p.namespace == hint["namespace"]
+      end)
+    else
+      _ -> false
+    end
+  end
+
+  defp valid_memory_hint?(_, _), do: false
 
   defp dispatch_memory(method, args, host, partition, scopes) do
     service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
@@ -391,7 +461,8 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp push_memory_reconcile(payload, socket) do
-    if authorized?("host_agent.recall", host_agent_scopes()) do
+    if socket.assigns.memory_protocol == "host_memory.v1" and Config.host_sync_v1_enabled?() and
+         authorized?("host_agent.recall", host_agent_scopes()) do
       do_push_memory_reconcile(payload, socket)
     else
       :ok
@@ -408,7 +479,10 @@ defmodule Backplane.Api.HostAgentChannel do
     |> Enum.each(fn %{"scope" => scope, "fact_set_hash" => fact_set_hash} ->
       case adapter.facts_for_scope(socket.assigns.host, scope, fact_set_hash) do
         {:full, facts} ->
-          push(socket, "memory_facts", %{"scope" => scope, "full" => true, "facts" => facts})
+          push_compat(socket, "facts", %{"scope" => scope, "full" => true, "facts" => facts})
+
+        {:error, code} ->
+          push_memory_error(socket, code)
 
         :unchanged ->
           :ok
@@ -422,13 +496,102 @@ defmodule Backplane.Api.HostAgentChannel do
           :ok
 
         wipes when is_list(wipes) ->
-          push(socket, "memory_wipe", wipe_payload(wipes))
+          Enum.each(wipes, fn wipe ->
+            push_compat(socket, "wipe", wipe_payload([wipe]) |> Map.put("scope", scope))
+          end)
+
+        {:error, code} ->
+          push_memory_error(socket, code)
 
         _other ->
           :ok
       end
     end)
   end
+
+  defp push_compat(socket, kind, payload) do
+    case HostAgentMemorySync.issue_receipt(socket.assigns.host, kind, payload) do
+      {:ok, issued} ->
+        push(socket, if(kind == "facts", do: "memory_facts", else: "memory_wipe"), issued)
+
+      {:error, code} ->
+        push_memory_error(socket, code)
+    end
+  end
+
+  defp push_memory_error(socket, code),
+    do:
+      push(
+        socket,
+        "memory_error",
+        json_shape(%{
+          code: code,
+          retryable:
+            code in [:storage_unavailable, :transaction_conflict, :snapshot_build_unavailable]
+        })
+      )
+
+  defp edge_request(operation, payload, socket) do
+    result =
+      with :ok <- selected_memory_protocol(socket, "host_memory.v2") do
+        apply(EdgeSync, operation, [
+          socket.assigns.host.id,
+          bound_edge_request(operation, payload, socket.assigns.memory_limits)
+        ])
+      end
+
+    memory_reply(result, socket)
+  end
+
+  defp bound_edge_request(:next, payload, limits) when is_map(payload) do
+    Enum.reduce(limits, payload, fn {key, maximum}, request ->
+      key = to_string(key)
+
+      case Map.fetch(request, key) do
+        :error ->
+          Map.put(request, key, maximum)
+
+        {:ok, requested} when is_integer(requested) and requested > 0 ->
+          Map.put(request, key, min(requested, maximum))
+
+        _ ->
+          request
+      end
+    end)
+  end
+
+  defp bound_edge_request(_, payload, _), do: payload
+
+  defp compat_ack(kind, payload, socket) do
+    result =
+      with :ok <- selected_memory_protocol(socket, "host_memory.v1"),
+           true <- Config.host_sync_v1_enabled?() do
+        EdgeSync.safe(fn ->
+          HostAgentMemorySync.ack_receipt(socket.assigns.host, kind, payload)
+        end)
+      else
+        false -> {:error, %{code: :protocol_disabled, retryable: false}}
+        error -> error
+      end
+
+    memory_reply(result, socket)
+  end
+
+  defp selected_memory_protocol(socket, protocol) do
+    cond do
+      not authorized?("host_agent.recall", host_agent_scopes()) ->
+        {:error, %{code: :unauthorized, retryable: false}}
+
+      socket.assigns.memory_protocol != protocol ->
+        {:error, %{code: :unsupported_protocol, retryable: false}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp memory_reply({:ok, result}, socket), do: {:reply, {:ok, json_shape(result)}, socket}
+  defp memory_reply({:error, error}, socket), do: {:reply, {:error, json_shape(error)}, socket}
 
   defp host_agent_scopes do
     Application.get_env(:backplane_api, :host_agent_scopes, @default_host_agent_scopes)
@@ -446,7 +609,7 @@ defmodule Backplane.Api.HostAgentChannel do
         failure: inspect(error.__struct__)
       )
 
-      :ok
+      push_memory_error(socket, :storage_unavailable)
   catch
     kind, _reason ->
       Logger.warning("Host-agent memory reconcile failed",
@@ -454,7 +617,7 @@ defmodule Backplane.Api.HostAgentChannel do
         failure: Atom.to_string(kind)
       )
 
-      :ok
+      push_memory_error(socket, :storage_unavailable)
   end
 
   defp announced_memory_scopes(%{

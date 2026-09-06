@@ -17,6 +17,107 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     :ok
   end
 
+  test "compat receipts bind issued content, host and kind and never advance v2" do
+    host = create_host!("receipts", "scope:receipts")
+    other = create_host!("foreign-receipts", "scope:receipts")
+    payload = %{"scope" => host.memory_scope, "full" => true, "facts" => []}
+    assert {:ok, issued} = HostAgentMemorySync.issue_receipt(host, "facts", payload)
+    assert issued["receipt_key"] =~ "facts:"
+    receipt = Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt)
+    assert is_nil(receipt.acknowledged_at)
+
+    ack =
+      Map.take(issued, ["receipt_key", "payload_hash", "scope"]) |> Map.put("status", "applied")
+
+    assert {:error, :batch_not_found} = HostAgentMemorySync.ack_receipt(other, "facts", ack)
+    assert {:error, :batch_not_found} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+
+    assert {:error, :invalid_ack} =
+             HostAgentMemorySync.ack_receipt(host, "facts", Map.put(ack, "status", "failed"))
+
+    assert {:error, :batch_conflict} =
+             HostAgentMemorySync.ack_receipt(
+               host,
+               "facts",
+               Map.put(ack, "payload_hash", String.duplicate("0", 64))
+             )
+
+    assert {:ok, %{status: :acknowledged}} = HostAgentMemorySync.ack_receipt(host, "facts", ack)
+    assert {:ok, %{status: :duplicate}} = HostAgentMemorySync.ack_receipt(host, "facts", ack)
+    assert Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt).acknowledged_at
+    assert Repo.aggregate(Backplane.Memory.EdgeSync.Cursor, :count) == 0
+  end
+
+  test "compat facts and wipes fail explicitly for invalid authority and oversized results" do
+    host = create_host!("bounds", "scope:bounds")
+    assert {:error, :unauthorized} = HostAgentMemorySync.facts_for_scope(host, "foreign", nil)
+    assert {:error, :unauthorized} = HostAgentMemorySync.active_wipes(host, "foreign")
+
+    insert_memory!(host, host.memory_scope, String.duplicate("x", 524_288),
+      memory_type: "semantic"
+    )
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+  end
+
+  test "compat queries bound fact and wipe counts without returning partial replacements" do
+    host = create_host!("counts", "scope:counts")
+    for n <- 1..101, do: insert_memory!(host, host.memory_scope, "fact #{n}", [])
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+
+    from(m in MemorySchema, where: m.host_id == ^host.id)
+    |> Repo.update_all(set: [deleted_at: DateTime.utc_now(), lifecycle_state: "tombstoned"])
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.active_wipes(host, host.memory_scope)
+  end
+
+  test "compat facts use canonical ownership and active or disputed lifecycle" do
+    host = create_host!("canonical", "scope:canonical")
+    owned = insert_memory!(host, host.memory_scope, "canonical shared provenance", [])
+
+    owned
+    |> Ecto.Changeset.change(client_id: "some-other-provenance", lifecycle_state: "disputed")
+    |> Repo.update!()
+
+    hidden = insert_memory!(host, host.memory_scope, "archived", [])
+    hidden |> Ecto.Changeset.change(lifecycle_state: "archived") |> Repo.update!()
+
+    assert {:full, [%{"id" => id}]} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+
+    assert id == owned.id
+  end
+
+  test "stable wipe receipt cannot be reissued with conflicting content" do
+    host = create_host!("wipe-receipt", "scope:wipe-receipt")
+
+    payload = %{
+      "scope" => host.memory_scope,
+      "directive_id" => "deleted:stable",
+      "items" => [%{"remote_id" => "one"}]
+    }
+
+    assert {:ok, issued} = HostAgentMemorySync.issue_receipt(host, "wipe", payload)
+    assert {:ok, ^issued} = HostAgentMemorySync.issue_receipt(host, "wipe", payload)
+
+    assert {:error, :batch_conflict} =
+             HostAgentMemorySync.issue_receipt(host, "wipe", Map.put(payload, "items", []))
+
+    ack =
+      Map.take(issued, ["receipt_key", "payload_hash", "scope"]) |> Map.put("status", "applied")
+
+    assert {:ok, %{status: :acknowledged}} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+
+    assert {:error, :invalid_ack} =
+             HostAgentMemorySync.ack_receipt(host, "wipe", Map.put(ack, "unbound", "extra"))
+
+    assert {:ok, %{status: :duplicate}} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+  end
+
   test "revocation schema includes canonical ownership and provenance fields" do
     required_fields = [:memory_space_id, :host_id, :source_client_id, :scope, :namespace]
 
