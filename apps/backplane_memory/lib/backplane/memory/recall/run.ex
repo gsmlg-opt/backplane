@@ -7,8 +7,10 @@ defmodule Backplane.Memory.Recall.Run do
   @primary_key {:id, :binary_id, autogenerate: true}
   @type t :: %__MODULE__{}
   schema "memory_recall_runs" do
+    field(:memory_space_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:request_id, :string)
@@ -38,7 +40,7 @@ defmodule Backplane.Memory.Recall.Run do
     timestamps(type: :utc_datetime_usec)
   end
 
-  @required ~w(host_id client_id scope namespace request_id correlation_id query_hash query_plan filters channel_weights channel_availability channel_errors token_budget status expires_at)a
+  @required ~w(memory_space_id host_id client_id scope namespace request_id correlation_id query_hash query_plan filters channel_weights channel_availability channel_errors token_budget status expires_at)a
   def changeset(run, attrs) do
     run
     |> cast(attrs, __schema__(:fields) -- [:id, :inserted_at, :updated_at])

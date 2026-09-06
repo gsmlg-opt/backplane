@@ -57,7 +57,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
     test "expansion skips when LLM returns {:skip, :no_llm}" do
       # MockLLMNoLLM.expand_query returns {:skip, :no_llm}
       # hybrid_recall should still work with just the original query
-      base = [agent_id: "a", host_id: "h"]
+      base = canonical_memory_opts("h", agent_id: "a")
       _m = insert_with_embedding("elixir programming", vec(%{0 => 1.0}), base)
 
       {:ok, results} =
@@ -74,7 +74,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
     test "expansion deduplicates results when expanded queries match same memory" do
       # MockLLMExpand returns [original, "original alternative"]
       # Both queries may hit the same memory; it should appear only once
-      base = [agent_id: "a", host_id: "h"]
+      base = canonical_memory_opts("h", agent_id: "a")
       mem = insert_with_embedding("elixir programming language", vec(%{0 => 1.0}), base)
 
       {:ok, results} =
@@ -93,7 +93,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
   describe "reranker" do
     test "reranker skips when memory.reranker_enabled is not 'true'" do
       # Default: reranker_enabled not set → candidates returned as-is (not reversed)
-      base = [agent_id: "b", host_id: "h"]
+      base = canonical_memory_opts("h", agent_id: "b")
       m1 = insert_with_embedding("first memory", vec(%{0 => 1.0}), base)
       m2 = insert_with_embedding("second memory", vec(%{0 => 0.9, 1 => 0.1}), base)
 
@@ -115,7 +115,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
     test "reranker reorders when memory.reranker_enabled is 'true'" do
       # MockLLMExpand.rerank/2 reverses the list
       # With reranker enabled, results should come back in reversed order
-      base = [agent_id: "c", host_id: "h"]
+      base = canonical_memory_opts("h", agent_id: "c")
       m1 = insert_with_embedding("aardvark biology", vec(%{0 => 1.0}), base)
       m2 = insert_with_embedding("zebra biology", vec(%{0 => 0.5, 1 => 0.5}), base)
 
@@ -147,7 +147,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
     end
 
     test "real proxy errors and malformed responses preserve exact hybrid results" do
-      base = [agent_id: "real-rerank", host_id: "h"]
+      base = canonical_memory_opts("h", agent_id: "real-rerank")
       _first = insert_with_embedding("alpha fallback", vec(%{0 => 1.0}), base)
       _second = insert_with_embedding("beta fallback", vec(%{0 => 0.8, 1 => 0.2}), base)
 

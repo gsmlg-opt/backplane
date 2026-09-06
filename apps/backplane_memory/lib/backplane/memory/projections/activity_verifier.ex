@@ -51,7 +51,8 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
 
     """
     WITH expected AS (
-      SELECT (event.occurred_at AT TIME ZONE 'UTC')::date AS date,
+      SELECT event.memory_space_id,
+             (event.occurred_at AT TIME ZONE 'UTC')::date AS date,
              COALESCE(event.project, '') AS project,
              COALESCE(event.agent_id, '') AS agent_id,
              event.host_id,
@@ -83,16 +84,19 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
         AND event.namespace = $3
         AND event.occurred_at >= $4::date
         AND event.occurred_at < ($5::date + INTERVAL '1 day')
-      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        AND event.memory_space_id::text = $7
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
     ), actual AS (
-      SELECT date, project, agent_id, host_id, client_id, scope, namespace, event_type,
+      SELECT memory_space_id, date, project, agent_id, host_id, client_id, scope, namespace, event_type,
              #{counters}
       FROM memory_activity_daily
       WHERE client_id = $1 AND scope = $2 AND namespace = $3
         AND ($6::text IS NULL OR host_id = $6)
         AND date >= $4::date AND date <= $5::date
+        AND memory_space_id::text = $7
     ), drift AS (
-      SELECT COALESCE(expected.date, actual.date) AS date,
+      SELECT COALESCE(expected.memory_space_id, actual.memory_space_id)::text AS memory_space_id,
+             COALESCE(expected.date, actual.date) AS date,
              COALESCE(expected.project, actual.project) AS project,
              COALESCE(expected.agent_id, actual.agent_id) AS agent_id,
              COALESCE(expected.host_id, actual.host_id) AS host_id,
@@ -103,7 +107,7 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
              #{Enum.map_join(@counter_names, ", ", &"expected.#{&1} AS expected_#{&1}")},
              #{Enum.map_join(@counter_names, ", ", &"actual.#{&1} AS actual_#{&1}")}
       FROM expected
-      FULL OUTER JOIN actual USING (date, project, agent_id, host_id, client_id, scope, namespace, event_type)
+      FULL OUTER JOIN actual USING (memory_space_id, date, project, agent_id, host_id, client_id, scope, namespace, event_type)
       WHERE #{differences}
     )
     SELECT count(*) OVER()::bigint AS drift_count, drift.*
@@ -115,6 +119,7 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
 
   defp drift_row([
          _count,
+         memory_space_id,
          date,
          project,
          agent_id,
@@ -128,6 +133,7 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
     {expected, actual} = Enum.split(counters, length(@counter_names))
 
     %{
+      memory_space_id: memory_space_id,
       date: date,
       project: project,
       agent_id: agent_id,
@@ -191,6 +197,8 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
           "activity.repair",
           "system",
           %{
+            "memory_space_id" => opts.memory_space_id,
+            "host_id" => opts.host_id,
             "client_id" => opts.client_id,
             "scope" => opts.scope,
             "namespace" => opts.namespace
@@ -209,7 +217,8 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
   defp delete_orphan_contributions_sql do
     """
     DELETE FROM memory_activity_subject_contributions AS contribution
-    WHERE contribution.client_id = $1
+    WHERE contribution.memory_space_id::text = $7
+      AND contribution.client_id = $1
       AND contribution.scope = $2
       AND contribution.namespace = $3
       AND ($6::text IS NULL OR contribution.host_id = $6)
@@ -219,10 +228,13 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
         SELECT 1
         FROM bpm_projected_sessions AS session
         JOIN bpm_events AS event
-          ON event.host_id = session.host_id
+          ON event.memory_space_id = session.memory_space_id
+         AND event.host_id = session.host_id
          AND event.session_id = session.session_id
         WHERE session.subject_id = contribution.subject_id
+          AND session.memory_space_id = contribution.memory_space_id
           AND event.schema_version IS NOT NULL
+          AND event.memory_space_id = contribution.memory_space_id
           AND (event.occurred_at AT TIME ZONE 'UTC')::date = contribution.date
           AND COALESCE(event.project, '') = contribution.project
           AND COALESCE(event.agent_id, '') = contribution.agent_id
@@ -250,14 +262,15 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
                     OR event.payload->'source'->>'is_error' = 'true'
                )::bigint = contribution.error_count
       )
-    RETURNING date, project, agent_id, host_id, client_id, scope, namespace, event_type
+    RETURNING memory_space_id::text, date, project, agent_id, host_id, client_id, scope, namespace, event_type
     """
   end
 
   defp delete_orphan_daily_sql do
     """
     DELETE FROM memory_activity_daily AS daily
-    WHERE daily.client_id = $1
+    WHERE daily.memory_space_id::text = $7
+      AND daily.client_id = $1
       AND daily.scope = $2
       AND daily.namespace = $3
       AND ($6::text IS NULL OR daily.host_id = $6)
@@ -266,7 +279,8 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
       AND NOT EXISTS (
         SELECT 1
         FROM memory_activity_subject_contributions AS contribution
-        WHERE contribution.date = daily.date
+        WHERE contribution.memory_space_id = daily.memory_space_id
+          AND contribution.date = daily.date
           AND contribution.project = daily.project
           AND contribution.agent_id = daily.agent_id
           AND contribution.host_id = daily.host_id
@@ -283,14 +297,15 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
     SELECT event.host_id, event.session_id
     FROM bpm_events AS event
     WHERE event.schema_version IS NOT NULL
+      AND event.memory_space_id::text = $7
       AND event.client_id = $1
       AND event.scope = $2
       AND event.namespace = $3
       AND ($6::text IS NULL OR event.host_id = $6)
       AND event.occurred_at >= $4::date
       AND event.occurred_at < ($5::date + INTERVAL '1 day')
-      AND ($7::text IS NULL OR event.host_id > $7
-           OR (event.host_id = $7 AND event.session_id > $8))
+      AND ($8::text IS NULL OR event.host_id > $8
+           OR (event.host_id = $8 AND event.session_id > $9))
     GROUP BY event.host_id, event.session_id
     ORDER BY event.host_id, event.session_id
     LIMIT #{@repair_page_size}
@@ -298,12 +313,13 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
   end
 
   defp options(opts) do
-    allowed = [:host_id, :client_id, :scope, :namespace, :date_from, :date_to]
+    allowed = [:memory_space_id, :host_id, :client_id, :scope, :namespace, :date_from, :date_to]
     today = Date.utc_today()
     window = Config.activity_retention_days()
 
     if Keyword.keyword?(opts) and Enum.all?(Keyword.keys(opts), &(&1 in allowed)) do
-      with {:ok, host_id} <- optional_identifier(Keyword.get(opts, :host_id)),
+      with {:ok, memory_space_id} <- memory_space_id(Keyword.get(opts, :memory_space_id)),
+           {:ok, host_id} <- optional_identifier(Keyword.get(opts, :host_id)),
            {:ok, client_id} <- identifier(Keyword.get(opts, :client_id)),
            {:ok, scope} <- identifier(Keyword.get(opts, :scope)),
            {:ok, namespace} <- identifier(Keyword.get(opts, :namespace)),
@@ -313,6 +329,7 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
            true <- Date.diff(date_to, date_from) < window do
         {:ok,
          %{
+           memory_space_id: memory_space_id,
            host_id: host_id,
            client_id: client_id,
            scope: scope,
@@ -335,6 +352,15 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
   defp identifier(_value), do: {:error, :invalid_identifier}
   defp optional_identifier(nil), do: {:ok, nil}
   defp optional_identifier(value), do: identifier(value)
+
+  defp memory_space_id(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, id} -> {:ok, id}
+      :error -> {:error, :invalid_memory_space_id}
+    end
+  end
+
+  defp memory_space_id(_value), do: {:error, :invalid_memory_space_id}
   defp date(%Date{} = date), do: {:ok, date}
 
   defp date(value) when is_binary(value) do
@@ -347,7 +373,15 @@ defmodule Backplane.Memory.Projections.ActivityVerifier do
   defp date(_value), do: {:error, :invalid_date}
 
   defp verification_params(opts),
-    do: [opts.client_id, opts.scope, opts.namespace, opts.date_from, opts.date_to, opts.host_id]
+    do: [
+      opts.client_id,
+      opts.scope,
+      opts.namespace,
+      opts.date_from,
+      opts.date_to,
+      opts.host_id,
+      opts.memory_space_id
+    ]
 
   defp repair_params(opts, nil), do: verification_params(opts) ++ [nil, nil]
 

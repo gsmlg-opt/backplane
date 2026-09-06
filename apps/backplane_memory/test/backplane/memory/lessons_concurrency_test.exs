@@ -109,8 +109,10 @@ defmodule Backplane.Memory.LessonsConcurrencyTest do
     unboxed(fn ->
       repo().insert!(%ProjectedSession{
         subject_id: "session:#{partition.host_id}:#{source_session_id}",
+        memory_space_id: partition.memory_space_id,
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         session_id: source_session_id,
@@ -310,8 +312,10 @@ defmodule Backplane.Memory.LessonsConcurrencyTest do
     unboxed(fn ->
       repo().insert!(%ProjectedSession{
         subject_id: "session:#{partition.host_id}:#{session_id}",
+        memory_space_id: partition.memory_space_id,
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         session_id: session_id,
@@ -326,9 +330,16 @@ defmodule Backplane.Memory.LessonsConcurrencyTest do
   end
 
   defp partition(suffix) do
+    host_id = "lesson-concurrency-#{suffix}"
+
+    memory_space_id =
+      unboxed(fn -> Backplane.Memory.IngestFixtures.ensure_memory_space!(host_id) end)
+
     %{
-      host_id: "lesson-concurrency-#{suffix}",
-      client_id: "host:lesson-concurrency-#{suffix}",
+      memory_space_id: memory_space_id,
+      host_id: host_id,
+      client_id: "host:#{host_id}",
+      source_client_id: "host:#{host_id}",
       scope: "personal",
       namespace: "private"
     }
@@ -356,7 +367,7 @@ defmodule Backplane.Memory.LessonsConcurrencyTest do
         ids =
           repo().all(
             from(m in Memory,
-              where: m.host_id == ^partition.host_id and m.client_id == ^partition.client_id,
+              where: m.memory_space_id == ^partition.memory_space_id,
               select: m.id
             )
           )
@@ -375,7 +386,7 @@ defmodule Backplane.Memory.LessonsConcurrencyTest do
 
           repo().delete_all(
             from(s in ProjectedSession,
-              where: s.host_id == ^partition.host_id and s.client_id == ^partition.client_id
+              where: s.memory_space_id == ^partition.memory_space_id
             )
           )
         after

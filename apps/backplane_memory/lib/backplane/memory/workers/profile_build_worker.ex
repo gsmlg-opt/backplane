@@ -9,6 +9,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Summaries.Summary
+  alias Backplane.Memory.PartitionIdentity
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -20,6 +21,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
           args:
             %{
               "project" => project,
+              "memory_space_id" => _memory_space_id,
               "host_id" => _host_id,
               "client_id" => _client_id,
               "scope" => _scope,
@@ -28,21 +30,26 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         } = job
       ) do
     Backplane.Memory.PipelineTelemetry.span("profile", job.args, fn ->
-      perform_partition(project, partition, job.args["force"] == true)
+      case generator_partition(partition) do
+        {:ok, partition} -> perform_partition(project, partition, job.args["force"] == true)
+        {:error, _reason} -> {:discard, :incomplete_partition}
+      end
     end)
   end
 
   def perform(%Oban.Job{}), do: {:discard, :ambiguous_partition}
 
   defp perform_partition(project, partition, force?) do
-    host_id = partition["host_id"]
-    client_id = partition["client_id"]
-    scope = partition["scope"]
-    namespace = partition["namespace"]
+    host_id = partition.host_id
+    memory_space_id = partition.memory_space_id
+    client_id = partition.client_id
+    scope = partition.scope
+    namespace = partition.namespace
 
     existing =
       repo().get_by(Profile,
         project: project,
+        memory_space_id: memory_space_id,
         host_id: host_id,
         client_id: client_id,
         scope: scope,
@@ -64,16 +71,20 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   end
 
   def enqueue(project, partition, opts) when is_list(opts) do
-    %{
-      project: project,
-      host_id: Map.fetch!(partition, :host_id),
-      client_id: Map.fetch!(partition, :client_id),
-      scope: Map.fetch!(partition, :scope),
-      namespace: Map.fetch!(partition, :namespace),
-      force: Keyword.get(opts, :force, false)
-    }
-    |> new()
-    |> Oban.insert()
+    with {:ok, partition} <- generator_partition(partition) do
+      %{
+        project: project,
+        memory_space_id: Map.fetch!(partition, :memory_space_id),
+        host_id: Map.fetch!(partition, :host_id),
+        client_id: Map.fetch!(partition, :client_id),
+        source_client_id: Map.get(partition, :source_client_id),
+        scope: Map.fetch!(partition, :scope),
+        namespace: Map.fetch!(partition, :namespace),
+        force: Keyword.get(opts, :force, false)
+      }
+      |> new()
+      |> Oban.insert()
+    end
   end
 
   defp fresh?(nil), do: false
@@ -83,16 +94,18 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   end
 
   defp build_and_upsert(project, partition) do
-    host_id = partition["host_id"]
-    client_id = partition["client_id"]
-    scope = partition["scope"]
-    namespace = partition["namespace"]
+    host_id = partition.host_id
+    memory_space_id = partition.memory_space_id
+    client_id = partition.client_id
+    scope = partition.scope
+    namespace = partition.namespace
 
     recent_session_ids =
       repo().all(
         from(m in Memory,
           where:
-            m.scope == ^scope and m.host_id == ^host_id and m.client_id == ^client_id and
+            m.memory_space_id == ^memory_space_id and m.scope == ^scope and
+              m.host_id == ^host_id and m.client_id == ^client_id and
               m.namespace == ^namespace and fragment("?->>'project'", m.metadata) == ^project and
               is_nil(m.deleted_at) and not is_nil(m.session_id),
           distinct: m.session_id,
@@ -109,7 +122,8 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         repo().all(
           from(m in Memory,
             where:
-              m.session_id in ^recent_session_ids and m.host_id == ^host_id and
+              m.session_id in ^recent_session_ids and m.memory_space_id == ^memory_space_id and
+                m.host_id == ^host_id and
                 m.client_id == ^client_id and m.scope == ^scope and
                 m.namespace == ^namespace and fragment("?->>'project'", m.metadata) == ^project and
                 is_nil(m.deleted_at),
@@ -128,7 +142,8 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
       repo().aggregate(
         from(m in Memory,
           where:
-            m.scope == ^scope and m.host_id == ^host_id and m.client_id == ^client_id and
+            m.memory_space_id == ^memory_space_id and m.scope == ^scope and
+              m.host_id == ^host_id and m.client_id == ^client_id and
               m.namespace == ^namespace and fragment("?->>'project'", m.metadata) == ^project and
               is_nil(m.deleted_at)
         ),
@@ -147,8 +162,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
 
     attrs = %{
       project: project,
+      memory_space_id: memory_space_id,
       host_id: host_id,
       client_id: client_id,
+      source_client_id: partition[:source_client_id],
       scope: scope,
       namespace: namespace,
       top_concepts: top_concepts,
@@ -188,7 +205,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
            :total_observations,
            :updated_at
          ]},
-      conflict_target: [:host_id, :client_id, :scope, :namespace, :project]
+      conflict_target: [:memory_space_id, :host_id, :client_id, :scope, :namespace, :project]
     )
 
     {:ok, :built}
@@ -210,9 +227,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         join: m in Memory,
         on: m.id == l.memory_id,
         where:
-          l.status == "active" and m.host_id == ^partition["host_id"] and
-            m.client_id == ^partition["client_id"] and m.scope == ^partition["scope"] and
-            m.namespace == ^partition["namespace"] and m.scope == ^project and
+          l.status == "active" and m.memory_space_id == ^partition.memory_space_id and
+            m.host_id == ^partition.host_id and
+            m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+            m.namespace == ^partition.namespace and m.scope == ^project and
             is_nil(m.deleted_at),
         order_by: [desc: l.updated_at],
         limit: 20,
@@ -226,8 +244,9 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     repo().all(
       from(c in Crystal,
         where:
-          c.host_id == ^partition["host_id"] and c.client_id == ^partition["client_id"] and
-            c.scope == ^partition["scope"] and c.namespace == ^partition["namespace"] and
+          c.memory_space_id == ^partition.memory_space_id and
+            c.host_id == ^partition.host_id and c.client_id == ^partition.client_id and
+            c.scope == ^partition.scope and c.namespace == ^partition.namespace and
             c.project == ^project and c.status == "complete",
         order_by: [desc: c.completed_at, desc: c.id],
         limit: 10,
@@ -243,7 +262,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     repo().all(
       from(s in Summary,
         where:
-          s.host_id == ^partition["host_id"] and s.project == ^project and
+          s.memory_space_id == ^partition.memory_space_id and
+            s.host_id == ^partition.host_id and
+            s.source_client_id == ^partition[:source_client_id] and s.scope == ^partition.scope and
+            s.namespace == ^partition.namespace and s.project == ^project and
             s.session_id in ^session_ids and is_nil(s.superseded_at),
         order_by: [desc: s.created_at, desc: s.id],
         limit: 10,
@@ -252,4 +274,16 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     )
     |> Map.new()
   end
+
+  defp generator_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 end

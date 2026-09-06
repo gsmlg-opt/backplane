@@ -22,6 +22,7 @@ end
 
 defmodule Backplane.Admin.MemoryFixtures do
   alias Backplane.Memory.Events
+  alias Backplane.Memory.IngestFixtures
   alias Backplane.Settings
 
   @gate_keys [
@@ -52,9 +53,28 @@ defmodule Backplane.Admin.MemoryFixtures do
         "fixture-stream-#{System.unique_integer([:positive, :monotonic])}"
       )
       |> Map.put_new(:event_type, "task.created")
+      |> canonical_event_attrs()
 
     {:ok, event} = Events.append(attrs)
     event
+  end
+
+  def canonical_event_attrs(attrs) do
+    attrs = Map.new(attrs)
+    host_id = Map.get(attrs, :host_id, "admin-memory-fixture-host")
+    client_id = Map.get(attrs, :client_id, "host:#{host_id}")
+
+    Map.merge(
+      %{
+        memory_space_id: IngestFixtures.ensure_memory_space!(host_id),
+        host_id: host_id,
+        client_id: client_id,
+        source_client_id: client_id,
+        scope: "global",
+        namespace: "private"
+      },
+      attrs
+    )
   end
 
   def safe_summary(event) do

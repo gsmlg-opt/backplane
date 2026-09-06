@@ -202,71 +202,90 @@ defmodule Backplane.Memory.Projections.MigrationTest do
              """).rows
 
     subject_id = "constraint-#{System.unique_integer([:positive])}"
+    partition = canonical_partition(subject_id)
 
     assert %{num_rows: 1} =
              repo().query!(
                """
                INSERT INTO bpm_projection_states
-                 (projector, subject_type, subject_id, processing_version, status, attempt_count,
+                 (projector, subject_type, subject_id, memory_space_id, host_id,
+                  source_client_id, scope, namespace, processing_version, status, attempt_count,
                   inserted_at, updated_at)
-               VALUES ('session', 'captured_session', $1, 'session-v1', 'complete', 0, now(), now())
+               VALUES ('session', 'captured_session', $1, $2, $3, $4, $5, $6,
+                       'session-v1', 'complete', 0, now(), now())
                """,
-               [subject_id]
+               partition_params(subject_id, partition)
              )
 
     assert_sql_error(:unique_violation, fn ->
       repo().query!(
         """
         INSERT INTO bpm_projection_states
-          (projector, subject_type, subject_id, processing_version, status, attempt_count,
+          (projector, subject_type, subject_id, memory_space_id, host_id,
+           source_client_id, scope, namespace, processing_version, status, attempt_count,
            inserted_at, updated_at)
-        VALUES ('session', 'captured_session', $1, 'session-v1', 'complete', 0, now(), now())
+        VALUES ('session', 'captured_session', $1, $2, $3, $4, $5, $6,
+                'session-v1', 'complete', 0, now(), now())
         """,
-        [subject_id]
+        partition_params(subject_id, partition)
       )
     end)
 
     assert_sql_error(:check_violation, fn ->
-      repo().query!("""
-      INSERT INTO bpm_projection_states
-        (projector, subject_type, subject_id, processing_version, status, attempt_count,
-         inserted_at, updated_at)
-      VALUES ('session', 'captured_session', 'invalid-status', 'session-v1', 'queued', 0, now(), now())
-      """)
+      repo().query!(
+        """
+        INSERT INTO bpm_projection_states
+          (projector, subject_type, subject_id, memory_space_id, host_id,
+           source_client_id, scope, namespace, processing_version, status, attempt_count,
+           inserted_at, updated_at)
+        VALUES ('session', 'captured_session', 'invalid-status', $1, $2, $3, $4, $5,
+                'session-v1', 'queued', 0, now(), now())
+        """,
+        tl(partition_params(subject_id, partition))
+      )
     end)
 
     assert %{num_rows: 1} =
              repo().query!(
                """
                INSERT INTO bpm_projection_snapshots
-                 (projector, subject_type, subject_id, input_revision, output_revision,
+                 (projector, subject_type, subject_id, memory_space_id, host_id,
+                  source_client_id, scope, namespace, input_revision, output_revision,
                   read_model, inserted_at, updated_at)
                VALUES
-                 ('session', 'captured_session', $1, 'input', 'output', '{}', now(), now())
+                 ('session', 'captured_session', $1, $2, $3, $4, $5, $6,
+                  'input', 'output', '{}', now(), now())
                """,
-               [subject_id]
+               partition_params(subject_id, partition)
              )
 
     assert_sql_error(:unique_violation, fn ->
       repo().query!(
         """
         INSERT INTO bpm_projection_snapshots
-          (projector, subject_type, subject_id, input_revision, output_revision,
+          (projector, subject_type, subject_id, memory_space_id, host_id,
+           source_client_id, scope, namespace, input_revision, output_revision,
            read_model, inserted_at, updated_at)
         VALUES
-          ('session', 'captured_session', $1, 'input-2', 'output-2', '{}', now(), now())
+          ('session', 'captured_session', $1, $2, $3, $4, $5, $6,
+           'input-2', 'output-2', '{}', now(), now())
         """,
-        [subject_id]
+        partition_params(subject_id, partition)
       )
     end)
 
     assert_sql_error(:check_violation, fn ->
-      repo().query!("""
-      INSERT INTO bpm_projection_states
-        (projector, subject_type, subject_id, processing_version, status, attempt_count,
-         inserted_at, updated_at)
-      VALUES ('session', 'captured_session', 'invalid-attempt', 'session-v1', 'failed', -1, now(), now())
-      """)
+      repo().query!(
+        """
+        INSERT INTO bpm_projection_states
+          (projector, subject_type, subject_id, memory_space_id, host_id,
+           source_client_id, scope, namespace, processing_version, status, attempt_count,
+           inserted_at, updated_at)
+        VALUES ('session', 'captured_session', 'invalid-attempt', $1, $2, $3, $4, $5,
+                'session-v1', 'failed', -1, now(), now())
+        """,
+        tl(partition_params(subject_id, partition))
+      )
     end)
   end
 
@@ -353,15 +372,18 @@ defmodule Backplane.Memory.Projections.MigrationTest do
 
   test "legacy events remain mutable during the compatibility period" do
     stream_id = "legacy-#{System.unique_integer([:positive])}"
+    partition = canonical_partition(stream_id)
 
     assert {:ok, {:inserted, event}} =
-             Store.append_tagged(%{
-               stream_id: stream_id,
-               session_id: stream_id,
-               event_type: "legacy.observation",
-               content: "before",
-               occurred_at: ~U[2026-08-05 00:00:00.000000Z]
-             })
+             Store.append_tagged(
+               Map.merge(partition, %{
+                 stream_id: stream_id,
+                 session_id: stream_id,
+                 event_type: "legacy.observation",
+                 content: "before",
+                 occurred_at: ~U[2026-08-05 00:00:00.000000Z]
+               })
+             )
 
     assert %{num_rows: 1} =
              repo().query!("UPDATE bpm_events SET content = 'after' WHERE id::text = $1", [
@@ -383,6 +405,17 @@ defmodule Backplane.Memory.Projections.MigrationTest do
       end
 
     assert error.postgres.code == code
+  end
+
+  defp partition_params(subject_id, partition) do
+    [
+      subject_id,
+      Ecto.UUID.dump!(partition.memory_space_id),
+      partition.host_id,
+      partition.source_client_id,
+      partition.scope,
+      partition.namespace
+    ]
   end
 
   defp load_processing_version_migration do

@@ -98,6 +98,9 @@ defmodule Backplane.Memory.Memories.Search do
   defp apply_filter({:scope, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.scope == ^v)
 
+  defp apply_filter({:memory_space_id, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.memory_space_id == ^v)
+
   defp apply_filter({:agent_id, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.agent_id == ^v)
 

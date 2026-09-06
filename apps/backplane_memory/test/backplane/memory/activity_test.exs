@@ -7,17 +7,15 @@ defmodule Backplane.Memory.ActivityTest do
   alias Backplane.Memory.Projections.ActivityDaily
   alias Backplane.Memory.Projections.Rebuild
 
-  @partition %{
-    host_id: "activity-host",
-    client_id: "activity-client",
-    scope: "activity-scope",
-    namespace: "private"
-  }
-
   test "heatmap returns every day in the requested window from exact-partition aggregates" do
     insert_daily!(~D[2026-08-01], %{event_count: 3, error_count: 1})
     insert_daily!(~D[2026-08-03], %{event_count: 2})
-    insert_daily!(~D[2026-08-02], %{host_id: "foreign-host", event_count: 99})
+
+    insert_daily!(~D[2026-08-02], %{
+      memory_space_id: canonical_partition("activity-foreign").memory_space_id,
+      host_id: "foreign-host",
+      event_count: 99
+    })
 
     assert {:ok,
             [
@@ -25,13 +23,13 @@ defmodule Backplane.Memory.ActivityTest do
               %{date: ~D[2026-08-02], event_count: 0, error_count: 0},
               %{date: ~D[2026-08-03], event_count: 2, error_count: 0}
             ]} =
-             Activity.heatmap(@partition,
+             Activity.heatmap(partition(),
                date_from: ~D[2026-08-01],
                date_to: ~D[2026-08-03]
              )
 
     assert {:error, :unauthorized} =
-             Activity.heatmap(Map.delete(@partition, :namespace),
+             Activity.heatmap(Map.delete(partition(), :namespace),
                date_from: ~D[2026-08-01],
                date_to: ~D[2026-08-03]
              )
@@ -46,14 +44,14 @@ defmodule Backplane.Memory.ActivityTest do
     append_event!("session-two", 1, "memory.recalled", ~U[2026-08-03 01:00:00.000000Z])
     append_event!("session-two", 2, "task.created", ~U[2026-08-03 01:01:00.000000Z])
 
-    assert {:ok, _} = Rebuild.session(@partition.host_id, "session-one")
-    assert {:ok, _} = Rebuild.session(@partition.host_id, "session-two")
+    assert {:ok, _} = Rebuild.session(partition().host_id, "session-one")
+    assert {:ok, _} = Rebuild.session(partition().host_id, "session-two")
 
     # Canonical input is not visible until the incremental activity projection commits.
     append_event!("unprojected", 1, "agent.tool.failed", ~U[2026-08-01 02:00:00.000000Z])
 
     assert {:ok, [first, empty, last]} =
-             Activity.trends(@partition,
+             Activity.trends(partition(),
                date_from: ~D[2026-08-01],
                date_to: ~D[2026-08-03]
              )
@@ -95,8 +93,8 @@ defmodule Backplane.Memory.ActivityTest do
 
     opts = [date_from: ~D[2026-08-01], date_to: ~D[2026-08-02], project: "backplane"]
 
-    assert {:ok, _} = Rebuild.session(@partition.host_id, "session-a")
-    assert {:ok, _} = Rebuild.session(@partition.host_id, "session-b")
+    assert {:ok, _} = Rebuild.session(partition().host_id, "session-a")
+    assert {:ok, _} = Rebuild.session(partition().host_id, "session-b")
 
     append_event!("unprojected", 1, "agent.tool.failed", ~U[2026-08-01 02:00:00.000000Z])
 
@@ -104,7 +102,7 @@ defmodule Backplane.Memory.ActivityTest do
             [
               %{key: "agent.prompt.submitted", event_count: 1, session_count: 1},
               %{key: "agent.tool.failed", event_count: 1, session_count: 1, error_count: 1}
-            ]} = Activity.breakdown(@partition, :event_type, opts)
+            ]} = Activity.breakdown(partition(), :event_type, opts)
 
     assert {:ok,
             %{
@@ -115,12 +113,12 @@ defmodule Backplane.Memory.ActivityTest do
               error_count: 1,
               action_count: 0,
               recall_count: 0
-            }} = Activity.summary(@partition, opts)
+            }} = Activity.summary(partition(), opts)
 
-    assert {:error, :invalid_options} = Activity.breakdown(@partition, :unknown, opts)
+    assert {:error, :invalid_options} = Activity.breakdown(partition(), :unknown, opts)
 
     assert {:error, :invalid_options} =
-             Activity.breakdown(@partition, :project, opts ++ [limit: 101])
+             Activity.breakdown(partition(), :project, opts ++ [limit: 101])
   end
 
   test "public activity stays exact-host while operator activity compares server-owned partitions" do
@@ -130,13 +128,14 @@ defmodule Backplane.Memory.ActivityTest do
       host_id: "activity-host-b"
     )
 
-    assert {:ok, _} = Rebuild.session(@partition.host_id, "host-a-session")
+    assert {:ok, _} = Rebuild.session(partition().host_id, "host-a-session")
     assert {:ok, _} = Rebuild.session("activity-host-b", "host-b-session")
 
     tenant_partition = %{
-      client_id: @partition.client_id,
-      scope: @partition.scope,
-      namespace: @partition.namespace
+      memory_space_id: partition().memory_space_id,
+      client_id: partition().client_id,
+      scope: partition().scope,
+      namespace: partition().namespace
     }
 
     opts = [date_from: ~D[2026-08-01], date_to: ~D[2026-08-01], limit: 10]
@@ -148,7 +147,12 @@ defmodule Backplane.Memory.ActivityTest do
             ]} = OperatorActivity.host_breakdown(tenant_partition, opts)
 
     assert {:ok, [%{key: "activity-host"}]} =
-             Activity.breakdown(@partition, :host_id, opts)
+             Activity.breakdown(partition(), :host_id, opts)
+
+    assert {:ok, partitions} =
+             OperatorActivity.partitions(memory_space_id: partition().memory_space_id)
+
+    assert Enum.all?(partitions, &(&1.memory_space_id == partition().memory_space_id))
 
     refute function_exported?(Activity, :admin_host_breakdown, 2)
   end
@@ -162,7 +166,7 @@ defmodule Backplane.Memory.ActivityTest do
     )
 
     assert {:ok, [latest]} =
-             Activity.recent_events(@partition,
+             Activity.recent_events(partition(),
                date_from: ~D[2026-08-01],
                date_to: ~D[2026-08-01],
                event_type: "task.created",
@@ -182,7 +186,7 @@ defmodule Backplane.Memory.ActivityTest do
              :project
            ]
 
-    assert {:error, :invalid_options} = Activity.recent_events(@partition, limit: 101)
+    assert {:error, :invalid_options} = Activity.recent_events(partition(), limit: 101)
   end
 
   defp insert_daily!(date, overrides) do
@@ -205,20 +209,22 @@ defmodule Backplane.Memory.ActivityTest do
       updated_at: now
     }
 
-    repo().insert_all(ActivityDaily, [@partition |> Map.merge(defaults) |> Map.merge(overrides)])
+    repo().insert_all(ActivityDaily, [partition() |> Map.merge(defaults) |> Map.merge(overrides)])
   end
 
   defp append_event!(session_id, sequence, event_type, occurred_at, overrides \\ []) do
-    host_id = Keyword.get(overrides, :host_id, @partition.host_id)
+    host_id = Keyword.get(overrides, :host_id, partition().host_id)
 
     assert {:ok, {:inserted, _event}} =
              Store.append_tagged(%{
                id: Ecto.UUID.generate(),
+               memory_space_id: partition().memory_space_id,
                stream_id: "capture:#{host_id}:#{session_id}",
                host_id: host_id,
-               client_id: @partition.client_id,
-               scope: @partition.scope,
-               namespace: @partition.namespace,
+               client_id: partition().client_id,
+               source_client_id: partition().source_client_id,
+               scope: partition().scope,
+               namespace: partition().namespace,
                session_id: session_id,
                project: Keyword.get(overrides, :project, "backplane"),
                agent_id: Keyword.get(overrides, :agent_id, "agent-1"),
@@ -232,5 +238,14 @@ defmodule Backplane.Memory.ActivityTest do
                payload_hash: "sha256:#{session_id}:#{sequence}",
                schema_version: 1
              })
+  end
+
+  defp partition do
+    canonical_partition("activity-space-owner",
+      client_id: "activity-client",
+      source_client_id: "activity-client",
+      scope: "activity-scope"
+    )
+    |> Map.put(:host_id, "activity-host")
   end
 end

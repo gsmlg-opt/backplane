@@ -115,15 +115,38 @@ defmodule Backplane.Memory.Audit do
   end
 
   @doc "List audit entries owned by an exact memory partition before pagination."
-  def list(%{host_id: host_id, client_id: client_id, scope: scope, namespace: namespace}, opts)
-      when is_list(opts) do
+  def list(partition, opts) when is_map(partition) and is_list(opts) do
+    case partition do
+      %{
+        memory_space_id: memory_space_id,
+        host_id: host_id,
+        client_id: client_id,
+        scope: scope,
+        namespace: namespace
+      } ->
+        list_partition(memory_space_id, host_id, client_id, scope, namespace, opts)
+
+      _incomplete ->
+        []
+    end
+  end
+
+  defp list_partition(
+         memory_space_id,
+         host_id,
+         client_id,
+         scope,
+         namespace,
+         opts
+       ) do
     limit = Keyword.get(opts, :limit, 50)
     offset = Keyword.get(opts, :offset, 0)
 
     q =
       from(r in "memory_audit_log",
         where:
-          (fragment("?->>'host_id'", r.metadata) == ^host_id and
+          (fragment("?->>'memory_space_id'", r.metadata) == ^memory_space_id and
+             fragment("?->>'host_id'", r.metadata) == ^host_id and
              fragment("?->>'client_id'", r.metadata) == ^client_id and
              fragment("?->>'scope'", r.metadata) == ^scope and
              fragment("?->>'namespace'", r.metadata) == ^namespace) or
@@ -131,7 +154,8 @@ defmodule Backplane.Memory.Audit do
               """
               EXISTS (
                 SELECT 1 FROM bpm_memories m
-                WHERE m.host_id = ? AND m.client_id = ? AND m.scope = ? AND m.namespace = ?
+                WHERE m.memory_space_id::text = ? AND m.host_id = ? AND m.client_id = ?
+                  AND m.scope = ? AND m.namespace = ?
                   AND CASE jsonb_typeof(?)
                     WHEN 'array' THEN ? @> jsonb_build_array(m.id::text)
                     WHEN 'object' THEN EXISTS (
@@ -142,6 +166,7 @@ defmodule Backplane.Memory.Audit do
                   END
               )
               """,
+              ^memory_space_id,
               ^host_id,
               ^client_id,
               ^scope,

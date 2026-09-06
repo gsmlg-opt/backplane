@@ -371,8 +371,10 @@ defmodule Backplane.Memory.Memories.RelationsTest do
   defp direct_opts(key) do
     [
       agent_id: "agent",
+      memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!("relations-owner"),
       host_id: "host",
       scope: "scope",
+      namespace: "private",
       idempotency_scope: "test",
       idempotency_key: key
     ]
@@ -421,6 +423,7 @@ defmodule Backplane.Memory.Memories.RelationsTest do
 
     trace =
       Map.take(metadata, [
+        "memory_space_id",
         "host_id",
         "client_id",
         "scope",
@@ -431,6 +434,10 @@ defmodule Backplane.Memory.Memories.RelationsTest do
       ])
 
     assert trace["host_id"] == "host"
+
+    assert trace["memory_space_id"] ==
+             Backplane.Memory.IngestFixtures.memory_space_id("relations-owner")
+
     assert trace["scope"] == "scope"
     assert trace["namespace"] == "private"
     assert is_binary(trace["request_id"])
@@ -439,6 +446,7 @@ defmodule Backplane.Memory.Memories.RelationsTest do
     assert Map.drop(metadata, [
              "correlation_id",
              "lifecycle_transitions",
+             "memory_space_id",
              "host_id",
              "client_id",
              "scope",

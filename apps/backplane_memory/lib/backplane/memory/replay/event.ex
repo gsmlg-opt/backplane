@@ -2,12 +2,14 @@ defmodule Backplane.Memory.Replay.Event do
   use Ecto.Schema
   @primary_key false
   schema "memory_replay_events" do
+    field(:memory_space_id, :binary_id)
     field(:subject_id, :string, primary_key: true)
     field(:input_revision, :string, primary_key: true)
     field(:position, :integer, primary_key: true)
     field(:event_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:session_id, :string)

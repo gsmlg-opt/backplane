@@ -9,6 +9,13 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorkerTest do
   test "schedules one exact-partition job per durable lesson partition" do
     Oban.Testing.with_testing_mode(:manual, fn ->
       for suffix <- ["a", "b"] do
+        partition =
+          canonical_partition("host-#{suffix}",
+            client_id: "client-#{suffix}",
+            scope: "project:#{suffix}",
+            namespace: "default"
+          )
+
         assert {:ok, _lesson} =
                  Lessons.save(
                    %{
@@ -17,12 +24,7 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorkerTest do
                      project: "backplane",
                      idempotency_key: "decay-#{suffix}"
                    },
-                   %{
-                     host_id: "host-#{suffix}",
-                     client_id: "client-#{suffix}",
-                     scope: "project:#{suffix}",
-                     namespace: "default"
-                   },
+                   partition,
                    @trace
                  )
       end

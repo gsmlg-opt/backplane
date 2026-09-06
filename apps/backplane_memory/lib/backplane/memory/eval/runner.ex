@@ -11,17 +11,22 @@ defmodule Backplane.Memory.Eval.Runner do
   alias Backplane.Memory.Qualification.Profile
   alias Backplane.Memory.Recall.Pipeline
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
+  alias Backplane.MemorySpaces.MemorySpace
 
   @warmups 5
   @samples 100
 
   def seed(fixture) do
     Enum.reduce_while(fixture["memories"], {:ok, %{}}, fn memory, {:ok, ids} ->
+      memory_space_id = ensure_memory_space!(memory["host_id"])
+
       opts = [
         type: "semantic",
+        memory_space_id: memory_space_id,
         agent_id: "memory-eval-agent",
         host_id: memory["host_id"],
         client_id: memory["client_id"],
+        source_client_id: memory["client_id"],
         scope: memory["scope"],
         namespace: memory["namespace"],
         session_id: memory["session_id"],
@@ -49,6 +54,8 @@ defmodule Backplane.Memory.Eval.Runner do
       end
 
     with {:ok, fixture} <- fixture_result do
+      fixture = canonical_fixture(fixture)
+
       with {:ok, ids} <- seed(fixture),
            {:ok, derived} <- seed_derived(fixture) do
         evaluate(fixture, opts |> Keyword.put(:seed_ids, ids) |> Keyword.put(:derived, derived))
@@ -161,6 +168,7 @@ defmodule Backplane.Memory.Eval.Runner do
 
     rows =
       Enum.map(derived, fn memory ->
+        memory_space_id = ensure_memory_space!(memory["host_id"])
         event_id = Ecto.UUID.generate()
         session_id = "derived-#{memory["fixture_memory_id"]}"
         subject_id = "#{fixture["fixture_id"]}:#{session_id}"
@@ -170,9 +178,13 @@ defmodule Backplane.Memory.Eval.Runner do
         repo().insert!(
           EventStream.changeset(%EventStream{}, %{
             stream_id: stream_id,
+            memory_space_id: memory_space_id,
             project: "memory-eval-derived",
             host_id: memory["host_id"],
             client_id: memory["client_id"],
+            source_client_id: memory["client_id"],
+            scope: memory["scope"],
+            namespace: memory["namespace"],
             session_id: session_id
           })
         )
@@ -181,10 +193,12 @@ defmodule Backplane.Memory.Eval.Runner do
           id: event_id,
           stream_id: stream_id,
           sequence: 1,
+          memory_space_id: memory_space_id,
           project: "memory-eval-derived",
           namespace: memory["namespace"],
           host_id: memory["host_id"],
           client_id: memory["client_id"],
+          source_client_id: memory["client_id"],
           scope: memory["scope"],
           session_id: session_id,
           event_type: "agent.prompt.submitted",
@@ -198,9 +212,11 @@ defmodule Backplane.Memory.Eval.Runner do
         repo().insert!(%ProjectedSession{
           subject_id: subject_id,
           session_id: session_id,
+          memory_space_id: memory_space_id,
           project: "memory-eval-derived",
           host_id: memory["host_id"],
           client_id: memory["client_id"],
+          source_client_id: memory["client_id"],
           scope: memory["scope"],
           namespace: memory["namespace"],
           status: "closed",
@@ -213,10 +229,14 @@ defmodule Backplane.Memory.Eval.Runner do
           repo().insert!(
             Summary.changeset(%Summary{}, %{
               session_id: session_id,
+              memory_space_id: memory_space_id,
               project: "memory-eval-derived",
               content: memory["content"],
               subject_id: subject_id,
               host_id: memory["host_id"],
+              source_client_id: memory["client_id"],
+              scope: memory["scope"],
+              namespace: memory["namespace"],
               processing_version: "eval-v2",
               input_revision: memory["fixture_memory_id"],
               output_revision: "output-#{memory["fixture_memory_id"]}"
@@ -395,6 +415,36 @@ defmodule Backplane.Memory.Eval.Runner do
     fixture["partition"]
     |> Map.put("query", query["query"])
     |> Map.put("token_budget", 100_000)
+  end
+
+  defp canonical_fixture(fixture) do
+    partition = fixture["partition"]
+    memory_space_id = ensure_memory_space!(partition["host_id"])
+
+    Map.put(
+      fixture,
+      "partition",
+      partition
+      |> Map.put("memory_space_id", memory_space_id)
+      |> Map.put("source_client_id", partition["client_id"])
+    )
+  end
+
+  defp ensure_memory_space!(host_id) do
+    memory_space_id = stable_uuid("evaluation:" <> host_id)
+
+    {:ok, _space} =
+      %MemorySpace{}
+      |> MemorySpace.changeset(%{id: memory_space_id, kind: "private", status: "active"})
+      |> repo().insert(on_conflict: :nothing)
+
+    memory_space_id
+  end
+
+  defp stable_uuid(value) do
+    digest = :crypto.hash(:md5, value)
+    {:ok, uuid} = Ecto.UUID.load(digest)
+    uuid
   end
 
   defp pipeline_opts do

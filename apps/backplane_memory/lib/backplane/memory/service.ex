@@ -1475,6 +1475,7 @@ defmodule Backplane.Memory.Service do
     context_module.build(args["project"], args["session_id"],
       include_profile: true,
       kind: lifecycle_kind(args["kind"]),
+      memory_space_id: partition.memory_space_id,
       scope: partition.scope,
       host_id: partition.host_id,
       client_id: partition.partition_id,
@@ -1520,10 +1521,12 @@ defmodule Backplane.Memory.Service do
     opts =
       [
         type: args["type"] || "semantic",
+        memory_space_id: partition.memory_space_id,
         scope: args["scope"] || partition.scope,
         agent_id: args["agent_id"] || "",
         host_id: partition.host_id,
         client_id: partition.partition_id,
+        source_client_id: partition[:source_client_id],
         namespace: partition.namespace,
         session_id: args["session_id"],
         tags: args["tags"] || [],
@@ -1742,8 +1745,10 @@ defmodule Backplane.Memory.Service do
         Backplane.Memory.Audit.log("crystal.crystallize", actor, targets, %{
           request_id: request_id,
           correlation_id: correlation_id,
+          memory_space_id: exact_partition.memory_space_id,
           host_id: exact_partition.host_id,
           client_id: exact_partition.client_id,
+          source_client_id: exact_partition[:source_client_id],
           scope: exact_partition.scope,
           namespace: exact_partition.namespace,
           source_kind: args["source_kind"],
@@ -1828,7 +1833,7 @@ defmodule Backplane.Memory.Service do
   defp do_handle_crystal_search(_args), do: {:error, :invalid_arguments}
 
   defp strict_trusted_args(args, public_keys) do
-    trusted_keys = ~w(host_id client_id scope namespace)
+    trusted_keys = ~w(memory_space_id host_id client_id source_client_id scope namespace)
 
     if Enum.all?(Map.keys(args), &(&1 in public_keys or &1 in trusted_keys)),
       do: :ok,
@@ -1837,8 +1842,10 @@ defmodule Backplane.Memory.Service do
 
   defp trusted_partition(args) do
     %{
+      memory_space_id: args["memory_space_id"],
       host_id: args["host_id"],
       client_id: args["client_id"],
+      source_client_id: args["source_client_id"],
       scope: args["scope"],
       namespace: args["namespace"]
     }
@@ -1931,9 +1938,8 @@ defmodule Backplane.Memory.Service do
   defp do_handle_recall_legacy(query, args) do
     opts =
       [limit: args["limit"] || 10]
+      |> add_if(args, "memory_space_id", :memory_space_id)
       |> add_if(args, "scope", :scope)
-      |> add_if(args, "host_id", :host_id)
-      |> add_if(args, "client_id", :client_id)
       |> add_if(args, "namespace", :namespace)
       |> add_if(args, "agent_id", :agent_id)
       |> add_if(args, "tag", :tag)
@@ -1959,7 +1965,7 @@ defmodule Backplane.Memory.Service do
 
   defp do_handle_recall_v2(query, args) do
     allowed =
-      ~w(query limit scope host_id client_id namespace project facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__)
+      ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__)
 
     cond do
       Map.has_key?(args, "agent_id") or Map.has_key?(args, "tag") ->
@@ -1971,8 +1977,10 @@ defmodule Backplane.Memory.Service do
       true ->
         plan = %{
           query: query,
+          memory_space_id: args["memory_space_id"],
           host_id: args["host_id"],
           client_id: args["client_id"],
+          source_client_id: args["source_client_id"],
           scope: args["scope"],
           namespace: args["namespace"],
           project: args["project"],
@@ -1999,8 +2007,6 @@ defmodule Backplane.Memory.Service do
       []
       |> add_if(args, "type", :type)
       |> add_if(args, "scope", :scope)
-      |> add_if(args, "host_id", :host_id)
-      |> add_if(args, "client_id", :client_id)
       |> add_if(args, "namespace", :namespace)
       |> add_if(args, "agent_id", :agent_id)
       |> add_if(args, "tag", :tag)
@@ -2108,10 +2114,13 @@ defmodule Backplane.Memory.Service do
     opts =
       [
         limit: args["limit"] || 50,
+        memory_space_id: args["memory_space_id"],
         host_id: args["host_id"],
         client_id: args["client_id"],
+        source_client_id: args["source_client_id"],
         scope: args["scope"],
-        namespace: args["namespace"]
+        namespace: args["namespace"],
+        trusted_partition: partition_from_args(args)
       ]
       |> then(fn o ->
         case args["exclude_session"] do
@@ -2678,6 +2687,7 @@ defmodule Backplane.Memory.Service do
   defp do_handle_compress_file(%{
          "file_path" => path,
          "agent_id" => agent_id,
+         "memory_space_id" => memory_space_id,
          "host_id" => host_id,
          "client_id" => client_id,
          "scope" => scope,
@@ -2687,10 +2697,19 @@ defmodule Backplane.Memory.Service do
     rows =
       Backplane.Memory.Observations.file_history([path],
         limit: 200,
+        memory_space_id: memory_space_id,
         host_id: host_id,
         client_id: client_id,
         scope: scope,
-        namespace: namespace
+        namespace: namespace,
+        trusted_partition:
+          partition_from_args(%{
+            "memory_space_id" => memory_space_id,
+            "host_id" => host_id,
+            "client_id" => client_id,
+            "scope" => scope,
+            "namespace" => namespace
+          })
       )
 
     inputs = compression_inputs(rows)
@@ -2707,6 +2726,7 @@ defmodule Backplane.Memory.Service do
 
       case Memories.remember(content,
              type: "semantic",
+             memory_space_id: memory_space_id,
              scope: scope,
              agent_id: agent_id,
              host_id: host_id,
@@ -2939,8 +2959,10 @@ defmodule Backplane.Memory.Service do
         {deleted, _} = repo.delete_all(from(l in query, select: l.id))
 
         Audit.log("coordination.heal", "system", ids, %{
+          memory_space_id: partition.memory_space_id,
           host_id: partition.host_id,
           client_id: partition.client_id,
+          source_client_id: partition[:source_client_id],
           scope: partition.scope,
           namespace: partition.namespace,
           expired_leases_cleared: deleted,
@@ -3103,7 +3125,8 @@ defmodule Backplane.Memory.Service do
     query =
       from(m in Backplane.Memory.Memories.Memory,
         where:
-          m.id == ^memory_id and m.host_id == ^partition.host_id and
+          m.id == ^memory_id and m.memory_space_id == ^partition.memory_space_id and
+            m.host_id == ^partition.host_id and
             m.client_id == ^partition.client_id and m.scope == ^partition.scope and
             m.namespace == ^partition.namespace
       )
@@ -3138,7 +3161,8 @@ defmodule Backplane.Memory.Service do
       repo.one(
         from(m in Backplane.Memory.Memories.Memory,
           where:
-            m.id == ^memory_id and m.host_id == ^partition.host_id and
+            m.id == ^memory_id and m.memory_space_id == ^partition.memory_space_id and
+              m.host_id == ^partition.host_id and
               m.client_id == ^partition.client_id and m.scope == ^partition.scope and
               m.namespace == ^partition.namespace,
           select: %{
@@ -3210,19 +3234,30 @@ defmodule Backplane.Memory.Service do
     defp governance_audit_partition(args, _memory_id), do: partition_from_args(args)
   end
 
-  defp partition_from_args(%{
-         "host_id" => host_id,
-         "client_id" => client_id,
-         "scope" => scope,
-         "namespace" => namespace
-       })
-       when is_binary(host_id) and is_binary(client_id) and is_binary(scope) and
+  defp partition_from_args(
+         %{
+           "memory_space_id" => memory_space_id,
+           "host_id" => host_id,
+           "client_id" => client_id,
+           "scope" => scope,
+           "namespace" => namespace
+         } = args
+       )
+       when is_binary(memory_space_id) and is_binary(host_id) and is_binary(client_id) and
+              is_binary(scope) and
               is_binary(namespace) do
-    %{host_id: host_id, client_id: client_id, scope: scope, namespace: namespace}
+    %{
+      memory_space_id: memory_space_id,
+      host_id: host_id,
+      client_id: client_id,
+      source_client_id: args["source_client_id"],
+      scope: scope,
+      namespace: namespace
+    }
   end
 
   defp partition_from_args(%{"__trusted_internal__" => true}) do
-    %{host_id: nil, client_id: nil, scope: nil, namespace: nil}
+    %{memory_space_id: nil, host_id: nil, client_id: nil, scope: nil, namespace: nil}
   end
 
   defp partition_from_args(_args),

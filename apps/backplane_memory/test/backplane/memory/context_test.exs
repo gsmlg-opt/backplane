@@ -5,13 +5,6 @@ defmodule Backplane.Memory.ContextTest do
 
   @settings_table :backplane_settings
   @key "memory.inject_context"
-  @partition [
-    host_id: "context-host",
-    client_id: "context-client",
-    scope: "context-project",
-    namespace: "private"
-  ]
-
   setup do
     original =
       case :ets.lookup(@settings_table, @key) do
@@ -44,7 +37,11 @@ defmodule Backplane.Memory.ContextTest do
       stub_setting("true")
       # No profile, no memories for this project → all parts empty → nil
       result =
-        Context.build("unknown-project-#{:rand.uniform(99_999)}", "sess-none", @partition)
+        Context.build(
+          "unknown-project-#{:rand.uniform(99_999)}",
+          "sess-none",
+          context_partition()
+        )
 
       assert result == nil
     end
@@ -57,7 +54,11 @@ defmodule Backplane.Memory.ContextTest do
     test "fails closed when inject_context is enabled with an empty partition field" do
       stub_setting("true")
 
-      assert Context.build("my-project", "session", Keyword.put(@partition, :namespace, "")) ==
+      assert Context.build(
+               "my-project",
+               "session",
+               Keyword.put(context_partition(), :namespace, "")
+             ) ==
                nil
     end
 
@@ -65,13 +66,16 @@ defmodule Backplane.Memory.ContextTest do
       stub_setting("true")
 
       project = "ctx-proj-#{:rand.uniform(99_999)}"
+      partition = context_partition()
 
       repo().insert!(%Backplane.Memory.Profiles.Profile{
         project: project,
-        host_id: @partition[:host_id],
-        client_id: @partition[:client_id],
-        scope: @partition[:scope],
-        namespace: @partition[:namespace],
+        memory_space_id: partition[:memory_space_id],
+        host_id: partition[:host_id],
+        client_id: partition[:client_id],
+        source_client_id: partition[:source_client_id],
+        scope: partition[:scope],
+        namespace: partition[:namespace],
         top_concepts: %{"elixir" => 3},
         top_files: %{"lib/foo.ex" => 2},
         patterns: %{},
@@ -79,7 +83,7 @@ defmodule Backplane.Memory.ContextTest do
         total_observations: 5
       })
 
-      result = Context.build(project, "some-session", @partition)
+      result = Context.build(project, "some-session", partition)
       assert is_binary(result)
       assert String.length(result) > 0
       assert String.contains?(result, project)
@@ -88,17 +92,20 @@ defmodule Backplane.Memory.ContextTest do
     test "labels injected profiles with revision time and stale state" do
       stub_setting("true")
       project = "ctx-stale-#{System.unique_integer([:positive])}"
+      partition = context_partition()
 
       repo().insert!(%Backplane.Memory.Profiles.Profile{
         project: project,
-        host_id: @partition[:host_id],
-        client_id: @partition[:client_id],
-        scope: @partition[:scope],
-        namespace: @partition[:namespace],
+        memory_space_id: partition[:memory_space_id],
+        host_id: partition[:host_id],
+        client_id: partition[:client_id],
+        source_client_id: partition[:source_client_id],
+        scope: partition[:scope],
+        namespace: partition[:namespace],
         updated_at: DateTime.add(DateTime.utc_now(), -7200, :second)
       })
 
-      result = Context.build(project, "some-session", @partition)
+      result = Context.build(project, "some-session", partition)
       assert result =~ "Profile revision:"
       assert result =~ "Profile state: stale"
     end
@@ -106,6 +113,7 @@ defmodule Backplane.Memory.ContextTest do
     test "session start injects typed exact-partition lessons with compact provenance" do
       stub_setting("true")
       project = "ctx-lessons-#{System.unique_integer([:positive])}"
+      partition = context_partition()
 
       {:ok, lesson} =
         Lessons.save(
@@ -116,8 +124,14 @@ defmodule Backplane.Memory.ContextTest do
             session_id: "source-session",
             idempotency_key: "ctx-own"
           },
-          Map.new(@partition),
+          Map.new(partition),
           %{actor: "context-agent", request_id: "ctx-request", correlation_id: "ctx-correlation"}
+        )
+
+      foreign_partition =
+        canonical_partition("context-foreign-host",
+          client_id: "foreign-client",
+          scope: partition[:scope]
         )
 
       {:ok, _foreign} =
@@ -129,7 +143,7 @@ defmodule Backplane.Memory.ContextTest do
             session_id: "foreign-session",
             idempotency_key: "ctx-foreign"
           },
-          @partition |> Map.new() |> Map.put(:client_id, "foreign-client"),
+          Map.new(foreign_partition),
           %{
             actor: "foreign",
             request_id: "foreign-request",
@@ -138,7 +152,7 @@ defmodule Backplane.Memory.ContextTest do
         )
 
       context =
-        Context.build(project, "current-session", Keyword.put(@partition, :kind, :session_start))
+        Context.build(project, "current-session", Keyword.put(partition, :kind, :session_start))
 
       assert context =~ "## Active Lessons"
       assert context =~ "Verify the manifest-selected asset"
@@ -150,6 +164,7 @@ defmodule Backplane.Memory.ContextTest do
     test "pre-compact uses a distinct current-session emphasis" do
       stub_setting("true")
       project = "ctx-precompact-#{System.unique_integer([:positive])}"
+      partition = context_partition()
 
       {:ok, _lesson} =
         Lessons.save(
@@ -160,7 +175,7 @@ defmodule Backplane.Memory.ContextTest do
             session_id: "current-session",
             idempotency_key: "ctx-precompact"
           },
-          Map.new(@partition),
+          Map.new(partition),
           %{
             actor: "context-agent",
             request_id: "compact-request",
@@ -168,8 +183,8 @@ defmodule Backplane.Memory.ContextTest do
           }
         )
 
-      start = Context.build(project, "current-session", @partition ++ [kind: :session_start])
-      compact = Context.build(project, "current-session", @partition ++ [kind: :pre_compact])
+      start = Context.build(project, "current-session", partition ++ [kind: :session_start])
+      compact = Context.build(project, "current-session", partition ++ [kind: :pre_compact])
 
       assert start =~ "## Active Lessons"
       assert compact =~ "## Pre-Compact Continuity"
@@ -181,5 +196,13 @@ defmodule Backplane.Memory.ContextTest do
 
   defp stub_setting(value) do
     :ets.insert(@settings_table, {@key, value})
+  end
+
+  defp context_partition do
+    canonical_partition("context-host",
+      client_id: "context-client",
+      scope: "context-project"
+    )
+    |> Map.to_list()
   end
 end

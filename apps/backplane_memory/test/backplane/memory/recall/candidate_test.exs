@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Recall.CandidateTest do
   alias Backplane.Memory.Summaries.Summary
 
   @partition %{
+    memory_space_id: "00000000-0000-4000-8000-000000000099",
     host_id: "host-a",
     client_id: "client-a",
     scope: "team",
@@ -86,22 +87,26 @@ defmodule Backplane.Memory.Recall.CandidateTest do
               source_refs: [%{type: :memory, id: ^memory_id}]
             }} =
              Adapters.memory(%Adapters.MemoryRow{
-               memory: %{
-                 id: memory_id,
-                 content: "fact",
-                 memory_type: "semantic",
-                 lifecycle_state: "active",
-                 confidence: 1.0,
-                 session_id: "s",
-                 metadata: %{"project" => "p"}
-               },
+               memory:
+                 Map.merge(@partition, %{
+                   id: memory_id,
+                   content: "fact",
+                   memory_type: "semantic",
+                   lifecycle_state: "active",
+                   confidence: 1.0,
+                   session_id: "s",
+                   metadata: %{"project" => "p"}
+                 }),
                partition: @partition,
                source_refs: [%Adapters.SourceRef{type: :memory, id: memory_id}]
              })
 
     summary = %Summary{
       id: summary_id,
+      memory_space_id: @partition.memory_space_id,
       host_id: @partition.host_id,
+      scope: @partition.scope,
+      namespace: @partition.namespace,
       content: "summary",
       session_id: "s",
       project: "p"
@@ -121,6 +126,7 @@ defmodule Backplane.Memory.Recall.CandidateTest do
 
     observation = %ProjectedObservation{
       event_id: event_id,
+      memory_space_id: @partition.memory_space_id,
       host_id: @partition.host_id,
       client_id: @partition.client_id,
       scope: @partition.scope,
@@ -149,7 +155,13 @@ defmodule Backplane.Memory.Recall.CandidateTest do
     assert {:error, :invalid_retrieval_row} =
              Adapters.summary(%Summary{id: id, content: "summary"})
 
-    memory = %{id: id, content: "fact", memory_type: "semantic", lifecycle_state: "active"}
+    memory =
+      Map.merge(@partition, %{
+        id: id,
+        content: "fact",
+        memory_type: "semantic",
+        lifecycle_state: "active"
+      })
 
     assert {:error, :missing_provenance} =
              Adapters.memory(%Adapters.MemoryRow{
@@ -167,7 +179,13 @@ defmodule Backplane.Memory.Recall.CandidateTest do
 
     assert {:error, :partition_mismatch} =
              Adapters.summary(%Adapters.SummaryRow{
-               summary: %Summary{id: id, host_id: "other", content: "summary"},
+               summary: %Summary{
+                 id: id,
+                 memory_space_id: "00000000-0000-4000-8000-000000000098",
+                 scope: @partition.scope,
+                 namespace: @partition.namespace,
+                 content: "summary"
+               },
                partition: @partition,
                source_refs: [%Adapters.SourceRef{type: :event, id: Ecto.UUID.generate()}]
              })

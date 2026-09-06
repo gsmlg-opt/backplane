@@ -5,7 +5,7 @@ defmodule Backplane.MemorySpaces do
 
   import Ecto.Query
 
-  alias Backplane.MemorySpaces.{Entitlement, LegacyAlias, MemorySpace}
+  alias Backplane.MemorySpaces.{BackfillIssue, Entitlement, LegacyAlias, MemorySpace}
   alias Backplane.Repo
 
   @namespace "private"
@@ -246,7 +246,11 @@ defmodule Backplane.MemorySpaces do
 
     case query do
       [%Entitlement{} = entitlement] ->
-        {:ok, partition(entitlement.memory_space_id, entitlement.scope)}
+        partition = partition(entitlement.memory_space_id, entitlement.scope)
+
+        if unresolved_partition_issue?(host_id, partition),
+          do: {:error, :partition_not_ready},
+          else: {:ok, partition}
 
       [] ->
         {:error, :unauthorized}
@@ -254,6 +258,25 @@ defmodule Backplane.MemorySpaces do
       _ ->
         {:error, :ambiguous_partition}
     end
+  end
+
+  defp unresolved_partition_issue?(host_id, partition) do
+    memory_space_id = partition.memory_space_id
+    scope = partition.scope
+    namespace = partition.namespace
+
+    Repo.exists?(
+      from(issue in BackfillIssue,
+        where: issue.disposition == "pending",
+        where:
+          (fragment("? ->> 'memory_space_id' = ?", issue.details, ^memory_space_id) or
+             fragment("? ->> 'host_id' = ?", issue.details, ^host_id)) and
+            (fragment("nullif(btrim(? ->> 'scope'), '') IS NULL", issue.details) or
+               fragment("? ->> 'scope' = ?", issue.details, ^scope)) and
+            (fragment("nullif(btrim(? ->> 'namespace'), '') IS NULL", issue.details) or
+               fragment("? ->> 'namespace' = ?", issue.details, ^namespace))
+      )
+    )
   end
 
   defp transaction(fun) do

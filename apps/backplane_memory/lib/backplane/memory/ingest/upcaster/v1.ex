@@ -11,6 +11,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
   def upcast(%{"schema_version" => 1} = event, auth_context) do
     partition = fetch(auth_context, :partition)
     host_id = fetch(partition, :host_id)
+    memory_space_id = fetch(partition, :memory_space_id)
     auth_token_id = fetch(auth_context, :auth_token_id)
     partition_id = fetch(partition, :partition_id)
     scope = fetch(partition, :scope)
@@ -23,6 +24,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
       |> maybe_put("source_client_id", event["client_id"])
       |> maybe_put("source_scope", event["scope"])
       |> Map.put("client_id", partition_id)
+      |> Map.put("memory_space_id", memory_space_id)
       |> Map.put("scope", scope)
       |> Map.put("namespace", namespace)
       |> wire_envelope()
@@ -30,12 +32,14 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
     {:ok,
      %{
        id: event["event_id"],
+       memory_space_id: memory_space_id,
        stream_id: stream_id(host_id, session_id, event["event_id"]),
        project: event["project"],
        namespace: namespace,
        agent_id: event["agent_id"],
        host_id: host_id,
        client_id: partition_id,
+       source_client_id: event["client_id"],
        session_id: session_id,
        event_type: event["event_type"],
        correlation_id: get_in(event, ["trace", "correlation_id"]),

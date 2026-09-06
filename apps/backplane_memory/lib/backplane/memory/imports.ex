@@ -3,24 +3,36 @@ defmodule Backplane.Memory.Imports do
 
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Imports.ImportBatch
+  alias Backplane.Memory.PartitionIdentity
 
-  def record(host_id, attrs) when is_binary(host_id) and is_map(attrs) do
-    Backplane.Memory.PipelineTelemetry.span(
-      "import." <> to_string(attrs["action"] || "invalid"),
-      Map.put(attrs, "host_id", host_id),
-      fn -> do_record(host_id, attrs) end
-    )
+  def record(partition, attrs) when is_map(partition) and is_map(attrs) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      Backplane.Memory.PipelineTelemetry.span(
+        "import." <> to_string(attrs["action"] || "invalid"),
+        Map.merge(attrs, %{
+          "memory_space_id" => partition.memory_space_id,
+          "host_id" => partition[:host_id],
+          "scope" => partition.scope,
+          "namespace" => partition.namespace
+        }),
+        fn -> do_record(partition, attrs) end
+      )
+    end
   end
 
-  def record(_host_id, _attrs), do: {:error, :invalid_batch}
+  def record(_partition, _attrs), do: {:error, :invalid_batch}
 
-  defp do_record(host_id, %{"protocol" => "host_import.v1", "action" => "started"} = attrs)
-       when is_binary(host_id) do
+  defp do_record(partition, %{"protocol" => "host_import.v1", "action" => "started"} = attrs) do
+    host_id = partition[:host_id]
     now = DateTime.utc_now()
 
     values = %{
       id: attrs["batch_id"],
+      memory_space_id: partition.memory_space_id,
       host_id: host_id,
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       integration: attrs["integration"],
       source_format: attrs["source_format"],
       source_path_fingerprint: attrs["source_path_fingerprint"],
@@ -45,10 +57,20 @@ defmodule Backplane.Memory.Imports do
     end)
   end
 
-  defp do_record(host_id, %{"protocol" => "host_import.v1", "action" => action} = attrs)
-       when is_binary(host_id) and action in ["completed", "failed"] do
+  defp do_record(partition, %{"protocol" => "host_import.v1", "action" => action} = attrs)
+       when action in ["completed", "failed"] do
+    host_id = partition[:host_id]
+
     transaction(fn ->
-      with %ImportBatch{host_id: ^host_id} = batch <- repo().get(ImportBatch, attrs["batch_id"]),
+      with %ImportBatch{
+             host_id: ^host_id,
+             memory_space_id: memory_space_id,
+             scope: scope,
+             namespace: namespace
+           } = batch
+           when memory_space_id == partition.memory_space_id and scope == partition.scope and
+                  namespace == partition.namespace <-
+             repo().get(ImportBatch, attrs["batch_id"]),
            {:ok, batch} <- update_batch(batch, action, attrs) do
         :ok =
           Audit.log_once(
@@ -68,7 +90,7 @@ defmodule Backplane.Memory.Imports do
     end)
   end
 
-  defp do_record(_host_id, _attrs), do: {:error, :invalid_batch}
+  defp do_record(_partition, _attrs), do: {:error, :invalid_batch}
 
   defp update_batch(batch, action, attrs) do
     values = %{
@@ -93,6 +115,7 @@ defmodule Backplane.Memory.Imports do
 
   defp audit_metadata(batch) do
     %{
+      "memory_space_id" => batch.memory_space_id,
       "host_id" => batch.host_id,
       "integration" => batch.integration,
       "source_format" => batch.source_format,

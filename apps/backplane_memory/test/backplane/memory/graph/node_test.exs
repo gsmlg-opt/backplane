@@ -3,29 +3,38 @@ defmodule Backplane.Memory.Graph.NodeTest do
 
   alias Backplane.Memory.Graph.Node
 
+  setup do
+    %{partition: canonical_partition("graph-node-#{System.unique_integer([:positive])}")}
+  end
+
+  defp node_attrs(partition, attrs), do: Map.merge(partition, attrs)
+
   describe "changeset/2 valid" do
-    test "accepts a valid type and name" do
-      cs = Node.changeset(%Node{}, %{type: "File", name: "lib/foo.ex"})
+    test "accepts a valid type and name", %{partition: partition} do
+      cs = Node.changeset(%Node{}, node_attrs(partition, %{type: "File", name: "lib/foo.ex"}))
       assert cs.valid?
     end
 
-    test "accepts all valid types" do
+    test "accepts all valid types", %{partition: partition} do
       for type <- ~w(File Function Module Library Concept Decision Bug Pattern Person) do
-        cs = Node.changeset(%Node{}, %{type: type, name: "example"})
+        cs = Node.changeset(%Node{}, node_attrs(partition, %{type: type, name: "example"}))
         assert cs.valid?, "expected valid for type=#{type}"
       end
     end
 
-    test "accepts optional properties and source_observation_ids" do
+    test "accepts optional properties and source_observation_ids", %{partition: partition} do
       id = Ecto.UUID.generate()
 
       cs =
-        Node.changeset(%Node{}, %{
-          type: "Concept",
-          name: "caching",
-          properties: %{"key" => "val"},
-          source_observation_ids: [id]
-        })
+        Node.changeset(
+          %Node{},
+          node_attrs(partition, %{
+            type: "Concept",
+            name: "caching",
+            properties: %{"key" => "val"},
+            source_observation_ids: [id]
+          })
+        )
 
       assert cs.valid?
     end
@@ -52,10 +61,10 @@ defmodule Backplane.Memory.Graph.NodeTest do
   end
 
   describe "insert" do
-    test "inserts a valid node into the database" do
+    test "inserts a valid node into the database", %{partition: partition} do
       {:ok, node} =
         %Node{}
-        |> Node.changeset(%{type: "Module", name: "MyApp.Repo"})
+        |> Node.changeset(node_attrs(partition, %{type: "Module", name: "MyApp.Repo"}))
         |> repo().insert()
 
       assert node.id != nil

@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   import Ecto.Query
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.ProjectedSession
 
   @processing_version "episodic-v1"
@@ -89,51 +90,54 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
       %Summary{} = summary ->
         content = summary.content
-        partition = projected_partition(summary)
 
-        case llm_module.extract_facts(content) do
-          {:ok, facts} when is_list(facts) ->
-            require Logger
+        with {:ok, partition} <- projected_partition(summary) do
+          case llm_module.extract_facts(content) do
+            {:ok, facts} when is_list(facts) ->
+              require Logger
 
-            errors =
-              facts
-              |> normalize_outputs()
-              |> Enum.with_index()
-              |> Enum.flat_map(fn {fact, ordinal} ->
-                case Memories.remember(fact,
-                       type: "semantic",
-                       scope: partition.scope,
-                       namespace: partition.namespace,
-                       client_id: partition.client_id,
-                       agent_id: summary.agent_id || "consolidation",
-                       host_id: summary.host_id,
-                       session_id: summary.session_id,
-                       idempotency_scope: "memory-worker:episodic",
-                       idempotency_key: idempotency_key(summary, ordinal),
-                       evidence: [summary_evidence(summary)]
-                     ) do
-                  {:ok, _} -> []
-                  {:error, reason} -> [reason]
-                end
-              end)
+              errors =
+                facts
+                |> normalize_outputs()
+                |> Enum.with_index()
+                |> Enum.flat_map(fn {fact, ordinal} ->
+                  case Memories.remember(fact,
+                         type: "semantic",
+                         memory_space_id: partition.memory_space_id,
+                         scope: partition.scope,
+                         namespace: partition.namespace,
+                         client_id: partition.client_id,
+                         source_client_id: partition[:source_client_id],
+                         agent_id: summary.agent_id || "consolidation",
+                         host_id: summary.host_id,
+                         session_id: summary.session_id,
+                         idempotency_scope: "memory-worker:episodic",
+                         idempotency_key: idempotency_key(summary, ordinal),
+                         evidence: [summary_evidence(summary)]
+                       ) do
+                    {:ok, _} -> []
+                    {:error, reason} -> [reason]
+                  end
+                end)
 
-            case errors do
-              [] ->
-                :ok
+              case errors do
+                [] ->
+                  :ok
 
-              [first | rest] ->
-                Logger.warning(
-                  "[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert"
-                )
+                [first | rest] ->
+                  Logger.warning(
+                    "[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert"
+                  )
 
-                {:error, first}
-            end
+                  {:error, first}
+              end
 
-          {:skip, _} ->
-            :ok
+            {:skip, _} ->
+              :ok
 
-          {:error, reason} ->
-            {:error, reason}
+            {:error, reason} ->
+              {:error, reason}
+          end
         end
     end
   end
@@ -164,17 +168,43 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     }
   end
 
-  defp projected_partition(%Summary{subject_id: subject_id, project: project}) do
+  defp projected_partition(%Summary{subject_id: subject_id} = summary) do
     case repo().get(ProjectedSession, subject_id) do
       %ProjectedSession{} = session ->
-        %{scope: session.scope, namespace: session.namespace, client_id: session.client_id}
+        partition =
+          Map.take(Map.from_struct(session), [
+            :memory_space_id,
+            :host_id,
+            :client_id,
+            :source_client_id,
+            :scope,
+            :namespace
+          ])
+
+        with {:ok, partition} <- generator_partition(partition),
+             {:ok, _summary_partition} <-
+               PartitionIdentity.validate(Map.from_struct(summary), partition) do
+          {:ok, partition}
+        end
 
       nil ->
-        %{scope: project, namespace: "private", client_id: nil}
+        {:error, :incomplete_partition}
     end
   end
 
   defp sha256(value), do: value |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+
+  defp generator_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   @doc "Enqueue an episodic extraction job for the given session_id."
   @spec enqueue(String.t()) :: {:ok, Oban.Job.t()} | {:error, term()}

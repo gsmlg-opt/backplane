@@ -6,6 +6,12 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
   test "returns complete old history from the indexed daily table with server filters" do
     suffix = unique()
 
+    partition =
+      canonical_partition("activity-owner-#{suffix}",
+        client_id: "client-#{suffix}",
+        scope: "scope-#{suffix}"
+      )
+
     insert_activity!(
       suffix,
       ~D[2025-09-01],
@@ -38,6 +44,7 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
 
     assert {:ok, [old]} =
              ReadModels.activity(
+               memory_space_id: partition.memory_space_id,
                client_id: "client-#{suffix}",
                scope: "scope-#{suffix}",
                namespace: "private",
@@ -56,6 +63,7 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
 
     assert {:ok, [old]} =
              ReadModels.activity(
+               memory_space_id: partition.memory_space_id,
                client_id: "client-#{suffix}",
                scope: "scope-#{suffix}",
                namespace: "private",
@@ -71,7 +79,19 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
   test "requires a complete partition and bounds dates, offsets, limits, and configured window" do
     assert {:error, :invalid_options} = ReadModels.activity([])
 
-    base = [client_id: "client", scope: "scope", namespace: "private", host_id: "host"]
+    partition = canonical_partition("activity-validation-owner", client_id: "client")
+
+    base = [
+      memory_space_id: partition.memory_space_id,
+      client_id: "client",
+      scope: "scope",
+      namespace: "private",
+      host_id: "host"
+    ]
+
+    assert {:error, :invalid_options} =
+             ReadModels.activity(Keyword.delete(base, :memory_space_id))
+
     assert {:error, :invalid_options} = ReadModels.activity(Keyword.delete(base, :host_id))
     assert {:error, :invalid_options} = ReadModels.activity(base ++ [limit: 0])
     assert {:error, :invalid_options} = ReadModels.activity(base ++ [limit: 10_001])
@@ -84,6 +104,7 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
 
   test "activity query uses an indexed bounded partition-date predicate" do
     suffix = unique()
+    partition = canonical_partition("activity-owner-#{suffix}", client_id: "client-#{suffix}")
     insert_activity!(suffix, ~D[2026-08-01], "project", "agent", "host", "memory.recalled", 1)
 
     repo().query!("SET LOCAL enable_seqscan = off")
@@ -93,18 +114,25 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
         """
         EXPLAIN (FORMAT TEXT)
         SELECT * FROM memory_activity_daily
-        WHERE host_id = $1 AND client_id = $2 AND scope = $3 AND namespace = 'private'
+        WHERE memory_space_id = $1 AND host_id = $2 AND client_id = $3 AND scope = $4
+          AND namespace = 'private'
           AND date >= '2026-01-01' AND date <= '2026-12-31'
         ORDER BY date DESC, project, agent_id, host_id, event_type
         LIMIT 100
         """,
-        ["host", "client-#{suffix}", "scope-#{suffix}"]
+        [
+          Ecto.UUID.dump!(partition.memory_space_id),
+          "host",
+          "client-#{suffix}",
+          "scope-#{suffix}"
+        ]
       ).rows
       |> List.flatten()
       |> Enum.join("\n")
 
     assert plan =~ ~r/(Index Scan|Bitmap Index Scan)/
     assert plan =~ "Index Cond:"
+    assert plan =~ "memory_space_id"
     assert plan =~ "host_id"
     assert plan =~ "client_id"
     assert plan =~ "scope"
@@ -115,13 +143,21 @@ defmodule Backplane.Memory.Projections.ActivityReadModelsTest do
   defp insert_activity!(suffix, date, project, agent, host, event_type, count) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
+    partition =
+      canonical_partition("activity-owner-#{suffix}",
+        client_id: "client-#{suffix}",
+        scope: "scope-#{suffix}"
+      )
+
     repo().insert_all(ActivityDaily, [
       %{
+        memory_space_id: partition.memory_space_id,
         date: date,
         project: project,
         agent_id: agent,
         host_id: host,
         client_id: "client-#{suffix}",
+        source_client_id: "client-#{suffix}",
         scope: "scope-#{suffix}",
         namespace: "private",
         event_type: event_type,

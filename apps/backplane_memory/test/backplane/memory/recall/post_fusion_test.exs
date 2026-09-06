@@ -156,6 +156,7 @@ defmodule Backplane.Memory.Recall.PostFusionTest do
       kind: Keyword.get(opts, :kind, :memory),
       memory_type: Keyword.get(opts, :memory_type, :semantic),
       content: "candidate",
+      memory_space_id: "00000000-0000-4000-8000-000000000099",
       host_id: Keyword.get(opts, :host_id, "host"),
       client_id: Keyword.get(opts, :client_id, "client"),
       scope: "team",

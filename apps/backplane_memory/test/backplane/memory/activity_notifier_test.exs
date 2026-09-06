@@ -16,6 +16,7 @@ defmodule Backplane.Memory.ActivityNotifierTest do
   test "broadcasts partition-safe activity invalidation only after projection commit" do
     suffix = System.unique_integer([:positive, :monotonic])
     subject_id = "activity-notifier-#{suffix}"
+    partition = partition(suffix)
     :ok = ActivityNotifier.subscribe()
     parent = self()
 
@@ -23,7 +24,9 @@ defmodule Backplane.Memory.ActivityNotifierTest do
       Task.async(fn ->
         unboxed(fn ->
           repo().transaction(fn ->
-            :ok = ActivityStore.replace_subject!(subject_id, "revision-1", [row(suffix)])
+            :ok =
+              ActivityStore.replace_subject!(subject_id, "revision-1", partition, [row(suffix)])
+
             send(parent, {:projected_inside_transaction, self()})
 
             receive do
@@ -41,6 +44,7 @@ defmodule Backplane.Memory.ActivityNotifierTest do
     assert_receive {:memory_activity_updated, summary}, 1_000
 
     assert summary == %{
+             memory_space_id: partition.memory_space_id,
              host_id: "host-#{suffix}",
              client_id: "client-#{suffix}",
              scope: "scope-#{suffix}",
@@ -73,6 +77,19 @@ defmodule Backplane.Memory.ActivityNotifierTest do
     }
   end
 
+  defp partition(suffix) do
+    host_id = "host-#{suffix}"
+
+    %{
+      memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!(host_id),
+      host_id: host_id,
+      client_id: "client-#{suffix}",
+      source_client_id: "client-#{suffix}",
+      scope: "scope-#{suffix}",
+      namespace: "private"
+    }
+  end
+
   defp cleanup(subject_id, suffix) do
     unboxed(fn ->
       repo().delete_all(from(c in ActivityContribution, where: c.subject_id == ^subject_id))
@@ -81,12 +98,16 @@ defmodule Backplane.Memory.ActivityNotifierTest do
   end
 
   defp unboxed(fun) do
-    :ok = Sandbox.checkout(repo(), sandbox: false)
+    case Sandbox.checkout(repo(), sandbox: false) do
+      :ok ->
+        try do
+          fun.()
+        after
+          :ok = Sandbox.checkin(repo())
+        end
 
-    try do
-      fun.()
-    after
-      :ok = Sandbox.checkin(repo())
+      {:already, :owner} ->
+        fun.()
     end
   end
 

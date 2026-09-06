@@ -42,16 +42,21 @@ defmodule Backplane.Memory.Projections.ActivityStoreTest do
 
   test "revision replacement removes obsolete keys and moves all counters atomically" do
     subject = "activity-subject-#{unique()}"
+    partition = canonical_partition("host", client_id: "client", scope: "scope")
     initial = [row("2026-02-01", "old", "memory.recalled", 2, %{recall_count: 2})]
     moved = [row("2026-02-02", "new", "task.completed", 3, %{action_count: 3})]
 
     assert {:ok, :ok} =
-             repo().transaction(fn -> ActivityStore.replace_subject!(subject, "r1", initial) end)
+             repo().transaction(fn ->
+               ActivityStore.replace_subject!(subject, "r1", partition, initial)
+             end)
 
     assert [%ActivityDaily{project: "old", recall_count: 2}] = activity("old")
 
     assert {:ok, :ok} =
-             repo().transaction(fn -> ActivityStore.replace_subject!(subject, "r2", moved) end)
+             repo().transaction(fn ->
+               ActivityStore.replace_subject!(subject, "r2", partition, moved)
+             end)
 
     assert activity("old") == []
 
@@ -60,7 +65,7 @@ defmodule Backplane.Memory.Projections.ActivityStoreTest do
 
     assert {:error, :rollback} =
              repo().transaction(fn ->
-               ActivityStore.replace_subject!(subject, "r3", initial)
+               ActivityStore.replace_subject!(subject, "r3", partition, initial)
                repo().rollback(:rollback)
              end)
 
@@ -111,6 +116,30 @@ defmodule Backplane.Memory.Projections.ActivityStoreTest do
     assert team.event_count == 1
   end
 
+  test "canonical memory spaces remain separate when legacy dimensions collide" do
+    project = "activity-space-isolation-#{unique()}"
+    shared_row = row("2026-05-01", project, "memory.recalled", 1, %{recall_count: 1})
+    partition_a = canonical_partition("space-a", client_id: "client", scope: "scope")
+    partition_b = canonical_partition("space-b", client_id: "client", scope: "scope")
+
+    for {subject, partition} <- [{"subject-a", partition_a}, {"subject-b", partition_b}] do
+      assert {:ok, :ok} =
+               repo().transaction(fn ->
+                 ActivityStore.replace_subject!("#{subject}-#{project}", "r1", partition, [
+                   shared_row
+                 ])
+               end)
+    end
+
+    assert rows = activity(project)
+    assert length(rows) == 2
+
+    assert MapSet.new(Enum.map(rows, & &1.memory_space_id)) ==
+             MapSet.new([partition_a.memory_space_id, partition_b.memory_space_id])
+
+    assert Enum.all?(rows, &(&1.event_count == 1))
+  end
+
   defp row(date, project, event_type, count, overrides) do
     Map.merge(
       %{
@@ -136,11 +165,15 @@ defmodule Backplane.Memory.Projections.ActivityStoreTest do
   end
 
   defp event(host, session, project, sequence, event_type, occurred_at) do
+    memory_space_id = Backplane.Memory.IngestFixtures.ensure_memory_space!(host)
+
     %{
       id: Ecto.UUID.generate(),
       stream_id: "capture:#{host}:#{session}",
+      memory_space_id: memory_space_id,
       host_id: host,
       client_id: "client-activity",
+      source_client_id: "client-activity",
       scope: "scope:activity",
       namespace: "private",
       session_id: session,

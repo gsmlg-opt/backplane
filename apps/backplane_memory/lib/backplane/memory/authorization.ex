@@ -38,7 +38,8 @@ defmodule Backplane.Memory.Authorization do
   defp trusted_identity?(kind, _client_id) when kind in [:legacy, :open], do: true
 
   defp validate_requested_partition(args, partition) do
-    with :ok <- matches_if_present(args, "host_id", partition.host_id),
+    with :ok <- matches_if_present(args, "memory_space_id", partition.memory_space_id),
+         :ok <- matches_if_present(args, "host_id", partition.host_id),
          :ok <- matches_if_present(args, "client_id", partition.partition_id),
          :ok <- matches_if_present(args, "namespace", partition.namespace),
          :ok <- matches_if_present(args, "scope", partition.scope) do
@@ -56,8 +57,10 @@ defmodule Backplane.Memory.Authorization do
 
   defp trusted_args(args, partition) do
     Map.merge(args, %{
+      "memory_space_id" => partition.memory_space_id,
       "host_id" => partition.host_id,
       "client_id" => partition.partition_id,
+      "source_client_id" => partition[:source_client_id],
       "namespace" => partition.namespace,
       "scope" => partition.scope
     })
@@ -94,7 +97,8 @@ defmodule Backplane.Memory.Authorization do
     query =
       from(m in Memory,
         where:
-          m.id == ^id and m.host_id == ^partition.host_id and
+          m.id == ^id and m.memory_space_id == ^partition.memory_space_id and
+            m.host_id == ^partition.host_id and
             m.client_id == ^partition.partition_id and m.scope == ^partition.scope and
             m.namespace == ^partition.namespace
       )

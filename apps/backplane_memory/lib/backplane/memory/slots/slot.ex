@@ -6,9 +6,11 @@ defmodule Backplane.Memory.Slots.Slot do
   @timestamps_opts false
 
   schema "memory_slots" do
+    field(:memory_space_id, :binary_id)
     field(:name, :string)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:content, :string, default: "")
@@ -21,8 +23,10 @@ defmodule Backplane.Memory.Slots.Slot do
     slot
     |> cast(attrs, [
       :name,
+      :memory_space_id,
       :host_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :content,

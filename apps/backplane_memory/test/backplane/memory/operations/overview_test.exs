@@ -2,8 +2,14 @@ defmodule Backplane.Memory.Operations.OverviewTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Events.{Event, Store, Stream}
+  alias Backplane.Memory.EventTestPartition
   alias Backplane.Memory.Operations
   alias Backplane.Memory.Operations.Query
+
+  setup do
+    EventTestPartition.ensure!()
+    :ok
+  end
 
   test "persisted counts distinguish open streams and use insertion time" do
     now = ~U[2030-07-17 12:34:56.000000Z]
@@ -227,7 +233,7 @@ defmodule Backplane.Memory.Operations.OverviewTest do
   end
 
   defp append!(attrs) do
-    assert {:ok, event} = Store.append(attrs, telemetry: false)
+    assert {:ok, event} = Store.append(EventTestPartition.attrs(attrs), telemetry: false)
     event
   end
 
@@ -244,6 +250,7 @@ defmodule Backplane.Memory.Operations.OverviewTest do
       attrs
       |> Map.new()
       |> Map.put(:stream_id, stream_id)
+      |> EventTestPartition.attrs()
 
     %Stream{}
     |> struct(attrs)

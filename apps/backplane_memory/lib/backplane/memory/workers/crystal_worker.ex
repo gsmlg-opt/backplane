@@ -11,6 +11,7 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
     ]
 
   alias Backplane.Memory.{Config, Crystals}
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Crystals.ProjectionStore
   alias Backplane.Memory.Projections.{ReadModels, Source}
 
@@ -46,9 +47,11 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
         %DateTime{} = current_time,
         opts
       ) do
-    with true <- valid?(host_id) and valid?(session_id) and valid?(expected_revision),
+    with {:ok, partition} <- generator_partition(args),
+         true <- valid?(host_id) and valid?(session_id) and valid?(expected_revision),
          {:ok, %{input_revision: ^expected_revision} = input} <-
            ReadModels.summary_input(host_id, session_id, limit: 100, allow_incomplete: true),
+         {:ok, _partition} <- PartitionIdentity.validate(input, partition),
          true <- input.status in @terminal do
       case grace_wait(input, current_time) do
         0 -> execute_build(args, opts)
@@ -75,19 +78,36 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
 
   def enqueue(host_id, session_id, input_revision)
       when is_binary(host_id) and is_binary(session_id) and is_binary(input_revision) do
-    ProjectionStore.enqueue(host_id, session_id, input_revision, fn ->
-      %{
-        host_id: host_id,
-        session_id: session_id,
-        processing_version: @processing_version,
-        input_revision: input_revision
-      }
-      |> new()
-      |> Oban.insert()
-    end)
-    |> case do
-      {:ok, job} -> {:ok, job}
-      {:error, reason} -> {:error, reason}
+    with {:ok, input} <-
+           ReadModels.summary_input(host_id, session_id, limit: 1, allow_incomplete: true),
+         {:ok, partition} <- PartitionIdentity.validate(input) do
+      enqueue(host_id, session_id, input_revision, partition)
+    end
+  end
+
+  def enqueue(host_id, session_id, input_revision, partition)
+      when is_binary(host_id) and is_binary(session_id) and is_binary(input_revision) and
+             is_map(partition) do
+    with {:ok, partition} <- generator_partition(partition) do
+      ProjectionStore.enqueue(host_id, session_id, input_revision, partition, fn ->
+        %{
+          memory_space_id: partition.memory_space_id,
+          host_id: host_id,
+          client_id: partition[:client_id],
+          source_client_id: partition[:source_client_id],
+          scope: partition.scope,
+          namespace: partition.namespace,
+          session_id: session_id,
+          processing_version: @processing_version,
+          input_revision: input_revision
+        }
+        |> new()
+        |> Oban.insert()
+      end)
+      |> case do
+        {:ok, job} -> {:ok, job}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -96,12 +116,13 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
            "host_id" => host_id,
            "session_id" => session_id,
            "input_revision" => input_revision
-         },
+         } = args,
          opts
        ) do
     build_session_fn =
       Keyword.get(opts, :build_session_fn, fn host, session, revision ->
         Crystals.build_session(host, session, revision,
+          partition: partition_from_args(args),
           enforce_feature_gate: Keyword.get(opts, :enforce_feature_gate, true)
         )
       end)
@@ -221,6 +242,13 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
     end
   end
 
+  defp partition_from_args(args) do
+    Map.new(
+      [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace],
+      fn key -> {key, args[Atom.to_string(key)]} end
+    )
+  end
+
   defp yield_build_task(task, timeout) do
     case Task.yield(task, timeout) do
       {:ok, value} ->
@@ -328,5 +356,16 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
   defp latest(nil, %DateTime{} = second), do: second
 
   defp valid?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp generator_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <- valid?(partition[:host_id]) and valid?(partition[:client_id]) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 end

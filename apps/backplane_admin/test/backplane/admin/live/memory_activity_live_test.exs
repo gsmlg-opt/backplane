@@ -3,9 +3,12 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
 
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Projections.{ActivityContribution, ActivityDaily}
+  alias Backplane.MemorySpaces.MemorySpace
   alias Backplane.Skills.{AgentManage, Hosts}
 
+  @memory_space_id "10000000-0000-0000-0000-000000000001"
   @partition %{
+    memory_space_id: @memory_space_id,
     host_id: "activity-ui-host",
     client_id: "activity-ui-client",
     scope: "team",
@@ -13,6 +16,15 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
   }
 
   setup do
+    assert {:ok, _space} =
+             %MemorySpace{}
+             |> MemorySpace.changeset(%{
+               id: @memory_space_id,
+               kind: "private",
+               status: "active"
+             })
+             |> repo().insert()
+
     AgentManage.clear()
     on_exit(fn -> AgentManage.clear() end)
   end
@@ -294,8 +306,10 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
              Store.append_tagged(%{
                id: Ecto.UUID.generate(),
                stream_id: "capture:#{@partition.host_id}:activity-live-feed",
+               memory_space_id: @partition.memory_space_id,
                host_id: @partition.host_id,
                client_id: @partition.client_id,
+               source_client_id: @partition.client_id,
                scope: @partition.scope,
                namespace: @partition.namespace,
                session_id: "activity-live-feed",

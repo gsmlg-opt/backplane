@@ -1,10 +1,47 @@
 defmodule Backplane.Memory.MemoriesTest do
   use Backplane.Memory.DataCase, async: true
 
-  alias Backplane.Memory.Memories
+  defmodule Memories do
+    def remember(content, opts \\ []) do
+      Backplane.Memory.Memories.remember(content, canonical_opts(opts))
+    end
+
+    defdelegate get(id), to: Backplane.Memory.Memories
+    defdelegate get(id, partition), to: Backplane.Memory.Memories
+    defdelegate forget(id), to: Backplane.Memory.Memories
+    defdelegate forget(id, partition), to: Backplane.Memory.Memories
+    defdelegate list(opts), to: Backplane.Memory.Memories
+    defdelegate list(opts, partition), to: Backplane.Memory.Memories
+    defdelegate count(opts), to: Backplane.Memory.Memories
+    defdelegate count(opts, partition), to: Backplane.Memory.Memories
+    defdelegate stats(), to: Backplane.Memory.Memories
+    defdelegate scope_stats(), to: Backplane.Memory.Memories
+
+    defp canonical_opts(opts) do
+      partition =
+        Backplane.Memory.DataCase.canonical_partition("memory-test-owner",
+          scope: opts[:scope] || "global"
+        )
+
+      Keyword.merge(opts,
+        memory_space_id: opts[:memory_space_id] || partition.memory_space_id,
+        scope: opts[:scope] || partition.scope,
+        namespace: opts[:namespace] || partition.namespace
+      )
+    end
+  end
+
+  setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("memory-test-owner")
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("memory-test-foreign-owner")
+    :ok
+  end
 
   defp partition(scope \\ "global") do
-    %{host_id: "h", client_id: "client", scope: scope, namespace: "private"}
+    Backplane.Memory.DataCase.canonical_partition("memory-test-owner",
+      client_id: "client",
+      scope: scope
+    )
   end
 
   describe "remember/2" do
@@ -62,7 +99,7 @@ defmodule Backplane.Memory.MemoriesTest do
       assert first.id != second.id
     end
 
-    test "does not deduplicate identical semantic content across hosts" do
+    test "does not deduplicate identical semantic content across memory spaces" do
       common = [
         agent_id: "agent",
         client_id: "shared-client",
@@ -74,7 +111,14 @@ defmodule Backplane.Memory.MemoriesTest do
       assert {:ok, first} = Memories.remember("host-specific fact", [host_id: "host-a"] ++ common)
 
       assert {:ok, second} =
-               Memories.remember("host-specific fact", [host_id: "host-b"] ++ common)
+               Memories.remember(
+                 "host-specific fact",
+                 [
+                   host_id: "host-b",
+                   memory_space_id:
+                     Backplane.Memory.IngestFixtures.memory_space_id("memory-test-foreign-owner")
+                 ] ++ common
+               )
 
       refute first.id == second.id
     end

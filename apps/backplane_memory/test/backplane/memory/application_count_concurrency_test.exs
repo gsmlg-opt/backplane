@@ -18,12 +18,16 @@ defmodule Backplane.Memory.ApplicationCountConcurrencyTest do
 
     memory =
       unboxed(fn ->
+        Backplane.Memory.IngestFixtures.ensure_memory_space!(partition.host_id)
+
         {:ok, memory} =
           Memories.remember(content,
             type: "procedural",
             agent_id: "author",
+            memory_space_id: partition.memory_space_id,
             host_id: partition.host_id,
             client_id: partition.client_id,
+            source_client_id: partition.source_client_id,
             scope: partition.scope,
             namespace: partition.namespace
           )
@@ -57,7 +61,14 @@ defmodule Backplane.Memory.ApplicationCountConcurrencyTest do
   end
 
   defp partition(host_id) do
-    %{host_id: host_id, client_id: "shared-client", scope: "shared-scope", namespace: "private"}
+    %{
+      memory_space_id: Backplane.Memory.IngestFixtures.memory_space_id(host_id),
+      host_id: host_id,
+      client_id: "shared-client",
+      source_client_id: "shared-client",
+      scope: "shared-scope",
+      namespace: "private"
+    }
   end
 
   defp cleanup_on_exit(content) do

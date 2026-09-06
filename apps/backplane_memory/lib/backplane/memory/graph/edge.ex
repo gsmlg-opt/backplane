@@ -9,8 +9,10 @@ defmodule Backplane.Memory.Graph.Edge do
   @timestamps_opts [type: :utc_datetime_usec, updated_at: false, inserted_at: :created_at]
 
   schema "memory_graph_edges" do
+    field(:memory_space_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:source_id, :binary_id)
@@ -24,7 +26,9 @@ defmodule Backplane.Memory.Graph.Edge do
     edge
     |> cast(attrs, [
       :host_id,
+      :memory_space_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :source_id,
@@ -32,7 +36,14 @@ defmodule Backplane.Memory.Graph.Edge do
       :relation,
       :weight
     ])
-    |> validate_required([:source_id, :target_id, :relation])
+    |> validate_required([
+      :source_id,
+      :target_id,
+      :relation,
+      :memory_space_id,
+      :scope,
+      :namespace
+    ])
     |> validate_inclusion(:relation, @valid_relations)
   end
 end

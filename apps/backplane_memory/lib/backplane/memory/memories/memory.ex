@@ -10,12 +10,14 @@ defmodule Backplane.Memory.Memories.Memory do
   @foreign_key_type :binary_id
 
   schema "bpm_memories" do
+    field(:memory_space_id, :binary_id)
     field(:content, :string)
     field(:memory_type, :string, default: "semantic")
     field(:scope, :string, default: "global")
     field(:agent_id, :string)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:session_id, :string)
     field(:tags, {:array, :string}, default: [])
     field(:metadata, :map, default: %{})
@@ -51,12 +53,14 @@ defmodule Backplane.Memory.Memories.Memory do
     memory
     |> cast(attrs, [
       :content,
+      :memory_space_id,
       :memory_type,
       :namespace,
       :scope,
       :agent_id,
       :host_id,
       :client_id,
+      :source_client_id,
       :session_id,
       :tags,
       :metadata,
@@ -69,7 +73,14 @@ defmodule Backplane.Memory.Memories.Memory do
       :expires_at,
       :deleted_at
     ])
-    |> validate_required([:content, :agent_id, :host_id])
+    |> validate_required([
+      :content,
+      :agent_id,
+      :host_id,
+      :memory_space_id,
+      :scope,
+      :namespace
+    ])
     |> validate_inclusion(:memory_type, @valid_types)
     |> validate_number(:application_count, greater_than_or_equal_to: 0)
     |> check_constraint(:application_count, name: :bpm_memories_application_count_nonnegative)

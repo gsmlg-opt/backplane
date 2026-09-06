@@ -209,12 +209,7 @@ defmodule Backplane.Memory.CrystalsTest do
     assert {:ok, input} = Rebuild.session(host_id, session_id)
     summarize(input)
 
-    args = %{
-      "host_id" => host_id,
-      "session_id" => session_id,
-      "processing_version" => "crystal-v1",
-      "input_revision" => input.input_revision
-    }
+    args = worker_args(input)
 
     assert {:snooze, 60} = run_crystal_worker(args, now)
     assert repo().aggregate(Crystal, :count) == 0
@@ -233,12 +228,24 @@ defmodule Backplane.Memory.CrystalsTest do
       assert job.max_attempts == 5
 
       assert job.args == %{
+               "memory_space_id" => input.memory_space_id,
                "host_id" => input.host_id,
+               "client_id" => input.client_id,
+               "source_client_id" => input.source_client_id,
+               "scope" => input.scope,
+               "namespace" => input.namespace,
                "session_id" => input.session_id,
                "processing_version" => "crystal-v1",
                "input_revision" => input.input_revision
              }
     end)
+  end
+
+  test "canonical enqueue fails closed when generator provenance is incomplete" do
+    partition = canonical_partition("crystal-incomplete") |> Map.delete(:client_id)
+
+    assert {:error, :incomplete_partition} =
+             CrystalWorker.enqueue("crystal-incomplete", "session", "revision", partition)
   end
 
   test "failed enqueue remains pending and a retry enqueues idempotently" do
@@ -900,10 +907,12 @@ defmodule Backplane.Memory.CrystalsTest do
              )
 
     partition = %{
+      memory_space_id: input.memory_space_id,
       host_id: input.host_id,
-      client_id: "host:#{input.host_id}",
-      scope: "private",
-      namespace: "private"
+      client_id: input.client_id,
+      source_client_id: input.source_client_id,
+      scope: input.scope,
+      namespace: input.namespace
     }
 
     assert {:ok, [%Crystal{id: crystal_id}]} =
@@ -945,7 +954,12 @@ defmodule Backplane.Memory.CrystalsTest do
       assert :ok =
                SummaryWorker.perform(%Oban.Job{
                  args: %{
+                   "memory_space_id" => input.memory_space_id,
                    "host_id" => input.host_id,
+                   "client_id" => input.client_id,
+                   "source_client_id" => input.source_client_id,
+                   "scope" => input.scope,
+                   "namespace" => input.namespace,
                    "session_id" => input.session_id,
                    "processing_version" => "summary-v1",
                    "input_revision" => input.input_revision
@@ -986,7 +1000,12 @@ defmodule Backplane.Memory.CrystalsTest do
 
   defp worker_args(input) do
     %{
+      "memory_space_id" => input.memory_space_id,
       "host_id" => input.host_id,
+      "client_id" => input.client_id,
+      "source_client_id" => input.source_client_id,
+      "scope" => input.scope,
+      "namespace" => input.namespace,
       "session_id" => input.session_id,
       "processing_version" => "crystal-v1",
       "input_revision" => input.input_revision

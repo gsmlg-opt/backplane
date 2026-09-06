@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Memories.MemoryTest do
 
   alias Backplane.Memory.{Audit, Memories}
   alias Backplane.Memory.Memories.Memory
+  alias Backplane.MemorySpaces.MemorySpace
 
   describe "changeset/2" do
     test "valid attrs produce a valid changeset" do
@@ -10,7 +11,8 @@ defmodule Backplane.Memory.Memories.MemoryTest do
         Memory.changeset(%Memory{}, %{
           content: "Paris is the capital of France.",
           agent_id: "a",
-          host_id: "h"
+          host_id: "h",
+          memory_space_id: Ecto.UUID.generate()
         })
 
       assert cs.valid?
@@ -19,17 +21,35 @@ defmodule Backplane.Memory.Memories.MemoryTest do
     end
 
     test "content is required" do
-      cs = Memory.changeset(%Memory{}, %{agent_id: "a", host_id: "h"})
+      cs =
+        Memory.changeset(%Memory{}, %{
+          agent_id: "a",
+          host_id: "h",
+          memory_space_id: Ecto.UUID.generate()
+        })
+
       assert %{content: ["can't be blank"]} = errors_on(cs)
     end
 
     test "agent_id is required" do
-      cs = Memory.changeset(%Memory{}, %{content: "x", host_id: "h"})
+      cs =
+        Memory.changeset(%Memory{}, %{
+          content: "x",
+          host_id: "h",
+          memory_space_id: Ecto.UUID.generate()
+        })
+
       assert %{agent_id: ["can't be blank"]} = errors_on(cs)
     end
 
     test "host_id is required" do
-      cs = Memory.changeset(%Memory{}, %{content: "x", agent_id: "a"})
+      cs =
+        Memory.changeset(%Memory{}, %{
+          content: "x",
+          agent_id: "a",
+          memory_space_id: Ecto.UUID.generate()
+        })
+
       assert %{host_id: ["can't be blank"]} = errors_on(cs)
     end
 
@@ -39,6 +59,7 @@ defmodule Backplane.Memory.Memories.MemoryTest do
           content: "x",
           agent_id: "a",
           host_id: "h",
+          memory_space_id: Ecto.UUID.generate(),
           memory_type: "invalid"
         })
 
@@ -46,7 +67,14 @@ defmodule Backplane.Memory.Memories.MemoryTest do
     end
 
     test "content_hash is derived from content" do
-      cs = Memory.changeset(%Memory{}, %{content: "hello", agent_id: "a", host_id: "h"})
+      cs =
+        Memory.changeset(%Memory{}, %{
+          content: "hello",
+          agent_id: "a",
+          host_id: "h",
+          memory_space_id: Ecto.UUID.generate()
+        })
+
       assert Ecto.Changeset.get_change(cs, :content_hash) == :crypto.hash(:sha256, "hello")
     end
   end
@@ -58,7 +86,8 @@ defmodule Backplane.Memory.Memories.MemoryTest do
         |> Memory.changeset(%{
           content: "Rome is the capital of Italy.",
           agent_id: "a",
-          host_id: "h"
+          host_id: "h",
+          memory_space_id: insert_space!()
         })
         |> Backplane.Repo.insert()
 
@@ -94,6 +123,7 @@ defmodule Backplane.Memory.Memories.MemoryTest do
       assert metadata["to"] == "tombstoned"
       assert metadata["result"] == "deleted"
       assert metadata["host_id"] == partition.host_id
+      assert metadata["memory_space_id"] == partition.memory_space_id
       assert metadata["client_id"] == partition.client_id
       assert metadata["scope"] == partition.scope
       assert metadata["namespace"] == partition.namespace
@@ -121,7 +151,10 @@ defmodule Backplane.Memory.Memories.MemoryTest do
   end
 
   defp partition(host_id) do
+    memory_space_id = insert_space!()
+
     %{
+      memory_space_id: memory_space_id,
       host_id: host_id,
       client_id: "host:#{host_id}",
       scope: "scope:#{host_id}",
@@ -132,10 +165,18 @@ defmodule Backplane.Memory.Memories.MemoryTest do
   defp remember_options(partition) do
     [
       agent_id: "agent",
+      memory_space_id: partition.memory_space_id,
       host_id: partition.host_id,
       client_id: partition.client_id,
       scope: partition.scope,
       namespace: partition.namespace
     ]
+  end
+
+  defp insert_space! do
+    %MemorySpace{}
+    |> MemorySpace.changeset(%{kind: "private", status: "active"})
+    |> Backplane.Repo.insert!()
+    |> Map.fetch!(:id)
   end
 end

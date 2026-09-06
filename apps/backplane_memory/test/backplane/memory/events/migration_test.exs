@@ -74,21 +74,26 @@ defmodule Backplane.Memory.Events.MigrationTest do
     first_stream_id = "global-key-stream-a-#{suffix}"
     second_stream_id = "global-key-stream-b-#{suffix}"
     idempotency_key = "global-key-#{suffix}"
+    partition = canonical_partition("event-migration-host")
 
     assert {:ok, _stream} =
-             repo().insert(Stream.changeset(%Stream{}, %{stream_id: first_stream_id}))
+             repo().insert(
+               Stream.changeset(%Stream{}, Map.put(partition, :stream_id, first_stream_id))
+             )
 
     assert {:ok, _stream} =
-             repo().insert(Stream.changeset(%Stream{}, %{stream_id: second_stream_id}))
+             repo().insert(
+               Stream.changeset(%Stream{}, Map.put(partition, :stream_id, second_stream_id))
+             )
 
     assert {:ok, _event} =
              first_stream_id
-             |> event_changeset(idempotency_key)
+             |> event_changeset(idempotency_key, partition)
              |> repo().insert()
 
     assert {:error, changeset} =
              second_stream_id
-             |> event_changeset(idempotency_key)
+             |> event_changeset(idempotency_key, partition)
              |> repo().insert()
 
     assert %{idempotency_key: ["has already been taken"]} = errors_on(changeset)
@@ -226,15 +231,18 @@ defmodule Backplane.Memory.Events.MigrationTest do
     refute source =~ "concurrently: true"
   end
 
-  defp event_changeset(stream_id, idempotency_key) do
-    Event.changeset(%Event{}, %{
-      id: Ecto.UUID.generate(),
-      stream_id: stream_id,
-      sequence: 1,
-      event_type: "session.started",
-      idempotency_key: idempotency_key,
-      occurred_at: DateTime.utc_now()
-    })
+  defp event_changeset(stream_id, idempotency_key, partition) do
+    Event.changeset(
+      %Event{},
+      Map.merge(partition, %{
+        id: Ecto.UUID.generate(),
+        stream_id: stream_id,
+        sequence: 1,
+        event_type: "session.started",
+        idempotency_key: idempotency_key,
+        occurred_at: DateTime.utc_now()
+      })
+    )
   end
 
   defp load_migration do

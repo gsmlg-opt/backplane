@@ -4,8 +4,10 @@ defmodule Backplane.Memory.LessonsAdminTest do
   alias Backplane.Memory.Lessons
 
   @partition %{
+    memory_space_id: "35c891b1-c374-d7b7-5cdf-3e0470362ba4",
     host_id: "lesson-admin-host",
     client_id: "lesson-admin-client",
+    source_client_id: "lesson-admin-client",
     scope: "team",
     namespace: "private"
   }
@@ -15,12 +17,18 @@ defmodule Backplane.Memory.LessonsAdminTest do
     correlation_id: "lesson-admin-correlation"
   }
 
+  setup do
+    assert Backplane.Memory.IngestFixtures.ensure_memory_space!(@partition.host_id) ==
+             @partition.memory_space_id
+
+    :ok
+  end
+
   test "list_admin is exact-partition, filterable, and bounded" do
     {:ok, first} = lesson_fixture("First admin rule", "alpha")
     {:ok, _second} = lesson_fixture("Second admin rule", "beta")
 
-    {:ok, _foreign} =
-      lesson_fixture("Foreign rule", "alpha", Map.put(@partition, :host_id, "other-host"))
+    {:ok, _foreign} = lesson_fixture("Foreign rule", "alpha", foreign_partition())
 
     assert {:ok, %{entries: [entry], page: 1, per_page: 1, total: 1, total_pages: 1}} =
              Lessons.list_admin(@partition,
@@ -50,7 +58,7 @@ defmodule Backplane.Memory.LessonsAdminTest do
     assert [%{evidence_kind: "supports", session_id: "session-console"}] = detail.evidence
 
     assert {:error, :not_found} =
-             Lessons.get_admin(lesson.memory_id, Map.put(@partition, :client_id, "other-client"))
+             Lessons.get_admin(lesson.memory_id, foreign_partition())
   end
 
   defp lesson_fixture(rule, project, partition \\ @partition) do
@@ -64,6 +72,14 @@ defmodule Backplane.Memory.LessonsAdminTest do
       },
       partition,
       @audit
+    )
+  end
+
+  defp foreign_partition do
+    canonical_partition("other-lesson-admin-host",
+      client_id: "other-client",
+      scope: @partition.scope,
+      namespace: @partition.namespace
     )
   end
 end

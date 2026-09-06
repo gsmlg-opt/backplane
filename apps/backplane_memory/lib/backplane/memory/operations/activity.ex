@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Operations.Activity do
   alias Backplane.Memory.Activity
   alias Backplane.Memory.Projections.ActivityDaily
 
-  @tenant_keys ~w(client_id scope namespace)a
+  @tenant_keys ~w(memory_space_id client_id scope namespace)a
 
   # This module is the trusted-operator boundary used by the private admin endpoint.
   # Public Memory APIs remain exact-host and never accept a cross-host authorization flag.
@@ -18,13 +18,16 @@ defmodule Backplane.Memory.Operations.Activity do
         ActivityDaily
         |> where(
           [row],
-          row.host_id != "" and row.client_id != "" and row.scope != "" and row.namespace != ""
+          not is_nil(row.memory_space_id) and row.host_id != "" and row.client_id != "" and
+            row.scope != "" and row.namespace != ""
         )
+        |> maybe_filter(:memory_space_id, options.memory_space_id)
         |> maybe_filter(:client_id, options.client_id)
         |> maybe_filter(:scope, options.scope)
         |> maybe_filter(:namespace, options.namespace)
         |> distinct(true)
         |> order_by([row],
+          asc: row.memory_space_id,
           asc: row.client_id,
           asc: row.scope,
           asc: row.namespace,
@@ -32,6 +35,7 @@ defmodule Backplane.Memory.Operations.Activity do
         )
         |> limit(^options.limit)
         |> select([row], %{
+          memory_space_id: row.memory_space_id,
           host_id: row.host_id,
           client_id: row.client_id,
           scope: row.scope,
@@ -51,6 +55,7 @@ defmodule Backplane.Memory.Operations.Activity do
     with {:ok, tenant} <- exact_tenant(tenant),
          {:ok, partitions} <-
            partitions(
+             memory_space_id: tenant.memory_space_id,
              client_id: tenant.client_id,
              scope: tenant.scope,
              namespace: tenant.namespace,
@@ -74,10 +79,11 @@ defmodule Backplane.Memory.Operations.Activity do
   end
 
   defp partition_options(opts) do
-    allowed = [:client_id, :scope, :namespace, :limit]
+    allowed = [:memory_space_id, :client_id, :scope, :namespace, :limit]
 
     if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [] do
       options = %{
+        memory_space_id: Keyword.get(opts, :memory_space_id),
         client_id: Keyword.get(opts, :client_id),
         scope: Keyword.get(opts, :scope),
         namespace: Keyword.get(opts, :namespace),
@@ -94,7 +100,10 @@ defmodule Backplane.Memory.Operations.Activity do
 
   defp valid_partition_options?(options) do
     is_integer(options.limit) and options.limit in 1..100 and
-      Enum.all?([options.client_id, options.scope, options.namespace], &valid_optional?/1)
+      Enum.all?(
+        [options.memory_space_id, options.client_id, options.scope, options.namespace],
+        &valid_optional?/1
+      )
   end
 
   defp exact_tenant(tenant) do

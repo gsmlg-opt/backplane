@@ -673,6 +673,7 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
           occurred_at: DateTime.add(base, sequence, :second),
           idempotency_key: "#{stream_id}-#{sequence}"
         }
+        |> canonical_event_attrs()
       end
 
     assert {:ok, events} = Events.append_batch(attrs)

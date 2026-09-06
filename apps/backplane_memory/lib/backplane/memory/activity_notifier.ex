@@ -42,13 +42,24 @@ defmodule Backplane.Memory.ActivityNotifier do
 
   defp summaries(keys) do
     keys
-    |> Enum.group_by(fn {_date, _project, _agent, host, client, scope, namespace, _type} ->
-      {host, client, scope, namespace}
+    |> Enum.group_by(fn {
+                          memory_space_id,
+                          _date,
+                          _project,
+                          _agent,
+                          host,
+                          client,
+                          scope,
+                          namespace,
+                          _type
+                        } ->
+      {memory_space_id, host, client, scope, namespace}
     end)
-    |> Enum.map(fn {{host, client, scope, namespace}, partition_keys} ->
-      dates = Enum.map(partition_keys, &elem(&1, 0))
+    |> Enum.map(fn {{memory_space_id, host, client, scope, namespace}, partition_keys} ->
+      dates = Enum.map(partition_keys, &elem(&1, 1))
 
       %{
+        memory_space_id: memory_space_id,
         host_id: host,
         client_id: client,
         scope: scope,
@@ -60,6 +71,7 @@ defmodule Backplane.Memory.ActivityNotifier do
   end
 
   defp parse_summary(%{
+         "memory_space_id" => memory_space_id,
          "host_id" => host,
          "client_id" => client,
          "scope" => scope,
@@ -71,6 +83,7 @@ defmodule Backplane.Memory.ActivityNotifier do
          {:ok, date_to} <- Date.from_iso8601(to) do
       {:ok,
        %{
+         memory_space_id: memory_space_id,
          host_id: host,
          client_id: client,
          scope: scope,

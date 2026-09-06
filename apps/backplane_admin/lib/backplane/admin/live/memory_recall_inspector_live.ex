@@ -5,7 +5,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
 
   alias Backplane.Memory.Recall.Store
 
-  @partition_params ~w(host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace)
   @candidate_kinds ~w(memory lesson crystal summary observation)
   @candidate_page_size 50
 
@@ -149,7 +149,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
           <fieldset class="contents">
             <legend class="sr-only">Exact memory partition</legend>
             <label :for={field <- @partition_params} class="text-sm font-medium">
-              {String.capitalize(field)}
+              {partition_label(field)}
               <input name={field} class="input mt-1 w-full" required maxlength="512" />
             </label>
           </fieldset>
@@ -287,6 +287,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
        end) do
       {:ok,
        %{
+         memory_space_id: String.trim(params["memory_space_id"]),
          host_id: String.trim(params["host"]),
          client_id: String.trim(params["client"]),
          scope: String.trim(params["scope"]),
@@ -378,6 +379,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
 
   defp canonical_partition(partition) do
     %{
+      "memory_space_id" => partition.memory_space_id,
       "host" => partition.host_id,
       "client" => partition.client_id,
       "scope" => partition.scope,
@@ -386,6 +388,9 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
   end
 
   defp index_path(query), do: "/memory/recall?#{URI.encode_query(query)}"
+
+  defp partition_label("memory_space_id"), do: "Memory space ID"
+  defp partition_label(field), do: String.capitalize(field)
 
   defp detail_path(id, query) do
     "/memory/recall/#{id}?#{URI.encode_query(query)}"

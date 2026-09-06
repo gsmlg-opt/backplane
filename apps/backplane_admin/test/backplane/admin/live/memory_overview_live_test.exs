@@ -8,9 +8,19 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
   alias Backplane.Repo
   alias Backplane.Skills.{AgentManage, Hosts}
 
+  @repair_memory_space_id "30000000-0000-0000-0000-000000000001"
+
   setup :setup_memory_gates
 
   setup do
+    %Backplane.MemorySpaces.MemorySpace{}
+    |> Backplane.MemorySpaces.MemorySpace.changeset(%{
+      id: @repair_memory_space_id,
+      kind: "private",
+      status: "active"
+    })
+    |> Repo.insert!(on_conflict: :nothing)
+
     AgentManage.clear()
     on_exit(fn -> AgentManage.clear() end)
   end
@@ -126,6 +136,7 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
     end
 
     params = %{
+      "memory_space_id" => @repair_memory_space_id,
       "host_id" => "repair-host",
       "client_id" => "repair-client",
       "scope" => "private",

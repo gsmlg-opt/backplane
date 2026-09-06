@@ -5,6 +5,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
   alias Backplane.Memory.Workers.ProceduralWorker
+  alias Backplane.MemorySpaces.BackfillIssue
 
   defmodule MockLLM do
     def extract_procedures(content) do
@@ -140,12 +141,14 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
       end
 
     assert {:ok, memory} =
-             Memories.remember("bounded semantic",
-               type: "semantic",
-               scope: "bounded",
-               agent_id: "agent",
-               host_id: "host",
-               evidence: evidence
+             Memories.remember(
+               "bounded semantic",
+               canonical_memory_opts("host",
+                 type: "semantic",
+                 scope: "bounded",
+                 agent_id: "agent",
+                 evidence: evidence
+               )
              )
 
     assert {:error, :evidence_limit_exceeded} =
@@ -165,6 +168,32 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     assert repo().aggregate(from(m in Memory, where: m.memory_type == "procedural"), :count) == 0
   end
 
+  test "skips a canonical-looking partition with an unresolved backfill issue" do
+    [{:ok, memory} | _rest] =
+      insert_partition("unresolved",
+        namespace: "team:unresolved",
+        client_id: "client",
+        project: "project"
+      )
+
+    repo().insert!(%BackfillIssue{
+      source_table: "bpm_memories",
+      source_id: memory.id,
+      reason: "partition_mismatch",
+      disposition: "pending",
+      details: %{
+        "memory_space_id" => memory.memory_space_id,
+        "host_id" => memory.host_id,
+        "scope" => memory.scope,
+        "namespace" => memory.namespace
+      }
+    })
+
+    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    refute_received {:procedural_input, _}
+    assert repo().aggregate(from(m in Memory, where: m.memory_type == "procedural"), :count) == 0
+  end
+
   defp insert_partition(prefix, opts) do
     count = Keyword.get(opts, :count, 10)
 
@@ -172,25 +201,27 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
       source_session_id = "#{prefix}-source-#{ordinal}"
 
       assert {:ok, _memory} =
-               Memories.remember("#{prefix} semantic #{ordinal}",
-                 type: "semantic",
-                 scope: "shared-scope",
-                 namespace: Keyword.fetch!(opts, :namespace),
-                 client_id: Keyword.fetch!(opts, :client_id),
-                 metadata: %{"project" => Keyword.fetch!(opts, :project)},
-                 agent_id: "#{prefix}-agent",
-                 host_id: "#{prefix}-host",
-                 evidence: [
-                   %{
-                     source_session_id: source_session_id,
-                     session_id: source_session_id,
-                     agent_id: "source-agent",
-                     host_id: "#{prefix}-host",
-                     evidence_kind: "supports",
-                     support_score: 0.75,
-                     excerpt: "#{prefix} excerpt #{ordinal}"
-                   }
-                 ]
+               Memories.remember(
+                 "#{prefix} semantic #{ordinal}",
+                 canonical_memory_opts("#{prefix}-host",
+                   type: "semantic",
+                   scope: "shared-scope",
+                   namespace: Keyword.fetch!(opts, :namespace),
+                   client_id: Keyword.fetch!(opts, :client_id),
+                   metadata: %{"project" => Keyword.fetch!(opts, :project)},
+                   agent_id: "#{prefix}-agent",
+                   evidence: [
+                     %{
+                       source_session_id: source_session_id,
+                       session_id: source_session_id,
+                       agent_id: "source-agent",
+                       host_id: "#{prefix}-host",
+                       evidence_kind: "supports",
+                       support_score: 0.75,
+                       excerpt: "#{prefix} excerpt #{ordinal}"
+                     }
+                   ]
+                 )
                )
     end
   end
@@ -198,14 +229,16 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   defp insert_unqualified_decoys(prefix) do
     for ordinal <- 1..3 do
       assert {:ok, _memory} =
-               Memories.remember("#{prefix} unqualified decoy #{ordinal}",
-                 type: "semantic",
-                 scope: "shared-scope",
-                 namespace: "team:a",
-                 client_id: "client-a",
-                 metadata: %{"project" => "project-a"},
-                 agent_id: "agent",
-                 host_id: "host"
+               Memories.remember(
+                 "#{prefix} unqualified decoy #{ordinal}",
+                 canonical_memory_opts("host",
+                   type: "semantic",
+                   scope: "shared-scope",
+                   namespace: "team:a",
+                   client_id: "client-a",
+                   metadata: %{"project" => "project-a"},
+                   agent_id: "agent"
+                 )
                )
     end
   end

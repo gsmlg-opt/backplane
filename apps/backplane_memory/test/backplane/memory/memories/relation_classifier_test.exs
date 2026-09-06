@@ -377,23 +377,31 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
     strong = %{evidence_kind: "confirms", support_score: 1.0}
 
     assert {:ok, ^older} =
-             Memories.remember("weak older",
-               agent_id: "agent",
-               host_id: "host",
-               scope: "scope",
-               namespace: "private",
-               metadata: older.metadata,
-               evidence: [Map.merge(strong, %{source_session_id: "strong-old", host_id: "host"})]
+             Memories.remember(
+               "weak older",
+               canonical_memory_opts("host",
+                 agent_id: "agent",
+                 scope: "scope",
+                 namespace: "private",
+                 metadata: older.metadata,
+                 evidence: [
+                   Map.merge(strong, %{source_session_id: "strong-old", host_id: "host"})
+                 ]
+               )
              )
 
     assert {:ok, ^newer} =
-             Memories.remember("weak newer",
-               agent_id: "agent",
-               host_id: "host",
-               scope: "scope",
-               namespace: "private",
-               metadata: newer.metadata,
-               evidence: [Map.merge(strong, %{source_session_id: "strong-new", host_id: "host"})]
+             Memories.remember(
+               "weak newer",
+               canonical_memory_opts("host",
+                 agent_id: "agent",
+                 scope: "scope",
+                 namespace: "private",
+                 metadata: newer.metadata,
+                 evidence: [
+                   Map.merge(strong, %{source_session_id: "strong-new", host_id: "host"})
+                 ]
+               )
              )
 
     assert :ok = RelationClassifier.process(newer.id, model: nil)
@@ -694,12 +702,14 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
     assert [original] = Relations.list_relations(first.id)
 
     assert {:ok, ^first} =
-             Memories.remember("Backplane listens on 4220",
-               agent_id: "agent",
-               host_id: "host",
-               scope: "scope",
-               namespace: "private",
-               metadata: claim("backplane", "port", "4220")
+             Memories.remember(
+               "Backplane listens on 4220",
+               canonical_memory_opts("host",
+                 agent_id: "agent",
+                 scope: "scope",
+                 namespace: "private",
+                 metadata: claim("backplane", "port", "4220")
+               )
              )
 
     assert :ok = RelationClassifier.process(second.id, model: nil)
@@ -735,17 +745,18 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   end
 
   defp remember!(content, metadata, opts \\ []) do
+    host_id = Keyword.get(opts, :host_id, "host")
+
     {:ok, memory} =
       Memories.remember(
         content,
         Keyword.merge(
-          [
+          canonical_memory_opts(host_id,
             agent_id: "agent",
-            host_id: "host",
             scope: "scope",
             namespace: "private",
             metadata: metadata
-          ],
+          ),
           opts
         )
       )

@@ -5,7 +5,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   alias Backplane.Memory.{Audit, Ingest, Memories}
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
-  alias Backplane.Memory.Projections.Rebuild
+  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild, Source}
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
 
@@ -210,27 +210,68 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   defp insert_summary(session_id, project, content) do
-    %Summary{}
-    |> Summary.changeset(%{session_id: session_id, project: project, content: content})
-    |> repo().insert!()
+    partition = canonical_partition("legacy", scope: project)
+
+    summary =
+      %Summary{}
+      |> Summary.changeset(
+        partition
+        |> Map.merge(%{session_id: session_id, project: project, content: content})
+      )
+      |> repo().insert!()
+
+    insert_projected_session!(summary, partition)
+    summary
   end
 
   defp insert_canonical_summary(host_id, session_id, content) do
     revision = digest("#{host_id}:#{session_id}:#{content}")
+    partition = canonical_partition(host_id, scope: "project-canonical")
 
-    %Summary{}
-    |> Summary.changeset(%{
-      session_id: session_id,
-      project: "project-canonical",
-      content: content,
-      subject_id: Backplane.Memory.Projections.Source.subject_id!(host_id, session_id),
-      host_id: host_id,
-      agent_id: "agent-canonical",
-      processing_version: "summary-v1",
-      input_revision: revision,
-      output_revision: digest(content)
+    summary =
+      %Summary{}
+      |> Summary.changeset(
+        partition
+        |> Map.merge(%{
+          session_id: session_id,
+          project: "project-canonical",
+          content: content,
+          subject_id: Source.subject_id!(host_id, session_id),
+          agent_id: "agent-canonical",
+          processing_version: "summary-v1",
+          input_revision: revision,
+          output_revision: digest(content)
+        })
+      )
+      |> repo().insert!()
+
+    insert_projected_session!(summary, partition)
+    summary
+  end
+
+  defp insert_projected_session!(summary, partition) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    repo().insert!(%ProjectedSession{
+      subject_id: summary.subject_id,
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      client_id: partition.client_id,
+      source_client_id: partition.source_client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
+      session_id: summary.session_id,
+      project: summary.project,
+      agent_id: summary.agent_id,
+      status: "completed",
+      started_at: now,
+      ended_at: now,
+      last_event_at: now,
+      source_sequence_max: 1,
+      gap_count: 0,
+      processing_version: "session-v1",
+      input_revision: summary.input_revision
     })
-    |> repo().insert!()
   end
 
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
@@ -260,9 +301,16 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   defp summary_job(host_id, session_id, input_revision) do
+    session = repo().get!(ProjectedSession, Source.subject_id!(host_id, session_id))
+
     %Oban.Job{
       args: %{
+        "memory_space_id" => session.memory_space_id,
         "host_id" => host_id,
+        "client_id" => session.client_id,
+        "source_client_id" => session.source_client_id,
+        "scope" => session.scope,
+        "namespace" => session.namespace,
         "session_id" => session_id,
         "processing_version" => "summary-v1",
         "input_revision" => input_revision

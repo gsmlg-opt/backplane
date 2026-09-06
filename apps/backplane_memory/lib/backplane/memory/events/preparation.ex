@@ -2,9 +2,11 @@ defmodule Backplane.Memory.Events.Preparation do
   @moduledoc false
 
   alias Backplane.Memory.Events.{Event, Types}
+  alias Backplane.Memory.PartitionIdentity
 
   def prepare(attrs) do
-    with {:ok, normalized} <- Types.normalize(attrs),
+    with {:ok, partition} <- PartitionIdentity.validate(attrs),
+         {:ok, normalized} <- Types.normalize(Map.merge(attrs, partition)),
          {:ok, filtered} <- Backplane.Memory.Privacy.Filter.apply_event(normalized) do
       allowed_fields = Event.__schema__(:fields) ++ [:id]
 

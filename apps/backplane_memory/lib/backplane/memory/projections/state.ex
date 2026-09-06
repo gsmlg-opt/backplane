@@ -6,6 +6,11 @@ defmodule Backplane.Memory.Projections.State do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_projection_states" do
+    field(:memory_space_id, :binary_id)
+    field(:host_id, :string)
+    field(:source_client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:projector, :string)
     field(:subject_type, :string)
     field(:subject_id, :string)
@@ -26,6 +31,11 @@ defmodule Backplane.Memory.Projections.State do
     state
     |> cast(attrs, [
       :projector,
+      :memory_space_id,
+      :host_id,
+      :source_client_id,
+      :scope,
+      :namespace,
       :subject_type,
       :subject_id,
       :processing_version,
@@ -39,6 +49,9 @@ defmodule Backplane.Memory.Projections.State do
     ])
     |> validate_required([
       :projector,
+      :memory_space_id,
+      :scope,
+      :namespace,
       :subject_type,
       :subject_id,
       :processing_version,

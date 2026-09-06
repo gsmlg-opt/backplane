@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
   import Ecto.Query
 
   alias Backplane.Memory.Crystals.Crystal
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{Source, State}
 
   @projector "crystal"
@@ -11,55 +12,86 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
   @processing_version "crystal-v1"
 
   def enqueue(host_id, session_id, input_revision, enqueue_fn),
-    do: enqueue(host_id, session_id, input_revision, enqueue_fn, [])
+    do:
+      enqueue(
+        host_id,
+        session_id,
+        input_revision,
+        source_partition(host_id, session_id),
+        enqueue_fn,
+        []
+      )
 
   def enqueue(host_id, session_id, input_revision, enqueue_fn, opts)
+      when is_function(enqueue_fn, 0) and is_list(opts),
+      do:
+        enqueue(
+          host_id,
+          session_id,
+          input_revision,
+          source_partition(host_id, session_id),
+          enqueue_fn,
+          opts
+        )
+
+  def enqueue(host_id, session_id, input_revision, partition, enqueue_fn),
+    do: enqueue(host_id, session_id, input_revision, partition, enqueue_fn, [])
+
+  def enqueue(host_id, session_id, input_revision, {:ok, partition}, enqueue_fn, opts),
+    do: enqueue(host_id, session_id, input_revision, partition, enqueue_fn, opts)
+
+  def enqueue(_host_id, _session_id, _input_revision, {:error, reason}, _enqueue_fn, _opts),
+    do: {:error, reason}
+
+  def enqueue(host_id, session_id, input_revision, partition, enqueue_fn, opts)
       when is_function(enqueue_fn, 0) and is_list(opts) do
-    subject_id = Source.subject_id!(host_id, session_id)
-    source_revision_fn = Keyword.get(opts, :source_revision_fn, &Source.input_revision/2)
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      subject_id = Source.subject_id!(host_id, session_id)
+      source_revision_fn = Keyword.get(opts, :source_revision_fn, &Source.input_revision/2)
 
-    case repo().transaction(fn ->
-           lock(subject_id)
+      case repo().transaction(fn ->
+             lock(subject_id)
 
-           case source_revision_fn.(host_id, session_id) do
-             {:ok, %{input_revision: ^input_revision}} ->
-               put_state(subject_id, input_revision, "pending", 0)
+             case source_revision_fn.(host_id, session_id) do
+               {:ok, %{input_revision: ^input_revision}} ->
+                 put_state(subject_id, input_revision, "pending", 0, partition)
 
-             {:ok, _newer_input} ->
-               stale(locked_state(subject_id))
-           end
-         end) do
-      {:ok, {:stale, _newer_state} = stale} ->
-        {:ok, stale}
+               {:ok, _newer_input} ->
+                 stale(locked_state(subject_id))
+             end
+           end) do
+        {:ok, {:stale, _newer_state} = stale} ->
+          {:ok, stale}
 
-      {:ok, %State{}} ->
-        repo().transaction(fn ->
-          lock(subject_id)
+        {:ok, %State{}} ->
+          repo().transaction(fn ->
+            lock(subject_id)
 
-          case {locked_state(subject_id), source_revision_fn.(host_id, session_id)} do
-            {%State{input_revision: ^input_revision}, {:ok, %{input_revision: ^input_revision}}} ->
-              case enqueue_fn.() do
-                {:ok, job} ->
-                  case source_revision_fn.(host_id, session_id) do
-                    {:ok, %{input_revision: ^input_revision}} ->
-                      put_state(subject_id, input_revision, "enqueued", 0)
-                      job
+            case {locked_state(subject_id), source_revision_fn.(host_id, session_id)} do
+              {%State{input_revision: ^input_revision}, {:ok, %{input_revision: ^input_revision}}} ->
+                case enqueue_fn.() do
+                  {:ok, job} ->
+                    case source_revision_fn.(host_id, session_id) do
+                      {:ok, %{input_revision: ^input_revision}} ->
+                        put_state(subject_id, input_revision, "enqueued", 0, partition)
+                        job
 
-                    {:ok, _newer_input} ->
-                      stale(locked_state(subject_id))
-                  end
+                      {:ok, _newer_input} ->
+                        stale(locked_state(subject_id))
+                    end
 
-                {:error, reason} ->
-                  repo().rollback(reason)
-              end
+                  {:error, reason} ->
+                    repo().rollback(reason)
+                end
 
-            {%State{} = newer_state, _source_revision} ->
-              {:stale, newer_state}
-          end
-        end)
+              {%State{} = newer_state, _source_revision} ->
+                {:stale, newer_state}
+            end
+          end)
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -143,26 +175,32 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
     end)
   end
 
-  defp put_state(subject_id, input_revision, status, attempts) when is_binary(subject_id) do
-    attrs = attrs(subject_id, input_revision, status, attempts)
+  defp put_state(subject_id, input_revision, status, attempts, partition)
+       when is_binary(subject_id) do
+    attrs = attrs(subject_id, input_revision, status, attempts, partition)
 
     case locked_state(subject_id) do
       nil -> %State{} |> State.changeset(attrs) |> repo().insert!()
-      state -> put_state(state, input_revision, status, attempts)
+      state -> put_state(state, input_revision, status, attempts, partition)
     end
   end
 
-  defp put_state(%State{} = state, input_revision, status, attempts, extra \\ []) do
+  defp put_state(%State{} = state, input_revision, status, attempts, extra) do
     attrs =
       state.subject_id
-      |> attrs(input_revision, status, attempts)
+      |> attrs(input_revision, status, attempts, Map.from_struct(state))
       |> Map.merge(Map.new(extra))
 
     state |> State.changeset(attrs) |> repo().update!()
   end
 
-  defp attrs(subject_id, input_revision, status, attempts) do
+  defp attrs(subject_id, input_revision, status, attempts, partition) do
     %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: @projector,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -196,6 +234,28 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
 
   defp safe_error_class(value) when is_atom(value), do: Atom.to_string(value)
   defp safe_error_class(_value), do: "crystallization_failed"
+
+  defp source_partition(host_id, session_id) do
+    with {:ok, events} <- Source.events(host_id, session_id),
+         [partition] <-
+           events
+           |> Enum.map(
+             &Map.take(&1, [
+               :memory_space_id,
+               :host_id,
+               :client_id,
+               :source_client_id,
+               :scope,
+               :namespace
+             ])
+           )
+           |> Enum.uniq(),
+         {:ok, partition} <- PartitionIdentity.validate(partition) do
+      {:ok, partition}
+    else
+      _ -> {:error, :incomplete_partition}
+    end
+  end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)

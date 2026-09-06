@@ -3,12 +3,29 @@ defmodule Backplane.Memory.EventNotifierTest do
 
   import Ecto.Query
 
-  alias Backplane.Memory.{EventNotifier, Events, Operations}
-  alias Backplane.Memory.Events.{Event, Store, Stream}
+  alias Backplane.Memory.{EventNotifier, Operations}
+  alias Backplane.Memory.Events.{Event, Stream}
   alias Ecto.Adapters.SQL.Sandbox
+
+  defmodule Store do
+    def append(attrs, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append(
+          Backplane.Memory.EventTestPartition.attrs(attrs),
+          opts
+        )
+
+    def append_batch(attrs_list, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append_batch(
+          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          opts
+        )
+  end
 
   setup_all do
     :ok = Sandbox.mode(repo(), :auto)
+    Backplane.Memory.EventTestPartition.ensure!()
     on_exit(fn -> :ok = Sandbox.mode(repo(), :manual) end)
     :ok
   end
@@ -168,7 +185,7 @@ defmodule Backplane.Memory.EventNotifierTest do
     event =
       unboxed(fn ->
         assert {:ok, event} =
-                 Events.append(%{
+                 Store.append(%{
                    stream_id: "#{prefix}:stream",
                    event_type: "task.created",
                    project: project

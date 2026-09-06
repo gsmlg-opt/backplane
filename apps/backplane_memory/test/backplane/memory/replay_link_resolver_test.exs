@@ -11,18 +11,11 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
   alias Backplane.Memory.Replay
   alias Backplane.Memory.Summaries.Summary
 
-  @partition %{
-    host_id: "link-host",
-    client_id: "link-client",
-    scope: "link-scope",
-    namespace: "private"
-  }
-
   test "attaches distinct partition-owned derived links to their replay events" do
     session = "replay-links-#{System.unique_integer([:positive])}"
     first_event_id = append!(session, 1)
     second_event_id = append!(session, 2)
-    assert {:ok, result} = Rebuild.session(@partition.host_id, session)
+    assert {:ok, result} = Rebuild.session(partition().host_id, session)
 
     summary = insert_summary!(result.subject_id, result.input_revision, session)
     first_memory = insert_memory!(session, "first")
@@ -44,7 +37,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
       repo().insert!(
         Node.changeset(
           %Node{},
-          Map.merge(@partition, %{
+          Map.merge(partition(), %{
             type: "Concept",
             name: "Replay",
             source_observation_ids: [first_event_id]
@@ -56,7 +49,8 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
       repo().insert!(
         Node.changeset(
           %Node{},
-          @partition
+          partition()
+          |> Map.put(:memory_space_id, canonical_partition("link-foreign").memory_space_id)
           |> Map.put(:client_id, "foreign-client")
           |> Map.merge(%{
             type: "Concept",
@@ -70,7 +64,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
       repo().insert!(
         Action.changeset(
           %Action{},
-          Map.merge(@partition, %{
+          Map.merge(partition(), %{
             title: "Follow up",
             source_observation_ids: [second_event_id]
           })
@@ -86,7 +80,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
       inserted_at: DateTime.utc_now()
     })
 
-    assert {:ok, %{events: [first, second]}} = Replay.load(@partition, session)
+    assert {:ok, %{events: [first, second]}} = Replay.load(partition(), session)
     assert first.event_id == first_event_id
     assert second.event_id == second_event_id
     assert first.links.summary == [summary.id]
@@ -106,15 +100,17 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
 
   defp insert_summary!(subject_id, input_revision, session) do
     repo().insert!(
-      Summary.changeset(%Summary{}, %{
-        subject_id: subject_id,
-        host_id: @partition.host_id,
-        session_id: session,
-        content: "summary",
-        processing_version: "summary-v1",
-        input_revision: input_revision,
-        output_revision: String.duplicate("b", 64)
-      })
+      Summary.changeset(
+        %Summary{},
+        Map.merge(partition(), %{
+          subject_id: subject_id,
+          session_id: session,
+          content: "summary",
+          processing_version: "summary-v1",
+          input_revision: input_revision,
+          output_revision: String.duplicate("b", 64)
+        })
+      )
     )
   end
 
@@ -122,7 +118,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
     repo().insert!(
       Memory.changeset(
         %Memory{},
-        Map.merge(@partition, %{
+        Map.merge(partition(), %{
           content: "linked memory #{session} #{suffix}",
           agent_id: "agent",
           session_id: session
@@ -137,7 +133,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
         memory_id: memory_id,
         source_event_id: event_id,
         session_id: session,
-        host_id: @partition.host_id,
+        host_id: partition().host_id,
         evidence_kind: "supports",
         support_score: 1.0
       })
@@ -148,7 +144,7 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
     repo().insert!(
       Crystal.changeset(
         %Crystal{},
-        Map.merge(@partition, %{
+        Map.merge(partition(), %{
           memory_id: memory_id,
           subject_id: subject_id,
           source_session_id: session,
@@ -170,11 +166,13 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
     assert {:ok, {:inserted, _}} =
              Store.append_tagged(%{
                id: event_id,
-               stream_id: "capture:#{@partition.host_id}:#{session}",
-               host_id: @partition.host_id,
-               client_id: @partition.client_id,
-               scope: @partition.scope,
-               namespace: @partition.namespace,
+               memory_space_id: partition().memory_space_id,
+               stream_id: "capture:#{partition().host_id}:#{session}",
+               host_id: partition().host_id,
+               client_id: partition().client_id,
+               source_client_id: partition().source_client_id,
+               scope: partition().scope,
+               namespace: partition().namespace,
                session_id: session,
                sequence: sequence,
                source_sequence: sequence,
@@ -187,5 +185,14 @@ defmodule Backplane.Memory.ReplayLinkResolverTest do
              })
 
     event_id
+  end
+
+  defp partition do
+    canonical_partition("link-space-owner",
+      client_id: "link-client",
+      source_client_id: "link-client",
+      scope: "link-scope"
+    )
+    |> Map.put(:host_id, "link-host")
   end
 end

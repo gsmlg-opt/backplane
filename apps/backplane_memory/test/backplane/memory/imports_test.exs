@@ -30,7 +30,7 @@ defmodule Backplane.Memory.ImportsTest do
     }
 
     assert {:ok, %{"batch_id" => ^batch_id, "status" => "started"}} =
-             Imports.record(host_id, started)
+             Imports.record(import_partition(host_id), started)
 
     completed =
       Map.merge(started, %{
@@ -41,8 +41,11 @@ defmodule Backplane.Memory.ImportsTest do
         "rejected_count" => 1
       })
 
-    assert {:ok, %{"status" => "completed"}} = Imports.record(host_id, completed)
-    assert {:ok, %{"status" => "completed"}} = Imports.record(host_id, completed)
+    assert {:ok, %{"status" => "completed"}} =
+             Imports.record(import_partition(host_id), completed)
+
+    assert {:ok, %{"status" => "completed"}} =
+             Imports.record(import_partition(host_id), completed)
 
     assert %ImportBatch{
              host_id: ^host_id,
@@ -62,7 +65,7 @@ defmodule Backplane.Memory.ImportsTest do
     host_id = Ecto.UUID.generate()
 
     assert {:error, %Ecto.Changeset{}} =
-             Imports.record(host_id, %{
+             Imports.record(import_partition(host_id), %{
                "protocol" => "host_import.v1",
                "action" => "started",
                "batch_id" => Ecto.UUID.generate(),
@@ -76,11 +79,11 @@ defmodule Backplane.Memory.ImportsTest do
     host_id = insert_host!()
     batch_id = Ecto.UUID.generate()
     started = started_payload(batch_id)
-    assert {:ok, _reply} = Imports.record(host_id, started)
+    assert {:ok, _reply} = Imports.record(import_partition(host_id), started)
 
     assert {:ok, %{"status" => "failed"}} =
              Imports.record(
-               host_id,
+               import_partition(host_id),
                Map.merge(started, %{
                  "action" => "failed",
                  "discovered_count" => 1,
@@ -95,6 +98,34 @@ defmodule Backplane.Memory.ImportsTest do
              repo().get!(ImportBatch, batch_id)
 
     assert length(Audit.list(operation: "memory.import.failed")) == 1
+  end
+
+  test "terminal lifecycle rejects another scope or namespace in the same memory space" do
+    partition = import_partition(insert_host!())
+    batch_id = Ecto.UUID.generate()
+    started = started_payload(batch_id)
+    assert {:ok, _} = Imports.record(partition, started)
+
+    for action <- ["completed", "failed"], key <- [:scope, :namespace] do
+      foreign_partition = Map.put(partition, key, "other")
+
+      terminal =
+        Map.merge(started, %{
+          "action" => action,
+          "discovered_count" => 0,
+          "imported_count" => 0,
+          "duplicate_count" => 0,
+          "rejected_count" => 0
+        })
+
+      assert {:error, :host_mismatch} =
+               Imports.record(foreign_partition, terminal)
+
+      assert %ImportBatch{status: "started", completed_at: nil} =
+               repo().get!(ImportBatch, batch_id)
+
+      assert Audit.list(operation: "memory.import.#{action}") == []
+    end
   end
 
   defp insert_host! do
@@ -123,5 +154,13 @@ defmodule Backplane.Memory.ImportsTest do
       "source_format" => "claude_code_jsonl",
       "source_path_fingerprint" => "sha256:" <> String.duplicate("c", 64)
     }
+  end
+
+  defp import_partition(host_id) do
+    canonical_partition(host_id,
+      client_id: "host:#{host_id}",
+      source_client_id: "host:#{host_id}",
+      scope: "private"
+    )
   end
 end

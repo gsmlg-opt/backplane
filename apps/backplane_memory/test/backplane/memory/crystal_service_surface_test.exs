@@ -7,6 +7,7 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
   alias Backplane.Memory.Coordination.Action
   alias Backplane.Memory.Projections.Rebuild
   alias Backplane.Memory.Workers.CrystalWorker
+  alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
 
   setup do
@@ -189,7 +190,12 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
 
     Oban.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, _job} =
-               CrystalWorker.enqueue(partition.host_id, session_id, projection.input_revision)
+               CrystalWorker.enqueue(
+                 partition.host_id,
+                 session_id,
+                 projection.input_revision,
+                 partition
+               )
     end)
 
     ingest_event!(partition, session_id, 4, "agent.tool.completed")
@@ -254,6 +260,7 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
       )
 
     client_id = "host:#{host.id}"
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
 
     auth = %{
       kind: :client_token,
@@ -264,8 +271,10 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
     }
 
     partition = %{
+      memory_space_id: canonical.memory_space_id,
       host_id: host.id,
       client_id: client_id,
+      source_client_id: client_id,
       scope: host.memory_scope,
       namespace: "private"
     }
@@ -292,7 +301,11 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
              Ingest.ingest_batch(
                ingest_auth_context(partition.host_id, %{
                  auth_token_id: "surface-token",
-                 partition: %{scope: partition.scope}
+                 partition: %{
+                   memory_space_id: partition.memory_space_id,
+                   scope: partition.scope,
+                   namespace: partition.namespace
+                 }
                }),
                %{
                  "batch_id" => Ecto.UUID.generate(),

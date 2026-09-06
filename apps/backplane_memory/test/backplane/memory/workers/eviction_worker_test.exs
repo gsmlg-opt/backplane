@@ -54,7 +54,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
 
   describe "perform/1" do
     test "rechecks eligibility after selection so a confidence update prevents eviction" do
-      {:ok, mem} = Memories.remember("racing memory", agent_id: "a", host_id: "h")
+      {:ok, mem} = remember("racing memory")
       now = DateTime.utc_now()
       old_dt = DateTime.add(now, -100 * 86_400, :second)
       set_accessed_at(mem.id, old_dt)
@@ -69,7 +69,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
     end
 
     test "concurrent workers report each eviction only once" do
-      {:ok, mem} = Memories.remember("single weak memory", agent_id: "a", host_id: "h")
+      {:ok, mem} = remember("single weak memory")
       old_dt = DateTime.add(DateTime.utc_now(), -100 * 86_400, :second)
       set_accessed_at(mem.id, old_dt)
       set_confidence(mem.id, 0.1)
@@ -91,7 +91,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       memories =
         for suffix <- 1..3 do
           {:ok, mem} =
-            Memories.remember("batched weak memory #{suffix}", agent_id: "a", host_id: "h")
+            remember("batched weak memory #{suffix}")
 
           old_dt = DateTime.add(DateTime.utc_now(), -100 * 86_400, :second)
           set_accessed_at(mem.id, old_dt)
@@ -120,7 +120,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
 
     test "archives memories where strength * confidence is below threshold and audits it" do
       # Insert a memory with a very old accessed_at so it decays heavily
-      {:ok, mem} = Memories.remember("old weak memory", agent_id: "a", host_id: "h")
+      {:ok, mem} = remember("old weak memory")
 
       # Set accessed_at to 100 days ago; with decay_period=30 and threshold=0.1,
       # decay_steps = div(100, 30) = 3, strength = 1.0 * 0.9^3 = 0.729
@@ -141,10 +141,16 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
 
       assert memory_id == mem.id
       assert metadata["reason"] == "retention"
+      assert metadata["memory_space_id"] == mem.memory_space_id
+      assert metadata["client_id"] == mem.client_id
+      assert metadata["source_client_id"] == mem.source_client_id
+      assert metadata["host_id"] == mem.host_id
+      assert metadata["scope"] == mem.scope
+      assert metadata["namespace"] == mem.namespace
     end
 
     test "leaves strong recent memories untouched" do
-      {:ok, mem} = Memories.remember("fresh strong memory", agent_id: "a", host_id: "h")
+      {:ok, mem} = remember("fresh strong memory")
       # accessed_at defaults to nil -> inserted_at (recent), confidence = 1.0
       # strength ~1.0, 1.0 * 1.0 = 1.0 >> 0.1 threshold
 
@@ -166,7 +172,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       set_setting(key, "0.99")
 
       {:ok, mem} =
-        Memories.remember("should be evicted by high threshold", agent_id: "a", host_id: "h")
+        remember("should be evicted by high threshold")
 
       set_confidence(mem.id, 0.05)
 
@@ -176,5 +182,9 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       refute deleted?(mem.id)
       assert {nil, "archived"} = lifecycle(mem.id)
     end
+  end
+
+  defp remember(content) do
+    Memories.remember(content, canonical_memory_opts("h", agent_id: "a"))
   end
 end

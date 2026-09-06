@@ -33,25 +33,19 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
   test "new evidence revisions enqueue while exact idempotent request retries do not" do
     Oban.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, memory} =
-               Memories.remember("classifier enqueue",
-                 agent_id: "agent",
-                 host_id: "host",
+               remember("classifier enqueue",
                  idempotency_scope: "classifier-enqueue",
                  idempotency_key: "classifier-enqueue-1"
                )
 
       assert {:ok, ^memory} =
-               Memories.remember("classifier enqueue",
-                 agent_id: "agent",
-                 host_id: "host",
+               remember("classifier enqueue",
                  idempotency_scope: "classifier-enqueue",
                  idempotency_key: "classifier-enqueue-2"
                )
 
       assert {:ok, ^memory} =
-               Memories.remember("classifier enqueue",
-                 agent_id: "agent",
-                 host_id: "host",
+               remember("classifier enqueue",
                  idempotency_scope: "classifier-enqueue",
                  idempotency_key: "classifier-enqueue-2"
                )
@@ -83,7 +77,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
     end)
 
     assert {:ok, memory} =
-             Memories.remember("classifier fail open", agent_id: "agent", host_id: "host")
+             remember("classifier fail open")
 
     assert_received {:enqueue_attempted, memory_id}
     assert memory_id == memory.id
@@ -103,7 +97,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
     end)
 
     assert {:ok, memory} =
-             Memories.remember("classifier exception content", agent_id: "agent", host_id: "host")
+             remember("classifier exception content")
 
     assert {:ok, _persisted} = Memories.trusted_get(memory.id)
     assert_receive {:enqueue_telemetry, %{count: 1}, metadata}
@@ -117,11 +111,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
       memories =
         for type <- ~w(working episodic semantic procedural), into: %{} do
           assert {:ok, memory} =
-                   Memories.remember("classifier type #{type}",
-                     agent_id: "agent",
-                     host_id: "host",
-                     type: type
-                   )
+                   remember("classifier type #{type}", type: type)
 
           {type, memory}
         end
@@ -135,6 +125,10 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_memory, key)
   defp restore_env(key, value), do: Application.put_env(:backplane_memory, key, value)
+
+  defp remember(content, opts \\ []) do
+    Memories.remember(content, canonical_memory_opts("host", [agent_id: "agent"] ++ opts))
+  end
 
   defp attach_enqueue_telemetry do
     handler = "relation-classifier-enqueue-#{System.unique_integer([:positive])}"

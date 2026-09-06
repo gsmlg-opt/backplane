@@ -35,10 +35,11 @@ defmodule Backplane.Memory.Ingest do
   ]
   @v1_authority_keys ~w(memory_space_id partition_id namespace)
   @v1_authority_atom_keys ~w(memory_space_id partition_id namespace)a
-  @prepared_partition_fields ~w(host_id client_id scope namespace integration ingest_auth_token_id)a
+  @prepared_partition_fields ~w(memory_space_id host_id client_id scope namespace integration ingest_auth_token_id)a
 
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Ingest.{EventValidator, Upcaster}
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Privacy.Filter
 
   def ingest_batch(auth_context, batch, opts \\ [])
@@ -239,21 +240,26 @@ defmodule Backplane.Memory.Ingest do
     partition = get(auth_context, :partition)
     partition_host_id = get(partition, :host_id)
     partition_id = get(partition, :partition_id)
+    memory_space_id = get(partition, :memory_space_id)
     scope = get(partition, :scope)
     namespace = get(partition, :namespace)
 
-    if non_empty_binary?(host_id) and partition_host_id == host_id and
-         partition_id == "host:#{host_id}" and non_empty_binary?(scope) and
-         namespace == "private" do
-      {:ok,
-       %{
-         host_id: host_id,
-         partition_id: partition_id,
-         scope: scope,
-         namespace: namespace
-       }}
+    candidate = %{
+      memory_space_id: memory_space_id,
+      host_id: partition_host_id,
+      client_id: partition_id,
+      scope: scope,
+      namespace: namespace
+    }
+
+    with true <- non_empty_binary?(host_id),
+         true <- partition_host_id == host_id,
+         true <- partition_id == "host:#{host_id}",
+         true <- namespace == "private",
+         {:ok, validated} <- PartitionIdentity.validate(candidate) do
+      {:ok, Map.put(validated, :partition_id, partition_id)}
     else
-      {:error, :invalid_partition}
+      _invalid -> {:error, :invalid_partition}
     end
   end
 

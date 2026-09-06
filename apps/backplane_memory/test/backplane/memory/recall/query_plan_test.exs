@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Recall.QueryPlanTest do
   alias Backplane.Memory.Recall.QueryPlan
 
   @partition %{
+    memory_space_id: "00000000-0000-4000-8000-000000000099",
     host_id: "host-a",
     client_id: "client-a",
     scope: "team",
@@ -36,8 +37,10 @@ defmodule Backplane.Memory.Recall.QueryPlanTest do
     assert trace["normalized_query"] == "CAF\u00c9 \u4f60\u597d work"
 
     assert trace["partition"] == %{
+             "memory_space_id" => @partition.memory_space_id,
              "host_id" => "host-a",
              "client_id" => "client-a",
+             "source_client_id" => nil,
              "scope" => "team",
              "namespace" => "private"
            }
@@ -46,7 +49,12 @@ defmodule Backplane.Memory.Recall.QueryPlanTest do
   test "requires an exact non-empty partition and rejects malformed or unknown input" do
     valid = Map.put(@partition, :query, "query")
 
-    for key <- [:host_id, :client_id, :scope, :namespace] do
+    for key <- [:memory_space_id, :scope, :namespace] do
+      assert {:error, :incomplete_partition} = QueryPlan.new(Map.delete(valid, key))
+      assert {:error, :incomplete_partition} = QueryPlan.new(Map.put(valid, key, " \t"))
+    end
+
+    for key <- [:host_id, :client_id] do
       assert {:error, {:invalid, ^key}} = QueryPlan.new(Map.delete(valid, key))
       assert {:error, {:invalid, ^key}} = QueryPlan.new(Map.put(valid, key, " \t"))
     end

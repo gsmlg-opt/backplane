@@ -1,7 +1,19 @@
 defmodule Backplane.Memory.Events.PreparationTest do
   use ExUnit.Case, async: true
 
-  alias Backplane.Memory.Events.Preparation
+  defmodule Preparation do
+    def prepare(attrs) do
+      attrs
+      |> Backplane.Memory.EventTestPartition.attrs()
+      |> Backplane.Memory.Events.Preparation.prepare()
+    end
+
+    def prepare_batch(attrs_list) do
+      attrs_list
+      |> Backplane.Memory.EventTestPartition.attrs_list()
+      |> Backplane.Memory.Events.Preparation.prepare_batch()
+    end
+  end
 
   test "prepare normalizes, sanitizes, and returns an Event struct" do
     assert {:ok, event} =

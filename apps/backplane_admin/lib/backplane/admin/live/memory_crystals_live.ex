@@ -5,7 +5,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
 
   alias Backplane.Memory.{Audit, Crystals, CrystalSources}
 
-  @partition_params ~w(host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace)
   @per_page 25
 
   @impl true
@@ -101,6 +101,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
         <h2 class="text-lg font-semibold">Select an exact partition</h2>
         <p class="mt-1 text-sm text-on-surface-variant">Host, client, scope, and namespace are required.</p>
         <.form id="crystal-partition-form" for={%{}} as={:partition} phx-submit="select_partition" class="mt-4 grid gap-3 sm:grid-cols-2">
+          <.dm_input id="crystal-memory-space" name="partition[memory_space_id]" label="Memory space ID" value="" required />
           <.dm_input id="crystal-host" name="partition[host]" label="Host" value="" required />
           <.dm_input id="crystal-client" name="partition[client]" label="Client" value="" required />
           <.dm_input id="crystal-scope" name="partition[scope]" label="Scope" value="" required />
@@ -320,8 +321,10 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
       %{
         request_id: request_id,
         correlation_id: request_id,
+        memory_space_id: partition.memory_space_id,
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition[:source_client_id],
         scope: partition.scope,
         namespace: partition.namespace,
         source_kind: detail.crystal.source_kind,
@@ -342,6 +345,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
         do:
           {:ok,
            %{
+             memory_space_id: normalized["memory_space_id"],
              host_id: normalized["host"],
              client_id: normalized["client"],
              scope: normalized["scope"],
@@ -362,6 +366,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
 
   defp partition_query(partition),
     do: %{
+      "memory_space_id" => partition.memory_space_id,
       "host" => partition.host_id,
       "client" => partition.client_id,
       "scope" => partition.scope,

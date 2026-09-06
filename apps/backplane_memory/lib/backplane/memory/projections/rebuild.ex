@@ -19,6 +19,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
   }
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.PartitionIdentity
 
   @subject_type "captured_session"
   @projector_names ~w(observations session activity replay)
@@ -37,11 +38,11 @@ defmodule Backplane.Memory.Projections.Rebuild do
              case Source.events(host_id, session_id) do
                {:ok, [_ | _] = events} ->
                  case canonical_partition(events) do
-                   {:ok, _partition} ->
+                   {:ok, partition} ->
                      input_revision = Revision.input_revision(events)
 
                      try do
-                       rebuild(host_id, session_id, subject_id, events, input_revision)
+                       rebuild(host_id, session_id, subject_id, events, input_revision, partition)
                      rescue
                        exception ->
                          repo().rollback(
@@ -84,18 +85,22 @@ defmodule Backplane.Memory.Projections.Rebuild do
   defp canonical_partition(events) do
     partitions =
       events
-      |> Enum.map(&Map.take(&1, [:host_id, :client_id, :scope, :namespace]))
+      |> Enum.map(
+        &Map.take(&1, [
+          :memory_space_id,
+          :host_id,
+          :client_id,
+          :source_client_id,
+          :scope,
+          :namespace
+        ])
+      )
+      |> Enum.map(&PartitionIdentity.validate/1)
 
-    complete? =
-      Enum.all?(partitions, fn partition ->
-        Enum.all?([:host_id, :client_id, :scope, :namespace], fn key ->
-          value = Map.get(partition, key)
-          is_binary(value) and String.trim(value) != ""
-        end)
-      end)
-
-    case Enum.uniq(partitions) do
-      [partition] when complete? -> {:ok, partition}
+    with true <- Enum.all?(partitions, &match?({:ok, _}, &1)),
+         [partition] <- partitions |> Enum.map(&elem(&1, 1)) |> Enum.uniq() do
+      {:ok, partition}
+    else
       _ -> {:error, :ambiguous_partition}
     end
   end
@@ -128,7 +133,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end
   end
 
-  defp rebuild(host_id, session_id, subject_id, events, input_revision) do
+  defp rebuild(host_id, session_id, subject_id, events, input_revision, partition) do
     gaps = Gaps.find(events)
     outputs = outputs(events, gaps)
     output_revisions = output_revisions(outputs)
@@ -142,19 +147,20 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     replace_session_row(subject_id, input_revision, events, Map.fetch!(outputs, "session"))
 
-    replace_activity_rows(subject_id, input_revision, Map.fetch!(outputs, "activity"))
+    replace_activity_rows(subject_id, input_revision, partition, Map.fetch!(outputs, "activity"))
     replace_replay_rows(subject_id, input_revision, events, Map.fetch!(outputs, "replay"))
 
     states =
       Enum.map(@projector_names, fn projector ->
-        state = mark_running(projector, subject_id, input_revision)
+        state = mark_running(projector, subject_id, input_revision, partition)
 
         replace_snapshot(
           projector,
           subject_id,
           input_revision,
           Map.fetch!(output_revisions, projector),
-          Map.fetch!(outputs, projector)
+          Map.fetch!(outputs, projector),
+          partition
         )
 
         finalize_state(
@@ -166,7 +172,12 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     %{
       production_read_models: true,
+      memory_space_id: partition.memory_space_id,
       host_id: host_id,
+      client_id: partition[:client_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       session_id: session_id,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -191,8 +202,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     row = %{
       subject_id: subject_id,
+      memory_space_id: read_model["memory_space_id"],
       host_id: read_model["host_id"],
       client_id: read_model["client_id"],
+      source_client_id: read_model["source_client_id"],
       scope: read_model["scope"],
       namespace: read_model["namespace"],
       session_id: read_model["session_id"],
@@ -215,8 +228,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
       on_conflict:
         {:replace,
          [
+           :memory_space_id,
            :host_id,
            :client_id,
+           :source_client_id,
            :scope,
            :namespace,
            :session_id,
@@ -243,8 +258,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
         [read_model["session_id"]],
         "#{subject_id}:#{input_revision}:#{read_model["status"]}",
         %{
+          memory_space_id: read_model["memory_space_id"],
           host_id: read_model["host_id"],
           client_id: read_model["client_id"],
+          source_client_id: read_model["source_client_id"],
           scope: read_model["scope"],
           namespace: read_model["namespace"],
           session_id: read_model["session_id"],
@@ -272,10 +289,15 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end)
   end
 
-  defp mark_running(projector, subject_id, input_revision) do
+  defp mark_running(projector, subject_id, input_revision, partition) do
     now = now()
 
     attrs = %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: projector,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -301,8 +323,20 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end
   end
 
-  defp replace_snapshot(projector, subject_id, input_revision, output_revision, read_model) do
+  defp replace_snapshot(
+         projector,
+         subject_id,
+         input_revision,
+         output_revision,
+         read_model,
+         partition
+       ) do
     attrs = %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: projector,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -332,8 +366,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
         %{
           event_id: observation["event_id"],
           subject_id: subject_id,
+          memory_space_id: read_model["memory_space_id"],
           host_id: read_model["host_id"],
           client_id: read_model["client_id"],
+          source_client_id: read_model["source_client_id"],
           scope: read_model["scope"],
           namespace: read_model["namespace"],
           session_id: read_model["session_id"],
@@ -363,13 +399,27 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end
   end
 
-  defp replace_activity_rows(subject_id, input_revision, read_model) do
-    ActivityStore.replace_subject!(subject_id, input_revision, read_model["activity"] || [])
+  defp replace_activity_rows(subject_id, input_revision, partition, read_model) do
+    ActivityStore.replace_subject!(
+      subject_id,
+      input_revision,
+      partition,
+      read_model["activity"] || []
+    )
   end
 
   defp replace_replay_rows(subject_id, input_revision, events, read_model) do
     first = List.first(events)
-    partition = Map.take(first, [:host_id, :client_id, :scope, :namespace])
+
+    partition =
+      Map.take(first, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
 
     Backplane.Memory.Replay.Store.put!(
       subject_id,
@@ -438,9 +488,15 @@ defmodule Backplane.Memory.Projections.Rebuild do
       repo().transaction(fn ->
         Source.lock_streams(host_id, session_id)
 
-        if current_input_revision(host_id, session_id) == input_revision do
+        with {:ok, ^input_revision, partition} <-
+               current_input_partition(host_id, session_id) do
           Enum.each(@projector_names, fn projector ->
             attrs = %{
+              memory_space_id: partition.memory_space_id,
+              host_id: partition[:host_id],
+              source_client_id: partition[:source_client_id],
+              scope: partition.scope,
+              namespace: partition.namespace,
               projector: projector,
               subject_type: @subject_type,
               subject_id: subject_id,
@@ -483,10 +539,15 @@ defmodule Backplane.Memory.Projections.Rebuild do
     :ok
   end
 
-  defp current_input_revision(host_id, session_id) do
+  defp current_input_partition(host_id, session_id) do
     case Source.events(host_id, session_id) do
-      {:ok, [_ | _] = events} -> Revision.input_revision(events)
-      _other -> nil
+      {:ok, [_ | _] = events} ->
+        with {:ok, partition} <- canonical_partition(events) do
+          {:ok, Revision.input_revision(events), partition}
+        end
+
+      _other ->
+        {:error, :not_found}
     end
   end
 

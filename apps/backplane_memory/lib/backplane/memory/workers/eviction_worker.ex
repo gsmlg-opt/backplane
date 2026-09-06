@@ -61,8 +61,10 @@ defmodule Backplane.Memory.Workers.EvictionWorker do
           where: ^predicate,
           select: %{
             id: m.id,
+            memory_space_id: m.memory_space_id,
             host_id: m.host_id,
             client_id: m.client_id,
+            source_client_id: m.source_client_id,
             scope: m.scope,
             namespace: m.namespace
           }
@@ -75,8 +77,10 @@ defmodule Backplane.Memory.Workers.EvictionWorker do
         reason: "retention",
         decay_period_days: decay_period_days,
         threshold: threshold,
+        memory_space_id: memory.memory_space_id,
         host_id: memory.host_id,
         client_id: memory.client_id,
+        source_client_id: memory.source_client_id,
         scope: memory.scope,
         namespace: memory.namespace,
         result: "archived"

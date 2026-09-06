@@ -4,10 +4,14 @@ defmodule Backplane.Memory.Events.Stream do
 
   @primary_key {:stream_id, :string, autogenerate: false}
   schema "bpm_streams" do
+    field :memory_space_id, :binary_id
     field :project, :string
     field :agent_id, :string
     field :host_id, :string
     field :client_id, :string
+    field :source_client_id, :string
+    field :scope, :string
+    field :namespace, :string
     field :session_id, :string
     field :run_id, :string
     field :next_sequence, :integer, default: 1
@@ -19,7 +23,19 @@ defmodule Backplane.Memory.Events.Stream do
 
   def changeset(stream, attrs) do
     stream
-    |> cast(attrs, [:stream_id, :project, :agent_id, :host_id, :client_id, :session_id, :run_id])
-    |> validate_required([:stream_id])
+    |> cast(attrs, [
+      :stream_id,
+      :memory_space_id,
+      :project,
+      :agent_id,
+      :host_id,
+      :client_id,
+      :source_client_id,
+      :scope,
+      :namespace,
+      :session_id,
+      :run_id
+    ])
+    |> validate_required([:stream_id, :memory_space_id, :scope, :namespace])
   end
 end

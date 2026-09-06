@@ -283,6 +283,7 @@ defmodule Backplane.Memory.Recall.SelectionTest do
         kind: Keyword.get(opts, :kind, :memory),
         memory_type: :semantic,
         content: "c",
+        memory_space_id: "00000000-0000-4000-8000-000000000099",
         host_id: "h",
         client_id: "c",
         scope: "s",

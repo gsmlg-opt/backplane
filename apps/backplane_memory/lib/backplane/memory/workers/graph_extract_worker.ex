@@ -7,6 +7,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
 
   alias Backplane.Memory.Graph
   alias Backplane.Memory.Memories.Memory
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.ProjectedObservation
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
@@ -16,6 +17,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
         args:
           %{
             "session_id" => session_id,
+            "memory_space_id" => _memory_space_id,
             "host_id" => _host_id,
             "client_id" => _client_id,
             "scope" => _scope,
@@ -23,17 +25,21 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
           } = partition
       }) do
     Backplane.Memory.PipelineTelemetry.span("graph", partition, fn ->
-      perform_partition(session_id, partition)
+      case generator_partition(partition) do
+        {:ok, partition} -> perform_partition(session_id, partition)
+        {:error, _reason} -> {:discard, :incomplete_partition}
+      end
     end)
   end
 
   def perform(%Oban.Job{}), do: {:discard, :ambiguous_partition}
 
   defp perform_partition(session_id, partition) do
-    host_id = partition["host_id"]
-    client_id = partition["client_id"]
-    scope = partition["scope"]
-    namespace = partition["namespace"]
+    host_id = partition.host_id
+    memory_space_id = partition.memory_space_id
+    client_id = partition.client_id
+    scope = partition.scope
+    namespace = partition.namespace
 
     min_obs =
       case Backplane.Settings.get("memory.graph_min_observations") do
@@ -46,7 +52,8 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
       repo().aggregate(
         from(m in Memory,
           where:
-            m.session_id == ^session_id and m.host_id == ^host_id and
+            m.session_id == ^session_id and m.memory_space_id == ^memory_space_id and
+              m.host_id == ^host_id and
               m.client_id == ^client_id and m.scope == ^scope and
               m.namespace == ^namespace and is_nil(m.deleted_at)
         ),
@@ -62,16 +69,18 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   end
 
   defp extract_graph(session_id, partition) do
-    host_id = partition["host_id"]
-    client_id = partition["client_id"]
-    scope = partition["scope"]
-    namespace = partition["namespace"]
+    host_id = partition.host_id
+    memory_space_id = partition.memory_space_id
+    client_id = partition.client_id
+    scope = partition.scope
+    namespace = partition.namespace
 
     memories =
       repo().all(
         from(m in Memory,
           where:
-            m.session_id == ^session_id and m.host_id == ^host_id and
+            m.session_id == ^session_id and m.memory_space_id == ^memory_space_id and
+              m.host_id == ^host_id and
               m.client_id == ^client_id and m.scope == ^scope and
               m.namespace == ^namespace and is_nil(m.deleted_at),
           select: m.content,
@@ -89,7 +98,9 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
           repo().all(
             from(observation in ProjectedObservation,
               where:
-                observation.session_id == ^session_id and observation.host_id == ^host_id and
+                observation.session_id == ^session_id and
+                  observation.memory_space_id == ^memory_space_id and
+                  observation.host_id == ^host_id and
                   observation.client_id == ^client_id and observation.scope == ^scope and
                   observation.namespace == ^namespace,
               order_by: [asc: observation.event_id],
@@ -120,16 +131,33 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   def enqueue(_session_id), do: {:error, :unauthorized}
 
   def enqueue(session_id, partition) do
-    %{session_id: session_id}
-    |> Map.merge(atom_partition(partition))
-    |> new()
-    |> Oban.insert()
+    with {:ok, partition} <- generator_partition(partition) do
+      %{session_id: session_id}
+      |> Map.merge(atom_partition(partition))
+      |> new()
+      |> Oban.insert()
+    end
   end
 
   defp atom_partition(partition) do
-    Map.new([:host_id, :client_id, :scope, :namespace], fn key ->
-      value = Map.get(partition, key) || Map.fetch!(partition, Atom.to_string(key))
-      {key, value}
-    end)
+    Map.new(
+      [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace],
+      fn key ->
+        value = Map.get(partition, key) || Map.get(partition, Atom.to_string(key))
+        {key, value}
+      end
+    )
   end
+
+  defp generator_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 end

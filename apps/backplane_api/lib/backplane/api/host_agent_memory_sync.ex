@@ -9,6 +9,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.RememberRequest
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
   alias Backplane.Api.HostMemoryRevocation
   alias Backplane.Skills.Host
 
@@ -21,8 +22,10 @@ defmodule Backplane.Api.HostAgentMemorySync do
          {:ok, local_id} <- required_binary(item, "id"),
          {:ok, content} <- required_binary(item, "content"),
          :ok <- validate_content_hash(item, content),
-         :ok <- validate_host_scope(host, scope_for(item)) do
-      remember_host_item(host, item, local_id, content, scope_for(item))
+         :ok <- validate_host_scope(host, scope_for(item)),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(host.id, scope_for(item), "private") do
+      remember_host_item(host, item, local_id, content, partition)
     else
       {:error, reason} -> {:error, :validation, reason}
     end
@@ -40,13 +43,16 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   def facts_for_scope(host, scope, host_fact_set_hash) when is_binary(scope) do
     with {:ok, current_host} <- reload_host(host),
-         :ok <- validate_host_scope(current_host, scope) do
+         :ok <- validate_host_scope(current_host, scope),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(current_host.id, scope, "private") do
       partition_id = host_partition_id(current_host)
 
       facts =
         MemorySchema
         |> where([memory], memory.scope == ^scope)
         |> where([memory], memory.namespace == "private")
+        |> where([memory], memory.memory_space_id == ^partition.memory_space_id)
         |> where([memory], memory.client_id == ^partition_id)
         |> where([memory], memory.memory_type in ^@fact_memory_types)
         |> where([memory], is_nil(memory.deleted_at))
@@ -76,12 +82,15 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   def active_wipes(host, scope) when is_binary(scope) do
     with {:ok, current_host} <- reload_host(host),
-         :ok <- validate_host_scope(current_host, scope) do
+         :ok <- validate_host_scope(current_host, scope),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(current_host.id, scope, "private") do
       partition_id = host_partition_id(current_host)
 
       MemorySchema
       |> where([memory], memory.scope == ^scope)
       |> where([memory], memory.namespace == "private")
+      |> where([memory], memory.memory_space_id == ^partition.memory_space_id)
       |> where([memory], memory.client_id == ^partition_id)
       |> where([memory], not is_nil(memory.deleted_at))
       |> order_by([memory], asc: memory.deleted_at, asc: memory.id)
@@ -113,17 +122,19 @@ defmodule Backplane.Api.HostAgentMemorySync do
     end
   end
 
-  defp remember_host_item(host, item, local_id, content, scope) do
+  defp remember_host_item(host, item, local_id, content, partition) do
     host_content_hash = host_content_hash(item, content)
     metadata = item |> Map.get("metadata", %{}) |> normalize_metadata()
 
     opts = [
       type: "episodic",
-      scope: scope,
+      memory_space_id: partition.memory_space_id,
+      scope: partition.scope,
       agent_id: optional_binary(item, "agent_id") || "",
       host_id: host.id,
       client_id: host_partition_id(host),
-      namespace: "private",
+      source_client_id: partition[:source_client_id],
+      namespace: partition.namespace,
       session_id: optional_binary(item, "session_id"),
       tags: normalize_tags(Map.get(item, "tags", [])),
       metadata: put_host_metadata(metadata, local_id, host_content_hash),
@@ -185,14 +196,11 @@ defmodule Backplane.Api.HostAgentMemorySync do
        do: {:ok, :duplicate}
 
   defp reconcile_forget(host, mapping) do
-    partition = %{
-      host_id: host.id,
-      client_id: host_partition_id(host),
-      scope: host.memory_scope,
-      namespace: "private"
-    }
-
-    with :ok <- Memories.tombstone(mapping.memory.id, partition),
+    with {:ok, canonical} <-
+           MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private"),
+         partition <-
+           Map.merge(canonical, %{host_id: host.id, client_id: host_partition_id(host)}),
+         :ok <- Memories.tombstone(mapping.memory.id, partition),
          :ok <- revoke_canonical_mappings(host, mapping) do
       {:ok, :ok}
     end
@@ -409,11 +417,14 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp revoke_mapping(host, mapping) do
     attrs = %{
+      memory_space_id: mapping.memory.memory_space_id,
       host_id: host.id,
+      source_client_id: mapping.memory.source_client_id,
       local_id: mapping.local_id,
       memory_id: mapping.memory.id,
       source_request_id: mapping.request && mapping.request.id,
       scope: mapping.memory.scope,
+      namespace: mapping.memory.namespace,
       content_hash: mapping.memory.content_hash
     }
 
@@ -468,7 +479,16 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp revocation_matches?(revocation, attrs) do
     Enum.all?(
-      [:host_id, :local_id, :memory_id, :source_request_id, :scope, :content_hash],
+      [
+        :memory_space_id,
+        :host_id,
+        :local_id,
+        :memory_id,
+        :source_request_id,
+        :scope,
+        :namespace,
+        :content_hash
+      ],
       &(Map.fetch!(revocation, &1) == Map.fetch!(attrs, &1))
     )
   end

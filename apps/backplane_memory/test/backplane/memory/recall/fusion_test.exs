@@ -3,7 +3,13 @@ defmodule Backplane.Memory.Recall.FusionTest do
 
   alias Backplane.Memory.Recall.{Candidate, Fusion}
 
-  @partition %{host_id: "h", client_id: "c", scope: "s", namespace: "n"}
+  @partition %{
+    memory_space_id: "00000000-0000-4000-8000-000000000099",
+    host_id: "h",
+    client_id: "c",
+    scope: "s",
+    namespace: "n"
+  }
 
   test "weighted RRF is deterministic, deduplicates identities, and exposes reproducible ranks" do
     a = candidate("00000000-0000-4000-8000-000000000001", :memory)

@@ -451,8 +451,10 @@ defmodule Backplane.Memory.Recall.Pipeline do
 
   defp partition(plan) do
     %{
+      memory_space_id: plan.memory_space_id,
       host_id: plan.host_id,
       client_id: plan.client_id,
+      source_client_id: plan.source_client_id,
       scope: plan.scope,
       namespace: plan.namespace,
       project: plan.project

@@ -41,6 +41,11 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
              Audit.list(operation: "projection.repair")
 
     assert metadata["host_id"] == "summary-host"
+    assert metadata["memory_space_id"] == memory_space_id("summary-host")
+    assert metadata["client_id"] == "host:summary-host"
+    assert metadata["source_client_id"] == "codex-cli"
+    assert metadata["scope"] == "project:backplane"
+    assert metadata["namespace"] == "private"
     assert metadata["session_id"] == "summary-session"
 
     expired_gap = %{
@@ -182,7 +187,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
   test "legacy events do not enqueue projection repair" do
     Oban.Testing.with_testing_mode(:manual, fn ->
-      assert {:ok, _legacy} =
+      assert {:error, :incomplete_partition} =
                Store.append(%{
                  stream_id: "legacy-#{Ecto.UUID.generate()}",
                  event_type: "conversation.user_message",

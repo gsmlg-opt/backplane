@@ -10,12 +10,13 @@ defmodule Backplane.Memory.Lessons do
   alias Backplane.Memory.Memories.Evidence
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.RememberRequest
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.ProjectedSession
   alias Backplane.Memory.Recall.{Channels, QueryPlan}
   alias Backplane.Memory.Summaries.Summary
 
   @save_keys ~w(rule context project session_id idempotency_key)
-  @partition_keys [:host_id, :client_id, :scope, :namespace]
+  @partition_keys [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace]
   @automatic_source_kinds ~w(correction failure_remediation repeated_failure_remediation consolidation crystal)
   @admin_statuses ~w(candidate active disputed superseded archived)
 
@@ -31,7 +32,7 @@ defmodule Backplane.Memory.Lessons do
           join: m in Memory,
           on: m.id == l.memory_id,
           where:
-            m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
+            m.memory_space_id == ^partition.memory_space_id and
               m.scope == ^partition.scope and m.namespace == ^partition.namespace
         )
         |> maybe_admin_status(filters.status)
@@ -74,8 +75,8 @@ defmodule Backplane.Memory.Lessons do
           join: m in Memory,
           on: m.id == l.memory_id,
           where:
-            l.memory_id == ^memory_id and m.host_id == ^partition.host_id and
-              m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+            l.memory_id == ^memory_id and m.memory_space_id == ^partition.memory_space_id and
+              m.scope == ^partition.scope and
               m.namespace == ^partition.namespace,
           select: {l, m},
           limit: 1
@@ -341,10 +342,12 @@ defmodule Backplane.Memory.Lessons do
     case repo().transaction(fn ->
            opts = [
              type: "procedural",
+             memory_space_id: partition.memory_space_id,
              scope: partition.scope,
              namespace: partition.namespace,
              host_id: partition.host_id,
              client_id: partition.client_id,
+             source_client_id: partition[:source_client_id],
              agent_id: attrs.actor,
              session_id: attrs.session_id,
              idempotency_scope: partition.client_id,
@@ -447,8 +450,9 @@ defmodule Backplane.Memory.Lessons do
                join: m in Memory,
                on: m.id == l.memory_id,
                where:
-                 l.memory_id == ^memory_id and m.host_id == ^partition.host_id and
-                   m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+                 l.memory_id == ^memory_id and
+                   m.memory_space_id == ^partition.memory_space_id and
+                   m.scope == ^partition.scope and
                    m.namespace == ^partition.namespace,
                select: {l, m},
                lock: "FOR UPDATE"
@@ -571,8 +575,8 @@ defmodule Backplane.Memory.Lessons do
         join: m in Memory,
         on: m.id == l.memory_id,
         where:
-          l.memory_id == ^memory_id and m.host_id == ^partition.host_id and
-            m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+          l.memory_id == ^memory_id and m.memory_space_id == ^partition.memory_space_id and
+            m.scope == ^partition.scope and
             m.namespace == ^partition.namespace,
         select: {l, m},
         lock: "FOR UPDATE"
@@ -764,8 +768,8 @@ defmodule Backplane.Memory.Lessons do
     case repo().one(
            from(event in Event,
              where:
-               event.id == ^id and event.host_id == ^partition.host_id and
-                 event.client_id == ^partition.client_id and event.scope == ^partition.scope and
+               event.id == ^id and event.memory_space_id == ^partition.memory_space_id and
+                 event.scope == ^partition.scope and
                  event.namespace == ^partition.namespace,
              limit: 1
            )
@@ -787,9 +791,32 @@ defmodule Backplane.Memory.Lessons do
     end
   end
 
-  # Legacy observations carry only a session_id and cannot prove exact-partition ownership.
-  # Callers must use a partition-bearing canonical event, summary, or request instead.
-  defp resolve_observation(_id, _partition), do: {:error, :strengthening_source_not_found}
+  defp resolve_observation(id, partition) do
+    case repo().one(
+           from(observation in Backplane.Memory.Observations.Observation,
+             where:
+               observation.id == ^id and
+                 observation.memory_space_id == ^partition.memory_space_id and
+                 observation.scope == ^partition.scope and
+                 observation.namespace == ^partition.namespace,
+             limit: 1
+           )
+         ) do
+      %Backplane.Memory.Observations.Observation{} = observation ->
+        {:ok,
+         %{
+           identity: {:observation, observation.id},
+           evidence: %{
+             source_observation_id: observation.id,
+             session_id: observation.session_id,
+             host_id: observation.host_id
+           }
+         }}
+
+      nil ->
+        {:error, :strengthening_source_not_found}
+    end
+  end
 
   defp resolve_summary(id, partition) do
     case repo().one(
@@ -797,8 +824,9 @@ defmodule Backplane.Memory.Lessons do
              join: session in ProjectedSession,
              on: session.subject_id == summary.subject_id,
              where:
-               summary.id == ^id and session.host_id == ^partition.host_id and
-                 session.client_id == ^partition.client_id and session.scope == ^partition.scope and
+               summary.id == ^id and summary.memory_space_id == ^partition.memory_space_id and
+                 session.memory_space_id == ^partition.memory_space_id and
+                 session.scope == ^partition.scope and
                  session.namespace == ^partition.namespace,
              select: {summary, session},
              limit: 1
@@ -827,8 +855,8 @@ defmodule Backplane.Memory.Lessons do
              join: memory in Memory,
              on: memory.id == request.memory_id,
              where:
-               request.id == ^id and memory.host_id == ^partition.host_id and
-                 memory.client_id == ^partition.client_id and memory.scope == ^partition.scope and
+               request.id == ^id and memory.memory_space_id == ^partition.memory_space_id and
+                 memory.scope == ^partition.scope and
                  memory.namespace == ^partition.namespace,
              select: {request, memory},
              limit: 1
@@ -856,8 +884,8 @@ defmodule Backplane.Memory.Lessons do
     case repo().one(
            from(crystal in Backplane.Memory.Crystals.Crystal,
              where:
-               crystal.id == ^id and crystal.host_id == ^partition.host_id and
-                 crystal.client_id == ^partition.client_id and crystal.scope == ^partition.scope and
+               crystal.id == ^id and crystal.memory_space_id == ^partition.memory_space_id and
+                 crystal.scope == ^partition.scope and
                  crystal.namespace == ^partition.namespace and crystal.status == "complete",
              limit: 1
            )
@@ -882,8 +910,9 @@ defmodule Backplane.Memory.Lessons do
     case repo().one(
            from(session in ProjectedSession,
              where:
-               session.session_id == ^id and session.host_id == ^partition.host_id and
-                 session.client_id == ^partition.client_id and session.scope == ^partition.scope and
+               session.session_id == ^id and
+                 session.memory_space_id == ^partition.memory_space_id and
+                 session.scope == ^partition.scope and
                  session.namespace == ^partition.namespace,
              limit: 1
            )
@@ -925,7 +954,7 @@ defmodule Backplane.Memory.Lessons do
                  join: m in Memory,
                  on: m.id == l.memory_id,
                  where:
-                   m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
+                   m.memory_space_id == ^partition.memory_space_id and
                      m.scope == ^partition.scope and m.namespace == ^partition.namespace and
                      l.status in ["active", "candidate", "disputed"] and
                      (is_nil(l.last_decayed_at) or l.last_decayed_at < ^interval_start),
@@ -991,10 +1020,12 @@ defmodule Backplane.Memory.Lessons do
     case repo().transaction(fn ->
            opts = [
              type: "procedural",
+             memory_space_id: partition.memory_space_id,
              scope: partition.scope,
              namespace: partition.namespace,
              host_id: partition.host_id,
              client_id: partition.client_id,
+             source_client_id: partition[:source_client_id],
              agent_id: attrs.actor,
              session_id: attrs.session_id,
              idempotency_scope: partition.client_id,
@@ -1019,6 +1050,7 @@ defmodule Backplane.Memory.Lessons do
                "#{partition.client_id}:#{attrs.idempotency_key}",
                %{
                  memory_id: memory.id,
+                 memory_space_id: partition.memory_space_id,
                  lesson_status: lesson.status,
                  source_kind: lesson.source_kind,
                  host_id: partition.host_id,
@@ -1162,6 +1194,7 @@ defmodule Backplane.Memory.Lessons do
     Map.merge(
       %{
         host_id: partition.host_id,
+        memory_space_id: partition.memory_space_id,
         client_id: partition.client_id,
         scope: partition.scope,
         namespace: partition.namespace,
@@ -1212,9 +1245,15 @@ defmodule Backplane.Memory.Lessons do
     values =
       Map.new(@partition_keys, fn key -> {key, partition[key] || partition[to_string(key)]} end)
 
-    if Enum.all?(values, fn {_key, value} -> is_binary(value) and String.trim(value) != "" end),
-      do: {:ok, values},
-      else: {:error, :unauthorized}
+    with {:ok, values} <- PartitionIdentity.validate(values),
+         true <-
+           Enum.all?([Map.get(values, :host_id), Map.get(values, :client_id)], fn value ->
+             is_binary(value) and String.trim(value) != ""
+           end) do
+      {:ok, values}
+    else
+      _invalid -> {:error, :unauthorized}
+    end
   end
 
   defp exact_partition(_partition), do: {:error, :unauthorized}

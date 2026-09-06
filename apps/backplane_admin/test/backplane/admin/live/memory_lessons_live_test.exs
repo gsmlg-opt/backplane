@@ -2,29 +2,38 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Memory.{Audit, Lessons}
+  alias Backplane.MemorySpaces
+  alias Backplane.Skills.Host
 
-  @partition %{
-    host_id: "lessons-ui-host",
-    client_id: "lessons-ui-client",
-    scope: "team",
-    namespace: "private"
-  }
   @audit %{
     actor: "fixture-agent",
     request_id: "lessons-ui-request",
     correlation_id: "lessons-ui-correlation"
   }
 
-  test "requires an exact partition and renders bounded lesson fields", %{conn: conn} do
+  setup do
+    %{partition: partition_fixture("lessons-ui")}
+  end
+
+  test "requires an exact partition and renders bounded lesson fields", %{
+    conn: conn,
+    partition: partition
+  } do
     {:ok, view, html} = live(conn, "/memory/lessons")
     assert html =~ "Select an exact partition"
     refute has_element?(view, "#memory-lessons-table")
+    assert has_element?(view, "#lesson-memory-space[required]")
 
-    {:ok, lesson} = active_lesson("Render lesson", "backplane")
-    {:ok, _foreign} = active_lesson("Foreign lesson", "backplane", %{host_id: "other-host"})
+    {:ok, lesson} = active_lesson(partition, "Render lesson", "backplane")
+
+    {:ok, _foreign} =
+      active_lesson(partition_fixture("other-lessons"), "Foreign lesson", "backplane")
 
     {:ok, view, _html} =
-      live(recycle(conn), lessons_path(%{"status" => "active", "project" => "backplane"}))
+      live(
+        recycle(conn),
+        lessons_path(partition, %{"status" => "active", "project" => "backplane"})
+      )
 
     assert has_element?(view, "#memory-lessons-table")
 
@@ -51,11 +60,14 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     end
   end
 
-  test "filters and paginates without losing exact partition", %{conn: conn} do
-    for index <- 1..26, do: active_lesson("Paged rule #{index}", "pagination")
+  test "filters and paginates without losing exact partition", %{
+    conn: conn,
+    partition: partition
+  } do
+    for index <- 1..26, do: active_lesson(partition, "Paged rule #{index}", "pagination")
 
     {:ok, view, _html} =
-      live(conn, lessons_path(%{"project" => "pagination", "per_page" => "25"}))
+      live(conn, lessons_path(partition, %{"project" => "pagination", "per_page" => "25"}))
 
     assert has_element?(view, "#lessons-next-page")
 
@@ -66,19 +78,31 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     patched = assert_patch(view)
     query = patched |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
 
-    assert Map.take(query, ["host", "client", "scope", "namespace", "status", "project"]) == %{
-             "host" => @partition.host_id,
-             "client" => @partition.client_id,
-             "scope" => @partition.scope,
-             "namespace" => @partition.namespace,
+    assert Map.take(query, [
+             "memory_space_id",
+             "host",
+             "client",
+             "scope",
+             "namespace",
+             "status",
+             "project"
+           ]) == %{
+             "memory_space_id" => partition.memory_space_id,
+             "host" => partition.host_id,
+             "client" => partition.client_id,
+             "scope" => partition.scope,
+             "namespace" => partition.namespace,
              "status" => "active",
              "project" => "pagination"
            }
   end
 
-  test "detail exposes evidence and governed actions with audited actor and reason", %{conn: conn} do
-    {:ok, candidate} = candidate_lesson("Governed UI lesson")
-    path = lesson_path(candidate.memory_id)
+  test "detail exposes evidence and governed actions with audited actor and reason", %{
+    conn: conn,
+    partition: partition
+  } do
+    {:ok, candidate} = candidate_lesson(partition, "Governed UI lesson")
+    path = lesson_path(candidate.memory_id, partition)
 
     {:ok, view, html} = live(conn, path)
     assert html =~ "Governed UI lesson"
@@ -94,7 +118,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     assert has_element?(view, "#lesson-state", "active")
 
     assert [%{actor: "admin_ui:backplane_admin", metadata: metadata}] =
-             Audit.list(@partition, operation: "lesson.transition")
+             Audit.list(partition, operation: "lesson.transition")
 
     assert metadata["reason"] == "Reviewed by operator"
 
@@ -108,9 +132,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     assert has_element?(view, "#lesson-action-reactivate")
   end
 
-  defp active_lesson(rule, project, overrides \\ %{}) do
-    partition = Map.merge(@partition, overrides)
-
+  defp active_lesson(partition, rule, project) do
     Lessons.save(
       %{
         rule: rule,
@@ -124,7 +146,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     )
   end
 
-  defp candidate_lesson(rule) do
+  defp candidate_lesson(partition, rule) do
     Lessons.create_candidate(
       %{
         rule: rule,
@@ -134,18 +156,19 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
         confidence: 0.9,
         idempotency_key: "candidate-ui-#{rule}"
       },
-      @partition,
+      partition,
       @audit
     )
   end
 
-  defp lessons_path(extra) do
+  defp lessons_path(partition, extra) do
     query =
       %{
-        "host" => @partition.host_id,
-        "client" => @partition.client_id,
-        "scope" => @partition.scope,
-        "namespace" => @partition.namespace
+        "memory_space_id" => partition.memory_space_id,
+        "host" => partition.host_id,
+        "client" => partition.client_id,
+        "scope" => partition.scope,
+        "namespace" => partition.namespace
       }
       |> Map.merge(extra)
       |> URI.encode_query()
@@ -153,14 +176,35 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     "/memory/lessons?#{query}"
   end
 
-  defp lesson_path(id), do: "/memory/lessons/#{id}?#{partition_query()}"
+  defp lesson_path(id, partition), do: "/memory/lessons/#{id}?#{partition_query(partition)}"
 
-  defp partition_query do
-    URI.encode_query(%{
-      "host" => @partition.host_id,
-      "client" => @partition.client_id,
-      "scope" => @partition.scope,
-      "namespace" => @partition.namespace
+  defp partition_query(partition) do
+    %{
+      "memory_space_id" => partition.memory_space_id,
+      "host" => partition.host_id,
+      "client" => partition.client_id,
+      "scope" => partition.scope,
+      "namespace" => partition.namespace
+    }
+    |> URI.encode_query()
+  end
+
+  defp partition_fixture(prefix) do
+    host =
+      Backplane.Repo.insert!(
+        Host.changeset(%Host{}, %{
+          name: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}",
+          memory_scope: "team"
+        })
+      )
+
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+    source_client_id = "host:#{host.id}"
+
+    Map.merge(canonical, %{
+      host_id: host.id,
+      client_id: source_client_id,
+      source_client_id: source_client_id
     })
   end
 end

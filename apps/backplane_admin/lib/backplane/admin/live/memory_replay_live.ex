@@ -16,7 +16,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
 
   alias Backplane.Memory.{Replay, ReplayNotifier}
 
-  @partition_params ~w(host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace)
   @speeds [0.5, 1.0, 2.0, 4.0]
   @page_size 100
   @max_events 1_000
@@ -241,13 +241,14 @@ defmodule Backplane.Admin.MemoryReplayLive do
       </.dm_alert>
 
       <div :if={@authorized?}>
-        <.form id="replay-selector" for={%{}} as={:replay} phx-submit="select_partition" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <.form id="replay-selector" for={%{}} as={:replay} phx-submit="select_partition" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+          <.dm_input id="replay-memory-space" name="replay[memory_space_id]" label="Memory space" value={partition_value(@partition, :memory_space_id)} required />
           <.dm_input id="replay-host" name="replay[host]" label="Host" value={partition_value(@partition, :host_id)} required />
           <.dm_input id="replay-client" name="replay[client]" label="Client" value={partition_value(@partition, :client_id)} required />
           <.dm_input id="replay-scope" name="replay[scope]" label="Scope" value={partition_value(@partition, :scope)} required />
           <.dm_input id="replay-namespace" name="replay[namespace]" label="Namespace" value={partition_value(@partition, :namespace)} required />
           <.dm_input id="replay-session" name="replay[session]" label="Session" value={@session_id || ""} required />
-          <div class="sm:col-span-2 lg:col-span-5"><.dm_btn type="submit" variant="primary">Load replay</.dm_btn></div>
+          <div class="sm:col-span-2 lg:col-span-6"><.dm_btn type="submit" variant="primary">Load replay</.dm_btn></div>
         </.form>
 
         <.dm_alert :if={@query_error} id="replay-query-error" variant="error" title="Replay unavailable" compact class="mt-4">
@@ -444,6 +445,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
     if Enum.all?(values, fn {_key, value} -> value != "" and byte_size(value) <= 512 end) do
       {:ok,
        %{
+         memory_space_id: values["memory_space_id"],
          host_id: values["host"],
          client_id: values["client"],
          scope: values["scope"],
@@ -577,6 +579,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
 
   defp partition_query(partition),
     do: %{
+      "memory_space_id" => partition.memory_space_id,
       "host" => partition.host_id,
       "client" => partition.client_id,
       "scope" => partition.scope,

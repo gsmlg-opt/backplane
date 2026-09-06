@@ -8,15 +8,18 @@ defmodule Backplane.Memory.Projections.ActivityProjector do
     |> Enum.group_by(&group_key/1)
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {
-                     {date, project, agent_id, host_id, client_id, scope, namespace, event_type},
+                     {date, project, agent_id, memory_space_id, host_id, client_id,
+                      source_client_id, scope, namespace, event_type},
                      grouped
                    } ->
       %{
         "date" => date,
         "project" => project,
         "agent_id" => agent_id,
+        "memory_space_id" => memory_space_id,
         "host_id" => host_id,
         "client_id" => client_id,
+        "source_client_id" => source_client_id,
         "scope" => scope,
         "namespace" => namespace,
         "event_type" => event_type,
@@ -37,8 +40,10 @@ defmodule Backplane.Memory.Projections.ActivityProjector do
       date(event.occurred_at),
       optional_dimension(event.project),
       optional_dimension(event.agent_id),
+      event.memory_space_id,
       event.host_id,
       event.client_id,
+      event.source_client_id,
       event.scope,
       event.namespace,
       event.event_type

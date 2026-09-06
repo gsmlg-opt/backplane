@@ -1,9 +1,11 @@
 defmodule Backplane.Memory.Observations do
   import Ecto.Query
-  alias Backplane.Memory.Events.{Event, Store}
+  alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Config
+  alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Projections.Source
   alias Backplane.Memory.Workers.SummaryWorker
 
   @event_opt_keys [
@@ -12,8 +14,10 @@ defmodule Backplane.Memory.Observations do
     :stream_id,
     :project,
     :agent_id,
+    :memory_space_id,
     :host_id,
     :client_id,
+    :source_client_id,
     :run_id,
     :correlation_id,
     :causation_id,
@@ -25,10 +29,14 @@ defmodule Backplane.Memory.Observations do
 
   @doc "Record an observation, applying privacy filter. Returns {:ok, obs} or {:error, reason}."
   def record(session_id, content, opts \\ []) do
-    if Config.dual_write?() do
-      record_with_event(session_id, content, opts)
-    else
-      record_legacy(session_id, content, opts)
+    with {:ok, partition} <- partition(opts) do
+      opts = canonical_opts(opts, partition)
+
+      if Config.dual_write?() do
+        record_with_event(session_id, content, opts)
+      else
+        record_legacy(session_id, content, opts)
+      end
     end
   end
 
@@ -120,6 +128,12 @@ defmodule Backplane.Memory.Observations do
     filtered = normalize_content(filtered)
 
     %{
+      memory_space_id: opts[:memory_space_id],
+      host_id: opts[:host_id],
+      client_id: opts[:client_id],
+      source_client_id: opts[:source_client_id],
+      scope: opts[:scope],
+      namespace: opts[:namespace],
       session_id: session_id,
       tool_name: opts[:tool_name],
       content: filtered,
@@ -194,22 +208,26 @@ defmodule Backplane.Memory.Observations do
 
   @doc "Register/upsert a session."
   def register_session(session_id, project, opts \\ []) do
-    if Config.dual_write?() do
-      started_at = System.monotonic_time()
+    with {:ok, partition} <- partition(opts) do
+      opts = canonical_opts(opts, partition)
 
-      case register_session_with_event(session_id, project, opts, 1) do
-        {:ok, session, event_result} ->
-          if event_result, do: Store.emit_result({:ok, event_result}, started_at)
-          {:ok, session}
+      if Config.dual_write?() do
+        started_at = System.monotonic_time()
 
-        {:error, reason, event_attempted?} ->
-          if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
-          {:error, reason}
+        case register_session_with_event(session_id, project, opts, 1) do
+          {:ok, session, event_result} ->
+            if event_result, do: Store.emit_result({:ok, event_result}, started_at)
+            {:ok, session}
+
+          {:error, reason, event_attempted?} ->
+            if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
+            {:error, reason}
+        end
+      else
+        session_id
+        |> session_changeset(project, opts)
+        |> repo().insert(on_conflict: :nothing, conflict_target: [:session_id])
       end
-    else
-      session_id
-      |> session_changeset(project)
-      |> repo().insert(on_conflict: :nothing, conflict_target: [:session_id])
     end
   end
 
@@ -219,7 +237,7 @@ defmodule Backplane.Memory.Observations do
       |> Ecto.Multi.run(:session, fn repo, _changes ->
         preexisting? = repo.exists?(from(s in Session, where: s.session_id == ^session_id))
 
-        case repo.insert(session_changeset(session_id, project),
+        case repo.insert(session_changeset(session_id, project, opts),
                on_conflict: :nothing,
                conflict_target: [:session_id]
              ) do
@@ -261,8 +279,14 @@ defmodule Backplane.Memory.Observations do
     end
   end
 
-  defp session_changeset(session_id, project) do
+  defp session_changeset(session_id, project, opts) do
     Session.changeset(%Session{}, %{
+      memory_space_id: opts[:memory_space_id],
+      host_id: opts[:host_id],
+      client_id: opts[:client_id],
+      source_client_id: opts[:source_client_id],
+      scope: opts[:scope],
+      namespace: opts[:namespace],
       session_id: session_id,
       project: project,
       started_at: DateTime.utc_now()
@@ -271,10 +295,16 @@ defmodule Backplane.Memory.Observations do
 
   @doc "Mark a session as ended and enqueue consolidation."
   def end_session(session_id, opts \\ []) do
-    if partition_opts?(opts) and not owned_session?(session_id, opts) do
-      {:error, :not_found}
-    else
-      do_end_session(session_id, opts)
+    with {:ok, partition} <- partition(opts) do
+      opts = canonical_opts(opts, partition)
+
+      case do_end_session(session_id, opts) do
+        {:error, :not_found} = error ->
+          if opts[:require_existing] == true, do: error, else: {0, nil}
+
+        result ->
+          result
+      end
     end
   end
 
@@ -285,7 +315,7 @@ defmodule Backplane.Memory.Observations do
       case end_session_with_event(session_id, opts, 1) do
         {:ok, result, event_result} ->
           if event_result, do: Store.emit_result({:ok, event_result}, started_at)
-          maybe_enqueue_summary(result, session_id)
+          maybe_enqueue_summary(result, session_id, opts)
           result
 
         {:error, reason, event_attempted?} ->
@@ -293,8 +323,8 @@ defmodule Backplane.Memory.Observations do
           {:error, reason}
       end
     else
-      result = transition_session(session_id)
-      maybe_enqueue_summary(result, session_id)
+      result = transition_session(session_id, opts)
+      maybe_enqueue_summary(result, session_id, opts)
       result
     end
   end
@@ -306,10 +336,22 @@ defmodule Backplane.Memory.Observations do
       Ecto.Multi.new()
       |> Ecto.Multi.update_all(
         :session_transition,
-        from(s in Session, where: s.session_id == ^session_id and is_nil(s.ended_at)),
+        from(s in Session,
+          where:
+            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
+              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace] and
+              is_nil(s.ended_at)
+        ),
         set: [ended_at: now]
       )
-      |> Ecto.Multi.one(:session, from(s in Session, where: s.session_id == ^session_id))
+      |> Ecto.Multi.one(
+        :session,
+        from(s in Session,
+          where:
+            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
+              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace]
+        )
+      )
       |> Ecto.Multi.merge(fn
         %{session_transition: {1, nil}, session: %Session{} = session} ->
           Ecto.Multi.new()
@@ -323,6 +365,9 @@ defmodule Backplane.Memory.Observations do
       end)
 
     case repo().transaction(multi) do
+      {:ok, %{session_transition: {0, nil}, session: nil}} ->
+        {:error, :not_found, false}
+
       {:ok, %{session_transition: {count, nil}} = changes} ->
         {:ok, {count, nil}, Map.get(changes, :event)}
 
@@ -344,19 +389,45 @@ defmodule Backplane.Memory.Observations do
     end
   end
 
-  defp transition_session(session_id) do
-    repo().update_all(
-      from(s in Session, where: s.session_id == ^session_id and is_nil(s.ended_at)),
-      set: [ended_at: DateTime.utc_now()]
+  defp transition_session(session_id, opts) do
+    result =
+      repo().update_all(
+        from(s in Session,
+          where:
+            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
+              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace] and is_nil(s.ended_at)
+        ),
+        set: [ended_at: DateTime.utc_now()]
+      )
+
+    case result do
+      {0, nil} ->
+        if owned_session_exists?(session_id, opts), do: result, else: {:error, :not_found}
+
+      _transitioned ->
+        result
+    end
+  end
+
+  defp owned_session_exists?(session_id, opts) do
+    repo().exists?(
+      from(s in Session,
+        where:
+          s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
+            s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace]
+      )
     )
   end
 
-  defp maybe_enqueue_summary({count, nil}, session_id) when count > 0 do
-    SummaryWorker.enqueue(session_id)
+  defp maybe_enqueue_summary({count, nil}, session_id, opts) when count > 0 do
+    with {:ok, %{input_revision: revision}} <- Source.input_revision(opts[:host_id], session_id) do
+      SummaryWorker.enqueue(opts[:host_id], session_id, revision, Map.new(opts))
+    end
+
     :ok
   end
 
-  defp maybe_enqueue_summary(_result, _session_id), do: :ok
+  defp maybe_enqueue_summary(_result, _session_id, _opts), do: :ok
 
   defp lifecycle_event_attrs(type, session, opts) do
     Map.merge(
@@ -371,30 +442,32 @@ defmodule Backplane.Memory.Observations do
         idempotency_key: type <> ":" <> session.session_id
       },
       opts
-      |> Keyword.take([:host_id, :client_id, :agent_id])
+      |> Keyword.take([
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace,
+        :agent_id
+      ])
       |> Map.new()
       |> Map.merge(trusted_partition_attrs(opts[:trusted_partition]))
     )
   end
 
   defp trusted_partition_attrs(partition) when is_map(partition),
-    do: Map.take(partition, [:host_id, :client_id, :scope, :namespace])
+    do:
+      Map.take(partition, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
 
   defp trusted_partition_attrs(_partition), do: %{}
-
-  defp partition_opts?(opts),
-    do: Enum.all?([:host_id, :client_id, :scope, :namespace], &is_binary(opts[&1]))
-
-  defp owned_session?(session_id, opts) do
-    repo().exists?(
-      from(e in Event,
-        where:
-          e.session_id == ^session_id and e.event_type == "session.started" and
-            e.host_id == ^opts[:host_id] and e.client_id == ^opts[:client_id] and
-            e.scope == ^opts[:scope] and e.namespace == ^opts[:namespace]
-      )
-    )
-  end
 
   @doc "Return observations referencing any of the listed file paths, newest first."
   def file_history(file_paths, opts \\ []) when is_list(file_paths) do
@@ -421,28 +494,40 @@ defmodule Backplane.Memory.Observations do
       end
 
     query =
-      case {opts[:host_id], opts[:client_id], opts[:scope], opts[:namespace]} do
-        {host_id, client_id, scope, namespace}
-        when is_binary(host_id) and is_binary(client_id) and is_binary(scope) and
-               is_binary(namespace) ->
+      case partition(opts) do
+        {:ok, partition} ->
           from(o in query,
-            join: e in Event,
-            on:
-              fragment(
-                "?->'_backplane'->>'legacy_observation_id' = ?::text",
-                e.payload,
-                o.id
-              ),
             where:
-              e.host_id == ^host_id and e.client_id == ^client_id and e.scope == ^scope and
-                e.namespace == ^namespace
+              o.memory_space_id == ^partition.memory_space_id and
+                o.scope == ^partition.scope and o.namespace == ^partition.namespace
           )
 
-        _tenant ->
-          query
+        {:error, _reason} ->
+          from(o in query, where: false)
       end
 
     repo().all(query)
+  end
+
+  defp partition(opts) when is_list(opts) do
+    opts[:trusted_partition]
+    |> case do
+      value when is_map(value) -> value
+      _ -> Map.new(opts)
+    end
+    |> PartitionIdentity.validate()
+  end
+
+  defp canonical_opts(opts, partition) do
+    Keyword.merge(opts,
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      client_id: partition[:client_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
+      trusted_partition: partition
+    )
   end
 
   # Extract file paths from content using simple heuristics

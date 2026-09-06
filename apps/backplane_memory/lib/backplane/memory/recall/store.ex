@@ -7,7 +7,8 @@ defmodule Backplane.Memory.Recall.Store do
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Run, TraceCandidate}
 
-  @partition_fields [:host_id, :client_id, :scope, :namespace]
+  @partition_fields [:memory_space_id, :host_id, :client_id, :scope, :namespace]
+  @canonical_partition_fields [:memory_space_id, :scope, :namespace]
   @channels ~w(fts vector graph)
   @source_types ~w(memory event observation summary request crystal lesson)
   @reranker_statuses ~w(ok disabled unavailable empty provider_error exit timeout malformed error)
@@ -51,8 +52,10 @@ defmodule Backplane.Memory.Recall.Store do
       now = now()
 
       attrs = %{
+        memory_space_id: plan.memory_space_id,
         host_id: plan.host_id,
         client_id: plan.client_id,
+        source_client_id: plan.source_client_id,
         scope: plan.scope,
         namespace: plan.namespace,
         request_id: request_id,
@@ -187,8 +190,7 @@ defmodule Backplane.Memory.Recall.Store do
         Run
         |> where(
           [run],
-          run.host_id == ^partition.host_id and
-            run.client_id == ^partition.client_id and
+          run.memory_space_id == ^partition.memory_space_id and
             run.scope == ^partition.scope and
             run.namespace == ^partition.namespace
         )
@@ -245,7 +247,9 @@ defmodule Backplane.Memory.Recall.Store do
 
   defp normalize_trace(run, partition, %{candidate: %Candidate{} = candidate} = trace) do
     with :ok <- validate_trace_keys(trace),
-         true <- candidate_partition(candidate) == partition or {:error, :partition_mismatch},
+         true <-
+           candidate_partition(candidate) == Map.take(partition, @canonical_partition_fields) or
+             {:error, :partition_mismatch},
          {:ok, selected} <- boolean(Map.get(trace, :selected, false), :selected),
          {:ok, rejection_reason} <-
            rejection_reason(selected, Map.get(trace, :rejection_reason)),
@@ -424,8 +428,8 @@ defmodule Backplane.Memory.Recall.Store do
       Run
       |> where(
         [run],
-        run.host_id == ^plan.host_id and run.client_id == ^plan.client_id and
-          run.scope == ^plan.scope and run.namespace == ^plan.namespace and
+        run.memory_space_id == ^plan.memory_space_id and run.scope == ^plan.scope and
+          run.namespace == ^plan.namespace and
           run.request_id == ^request_id
       )
 
@@ -461,31 +465,32 @@ defmodule Backplane.Memory.Recall.Store do
   defp partitioned_run_query(run_id, partition) do
     from(run in Run,
       where:
-        run.id == ^run_id and run.host_id == ^partition.host_id and
-          run.client_id == ^partition.client_id and run.scope == ^partition.scope and
-          run.namespace == ^partition.namespace
+        run.id == ^run_id and run.memory_space_id == ^partition.memory_space_id and
+          run.scope == ^partition.scope and run.namespace == ^partition.namespace
     )
   end
 
   defp partition(value) when is_map(value) do
-    Enum.reduce_while(@partition_fields, {:ok, %{}}, fn key, {:ok, acc} ->
-      case Map.get(value, key, Map.get(value, Atom.to_string(key))) do
-        item when is_binary(item) ->
-          item = String.trim(item)
+    with {:ok, canonical} <- Backplane.Memory.PartitionIdentity.validate(value) do
+      Enum.reduce_while(@partition_fields, {:ok, canonical}, fn key, {:ok, acc} ->
+        case Map.get(value, key, Map.get(value, Atom.to_string(key))) do
+          item when is_binary(item) ->
+            item = String.trim(item)
 
-          if item != "" and byte_size(item) <= 512,
-            do: {:cont, {:ok, Map.put(acc, key, item)}},
-            else: {:halt, {:error, :invalid_partition}}
+            if item != "" and byte_size(item) <= 512,
+              do: {:cont, {:ok, Map.put(acc, key, item)}},
+              else: {:halt, {:error, :invalid_partition}}
 
-        _invalid ->
-          {:halt, {:error, :invalid_partition}}
-      end
-    end)
+          _invalid ->
+            {:halt, {:error, :invalid_partition}}
+        end
+      end)
+    end
   end
 
   defp partition(_value), do: {:error, :invalid_partition}
 
-  defp candidate_partition(candidate), do: Map.take(candidate, @partition_fields)
+  defp candidate_partition(candidate), do: Map.take(candidate, @canonical_partition_fields)
 
   defp required_option(opts, key) do
     case Keyword.get(opts, key) do

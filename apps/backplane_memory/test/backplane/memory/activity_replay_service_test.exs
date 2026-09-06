@@ -4,6 +4,7 @@ defmodule Backplane.Memory.ActivityReplayServiceTest do
   alias Backplane.Memory.{Audit, Service}
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Projections.Rebuild
+  alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
 
   defmodule ImportDispatcher do
@@ -38,6 +39,8 @@ defmodule Backplane.Memory.ActivityReplayServiceTest do
         })
       )
 
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+
     on_exit(fn ->
       Enum.each(snapshot, fn {key, rows} ->
         :ets.delete(:backplane_settings, key)
@@ -50,8 +53,10 @@ defmodule Backplane.Memory.ActivityReplayServiceTest do
     end)
 
     partition = %{
+      memory_space_id: canonical.memory_space_id,
       host_id: host.id,
       client_id: "host:#{host.id}",
+      source_client_id: "host:#{host.id}",
       scope: host.memory_scope,
       namespace: "private"
     }
@@ -135,9 +140,11 @@ defmodule Backplane.Memory.ActivityReplayServiceTest do
     assert {:ok, {:inserted, _}} =
              Store.append_tagged(%{
                id: Ecto.UUID.generate(),
+               memory_space_id: partition.memory_space_id,
                stream_id: "capture:#{partition.host_id}:#{session}",
                host_id: partition.host_id,
                client_id: partition.client_id,
+               source_client_id: partition.source_client_id,
                scope: partition.scope,
                namespace: partition.namespace,
                session_id: session,

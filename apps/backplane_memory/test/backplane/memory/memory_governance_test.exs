@@ -5,8 +5,8 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
 
   test "legacy contradiction heuristic is an unconditional no-op" do
-    {:ok, first} = Memories.remember("same tags one", agent_id: "a", host_id: "h", tags: ["x"])
-    {:ok, second} = Memories.remember("same tags two", agent_id: "a", host_id: "h", tags: ["x"])
+    first = remember!("same tags one", tags: ["x"])
+    second = remember!("same tags two", tags: ["x"])
 
     assert {:ok, :no_change} = Memories.maybe_detect_contradiction(first.id, second.id)
     assert Memories.get(first.id) == {:error, :unauthorized}
@@ -15,7 +15,7 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
   end
 
   test "forget/1 writes an audit entry" do
-    {:ok, mem} = Memories.remember("test governance", agent_id: "a1", host_id: "h1")
+    mem = remember!("test governance")
     assert {:error, :unauthorized} = Memories.forget(mem.id)
     :ok = Memories.trusted_forget(mem.id)
 
@@ -28,7 +28,7 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
   end
 
   test "target audit lookup handles legacy arrays and maps without a global prelimit" do
-    {:ok, mem} = Memories.remember("targeted audit", agent_id: "a1", host_id: "h1")
+    mem = remember!("targeted audit")
     :ok = Audit.log("legacy_array", "system", [mem.id], %{"shape" => "array"})
     :ok = Audit.log("legacy_map", "system", %{"memory_id" => mem.id}, %{"shape" => "map"})
 
@@ -54,7 +54,7 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
     :ok = Backplane.Settings.set("memory.hard_delete_enabled", "true")
     on_exit(fn -> Backplane.Settings.set("memory.hard_delete_enabled", previous) end)
 
-    {:ok, mem} = Memories.remember("retained provenance", agent_id: "a1", host_id: "h1")
+    mem = remember!("retained provenance")
 
     assert {:error, :unauthorized} = Memories.forget(mem.id)
     assert {:error, :provenance_retained} = Memories.trusted_forget(mem.id)
@@ -99,8 +99,22 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
   end
 
   defp insert_legacy_memory!(content) do
+    partition = canonical_partition("legacy-governance", client_id: "legacy")
+
     %Memory{}
-    |> Memory.changeset(%{content: content, agent_id: "legacy", host_id: "legacy"})
+    |> Memory.changeset(
+      Map.merge(partition, %{content: content, agent_id: "legacy", host_id: "legacy"})
+    )
     |> repo().insert!()
+  end
+
+  defp remember!(content, opts \\ []) do
+    assert {:ok, memory} =
+             Memories.remember(
+               content,
+               canonical_memory_opts("governance-host", [agent_id: "a1"] ++ opts)
+             )
+
+    memory
   end
 end

@@ -60,6 +60,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   @impl true
   def handle_event("repair", %{"repair" => params}, socket) do
     partition = %{
+      memory_space_id: params["memory_space_id"],
       host_id: params["host_id"],
       client_id: params["client_id"],
       scope: params["scope"],
@@ -68,7 +69,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
 
     args =
       params
-      |> Map.drop(~w(host_id client_id scope namespace))
+      |> Map.drop(~w(memory_space_id host_id client_id scope namespace))
       |> Map.reject(fn {_key, value} -> value == "" end)
 
     result = Repair.run(args, partition, "admin:memory_operations")
@@ -352,6 +353,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
             </p>
 
             <.form for={%{}} as={:repair} phx-submit="repair" class="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <.dm_input id="repair-memory-space" name="repair[memory_space_id]" label="Memory space" value="" required />
               <.dm_input id="repair-host" name="repair[host_id]" label="Host" value="" required />
               <.dm_input id="repair-client" name="repair[client_id]" label="Client" value="" required />
               <.dm_input id="repair-scope" name="repair[scope]" label="Scope" value="" required />

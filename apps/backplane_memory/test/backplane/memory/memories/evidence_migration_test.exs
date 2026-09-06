@@ -74,7 +74,11 @@ defmodule Backplane.Memory.Memories.EvidenceMigrationTest do
   end
 
   test "database rejects invalid request and evidence provenance" do
-    {:ok, memory} = Memories.remember("migration provenance", agent_id: "agent", host_id: "host")
+    {:ok, memory} =
+      Memories.remember(
+        "migration provenance",
+        canonical_memory_opts("host", agent_id: "agent")
+      )
 
     assert_sql_error(:check_violation, fn ->
       insert_request(memory.id, "", "key", :crypto.strong_rand_bytes(32))
@@ -118,11 +122,13 @@ defmodule Backplane.Memory.Memories.EvidenceMigrationTest do
 
   test "request and evidence rows reject update, delete, and truncate" do
     {:ok, memory} =
-      Memories.remember("immutable provenance",
-        agent_id: "agent",
-        host_id: "host",
-        idempotency_scope: "direct",
-        idempotency_key: "immutable"
+      Memories.remember(
+        "immutable provenance",
+        canonical_memory_opts("host",
+          agent_id: "agent",
+          idempotency_scope: "direct",
+          idempotency_key: "immutable"
+        )
       )
 
     for table <- ["bpm_memory_remember_requests", "bpm_memory_evidence"],
@@ -263,11 +269,13 @@ defmodule Backplane.Memory.Memories.EvidenceMigrationTest do
 
   test "one durable source cannot be counted twice under different evidence kinds" do
     {:ok, memory} =
-      Memories.remember("unique source",
-        agent_id: "agent",
-        host_id: "host",
-        idempotency_scope: "direct",
-        idempotency_key: "unique-source"
+      Memories.remember(
+        "unique source",
+        canonical_memory_opts("host",
+          agent_id: "agent",
+          idempotency_scope: "direct",
+          idempotency_key: "unique-source"
+        )
       )
 
     [[request_id]] =

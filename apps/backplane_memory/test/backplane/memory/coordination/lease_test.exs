@@ -6,11 +6,20 @@ defmodule Backplane.Memory.Coordination.LeaseTest do
   alias Backplane.Memory.Workers.LeaseCleanupWorker
 
   @partition %{
+    memory_space_id: "c0fc5041-bcbd-3b9e-f0f3-2e3b4342d68a",
     host_id: "lease-host",
     client_id: "host:lease-host",
+    source_client_id: "host:lease-host",
     scope: "lease-scope",
     namespace: "private"
   }
+
+  setup do
+    assert Backplane.Memory.IngestFixtures.ensure_memory_space!(@partition.host_id) ==
+             @partition.memory_space_id
+
+    :ok
+  end
 
   describe "acquire/4" do
     test "first caller acquires the lease successfully" do

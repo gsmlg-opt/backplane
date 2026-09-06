@@ -5,9 +5,11 @@ defmodule Backplane.Memory.Projections.ProjectedObservation do
 
   @primary_key {:event_id, :binary_id, autogenerate: false}
   schema "bpm_projected_observations" do
+    field(:memory_space_id, :binary_id)
     field(:subject_id, :string)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:session_id, :string)

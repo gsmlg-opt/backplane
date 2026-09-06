@@ -8,8 +8,10 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
     first = List.first(ordered)
 
     %{
+      "memory_space_id" => field(first, :memory_space_id),
       "host_id" => field(first, :host_id),
       "client_id" => field(first, :client_id),
+      "source_client_id" => field(first, :source_client_id),
       "scope" => field(first, :scope),
       "namespace" => field(first, :namespace),
       "session_id" => field(first, :session_id),

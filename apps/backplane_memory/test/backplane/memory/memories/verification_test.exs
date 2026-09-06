@@ -4,13 +4,40 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.Relation
   alias Backplane.Memory.Memories.Relations
   alias Backplane.Memory.Projections.Rebuild
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{EpisodicWorker, ProceduralWorker, SummaryWorker}
+
+  defmodule Memories do
+    @moduledoc false
+
+    def remember(content, opts) do
+      host_id = Keyword.fetch!(opts, :host_id)
+
+      opts
+      |> Keyword.put_new(
+        :memory_space_id,
+        Backplane.Memory.IngestFixtures.ensure_memory_space!(host_id)
+      )
+      |> then(&Backplane.Memory.Memories.remember(content, &1))
+    end
+
+    def verify(memory_id, partition) do
+      partition = Map.new(partition)
+
+      partition
+      |> Map.put_new(
+        :memory_space_id,
+        Backplane.Memory.IngestFixtures.ensure_memory_space!(Map.fetch!(partition, :host_id))
+      )
+      |> then(&Backplane.Memory.Memories.verify(memory_id, &1))
+    end
+
+    defdelegate list_evidence(memory_id), to: Backplane.Memory.Memories
+  end
 
   defmodule MockLLM do
     def extract_facts(content) do
@@ -59,6 +86,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
              SummaryWorker.perform(%Oban.Job{
                args: %{
                  "host_id" => host_id,
+                 "memory_space_id" => projection.memory_space_id,
+                 "client_id" => projection.client_id,
+                 "scope" => projection.scope,
+                 "namespace" => projection.namespace,
                  "session_id" => session_id,
                  "processing_version" => "summary-v1",
                  "input_revision" => projection.input_revision
@@ -78,13 +109,16 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       )
 
     partition = %{
+      memory_space_id: memory_space_id(host_id),
       host_id: host_id,
       client_id: "host:#{host_id}",
       scope: "verify-scope",
       namespace: "private"
     }
 
-    assert Map.take(memory, [:host_id, :client_id, :scope, :namespace]) == partition
+    assert Map.take(memory, [:memory_space_id, :host_id, :client_id, :scope, :namespace]) ==
+             partition
+
     assert {:ok, verification} = Memories.verify(memory.id, partition)
 
     assert verification.memory.memory_type == "semantic"
@@ -131,6 +165,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                SummaryWorker.perform(%Oban.Job{
                  args: %{
                    "host_id" => host_id,
+                   "memory_space_id" => next_projection.memory_space_id,
+                   "client_id" => next_projection.client_id,
+                   "scope" => next_projection.scope,
+                   "namespace" => next_projection.namespace,
                    "session_id" => next_session_id,
                    "processing_version" => "summary-v1",
                    "input_revision" => next_projection.input_revision
@@ -143,7 +181,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => next_summary.id}})
     end
 
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Oban.Job{args: partition})
 
     procedure =
       repo().one!(
@@ -152,7 +190,14 @@ defmodule Backplane.Memory.Memories.VerificationTest do
         )
       )
 
-    assert Map.take(procedure, [:host_id, :client_id, :scope, :namespace]) == partition
+    assert Map.take(procedure, [
+             :memory_space_id,
+             :host_id,
+             :client_id,
+             :scope,
+             :namespace
+           ]) == partition
+
     assert {:ok, procedure_verification} = Memories.verify(procedure.id, partition)
     assert procedure_verification.evidence_count == 11
     assert length(procedure_verification.summaries) == 10
@@ -500,6 +545,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert {:ok, owner} =
              Memories.remember("owner with forged request root",
                type: "semantic",
+               memory_space_id: foreign_space_id("request-owner"),
                host_id: "shared-host",
                client_id: "owner-client",
                scope: "shared-scope",
@@ -516,6 +562,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
              )
 
     partition = %{
+      memory_space_id: foreign_space_id("request-owner"),
       host_id: "shared-host",
       client_id: "owner-client",
       scope: "shared-scope",
@@ -546,7 +593,11 @@ defmodule Backplane.Memory.Memories.VerificationTest do
         content: "foreign canonical summary",
         observation_count: 1,
         subject_id: projection.subject_id,
+        memory_space_id: projection.memory_space_id,
         host_id: host_id,
+        source_client_id: projection.source_client_id,
+        scope: projection.scope,
+        namespace: projection.namespace,
         processing_version: "foreign-v1",
         input_revision: projection.input_revision,
         output_revision: String.duplicate("a", 64)
@@ -566,6 +617,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert {:ok, owner} =
              Memories.remember("owner with forged summary root",
                type: "semantic",
+               memory_space_id: foreign_space_id("summary-owner"),
                host_id: host_id,
                client_id: "owner-client",
                scope: "verify-scope",
@@ -582,6 +634,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
              )
 
     partition = %{
+      memory_space_id: foreign_space_id("summary-owner"),
       host_id: host_id,
       client_id: "owner-client",
       scope: "verify-scope",
@@ -673,4 +726,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   end
 
   defp evidence_ids(memory), do: Enum.map(Memories.list_evidence(memory.id), & &1.id)
+
+  defp foreign_space_id(label),
+    do: Backplane.Memory.IngestFixtures.ensure_memory_space!("verification-#{label}")
 end

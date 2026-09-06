@@ -4,8 +4,8 @@ defmodule Mix.Tasks.Memory.Activity.Verify do
   @moduledoc """
   Compares durable daily activity with authoritative canonical events.
 
-      mix memory.activity.verify --client ID --scope SCOPE --namespace NAMESPACE
-      mix memory.activity.verify --client ID --scope SCOPE --namespace NAMESPACE \
+      mix memory.activity.verify --memory-space UUID --client ID --scope SCOPE --namespace NAMESPACE
+      mix memory.activity.verify --memory-space UUID --client ID --scope SCOPE --namespace NAMESPACE \
         --from YYYY-MM-DD --to YYYY-MM-DD [--repair]
   """
 
@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Memory.Activity.Verify do
 
   alias Backplane.Memory.Projections.ActivityVerifier
 
-  @usage "Usage: mix memory.activity.verify --client ID --scope SCOPE --namespace NAMESPACE [--from YYYY-MM-DD --to YYYY-MM-DD] [--repair]"
+  @usage "Usage: mix memory.activity.verify --memory-space UUID --client ID --scope SCOPE --namespace NAMESPACE [--from YYYY-MM-DD --to YYYY-MM-DD] [--repair]"
 
   @impl Mix.Task
   def run(args) do
@@ -48,6 +48,7 @@ defmodule Mix.Tasks.Memory.Activity.Verify do
     {opts, positional, invalid} =
       OptionParser.parse(args,
         strict: [
+          memory_space: :string,
           client: :string,
           scope: :string,
           namespace: :string,
@@ -58,11 +59,12 @@ defmodule Mix.Tasks.Memory.Activity.Verify do
       )
 
     duplicate? =
-      Enum.any?(~w(--client --scope --namespace --from --to --repair), fn switch ->
+      Enum.any?(~w(--memory-space --client --scope --namespace --from --to --repair), fn switch ->
         Enum.count(args, &(&1 == switch or String.starts_with?(&1, switch <> "="))) > 1
       end)
 
-    required? = Enum.all?([:client, :scope, :namespace], &non_empty?(Keyword.get(opts, &1)))
+    required? =
+      Enum.all?([:memory_space, :client, :scope, :namespace], &non_empty?(Keyword.get(opts, &1)))
 
     dates? =
       (Keyword.has_key?(opts, :from) and Keyword.has_key?(opts, :to)) or
@@ -73,6 +75,7 @@ defmodule Mix.Tasks.Memory.Activity.Verify do
 
       verifier_opts =
         [
+          memory_space_id: Keyword.fetch!(opts, :memory_space),
           client_id: Keyword.fetch!(opts, :client),
           scope: Keyword.fetch!(opts, :scope),
           namespace: Keyword.fetch!(opts, :namespace)

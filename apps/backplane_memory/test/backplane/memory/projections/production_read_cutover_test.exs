@@ -26,14 +26,25 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     ingest_session!("host-b", session_id, project, "Bash", "2026-08-04T02:00:00.000Z")
 
     decoy_session = unique("legacy-decoy")
+    decoy_partition = canonical_partition("legacy-decoy-host")
 
     repo().insert!(%Session{
+      memory_space_id: decoy_partition.memory_space_id,
+      host_id: decoy_partition.host_id,
+      source_client_id: decoy_partition.source_client_id,
+      scope: decoy_partition.scope,
+      namespace: decoy_partition.namespace,
       session_id: decoy_session,
       project: project,
       started_at: ~U[2030-01-01 00:00:00.000000Z]
     })
 
     repo().insert!(%Observation{
+      memory_space_id: decoy_partition.memory_space_id,
+      host_id: decoy_partition.host_id,
+      source_client_id: decoy_partition.source_client_id,
+      scope: decoy_partition.scope,
+      namespace: decoy_partition.namespace,
       session_id: decoy_session,
       tool_name: "LegacyOnly",
       content: "legacy decoy",
@@ -182,8 +193,14 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
 
     ingest!(event(host_id, active_session, project, 1, "agent.session.started"))
     assert {:ok, _result} = Rebuild.session(host_id, active_session)
+    decoy_partition = canonical_partition("legacy-active-host")
 
     repo().insert!(%Session{
+      memory_space_id: decoy_partition.memory_space_id,
+      host_id: decoy_partition.host_id,
+      source_client_id: decoy_partition.source_client_id,
+      scope: decoy_partition.scope,
+      namespace: decoy_partition.namespace,
       session_id: unique("legacy-active"),
       project: project,
       started_at: ~U[2030-01-01 00:00:00.000000Z]
@@ -331,8 +348,14 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
 
     other_project = unique("other-project")
     ingest_session!("other-host", session_id, other_project, "Other", "2026-08-04T05:00:00.000Z")
+    decoy_partition = canonical_partition("legacy-filter-decoy")
 
     repo().insert!(%Observation{
+      memory_space_id: decoy_partition.memory_space_id,
+      host_id: decoy_partition.host_id,
+      source_client_id: decoy_partition.source_client_id,
+      scope: decoy_partition.scope,
+      namespace: decoy_partition.namespace,
       session_id: session_id,
       tool_name: "LegacyOnly",
       content: "legacy filtered decoy",
@@ -460,8 +483,14 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     subject_id = Source.subject_id!(host_id, session_id)
     input_revision = "input-#{subject_id}"
     output_revision = "output-#{subject_id}"
+    partition = canonical_partition(host_id, scope: "bounded-project")
 
     repo().insert!(%State{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      source_client_id: partition.source_client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "observations",
       subject_type: "captured_session",
       subject_id: subject_id,
@@ -473,6 +502,11 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     })
 
     repo().insert!(%Snapshot{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      source_client_id: partition.source_client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "observations",
       subject_type: "captured_session",
       subject_id: subject_id,
@@ -494,8 +528,10 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
         %{
           event_id: Ecto.UUID.generate(),
           subject_id: subject_id,
+          memory_space_id: partition.memory_space_id,
           host_id: host_id,
           client_id: "host:#{host_id}",
+          source_client_id: partition.source_client_id,
           scope: "bounded-project",
           namespace: "private",
           session_id: session_id,
@@ -558,11 +594,13 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     assert timeline_sql =~ ~s(FROM "bpm_projected_observations")
     assert pattern_sql =~ ~s(FROM "bpm_projected_observations")
     assert pattern_sql =~ "LIMIT $"
+
     assert timeline_plan =~
              ~r/(?:Index Scan(?: Backward)? using|Bitmap Index Scan on) bpm_projected_observations_/
 
     assert pattern_plan =~
              ~r/(?:Index Scan(?: Backward)? using|Bitmap Index Scan on) bpm_projected_observations_/
+
     assert pattern_plan =~ "Limit"
     refute timeline_plan =~ "Function Scan"
     refute pattern_plan =~ "Function Scan"
@@ -662,9 +700,13 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     input_revision = unique("partition-input")
     output_revision = unique("partition-output")
 
+    owner = canonical_partition(host_id, client_id: client_id, scope: scope, namespace: namespace)
+
     partition = %{
+      "memory_space_id" => owner.memory_space_id,
       "host_id" => host_id,
       "client_id" => client_id,
+      "source_client_id" => owner.source_client_id,
       "scope" => scope,
       "namespace" => namespace,
       "session_id" => session_id,
@@ -679,7 +721,8 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
       Map.merge(partition, %{
         "status" => "active",
         "counts" => %{"events" => 1}
-      })
+      }),
+      owner
     )
 
     insert_projection_pair!(
@@ -687,14 +730,17 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
       subject_id,
       input_revision,
       output_revision,
-      partition
+      partition,
+      owner
     )
 
     repo().insert!(%ProjectedObservation{
       event_id: Ecto.UUID.generate(),
       subject_id: subject_id,
+      memory_space_id: owner.memory_space_id,
       host_id: host_id,
       client_id: client_id,
+      source_client_id: owner.source_client_id,
       scope: scope,
       namespace: namespace,
       session_id: session_id,
@@ -718,21 +764,35 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     input_revision = unique("legacy-partition-input")
     output_revision = unique("legacy-partition-output")
     read_model = %{"host_id" => host_id, "session_id" => session_id, "status" => "active"}
+    owner = canonical_partition("legacy-read-owner-#{host_id}") |> Map.put(:host_id, host_id)
 
-    insert_projection_pair!("session", subject_id, input_revision, output_revision, read_model)
+    insert_projection_pair!(
+      "session",
+      subject_id,
+      input_revision,
+      output_revision,
+      read_model,
+      owner
+    )
 
     insert_projection_pair!(
       "observations",
       subject_id,
       input_revision,
       output_revision,
-      read_model
+      read_model,
+      owner
     )
 
     repo().insert!(%ProjectedObservation{
       event_id: Ecto.UUID.generate(),
       subject_id: subject_id,
+      memory_space_id: owner.memory_space_id,
       host_id: host_id,
+      client_id: owner.client_id,
+      source_client_id: owner.source_client_id,
+      scope: owner.scope,
+      namespace: owner.namespace,
       session_id: session_id,
       event_type: "agent.tool.completed",
       occurred_at: DateTime.utc_now(),
@@ -745,8 +805,20 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     })
   end
 
-  defp insert_projection_pair!(projector, subject_id, input_revision, output_revision, read_model) do
+  defp insert_projection_pair!(
+         projector,
+         subject_id,
+         input_revision,
+         output_revision,
+         read_model,
+         owner
+       ) do
     repo().insert!(%State{
+      memory_space_id: owner.memory_space_id,
+      host_id: owner.host_id,
+      source_client_id: owner.source_client_id,
+      scope: owner.scope,
+      namespace: owner.namespace,
       projector: projector,
       subject_type: "captured_session",
       subject_id: subject_id,
@@ -758,6 +830,11 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
     })
 
     repo().insert!(%Snapshot{
+      memory_space_id: owner.memory_space_id,
+      host_id: owner.host_id,
+      source_client_id: owner.source_client_id,
+      scope: owner.scope,
+      namespace: owner.namespace,
       projector: projector,
       subject_type: "captured_session",
       subject_id: subject_id,

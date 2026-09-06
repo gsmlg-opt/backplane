@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Graph do
   import Ecto.Query
   alias Backplane.Memory.Graph.{Edge, Node}
   alias Backplane.Memory.Memories.{Memory, Relation}
+  alias Backplane.Memory.PartitionIdentity
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -12,9 +13,15 @@ defmodule Backplane.Memory.Graph do
   Uses Jaro distance >= 0.85 to identify the same entity.
   Returns `{:ok, node}` — either an existing node or a newly inserted one.
   """
-  def upsert_node(attrs), do: upsert_node(attrs, nil)
+  def upsert_node(_attrs), do: {:error, :unauthorized}
 
   def upsert_node(attrs, partition) when is_map(attrs) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      do_upsert_node(attrs, partition)
+    end
+  end
+
+  defp do_upsert_node(attrs, partition) do
     attrs = stringify_keys(attrs)
     name = attrs["name"]
     type = attrs["type"]
@@ -54,9 +61,15 @@ defmodule Backplane.Memory.Graph do
   end
 
   @doc "Insert an edge between two node IDs. Silently ignores duplicate (source, target, relation) combinations."
-  def insert_edge(attrs), do: insert_edge(attrs, nil)
+  def insert_edge(_attrs), do: {:error, :unauthorized}
 
   def insert_edge(attrs, partition) when is_map(attrs) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      do_insert_edge(attrs, partition)
+    end
+  end
+
+  defp do_insert_edge(attrs, partition) do
     attrs = Map.merge(stringify_keys(attrs), string_partition_attrs(partition))
     source_id = attrs["source_id"]
     target_id = attrs["target_id"]
@@ -74,9 +87,18 @@ defmodule Backplane.Memory.Graph do
   end
 
   @doc "Return node count by type and edge count by relation."
-  def stats, do: stats(nil)
+  def stats, do: empty_stats()
 
-  def stats(partition) do
+  def stats(partition) when is_map(partition) do
+    case PartitionIdentity.validate(partition) do
+      {:ok, partition} -> do_stats(partition)
+      {:error, _reason} -> empty_stats()
+    end
+  end
+
+  def stats(_partition), do: empty_stats()
+
+  defp do_stats(partition) do
     node_stats =
       repo().all(
         from(n in Node,
@@ -124,7 +146,7 @@ defmodule Backplane.Memory.Graph do
 
   def relations(partition, domain, limit)
       when domain in ~w(knowledge lifecycle provenance) and limit in 1..100 do
-    query =
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
       from(r in Relation,
         join: source in Memory,
         on: source.id == r.source_memory_id,
@@ -145,65 +167,40 @@ defmodule Backplane.Memory.Graph do
           target_content: target.content
         }
       )
-
-    query
-    |> relation_partition(partition)
-    |> repo().all()
+      |> relation_partition(partition)
+      |> repo().all()
+    else
+      {:error, _reason} -> []
+    end
   end
 
   def relations(_partition, _domain, _limit), do: []
 
-  defp relation_partition(query, nil) do
-    where(
-      query,
-      [_relation, source, _target],
-      is_nil(source.host_id) and is_nil(source.client_id) and is_nil(source.scope) and
-        is_nil(source.namespace)
-    )
-  end
-
   defp relation_partition(query, partition) do
     where(
       query,
-      [_relation, source, _target],
-      source.host_id == ^Map.fetch!(partition, :host_id) and
-        source.client_id == ^Map.fetch!(partition, :client_id) and
+      [_relation, source, target],
+      source.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
         source.scope == ^Map.fetch!(partition, :scope) and
-        source.namespace == ^Map.fetch!(partition, :namespace)
+        source.namespace == ^Map.fetch!(partition, :namespace) and
+        source.memory_space_id == target.memory_space_id and source.scope == target.scope and
+        source.namespace == target.namespace
     )
   end
-
-  defp partition_dynamic(nil),
-    do:
-      dynamic(
-        [row],
-        is_nil(row.host_id) and is_nil(row.client_id) and is_nil(row.scope) and
-          is_nil(row.namespace)
-      )
 
   defp partition_dynamic(partition) when is_map(partition) do
     dynamic(
       [row],
-      row.host_id == ^Map.fetch!(partition, :host_id) and
-        row.client_id == ^Map.fetch!(partition, :client_id) and
+      row.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
         row.scope == ^Map.fetch!(partition, :scope) and
         row.namespace == ^Map.fetch!(partition, :namespace)
-    )
-  end
-
-  defp relation_partition_dynamic(nil) do
-    dynamic(
-      [_relation, memory],
-      is_nil(memory.host_id) and is_nil(memory.client_id) and is_nil(memory.scope) and
-        is_nil(memory.namespace)
     )
   end
 
   defp relation_partition_dynamic(partition) when is_map(partition) do
     dynamic(
       [_relation, memory],
-      memory.host_id == ^Map.fetch!(partition, :host_id) and
-        memory.client_id == ^Map.fetch!(partition, :client_id) and
+      memory.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
         memory.scope == ^Map.fetch!(partition, :scope) and
         memory.namespace == ^Map.fetch!(partition, :namespace)
     )
@@ -213,9 +210,24 @@ defmodule Backplane.Memory.Graph do
 
   defp string_partition_attrs(partition) when is_map(partition),
     do:
-      Map.new([:host_id, :client_id, :scope, :namespace], fn key ->
-        {Atom.to_string(key), Map.fetch!(partition, key)}
-      end)
+      Map.new(
+        [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace],
+        fn key ->
+          {Atom.to_string(key), Map.get(partition, key)}
+        end
+      )
+
+  defp empty_stats do
+    %{
+      node_count_by_type: %{},
+      edge_count_by_relation: %{},
+      relation_count_by_domain: %{
+        "knowledge" => 0,
+        "lifecycle" => 0,
+        "provenance" => 0
+      }
+    }
+  end
 
   defp stringify_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 

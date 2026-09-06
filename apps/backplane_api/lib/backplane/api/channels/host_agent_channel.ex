@@ -5,6 +5,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   alias Backplane.AgentTraces
   alias Backplane.Clients
+  alias Backplane.MemorySpaces
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, Hosts, SyncStatuses}
@@ -15,28 +16,45 @@ defmodule Backplane.Api.HostAgentChannel do
   @max_memory_sync_batch_size 50
   @max_memory_sync_payload_bytes 512 * 1024
   @default_host_agent_scopes ~w(host_agent.capture host_agent.recall host_agent.import)
+  @memory_authority_keys ~w(memory_space_id partition_id host_id client_id scope namespace)
+  @memory_authority_atom_keys ~w(memory_space_id partition_id host_id client_id scope namespace)a
 
   @impl true
   def join("host_agent:" <> host_id, payload, socket) do
-    if socket.assigns.host.id == host_id do
-      metadata = Map.get(socket.assigns, :connection_metadata, %{})
-
-      case AgentManage.register_connection(
+    with true <- socket.assigns.host.id == host_id,
+         {:ok, partition} <- MemorySpaces.resolve_host_partition(host_id, nil, "private"),
+         metadata = Map.get(socket.assigns, :connection_metadata, %{}),
+         :ok <-
+           AgentManage.register_connection(
              socket.assigns.host,
              socket.assigns.auth_token,
              self(),
              metadata
            ) do
-        :ok ->
-          PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
-          send(self(), {:memory_reconcile, payload})
-          {:ok, socket}
+      PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
+      send(self(), {:memory_reconcile, payload})
 
-        {:error, :not_started} ->
-          {:error, %{reason: "registry_unavailable"}}
-      end
+      partition =
+        Map.merge(partition, %{
+          host_id: host_id,
+          client_id: host_id,
+          source_client_id: host_id
+        })
+
+      socket = assign(socket, :memory_partition, partition)
+
+      {:ok,
+       %{
+         "memory_partition" => %{
+           "memory_space_id" => partition.memory_space_id,
+           "scope" => partition.scope,
+           "namespace" => partition.namespace
+         }
+       }, socket}
     else
-      {:error, %{reason: "unauthorized"}}
+      false -> {:error, %{reason: "unauthorized"}}
+      {:error, :not_started} -> {:error, %{reason: "registry_unavailable"}}
+      {:error, reason} -> {:error, %{reason: format_memory_error(reason)}}
     end
   end
 
@@ -141,7 +159,13 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("memory_call", %{"method" => method, "arguments" => args}, socket)
       when is_binary(method) and is_map(args) do
-    case dispatch_memory(method, args, socket.assigns.host, host_agent_scopes()) do
+    case dispatch_memory(
+           method,
+           args,
+           socket.assigns.host,
+           socket.assigns.memory_partition,
+           host_agent_scopes()
+         ) do
       {:ok, result} ->
         {:reply, {:ok, %{"ok" => true, "result" => result}}, socket}
 
@@ -155,7 +179,12 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   def handle_in("mcp_tools_list", payload, socket) when is_map(payload) do
-    auth = host_memory_auth(socket.assigns.host, host_agent_scopes())
+    auth =
+      host_memory_auth(
+        socket.assigns.host,
+        socket.assigns.memory_partition,
+        host_agent_scopes()
+      )
 
     tools =
       ToolRegistry.list_all()
@@ -171,7 +200,12 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("mcp_tool_call", %{"name" => name, "arguments" => args}, socket)
       when is_binary(name) and is_map(args) do
-    auth = host_memory_auth(socket.assigns.host, host_agent_scopes())
+    auth =
+      host_memory_auth(
+        socket.assigns.host,
+        socket.assigns.memory_partition,
+        host_agent_scopes()
+      )
 
     case Clients.scope_matches?(auth.scopes, name) &&
            McpHandler.dispatch_tool_call(name, args, auth) do
@@ -220,7 +254,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("memory_import_batch", %{"protocol" => "host_import.v1"} = payload, socket) do
     if authorized?("host_agent.import", host_agent_scopes()) do
-      case safe_memory_import_record(socket.assigns.host.id, payload) do
+      case safe_memory_import_record(socket.assigns.memory_partition, payload) do
         {:ok, reply} -> {:reply, {:ok, %{"ok" => true, "result" => reply}}, socket}
         {:error, reason} -> {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
       end
@@ -290,11 +324,12 @@ defmodule Backplane.Api.HostAgentChannel do
     {:stop, :normal, socket}
   end
 
-  defp dispatch_memory(method, args, host, scopes) do
+  defp dispatch_memory(method, args, host, partition, scopes) do
     service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
-    auth = host_memory_auth(host, scopes)
+    auth = host_memory_auth(host, partition, scopes)
 
-    with true <- authorized?(memory_method_permission(method), scopes) do
+    with true <- authorized?(memory_method_permission(method), scopes),
+         :ok <- reject_authority_claim(args) do
       case method do
         "remember" ->
           service.handle_remember(args, auth)
@@ -310,6 +345,7 @@ defmodule Backplane.Api.HostAgentChannel do
       end
     else
       false -> {:error, :unauthorized}
+      {:error, :authority_claim} -> {:error, :invalid_arguments}
     end
   end
 
@@ -321,7 +357,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp memory_method_permission(_method), do: "host_agent.recall"
 
-  defp host_memory_auth(host, host_agent_scopes) do
+  defp host_memory_auth(host, partition, host_agent_scopes) do
     memory_scopes =
       []
       |> maybe_add_memory_scope(host_agent_scopes, "host_agent.recall", "memory.read")
@@ -332,8 +368,20 @@ defmodule Backplane.Api.HostAgentChannel do
       client_id: host.id,
       scopes: memory_scopes,
       subject: host.id,
-      principal_metadata: %{"memory_partition_id" => "host:#{host.id}"}
+      principal_metadata: %{
+        "memory_partition_id" => "host:#{host.id}",
+        "memory_space_id" => partition.memory_space_id,
+        "scope" => partition.scope,
+        "namespace" => partition.namespace
+      }
     }
+  end
+
+  defp reject_authority_claim(args) do
+    if Enum.any?(@memory_authority_keys, &Map.has_key?(args, &1)) or
+         Enum.any?(@memory_authority_atom_keys, &Map.has_key?(args, &1)),
+       do: {:error, :authority_claim},
+       else: :ok
   end
 
   defp maybe_add_memory_scope(memory_scopes, host_agent_scopes, permission, memory_scope) do
@@ -519,8 +567,8 @@ defmodule Backplane.Api.HostAgentChannel do
     )
   end
 
-  defp safe_memory_import_record(host_id, payload) do
-    memory_import_adapter().record(host_id, payload)
+  defp safe_memory_import_record(partition, payload) do
+    memory_import_adapter().record(partition, payload)
   rescue
     _error -> {:error, :import_unavailable}
   catch
@@ -626,30 +674,38 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp ingest_memory_events(host, socket, payload) do
-    auth_context = %{
-      host_id: host.id,
-      auth_token_id: socket.assigns.auth_token.id,
-      scopes: host_agent_scopes(),
-      partition: %{
+    with {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private") do
+      partition =
+        Map.merge(partition, %{
+          host_id: host.id,
+          client_id: host.id,
+          source_client_id: host.id
+        })
+
+      auth_context = %{
         host_id: host.id,
-        partition_id: "host:#{host.id}",
-        scope: host.memory_scope,
-        namespace: "private"
+        auth_token_id: socket.assigns.auth_token.id,
+        scopes: host_agent_scopes(),
+        partition: Map.put(partition, :partition_id, "host:#{host.id}")
       }
-    }
 
-    case safe_host_event_ingest(auth_context, payload) do
-      {:ok, reply} when is_map(reply) ->
-        {:reply, {:ok, reply}, socket}
+      case safe_host_event_ingest(auth_context, payload) do
+        {:ok, reply} when is_map(reply) ->
+          {:reply, {:ok, reply}, assign(socket, :memory_partition, partition)}
 
-      {:error, :host_mismatch} ->
-        {:reply, {:error, %{"reason" => "host_mismatch"}}, socket}
+        {:error, :host_mismatch} ->
+          {:reply, {:error, %{"reason" => "host_mismatch"}}, socket}
 
-      {:error, :invalid_batch} ->
-        invalid_payload(socket)
+        {:error, :invalid_batch} ->
+          invalid_payload(socket)
 
-      {:error, :ingest_unavailable} ->
-        {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
+        {:error, :ingest_unavailable} ->
+          {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
+      end
+    else
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
     end
   end
 

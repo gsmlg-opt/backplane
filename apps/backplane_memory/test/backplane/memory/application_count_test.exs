@@ -11,8 +11,10 @@ defmodule Backplane.Memory.ApplicationCountTest do
              Memories.remember("Apply this procedure",
                type: "procedural",
                agent_id: "author",
+               memory_space_id: partition.memory_space_id,
                host_id: partition.host_id,
                client_id: partition.client_id,
+               source_client_id: partition.source_client_id,
                scope: partition.scope,
                namespace: partition.namespace
              )
@@ -21,8 +23,10 @@ defmodule Backplane.Memory.ApplicationCountTest do
              Memories.remember("A factual memory",
                type: "semantic",
                agent_id: "author",
+               memory_space_id: partition.memory_space_id,
                host_id: partition.host_id,
                client_id: partition.client_id,
+               source_client_id: partition.source_client_id,
                scope: partition.scope,
                namespace: partition.namespace
              )
@@ -65,14 +69,17 @@ defmodule Backplane.Memory.ApplicationCountTest do
              Memories.remember("Always verify the exact served artifact",
                type: "procedural",
                agent_id: "author",
+               memory_space_id: partition.memory_space_id,
                host_id: partition.host_id,
                client_id: partition.client_id,
+               source_client_id: partition.source_client_id,
                scope: partition.scope,
                namespace: partition.namespace
              )
 
     assert {:ok, [%{id: procedure_id}]} =
              Search.hybrid_recall("verify exact served artifact",
+               memory_space_id: partition.memory_space_id,
                host_id: partition.host_id,
                client_id: partition.client_id,
                scope: partition.scope,
@@ -87,6 +94,10 @@ defmodule Backplane.Memory.ApplicationCountTest do
   end
 
   defp partition(host_id) do
-    %{host_id: host_id, client_id: "shared-client", scope: "shared-scope", namespace: "private"}
+    canonical_partition(host_id,
+      client_id: "shared-client",
+      source_client_id: "shared-client",
+      scope: "shared-scope"
+    )
   end
 end

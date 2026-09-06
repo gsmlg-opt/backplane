@@ -41,7 +41,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   end
 
   test "disabled classifier skips without loading or invoking the model" do
-    {:ok, memory} = Memories.remember("disabled classifier", agent_id: "agent", host_id: "host")
+    {:ok, memory} = remember("disabled classifier")
 
     assert :ok = perform(memory.id)
   end
@@ -65,7 +65,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   test "a disabled completed revision can be enqueued again after re-enable" do
     Oban.Testing.with_testing_mode(:manual, fn ->
       {:ok, memory} =
-        Memories.remember("re-enable classifier", agent_id: "agent", host_id: "host")
+        remember("re-enable classifier")
 
       revision = "same-evidence-revision"
       assert {:ok, first_job} = RelationClassifierWorker.enqueue(memory.id, revision)
@@ -91,7 +91,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   end
 
   test "enabled classifier skips a deleted memory" do
-    {:ok, memory} = Memories.remember("deleted classifier", agent_id: "agent", host_id: "host")
+    {:ok, memory} = remember("deleted classifier")
     assert :ok = Memories.trusted_forget(memory.id)
     enable_classifier()
 
@@ -99,7 +99,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   end
 
   test "enabled classifier skips ambiguous work when no model is configured" do
-    {:ok, memory} = Memories.remember("no classifier model", agent_id: "agent", host_id: "host")
+    {:ok, memory} = remember("no classifier model")
     :ets.delete(:backplane_settings, "memory.llm_model")
     enable_classifier()
 
@@ -142,22 +142,18 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
 
   defp ambiguous_pair do
     {:ok, first} =
-      Memories.remember("first ambiguous memory",
-        agent_id: "agent",
-        host_id: "host",
-        metadata: %{"entities" => ["backplane"]}
-      )
+      remember("first ambiguous memory", metadata: %{"entities" => ["backplane"]})
 
     {:ok, second} =
-      Memories.remember("second ambiguous memory",
-        agent_id: "agent",
-        host_id: "host",
-        metadata: %{"entities" => ["backplane"]}
-      )
+      remember("second ambiguous memory", metadata: %{"entities" => ["backplane"]})
 
     {first, second}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_memory, key)
   defp restore_env(key, value), do: Application.put_env(:backplane_memory, key, value)
+
+  defp remember(content, opts \\ []) do
+    Memories.remember(content, canonical_memory_opts("host", [agent_id: "agent"] ++ opts))
+  end
 end

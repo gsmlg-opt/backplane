@@ -6,9 +6,11 @@ defmodule Backplane.Memory.Profiles.Profile do
   @timestamps_opts false
 
   schema "memory_profiles" do
+    field(:memory_space_id, :binary_id)
     field(:project, :string)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:top_concepts, :map, default: %{})
@@ -28,8 +30,10 @@ defmodule Backplane.Memory.Profiles.Profile do
     profile
     |> cast(attrs, [
       :project,
+      :memory_space_id,
       :host_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :top_concepts,
@@ -44,6 +48,6 @@ defmodule Backplane.Memory.Profiles.Profile do
       :total_observations,
       :updated_at
     ])
-    |> validate_required([:project])
+    |> validate_required([:project, :memory_space_id, :scope, :namespace])
   end
 end

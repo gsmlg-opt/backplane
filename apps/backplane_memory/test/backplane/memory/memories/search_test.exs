@@ -2,8 +2,56 @@ defmodule Backplane.Memory.Memories.SearchTest do
   use Backplane.Memory.DataCase, async: true
 
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
-  alias Backplane.Memory.Memories.Search
-  alias Backplane.Memory.Memories
+
+  defmodule Memories do
+    def remember(content, opts \\ []) do
+      Backplane.Memory.Memories.remember(content, canonical_opts(opts))
+    end
+
+    defdelegate trusted_forget(id), to: Backplane.Memory.Memories
+
+    def canonical_opts(opts) do
+      partition =
+        Backplane.Memory.DataCase.canonical_partition("search-test-owner",
+          scope: opts[:scope] || "global"
+        )
+
+      Keyword.merge(opts,
+        memory_space_id: opts[:memory_space_id] || partition.memory_space_id,
+        host_id: opts[:host_id] || "search-test-host",
+        client_id: opts[:client_id] || "search-test-runtime",
+        scope: opts[:scope] || partition.scope,
+        namespace: opts[:namespace] || partition.namespace
+      )
+    end
+
+    def search_opts(opts) do
+      partition =
+        Backplane.Memory.DataCase.canonical_partition("search-test-owner",
+          scope: opts[:scope] || "global"
+        )
+
+      Keyword.merge(opts,
+        memory_space_id: opts[:memory_space_id] || partition.memory_space_id,
+        scope: opts[:scope] || partition.scope,
+        namespace: opts[:namespace] || partition.namespace
+      )
+    end
+  end
+
+  defmodule Search do
+    def recall(query, opts \\ []),
+      do: Backplane.Memory.Memories.Search.recall(query, Memories.search_opts(opts))
+
+    def hybrid_recall(query, opts \\ []),
+      do: Backplane.Memory.Memories.Search.hybrid_recall(query, Memories.search_opts(opts))
+  end
+
+  setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("search-test-owner")
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("search-test-foreign-owner")
+    :ok
+  end
 
   @dim 2560
 
@@ -111,6 +159,8 @@ defmodule Backplane.Memory.Memories.SearchTest do
         insert_with_embedding("near foreign row #{index}", query_vector,
           agent_id: "a",
           host_id: "h",
+          memory_space_id:
+            Backplane.Memory.IngestFixtures.memory_space_id("search-test-foreign-owner"),
           client_id: "foreign-client",
           namespace: "private",
           session_id: "session-a",
@@ -247,6 +297,8 @@ defmodule Backplane.Memory.Memories.SearchTest do
             "partitionneedle partitionneedle partitionneedle foreign #{index}",
             agent_id: "a",
             host_id: "h",
+            memory_space_id:
+              Backplane.Memory.IngestFixtures.memory_space_id("search-test-foreign-owner"),
             client_id: "foreign-client",
             namespace: "private",
             session_id: "session-a",

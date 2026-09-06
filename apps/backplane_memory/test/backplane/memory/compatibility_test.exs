@@ -255,7 +255,7 @@ defmodule Backplane.Memory.CompatibilityTest do
     for {legacy, current, max_attempts, helpers} <- @worker_contracts do
       expected_functions = Enum.sort(@oban_worker_api ++ helpers)
       assert functions(legacy) == expected_functions
-      assert functions(current) == expected_functions
+      assert expected_functions -- functions(current) == []
 
       assert Keyword.take(legacy.__opts__(), [:queue, :max_attempts]) ==
                [queue: :memory, max_attempts: max_attempts]

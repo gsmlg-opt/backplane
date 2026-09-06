@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Graph.BFS do
 
   import Ecto.Query
   alias Backplane.Memory.Graph.{Edge, Node}
+  alias Backplane.Memory.PartitionIdentity
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -17,11 +18,15 @@ defmodule Backplane.Memory.Graph.BFS do
   """
   @spec query(String.t(), pos_integer(), String.t() | nil) ::
           {:ok, %{nodes: [Node.t()], edges: [Edge.t()]}}
-  def query(entity_name, depth \\ 2, relation_filter \\ nil) do
-    query(entity_name, depth, relation_filter, nil)
-  end
+  def query(_entity_name, _depth \\ 2, _relation_filter \\ nil), do: {:error, :unauthorized}
 
   def query(entity_name, depth, relation_filter, partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      do_query(entity_name, depth, relation_filter, partition)
+    end
+  end
+
+  defp do_query(entity_name, depth, relation_filter, partition) do
     seed_nodes =
       repo().all(
         from(n in Node,
@@ -41,15 +46,15 @@ defmodule Backplane.Memory.Graph.BFS do
   Returns `{:ok, %{nodes: [...], edges: [...]}}`.
   """
   @spec query_from_nodes([Node.t()], pos_integer(), String.t() | nil) ::
-          {:ok, %{nodes: [Node.t()], edges: [Edge.t()]}}
-  def query_from_nodes(seed_nodes, depth, relation_filter \\ nil) when is_list(seed_nodes) do
-    query_from_nodes(seed_nodes, depth, relation_filter, nil)
-  end
+          {:error, :unauthorized}
+  def query_from_nodes(_seed_nodes, _depth, _relation_filter \\ nil), do: {:error, :unauthorized}
 
   def query_from_nodes(seed_nodes, depth, relation_filter, partition) when is_list(seed_nodes) do
-    seed_nodes = Enum.filter(seed_nodes, &partition_match?(&1, partition))
-    seed_ids = Enum.map(seed_nodes, & &1.id)
-    bfs(seed_ids, seed_nodes, [], relation_filter, depth, partition)
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      seed_nodes = Enum.filter(seed_nodes, &partition_match?(&1, partition))
+      seed_ids = Enum.map(seed_nodes, & &1.id)
+      bfs(seed_ids, seed_nodes, [], relation_filter, depth, partition)
+    end
   end
 
   defp bfs([], visited_nodes, visited_edges, _filter, _depth, _partition),
@@ -104,32 +109,17 @@ defmodule Backplane.Memory.Graph.BFS do
     )
   end
 
-  defp partition_dynamic(nil),
-    do:
-      dynamic(
-        [row],
-        is_nil(row.host_id) and is_nil(row.client_id) and is_nil(row.scope) and
-          is_nil(row.namespace)
-      )
-
   defp partition_dynamic(partition) when is_map(partition) do
     dynamic(
       [row],
-      row.host_id == ^Map.fetch!(partition, :host_id) and
-        row.client_id == ^Map.fetch!(partition, :client_id) and
+      row.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
         row.scope == ^Map.fetch!(partition, :scope) and
         row.namespace == ^Map.fetch!(partition, :namespace)
     )
   end
 
-  defp partition_match?(node, nil) do
-    is_nil(node.host_id) and is_nil(node.client_id) and is_nil(node.scope) and
-      is_nil(node.namespace)
-  end
-
   defp partition_match?(node, partition) do
-    node.host_id == Map.fetch!(partition, :host_id) and
-      node.client_id == Map.fetch!(partition, :client_id) and
+    node.memory_space_id == Map.fetch!(partition, :memory_space_id) and
       node.scope == Map.fetch!(partition, :scope) and
       node.namespace == Map.fetch!(partition, :namespace)
   end

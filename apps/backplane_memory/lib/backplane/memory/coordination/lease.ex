@@ -6,13 +6,16 @@ defmodule Backplane.Memory.Coordination.Lease do
   import Ecto.Query
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.PartitionIdentity
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts false
 
   schema "memory_leases" do
+    field(:memory_space_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:action_id, :binary_id)
@@ -26,7 +29,9 @@ defmodule Backplane.Memory.Coordination.Lease do
     lease
     |> cast(attrs, [
       :host_id,
+      :memory_space_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :action_id,
@@ -34,7 +39,16 @@ defmodule Backplane.Memory.Coordination.Lease do
       :acquired_at,
       :expires_at
     ])
-    |> validate_required([:action_id, :holder_agent_id, :expires_at])
+    |> validate_required([
+      :memory_space_id,
+      :host_id,
+      :client_id,
+      :scope,
+      :namespace,
+      :action_id,
+      :holder_agent_id,
+      :expires_at
+    ])
   end
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
@@ -43,10 +57,16 @@ defmodule Backplane.Memory.Coordination.Lease do
   Acquire an exclusive lease for action_id.
   Returns {:ok, lease_id} or {:error, %{held_by: agent_id, expires_at: dt}}.
   """
-  def acquire(action_id, agent_id, ttl_seconds \\ 300),
-    do: acquire(action_id, agent_id, ttl_seconds, nil)
+  def acquire(_action_id, _agent_id, _ttl_seconds \\ 300),
+    do: {:error, :partition_required}
 
   def acquire(action_id, agent_id, ttl_seconds, partition) do
+    with {:ok, partition} <- canonical_partition(partition) do
+      do_acquire(action_id, agent_id, ttl_seconds, partition)
+    end
+  end
+
+  defp do_acquire(action_id, agent_id, ttl_seconds, partition) do
     now = DateTime.utc_now()
     expires_at = DateTime.add(now, ttl_seconds, :second)
 
@@ -83,6 +103,12 @@ defmodule Backplane.Memory.Coordination.Lease do
           if deleted_count > 0 do
             Audit.log("coordination.lease.cleanup", "system", deleted_ids, %{
               action_id: action_id,
+              memory_space_id: partition.memory_space_id,
+              host_id: partition.host_id,
+              client_id: partition.client_id,
+              source_client_id: partition[:source_client_id],
+              scope: partition.scope,
+              namespace: partition.namespace,
               result: "expired",
               count: deleted_count
             })
@@ -110,8 +136,10 @@ defmodule Backplane.Memory.Coordination.Lease do
             Audit.log("coordination.lease.acquire", agent_id, [new_id], %{
               action_id: action_id,
               expires_at: expires_at,
+              memory_space_id: partition.memory_space_id,
               host_id: partition_value(partition, :host_id),
               client_id: partition_value(partition, :client_id),
+              source_client_id: partition_value(partition, :source_client_id),
               scope: partition_value(partition, :scope),
               namespace: partition_value(partition, :namespace),
               result: "acquired"
@@ -145,25 +173,31 @@ defmodule Backplane.Memory.Coordination.Lease do
     do:
       dynamic(
         [row],
-        row.host_id == ^Map.fetch!(partition, :host_id) and
-          row.client_id == ^Map.fetch!(partition, :client_id) and
+        row.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
           row.scope == ^Map.fetch!(partition, :scope) and
           row.namespace == ^Map.fetch!(partition, :namespace)
       )
 
-  defp partition_dynamic(nil),
-    do:
-      dynamic(
-        [row],
-        is_nil(row.host_id) and is_nil(row.client_id) and is_nil(row.scope) and
-          is_nil(row.namespace)
-      )
-
   defp partition_attrs(partition) when is_map(partition),
-    do: Map.take(partition, [:host_id, :client_id, :scope, :namespace])
-
-  defp partition_attrs(nil), do: %{}
+    do:
+      Map.take(partition, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
 
   defp partition_value(partition, key) when is_map(partition), do: Map.get(partition, key)
-  defp partition_value(nil, _key), do: nil
+
+  defp canonical_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         host_id when is_binary(host_id) and host_id != "" <- partition[:host_id],
+         client_id when is_binary(client_id) and client_id != "" <- partition[:client_id] do
+      {:ok, partition}
+    else
+      _invalid -> {:error, :partition_required}
+    end
+  end
 end

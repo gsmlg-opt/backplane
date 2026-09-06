@@ -4,6 +4,9 @@ defmodule Backplane.Memory.Projections.StateTest do
   alias Backplane.Memory.Projections.{Snapshot, State}
 
   @subject %{
+    memory_space_id: "00000000-0000-4000-8000-000000000001",
+    scope: "global",
+    namespace: "private",
     projector: "session",
     subject_type: "captured_session",
     subject_id: "host-1/session-1",

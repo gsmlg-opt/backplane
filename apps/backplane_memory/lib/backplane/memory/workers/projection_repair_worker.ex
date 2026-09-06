@@ -77,7 +77,12 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
            case rebuild.(event.host_id, event.session_id) do
              {:ok, result} ->
                Audit.log_once("projection.repair", "system", [event.id], event.id, %{
+                 memory_space_id: event.memory_space_id,
                  host_id: event.host_id,
+                 client_id: event.client_id,
+                 source_client_id: event.source_client_id,
+                 scope: event.scope,
+                 namespace: event.namespace,
                  session_id: event.session_id,
                  result: "repaired"
                })

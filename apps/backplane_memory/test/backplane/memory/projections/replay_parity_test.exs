@@ -194,8 +194,10 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
 
   defp normalize_session(session, event_ids) do
     session
+    |> Map.put("memory_space_id", "memory-space-id")
     |> Map.put("host_id", "host-id")
     |> Map.put("client_id", "client-id")
+    |> Map.put("source_client_id", "source-client-id")
     |> Map.put("session_id", "session-id")
     |> Map.put("subject_id", "subject-id")
     |> Map.update!("source_event_ids", &Enum.map(&1, fn id -> Map.fetch!(event_ids, id) end))
@@ -203,12 +205,19 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
 
   defp normalize_timeline(timeline, event_ids) do
     timeline
+    |> Map.put("memory_space_id", "memory-space-id")
     |> Map.put("host_id", "host-id")
     |> Map.put("client_id", "client-id")
+    |> Map.put("source_client_id", "source-client-id")
     |> Map.put("session_id", "session-id")
     |> Map.update!("observations", fn observations ->
       Enum.map(observations, fn observation ->
-        Map.update!(observation, "event_id", &Map.fetch!(event_ids, &1))
+        observation
+        |> Map.put("memory_space_id", "memory-space-id")
+        |> Map.put("host_id", "host-id")
+        |> Map.put("client_id", "client-id")
+        |> Map.put("source_client_id", "source-client-id")
+        |> Map.update!("event_id", &Map.fetch!(event_ids, &1))
       end)
     end)
   end

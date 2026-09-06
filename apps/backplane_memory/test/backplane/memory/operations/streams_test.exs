@@ -353,8 +353,8 @@ defmodule Backplane.Memory.Operations.StreamsTest do
 
   defp insert_stream!(stream_id, attrs \\ []) do
     attrs =
-      attrs
-      |> Map.new()
+      stream_partition()
+      |> Map.merge(Map.new(attrs))
       |> Map.put(:stream_id, stream_id)
 
     %Stream{}
@@ -365,11 +365,11 @@ defmodule Backplane.Memory.Operations.StreamsTest do
   defp append_events!(stream_id, count) do
     attrs =
       for sequence <- 1..count do
-        %{
+        Map.merge(stream_partition(), %{
           stream_id: stream_id,
           event_type: "task.updated",
           content: Integer.to_string(sequence)
-        }
+        })
       end
 
     assert {:ok, events} = Store.append_batch(attrs, telemetry: false)
@@ -388,5 +388,12 @@ defmodule Backplane.Memory.Operations.StreamsTest do
 
   defp unique(prefix) do
     "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+  end
+
+  defp stream_partition do
+    canonical_partition("operations-stream-owner",
+      client_id: "operations-stream-client",
+      scope: "operations-stream-scope"
+    )
   end
 end
