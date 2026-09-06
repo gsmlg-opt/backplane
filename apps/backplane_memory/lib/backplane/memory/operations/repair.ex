@@ -10,7 +10,7 @@ defmodule Backplane.Memory.Operations.Repair do
 
   import Ecto.Query
 
-  alias Backplane.Memory.{Audit, Crystals, Lessons}
+  alias Backplane.Memory.{Audit, Crystals, Lessons, PartitionIdentity}
   alias Backplane.Memory.Coordination.Lease
   alias Backplane.Memory.Memories.{Memory, Relation, Relations}
   alias Backplane.Memory.Projections.{ActivityVerifier, ProjectedSession, Rebuild, State}
@@ -182,6 +182,7 @@ defmodule Backplane.Memory.Operations.Repair do
   defp dispatch("activity", args, partition) do
     opts =
       [
+        memory_space_id: partition.memory_space_id,
         host_id: partition.host_id,
         client_id: partition.client_id,
         scope: partition.scope,
@@ -397,11 +398,15 @@ defmodule Backplane.Memory.Operations.Repair do
   end
 
   defp exact_partition(partition) do
-    keys = [:host_id, :client_id, :scope, :namespace]
-
-    if Enum.all?(keys, &(is_binary(partition[&1]) and String.trim(partition[&1]) != "")),
-      do: {:ok, Map.take(partition, keys)},
-      else: {:error, :unauthorized}
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <-
+           Enum.all?([:host_id, :client_id], fn key ->
+             is_binary(partition[key]) and String.trim(partition[key]) != ""
+           end) do
+      {:ok, partition}
+    else
+      _invalid -> {:error, :unauthorized}
+    end
   end
 
   defp relation_resolution("confirmed"), do: {:ok, :confirmed}
@@ -419,7 +424,14 @@ defmodule Backplane.Memory.Operations.Repair do
   defp optional_date(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp caller_key(partition, key) do
-    [partition.host_id, partition.client_id, partition.scope, partition.namespace, key]
+    [
+      partition.memory_space_id,
+      partition.host_id,
+      partition.client_id,
+      partition.scope,
+      partition.namespace,
+      key
+    ]
     |> Jason.encode!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

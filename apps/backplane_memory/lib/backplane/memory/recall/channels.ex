@@ -265,11 +265,13 @@ defmodule Backplane.Memory.Recall.Channels do
       from(summary in Summary,
         join: session in ProjectedSession,
         on:
-          session.host_id == summary.host_id and session.session_id == summary.session_id and
+          session.memory_space_id == summary.memory_space_id and
+            session.scope == summary.scope and session.namespace == summary.namespace and
+            session.session_id == summary.session_id and
             session.subject_id == summary.subject_id,
         where:
-          session.host_id == ^plan.host_id and session.client_id == ^plan.client_id and
-            session.scope == ^plan.scope and session.namespace == ^plan.namespace,
+          session.memory_space_id == ^plan.memory_space_id and session.scope == ^plan.scope and
+            session.namespace == ^plan.namespace,
         where:
           fragment(
             "to_tsvector('simple', coalesce(?, '')) @@ websearch_to_tsquery('simple', ?)",
@@ -305,8 +307,7 @@ defmodule Backplane.Memory.Recall.Channels do
       |> join(:inner, [source], event in Event, on: event.id == source.event_id)
       |> where(
         [source, event],
-        source.summary_id in ^summary_ids and source.host_id == ^plan.host_id and
-          event.host_id == ^plan.host_id and event.client_id == ^plan.client_id and
+        source.summary_id in ^summary_ids and event.memory_space_id == ^plan.memory_space_id and
           event.scope == ^plan.scope and event.namespace == ^plan.namespace
       )
       |> order_by([source, _event], asc: source.summary_id, asc: source.event_id)
@@ -352,8 +353,8 @@ defmodule Backplane.Memory.Recall.Channels do
     where(
       query,
       [row],
-      row.host_id == ^plan.host_id and row.client_id == ^plan.client_id and
-        row.scope == ^plan.scope and row.namespace == ^plan.namespace
+      row.memory_space_id == ^plan.memory_space_id and row.scope == ^plan.scope and
+        row.namespace == ^plan.namespace
     )
   end
 
@@ -553,12 +554,13 @@ defmodule Backplane.Memory.Recall.Channels do
       from(summary in Summary,
         join: session in ProjectedSession,
         on:
-          session.host_id == summary.host_id and session.session_id == summary.session_id and
+          session.memory_space_id == summary.memory_space_id and
+            session.scope == summary.scope and session.namespace == summary.namespace and
+            session.session_id == summary.session_id and
             session.subject_id == summary.subject_id,
         where:
-          summary.id in ^summary_ids and session.host_id == ^plan.host_id and
-            session.client_id == ^plan.client_id and session.scope == ^plan.scope and
-            session.namespace == ^plan.namespace,
+          summary.id in ^summary_ids and session.memory_space_id == ^plan.memory_space_id and
+            session.scope == ^plan.scope and session.namespace == ^plan.namespace,
         select: summary.id
       )
       |> repo().all()
@@ -573,6 +575,7 @@ defmodule Backplane.Memory.Recall.Channels do
 
     valid_observations =
       Observation
+      |> exact_partition(plan)
       |> where([observation], observation.id in ^observation_ids)
       |> select([observation], observation.id)
       |> repo().all()
@@ -592,9 +595,9 @@ defmodule Backplane.Memory.Recall.Channels do
       else: []
   end
 
-  defp evidence_refs(%Evidence{source_observation_id: id, host_id: host_id}, memory, context)
+  defp evidence_refs(%Evidence{source_observation_id: id}, _memory, context)
        when not is_nil(id) do
-    if host_id == memory.host_id and MapSet.member?(context.observations, id),
+    if MapSet.member?(context.observations, id),
       do: [%Adapters.SourceRef{type: :observation, id: id}],
       else: []
   end
@@ -638,7 +641,17 @@ defmodule Backplane.Memory.Recall.Channels do
     |> then(&struct!(Evidence, &1))
   end
 
-  defp partition(value), do: Map.take(value, [:host_id, :client_id, :scope, :namespace])
+  defp partition(value),
+    do:
+      Map.take(value, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
+
   defp parse_time(value), do: value |> DateTime.from_iso8601() |> elem(1)
   defp kind_order(:memory), do: 0
   defp kind_order(:lesson), do: 1

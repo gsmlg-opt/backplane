@@ -5,11 +5,13 @@ defmodule Backplane.Memory.Projections.ActivityDaily do
 
   @primary_key false
   schema "memory_activity_daily" do
+    field :memory_space_id, :binary_id, primary_key: true
     field :date, :date, primary_key: true
     field :project, :string, primary_key: true
     field :agent_id, :string, primary_key: true
     field :host_id, :string, primary_key: true
     field :client_id, :string, primary_key: true
+    field :source_client_id, :string
     field :scope, :string, primary_key: true
     field :namespace, :string, primary_key: true
     field :event_type, :string, primary_key: true

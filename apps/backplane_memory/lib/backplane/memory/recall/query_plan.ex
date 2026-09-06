@@ -2,13 +2,16 @@ defmodule Backplane.Memory.Recall.QueryPlan do
   @moduledoc "Typed, partition-complete input to the Recall V2 pipeline."
 
   alias Backplane.Memory.Numeric
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Privacy.Filter
 
   @channels [:fts, :vector, :graph]
   @allowed_keys [
     :query,
+    :memory_space_id,
     :host_id,
     :client_id,
+    :source_client_id,
     :scope,
     :namespace,
     :project,
@@ -24,6 +27,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
   @enforce_keys [
     :normalized_query,
     :query_hash,
+    :memory_space_id,
     :host_id,
     :client_id,
     :scope,
@@ -34,14 +38,16 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     :channel_weights,
     :token_budget
   ]
-  defstruct @enforce_keys ++ [:project, :temporal_hints]
+  defstruct @enforce_keys ++ [:source_client_id, :project, :temporal_hints]
 
   @type channel :: :fts | :vector | :graph
   @type t :: %__MODULE__{
           normalized_query: String.t(),
           query_hash: binary(),
+          memory_space_id: Ecto.UUID.t(),
           host_id: String.t(),
           client_id: String.t(),
+          source_client_id: String.t() | nil,
           scope: String.t(),
           namespace: String.t(),
           project: String.t() | nil,
@@ -59,6 +65,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
 
     with [] <- Enum.sort(unknown),
          {:ok, normalized_query} <- normalized_required(attrs, :query, 16_384),
+         {:ok, partition} <- PartitionIdentity.validate(attrs),
          {:ok, host_id} <- normalized_required(attrs, :host_id, 512),
          {:ok, client_id} <- normalized_required(attrs, :client_id, 512),
          {:ok, scope} <- normalized_required(attrs, :scope, 512),
@@ -76,8 +83,10 @@ defmodule Backplane.Memory.Recall.QueryPlan do
        %__MODULE__{
          normalized_query: normalized_query,
          query_hash: :crypto.hash(:sha256, normalized_query),
+         memory_space_id: partition.memory_space_id,
          host_id: host_id,
          client_id: client_id,
+         source_client_id: partition[:source_client_id],
          scope: scope,
          namespace: namespace,
          project: project,
@@ -103,8 +112,10 @@ defmodule Backplane.Memory.Recall.QueryPlan do
       "normalized_query" => plan.normalized_query,
       "query_hash" => Base.encode16(plan.query_hash, case: :lower),
       "partition" => %{
+        "memory_space_id" => plan.memory_space_id,
         "host_id" => plan.host_id,
         "client_id" => plan.client_id,
+        "source_client_id" => plan.source_client_id,
         "scope" => plan.scope,
         "namespace" => plan.namespace
       },

@@ -37,7 +37,8 @@ defmodule Backplane.Memory.Memories.RelationsMigrationTest do
              repo().query!("""
              SELECT indexdef
              FROM pg_indexes
-             WHERE indexname = 'bpm_memory_relations_confirmed_supersession_uniq'
+             WHERE schemaname = current_schema()
+               AND indexname = 'bpm_memory_relations_confirmed_supersession_uniq'
              """).rows
 
     assert definition =~ "UNIQUE INDEX"
@@ -51,7 +52,9 @@ defmodule Backplane.Memory.Memories.RelationsMigrationTest do
              repo().query!("""
              SELECT data_type, is_nullable
              FROM information_schema.columns
-             WHERE table_name = 'bpm_memory_relations' AND column_name = 'correlation_id'
+             WHERE table_schema = current_schema()
+               AND table_name = 'bpm_memory_relations'
+               AND column_name = 'correlation_id'
              """).rows
   end
 
@@ -88,12 +91,14 @@ defmodule Backplane.Memory.Memories.RelationsMigrationTest do
   end
 
   defp remember(content, key) do
-    Memories.remember(content,
-      agent_id: "agent",
-      host_id: "host",
-      scope: "scope",
-      idempotency_scope: "test",
-      idempotency_key: key
+    Memories.remember(
+      content,
+      canonical_memory_opts("host",
+        agent_id: "agent",
+        scope: "scope",
+        idempotency_scope: "test",
+        idempotency_key: key
+      )
     )
   end
 end

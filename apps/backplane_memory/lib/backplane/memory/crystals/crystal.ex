@@ -6,10 +6,12 @@ defmodule Backplane.Memory.Crystals.Crystal do
   @foreign_key_type :binary_id
 
   schema "memory_crystals" do
+    field(:memory_space_id, :binary_id)
     field(:memory_id, :binary_id)
     field(:subject_id, :string)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:source_session_id, :string)
@@ -39,9 +41,11 @@ defmodule Backplane.Memory.Crystals.Crystal do
     |> cast(attrs, __schema__(:fields) -- [:id, :inserted_at, :updated_at])
     |> validate_required([
       :memory_id,
+      :memory_space_id,
       :subject_id,
       :host_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :source_session_id,

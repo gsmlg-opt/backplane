@@ -4,6 +4,11 @@ defmodule Backplane.Memory.Projections.Snapshot do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_projection_snapshots" do
+    field(:memory_space_id, :binary_id)
+    field(:host_id, :string)
+    field(:source_client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:projector, :string)
     field(:subject_type, :string)
     field(:subject_id, :string)
@@ -17,6 +22,11 @@ defmodule Backplane.Memory.Projections.Snapshot do
     snapshot
     |> cast(attrs, [
       :projector,
+      :memory_space_id,
+      :host_id,
+      :source_client_id,
+      :scope,
+      :namespace,
       :subject_type,
       :subject_id,
       :input_revision,
@@ -25,6 +35,9 @@ defmodule Backplane.Memory.Projections.Snapshot do
     ])
     |> validate_required([
       :projector,
+      :memory_space_id,
+      :scope,
+      :namespace,
       :subject_type,
       :subject_id,
       :input_revision,

@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   alias Backplane.Memory.Ingest
   alias Backplane.Memory.Observations
   alias Backplane.Memory.Observations.Observation
-  alias Backplane.Memory.Projections.{ReadModels, Rebuild, Source, State}
+  alias Backplane.Memory.Projections.{ProjectedSession, ReadModels, Rebuild, Source, State}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
 
@@ -16,7 +16,16 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
       first = canonical_session("host-a", session_id, "project-a", "host a observation")
       second = canonical_session("host-b", session_id, "project-b", "host b observation")
 
-      repo().insert!(%Observation{session_id: session_id, content: "legacy decoy"})
+      decoy_partition = canonical_partition("legacy-decoy", scope: "legacy")
+
+      repo().insert!(%Observation{
+        memory_space_id: decoy_partition.memory_space_id,
+        host_id: decoy_partition.host_id,
+        scope: decoy_partition.scope,
+        namespace: decoy_partition.namespace,
+        session_id: session_id,
+        content: "legacy decoy"
+      })
 
       assert :ok = perform("host-a", session_id, first.input_revision)
       assert :ok = perform("host-b", session_id, second.input_revision)
@@ -36,8 +45,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
 
       assert Enum.sort(
                Enum.map(Oban.Testing.all_enqueued(repo(), worker: EpisodicWorker), & &1.args)
-             ) ==
-               Enum.sort(Enum.map(summaries, &%{"summary_id" => &1.id}))
+             ) == Enum.sort(Enum.map(summaries, &%{"summary_id" => &1.id}))
     end)
   end
 
@@ -230,8 +238,11 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   end
 
   test "legacy session-only jobs remain explicitly compatible" do
-    Observations.register_session("legacy-summary", "legacy-project")
-    {:ok, _} = Observations.record("legacy-summary", "legacy observation", [])
+    partition = canonical_partition("legacy", scope: "legacy-project")
+    opts = Map.to_list(partition)
+
+    Observations.register_session("legacy-summary", "legacy-project", opts)
+    {:ok, _} = Observations.record("legacy-summary", "legacy observation", opts)
 
     assert :ok = SummaryWorker.perform(%Oban.Job{args: %{"session_id" => "legacy-summary"}})
     summary = repo().one!(from(s in Summary, where: s.session_id == "legacy-summary"))
@@ -261,7 +272,12 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
                SummaryWorker.enqueue(result.host_id, result.session_id, result.input_revision)
 
       assert job.args == %{
+               memory_space_id: result.memory_space_id,
                host_id: result.host_id,
+               client_id: result.client_id,
+               source_client_id: result.source_client_id,
+               scope: result.scope,
+               namespace: result.namespace,
                session_id: result.session_id,
                processing_version: "summary-v1",
                input_revision: result.input_revision
@@ -486,9 +502,30 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   end
 
   defp perform(host_id, session_id, input_revision) do
+    partition =
+      case repo().get(ProjectedSession, Source.subject_id!(host_id, session_id)) do
+        %ProjectedSession{} = session ->
+          Map.take(Map.from_struct(session), [
+            :memory_space_id,
+            :host_id,
+            :client_id,
+            :source_client_id,
+            :scope,
+            :namespace
+          ])
+
+        nil ->
+          canonical_partition(host_id, scope: "missing")
+      end
+
     SummaryWorker.perform(%Oban.Job{
       args: %{
+        "memory_space_id" => partition.memory_space_id,
         "host_id" => host_id,
+        "client_id" => partition.client_id,
+        "source_client_id" => partition.source_client_id,
+        "scope" => partition.scope,
+        "namespace" => partition.namespace,
         "session_id" => session_id,
         "processing_version" => "summary-v1",
         "input_revision" => input_revision
@@ -504,6 +541,13 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
             s.processing_version == "summary-v1"
       )
     )
+  end
+
+  test "canonical enqueue fails closed when generator provenance is incomplete" do
+    partition = canonical_partition("summary-incomplete") |> Map.delete(:client_id)
+
+    assert {:error, :incomplete_partition} =
+             SummaryWorker.enqueue("summary-incomplete", "session", "revision", partition)
   end
 
   defp state(subject_id, projector \\ "summary") do

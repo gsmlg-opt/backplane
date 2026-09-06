@@ -9,11 +9,119 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   alias Backplane.Api.HostMemoryRevocation
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
 
   setup do
     Application.delete_env(:backplane_api, :host_memory_sync_adapter)
     Application.delete_env(:backplane_api, :memory_service)
     :ok
+  end
+
+  test "compat receipts bind issued content, host and kind and never advance v2" do
+    host = create_host!("receipts", "scope:receipts")
+    other = create_host!("foreign-receipts", "scope:receipts")
+    payload = %{"scope" => host.memory_scope, "full" => true, "facts" => []}
+    assert {:ok, issued} = HostAgentMemorySync.issue_receipt(host, "facts", payload)
+    assert issued["receipt_key"] =~ "facts:"
+    receipt = Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt)
+    assert is_nil(receipt.acknowledged_at)
+
+    ack =
+      Map.take(issued, ["receipt_key", "payload_hash", "scope"]) |> Map.put("status", "applied")
+
+    assert {:error, :batch_not_found} = HostAgentMemorySync.ack_receipt(other, "facts", ack)
+    assert {:error, :batch_not_found} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+
+    assert {:error, :invalid_ack} =
+             HostAgentMemorySync.ack_receipt(host, "facts", Map.put(ack, "status", "failed"))
+
+    assert {:error, :batch_conflict} =
+             HostAgentMemorySync.ack_receipt(
+               host,
+               "facts",
+               Map.put(ack, "payload_hash", String.duplicate("0", 64))
+             )
+
+    assert {:ok, %{status: :acknowledged}} = HostAgentMemorySync.ack_receipt(host, "facts", ack)
+    assert {:ok, %{status: :duplicate}} = HostAgentMemorySync.ack_receipt(host, "facts", ack)
+    assert Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt).acknowledged_at
+    assert Repo.aggregate(Backplane.Memory.EdgeSync.Cursor, :count) == 0
+  end
+
+  test "compat facts and wipes fail explicitly for invalid authority and oversized results" do
+    host = create_host!("bounds", "scope:bounds")
+    assert {:error, :unauthorized} = HostAgentMemorySync.facts_for_scope(host, "foreign", nil)
+    assert {:error, :unauthorized} = HostAgentMemorySync.active_wipes(host, "foreign")
+
+    insert_memory!(host, host.memory_scope, String.duplicate("x", 524_288),
+      memory_type: "semantic"
+    )
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+  end
+
+  test "compat queries bound fact and wipe counts without returning partial replacements" do
+    host = create_host!("counts", "scope:counts")
+    for n <- 1..101, do: insert_memory!(host, host.memory_scope, "fact #{n}", [])
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+
+    from(m in MemorySchema, where: m.host_id == ^host.id)
+    |> Repo.update_all(set: [deleted_at: DateTime.utc_now(), lifecycle_state: "tombstoned"])
+
+    assert {:error, :payload_too_large} =
+             HostAgentMemorySync.active_wipes(host, host.memory_scope)
+  end
+
+  test "compat facts use canonical ownership and active or disputed lifecycle" do
+    host = create_host!("canonical", "scope:canonical")
+    owned = insert_memory!(host, host.memory_scope, "canonical shared provenance", [])
+
+    owned
+    |> Ecto.Changeset.change(client_id: "some-other-provenance", lifecycle_state: "disputed")
+    |> Repo.update!()
+
+    hidden = insert_memory!(host, host.memory_scope, "archived", [])
+    hidden |> Ecto.Changeset.change(lifecycle_state: "archived") |> Repo.update!()
+
+    assert {:full, [%{"id" => id}]} =
+             HostAgentMemorySync.facts_for_scope(host, host.memory_scope, nil)
+
+    assert id == owned.id
+  end
+
+  test "stable wipe receipt cannot be reissued with conflicting content" do
+    host = create_host!("wipe-receipt", "scope:wipe-receipt")
+
+    payload = %{
+      "scope" => host.memory_scope,
+      "directive_id" => "deleted:stable",
+      "items" => [%{"remote_id" => "one"}]
+    }
+
+    assert {:ok, issued} = HostAgentMemorySync.issue_receipt(host, "wipe", payload)
+    assert {:ok, ^issued} = HostAgentMemorySync.issue_receipt(host, "wipe", payload)
+
+    assert {:error, :batch_conflict} =
+             HostAgentMemorySync.issue_receipt(host, "wipe", Map.put(payload, "items", []))
+
+    ack =
+      Map.take(issued, ["receipt_key", "payload_hash", "scope"]) |> Map.put("status", "applied")
+
+    assert {:ok, %{status: :acknowledged}} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+
+    assert {:error, :invalid_ack} =
+             HostAgentMemorySync.ack_receipt(host, "wipe", Map.put(ack, "unbound", "extra"))
+
+    assert {:ok, %{status: :duplicate}} = HostAgentMemorySync.ack_receipt(host, "wipe", ack)
+  end
+
+  test "revocation schema includes canonical ownership and provenance fields" do
+    required_fields = [:memory_space_id, :host_id, :source_client_id, :scope, :namespace]
+
+    assert [] == required_fields -- HostMemoryRevocation.__schema__(:fields)
   end
 
   test "remember maps a host local id to one stable canonical memory id" do
@@ -400,8 +508,8 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   end
 
   test "forget rejects remote ids owned by another host" do
-    requester = create_host!("requester")
-    owner = create_host!("owner")
+    requester = create_host!("requester", "scope:private")
+    owner = create_host!("owner", "scope:private")
     foreign = insert_memory!(owner, "scope:private", "foreign memory", memory_type: "episodic")
 
     assert {:error, :validation, _reason} =
@@ -473,14 +581,18 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
              )
 
     foreign = insert_memory!(host, scope, "conflicting memory", memory_type: "episodic")
+    partition = partition_for!(host, scope)
 
     assert {:ok, conflict} =
              %HostMemoryRevocation{}
              |> HostMemoryRevocation.changeset(%{
+               memory_space_id: partition.memory_space_id,
                host_id: host.id,
+               source_client_id: foreign.source_client_id,
                local_id: "local_b",
                memory_id: foreign.id,
-               scope: scope,
+               scope: partition.scope,
+               namespace: partition.namespace,
                content_hash: foreign.content_hash
              })
              |> Repo.insert()
@@ -571,7 +683,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
   test "entitled_scopes and active_wipes are backed by memory rows" do
     host = create_host!("entitled", "scope:entitled")
-    other = create_host!("other")
+    other = create_host!("other", "scope:foreign")
     scope = "scope:entitled"
 
     _owned = insert_memory!(host, scope, "owned fact", memory_type: "semantic")
@@ -601,7 +713,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert deleted_hash == Base.encode16(deleted.content_hash, case: :lower)
   end
 
-  defp create_host!(suffix, memory_scope \\ "proj_local") do
+  defp create_host!(suffix, memory_scope) do
     name = "host-memory-sync-#{suffix}-#{System.unique_integer([:positive])}"
 
     assert {:ok, host, _auth_token, _token} =
@@ -624,19 +736,28 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
   end
 
   defp insert_memory!(host, scope, content, opts) do
+    partition = partition_for!(host, scope)
+
     attrs = %{
       content: content,
+      memory_space_id: partition.memory_space_id,
       memory_type: Keyword.get(opts, :memory_type, "semantic"),
-      scope: scope,
+      scope: partition.scope,
       agent_id: "agent_1",
       host_id: host.id,
       client_id: "host:#{host.id}",
-      namespace: "private",
+      source_client_id: Keyword.get(opts, :source_client_id, "host:#{host.id}"),
+      namespace: partition.namespace,
       tags: Keyword.get(opts, :tags, []),
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
     %MemorySchema{} |> MemorySchema.changeset(attrs) |> Repo.insert!()
+  end
+
+  defp partition_for!(host, scope) do
+    assert {:ok, partition} = MemorySpaces.resolve_host_partition(host.id, scope, "private")
+    partition
   end
 
   defp memories_for(host, scope, opts) do
@@ -673,6 +794,7 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
   alias Backplane.Api.{HostAgentMemorySync, HostMemoryRevocation}
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
   alias Backplane.Repo
   alias Backplane.Skills.Host
   alias Ecto.Adapters.SQL.Sandbox
@@ -854,12 +976,16 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
 
   defp create_host!(suffix, memory_scope) do
     unboxed(fn ->
-      %Host{}
-      |> Host.changeset(%{
-        "name" => unique("host-memory-sync-concurrency:#{suffix}"),
-        "memory_scope" => memory_scope
-      })
-      |> Repo.insert!()
+      host =
+        %Host{}
+        |> Host.changeset(%{
+          "name" => unique("host-memory-sync-concurrency:#{suffix}"),
+          "memory_scope" => memory_scope
+        })
+        |> Repo.insert!()
+
+      assert {:ok, _partition} = MemorySpaces.provision_private_host(host.id, memory_scope)
+      host
     end)
   end
 
@@ -893,6 +1019,8 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
   defp cleanup_on_exit(host_id) do
     on_exit(fn ->
       unboxed(fn ->
+        memory_space_id = MemorySpaces.private_host_space_id(host_id)
+
         tables = [
           "bpm_host_memory_revocations",
           "memory_audit_log",
@@ -923,6 +1051,20 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
           )
 
           Repo.query!("DELETE FROM bpm_memories WHERE host_id = $1", [host_id])
+
+          Repo.query!("DELETE FROM bpm_memory_space_entitlements WHERE host_id = $1::uuid", [
+            Ecto.UUID.dump!(host_id)
+          ])
+
+          Repo.query!(
+            "DELETE FROM bpm_memory_space_legacy_aliases WHERE memory_space_id = $1::uuid",
+            [Ecto.UUID.dump!(memory_space_id)]
+          )
+
+          Repo.query!("DELETE FROM bpm_memory_spaces WHERE id = $1::uuid", [
+            Ecto.UUID.dump!(memory_space_id)
+          ])
+
           Repo.query!("DELETE FROM skill_hosts WHERE id = $1::uuid", [Ecto.UUID.dump!(host_id)])
         after
           Enum.each(Enum.reverse(tables), &Repo.query!("ALTER TABLE #{&1} ENABLE TRIGGER USER"))

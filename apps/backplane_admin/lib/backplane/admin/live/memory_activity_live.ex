@@ -11,7 +11,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
   @distribution_page_size 10
   @filter_keys ~w(project agent_id event_type)
   @periods ~w(daily monthly yearly)
-  @partition_keys ~w(host_id client_id scope namespace)
+  @partition_keys ~w(memory_space_id host_id client_id scope namespace)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -378,7 +378,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
            ),
          {:ok, host_breakdown} <-
            OperatorActivity.host_breakdown(
-             Map.take(partition, [:client_id, :scope, :namespace]),
+             Map.take(partition, [:memory_space_id, :client_id, :scope, :namespace]),
              Keyword.put(opts, :limit, @distribution_limit)
            ),
          {:ok, recent_events} <- Activity.recent_events(partition, Keyword.put(opts, :limit, 20)),

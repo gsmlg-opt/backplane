@@ -187,7 +187,9 @@ defmodule Backplane.Memory.Router do
       %{"session_id" => session_id} when is_binary(session_id) ->
         case Backplane.Memory.Observations.end_session(
                session_id,
-               partition_opts(conn.assigns.memory_partition)
+               conn.assigns.memory_partition
+               |> partition_opts()
+               |> Keyword.put(:require_existing, true)
              ) do
           {count, nil} when count in [0, 1] ->
             conn
@@ -406,13 +408,17 @@ defmodule Backplane.Memory.Router do
 
   defp partition_opts(partition) do
     [
+      memory_space_id: partition.memory_space_id,
       host_id: partition.host_id,
       client_id: partition.partition_id,
+      source_client_id: partition[:source_client_id],
       scope: partition.scope,
       namespace: partition.namespace,
       trusted_partition: %{
+        memory_space_id: partition.memory_space_id,
         host_id: partition.host_id,
         client_id: partition.partition_id,
+        source_client_id: partition[:source_client_id],
         scope: partition.scope,
         namespace: partition.namespace
       }

@@ -9,8 +9,13 @@ defmodule Backplane.Api.HostAgentMemorySync do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.RememberRequest
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
   alias Backplane.Api.HostMemoryRevocation
   alias Backplane.Skills.Host
+  alias Backplane.Memory.EdgeSync.{CompatReceipt, SnapshotBuilder}
+
+  @max_compat_items 100
+  @max_compat_bytes 524_288
 
   @fact_memory_types ~w(semantic procedural)
   @host_memory_metadata_key "host_memory"
@@ -21,8 +26,10 @@ defmodule Backplane.Api.HostAgentMemorySync do
          {:ok, local_id} <- required_binary(item, "id"),
          {:ok, content} <- required_binary(item, "content"),
          :ok <- validate_content_hash(item, content),
-         :ok <- validate_host_scope(host, scope_for(item)) do
-      remember_host_item(host, item, local_id, content, scope_for(item))
+         :ok <- validate_host_scope(host, scope_for(item)),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(host.id, scope_for(item), "private") do
+      remember_host_item(host, item, local_id, content, partition)
     else
       {:error, reason} -> {:error, :validation, reason}
     end
@@ -40,15 +47,16 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   def facts_for_scope(host, scope, host_fact_set_hash) when is_binary(scope) do
     with {:ok, current_host} <- reload_host(host),
-         :ok <- validate_host_scope(current_host, scope) do
-      partition_id = host_partition_id(current_host)
-
+         :ok <- validate_host_scope(current_host, scope),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(current_host.id, scope, "private") do
       facts =
         MemorySchema
         |> where([memory], memory.scope == ^scope)
         |> where([memory], memory.namespace == "private")
-        |> where([memory], memory.client_id == ^partition_id)
+        |> where([memory], memory.memory_space_id == ^partition.memory_space_id)
         |> where([memory], memory.memory_type in ^@fact_memory_types)
+        |> where([memory], memory.lifecycle_state in ["active", "disputed"])
         |> where([memory], is_nil(memory.deleted_at))
         |> order_by([memory], asc: memory.id, asc: memory.updated_at)
         |> select([memory], %{
@@ -59,52 +67,234 @@ defmodule Backplane.Api.HostAgentMemorySync do
           metadata: memory.metadata,
           updated_at: memory.updated_at
         })
+        |> limit(^(@max_compat_items + 1))
+        |> guarded_fact_query()
         |> Repo.all()
-        |> Enum.map(&fact_payload/1)
 
-      if host_fact_set_hash == fact_set_hash(facts) do
-        :unchanged
-      else
-        {:full, facts}
+      with :ok <- fetched_rows_valid(facts, :content) do
+        facts = Enum.map(facts, &fact_payload/1)
+
+        with :ok <- bounded(facts) do
+          if host_fact_set_hash == fact_set_hash(facts), do: :unchanged, else: {:full, facts}
+        end
       end
     else
-      _error -> :unchanged
+      _error -> {:error, :unauthorized}
     end
   end
 
-  def facts_for_scope(_host, _scope, _host_fact_set_hash), do: :unchanged
+  def facts_for_scope(_host, _scope, _host_fact_set_hash), do: {:error, :invalid_request}
 
   def active_wipes(host, scope) when is_binary(scope) do
     with {:ok, current_host} <- reload_host(host),
-         :ok <- validate_host_scope(current_host, scope) do
-      partition_id = host_partition_id(current_host)
+         :ok <- validate_host_scope(current_host, scope),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(current_host.id, scope, "private") do
+      wipes =
+        MemorySchema
+        |> where([memory], memory.scope == ^scope)
+        |> where([memory], memory.namespace == "private")
+        |> where([memory], memory.memory_space_id == ^partition.memory_space_id)
+        |> where([memory], not is_nil(memory.deleted_at))
+        |> order_by([memory], asc: memory.deleted_at, asc: memory.id)
+        |> select([memory], %{
+          id: memory.id,
+          scope: memory.scope,
+          content_hash: memory.content_hash
+        })
+        |> limit(^(@max_compat_items + 1))
+        |> guarded_wipe_query()
+        |> Repo.all()
 
-      MemorySchema
-      |> where([memory], memory.scope == ^scope)
-      |> where([memory], memory.namespace == "private")
-      |> where([memory], memory.client_id == ^partition_id)
-      |> where([memory], not is_nil(memory.deleted_at))
-      |> order_by([memory], asc: memory.deleted_at, asc: memory.id)
-      |> select([memory], %{
-        id: memory.id,
-        scope: memory.scope,
-        content_hash: memory.content_hash
-      })
-      |> Repo.all()
-      |> Enum.map(fn memory ->
-        %{
-          "directive_id" => "deleted:#{memory.id}",
-          "remote_id" => memory.id,
-          "content_hash" => encode_hash(memory.content_hash),
-          "scope" => memory.scope
-        }
-      end)
+      with :ok <- fetched_rows_valid(wipes, :scope) do
+        wipes =
+          Enum.map(wipes, fn memory ->
+            %{
+              "directive_id" => "deleted:#{memory.id}",
+              "remote_id" => memory.id,
+              "content_hash" => encode_hash(memory.content_hash),
+              "scope" => memory.scope
+            }
+          end)
+
+        with :ok <- bounded(wipes), do: wipes
+      end
     else
-      _error -> []
+      _error -> {:error, :unauthorized}
     end
   end
 
-  def active_wipes(_host, _scope), do: []
+  def active_wipes(_host, _scope), do: {:error, :invalid_request}
+
+  @doc "Persist the exact compatibility delivery before it is pushed to the host."
+  def issue_receipt(host, kind, %{"scope" => scope} = payload) when kind in ["facts", "wipe"] do
+    with {:ok, current} <- reload_host(host),
+         :ok <- validate_host_scope(current, scope),
+         {:ok, partition} <- MemorySpaces.resolve_host_partition(current.id, scope, "private") do
+      key =
+        case kind do
+          "facts" ->
+            "facts:#{partition.memory_space_id}:#{scope}:#{fact_set_hash(payload["facts"])}"
+
+          "wipe" ->
+            payload["directive_id"]
+        end
+
+      hash = SnapshotBuilder.hash(payload)
+      issued = Map.merge(payload, %{"receipt_key" => key, "payload_hash" => hash})
+
+      with true <- is_binary(key) and byte_size(key) <= 1024,
+           :ok <- bounded_frame(issued) do
+        Repo.transaction(fn ->
+          receipt = %CompatReceipt{
+            host_id: current.id,
+            kind: kind,
+            receipt_key: key,
+            scope: scope,
+            payload_hash: hash,
+            issued_at: DateTime.utc_now()
+          }
+
+          Repo.insert!(receipt,
+            on_conflict: :nothing,
+            conflict_target: [:host_id, :kind, :receipt_key]
+          )
+
+          existing = receipt_query(current.id, kind, key) |> Repo.one!()
+
+          if existing.payload_hash != hash or existing.scope != scope,
+            do: Repo.rollback(:batch_conflict)
+
+          issued
+        end)
+      else
+        false -> {:error, :invalid_request}
+        error -> error
+      end
+    else
+      _ -> {:error, :unauthorized}
+    end
+  end
+
+  def issue_receipt(_, _, _), do: {:error, :invalid_request}
+
+  @doc "Acknowledge only a committed application of an exact issued v1 receipt."
+  def ack_receipt(
+        host,
+        kind,
+        %{"receipt_key" => key, "payload_hash" => hash, "scope" => scope, "status" => "applied"} =
+          ack
+      )
+      when kind in ["facts", "wipe"] do
+    allowed = ~w(receipt_key payload_hash scope status)
+
+    with true <- Enum.sort(Map.keys(ack)) == Enum.sort(allowed),
+         true <-
+           is_binary(key) and byte_size(key) <= 1024 and is_binary(hash) and byte_size(hash) <= 71,
+         {:ok, current} <- reload_host(host),
+         :ok <- validate_host_scope(current, scope),
+         {:ok, _} <- MemorySpaces.resolve_host_partition(current.id, scope, "private") do
+      Repo.transaction(fn ->
+        case receipt_query(current.id, kind, key) |> lock("FOR UPDATE") |> Repo.one() do
+          nil ->
+            Repo.rollback(:batch_not_found)
+
+          %{payload_hash: ^hash, scope: ^scope, acknowledged_at: nil} = receipt ->
+            receipt
+            |> Ecto.Changeset.change(acknowledged_at: DateTime.utc_now())
+            |> Repo.update!()
+
+            %{status: :acknowledged}
+
+          %{payload_hash: ^hash, scope: ^scope} ->
+            %{status: :duplicate}
+
+          _ ->
+            Repo.rollback(:batch_conflict)
+        end
+      end)
+    else
+      _ -> {:error, :invalid_ack}
+    end
+  end
+
+  def ack_receipt(_, _, _), do: {:error, :invalid_ack}
+
+  defp receipt_query(host_id, kind, key),
+    do:
+      from(r in CompatReceipt,
+        where: r.host_id == ^host_id and r.kind == ^kind and r.receipt_key == ^key
+      )
+
+  defp bounded(items) do
+    if length(items) <= @max_compat_items, do: bounded_frame(items), else: oversized()
+  end
+
+  defp bounded_frame(payload) do
+    if byte_size(Jason.encode!(payload)) <= @max_compat_bytes, do: :ok, else: oversized()
+  end
+
+  defp oversized do
+    :telemetry.execute([:backplane, :memory, :compat, :rejected], %{count: 1}, %{
+      code: :payload_too_large
+    })
+
+    {:error, :payload_too_large}
+  end
+
+  # The SQL window runs over at most N+1 candidates. Oversized JSON fields are
+  # replaced by NULL in PostgreSQL, before the driver can materialize them.
+  # The complete encoded wire frame is checked again before issuing its receipt.
+  defp guarded_fact_query(query) do
+    from r in subquery(query),
+      select: %{
+        id: r.id,
+        content_hash: r.content_hash,
+        updated_at: r.updated_at,
+        content:
+          fragment(
+            "CASE WHEN sum(octet_length(row_to_json(?)::text)) OVER () <= ? THEN ? END",
+            r,
+            ^@max_compat_bytes,
+            r.content
+          ),
+        tags:
+          fragment(
+            "CASE WHEN sum(octet_length(row_to_json(?)::text)) OVER () <= ? THEN ? END",
+            r,
+            ^@max_compat_bytes,
+            r.tags
+          ),
+        metadata:
+          fragment(
+            "CASE WHEN sum(octet_length(row_to_json(?)::text)) OVER () <= ? THEN ? END",
+            r,
+            ^@max_compat_bytes,
+            r.metadata
+          )
+      }
+  end
+
+  defp guarded_wipe_query(query) do
+    from r in subquery(query),
+      select: %{
+        id: r.id,
+        content_hash: r.content_hash,
+        scope:
+          fragment(
+            "CASE WHEN sum(octet_length(row_to_json(?)::text)) OVER () <= ? THEN ? END",
+            r,
+            ^@max_compat_bytes,
+            r.scope
+          )
+      }
+  end
+
+  defp fetched_rows_valid(rows, key) do
+    if length(rows) <= @max_compat_items and Enum.all?(rows, &(not is_nil(Map.get(&1, key)))),
+      do: :ok,
+      else: oversized()
+  end
 
   def entitled_scopes(host) do
     case reload_host(host) do
@@ -113,17 +303,19 @@ defmodule Backplane.Api.HostAgentMemorySync do
     end
   end
 
-  defp remember_host_item(host, item, local_id, content, scope) do
+  defp remember_host_item(host, item, local_id, content, partition) do
     host_content_hash = host_content_hash(item, content)
     metadata = item |> Map.get("metadata", %{}) |> normalize_metadata()
 
     opts = [
       type: "episodic",
-      scope: scope,
+      memory_space_id: partition.memory_space_id,
+      scope: partition.scope,
       agent_id: optional_binary(item, "agent_id") || "",
       host_id: host.id,
       client_id: host_partition_id(host),
-      namespace: "private",
+      source_client_id: partition[:source_client_id],
+      namespace: partition.namespace,
       session_id: optional_binary(item, "session_id"),
       tags: normalize_tags(Map.get(item, "tags", [])),
       metadata: put_host_metadata(metadata, local_id, host_content_hash),
@@ -185,14 +377,11 @@ defmodule Backplane.Api.HostAgentMemorySync do
        do: {:ok, :duplicate}
 
   defp reconcile_forget(host, mapping) do
-    partition = %{
-      host_id: host.id,
-      client_id: host_partition_id(host),
-      scope: host.memory_scope,
-      namespace: "private"
-    }
-
-    with :ok <- Memories.tombstone(mapping.memory.id, partition),
+    with {:ok, canonical} <-
+           MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private"),
+         partition <-
+           Map.merge(canonical, %{host_id: host.id, client_id: host_partition_id(host)}),
+         :ok <- Memories.tombstone(mapping.memory.id, partition),
          :ok <- revoke_canonical_mappings(host, mapping) do
       {:ok, :ok}
     end
@@ -409,11 +598,14 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp revoke_mapping(host, mapping) do
     attrs = %{
+      memory_space_id: mapping.memory.memory_space_id,
       host_id: host.id,
+      source_client_id: mapping.memory.source_client_id,
       local_id: mapping.local_id,
       memory_id: mapping.memory.id,
       source_request_id: mapping.request && mapping.request.id,
       scope: mapping.memory.scope,
+      namespace: mapping.memory.namespace,
       content_hash: mapping.memory.content_hash
     }
 
@@ -468,7 +660,16 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp revocation_matches?(revocation, attrs) do
     Enum.all?(
-      [:host_id, :local_id, :memory_id, :source_request_id, :scope, :content_hash],
+      [
+        :memory_space_id,
+        :host_id,
+        :local_id,
+        :memory_id,
+        :source_request_id,
+        :scope,
+        :namespace,
+        :content_hash
+      ],
       &(Map.fetch!(revocation, &1) == Map.fetch!(attrs, &1))
     )
   end

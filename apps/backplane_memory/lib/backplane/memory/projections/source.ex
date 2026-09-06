@@ -45,15 +45,17 @@ defmodule Backplane.Memory.Projections.Source do
         select: [e.id, e.payload_hash, e.source_sequence, e.event_type]
       )
 
-    {context, count} =
-      query
-      |> repo().stream(max_rows: @default_page_size)
-      |> Enum.reduce({:crypto.hash_init(:sha256) |> :crypto.hash_update("["), 0}, fn row,
-                                                                                     {context,
-                                                                                      count} ->
-        {:ok, encoded} = Revision.encode_json(row)
-        separator = if count == 0, do: "", else: ","
-        {:crypto.hash_update(context, [separator, encoded]), count + 1}
+    {:ok, {context, count}} =
+      repo().transaction(fn ->
+        query
+        |> repo().stream(max_rows: @default_page_size)
+        |> Enum.reduce({:crypto.hash_init(:sha256) |> :crypto.hash_update("["), 0}, fn row,
+                                                                                       {context,
+                                                                                        count} ->
+          {:ok, encoded} = Revision.encode_json(row)
+          separator = if count == 0, do: "", else: ","
+          {:crypto.hash_update(context, [separator, encoded]), count + 1}
+        end)
       end)
 
     revision =

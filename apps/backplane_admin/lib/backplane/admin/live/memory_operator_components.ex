@@ -3,7 +3,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
 
   import Backplane.Admin.MemoryComponents
 
-  @partition_keys ~w(host client scope namespace)
+  @partition_keys ~w(memory_space_id host client scope namespace)
 
   attr(:id, :string, required: true)
   attr(:title, :string, required: true)
@@ -19,7 +19,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
       <.dm_card variant="bordered" padding="lg">
         <h2 class="text-lg font-semibold">Select an exact partition</h2>
         <p class="mt-1 text-sm text-on-surface-variant">
-          Host, client, scope, and namespace are required before partitioned data is queried.
+          Memory space, host, client, scope, and namespace are required before partitioned data is queried.
         </p>
         <.form
           id={@id <> "-form"}
@@ -28,6 +28,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
           phx-submit="select_partition"
           class="mt-4 grid gap-3 sm:grid-cols-2"
         >
+          <.dm_input id={@id <> "-memory-space"} name="partition[memory_space_id]" label="Memory space" value={@values["memory_space_id"] || ""} required />
           <.dm_input id={@id <> "-host"} name="partition[host]" label="Host" value={@values["host"] || ""} required />
           <.dm_input id={@id <> "-client"} name="partition[client]" label="Client" value={@values["client"] || ""} required />
           <.dm_input id={@id <> "-scope"} name="partition[scope]" label="Scope" value={@values["scope"] || ""} required />
@@ -52,9 +53,10 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
   def exact_partition(params) when is_map(params) do
     values = Map.take(params, @partition_keys)
 
-    if Enum.all?(@partition_keys, &(nonempty?(values[&1]))) do
+    if Enum.all?(@partition_keys, &nonempty?(values[&1])) do
       {:ok,
        %{
+         memory_space_id: String.trim(values["memory_space_id"]),
          host_id: String.trim(values["host"]),
          client_id: String.trim(values["client"]),
          scope: String.trim(values["scope"]),
@@ -67,6 +69,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
 
   def partition_query(partition) when is_map(partition) do
     %{
+      "memory_space_id" => partition.memory_space_id,
       "host" => partition.host_id,
       "client" => partition.client_id,
       "scope" => partition.scope,
@@ -90,7 +93,10 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
 
   def status_variant(status) when status in ["complete", "done", "active"], do: "success"
   def status_variant(status) when status in ["failed", "dead_letter", "blocked"], do: "error"
-  def status_variant(status) when status in ["pending", "enqueued", "running", "in_progress"], do: "warning"
+
+  def status_variant(status) when status in ["pending", "enqueued", "running", "in_progress"],
+    do: "warning"
+
   def status_variant(_status), do: "neutral"
 
   def format_datetime(nil), do: "—"

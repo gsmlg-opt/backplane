@@ -8,6 +8,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   alias Backplane.Memory.Memories.Evidence
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces.BackfillIssue
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories
 
@@ -89,10 +90,11 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
 
       {:error, reason} ->
         Logger.warning("[memory] procedural worker: LLM extract failed",
-          partition_id: partition.client_id,
-          host_id: partition.host_id,
-          namespace: partition.namespace,
-          scope: partition.scope,
+          memory_space_id: elem(partition, 0),
+          partition_id: elem(partition, 4),
+          host_id: elem(partition, 6),
+          namespace: elem(partition, 2),
+          scope: elem(partition, 1),
           failure: failure_category(reason)
         )
 
@@ -106,12 +108,14 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   defp persist_output({:procedure, procedure}, partition, revision, ordinal, evidence) do
     Memories.remember(procedure,
       type: "procedural",
-      scope: elem(partition, 0),
-      namespace: elem(partition, 1),
-      metadata: %{"project" => elem(partition, 2)},
-      client_id: empty_to_nil(elem(partition, 3)),
+      memory_space_id: elem(partition, 0),
+      scope: elem(partition, 1),
+      namespace: elem(partition, 2),
+      metadata: %{"project" => elem(partition, 3)},
+      client_id: empty_to_nil(elem(partition, 4)),
+      source_client_id: empty_to_nil(elem(partition, 5)),
       agent_id: "consolidation",
-      host_id: elem(partition, 4),
+      host_id: elem(partition, 6),
       idempotency_scope: "memory-worker:procedural",
       idempotency_key: idempotency_key(partition, revision, ordinal),
       evidence: evidence
@@ -130,17 +134,19 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
         %{
           rule: rule,
           context: context,
-          project: elem(partition, 2),
+          project: elem(partition, 3),
           source_kind: "consolidation",
           confidence: confidence,
           evidence: evidence,
           idempotency_key: idempotency_key(partition, revision, ordinal)
         },
         %{
-          scope: elem(partition, 0),
-          namespace: elem(partition, 1),
-          client_id: elem(partition, 3),
-          host_id: elem(partition, 4)
+          memory_space_id: elem(partition, 0),
+          scope: elem(partition, 1),
+          namespace: elem(partition, 2),
+          client_id: elem(partition, 4),
+          source_client_id: empty_to_nil(elem(partition, 5)),
+          host_id: elem(partition, 6)
         },
         %{actor: "system:lesson-consolidation", request_id: revision, correlation_id: revision}
       )
@@ -159,10 +165,13 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
         join: e in Evidence,
         on: e.memory_id == m.id,
         where:
-          m.memory_type == "semantic" and is_nil(m.deleted_at) and not is_nil(m.scope) and
+          m.memory_type == "semantic" and is_nil(m.deleted_at) and
+            not is_nil(m.memory_space_id) and not is_nil(m.scope) and
+            not is_nil(m.namespace) and not is_nil(m.host_id) and not is_nil(m.client_id) and
             (not is_nil(e.source_event_id) or not is_nil(e.source_observation_id) or
                not is_nil(e.source_summary_id) or not is_nil(e.source_session_id)),
         group_by: [
+          m.memory_space_id,
           m.scope,
           m.namespace,
           fragment(
@@ -171,21 +180,43 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
             m.metadata
           ),
           fragment("COALESCE(?, '')", m.client_id),
+          fragment("COALESCE(?, '')", m.source_client_id),
           m.host_id
         ],
         having: count(m.id, :distinct) >= @min_semantic_count,
         select:
-          {m.scope, m.namespace,
+          {m.memory_space_id, m.scope, m.namespace,
            fragment(
              "COALESCE(CASE WHEN jsonb_typeof(?->'project') = 'string' THEN ?->>'project' ELSE '' END, '')",
              m.metadata,
              m.metadata
-           ), fragment("COALESCE(?, '')", m.client_id), m.host_id}
+           ), fragment("COALESCE(?, '')", m.client_id),
+           fragment("COALESCE(?, '')", m.source_client_id), m.host_id}
+      )
+    )
+    |> Enum.reject(&unresolved_partition?/1)
+  end
+
+  defp unresolved_partition?(
+         {memory_space_id, scope, namespace, _project, _client, _source, host_id}
+       ) do
+    repo().exists?(
+      from(issue in BackfillIssue,
+        where: issue.disposition == "pending",
+        where:
+          (fragment("? ->> 'memory_space_id' = ?", issue.details, ^memory_space_id) or
+             fragment("? ->> 'host_id' = ?", issue.details, ^host_id)) and
+            (fragment("nullif(btrim(? ->> 'scope'), '') IS NULL", issue.details) or
+               fragment("? ->> 'scope' = ?", issue.details, ^scope)) and
+            (fragment("nullif(btrim(? ->> 'namespace'), '') IS NULL", issue.details) or
+               fragment("? ->> 'namespace' = ?", issue.details, ^namespace))
       )
     )
   end
 
-  defp qualifying_inputs({scope, namespace, project, client_id, host_id}) do
+  defp qualifying_inputs(
+         {memory_space_id, scope, namespace, project, client_id, _source_client_id, host_id}
+       ) do
     root_memory_ids = root_memory_ids()
 
     repo().all(
@@ -194,6 +225,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
           m.memory_type == "semantic" and is_nil(m.deleted_at) and not is_nil(m.scope) and
             m.id in subquery(root_memory_ids),
         where: m.scope == ^scope and m.namespace == ^namespace,
+        where: m.memory_space_id == ^memory_space_id,
         where:
           fragment(
             "COALESCE(CASE WHEN jsonb_typeof(?->'project') = 'string' THEN ?->>'project' ELSE '' END, '')",

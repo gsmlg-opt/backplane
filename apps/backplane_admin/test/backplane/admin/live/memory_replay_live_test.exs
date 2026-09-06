@@ -10,13 +10,28 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
   alias Backplane.Memory.Projections.Rebuild
   alias Backplane.Memory.Replay
   alias Backplane.Memory.Summaries.Summary
+  alias Backplane.MemorySpaces.MemorySpace
 
+  @memory_space_id "40000000-0000-0000-0000-000000000001"
   @partition %{
+    memory_space_id: @memory_space_id,
     host_id: "replay-ui-host",
     client_id: "replay-ui-client",
     scope: "replay-ui-scope",
     namespace: "private"
   }
+
+  setup do
+    %MemorySpace{}
+    |> MemorySpace.changeset(%{
+      id: @memory_space_id,
+      kind: "private",
+      status: "active"
+    })
+    |> repo().insert!(on_conflict: :nothing)
+
+    :ok
+  end
 
   test "router grants separate trusted-operator replay capabilities while direct mounts fail closed",
        %{conn: conn} do
@@ -300,9 +315,11 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     assert {:ok, {:inserted, _}} =
              Store.append_tagged(%{
                id: event_id,
+               memory_space_id: @partition.memory_space_id,
                stream_id: "capture:#{@partition.host_id}:#{session}",
                host_id: @partition.host_id,
                client_id: @partition.client_id,
+               source_client_id: @partition.client_id,
                scope: @partition.scope,
                namespace: @partition.namespace,
                session_id: session,
@@ -322,15 +339,18 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
   defp insert_links!(session, result, first_event_id, second_event_id) do
     summary =
       repo().insert!(
-        Summary.changeset(%Summary{}, %{
-          subject_id: result.subject_id,
-          host_id: @partition.host_id,
-          session_id: session,
-          content: "summary",
-          processing_version: "summary-v1",
-          input_revision: result.input_revision,
-          output_revision: String.duplicate("b", 64)
-        })
+        Summary.changeset(
+          %Summary{},
+          Map.merge(@partition, %{
+            subject_id: result.subject_id,
+            source_client_id: @partition.client_id,
+            session_id: session,
+            content: "summary",
+            processing_version: "summary-v1",
+            input_revision: result.input_revision,
+            output_revision: String.duplicate("b", 64)
+          })
+        )
       )
 
     first_memory = insert_memory!(session, "first")
@@ -376,6 +396,7 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
           %Crystal{},
           Map.merge(@partition, %{
             memory_id: second_memory.id,
+            source_client_id: @partition.client_id,
             subject_id: result.subject_id,
             source_session_id: session,
             title: "Replay crystal",
@@ -434,6 +455,7 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
 
   defp replay_params(session) do
     @partition
+    |> Map.take([:memory_space_id, :host_id, :client_id, :scope, :namespace])
     |> Map.new(fn {key, value} -> {partition_param(key), value} end)
     |> Map.put("session", session)
   end
@@ -461,5 +483,6 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
 
   defp partition_param(:host_id), do: "host"
   defp partition_param(:client_id), do: "client"
+  defp partition_param(:memory_space_id), do: "memory_space_id"
   defp partition_param(key), do: Atom.to_string(key)
 end

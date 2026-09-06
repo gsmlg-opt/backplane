@@ -9,8 +9,8 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorkerTest do
 
   describe "perform/1" do
     test "increments access_count and sets accessed_at for given memory IDs" do
-      {:ok, m1} = Memories.remember("fact one", agent_id: "a", host_id: "h")
-      {:ok, m2} = Memories.remember("fact two", agent_id: "a", host_id: "h")
+      {:ok, m1} = Memories.remember("fact one", canonical_memory_opts("h", agent_id: "a"))
+      {:ok, m2} = Memories.remember("fact two", canonical_memory_opts("h", agent_id: "a"))
 
       before_count =
         from(m in MemorySchema, where: m.id == ^m1.id, select: m.access_count)
@@ -33,7 +33,9 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorkerTest do
     end
 
     test "increments access_count each time it is called" do
-      {:ok, mem} = Memories.remember("repeated access", agent_id: "a", host_id: "h")
+      {:ok, mem} =
+        Memories.remember("repeated access", canonical_memory_opts("h", agent_id: "a"))
+
       job = %Oban.Job{args: %{"memory_ids" => [mem.id]}}
 
       :ok = AccessWritebackWorker.perform(job)

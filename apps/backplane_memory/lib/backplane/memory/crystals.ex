@@ -9,6 +9,7 @@ defmodule Backplane.Memory.Crystals do
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.Evidence
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Projections.{ProjectedSession, ReadModels, Revision, Source}
   alias Backplane.Memory.Summaries.Summary
@@ -46,6 +47,7 @@ defmodule Backplane.Memory.Crystals do
              from(c in Crystal,
                where:
                  c.id == ^id and c.host_id == ^partition.host_id and
+                   c.memory_space_id == ^partition.memory_space_id and
                    c.client_id == ^partition.client_id and c.scope == ^partition.scope and
                    c.namespace == ^partition.namespace
              )
@@ -111,13 +113,15 @@ defmodule Backplane.Memory.Crystals do
              from(s in ProjectedSession,
                where:
                  s.session_id == ^session_id and s.host_id == ^partition.host_id and
+                   s.memory_space_id == ^partition.memory_space_id and
                    s.client_id == ^partition.client_id and s.scope == ^partition.scope and
                    s.namespace == ^partition.namespace and
                    s.status in ["stopped", "completed", "abandoned"],
                lock: "FOR SHARE"
              )
            ),
-         {:ok, enqueue_result} <- CrystalWorker.enqueue(partition.host_id, session_id, revision) do
+         {:ok, enqueue_result} <-
+           CrystalWorker.enqueue(partition.host_id, session_id, revision, partition) do
       case enqueue_result do
         {:stale, _state} ->
           {:ok, %{status: "skipped", job: nil, input_revision: revision}}
@@ -145,7 +149,8 @@ defmodule Backplane.Memory.Crystals do
       query =
         from(c in Crystal,
           where:
-            c.host_id == ^partition.host_id and c.client_id == ^partition.client_id and
+            c.memory_space_id == ^partition.memory_space_id and
+              c.host_id == ^partition.host_id and c.client_id == ^partition.client_id and
               c.scope == ^partition.scope and c.namespace == ^partition.namespace and
               c.status == "complete",
           order_by: [desc: c.completed_at, desc: c.id],
@@ -185,32 +190,35 @@ defmodule Backplane.Memory.Crystals do
         Source.lock_streams(host_id, session_id)
         lock_identity(subject_id, version)
 
-        case current(host_id, session_id, version) do
-          %Crystal{input_revision: ^expected_revision} = crystal ->
-            case Source.input_revision(host_id, session_id) do
-              {:ok, %{input_revision: ^expected_revision}} -> crystal
-              {:ok, _newer_input} -> repo().rollback(:stale_input_revision)
-            end
+        with {:ok, %{input_revision: ^expected_revision} = input} <-
+               ReadModels.summary_input(host_id, session_id,
+                 limit: 100,
+                 allow_incomplete: true
+               ),
+             {:ok, partition} <- exact_partition(input),
+             :ok <- requested_partition(partition, Keyword.get(opts, :partition)) do
+          case current(host_id, session_id, version, partition) do
+            %Crystal{input_revision: ^expected_revision} = crystal ->
+              case Source.input_revision(host_id, session_id) do
+                {:ok, %{input_revision: ^expected_revision}} -> crystal
+                {:ok, _newer_input} -> repo().rollback(:stale_input_revision)
+              end
 
-          %Crystal{} ->
-            repo().rollback(:stale_input_revision)
+            %Crystal{} ->
+              repo().rollback(:stale_input_revision)
 
-          nil ->
-            with {:ok, %{input_revision: ^expected_revision} = input} <-
-                   ReadModels.summary_input(host_id, session_id,
-                     limit: 100,
-                     allow_incomplete: true
-                   ),
-                 {:ok, partition} <- exact_partition(input),
-                 :ok <- requested_partition(partition, Keyword.get(opts, :partition)),
-                 %Summary{} = summary <- current_summary(input),
-                 {:ok, structured, model} <- enrich(input, summary, enrich_fn) do
-              persist(input, partition, summary, structured, model, version)
-            else
-              nil -> repo().rollback(:summary_not_ready)
-              {:ok, _newer} -> repo().rollback(:stale_input_revision)
-              {:error, reason} -> repo().rollback(reason)
-            end
+            nil ->
+              with %Summary{} = summary <- current_summary(input),
+                   {:ok, structured, model} <- enrich(input, summary, enrich_fn) do
+                persist(input, partition, summary, structured, model, version)
+              else
+                nil -> repo().rollback(:summary_not_ready)
+                {:error, reason} -> repo().rollback(reason)
+              end
+          end
+        else
+          {:ok, _newer} -> repo().rollback(:stale_input_revision)
+          {:error, reason} -> repo().rollback(reason)
         end
       end)
       |> case do
@@ -237,7 +245,8 @@ defmodule Backplane.Memory.Crystals do
         |> join(:inner, [crystal], memory in Memory, on: memory.id == crystal.memory_id)
         |> where(
           [crystal, memory],
-          crystal.host_id == ^host and crystal.client_id == ^client and crystal.scope == ^scope and
+          crystal.memory_space_id == ^partition.memory_space_id and
+            crystal.host_id == ^host and crystal.client_id == ^client and crystal.scope == ^scope and
             crystal.namespace == ^namespace and crystal.status == "complete" and
             is_nil(memory.deleted_at) and
             fragment(
@@ -270,6 +279,7 @@ defmodule Backplane.Memory.Crystals do
     content = searchable_content(structured, version)
 
     memory_attrs = %{
+      memory_space_id: partition.memory_space_id,
       content: content,
       memory_type: "episodic",
       scope: partition.scope,
@@ -277,6 +287,7 @@ defmodule Backplane.Memory.Crystals do
       agent_id: input.agent_id || "unknown",
       host_id: partition.host_id,
       client_id: partition.client_id,
+      source_client_id: partition[:source_client_id],
       session_id: input.session_id,
       tags: ["crystal"],
       metadata: %{
@@ -306,10 +317,12 @@ defmodule Backplane.Memory.Crystals do
     crystal =
       %Crystal{}
       |> Crystal.changeset(%{
+        memory_space_id: partition.memory_space_id,
         memory_id: memory.id,
         subject_id: input.subject_id,
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition[:source_client_id],
         scope: partition.scope,
         namespace: partition.namespace,
         source_session_id: input.session_id,
@@ -360,6 +373,7 @@ defmodule Backplane.Memory.Crystals do
       |> where(
         [event],
         not is_nil(event.schema_version) and event.host_id == ^partition.host_id and
+          event.memory_space_id == ^partition.memory_space_id and
           event.client_id == ^partition.client_id and event.scope == ^partition.scope and
           event.namespace == ^partition.namespace and event.session_id == ^input.session_id
       )
@@ -469,45 +483,64 @@ defmodule Backplane.Memory.Crystals do
           session.subject_id == ^input.subject_id and session.host_id == ^input.host_id and
             session.session_id == ^input.session_id,
         select: %{
+          memory_space_id: session.memory_space_id,
           host_id: session.host_id,
           client_id: session.client_id,
+          source_client_id: session.source_client_id,
           scope: session.scope,
           namespace: session.namespace
         }
       )
     )
     |> case do
-      %{host_id: host, client_id: client, scope: scope, namespace: namespace} = partition
-      when is_binary(host) and is_binary(client) and is_binary(scope) and is_binary(namespace) ->
-        {:ok, partition}
+      %{} = partition ->
+        with {:ok, partition} <- PartitionIdentity.validate(partition),
+             {:ok, _input_partition} <- PartitionIdentity.validate(input, partition),
+             host when is_binary(host) and host != "" <- partition[:host_id],
+             client when is_binary(client) and client != "" <- partition[:client_id] do
+          {:ok, partition}
+        else
+          _invalid -> {:error, :partition_mismatch}
+        end
 
-      _missing ->
+      nil ->
         {:error, :partition_mismatch}
     end
   end
 
   defp requested_partition(_actual, nil), do: :ok
-  defp requested_partition(actual, actual), do: :ok
-  defp requested_partition(_actual, _requested), do: {:error, :partition_mismatch}
 
-  defp normalize_partition(partition) do
-    normalized =
-      Map.new([:host_id, :client_id, :scope, :namespace], fn key ->
-        {key, Map.get(partition, key, Map.get(partition, Atom.to_string(key)))}
-      end)
-
-    if Enum.all?(normalized, fn {_key, value} -> valid_identifier?(value) end),
-      do: {:ok, normalized},
-      else: {:error, :invalid_partition}
+  defp requested_partition(actual, requested) do
+    with {:ok, requested} <- normalize_partition(requested),
+         {:ok, _requested} <- PartitionIdentity.validate(requested, actual),
+         true <-
+           Map.take(requested, [:host_id, :client_id, :source_client_id]) ==
+             Map.take(actual, [:host_id, :client_id, :source_client_id]) do
+      :ok
+    else
+      _invalid -> {:error, :partition_mismatch}
+    end
   end
 
-  defp valid_identifier?(value), do: is_binary(value) and String.trim(value) != ""
+  defp normalize_partition(partition) do
+    case PartitionIdentity.validate(partition) do
+      {:ok, %{host_id: host_id, client_id: client_id} = normalized}
+      when is_binary(host_id) and host_id != "" and is_binary(client_id) and client_id != "" ->
+        {:ok, normalized}
+
+      _ ->
+        {:error, :invalid_partition}
+    end
+  end
 
   defp current_summary(input) do
     repo().one(
       from(summary in Summary,
         where:
-          summary.subject_id == ^input.subject_id and summary.host_id == ^input.host_id and
+          summary.subject_id == ^input.subject_id and
+            summary.memory_space_id == ^input.memory_space_id and
+            summary.host_id == ^input.host_id and summary.scope == ^input.scope and
+            summary.namespace == ^input.namespace and
             summary.session_id == ^input.session_id and
             summary.input_revision == ^input.input_revision and
             summary.processing_version == "summary-v1",
@@ -516,11 +549,14 @@ defmodule Backplane.Memory.Crystals do
     )
   end
 
-  defp current(host_id, session_id, version) do
+  defp current(host_id, session_id, version, partition) do
     repo().one(
       from(crystal in Crystal,
         where:
-          crystal.host_id == ^host_id and crystal.source_session_id == ^session_id and
+          crystal.memory_space_id == ^partition.memory_space_id and
+            crystal.host_id == ^host_id and crystal.client_id == ^partition.client_id and
+            crystal.scope == ^partition.scope and crystal.namespace == ^partition.namespace and
+            crystal.source_session_id == ^session_id and
             crystal.processing_version == ^version,
         lock: "FOR UPDATE"
       )
@@ -569,7 +605,7 @@ defmodule Backplane.Memory.Crystals do
     sql = """
     WITH RECURSIVE traversal(visited, frontier) AS (
       SELECT ARRAY[id]::uuid[], ARRAY[id]::uuid[] FROM memory_actions
-      WHERE id = $1 AND host_id = $2 AND client_id = $3 AND scope = $4 AND namespace = $5
+      WHERE id = $1 AND memory_space_id = $2::uuid AND scope = $3 AND namespace = $4
       UNION ALL
       SELECT traversal.visited || next_frontier.ids, next_frontier.ids
       FROM traversal
@@ -584,17 +620,17 @@ defmodule Backplane.Memory.Crystals do
           JOIN memory_actions adjacent
             ON adjacent.id =
                  CASE WHEN edge.source_id = current.id THEN edge.target_id ELSE edge.source_id END
-           AND adjacent.host_id = $2 AND adjacent.client_id = $3
-           AND adjacent.scope = $4 AND adjacent.namespace = $5
+           AND adjacent.memory_space_id = $2::uuid
+           AND adjacent.scope = $3 AND adjacent.namespace = $4
           WHERE NOT (
             CASE WHEN edge.source_id = current.id THEN edge.target_id ELSE edge.source_id END =
               ANY(traversal.visited)
           )
           ORDER BY id
-          LIMIT $6 - cardinality(traversal.visited)
+          LIMIT $5 - cardinality(traversal.visited)
         ) AS candidate
       ) AS next_frontier
-      WHERE cardinality(traversal.frontier) > 0 AND cardinality(traversal.visited) < $6
+      WHERE cardinality(traversal.frontier) > 0 AND cardinality(traversal.visited) < $5
     ), bounded AS (
       SELECT visited FROM traversal ORDER BY cardinality(visited) DESC LIMIT 1
     )
@@ -609,8 +645,7 @@ defmodule Backplane.Memory.Crystals do
     rows =
       repo().query!(sql, [
         Ecto.UUID.dump!(root_id),
-        partition.host_id,
-        partition.client_id,
+        Ecto.UUID.dump!(partition.memory_space_id),
         partition.scope,
         partition.namespace,
         limit + 1
@@ -684,7 +719,7 @@ defmodule Backplane.Memory.Crystals do
       case repo().one(
              from(c in Crystal,
                where:
-                 c.host_id == ^partition.host_id and c.client_id == ^partition.client_id and
+                 c.memory_space_id == ^partition.memory_space_id and
                    c.scope == ^partition.scope and c.namespace == ^partition.namespace and
                    c.action_chain_key == ^key and c.processing_version == ^version,
                lock: "FOR UPDATE"
@@ -705,8 +740,9 @@ defmodule Backplane.Memory.Crystals do
       repo().all(
         from(a in "memory_actions",
           where:
-            type(a.id, :binary_id) in ^ids and a.host_id == ^partition.host_id and
-              a.client_id == ^partition.client_id and a.scope == ^partition.scope and
+            type(a.id, :binary_id) in ^ids and
+              type(a.memory_space_id, :binary_id) == ^partition.memory_space_id and
+              a.scope == ^partition.scope and
               a.namespace == ^partition.namespace,
           order_by: type(a.id, :binary_id),
           select: %{
@@ -793,6 +829,7 @@ defmodule Backplane.Memory.Crystals do
     memory =
       %Memory{}
       |> Memory.changeset(%{
+        memory_space_id: partition.memory_space_id,
         content: searchable_content(structured, version),
         memory_type: "episodic",
         scope: partition.scope,
@@ -800,6 +837,7 @@ defmodule Backplane.Memory.Crystals do
         agent_id: List.first(actions).created_by || "system",
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition[:source_client_id],
         session_id: session_id,
         tags: ["crystal", "action-chain"],
         metadata: %{
@@ -814,10 +852,12 @@ defmodule Backplane.Memory.Crystals do
     crystal =
       %Crystal{}
       |> Crystal.changeset(%{
+        memory_space_id: partition.memory_space_id,
         memory_id: memory.id,
         subject_id: "action-chain:#{key}",
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition[:source_client_id],
         scope: partition.scope,
         namespace: partition.namespace,
         source_session_id: session_id,

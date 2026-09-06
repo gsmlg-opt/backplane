@@ -115,10 +115,10 @@ defmodule Backplane.Memory.Memories.Verification do
     }
   end
 
-  defp evidence(memory_id, partition) do
+  defp evidence(memory_id, _partition) do
     repo().all(
       from(e in Evidence,
-        where: e.memory_id == ^memory_id and e.host_id == ^partition.host_id,
+        where: e.memory_id == ^memory_id,
         order_by: [asc: e.created_at, asc: e.id],
         limit: ^@evidence_limit
       )
@@ -135,11 +135,9 @@ defmodule Backplane.Memory.Memories.Verification do
           on: target.id == r.target_memory_id,
           where: r.source_memory_id == ^memory_id or r.target_memory_id == ^memory_id,
           where:
-            source.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", source.client_id, ^partition.client_id) and
+            source.memory_space_id == ^partition.memory_space_id and
               source.scope == ^partition.scope and source.namespace == ^partition.namespace and
-              target.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", target.client_id, ^partition.client_id) and
+              target.memory_space_id == ^partition.memory_space_id and
               target.scope == ^partition.scope and target.namespace == ^partition.namespace,
           order_by: [asc: r.created_at, asc: r.id],
           limit: ^@relation_limit,
@@ -183,7 +181,9 @@ defmodule Backplane.Memory.Memories.Verification do
       nodes =
         repo().all(
           from(s in Summary,
-            where: s.id in ^ids and s.host_id == ^partition.host_id,
+            where:
+              s.id in ^ids and s.memory_space_id == ^partition.memory_space_id and
+                s.scope == ^partition.scope and s.namespace == ^partition.namespace,
             order_by: [asc: s.created_at, asc: s.id],
             limit: ^@source_limit,
             select: %{
@@ -224,10 +224,9 @@ defmodule Backplane.Memory.Memories.Verification do
       from(link in SourceEvent,
         join: event in Event,
         on: event.id == link.event_id,
-        where: link.summary_id in ^summary_ids and link.host_id == ^partition.host_id,
+        where: link.summary_id in ^summary_ids,
         where:
-          event.host_id == ^partition.host_id and
-            fragment("? IS NOT DISTINCT FROM ?", event.client_id, ^partition.client_id) and
+          event.memory_space_id == ^partition.memory_space_id and
             event.scope == ^partition.scope and event.namespace == ^partition.namespace,
         order_by: [asc: link.summary_id, asc: event.sequence, asc: link.event_id],
         limit: ^@source_limit,
@@ -276,8 +275,7 @@ defmodule Backplane.Memory.Memories.Verification do
       from(event in Event,
         where: event.id in ^ids,
         where:
-          event.host_id == ^partition.host_id and
-            fragment("? IS NOT DISTINCT FROM ?", event.client_id, ^partition.client_id) and
+          event.memory_space_id == ^partition.memory_space_id and
             event.scope == ^partition.scope and event.namespace == ^partition.namespace,
         order_by: [asc: event.occurred_at, asc: event.sequence, asc: event.id],
         limit: ^@source_limit,
@@ -309,8 +307,7 @@ defmodule Backplane.Memory.Memories.Verification do
       from(observation in ProjectedObservation,
         where: observation.event_id in ^ids,
         where:
-          observation.host_id == ^partition.host_id and
-            fragment("? IS NOT DISTINCT FROM ?", observation.client_id, ^partition.client_id) and
+          observation.memory_space_id == ^partition.memory_space_id and
             observation.scope == ^partition.scope and
             observation.namespace == ^partition.namespace,
         order_by: [asc: observation.occurred_at, asc: observation.event_id],
@@ -495,8 +492,7 @@ defmodule Backplane.Memory.Memories.Verification do
         from(m in Memory,
           where: m.id in ^related_ids,
           where:
-            m.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", m.client_id, ^partition.client_id) and
+            m.memory_space_id == ^partition.memory_space_id and
               m.scope == ^partition.scope and m.namespace == ^partition.namespace,
           order_by: [asc: m.id],
           limit: ^@relation_limit,
@@ -515,7 +511,7 @@ defmodule Backplane.Memory.Memories.Verification do
     inherited_evidence =
       repo().all(
         from(e in Evidence,
-          where: e.memory_id in ^related_ids and e.host_id == ^partition.host_id,
+          where: e.memory_id in ^related_ids,
           order_by: [asc: e.memory_id, asc: e.created_at, asc: e.id],
           limit: ^@evidence_limit
         )
@@ -570,10 +566,10 @@ defmodule Backplane.Memory.Memories.Verification do
         ON relation.source_memory_id = walk.memory_id OR relation.target_memory_id = walk.memory_id
       JOIN bpm_memories source ON source.id = relation.source_memory_id
       JOIN bpm_memories target ON target.id = relation.target_memory_id
-      WHERE source.host_id = $2 AND source.client_id IS NOT DISTINCT FROM $3
-        AND source.scope = $4 AND source.namespace = $5
-        AND target.host_id = $2 AND target.client_id IS NOT DISTINCT FROM $3
-        AND target.scope = $4 AND target.namespace = $5
+      WHERE source.memory_space_id = $2::text::uuid
+        AND source.scope = $3 AND source.namespace = $4
+        AND target.memory_space_id = $2::text::uuid
+        AND target.scope = $3 AND target.namespace = $4
       ORDER BY memory_id
       LIMIT #{@graph_node_limit * 2}
     ), level2 AS (
@@ -584,10 +580,10 @@ defmodule Backplane.Memory.Memories.Verification do
         ON relation.source_memory_id = level1.memory_id OR relation.target_memory_id = level1.memory_id
       JOIN bpm_memories source ON source.id = relation.source_memory_id
       JOIN bpm_memories target ON target.id = relation.target_memory_id
-      WHERE source.host_id = $2 AND source.client_id IS NOT DISTINCT FROM $3
-        AND source.scope = $4 AND source.namespace = $5
-        AND target.host_id = $2 AND target.client_id IS NOT DISTINCT FROM $3
-        AND target.scope = $4 AND target.namespace = $5
+      WHERE source.memory_space_id = $2::text::uuid
+        AND source.scope = $3 AND source.namespace = $4
+        AND target.memory_space_id = $2::text::uuid
+        AND target.scope = $3 AND target.namespace = $4
       ORDER BY memory_id
       LIMIT #{@graph_node_limit * 2}
     ), universe AS (
@@ -597,8 +593,7 @@ defmodule Backplane.Memory.Memories.Verification do
 
     params = [
       root_id,
-      partition.host_id,
-      partition.client_id,
+      partition.memory_space_id,
       partition.scope,
       partition.namespace
     ]
@@ -693,11 +688,9 @@ defmodule Backplane.Memory.Memories.Verification do
       on: target.id == r.target_memory_id,
       where: r.source_memory_id in ^ids and r.target_memory_id in ^ids,
       where:
-        source.host_id == ^partition.host_id and
-          fragment("? IS NOT DISTINCT FROM ?", source.client_id, ^partition.client_id) and
+        source.memory_space_id == ^partition.memory_space_id and
           source.scope == ^partition.scope and source.namespace == ^partition.namespace and
-          target.host_id == ^partition.host_id and
-          fragment("? IS NOT DISTINCT FROM ?", target.client_id, ^partition.client_id) and
+          target.memory_space_id == ^partition.memory_space_id and
           target.scope == ^partition.scope and target.namespace == ^partition.namespace
     )
   end
@@ -727,8 +720,7 @@ defmodule Backplane.Memory.Memories.Verification do
         from(event in Event,
           where: event.id in ^event_ids,
           where:
-            event.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", event.client_id, ^partition.client_id) and
+            event.memory_space_id == ^partition.memory_space_id and
               event.scope == ^partition.scope and event.namespace == ^partition.namespace,
           order_by: [asc: event.id],
           limit: ^@source_limit,
@@ -741,8 +733,7 @@ defmodule Backplane.Memory.Memories.Verification do
         from(obs in ProjectedObservation,
           where: obs.event_id in ^observation_ids,
           where:
-            obs.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", obs.client_id, ^partition.client_id) and
+            obs.memory_space_id == ^partition.memory_space_id and
               obs.scope == ^partition.scope and obs.namespace == ^partition.namespace,
           order_by: [asc: obs.event_id],
           limit: ^@source_limit,
@@ -760,10 +751,12 @@ defmodule Backplane.Memory.Memories.Verification do
         from(summary in Summary,
           join: session in ProjectedSession,
           on: session.subject_id == summary.subject_id,
-          where: summary.id in ^summary_ids and summary.host_id == ^partition.host_id,
           where:
-            session.host_id == ^partition.host_id and
-              fragment("? IS NOT DISTINCT FROM ?", session.client_id, ^partition.client_id) and
+            summary.id in ^summary_ids and
+              summary.memory_space_id == ^partition.memory_space_id and
+              summary.scope == ^partition.scope and summary.namespace == ^partition.namespace,
+          where:
+            session.memory_space_id == ^partition.memory_space_id and
               session.scope == ^partition.scope and session.namespace == ^partition.namespace and
               session.session_id == summary.session_id and session.project == summary.project,
           order_by: [asc: summary.id],
@@ -800,9 +793,9 @@ defmodule Backplane.Memory.Memories.Verification do
     sessions =
       repo().all(
         from(session in ProjectedSession,
-          where: session.session_id in ^session_ids and session.host_id == ^partition.host_id,
           where:
-            fragment("? IS NOT DISTINCT FROM ?", session.client_id, ^partition.client_id) and
+            session.session_id in ^session_ids and
+              session.memory_space_id == ^partition.memory_space_id and
               session.scope == ^partition.scope and session.namespace == ^partition.namespace,
           order_by: [asc: session.subject_id],
           limit: ^@source_limit,
@@ -900,11 +893,9 @@ defmodule Backplane.Memory.Memories.Verification do
 
   defp inherited_evidence_total([], _partition), do: 0
 
-  defp inherited_evidence_total(memory_ids, partition) do
+  defp inherited_evidence_total(memory_ids, _partition) do
     repo().aggregate(
-      from(e in Evidence,
-        where: e.memory_id in ^memory_ids and e.host_id == ^partition.host_id
-      ),
+      from(e in Evidence, where: e.memory_id in ^memory_ids),
       :count
     )
   end
@@ -956,9 +947,9 @@ defmodule Backplane.Memory.Memories.Verification do
 
     repo().all(
       from(session in ProjectedSession,
-        where: session.session_id in ^ids and session.host_id == ^partition.host_id,
         where:
-          fragment("? IS NOT DISTINCT FROM ?", session.client_id, ^partition.client_id) and
+          session.session_id in ^ids and
+            session.memory_space_id == ^partition.memory_space_id and
             session.scope == ^partition.scope and session.namespace == ^partition.namespace,
         order_by: [asc: session.session_id, asc: session.subject_id],
         limit: ^@source_limit,
@@ -979,9 +970,9 @@ defmodule Backplane.Memory.Memories.Verification do
     )
   end
 
-  defp evidence_total(memory_id, partition) do
+  defp evidence_total(memory_id, _partition) do
     repo().aggregate(
-      from(e in Evidence, where: e.memory_id == ^memory_id and e.host_id == ^partition.host_id),
+      from(e in Evidence, where: e.memory_id == ^memory_id),
       :count
     )
   end
@@ -995,11 +986,9 @@ defmodule Backplane.Memory.Memories.Verification do
         on: target.id == r.target_memory_id,
         where: r.source_memory_id == ^memory_id or r.target_memory_id == ^memory_id,
         where:
-          source.host_id == ^partition.host_id and
-            fragment("? IS NOT DISTINCT FROM ?", source.client_id, ^partition.client_id) and
+          source.memory_space_id == ^partition.memory_space_id and
             source.scope == ^partition.scope and source.namespace == ^partition.namespace and
-            target.host_id == ^partition.host_id and
-            fragment("? IS NOT DISTINCT FROM ?", target.client_id, ^partition.client_id) and
+            target.memory_space_id == ^partition.memory_space_id and
             target.scope == ^partition.scope and target.namespace == ^partition.namespace
       ),
       :count

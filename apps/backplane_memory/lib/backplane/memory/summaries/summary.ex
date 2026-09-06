@@ -6,12 +6,16 @@ defmodule Backplane.Memory.Summaries.Summary do
   @timestamps_opts [type: :utc_datetime_usec, updated_at: false, inserted_at: :created_at]
 
   schema "memory_summaries" do
+    field(:memory_space_id, :binary_id)
     field(:session_id, :string)
     field(:project, :string, default: "")
     field(:content, :string)
     field(:observation_count, :integer, default: 0)
     field(:subject_id, :string)
     field(:host_id, :string)
+    field(:source_client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:agent_id, :string)
     field(:processing_version, :string)
     field(:input_revision, :string)
@@ -30,11 +34,15 @@ defmodule Backplane.Memory.Summaries.Summary do
     summary
     |> cast(attrs, [
       :session_id,
+      :memory_space_id,
       :project,
       :content,
       :observation_count,
       :subject_id,
       :host_id,
+      :source_client_id,
+      :scope,
+      :namespace,
       :agent_id,
       :processing_version,
       :input_revision,
@@ -50,6 +58,9 @@ defmodule Backplane.Memory.Summaries.Summary do
       :content,
       :subject_id,
       :host_id,
+      :memory_space_id,
+      :scope,
+      :namespace,
       :processing_version,
       :input_revision,
       :output_revision

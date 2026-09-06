@@ -1,7 +1,8 @@
 # Memory V2 PR2 Revisioned Edge Design
 
-- **Status:** Proposed concrete implementation design constrained by the accepted Memory V2 handoff and ADRs
+- **Status:** Approved implementation design
 - **Date:** 2026-09-02
+- **Approval Date:** 2026-09-05
 - **Branch:** `codex/memory-v2-pr2-revisioned-edge`
 - **Authority:** Backplane is canonical; host-agent mirror state is transport-bounded, non-authoritative, and disposable
 

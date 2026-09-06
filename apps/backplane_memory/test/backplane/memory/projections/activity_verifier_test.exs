@@ -19,29 +19,35 @@ defmodule Backplane.Memory.Projections.ActivityVerifierTest do
     session = "verify-session-#{suffix}"
     project = "verify-project-#{suffix}"
 
+    partition =
+      canonical_partition(host, client_id: "verify-client", scope: "verify-scope")
+
     assert {:ok, {:inserted, _event}} =
-             Store.append_tagged(%{
-               id: Ecto.UUID.generate(),
-               stream_id: "capture:#{host}:#{session}",
-               host_id: host,
-               client_id: "verify-client",
-               scope: "verify-scope",
-               namespace: "private",
-               session_id: session,
-               project: project,
-               agent_id: "verify-agent",
-               source_sequence: 1,
-               event_type: "memory.recalled",
-               occurred_at: "2026-05-01T01:00:00.000000Z",
-               idempotency_key: "verify:#{suffix}",
-               payload: %{},
-               payload_hash: "sha256:verify",
-               schema_version: 1
-             })
+             Store.append_tagged(
+               Map.merge(partition, %{
+                 id: Ecto.UUID.generate(),
+                 stream_id: "capture:#{host}:#{session}",
+                 host_id: host,
+                 client_id: "verify-client",
+                 scope: "verify-scope",
+                 namespace: "private",
+                 session_id: session,
+                 project: project,
+                 agent_id: "verify-agent",
+                 source_sequence: 1,
+                 event_type: "memory.recalled",
+                 occurred_at: "2026-05-01T01:00:00.000000Z",
+                 idempotency_key: "verify:#{suffix}",
+                 payload: %{},
+                 payload_hash: "sha256:verify",
+                 schema_version: 1
+               })
+             )
 
     assert {:ok, _result} = Rebuild.session(host, session)
 
     opts = [
+      memory_space_id: partition.memory_space_id,
       client_id: "verify-client",
       scope: "verify-scope",
       namespace: "private",
@@ -73,11 +79,13 @@ defmodule Backplane.Memory.Projections.ActivityVerifierTest do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     orphan_daily = %{
+      memory_space_id: partition.memory_space_id,
       date: ~D[2026-05-01],
       project: "orphan",
       agent_id: "verify-agent",
       host_id: host,
       client_id: "verify-client",
+      source_client_id: "verify-client",
       scope: "verify-scope",
       namespace: "private",
       event_type: "orphan.event",

@@ -5,6 +5,7 @@ defmodule Backplane.Memory.AuditContractTest do
 
   alias Backplane.Memory.{Audit, Memories, Service}
   alias Backplane.Memory.Coordination.{Action, Lease}
+  alias Backplane.MemorySpaces
   alias Backplane.Skills.Hosts
 
   setup do
@@ -95,6 +96,7 @@ defmodule Backplane.Memory.AuditContractTest do
     assert {:ok, memory} =
              Memories.remember("derived text must not enter audit",
                agent_id: "audit-agent",
+               memory_space_id: auth.partition.memory_space_id,
                host_id: "audit-host",
                client_id: "audit-client",
                scope: "audit-scope",
@@ -133,6 +135,7 @@ defmodule Backplane.Memory.AuditContractTest do
     assert {:ok, ^memory} =
              Memories.remember("derived text must not enter audit",
                agent_id: "audit-agent",
+               memory_space_id: auth.partition.memory_space_id,
                host_id: "audit-host",
                client_id: "audit-client",
                scope: "audit-scope",
@@ -158,19 +161,10 @@ defmodule Backplane.Memory.AuditContractTest do
   end
 
   test "partition listing applies ownership before pagination" do
-    owner = %{
-      host_id: "owner-host",
-      client_id: "owner-client",
-      scope: "owner-scope",
-      namespace: "private"
-    }
+    owner = canonical_partition("owner-host", client_id: "owner-client", scope: "owner-scope")
 
-    foreign = %{
-      host_id: "foreign-host",
-      client_id: "foreign-client",
-      scope: "foreign-scope",
-      namespace: "private"
-    }
+    foreign =
+      canonical_partition("foreign-host", client_id: "foreign-client", scope: "foreign-scope")
 
     Audit.log("remember", "owner", ["owner-old"], Map.merge(owner, %{request_id: "owner-old"}))
 
@@ -185,10 +179,25 @@ defmodule Backplane.Memory.AuditContractTest do
 
     Audit.log("remember", "owner", ["owner-new"], Map.merge(owner, %{request_id: "owner-new"}))
 
+    Audit.log(
+      "remember",
+      "colliding-space",
+      ["colliding-space"],
+      owner
+      |> Map.put(:memory_space_id, Ecto.UUID.generate())
+      |> Map.put(:request_id, "colliding-space")
+    )
+
     assert [%{target_ids: ["owner-new"]}] = Audit.list(owner, operation: "remember", limit: 1)
 
     assert [%{target_ids: ["owner-old"]}] =
              Audit.list(owner, operation: "remember", limit: 1, offset: 1)
+
+    assert ["owner-old", "owner-new"] ==
+             owner
+             |> Audit.list(operation: "remember", limit: 10)
+             |> Enum.map(fn %{target_ids: [target]} -> target end)
+             |> Enum.sort(:desc)
   end
 
   test "audit logging strips raw and content fields recursively" do
@@ -214,16 +223,22 @@ defmodule Backplane.Memory.AuditContractTest do
         "memory_scope" => scope
       })
 
+    source_client_id = Ecto.UUID.generate()
+
     auth = %{
       kind: :client_token,
-      client_id: Ecto.UUID.generate(),
+      client_id: source_client_id,
       scopes: ["memory::*"],
       principal_metadata: %{"memory_partition_id" => "host:#{host.id}"}
     }
 
+    assert {:ok, canonical} = MemorySpaces.resolve_host_partition(host.id, scope, "private")
+
     partition = %{
+      memory_space_id: canonical.memory_space_id,
       host_id: host.id,
       client_id: "host:#{host.id}",
+      source_client_id: "host:#{host.id}",
       scope: scope,
       namespace: "private"
     }
@@ -244,6 +259,11 @@ defmodule Backplane.Memory.AuditContractTest do
              Audit.list(operation: "coordination.heal")
 
     assert metadata["host_id"] == host.id
+    assert metadata["memory_space_id"] == canonical.memory_space_id
+    assert metadata["client_id"] == "host:#{host.id}"
+    assert metadata["source_client_id"] == source_client_id
+    assert metadata["scope"] == scope
+    assert metadata["namespace"] == "private"
     assert metadata["expired_leases_cleared"] == 1
   end
 end

@@ -57,13 +57,16 @@ defmodule Backplane.Memory.Workers.ActivityRetentionWorkerTest do
 
   defp insert_pair!(subject_id, date) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    memory_space_id = Backplane.Memory.IngestFixtures.ensure_memory_space!("activity-retention")
 
     dimensions = %{
+      memory_space_id: memory_space_id,
       date: date,
       project: subject_id,
       agent_id: "agent",
       host_id: "host",
       client_id: "client",
+      source_client_id: "client",
       scope: "scope",
       namespace: "private",
       event_type: "agent.prompt.submitted"

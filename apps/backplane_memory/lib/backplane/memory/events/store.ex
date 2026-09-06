@@ -7,7 +7,18 @@ defmodule Backplane.Memory.Events.Store do
   alias Backplane.Memory.Events.{Event, Preparation, Stream}
   alias Backplane.Memory.Workers.ProjectionRepairWorker
 
-  @metadata_fields [:project, :agent_id, :host_id, :client_id, :session_id, :run_id]
+  @metadata_fields [
+    :memory_space_id,
+    :project,
+    :agent_id,
+    :host_id,
+    :client_id,
+    :source_client_id,
+    :scope,
+    :namespace,
+    :session_id,
+    :run_id
+  ]
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
@@ -439,9 +450,12 @@ defmodule Backplane.Memory.Events.Store do
     Enum.all?(
       [
         :schema_version,
+        :memory_space_id,
         :host_id,
         :agent_id,
         :client_id,
+        :source_client_id,
+        :namespace,
         :integration,
         :project,
         :scope,
@@ -478,9 +492,12 @@ defmodule Backplane.Memory.Events.Store do
       event_type: event.event_type,
       event_fingerprint: fingerprint(event),
       schema_version: event.schema_version,
+      memory_space_id: event.memory_space_id,
       host_id: event.host_id,
       agent_id: event.agent_id,
       client_id: event.client_id,
+      source_client_id: event.source_client_id,
+      namespace: event.namespace,
       integration: event.integration,
       project: event.project,
       scope: event.scope,

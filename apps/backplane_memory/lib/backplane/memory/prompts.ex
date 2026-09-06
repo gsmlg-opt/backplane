@@ -12,7 +12,6 @@ defmodule Backplane.Memory.Prompts do
   alias Backplane.Memory.Projections.ProjectedSession
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
 
-  @namespace "private"
   @max_arg_chars 500
   @max_recall_candidates 20
   @max_recall_results 5
@@ -88,9 +87,8 @@ defmodule Backplane.Memory.Prompts do
       opts =
         [
           limit: @max_recall_candidates,
-          host_id: partition.host_id,
-          client_id: partition.partition_id,
-          namespace: @namespace,
+          memory_space_id: partition.memory_space_id,
+          namespace: partition.namespace,
           scope: partition.scope,
           embed_fn: fn _texts, _mode, _opts -> {:error, :fts_only} end,
           writeback_fn: fn _ids -> :ok end
@@ -148,14 +146,13 @@ defmodule Backplane.Memory.Prompts do
   end
 
   defp session_events(
-         %{host_id: host_id, partition_id: partition_id, scope: scope},
+         %{memory_space_id: memory_space_id, scope: scope, namespace: namespace},
          session_id,
          project
        ) do
     Event
-    |> where([e], e.host_id == ^host_id)
-    |> where([e], e.client_id == ^partition_id)
-    |> where([e], e.namespace == @namespace)
+    |> where([e], e.memory_space_id == ^memory_space_id)
+    |> where([e], e.namespace == ^namespace)
     |> where([e], e.scope == ^scope)
     |> where([e], e.session_id == ^session_id)
     |> maybe_event_project(project)
@@ -238,7 +235,7 @@ defmodule Backplane.Memory.Prompts do
   end
 
   defp handoff_memories(
-         %{host_id: host_id, partition_id: partition_id, scope: scope},
+         %{memory_space_id: memory_space_id, scope: scope, namespace: namespace},
          session_id,
          project
        ) do
@@ -246,8 +243,7 @@ defmodule Backplane.Memory.Prompts do
     |> live_memories()
     |> where(
       [m],
-      m.host_id == ^host_id and m.client_id == ^partition_id and
-        m.namespace == @namespace and m.scope == ^scope
+      m.memory_space_id == ^memory_space_id and m.namespace == ^namespace and m.scope == ^scope
     )
     |> where([m], m.session_id == ^session_id)
     |> maybe_memory_project(project)
@@ -261,7 +257,9 @@ defmodule Backplane.Memory.Prompts do
 
     summary =
       Summary
-      |> where([s], s.host_id == ^partition.host_id)
+      |> where([s], s.memory_space_id == ^partition.memory_space_id)
+      |> where([s], s.scope == ^partition.scope)
+      |> where([s], s.namespace == ^partition.namespace)
       |> where([s], s.session_id == ^session_id)
       |> maybe_summary_project(project)
       |> exact_summary_partition(partition, project)
@@ -289,7 +287,6 @@ defmodule Backplane.Memory.Prompts do
         source_ids =
           SourceEvent
           |> where([source], source.summary_id == ^summary.id)
-          |> where([source], source.host_id == ^partition.host_id)
           |> where([source], source.session_id == ^session_id)
           |> order_by([source], asc: source.event_id)
           |> limit(@max_handoff_events)
@@ -308,10 +305,9 @@ defmodule Backplane.Memory.Prompts do
 
   defp current_handoff_revision(partition, session_id, project) do
     ProjectedSession
-    |> where([s], s.host_id == ^partition.host_id)
-    |> where([s], s.client_id == ^partition.partition_id)
+    |> where([s], s.memory_space_id == ^partition.memory_space_id)
     |> where([s], s.scope == ^partition.scope)
-    |> where([s], s.namespace == @namespace)
+    |> where([s], s.namespace == ^partition.namespace)
     |> where([s], s.session_id == ^session_id)
     |> where([s], s.project == ^project)
     |> order_by([s], desc: s.updated_at, desc: s.subject_id)
@@ -325,23 +321,21 @@ defmodule Backplane.Memory.Prompts do
     |> where(
       [s],
       fragment(
-        "EXISTS (SELECT 1 FROM memory_summary_source_events AS source JOIN bpm_events AS event ON event.id = source.event_id WHERE source.summary_id = ? AND event.schema_version IS NOT NULL AND event.host_id = ? AND event.client_id = ? AND event.scope = ? AND event.namespace = ?)",
+        "EXISTS (SELECT 1 FROM memory_summary_source_events AS source JOIN bpm_events AS event ON event.id = source.event_id WHERE source.summary_id = ? AND event.schema_version IS NOT NULL AND event.memory_space_id = ? AND event.scope = ? AND event.namespace = ?)",
         s.id,
-        ^partition.host_id,
-        ^partition.partition_id,
+        ^Ecto.UUID.dump!(partition.memory_space_id),
         ^partition.scope,
-        ^@namespace
+        ^partition.namespace
       )
     )
     |> where(
       [s],
       fragment(
-        "NOT EXISTS (SELECT 1 FROM memory_summary_source_events AS source JOIN bpm_events AS event ON event.id = source.event_id WHERE source.summary_id = ? AND (event.schema_version IS NULL OR event.host_id IS DISTINCT FROM ? OR event.client_id IS DISTINCT FROM ? OR event.scope IS DISTINCT FROM ? OR event.namespace IS DISTINCT FROM ?))",
+        "NOT EXISTS (SELECT 1 FROM memory_summary_source_events AS source JOIN bpm_events AS event ON event.id = source.event_id WHERE source.summary_id = ? AND (event.schema_version IS NULL OR event.memory_space_id IS DISTINCT FROM ? OR event.scope IS DISTINCT FROM ? OR event.namespace IS DISTINCT FROM ?))",
         s.id,
-        ^partition.host_id,
-        ^partition.partition_id,
+        ^Ecto.UUID.dump!(partition.memory_space_id),
         ^partition.scope,
-        ^@namespace
+        ^partition.namespace
       )
     )
     |> exact_summary_project(project)
@@ -361,22 +355,20 @@ defmodule Backplane.Memory.Prompts do
 
   defp handoff_actions(partition, session_id, project) do
     Action
-    |> where([action], action.host_id == ^partition.host_id)
-    |> where([action], action.client_id == ^partition.partition_id)
+    |> where([action], action.memory_space_id == ^partition.memory_space_id)
     |> where([action], action.scope == ^partition.scope)
-    |> where([action], action.namespace == @namespace)
+    |> where([action], action.namespace == ^partition.namespace)
     |> where([action], action.status in ["pending", "in_progress", "blocked"])
     |> maybe_action_project(project)
     |> where(
       [action],
       fragment("? = ANY(COALESCE(?, ARRAY[]::text[]))", ^session_id, action.tags) or
         fragment(
-          "EXISTS (SELECT 1 FROM bpm_memories AS memory WHERE memory.id = ANY(?) AND memory.host_id = ? AND memory.client_id = ? AND memory.scope = ? AND memory.namespace = ? AND memory.session_id = ?)",
+          "EXISTS (SELECT 1 FROM bpm_memories AS memory WHERE memory.id = ANY(?) AND memory.memory_space_id = ? AND memory.scope = ? AND memory.namespace = ? AND memory.session_id = ?)",
           action.source_memory_ids,
-          ^partition.host_id,
-          ^partition.partition_id,
+          ^Ecto.UUID.dump!(partition.memory_space_id),
           ^partition.scope,
-          ^@namespace,
+          ^partition.namespace,
           ^session_id
         )
     )
@@ -394,10 +386,11 @@ defmodule Backplane.Memory.Prompts do
 
   defp lesson_capability(partition, session_id, project) do
     exact_partition = %{
+      memory_space_id: partition.memory_space_id,
       host_id: partition.host_id,
       client_id: partition.partition_id,
       scope: partition.scope,
-      namespace: @namespace
+      namespace: partition.namespace
     }
 
     case Lessons.list_admin(exact_partition,
@@ -475,7 +468,7 @@ defmodule Backplane.Memory.Prompts do
 
   defp capability_rows(table, columns, partition, session_id, project) do
     direct_partition? =
-      Enum.all?(~w(host_id client_id scope namespace), &MapSet.member?(columns, &1))
+      Enum.all?(~w(memory_space_id scope namespace), &MapSet.member?(columns, &1))
 
     memory_partition? = MapSet.member?(columns, "memory_id")
 
@@ -490,18 +483,16 @@ defmodule Backplane.Memory.Prompts do
         if direct_partition? do
           {"#{table} AS capability",
            [
-             {"capability.host_id", partition.host_id},
-             {"capability.client_id", partition.partition_id},
+             {"capability.memory_space_id", Ecto.UUID.dump!(partition.memory_space_id)},
              {"capability.scope", partition.scope},
-             {"capability.namespace", @namespace}
+             {"capability.namespace", partition.namespace}
            ]}
         else
           {"#{table} AS capability JOIN bpm_memories AS memory ON memory.id = capability.memory_id",
            [
-             {"memory.host_id", partition.host_id},
-             {"memory.client_id", partition.partition_id},
+             {"memory.memory_space_id", Ecto.UUID.dump!(partition.memory_space_id)},
              {"memory.scope", partition.scope},
-             {"memory.namespace", @namespace},
+             {"memory.namespace", partition.namespace},
              {"memory.session_id", session_id},
              {"memory.metadata->>'project'", project}
            ]}
@@ -610,7 +601,7 @@ defmodule Backplane.Memory.Prompts do
   end
 
   defp pattern_events(
-         %{host_id: host_id, partition_id: partition_id, scope: scope},
+         %{memory_space_id: memory_space_id, scope: scope, namespace: namespace},
          project,
          session,
          from,
@@ -619,8 +610,7 @@ defmodule Backplane.Memory.Prompts do
     Event
     |> where(
       [e],
-      e.host_id == ^host_id and e.client_id == ^partition_id and
-        e.namespace == @namespace and e.scope == ^scope
+      e.memory_space_id == ^memory_space_id and e.namespace == ^namespace and e.scope == ^scope
     )
     |> maybe_event_project(project)
     |> maybe_event_session(session)

@@ -8,13 +8,18 @@ defmodule Backplane.Memory.CrystalActionChainTest do
   alias Backplane.Memory.Memories.{Evidence, Memory}
 
   @partition %{
+    memory_space_id: "823f1a56-a6ad-14e2-6179-fa82c7f9eace",
     host_id: "host-crystal-action",
     client_id: "client-crystal-action",
+    source_client_id: "client-crystal-action",
     scope: "team",
     namespace: "project"
   }
 
   setup do
+    assert Backplane.Memory.IngestFixtures.ensure_memory_space!(@partition.host_id) ==
+             @partition.memory_space_id
+
     previous_client = Application.get_env(:backplane_memory, :llm_client)
     Application.put_env(:backplane_memory, :llm_client, __MODULE__)
 
@@ -150,7 +155,13 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     end)
     |> insert_edges()
 
-    foreign_partition = Map.put(@partition, :host_id, "foreign-dense-host")
+    foreign_partition =
+      canonical_partition("foreign-dense-host",
+        client_id: @partition.client_id,
+        scope: @partition.scope,
+        namespace: @partition.namespace
+      )
+
     [foreign_id] = insert_actions(1, foreign_partition)
     insert_edge(List.first(action_ids), foreign_id)
 
@@ -251,8 +262,10 @@ defmodule Backplane.Memory.CrystalActionChainTest do
              Memories.remember("Crystal evidence without lesson join",
                type: "procedural",
                agent_id: "tester",
+               memory_space_id: @partition.memory_space_id,
                host_id: @partition.host_id,
                client_id: @partition.client_id,
+               source_client_id: @partition.source_client_id,
                scope: @partition.scope,
                namespace: @partition.namespace,
                evidence: [
@@ -331,8 +344,10 @@ defmodule Backplane.Memory.CrystalActionChainTest do
       Enum.map(1..count, fn index ->
         %{
           id: Ecto.UUID.generate(),
+          memory_space_id: partition.memory_space_id,
           host_id: partition.host_id,
           client_id: partition.client_id,
+          source_client_id: partition.source_client_id,
           scope: partition.scope,
           namespace: partition.namespace,
           title: "Dense action #{index}",
@@ -348,7 +363,15 @@ defmodule Backplane.Memory.CrystalActionChainTest do
         }
       end)
 
-    {^count, inserted} = repo().insert_all(Action, rows, returning: [:id])
+    inserted =
+      rows
+      |> Enum.chunk_every(2_000)
+      |> Enum.flat_map(fn chunk ->
+        {inserted_count, inserted} = repo().insert_all(Action, chunk, returning: [:id])
+        assert inserted_count == length(chunk)
+        inserted
+      end)
+
     Enum.map(inserted, & &1.id)
   end
 

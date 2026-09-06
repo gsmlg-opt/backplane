@@ -2,7 +2,30 @@ defmodule Backplane.Memory.Events.QueryTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Events
-  alias Backplane.Memory.Events.{Event, Store, Stream}
+  alias Backplane.Memory.Events.{Event, Stream}
+
+  defmodule Store do
+    def append(attrs, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append(
+          Backplane.Memory.EventTestPartition.attrs(attrs),
+          opts
+        )
+
+    def append_batch(attrs_list, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append_batch(
+          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          opts
+        )
+
+    defdelegate close_stream(stream_id, opts \\ []), to: Backplane.Memory.Events.Store
+  end
+
+  setup do
+    Backplane.Memory.EventTestPartition.ensure!()
+    :ok
+  end
 
   describe "range/2" do
     test "returns an inclusive stream-local range in sequence order" do

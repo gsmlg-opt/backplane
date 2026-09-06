@@ -18,6 +18,18 @@ defmodule Backplane.SettingsTest do
   end
 
   describe "defaults" do
+    test "host delivery defaults preserve v1 and require explicit v2 opt-in" do
+      for {key, expected} <- [
+            {"memory.host_sync_v1.enabled", true},
+            {"memory.host_sync_v2.enabled", false},
+            {"memory.host_sync_max_item_bytes", 262_144}
+          ] do
+        Repo.delete_all(from(s in Setting, where: s.key == ^key))
+        :ets.delete(:backplane_settings, key)
+        assert Settings.get(key) == expected
+      end
+    end
+
     test "smart auto model has no default target models" do
       key = "llm.auto_models.smart.targets"
 

@@ -1,8 +1,23 @@
 defmodule Backplane.Memory.EventsTest do
   use Backplane.Memory.DataCase, async: false
 
-  alias Backplane.Memory.Events
   alias Backplane.Memory.Events.{Event, Stream}
+
+  defmodule Events do
+    def append(attrs),
+      do: Backplane.Memory.Events.append(Backplane.Memory.EventTestPartition.attrs(attrs))
+
+    def append_batch(attrs_list),
+      do:
+        Backplane.Memory.Events.append_batch(
+          Backplane.Memory.EventTestPartition.attrs_list(attrs_list)
+        )
+  end
+
+  setup do
+    Backplane.Memory.EventTestPartition.ensure!()
+    :ok
+  end
 
   test "append persists and allocates stream-local sequences" do
     stream_id = unique("facade")

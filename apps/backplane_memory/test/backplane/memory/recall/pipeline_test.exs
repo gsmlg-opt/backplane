@@ -5,6 +5,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   alias Backplane.Memory.Memories
 
   @partition %{
+    memory_space_id: "07099fca-7a4c-815b-6e6c-1eebe35dac04",
     host_id: "pipeline-host",
     client_id: "pipeline-client",
     scope: "team",
@@ -12,6 +13,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   }
 
   setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("pipeline-host")
     previous = Application.get_env(:backplane_memory, :recall_task_supervisor)
     supervisor = start_supervised!({Task.Supervisor, name: unique_supervisor()})
     Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
@@ -272,7 +274,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
 
   test "invalid options and partitions fail closed before providers run" do
     provider = fn _, _ -> flunk("provider must not run") end
-    assert {:error, {:invalid, :host_id}} = Pipeline.run(%{query: "q"})
+    assert {:error, :incomplete_partition} = Pipeline.run(%{query: "q"})
 
     assert {:error, :invalid_options} =
              Pipeline.run(Map.merge(@partition, %{query: "q"}), unknown: true)
@@ -320,6 +322,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   test "real database FTS remains available with embedding and LLM unavailable" do
     assert {:ok, memory} =
              Memories.remember("real pipeline fts outage",
+               memory_space_id: @partition.memory_space_id,
                agent_id: @partition.client_id,
                host_id: @partition.host_id,
                client_id: @partition.client_id,

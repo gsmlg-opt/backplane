@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
   describe "direct remember request idempotency" do
     test "unkeyed calls retain one request evidence row per explicit remember" do
-      opts = [agent_id: "agent", host_id: "host"]
+      opts = canonical_memory_opts("host", agent_id: "agent")
 
       assert {:ok, first} = Memories.remember("unkeyed provenance", opts)
       assert {:ok, second} = Memories.remember("unkeyed provenance", opts)
@@ -18,7 +18,10 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
     test "a newly created unkeyed memory verifies with evidence" do
       assert {:ok, memory} =
-               Memories.remember("new unkeyed provenance", agent_id: "agent", host_id: "host")
+               Memories.remember(
+                 "new unkeyed provenance",
+                 canonical_memory_opts("host", agent_id: "agent")
+               )
 
       assert {:ok, verification} = Memories.trusted_verify(memory.id)
       assert verification.evidence_count == 1
@@ -56,15 +59,15 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
       assert repo().aggregate(Evidence, :count) == 2
     end
 
-    test "exact candidates are partitioned by namespace, type, project, and client" do
-      base = [agent_id: "agent", host_id: "host", scope: "scope"]
+    test "exact candidates are partitioned by namespace, type, project, and memory space" do
+      base = canonical_memory_opts("host", agent_id: "agent", scope: "scope")
 
       variants = [
         base,
         Keyword.put(base, :namespace, "team:one"),
         Keyword.put(base, :type, "procedural"),
         Keyword.put(base, :metadata, %{"project" => "one"}),
-        Keyword.put(base, :client_id, "client-one")
+        canonical_memory_opts("foreign-host", agent_id: "agent", scope: "scope")
       ]
 
       ids =
@@ -95,10 +98,9 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
     test "an idempotency key requires a trusted server-side scope" do
       assert {:error, :idempotency_scope_required} =
-               Memories.remember("fact",
-                 agent_id: "agent",
-                 host_id: "host",
-                 idempotency_key: "key"
+               Memories.remember(
+                 "fact",
+                 canonical_memory_opts("host", agent_id: "agent", idempotency_key: "key")
                )
 
       assert Memories.trusted_count() == 0
@@ -106,11 +108,13 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
     test "rejects an empty idempotency key without raising or writing" do
       assert {:error, :invalid_idempotency_key} =
-               Memories.remember("fact",
-                 agent_id: "agent",
-                 host_id: "host",
-                 idempotency_scope: "direct",
-                 idempotency_key: "  "
+               Memories.remember(
+                 "fact",
+                 canonical_memory_opts("host",
+                   agent_id: "agent",
+                   idempotency_scope: "direct",
+                   idempotency_key: "  "
+                 )
                )
 
       assert Memories.trusted_count() == 0
@@ -179,7 +183,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
       assert repo().aggregate(RememberRequest, :count) == 1
       assert repo().aggregate(Evidence, :count) == 2
-      assert {:ok, %{evidence_count: 1}} = Memories.trusted_verify(memory.id)
+      assert {:ok, %{evidence_count: 2}} = Memories.trusted_verify(memory.id)
     end
 
     test "rejects one source with conflicting durable attributes before writing" do
@@ -288,7 +292,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
       assert repo().aggregate(RememberRequest, :count) == 1
       assert repo().aggregate(Evidence, :count) == 2
-      assert {:ok, %{evidence_count: 1}} = Memories.trusted_verify(memory.id)
+      assert {:ok, %{evidence_count: 2}} = Memories.trusted_verify(memory.id)
     end
 
     test "returns an ordered chain and counts derived from rows" do
@@ -349,11 +353,11 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                  direct_opts("diverse-host") |> Keyword.put(:host_id, "host-two")
                )
 
-      refute other_host_memory.id == memory.id
+      assert other_host_memory.id == memory.id
 
       assert {:ok, verification} = Memories.trusted_verify(memory.id)
-      assert verification.evidence_count == 3
-      assert verification.source_diversity == 2
+      assert verification.evidence_count == 4
+      assert verification.source_diversity == 3
     end
 
     test "request evidence distinguishes sessions before host and agent provenance" do
@@ -381,12 +385,11 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
   end
 
   defp direct_opts(key) do
-    [
+    canonical_memory_opts("host",
       agent_id: "agent",
-      host_id: "host",
       idempotency_scope: "direct",
       idempotency_key: key
-    ]
+    )
   end
 
   defp session_evidence(source_session_id, overrides \\ %{}) do

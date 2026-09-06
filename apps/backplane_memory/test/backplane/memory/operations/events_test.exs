@@ -2,7 +2,13 @@ defmodule Backplane.Memory.Operations.EventsTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Events.Store
+  alias Backplane.Memory.EventTestPartition
   alias Backplane.Memory.Operations
+
+  setup do
+    EventTestPartition.ensure!()
+    :ok
+  end
 
   defmodule EventsFailingRepo do
     def all(_query), do: raise("forced events read failure")
@@ -67,7 +73,8 @@ defmodule Backplane.Memory.Operations.EventsTest do
         }
       end
 
-    assert {:ok, _events} = Store.append_batch(attrs, telemetry: false)
+    assert {:ok, _events} =
+             Store.append_batch(EventTestPartition.attrs_list(attrs), telemetry: false)
 
     assert {:ok, %{events: events, next_cursor: cursor, filters: filters}} =
              Operations.timeline(%{"project" => project, "limit" => "999"})
@@ -216,7 +223,7 @@ defmodule Backplane.Memory.Operations.EventsTest do
   end
 
   defp append!(attrs) do
-    assert {:ok, event} = Store.append(attrs, telemetry: false)
+    assert {:ok, event} = Store.append(EventTestPartition.attrs(attrs), telemetry: false)
     event
   end
 

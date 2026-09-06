@@ -7,13 +7,14 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     unique: [
       period: :infinity,
       states: :incomplete,
-      keys: [:host_id, :session_id, :input_revision]
+      keys: [:memory_space_id, :host_id, :session_id, :input_revision]
     ]
 
   import Ecto.Query
 
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Config
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{ReadModels, Revision, Source, State}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{CrystalWorker, EpisodicWorker}
@@ -28,23 +29,27 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
         args:
           %{
             "host_id" => host_id,
+            "memory_space_id" => _memory_space_id,
+            "scope" => _scope,
+            "namespace" => _namespace,
             "session_id" => session_id,
             "processing_version" => @processing_version,
             "input_revision" => expected_revision
           } = args
       }) do
     Backplane.Memory.PipelineTelemetry.span("summary", args, fn ->
-      if valid_identifier?(host_id) and valid_identifier?(session_id) and
-           valid_identifier?(expected_revision) do
-        perform_canonical(host_id, session_id, expected_revision)
+      with true <-
+             valid_identifier?(host_id) and valid_identifier?(session_id) and
+               valid_identifier?(expected_revision),
+           {:ok, partition} <- generator_partition(args) do
+        perform_canonical(host_id, session_id, expected_revision, partition)
       else
-        {:cancel, :invalid_arguments}
+        {:error, :incomplete_partition} -> {:cancel, :incomplete_partition}
+        _ -> {:cancel, :invalid_arguments}
       end
     end)
   end
 
-  # Explicitly isolated compatibility for legacy jobs and callers. Canonical jobs
-  # above never enter this branch and therefore never read legacy tables.
   def perform(%Oban.Job{args: %{"session_id" => session_id} = args})
       when is_binary(session_id) and map_size(args) == 1 do
     Backplane.Memory.PipelineTelemetry.span("summary.legacy", args, fn ->
@@ -68,38 +73,55 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   @doc "Enqueues a canonical summary revision."
   def enqueue(host_id, session_id, input_revision)
       when is_binary(host_id) and is_binary(session_id) and is_binary(input_revision) do
-    subject_id = Source.subject_id!(host_id, session_id)
-
-    case repo().transaction(fn ->
-           Source.lock_streams(host_id, session_id)
-           lock_subject(subject_id)
-           mark_pending(subject_id, input_revision)
-
-           %{
-             host_id: host_id,
-             session_id: session_id,
-             processing_version: @processing_version,
-             input_revision: input_revision
-           }
-           |> new()
-           |> Oban.insert()
-           |> case do
-             {:ok, job} -> job
-             {:error, reason} -> repo().rollback(reason)
-           end
-         end) do
-      {:ok, job} -> {:ok, job}
-      {:error, reason} -> {:error, reason}
+    with {:ok, partition} <- source_partition(host_id, session_id) do
+      enqueue(host_id, session_id, input_revision, partition)
     end
   end
 
-  defp perform_canonical(host_id, session_id, expected_revision) do
+  def enqueue(host_id, session_id, input_revision, partition)
+      when is_binary(host_id) and is_binary(session_id) and is_binary(input_revision) and
+             is_map(partition) do
+    with {:ok, partition} <- generator_partition(partition) do
+      subject_id = Source.subject_id!(host_id, session_id)
+
+      case repo().transaction(fn ->
+             Source.lock_streams(host_id, session_id)
+             lock_subject(subject_id)
+             mark_pending(subject_id, input_revision, partition)
+
+             %{
+               memory_space_id: partition.memory_space_id,
+               host_id: host_id,
+               client_id: partition[:client_id],
+               source_client_id: partition[:source_client_id],
+               scope: partition.scope,
+               namespace: partition.namespace,
+               session_id: session_id,
+               processing_version: @processing_version,
+               input_revision: input_revision
+             }
+             |> new()
+             |> Oban.insert()
+             |> case do
+               {:ok, job} -> job
+               {:error, reason} -> repo().rollback(reason)
+             end
+           end) do
+        {:ok, job} -> {:ok, job}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp perform_canonical(host_id, session_id, expected_revision, partition) do
     case ReadModels.summary_input(host_id, session_id, limit: 100, allow_incomplete: true) do
       {:ok, %{input_revision: ^expected_revision} = input} ->
-        if summary_ready?(input) do
-          persist_canonical(host_id, session_id, expected_revision)
-        else
-          :ok
+        with {:ok, _input_partition} <- PartitionIdentity.validate(input, partition) do
+          if summary_ready?(input) do
+            persist_canonical(host_id, session_id, expected_revision, partition)
+          else
+            :ok
+          end
         end
 
       {:ok, _newer_input} ->
@@ -114,7 +136,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end
   end
 
-  defp persist_canonical(host_id, session_id, expected_revision) do
+  defp persist_canonical(host_id, session_id, expected_revision, partition) do
     subject_id = Source.subject_id!(host_id, session_id)
 
     result =
@@ -129,9 +151,10 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
                  limit: 100,
                  allow_incomplete: true
                ),
+             {:ok, _input_partition} <- PartitionIdentity.validate(input, partition),
              true <- summary_ready?(input) do
-          state = mark_running(subject_id, expected_revision)
-          attrs = summary_attrs(input)
+          state = mark_running(subject_id, expected_revision, partition)
+          attrs = summary_attrs(input, partition)
           summary = store_summary(subject_id, attrs)
           store_summary_sources(summary, input)
           complete_state(state, expected_revision, attrs.output_revision)
@@ -147,7 +170,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       {:ok, %Summary{} = summary} ->
         with {:ok, _episodic_job} <- EpisodicWorker.enqueue_summary(summary.id),
              {:ok, _crystal_job} <-
-               CrystalWorker.enqueue(host_id, session_id, expected_revision) do
+               CrystalWorker.enqueue(host_id, session_id, expected_revision, partition) do
           :ok
         else
           {:error, reason} -> {:error, reason}
@@ -164,17 +187,17 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
         :ok
 
       {:error, reason} ->
-        record_failed(host_id, session_id, subject_id, expected_revision, reason)
+        record_failed(host_id, session_id, subject_id, expected_revision, reason, partition)
         {:error, reason}
     end
   rescue
     exception ->
       subject_id = Source.subject_id!(host_id, session_id)
-      record_failed(host_id, session_id, subject_id, expected_revision, exception)
+      record_failed(host_id, session_id, subject_id, expected_revision, exception, partition)
       reraise exception, __STACKTRACE__
   end
 
-  defp summary_attrs(input) do
+  defp summary_attrs(input, partition) do
     counts = input.counts
     observations = input.observations
     errors = input.errors
@@ -235,6 +258,10 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     {:ok, output_revision} = Revision.output_revision(output)
 
     %{
+      memory_space_id: partition.memory_space_id,
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       session_id: input.session_id,
       project: input.project,
       content: content,
@@ -259,12 +286,22 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       SELECT $1::uuid, event.id, $2, $3, now()
       FROM bpm_events AS event
       WHERE event.schema_version IS NOT NULL
+        AND event.memory_space_id = $4::uuid
+        AND event.scope = $5
+        AND event.namespace = $6
         AND event.host_id = $2
         AND event.session_id = $3
       ORDER BY event.source_sequence, event.event_type, event.id
       ON CONFLICT (summary_id, event_id) DO NOTHING
       """,
-      [Ecto.UUID.dump!(summary.id), input.host_id, input.session_id]
+      [
+        Ecto.UUID.dump!(summary.id),
+        input.host_id,
+        input.session_id,
+        Ecto.UUID.dump!(summary.memory_space_id),
+        summary.scope,
+        summary.namespace
+      ]
     )
 
     expected_count = input.counts["events"] || 0
@@ -312,8 +349,13 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     |> repo().update!()
   end
 
-  defp mark_running(subject_id, input_revision) do
+  defp mark_running(subject_id, input_revision, partition) do
     attrs = %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "summary",
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -339,8 +381,13 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end
   end
 
-  defp mark_pending(subject_id, input_revision) do
+  defp mark_pending(subject_id, input_revision, partition) do
     attrs = %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "summary",
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -383,6 +430,16 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
 
   @doc false
   def record_failed(host_id, session_id, subject_id, input_revision, reason) do
+    case source_partition(host_id, session_id) do
+      {:ok, partition} ->
+        record_failed(host_id, session_id, subject_id, input_revision, reason, partition)
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp record_failed(host_id, session_id, subject_id, input_revision, reason, partition) do
     error = if is_exception(reason), do: Exception.message(reason), else: inspect(reason)
 
     try do
@@ -392,7 +449,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
 
         case Source.input_revision(host_id, session_id) do
           {:ok, %{input_revision: ^input_revision}} ->
-            write_failed_state(subject_id, input_revision, error)
+            write_failed_state(subject_id, input_revision, error, partition)
 
           _stale_or_unavailable ->
             :ok
@@ -405,8 +462,13 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     :ok
   end
 
-  defp write_failed_state(subject_id, input_revision, error) do
+  defp write_failed_state(subject_id, input_revision, error, partition) do
     attrs = %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition[:host_id],
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "summary",
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -453,46 +515,82 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     repo().query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [subject_id])
   end
 
+  defp source_partition(host_id, session_id) do
+    with {:ok, events} <- Source.events(host_id, session_id),
+         partitions when partitions != [] <-
+           events
+           |> Enum.map(
+             &Map.take(&1, [
+               :memory_space_id,
+               :host_id,
+               :client_id,
+               :source_client_id,
+               :scope,
+               :namespace
+             ])
+           )
+           |> Enum.uniq(),
+         [partition] <- partitions,
+         {:ok, partition} <- PartitionIdentity.validate(partition) do
+      {:ok, partition}
+    else
+      _ -> {:error, :incomplete_partition}
+    end
+  end
+
   defp perform_legacy(session_id) do
     case repo().one(from(s in Session, where: s.session_id == ^session_id)) do
       nil ->
         :ok
 
       %Session{} = session ->
-        observations =
-          repo().all(
-            from(o in Observation,
-              where: o.session_id == ^session_id and not o.is_error,
-              order_by: [desc: fragment("length(?)", o.content), asc: o.id],
-              limit: 20
+        with {:ok, partition} <- PartitionIdentity.validate(Map.from_struct(session)) do
+          observations =
+            repo().all(
+              from(o in Observation,
+                where:
+                  o.session_id == ^session_id and
+                    o.memory_space_id == ^partition.memory_space_id and
+                    o.scope == ^partition.scope and o.namespace == ^partition.namespace and
+                    not o.is_error,
+                order_by: [desc: fragment("length(?)", o.content), asc: o.id],
+                limit: 20
+              )
             )
-          )
 
-        if observations == [] do
-          mark_legacy_consolidated(session_id)
-          :ok
-        else
-          attrs = %{
-            session_id: session_id,
-            project: session.project || "",
-            content: build_legacy_summary(session, observations),
-            observation_count: length(observations)
-          }
+          if observations == [] do
+            mark_legacy_consolidated(session_id)
+            :ok
+          else
+            attrs = %{
+              memory_space_id: partition.memory_space_id,
+              host_id: session.host_id,
+              source_client_id: session.source_client_id,
+              scope: partition.scope,
+              namespace: partition.namespace,
+              session_id: session_id,
+              project: session.project || "",
+              content: build_legacy_summary(session, observations),
+              observation_count: length(observations)
+            }
 
-          changeset = Summary.changeset(%Summary{}, attrs)
+            changeset = Summary.changeset(%Summary{}, attrs)
 
-          case repo().insert(changeset,
-                 on_conflict: :nothing,
-                 conflict_target: [:subject_id, :processing_version]
-               ) do
-            {:ok, _} ->
-              mark_legacy_consolidated(session_id)
-              EpisodicWorker.enqueue(session_id)
-              :ok
+            case repo().insert(changeset,
+                   on_conflict: :nothing,
+                   conflict_target: [:subject_id, :processing_version]
+                 ) do
+              {:ok, _} ->
+                mark_legacy_consolidated(session_id)
+                EpisodicWorker.enqueue(session_id)
+                :ok
 
-            {:error, changeset} ->
-              {:error, changeset}
+              {:error, changeset} ->
+                {:error, changeset}
+            end
           end
+        else
+          {:error, _reason} -> {:cancel, :incomplete_partition}
         end
     end
   end
@@ -513,6 +611,18 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   end
 
   defp valid_identifier?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp generator_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <-
+           valid_identifier?(partition[:host_id]) and valid_identifier?(partition[:client_id]) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp format_counts(counts), do: format_frequency_pairs(counts)
 
   defp file_counts(observations) do

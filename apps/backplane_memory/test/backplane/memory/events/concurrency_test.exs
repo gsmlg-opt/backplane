@@ -3,10 +3,41 @@ defmodule Backplane.Memory.Events.ConcurrencyTest do
 
   import Ecto.Query
 
-  alias Backplane.Memory.Events.{Event, Store, Stream}
+  alias Backplane.Memory.Events.{Event, Stream}
   alias Ecto.Adapters.SQL.Sandbox
 
   @task_timeout 30_000
+
+  defmodule Store do
+    def append(attrs, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append(
+          Backplane.Memory.EventTestPartition.attrs(attrs),
+          opts
+        )
+
+    def append_batch(attrs_list, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append_batch(
+          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          opts
+        )
+
+    def append_multi(multi, name, attrs),
+      do:
+        Backplane.Memory.Events.Store.append_multi(
+          multi,
+          name,
+          Backplane.Memory.EventTestPartition.attrs(attrs)
+        )
+
+    defdelegate list(stream_id), to: Backplane.Memory.Events.Store
+  end
+
+  setup do
+    unboxed(&Backplane.Memory.EventTestPartition.ensure!/0)
+    :ok
+  end
 
   test "100 committed writers allocate every sequence exactly once" do
     prefix = unique("hundred-writers")

@@ -3,7 +3,13 @@ defmodule Backplane.Memory.Recall.RetrieverTest do
 
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Retriever}
 
-  @partition %{host_id: "h", client_id: "c", scope: "s", namespace: "n"}
+  @partition %{
+    memory_space_id: "00000000-0000-4000-8000-000000000099",
+    host_id: "h",
+    client_id: "c",
+    scope: "s",
+    namespace: "n"
+  }
 
   setup do
     supervisor = start_supervised!({Task.Supervisor, name: unique_supervisor()})

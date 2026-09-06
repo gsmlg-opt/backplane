@@ -8,7 +8,7 @@ defmodule Backplane.Memory.Recall.Candidate do
   @lifecycle_states [:candidate, :active, :disputed, :superseded, :archived, :tombstoned]
   @channels [:fts, :vector, :graph, :reranker, :lifecycle, :final]
   @source_types [:memory, :event, :observation, :summary, :request, :crystal, :lesson]
-  @partition [:host_id, :client_id, :scope, :namespace]
+  @partition [:memory_space_id, :host_id, :client_id, :scope, :namespace]
   @required @partition ++ [:id, :kind, :memory_type, :content, :source_ids]
   @optional [
     :project,
@@ -50,6 +50,7 @@ defmodule Backplane.Memory.Recall.Candidate do
 
     with [] <- Enum.sort(unknown),
          {:ok, id} <- uuid(attrs, :id),
+         {:ok, memory_space_id} <- uuid(attrs, :memory_space_id),
          {:ok, kind} <- member(attrs, :kind, @kinds),
          {:ok, memory_type} <- member(attrs, :memory_type, @memory_types),
          {:ok, content} <- required_string(attrs, :content, 1_000_000),
@@ -95,6 +96,7 @@ defmodule Backplane.Memory.Recall.Candidate do
          kind: kind,
          memory_type: memory_type,
          content: content,
+         memory_space_id: memory_space_id,
          host_id: host_id,
          client_id: client_id,
          scope: scope,

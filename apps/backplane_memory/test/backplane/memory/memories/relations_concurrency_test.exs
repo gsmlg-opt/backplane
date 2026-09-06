@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Memories.RelationsConcurrencyTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
+  import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Relation, RelationEvidence, Relations}
@@ -255,10 +256,14 @@ defmodule Backplane.Memory.Memories.RelationsConcurrencyTest do
   end
 
   defp direct_opts(key) do
+    memory_space_id = ensure_memory_space!("host")
+
     [
+      memory_space_id: memory_space_id,
       agent_id: "agent",
       host_id: "host",
       scope: "scope",
+      namespace: "private",
       idempotency_scope: "test",
       idempotency_key: key
     ]

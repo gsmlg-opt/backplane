@@ -5,13 +5,6 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
   alias Backplane.Memory.Projections.State
   alias Backplane.Memory.Recall.{QueryPlan, Store}
 
-  @partition %{
-    host_id: "dashboard-host",
-    client_id: "dashboard-client",
-    scope: "team",
-    namespace: "private"
-  }
-
   test "empty durable sources remain explicit instead of fabricating dashboard values" do
     reset_dashboard_sources()
 
@@ -42,17 +35,20 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
   test "durable processing and recall rows drive actionable rates and latency percentiles" do
     reset_dashboard_sources()
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    partition = partition()
 
     %State{}
-    |> State.changeset(%{
-      projector: "session",
-      subject_type: "session",
-      subject_id: "dashboard-subject",
-      processing_version: "dashboard-v1",
-      status: "failed",
-      attempt_count: 3,
-      last_error: "projection failed"
-    })
+    |> State.changeset(
+      Map.merge(partition, %{
+        projector: "session",
+        subject_type: "session",
+        subject_id: "dashboard-subject",
+        processing_version: "dashboard-v1",
+        status: "failed",
+        attempt_count: 3,
+        last_error: "projection failed"
+      })
+    )
     |> repo().insert!()
 
     Backplane.Memory.Workers.EmbedWorker.new(%{"id" => Ecto.UUID.generate()})
@@ -68,7 +64,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
     )
 
     assert {:ok, plan} =
-             QueryPlan.new(Map.merge(@partition, %{query: "dashboard recall", token_budget: 100}))
+             QueryPlan.new(Map.merge(partition, %{query: "dashboard recall", token_budget: 100}))
 
     for {latency, availability, errors, reranker_status, result_count} <- [
           {10, %{"fts" => true, "vector" => false, "graph" => false}, %{"vector" => "timeout"},
@@ -87,7 +83,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
 
           assert {:ok, candidate} =
                    Backplane.Memory.Recall.Candidate.new(
-                     Map.merge(@partition, %{
+                     Map.merge(Map.drop(partition, [:source_client_id]), %{
                        id: Ecto.UUID.generate(),
                        kind: :memory,
                        memory_type: :semantic,
@@ -108,7 +104,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
         end
 
       assert {:ok, _run} =
-               Store.finalize(run.id, @partition, traces,
+               Store.finalize(run.id, partition, traces,
                  latency_ms: latency,
                  channel_availability: availability,
                  channel_errors: errors,
@@ -148,6 +144,10 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
     assert snapshot.recall.channels == %{fts: :available, vector: :degraded, graph: :degraded}
     assert snapshot.recall.channel_failures == %{fts: 0, vector: 1, graph: 0}
     assert snapshot.recall.reranker == %{used: 2, failures: 1}
+  end
+
+  defp partition do
+    canonical_partition("dashboard-host", client_id: "dashboard-client", scope: "team")
   end
 
   defp reset_dashboard_sources do

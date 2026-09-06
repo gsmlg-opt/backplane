@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Profiles
   alias Backplane.Memory.Profiles.Profile
+  alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.ProfileBuildWorker
 
   defp insert_memory(content, opts) do
@@ -15,7 +16,12 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
     defaults =
       [agent_id: "agent-1", host_id: "host-1", client_id: "host:host-1", namespace: "private"]
 
-    {:ok, mem} = Memories.remember(content, Keyword.merge(defaults, opts))
+    {:ok, mem} =
+      Memories.remember(
+        content,
+        canonical_memory_opts("host-1", Keyword.merge(defaults, opts))
+      )
+
     mem
   end
 
@@ -36,6 +42,48 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       profile = Profiles.get(project, partition(scope))
       assert profile.total_observations == 1
       assert profile.source_records["session_ids"] == ["owned"]
+    end
+
+    test "does not blend summaries from another canonical subpartition" do
+      project = "summary-partition-#{System.unique_integer([:positive])}"
+      owner = partition(project)
+
+      insert_memory("owned memory",
+        scope: project,
+        session_id: "shared-session",
+        metadata: %{"project" => project}
+      )
+
+      owned_summary = insert_summary(owner, project, "owned summary")
+
+      foreign =
+        owner
+        |> Map.put(:source_client_id, "foreign-client")
+        |> Map.put(:namespace, "team:foreign")
+
+      foreign_summary = insert_summary(foreign, project, "foreign summary")
+
+      assert {:ok, :built} = ProfileBuildWorker.perform(job(project))
+      profile = Profiles.get(project, owner)
+
+      assert profile.source_records["summary_ids"] == [owned_summary.id]
+      refute Map.has_key?(profile.recent_summaries, foreign_summary.id)
+    end
+
+    test "fails closed when generator provenance is incomplete" do
+      incomplete = canonical_partition("profile-incomplete") |> Map.drop([:host_id, :client_id])
+
+      args =
+        incomplete
+        |> Map.merge(%{host_id: nil, client_id: nil})
+        |> stringify_keys()
+        |> Map.put("project", "incomplete")
+
+      assert {:discard, :incomplete_partition} =
+               ProfileBuildWorker.perform(%Oban.Job{args: args})
+
+      assert {:error, :incomplete_partition} =
+               ProfileBuildWorker.enqueue("incomplete", incomplete)
     end
 
     test "builds profile from fixture memories and upserts correctly" do
@@ -104,8 +152,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       # Insert stale profile so TTL does not block the second build
       repo().insert!(%Profile{
         project: project,
+        memory_space_id: canonical_partition("host-1", scope: project).memory_space_id,
         host_id: "host-1",
         client_id: "host:host-1",
+        source_client_id: "host:host-1",
         scope: project,
         namespace: "private",
         top_concepts: %{},
@@ -143,8 +193,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       # Directly insert a fresh profile (updated less than 1 hour ago)
       repo().insert!(%Profile{
         project: project,
+        memory_space_id: canonical_partition("host-1", scope: project).memory_space_id,
         host_id: "host-1",
         client_id: "host:host-1",
+        source_client_id: "host:host-1",
         scope: project,
         namespace: "private",
         top_concepts: %{"cached" => 1},
@@ -166,8 +218,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
       repo().insert!(%Profile{
         project: project,
+        memory_space_id: canonical_partition("host-1", scope: project).memory_space_id,
         host_id: "host-1",
         client_id: "host:host-1",
+        source_client_id: "host:host-1",
         scope: project,
         namespace: "private",
         top_concepts: %{"old" => 1},
@@ -198,8 +252,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
       repo().insert!(%Profile{
         project: project,
+        memory_space_id: canonical_partition("host-1", scope: project).memory_space_id,
         host_id: "host-1",
         client_id: "host:host-1",
+        source_client_id: "host:host-1",
         scope: project,
         namespace: "private",
         top_concepts: %{"foo" => 3},
@@ -217,7 +273,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   end
 
   defp partition(project) do
-    %{host_id: "host-1", client_id: "host:host-1", scope: project, namespace: "private"}
+    canonical_partition("host-1", client_id: "host:host-1", scope: project)
   end
 
   defp job(project, scope \\ nil) do
@@ -228,4 +284,24 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
     %Oban.Job{args: args}
   end
+
+  defp insert_summary(partition, project, content) do
+    revision = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+    %Summary{}
+    |> Summary.changeset(
+      Map.merge(partition, %{
+        session_id: "shared-session",
+        project: project,
+        content: content,
+        subject_id: "profile:#{revision}",
+        processing_version: "summary-v1",
+        input_revision: revision,
+        output_revision: revision
+      })
+    )
+    |> repo().insert!()
+  end
+
+  defp stringify_keys(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 end

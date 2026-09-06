@@ -6,13 +6,16 @@ defmodule Backplane.Memory.Coordination.Signal do
   import Ecto.Query
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.PartitionIdentity
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts false
 
   schema "memory_signals" do
+    field(:memory_space_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
+    field(:source_client_id, :string)
     field(:scope, :string)
     field(:namespace, :string)
     field(:sender_agent_id, :string)
@@ -27,7 +30,9 @@ defmodule Backplane.Memory.Coordination.Signal do
     sig
     |> cast(attrs, [
       :host_id,
+      :memory_space_id,
       :client_id,
+      :source_client_id,
       :scope,
       :namespace,
       :sender_agent_id,
@@ -36,16 +41,31 @@ defmodule Backplane.Memory.Coordination.Signal do
       :payload,
       :sent_at
     ])
-    |> validate_required([:sender_agent_id, :recipient_agent_id, :topic])
+    |> validate_required([
+      :memory_space_id,
+      :host_id,
+      :client_id,
+      :scope,
+      :namespace,
+      :sender_agent_id,
+      :recipient_agent_id,
+      :topic
+    ])
   end
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @doc "Send a signal from sender to recipient."
-  def send_signal(sender, recipient, topic, payload \\ %{}),
-    do: send_signal(sender, recipient, topic, payload, nil)
+  def send_signal(_sender, _recipient, _topic, _payload \\ %{}),
+    do: {:error, :partition_required}
 
   def send_signal(sender, recipient, topic, payload, partition) do
+    with {:ok, partition} <- canonical_partition(partition) do
+      do_send_signal(sender, recipient, topic, payload, partition)
+    end
+  end
+
+  defp do_send_signal(sender, recipient, topic, payload, partition) do
     repo().transaction(fn ->
       case %__MODULE__{}
            |> changeset(
@@ -63,8 +83,10 @@ defmodule Backplane.Memory.Coordination.Signal do
           Audit.log("coordination.signal.send", sender, [signal.id], %{
             recipient_agent_id: recipient,
             topic: topic,
+            memory_space_id: signal.memory_space_id,
             host_id: signal.host_id,
             client_id: signal.client_id,
+            source_client_id: signal.source_client_id,
             scope: signal.scope,
             namespace: signal.namespace,
             result: "sent"
@@ -83,11 +105,17 @@ defmodule Backplane.Memory.Coordination.Signal do
   end
 
   @doc "Read unread signals for agent (and optionally topic). Marks them read atomically."
-  def read_signals(agent_id, topic \\ nil, limit \\ 20),
-    do: read_signals(agent_id, topic, limit, nil)
+  def read_signals(_agent_id, _topic \\ nil, _limit \\ 20),
+    do: {:error, :partition_required}
 
   def read_signals(agent_id, topic, limit, partition) do
-    now = DateTime.utc_now()
+    with {:ok, partition} <- canonical_partition(partition) do
+      do_read_signals(agent_id, topic, limit, partition)
+    end
+  end
+
+  defp do_read_signals(agent_id, topic, limit, partition) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     query =
       from(s in __MODULE__,
@@ -115,6 +143,12 @@ defmodule Backplane.Memory.Coordination.Signal do
 
         Audit.log("coordination.signal.read", agent_id, ids, %{
           topic: topic,
+          memory_space_id: partition.memory_space_id,
+          host_id: partition.host_id,
+          client_id: partition.client_id,
+          source_client_id: partition[:source_client_id],
+          scope: partition.scope,
+          namespace: partition.namespace,
           result: "read"
         })
       end
@@ -127,22 +161,29 @@ defmodule Backplane.Memory.Coordination.Signal do
     do:
       dynamic(
         [row],
-        row.host_id == ^Map.fetch!(partition, :host_id) and
-          row.client_id == ^Map.fetch!(partition, :client_id) and
+        row.memory_space_id == ^Map.fetch!(partition, :memory_space_id) and
           row.scope == ^Map.fetch!(partition, :scope) and
           row.namespace == ^Map.fetch!(partition, :namespace)
       )
 
-  defp partition_dynamic(nil),
-    do:
-      dynamic(
-        [row],
-        is_nil(row.host_id) and is_nil(row.client_id) and is_nil(row.scope) and
-          is_nil(row.namespace)
-      )
-
   defp partition_attrs(partition) when is_map(partition),
-    do: Map.take(partition, [:host_id, :client_id, :scope, :namespace])
+    do:
+      Map.take(partition, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
 
-  defp partition_attrs(nil), do: %{}
+  defp canonical_partition(partition) do
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         host_id when is_binary(host_id) and host_id != "" <- partition[:host_id],
+         client_id when is_binary(client_id) and client_id != "" <- partition[:client_id] do
+      {:ok, partition}
+    else
+      _invalid -> {:error, :partition_required}
+    end
+  end
 end

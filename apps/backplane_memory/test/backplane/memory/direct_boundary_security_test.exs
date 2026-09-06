@@ -2,6 +2,7 @@ defmodule Backplane.Memory.DirectBoundarySecurityTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.{Memories, Service}
+  alias Backplane.MemorySpaces.MemorySpace
   alias Backplane.Skills.Hosts
 
   setup do
@@ -126,12 +127,14 @@ defmodule Backplane.Memory.DirectBoundarySecurityTest do
   test "lower Memories APIs require an exact host client scope namespace partition" do
     partition_a = partition("host-a", "client-a", "scope-a", "private")
     partition_b = partition("host-b", "client-b", "scope-a", "private")
+    other_space = %{partition_a | memory_space_id: partition_b.memory_space_id}
     other_namespace = %{partition_a | namespace: "team:red"}
 
     {:ok, memory} =
       Memories.remember("partitioned lower API",
         type: "semantic",
         agent_id: "agent",
+        memory_space_id: partition_a.memory_space_id,
         host_id: partition_a.host_id,
         client_id: partition_a.client_id,
         scope: partition_a.scope,
@@ -148,6 +151,7 @@ defmodule Backplane.Memory.DirectBoundarySecurityTest do
     assert {:ok, %{id: id}} = Memories.get(memory.id, partition_a)
     assert id == memory.id
     assert {:error, :not_found} = Memories.get(memory.id, partition_b)
+    assert {:error, :not_found} = Memories.get(memory.id, other_space)
     assert {:error, :not_found} = Memories.get(memory.id, other_namespace)
     assert [%{id: ^id}] = Memories.list([], partition_a)
     assert [] = Memories.list([], partition_b)
@@ -177,6 +181,18 @@ defmodule Backplane.Memory.DirectBoundarySecurityTest do
   end
 
   defp partition(host_id, client_id, scope, namespace) do
-    %{host_id: host_id, client_id: client_id, scope: scope, namespace: namespace}
+    memory_space_id =
+      %MemorySpace{}
+      |> MemorySpace.changeset(%{kind: "private", status: "active"})
+      |> Backplane.Repo.insert!()
+      |> Map.fetch!(:id)
+
+    %{
+      memory_space_id: memory_space_id,
+      host_id: host_id,
+      client_id: client_id,
+      scope: scope,
+      namespace: namespace
+    }
   end
 end

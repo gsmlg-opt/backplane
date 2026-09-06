@@ -4,6 +4,7 @@ defmodule Backplane.Api.MemoryCrystalsRouterTest do
   alias Backplane.Clients
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Coordination.Action
+  alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
 
   setup do
@@ -137,10 +138,13 @@ defmodule Backplane.Api.MemoryCrystalsRouterTest do
         })
       )
 
+    assert {:ok, canonical_partition} =
+             MemorySpaces.provision_private_host(host.id, host.memory_scope)
+
     token = "#{prefix}-#{System.unique_integer([:positive])}"
     client_id = "host:#{host.id}"
 
-    {:ok, _client} =
+    {:ok, client} =
       Clients.create_client(%{
         name: "#{prefix} client",
         token: token,
@@ -149,12 +153,12 @@ defmodule Backplane.Api.MemoryCrystalsRouterTest do
         metadata: %{"memory_partition_id" => client_id}
       })
 
-    partition = %{
-      host_id: host.id,
-      client_id: client_id,
-      scope: host.memory_scope,
-      namespace: "private"
-    }
+    partition =
+      Map.merge(canonical_partition, %{
+        host_id: host.id,
+        client_id: client_id,
+        source_client_id: client.id
+      })
 
     {host, token, partition}
   end

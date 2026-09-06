@@ -8,6 +8,24 @@ defmodule Backplane.Memory.IngestTest do
   alias Backplane.Memory.Ingest.EventValidator
   import Backplane.Memory.IngestFixtures
 
+  setup do
+    now = DateTime.utc_now()
+
+    spaces =
+      for host_id <- ["host-1", "host-2"] do
+        %{
+          id: Backplane.Memory.IngestFixtures.memory_space_id(host_id),
+          kind: "private",
+          status: "active",
+          inserted_at: now,
+          updated_at: now
+        }
+      end
+
+    repo().insert_all(Backplane.MemorySpaces.MemorySpace, spaces, on_conflict: :nothing)
+    :ok
+  end
+
   test "100 sequential authenticated deliveries create one durable captured-event effect" do
     event = valid_event()
     batch = %{"batch_id" => Ecto.UUID.generate(), "host_id" => "host-1", "events" => [event]}
@@ -28,7 +46,9 @@ defmodule Backplane.Memory.IngestTest do
     assert [
              %Event{
                id: ^server_event_id,
+               memory_space_id: memory_space_id,
                host_id: "host-1",
+               source_client_id: "codex-cli",
                idempotency_key: "capture:6:host-1:codex:session-1:1",
                raw_envelope: %{"idempotency_key" => "codex:session-1:1"}
              }
@@ -40,6 +60,11 @@ defmodule Backplane.Memory.IngestTest do
                      e.idempotency_key == "capture:6:host-1:codex:session-1:1"
                )
              )
+
+    assert memory_space_id == Backplane.Memory.IngestFixtures.memory_space_id("host-1")
+
+    assert [%Stream{memory_space_id: ^memory_space_id, scope: "proj_local", namespace: "private"}] =
+             repo().all(Stream)
   end
 
   test "persists accepted events, returns exact duplicates, and rejects identity conflicts" do
@@ -297,7 +322,9 @@ defmodule Backplane.Memory.IngestTest do
              })
 
     stored = repo().get!(Event, id)
+    assert stored.memory_space_id == Backplane.Memory.IngestFixtures.memory_space_id("host-1")
     assert stored.client_id == "host:host-1"
+    assert stored.source_client_id == "spoofed-client [REDACTED]"
     assert stored.raw_envelope["client_id"] == "host:host-1"
     assert stored.scope == "proj_local"
     assert stored.raw_envelope["scope"] == "proj_local"
@@ -481,6 +508,9 @@ defmodule Backplane.Memory.IngestTest do
       Map.delete(auth_context("host-1"), :partition),
       auth_context("host-1", %{partition: nil}),
       auth_context("host-1", %{partition: %{}}),
+      auth_context("host-1", %{
+        partition: Map.delete(trusted_partition("host-1"), :memory_space_id)
+      }),
       auth_context("host-1", %{partition: trusted_partition("host-2")}),
       auth_context("host-1", %{
         partition: %{trusted_partition("host-1") | partition_id: "host:other"}
@@ -755,6 +785,7 @@ defmodule Backplane.Memory.IngestTest do
 
   defp trusted_partition(host_id) do
     %{
+      memory_space_id: Backplane.Memory.IngestFixtures.memory_space_id(host_id),
       host_id: host_id,
       partition_id: "host:#{host_id}",
       scope: "proj_local",

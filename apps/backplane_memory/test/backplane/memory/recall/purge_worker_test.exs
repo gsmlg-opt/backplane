@@ -7,7 +7,18 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Run, Store, TraceCandidate}
   alias Backplane.Memory.Workers.RecallTracePurgeWorker
 
-  @partition %{host_id: "host-a", client_id: "client-a", scope: "team", namespace: "private"}
+  @partition %{
+    memory_space_id: "62a66140-e479-85c1-892d-8b6d6b77aba1",
+    host_id: "host-a",
+    client_id: "client-a",
+    scope: "team",
+    namespace: "private"
+  }
+
+  setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("host-a")
+    :ok
+  end
 
   test "bounded concurrent purges delete only expired runs, cascade, audit, and emit telemetry" do
     attach_telemetry()
@@ -48,6 +59,7 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
       for index <- 1..101 do
         %{
           id: Ecto.UUID.generate(),
+          memory_space_id: @partition.memory_space_id,
           host_id: "host-a",
           client_id: "client-a",
           scope: "team",

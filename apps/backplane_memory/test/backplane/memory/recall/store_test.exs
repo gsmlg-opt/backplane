@@ -14,7 +14,18 @@ defmodule Backplane.Memory.Recall.StoreTest do
     TraceCandidate
   }
 
-  @partition %{host_id: "host-a", client_id: "client-a", scope: "team", namespace: "private"}
+  @partition %{
+    memory_space_id: "62a66140-e479-85c1-892d-8b6d6b77aba1",
+    host_id: "host-a",
+    client_id: "client-a",
+    scope: "team",
+    namespace: "private"
+  }
+
+  setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("host-a")
+    :ok
+  end
 
   test "create is privacy-safe and idempotent, while conflicting retries are rejected" do
     request_id = unique("request")
@@ -137,8 +148,15 @@ defmodule Backplane.Memory.Recall.StoreTest do
 
     refute inspect(repo().all(TraceCandidate)) =~ "private candidate content"
 
-    assert {:error, :not_found} =
+    assert {:ok, [%TraceCandidate{}]} =
              Store.put_candidates(run.id, %{@partition | host_id: "other"}, [trace])
+
+    assert {:error, :not_found} =
+             Store.put_candidates(
+               run.id,
+               %{@partition | memory_space_id: "00000000-0000-4000-8000-000000000098"},
+               [trace]
+             )
 
     assert {:error, :too_many_candidates} =
              Store.put_candidates(run.id, @partition, List.duplicate(trace, 501))
@@ -410,7 +428,14 @@ defmodule Backplane.Memory.Recall.StoreTest do
     assert {:error, :invalid_cursor} = Store.list(@partition, limit: 2, cursor: "bad")
     assert {:error, {:invalid, :limit}} = Store.list(@partition, limit: 101)
     assert {:error, {:unknown_options, [:unknown]}} = Store.list(@partition, unknown: true)
-    assert {:error, :not_found} = Store.get(first.id, %{@partition | client_id: "other"})
+    assert {:ok, %Run{}, []} = Store.get(first.id, %{@partition | client_id: "other"})
+
+    assert {:error, :not_found} =
+             Store.get(
+               first.id,
+               %{@partition | memory_space_id: "00000000-0000-4000-8000-000000000098"}
+             )
+
     assert {:ok, %Run{id: id}, []} = Store.get(first.id, @partition)
     assert id == first.id
   end

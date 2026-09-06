@@ -41,7 +41,12 @@ defmodule Backplane.Memory.Projections.ReadModels do
       {:ok,
        %{
          subject_id: session.subject_id,
+         memory_space_id: session.memory_space_id,
          host_id: model["host_id"],
+         client_id: model["client_id"],
+         source_client_id: session.source_client_id,
+         scope: model["scope"],
+         namespace: model["namespace"],
          session_id: model["session_id"],
          project: model["project"] || "",
          agent_id: model["agent_id"],
@@ -69,6 +74,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
     with {:ok, opts} <-
            options(opts, @default_session_limit, [
              :project,
+             :memory_space_id,
              :host_id,
              :client_id,
              :scope,
@@ -123,6 +129,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
            options(opts, @default_timeline_limit, [
              :project,
              :session_id,
+             :memory_space_id,
              :host_id,
              :client_id,
              :scope,
@@ -195,6 +202,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
            options(opts, @default_pattern_limit, [
              :project,
              :session_id,
+             :memory_space_id,
              :host_id,
              :client_id,
              :scope,
@@ -228,7 +236,8 @@ defmodule Backplane.Memory.Projections.ReadModels do
         ActivityDaily
         |> where(
           [activity],
-          activity.client_id == ^opts.client_id and activity.scope == ^opts.scope and
+          activity.memory_space_id == ^opts.memory_space_id and
+            activity.client_id == ^opts.client_id and activity.scope == ^opts.scope and
             activity.namespace == ^opts.namespace and activity.date >= ^opts.date_from and
             activity.date <= ^opts.date_to
         )
@@ -250,6 +259,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
         |> limit(^opts.limit)
         |> offset(^opts.offset)
         |> select([activity], %{
+          memory_space_id: activity.memory_space_id,
           date: activity.date,
           project: activity.project,
           agent_id: activity.agent_id,
@@ -276,6 +286,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
 
   defp activity_options(opts) do
     allowed = [
+      :memory_space_id,
       :client_id,
       :scope,
       :namespace,
@@ -297,6 +308,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
              optional_date(Keyword.get(opts, :date_from, Date.add(today, 1 - window_days))),
            {:ok, date_to} <- optional_date(Keyword.get(opts, :date_to, today)) do
         normalized = %{
+          memory_space_id: Keyword.get(opts, :memory_space_id),
           client_id: Keyword.get(opts, :client_id),
           scope: Keyword.get(opts, :scope),
           namespace: Keyword.get(opts, :namespace),
@@ -323,7 +335,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
 
   defp valid_activity_options?(opts, window_days) do
     Enum.all?(
-      [opts.host_id, opts.client_id, opts.scope, opts.namespace],
+      [opts.memory_space_id, opts.host_id, opts.client_id, opts.scope, opts.namespace],
       &valid_required_identifier?/1
     ) and
       Enum.all?(
@@ -394,6 +406,8 @@ defmodule Backplane.Memory.Projections.ReadModels do
             fragment("?->>'session_id'", snapshot.read_model) == ^session_id,
         select: %{
           subject_id: snapshot.subject_id,
+          memory_space_id: snapshot.memory_space_id,
+          source_client_id: snapshot.source_client_id,
           read_model: fragment("? - 'source_event_ids'", snapshot.read_model),
           input_revision: state.input_revision,
           output_revision: state.output_revision,
@@ -553,6 +567,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
   defp session_filters(query, opts) do
     query
     |> require_json_partition()
+    |> maybe_snapshot_filter(:memory_space_id, opts.memory_space_id)
     |> maybe_json_filter(:project, opts.project)
     |> maybe_json_filter(:host_id, opts.host_id)
     |> maybe_json_filter(:client_id, opts.client_id)
@@ -565,6 +580,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
   defp observation_subject_filters(query, opts) do
     query
     |> require_observation_partition()
+    |> maybe_observation_subject_filter(:memory_space_id, opts.memory_space_id)
     |> maybe_observation_subject_filter(:project, opts.project)
     |> maybe_observation_subject_filter(:session_id, opts.session_id)
     |> maybe_observation_subject_filter(:host_id, opts.host_id)
@@ -577,6 +593,12 @@ defmodule Backplane.Memory.Projections.ReadModels do
 
   defp maybe_observation_subject_filter(query, field, value) do
     where(query, [observation], field(observation, ^field) == ^value)
+  end
+
+  defp maybe_snapshot_filter(query, _field, nil), do: query
+
+  defp maybe_snapshot_filter(query, :memory_space_id, value) do
+    where(query, [snapshot, _state], snapshot.memory_space_id == ^value)
   end
 
   defp observation_filters(query, opts) do
@@ -669,6 +691,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
       normalized = %{
         limit: Keyword.get(opts, :limit, default_limit),
         offset: Keyword.get(opts, :offset, 0),
+        memory_space_id: Keyword.get(opts, :memory_space_id),
         project: Keyword.get(opts, :project),
         host_id: Keyword.get(opts, :host_id),
         client_id: Keyword.get(opts, :client_id),
@@ -699,6 +722,7 @@ defmodule Backplane.Memory.Projections.ReadModels do
   defp valid_options?(opts) do
     is_integer(opts.limit) and opts.limit in 1..@max_limit and is_integer(opts.offset) and
       opts.offset in 0..@max_offset and valid_optional_identifier?(opts.project) and
+      valid_optional_identifier?(opts.memory_space_id) and
       valid_optional_identifier?(opts.host_id) and valid_optional_identifier?(opts.session_id) and
       valid_optional_identifier?(opts.client_id) and valid_optional_identifier?(opts.scope) and
       valid_optional_identifier?(opts.namespace) and
@@ -714,7 +738,8 @@ defmodule Backplane.Memory.Projections.ReadModels do
     where(
       query,
       [snapshot, _state],
-      fragment("COALESCE(?->>'host_id', '') <> ''", snapshot.read_model) and
+      not is_nil(snapshot.memory_space_id) and
+        fragment("COALESCE(?->>'host_id', '') <> ''", snapshot.read_model) and
         fragment("COALESCE(?->>'client_id', '') <> ''", snapshot.read_model) and
         fragment("COALESCE(?->>'scope', '') <> ''", snapshot.read_model) and
         fragment("COALESCE(?->>'namespace', '') <> ''", snapshot.read_model)
@@ -725,7 +750,8 @@ defmodule Backplane.Memory.Projections.ReadModels do
     where(
       query,
       [observation],
-      not is_nil(observation.host_id) and not is_nil(observation.client_id) and
+      not is_nil(observation.memory_space_id) and not is_nil(observation.host_id) and
+        not is_nil(observation.client_id) and
         not is_nil(observation.scope) and not is_nil(observation.namespace)
     )
   end

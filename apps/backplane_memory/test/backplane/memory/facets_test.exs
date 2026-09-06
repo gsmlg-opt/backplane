@@ -5,7 +5,9 @@ defmodule Backplane.Memory.FacetsTest do
   alias Backplane.Memory.Memories
 
   defp remember(content) do
-    {:ok, mem} = Memories.remember(content, agent_id: "a", host_id: "h")
+    {:ok, mem} =
+      Memories.remember(content, canonical_memory_opts("facets-host", agent_id: "a"))
+
     mem
   end
 

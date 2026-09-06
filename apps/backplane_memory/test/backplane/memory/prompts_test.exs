@@ -43,9 +43,14 @@ defmodule Backplane.Memory.PromptsTest do
         ]
       )
 
-    remember!("authorized-needle wrong client", client_id: "client-b", namespace: "private")
+    remember!("authorized-needle wrong client",
+      memory_space_id: foreign_memory_space_id("wrong-client"),
+      client_id: "client-b",
+      namespace: "private"
+    )
 
     remember!("authorized-needle wrong host",
+      memory_space_id: foreign_memory_space_id("wrong-host"),
       client_id: "client-a",
       host_id: "foreign-host",
       namespace: "private"
@@ -56,6 +61,7 @@ defmodule Backplane.Memory.PromptsTest do
 
     :ok =
       Memories.forget(deleted.id, %{
+        memory_space_id: exact_partition().memory_space_id,
         host_id: host_id(),
         client_id: partition_id(),
         scope: entitled_scope(),
@@ -230,6 +236,7 @@ defmodule Backplane.Memory.PromptsTest do
       })
 
     append!(%{
+      memory_space_id: foreign_memory_space_id("session-client"),
       client_id: "client-b",
       namespace: "private",
       session_id: "same-session",
@@ -239,6 +246,7 @@ defmodule Backplane.Memory.PromptsTest do
     })
 
     append!(%{
+      memory_space_id: foreign_memory_space_id("session-host"),
       host_id: "foreign-host",
       client_id: "client-a",
       namespace: "private",
@@ -270,6 +278,7 @@ defmodule Backplane.Memory.PromptsTest do
              Service.get_prompt("session_handoff", %{"session_id" => "same-session"}, auth())
 
     remember!("wrong-host-memory-secret",
+      memory_space_id: foreign_memory_space_id("memory-host"),
       host_id: "foreign-host",
       client_id: "client-a",
       namespace: "private",
@@ -643,15 +652,24 @@ defmodule Backplane.Memory.PromptsTest do
     repo().query!(
       """
       INSERT INTO bpm_events
-        (id, stream_id, sequence, project, namespace, host_id, client_id, session_id,
-         event_type, status, content, importance, payload, scope, occurred_at, inserted_at)
-      SELECT gen_random_uuid(), $1, n, 'project-a', 'private', $2, $3, 'saturated-session',
+        (id, stream_id, sequence, project, namespace, memory_space_id, host_id, client_id,
+         source_client_id, session_id, event_type, status, content, importance, payload, scope,
+         occurred_at, inserted_at)
+      SELECT gen_random_uuid(), $1, n, 'project-a', 'private', $2, $3, $4, $4,
+             'saturated-session',
              'tool.call.failed', 'failed', 'decision event-' || n, 0,
              jsonb_build_object('file', 'lib/file_' || n || '.ex', 'commit', 'commit-' || n),
-             $4, $5::timestamptz + n * interval '1 microsecond', NOW()
+             $5, $6::timestamptz + n * interval '1 microsecond', NOW()
       FROM generate_series(2, 10001) AS n
       """,
-      [first.stream_id, host_id(), partition_id(), entitled_scope(), first.occurred_at]
+      [
+        first.stream_id,
+        Ecto.UUID.dump!(first.memory_space_id),
+        host_id(),
+        partition_id(),
+        entitled_scope(),
+        first.occurred_at
+      ]
     )
 
     handler_id = "handoff-large-query-#{System.unique_integer([:positive])}"
@@ -723,6 +741,7 @@ defmodule Backplane.Memory.PromptsTest do
 
   test "session_handoff returns not_found for missing or foreign sessions" do
     append!(%{
+      memory_space_id: foreign_memory_space_id("hidden-session"),
       client_id: "client-b",
       namespace: "private",
       session_id: "hidden-session",
@@ -832,6 +851,7 @@ defmodule Backplane.Memory.PromptsTest do
     end
 
     append!(%{
+      memory_space_id: foreign_memory_space_id("pattern-client"),
       client_id: "client-b",
       namespace: "private",
       session_id: "s3",
@@ -842,6 +862,7 @@ defmodule Backplane.Memory.PromptsTest do
     })
 
     append!(%{
+      memory_space_id: foreign_memory_space_id("pattern-host"),
       host_id: "foreign-host",
       client_id: "client-a",
       namespace: "private",
@@ -955,6 +976,8 @@ defmodule Backplane.Memory.PromptsTest do
   end
 
   defp remember!(content, opts) do
+    partition = exact_partition()
+
     opts =
       opts
       |> Keyword.update(:client_id, partition_id(), fn
@@ -962,6 +985,9 @@ defmodule Backplane.Memory.PromptsTest do
         client_id -> client_id
       end)
       |> Keyword.put_new(:scope, entitled_scope())
+      |> Keyword.put_new(:namespace, partition.namespace)
+      |> Keyword.put_new(:memory_space_id, partition.memory_space_id)
+      |> Keyword.put_new(:source_client_id, partition.source_client_id)
 
     {:ok, memory} =
       Memories.remember(content, Keyword.merge([agent_id: "agent", host_id: host_id()], opts))
@@ -974,9 +1000,11 @@ defmodule Backplane.Memory.PromptsTest do
 
     attrs = %{
       memory_id: memory.id,
+      memory_space_id: memory.memory_space_id,
       subject_id: "session:#{session_id}",
       host_id: host_id(),
       client_id: partition_id(),
+      source_client_id: partition_id(),
       scope: entitled_scope(),
       namespace: "private",
       source_session_id: session_id,
@@ -1006,6 +1034,8 @@ defmodule Backplane.Memory.PromptsTest do
   end
 
   defp append!(attrs) do
+    partition = exact_partition()
+
     attrs =
       attrs
       |> Map.update(:client_id, partition_id(), fn
@@ -1014,6 +1044,9 @@ defmodule Backplane.Memory.PromptsTest do
       end)
       |> Map.put_new(:scope, entitled_scope())
       |> Map.put_new(:host_id, host_id())
+      |> Map.put_new(:namespace, partition.namespace)
+      |> Map.put_new(:memory_space_id, partition.memory_space_id)
+      |> Map.put_new(:source_client_id, partition.source_client_id)
 
     {:ok, event} =
       Store.append(
@@ -1046,7 +1079,11 @@ defmodule Backplane.Memory.PromptsTest do
             project: hd(events).project,
             content: content,
             subject_id: "summary:#{System.unique_integer([:positive, :monotonic])}",
+            memory_space_id: hd(events).memory_space_id,
             host_id: hd(events).host_id,
+            source_client_id: hd(events).source_client_id,
+            scope: hd(events).scope,
+            namespace: hd(events).namespace,
             agent_id: "agent",
             processing_version: "summary-v1",
             input_revision: input_revision,
@@ -1083,8 +1120,10 @@ defmodule Backplane.Memory.PromptsTest do
     row = %ProjectedSession{
       subject_id:
         "#{first.host_id}:#{first.client_id}:#{first.scope}:#{first.namespace}:#{first.project}:#{first.session_id}",
+      memory_space_id: first.memory_space_id,
       host_id: first.host_id,
       client_id: first.client_id,
+      source_client_id: first.source_client_id,
       scope: first.scope,
       namespace: first.namespace,
       session_id: first.session_id,
@@ -1122,12 +1161,18 @@ defmodule Backplane.Memory.PromptsTest do
   defp entitled_scope, do: Process.get(:memory_prompt_host).memory_scope
 
   defp exact_partition do
-    %{
+    {:ok, owner} =
+      Backplane.MemorySpaces.resolve_host_partition(host_id(), entitled_scope(), "private")
+
+    Map.merge(owner, %{
       host_id: host_id(),
       client_id: partition_id(),
-      scope: entitled_scope(),
-      namespace: "private"
-    }
+      source_client_id: partition_id()
+    })
+  end
+
+  defp foreign_memory_space_id(label) do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("prompt-#{label}")
   end
 
   defp assert_jsonl(text) do

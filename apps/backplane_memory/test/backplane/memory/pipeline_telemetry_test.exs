@@ -32,7 +32,8 @@ defmodule Backplane.Memory.PipelineTelemetryTest do
     assert {:ok, :done} =
              PipelineTelemetry.span("lesson.candidate", metadata, fn -> {:ok, :done} end)
 
-    assert_receive {[:backplane, :memory, :pipeline], %{count: 1, duration_us: duration}, success}
+    assert_receive {[:backplane, :memory, :pipeline], %{count: 1, duration_us: duration},
+                    %{stage: "lesson.candidate"} = success}
 
     assert duration >= 0
     assert success.stage == "lesson.candidate"
@@ -46,7 +47,7 @@ defmodule Backplane.Memory.PipelineTelemetryTest do
                {:error, :provider_unavailable}
              end)
 
-    assert_receive {[:backplane, :memory, :pipeline], %{count: 1}, failed}
+    assert_receive {[:backplane, :memory, :pipeline], %{count: 1}, %{stage: "summary"} = failed}
     assert failed.status == "error"
     assert failed.error_class == "provider_unavailable"
   end
@@ -69,7 +70,9 @@ defmodule Backplane.Memory.PipelineTelemetryTest do
 
     assert {:cancel, :invalid_arguments} = CrystalWorker.perform(%Oban.Job{args: %{}})
 
-    assert_receive {[:backplane, :memory, :pipeline], %{count: 1, duration_us: duration}, metadata}
+    assert_receive {[:backplane, :memory, :pipeline], %{count: 1, duration_us: duration},
+                    %{stage: "crystal"} = metadata}
+
     assert duration >= 0
     assert metadata.stage == "crystal"
     assert metadata.status == "cancelled"

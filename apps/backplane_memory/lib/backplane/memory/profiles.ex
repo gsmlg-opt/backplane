@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Profiles do
   import Ecto.Query
 
   alias Backplane.Memory.Profiles.Profile
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Workers.ProfileBuildWorker
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
@@ -20,7 +21,9 @@ defmodule Backplane.Memory.Profiles do
   end
 
   def get(project, partition) when is_binary(project) and is_map(partition) do
-    repo().get_by(Profile, Keyword.merge([project: project], partition_fields(partition)))
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      repo().get_by(Profile, Keyword.merge([project: project], partition_fields(partition)))
+    end
   end
 
   @doc """
@@ -35,17 +38,20 @@ defmodule Backplane.Memory.Profiles do
   end
 
   def get_or_build(project, partition) when is_binary(project) and is_map(partition) do
-    case get(project, partition) do
-      nil ->
-        ProfileBuildWorker.enqueue(project, partition)
-        {:building, nil}
+    with {:ok, partition} <- PartitionIdentity.validate(partition) do
+      case get(project, partition) do
+        nil ->
+          ProfileBuildWorker.enqueue(project, partition)
+          {:building, nil}
 
-      profile ->
-        {:ok, profile}
+        profile ->
+          {:ok, profile}
+      end
     end
   end
 
   defp partition_fields(partition) do
-    for key <- [:host_id, :client_id, :scope, :namespace], do: {key, Map.fetch!(partition, key)}
+    for key <- [:memory_space_id, :scope, :namespace],
+        do: {key, Map.fetch!(partition, key)}
   end
 end

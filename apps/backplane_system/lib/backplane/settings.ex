@@ -23,6 +23,21 @@ defmodule Backplane.Settings do
   # --- Defaults ---
 
   @defaults %{
+    "memory.host_sync_v1.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable host memory v1 delivery"
+    },
+    "memory.host_sync_v2.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Enable host memory v2 delivery"
+    },
+    "memory.host_sync_max_item_bytes" => %{
+      value: 262_144,
+      type: "integer",
+      desc: "Maximum encoded edge memory item bytes (1..262144)"
+    },
     # LLM auto model target preferences
     "llm.auto_models.fast.targets" => %{
       value: [],

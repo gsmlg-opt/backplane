@@ -1,12 +1,118 @@
 defmodule Backplane.Memory.ServiceTest do
   use Backplane.Memory.DataCase, async: false
 
-  alias Backplane.Memory.{Memories, Observations, Service}
+  alias Backplane.Memory.Service
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Workers.ProfileBuildWorker
   alias Backplane.Skills.Hosts
+
+  defmodule TestPartition do
+    @fallback_host "service-test-owner"
+
+    def from_options(opts) do
+      host_id = Keyword.get(opts, :host_id, @fallback_host)
+      scope = Keyword.get(opts, :scope, "global")
+      namespace = Keyword.get(opts, :namespace, "private")
+      client_id = Keyword.get(opts, :client_id, "host:#{host_id}")
+
+      base = %{
+        memory_space_id:
+          Keyword.get(opts, :memory_space_id) || memory_space_id(host_id, scope, namespace),
+        host_id: host_id,
+        client_id: client_id,
+        source_client_id: Keyword.get(opts, :source_client_id, client_id),
+        scope: scope,
+        namespace: namespace
+      }
+
+      Keyword.merge(opts, Map.to_list(base))
+    end
+
+    def trusted_args(args) do
+      atom_options =
+        for key <- ~w(host_id client_id source_client_id scope namespace)a,
+            value = Map.get(args, Atom.to_string(key)),
+            not is_nil(value),
+            do: {key, value}
+
+      atom_options
+      |> from_options()
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> then(&Map.merge(args, &1))
+    end
+
+    def fallback(scope \\ "global") do
+      from_options(scope: scope) |> Map.new()
+    end
+
+    def root_attrs(schema, scope \\ "global") do
+      fields =
+        case schema do
+          :memory ->
+            [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace]
+
+          :observation ->
+            [:memory_space_id, :host_id, :source_client_id, :scope, :namespace]
+
+          :session ->
+            [:memory_space_id, :host_id, :source_client_id, :scope, :namespace]
+
+          :profile ->
+            [:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace]
+        end
+
+      Map.take(fallback(scope), fields)
+    end
+
+    defp memory_space_id(host_id, scope, namespace) do
+      case Ecto.UUID.cast(host_id) do
+        {:ok, ^host_id} ->
+          case Backplane.MemorySpaces.resolve_host_partition(host_id, scope, namespace) do
+            {:ok, partition} -> partition.memory_space_id
+            _ -> fallback_space!()
+          end
+
+        _ ->
+          fallback_space!()
+      end
+    end
+
+    defp fallback_space!,
+      do: Backplane.Memory.IngestFixtures.ensure_memory_space!(@fallback_host)
+  end
+
+  defmodule Memories do
+    def remember(content, opts \\ []) do
+      Backplane.Memory.Memories.remember(content, TestPartition.from_options(opts))
+    end
+
+    defdelegate trusted_get(id), to: Backplane.Memory.Memories
+    defdelegate list_evidence(id), to: Backplane.Memory.Memories
+  end
+
+  defmodule Observations do
+    def record(session_id, content, opts \\ []) do
+      opts = TestPartition.from_options(opts)
+
+      Backplane.Memory.Observations.record(
+        session_id,
+        content,
+        Keyword.put(opts, :trusted_partition, Map.new(opts))
+      )
+    end
+
+    def register_session(session_id, project, opts \\ []) do
+      opts = TestPartition.from_options(opts)
+
+      Backplane.Memory.Observations.register_session(
+        session_id,
+        project,
+        Keyword.put(opts, :trusted_partition, Map.new(opts))
+      )
+    end
+  end
 
   defmodule RaisingLifecycleContext do
     def build(_project, _session_id, _opts) do
@@ -225,14 +331,19 @@ defmodule Backplane.Memory.ServiceTest do
                  host_id: host.id
                )
 
-      repo().insert!(%Backplane.Memory.Profiles.Profile{
-        project: project,
-        top_concepts: %{"foreign-profile-secret" => 99},
-        top_files: %{},
-        patterns: %{},
-        session_count: 1,
-        total_observations: 1
-      })
+      repo().insert!(
+        struct(
+          Backplane.Memory.Profiles.Profile,
+          Map.merge(TestPartition.root_attrs(:profile), %{
+            project: project,
+            top_concepts: %{"foreign-profile-secret" => 99},
+            top_files: %{},
+            patterns: %{},
+            session_count: 1,
+            total_observations: 1
+          })
+        )
+      )
 
       args = %{
         "kind" => "session_start",
@@ -376,7 +487,7 @@ defmodule Backplane.Memory.ServiceTest do
 
       assert {:ok, %{id: memory_id}} = Service.handle_remember(args, memory_auth(host))
 
-      assert {:ok, result} = Service.trusted_call("memory::verify", %{"memory_id" => memory_id})
+      assert {:ok, result} = trusted_call("memory::verify", %{"memory_id" => memory_id})
       assert result.exists
       assert result.evidence_count == 1
       assert result.supporting_count == 1
@@ -409,7 +520,7 @@ defmodule Backplane.Memory.ServiceTest do
                  memory_auth(host)
                )
 
-      assert {:ok, result} = Service.trusted_call("memory::verify", %{"memory_id" => memory_id})
+      assert {:ok, result} = trusted_call("memory::verify", %{"memory_id" => memory_id})
       assert result.evidence_count == 2
       assert result.source_diversity == 2
       assert Enum.map(result.evidence, & &1.session_id) == ["session-a", "session-b"]
@@ -466,8 +577,16 @@ defmodule Backplane.Memory.ServiceTest do
       assert [%{id: ^memory_id, kind: :memory, source_ids: [_ | _]}] = result.results
       assert result.channels.fts.status == :ok
 
+      assert {:ok, recall_partition} =
+               Backplane.MemorySpaces.resolve_host_partition(
+                 host.id,
+                 host.memory_scope,
+                 "private"
+               )
+
       assert {:ok, %Backplane.Memory.Recall.Run{status: "complete"}, [_ | _]} =
                Backplane.Memory.Recall.Store.get(result.recall_run_id, %{
+                 memory_space_id: recall_partition.memory_space_id,
                  host_id: host.id,
                  client_id: "host:#{host.id}",
                  scope: host.memory_scope,
@@ -536,7 +655,7 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       assert {:ok, %{results: [%{id: id} = result]} = response} =
-               Service.trusted_call("memory::recall", %{
+               trusted_call("memory::recall", %{
                  "query" => "legacy parity recall",
                  "scope" => "legacy-scope"
                })
@@ -589,7 +708,7 @@ defmodule Backplane.Memory.ServiceTest do
       end)
 
       assert {:ok, %{results: results}} =
-               Service.trusted_call("memory::recall", %{
+               trusted_call("memory::recall", %{
                  "query" => "gateway fallback signal",
                  "limit" => 2,
                  "scope" => scope
@@ -608,7 +727,7 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       assert {:ok, %{results: [%{id: id}]}} =
-               Service.trusted_call("memory::recall", %{
+               trusted_call("memory::recall", %{
                  "query" => "service recall",
                  "limit" => 5,
                  "scope" => "service"
@@ -619,7 +738,7 @@ defmodule Backplane.Memory.ServiceTest do
 
     test "returns an empty result set when no lexical memory matches" do
       assert {:ok, %{results: []}} =
-               Service.trusted_call("memory::recall", %{"query" => "no-such-recall-contract-term"})
+               trusted_call("memory::recall", %{"query" => "no-such-recall-contract-term"})
     end
 
     test "applies scope, agent, host, and tag filters" do
@@ -640,7 +759,7 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       assert {:ok, %{results: [%{id: id}]}} =
-               Service.trusted_call("memory::recall", %{
+               trusted_call("memory::recall", %{
                  "query" => "filtered recall contract",
                  "scope" => "filtered-scope",
                  "agent_id" => "filtered-agent",
@@ -664,7 +783,7 @@ defmodule Backplane.Memory.ServiceTest do
       end
 
       assert {:ok, %{results: results}} =
-               Service.trusted_call("memory::recall", %{
+               trusted_call("memory::recall", %{
                  "query" => "default recall contract",
                  "scope" => scope
                })
@@ -673,7 +792,7 @@ defmodule Backplane.Memory.ServiceTest do
     end
 
     test "returns error when query is missing" do
-      assert {:error, _} = Service.trusted_call("memory::recall", %{})
+      assert {:error, _} = trusted_call("memory::recall", %{})
     end
   end
 
@@ -682,12 +801,12 @@ defmodule Backplane.Memory.ServiceTest do
       {:ok, _} = Memories.remember("Tokyo is in Japan.", agent_id: "a", host_id: "h")
 
       assert {:ok, %{results: [%{id: _, content: _, scope: _}]}} =
-               Service.trusted_call("memory::list", %{"q" => "Tokyo"})
+               trusted_call("memory::list", %{"q" => "Tokyo"})
     end
 
     test "returns an empty result set when filters do not match" do
       assert {:ok, %{results: []}} =
-               Service.trusted_call("memory::list", %{"scope" => "missing-list-contract-scope"})
+               trusted_call("memory::list", %{"scope" => "missing-list-contract-scope"})
     end
 
     test "applies type, scope, agent, tag, and substring filters" do
@@ -710,7 +829,7 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       assert {:ok, %{results: [%{id: id}]}} =
-               Service.trusted_call("memory::list", %{
+               trusted_call("memory::list", %{
                  "type" => "procedural",
                  "scope" => "list-scope",
                  "agent_id" => "list-agent",
@@ -732,7 +851,7 @@ defmodule Backplane.Memory.ServiceTest do
           timestamp = DateTime.add(base_time, i, :second)
 
           {id,
-           %{
+           Map.merge(TestPartition.root_attrs(:memory, scope), %{
              id: id,
              content: content,
              memory_type: "semantic",
@@ -742,13 +861,13 @@ defmodule Backplane.Memory.ServiceTest do
              content_hash: :crypto.hash(:sha256, content),
              inserted_at: timestamp,
              updated_at: timestamp
-           }}
+           })}
         end
 
       {51, nil} = repo().insert_all(MemorySchema, Enum.map(entries, &elem(&1, 1)))
 
       assert {:ok, %{results: results}} =
-               Service.trusted_call("memory::list", %{"scope" => scope})
+               trusted_call("memory::list", %{"scope" => scope})
 
       expected_ids = entries |> Enum.reverse() |> Enum.take(50) |> Enum.map(&elem(&1, 0))
       assert Enum.map(results, & &1.id) == expected_ids
@@ -760,7 +879,7 @@ defmodule Backplane.Memory.ServiceTest do
       {:ok, mem} = Memories.remember("Berlin is in Germany.", agent_id: "a", host_id: "h")
 
       assert {:ok, %{id: id, status: "deleted"}} =
-               Service.trusted_call("memory::forget", %{"id" => mem.id})
+               trusted_call("memory::forget", %{"id" => mem.id})
 
       assert id == mem.id
       assert {:error, :not_found} = Memories.trusted_get(mem.id)
@@ -768,7 +887,7 @@ defmodule Backplane.Memory.ServiceTest do
 
     test "returns error for unknown id" do
       assert {:error, "memory not found"} =
-               Service.trusted_call("memory::forget", %{"id" => Ecto.UUID.generate()})
+               trusted_call("memory::forget", %{"id" => Ecto.UUID.generate()})
     end
 
     test "returns a stable error when hard deletion would discard provenance" do
@@ -779,25 +898,25 @@ defmodule Backplane.Memory.ServiceTest do
       {:ok, mem} = Memories.remember("service retained", agent_id: "a", host_id: "h")
 
       assert {:error, "memory provenance retained"} =
-               Service.trusted_call("memory::forget", %{"id" => mem.id})
+               trusted_call("memory::forget", %{"id" => mem.id})
 
       assert {:ok, ^mem} = Memories.trusted_get(mem.id)
     end
 
     test "returns an error when id is missing" do
       assert {:error, "id is required and must be a string"} =
-               Service.trusted_call("memory::forget", %{})
+               trusted_call("memory::forget", %{})
     end
   end
 
   describe "handle_stats/1" do
     test "returns an empty collection when there are no memories" do
-      assert {:ok, %{stats: []}} = Service.trusted_call("memory::stats", %{})
+      assert {:ok, %{stats: []}} = trusted_call("memory::stats", %{})
     end
 
     test "returns stats grouped by memory_type" do
       {:ok, _} = Memories.remember("s1", agent_id: "a", host_id: "h", type: "semantic")
-      assert {:ok, %{stats: stats}} = Service.trusted_call("memory::stats", %{})
+      assert {:ok, %{stats: stats}} = trusted_call("memory::stats", %{})
       assert Enum.any?(stats, &(&1.memory_type == "semantic"))
     end
   end
@@ -808,7 +927,7 @@ defmodule Backplane.Memory.ServiceTest do
       host = create_memory_host!("profile", project)
       args = Map.put(trusted_args(host), "project", project)
 
-      assert {:ok, %{status: "building"}} = Service.trusted_call("memory::profile", args)
+      assert {:ok, %{status: "building"}} = trusted_call("memory::profile", args)
 
       assert {:ok,
               %{
@@ -818,11 +937,11 @@ defmodule Backplane.Memory.ServiceTest do
                 patterns: %{},
                 session_count: 0,
                 total_observations: 0
-              }} = Service.trusted_call("memory::profile", args)
+              }} = trusted_call("memory::profile", args)
     end
 
     test "returns an error when project is missing" do
-      assert {:error, "project is required"} = Service.trusted_call("memory::profile", %{})
+      assert {:error, "project is required"} = trusted_call("memory::profile", %{})
     end
   end
 
@@ -832,7 +951,7 @@ defmodule Backplane.Memory.ServiceTest do
       {:ok, other} = Observations.record("file-history-other", "updated lib/contract.ex")
 
       assert {:ok, %{results: [%{id: id, session_id: "file-history-other"}]}} =
-               Service.trusted_call("memory::file_history", %{
+               trusted_call("memory::file_history", %{
                  "files" => ["lib/contract.ex"],
                  "exclude_session" => "file-history-mine",
                  "limit" => 1
@@ -843,7 +962,7 @@ defmodule Backplane.Memory.ServiceTest do
 
     test "returns an empty result set for unmatched files" do
       assert {:ok, %{results: []}} =
-               Service.trusted_call("memory::file_history", %{"files" => ["missing/contract.ex"]})
+               trusted_call("memory::file_history", %{"files" => ["missing/contract.ex"]})
     end
 
     test "defaults the result limit to the newest 50 observations" do
@@ -856,19 +975,19 @@ defmodule Backplane.Memory.ServiceTest do
           id = Ecto.UUID.generate()
 
           {id,
-           %{
+           Map.merge(TestPartition.root_attrs(:observation), %{
              id: id,
              session_id: session_id,
              content: "file history default contract #{i}",
              files: %{"paths" => [path]},
              created_at: DateTime.add(base_time, i, :second)
-           }}
+           })}
         end
 
       {51, nil} = repo().insert_all(Observation, Enum.map(entries, &elem(&1, 1)))
 
       assert {:ok, %{results: results}} =
-               Service.trusted_call("memory::file_history", %{"files" => [path]})
+               trusted_call("memory::file_history", %{"files" => [path]})
 
       expected_ids = entries |> Enum.reverse() |> Enum.take(50) |> Enum.map(&elem(&1, 0))
       assert Enum.map(results, & &1.id) == expected_ids
@@ -876,14 +995,14 @@ defmodule Backplane.Memory.ServiceTest do
 
     test "returns an error when files is missing" do
       assert {:error, "files is required and must be an array"} =
-               Service.trusted_call("memory::file_history", %{})
+               trusted_call("memory::file_history", %{})
     end
   end
 
   describe "handle_sessions/1" do
     test "returns an empty result set when no sessions exist" do
       assert {:ok, %{sessions: []}} =
-               Service.trusted_call("memory::sessions", %{
+               trusted_call("memory::sessions", %{
                  "session_id" => "missing-#{System.unique_integer([:positive])}"
                })
     end
@@ -893,7 +1012,7 @@ defmodule Backplane.Memory.ServiceTest do
       {:ok, _decoy} = Observations.register_session("session-contract-decoy", "project-b")
 
       assert {:ok, %{sessions: []}} =
-               Service.trusted_call("memory::sessions", %{"project" => "project-a"})
+               trusted_call("memory::sessions", %{"project" => "project-a"})
 
       assert target.project == "project-a"
     end
@@ -907,17 +1026,17 @@ defmodule Backplane.Memory.ServiceTest do
           session_id = "sessions-default-#{i}"
 
           {session_id,
-           %{
+           Map.merge(TestPartition.root_attrs(:session), %{
              session_id: session_id,
              project: project,
              started_at: DateTime.add(base_time, i, :second)
-           }}
+           })}
         end
 
       {21, nil} = repo().insert_all(Session, Enum.map(entries, &elem(&1, 1)))
 
       assert {:ok, %{sessions: sessions}} =
-               Service.trusted_call("memory::sessions", %{"project" => project})
+               trusted_call("memory::sessions", %{"project" => project})
 
       assert sessions == []
     end
@@ -926,7 +1045,7 @@ defmodule Backplane.Memory.ServiceTest do
   describe "handle_timeline/1" do
     test "returns an empty timeline when there are no observations" do
       assert {:ok, %{timeline: []}} =
-               Service.trusted_call("memory::timeline", %{
+               trusted_call("memory::timeline", %{
                  "session_id" => "missing-#{System.unique_integer([:positive])}"
                })
     end
@@ -938,28 +1057,28 @@ defmodule Backplane.Memory.ServiceTest do
 
       {3, nil} =
         repo().insert_all(Observation, [
-          %{
+          Map.merge(TestPartition.root_attrs(:observation), %{
             id: first_id,
             session_id: "timeline-a",
             content: "timeline contract first",
             created_at: ~U[2026-01-01 00:00:01.000000Z]
-          },
-          %{
+          }),
+          Map.merge(TestPartition.root_attrs(:observation), %{
             id: second_id,
             session_id: "timeline-a",
             content: "timeline contract second",
             created_at: ~U[2026-01-01 00:00:02.000000Z]
-          },
-          %{
+          }),
+          Map.merge(TestPartition.root_attrs(:observation), %{
             id: other_id,
             session_id: "timeline-b",
             content: "timeline contract other",
             created_at: ~U[2026-01-01 00:00:03.000000Z]
-          }
+          })
         ])
 
       assert {:ok, %{timeline: []}} =
-               Service.trusted_call("memory::timeline", %{"session_id" => "timeline-a"})
+               trusted_call("memory::timeline", %{"session_id" => "timeline-a"})
     end
 
     test "does not load legacy observations into the bounded default page" do
@@ -971,18 +1090,18 @@ defmodule Backplane.Memory.ServiceTest do
           id = Ecto.UUID.generate()
 
           {id,
-           %{
+           Map.merge(TestPartition.root_attrs(:observation), %{
              id: id,
              session_id: session_id,
              content: "timeline default contract #{i}",
              created_at: DateTime.add(base_time, i, :second)
-           }}
+           })}
         end
 
       {51, nil} = repo().insert_all(Observation, Enum.map(entries, &elem(&1, 1)))
 
       assert {:ok, %{timeline: []}} =
-               Service.trusted_call("memory::timeline", %{"session_id" => session_id})
+               trusted_call("memory::timeline", %{"session_id" => session_id})
     end
   end
 
@@ -994,7 +1113,7 @@ defmodule Backplane.Memory.ServiceTest do
 
       Oban.Testing.with_testing_mode(:manual, fn ->
         assert {:ok, %{status: "queued", session_id: ^missing_session}} =
-                 Service.trusted_call("memory::consolidate", args)
+                 trusted_call("memory::consolidate", args)
 
         assert Oban.Testing.assert_enqueued(
                  repo(),
@@ -1005,7 +1124,7 @@ defmodule Backplane.Memory.ServiceTest do
     end
 
     test "returns an error when session_id is missing" do
-      assert {:error, "session_id is required"} = Service.trusted_call("memory::consolidate", %{})
+      assert {:error, "session_id is required"} = trusted_call("memory::consolidate", %{})
     end
   end
 
@@ -1029,7 +1148,7 @@ defmodule Backplane.Memory.ServiceTest do
         })
 
       assert {:ok, %{status: "compressed", memory_id: memory_id}} =
-               Service.trusted_call("memory::compress_file", args)
+               trusted_call("memory::compress_file", args)
 
       assert [
                %{source_type: "request"},
@@ -1047,7 +1166,7 @@ defmodule Backplane.Memory.ServiceTest do
       refute Enum.any?(Memories.list_evidence(memory_id), &(&1.source_id == excluded.id))
 
       counts = {repo().aggregate(RememberRequest, :count), repo().aggregate(Evidence, :count)}
-      assert {:ok, %{memory_id: ^memory_id}} = Service.trusted_call("memory::compress_file", args)
+      assert {:ok, %{memory_id: ^memory_id}} = trusted_call("memory::compress_file", args)
 
       assert counts ==
                {repo().aggregate(RememberRequest, :count), repo().aggregate(Evidence, :count)}
@@ -1062,7 +1181,8 @@ defmodule Backplane.Memory.ServiceTest do
 
       {:ok, _} =
         authoritative_observation("other-host-session", "other host changed #{path}",
-          host_id: "host-b"
+          host_id: "host-b",
+          memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!("foreign-owner")
         )
 
       {:ok, other_agent} =
@@ -1071,7 +1191,7 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       assert {:ok, %{memory_id: memory_id}} =
-               Service.trusted_call("memory::compress_file", %{
+               trusted_call("memory::compress_file", %{
                  "file_path" => path,
                  "agent_id" => "compressor",
                  "host_id" => "host-a",
@@ -1103,12 +1223,17 @@ defmodule Backplane.Memory.ServiceTest do
     }
 
     Observations.record(session_id, content,
+      memory_space_id: Keyword.get(opts, :memory_space_id),
       host_id: partition.host_id,
       client_id: partition.client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
       agent_id: Keyword.get(opts, :agent_id, "compressor"),
       trusted_partition: partition
     )
   end
+
+  defp trusted_call(name, args), do: Service.trusted_call(name, TestPartition.trusted_args(args))
 
   defp compression_partition do
     %{

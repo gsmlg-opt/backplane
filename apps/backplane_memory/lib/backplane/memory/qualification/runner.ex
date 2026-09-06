@@ -10,6 +10,7 @@ defmodule Backplane.Memory.Qualification.Runner do
   alias Backplane.Memory.Qualification
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{ProjectionRepairWorker, SummaryWorker}
+  alias Backplane.MemorySpaces.MemorySpace
 
   @max_batch_size 100
   @default_ingest_concurrency 20
@@ -313,7 +314,12 @@ defmodule Backplane.Memory.Qualification.Runner do
           :ok =
             SummaryWorker.perform(%Oban.Job{
               args: %{
+                "memory_space_id" => projection.memory_space_id,
                 "host_id" => host_id,
+                "client_id" => projection.client_id,
+                "source_client_id" => projection.source_client_id,
+                "scope" => projection.scope,
+                "namespace" => projection.namespace,
                 "session_id" => session_id,
                 "processing_version" => "summary-v1",
                 "input_revision" => projection.input_revision
@@ -481,17 +487,38 @@ defmodule Backplane.Memory.Qualification.Runner do
   end
 
   defp auth_context(host_id) do
+    memory_space_id = ensure_memory_space!(host_id)
+
     %{
       host_id: host_id,
       auth_token_id: "qualification-token",
       scopes: ["host_agent.capture"],
       partition: %{
+        memory_space_id: memory_space_id,
         host_id: host_id,
+        source_client_id: "qualification-runner",
         partition_id: "host:#{host_id}",
-        scope: "proj_local",
+        scope: "project:memory-v2-qualification",
         namespace: "private"
       }
     }
+  end
+
+  defp ensure_memory_space!(host_id) do
+    memory_space_id = stable_uuid("qualification:" <> host_id)
+
+    {:ok, _space} =
+      %MemorySpace{}
+      |> MemorySpace.changeset(%{id: memory_space_id, kind: "private", status: "active"})
+      |> repo().insert(on_conflict: :nothing)
+
+    memory_space_id
+  end
+
+  defp stable_uuid(value) do
+    digest = :crypto.hash(:md5, value)
+    {:ok, uuid} = Ecto.UUID.load(digest)
+    uuid
   end
 
   defp validate_count(value) when is_integer(value) and value > 0, do: :ok

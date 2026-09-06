@@ -69,11 +69,28 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert [audit] = Audit.list(operation: "session.abandoned")
     assert audit.target_ids["event_id"] == abandonment.id
     assert audit.metadata["correlation_id"] == abandonment.correlation_id
+    assert audit.metadata["memory_space_id"] == abandonment.memory_space_id
+    assert audit.metadata["host_id"] == abandonment.host_id
+    assert audit.metadata["client_id"] == abandonment.client_id
+    assert audit.metadata["source_client_id"] == abandonment.source_client_id
+    assert audit.metadata["scope"] == abandonment.scope
+    assert audit.metadata["namespace"] == abandonment.namespace
 
     assert [] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
 
     assert {:ok, %{abandoned: 0, enqueued: 1, swept: 1}} = sweep(shift(now, 60))
     assert [_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+
+    assert [%{metadata: summary_metadata}] =
+             Audit.list(operation: "session.summary_enqueued")
+
+    assert summary_metadata["memory_space_id"] == abandonment.memory_space_id
+    assert summary_metadata["host_id"] == abandonment.host_id
+    assert summary_metadata["client_id"] == abandonment.client_id
+    assert summary_metadata["source_client_id"] == abandonment.source_client_id
+    assert summary_metadata["scope"] == abandonment.scope
+    assert summary_metadata["namespace"] == abandonment.namespace
+
     assert {:ok, %{enqueued: 0, swept: 0}} = sweep(shift(now, 61))
     assert [_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
   end
@@ -155,8 +172,13 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
       assert {:ok, _} = Rebuild.session(host_id, session_id)
     end
 
-    Observations.register_session(session_id, "legacy-decoy")
-    Observations.end_session(session_id)
+    legacy_partition = canonical_partition("legacy-decoy")
+    legacy_opts = Map.to_list(legacy_partition)
+
+    assert {:ok, _legacy_session} =
+             Observations.register_session(session_id, "legacy-decoy", legacy_opts)
+
+    assert {1, nil} = Observations.end_session(session_id, legacy_opts)
 
     repo().update_all(
       from(session in Backplane.Memory.Observations.Session,

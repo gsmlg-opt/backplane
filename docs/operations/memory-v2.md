@@ -108,6 +108,7 @@ devenv shell -- mix memory.projections.rebuild --failed-only \
   --continue-on-error --page-size 100 --max-subjects 500 \
   --run-id failed-projections
 devenv shell -- mix memory.activity.verify \
+  --memory-space MEMORY_SPACE_ID \
   --client CLIENT_ID --scope SCOPE --namespace NAMESPACE
 ```
 
@@ -140,6 +141,7 @@ client/scope/namespace partition. A non-zero drift count blocks cutover.
 
   ```sh
   devenv shell -- mix memory.activity.verify \
+    --memory-space MEMORY_SPACE_ID \
     --client CLIENT_ID --scope SCOPE --namespace NAMESPACE \
     --from YYYY-MM-DD --to YYYY-MM-DD --repair
   ```

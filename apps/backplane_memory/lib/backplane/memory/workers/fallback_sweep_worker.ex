@@ -134,11 +134,13 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
     attrs = %{
       id: Ecto.UUID.generate(),
       stream_id: source.stream_id,
+      memory_space_id: source.memory_space_id,
       project: session.project,
       namespace: source.namespace,
       agent_id: session.agent_id,
       host_id: session.host_id,
       client_id: source.client_id,
+      source_client_id: source.source_client_id,
       session_id: session.session_id,
       event_type: "agent.session.abandoned",
       actor_type: "system",
@@ -177,6 +179,12 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
           %{
             "correlation_id" => correlation_id,
             "input_revision" => session.input_revision,
+            "memory_space_id" => session.memory_space_id,
+            "host_id" => session.host_id,
+            "client_id" => session.client_id,
+            "source_client_id" => session.source_client_id,
+            "scope" => session.scope,
+            "namespace" => session.namespace,
             "stale_after_seconds" => Config.session_stale_after_seconds()
           }
         )
@@ -204,7 +212,15 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
             "host_id" => session.host_id,
             "session_id" => session.session_id
           },
-          %{"input_revision" => session.input_revision}
+          %{
+            "input_revision" => session.input_revision,
+            "memory_space_id" => session.memory_space_id,
+            "host_id" => session.host_id,
+            "client_id" => session.client_id,
+            "source_client_id" => session.source_client_id,
+            "scope" => session.scope,
+            "namespace" => session.namespace
+          }
         )
 
         :enqueued

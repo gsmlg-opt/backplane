@@ -6,7 +6,6 @@ defmodule Backplane.Memory.Memories.Relations do
   alias Backplane.Memory.Audit
 
   alias Backplane.Memory.Memories.{
-    Attribution,
     Evidence,
     Memory,
     Relation,
@@ -392,12 +391,8 @@ defmodule Backplane.Memory.Memories.Relations do
   end
 
   defp validate_partition!(source, target) do
-    fields = [:host_id, :scope, :namespace, :memory_type]
-
-    equal? =
-      Enum.all?(fields, &(Map.fetch!(source, &1) == Map.fetch!(target, &1))) and
-        Attribution.project(source.metadata) == Attribution.project(target.metadata) and
-        (source.client_id || "") == (target.client_id || "")
+    fields = [:memory_space_id, :scope, :namespace]
+    equal? = Enum.all?(fields, &(Map.fetch!(source, &1) == Map.fetch!(target, &1)))
 
     if equal?, do: :ok, else: repo().rollback(:partition_mismatch)
   end
@@ -552,6 +547,7 @@ defmodule Backplane.Memory.Memories.Relations do
     correlation_ids = traces |> Enum.flat_map(& &1.correlation_ids) |> Enum.uniq() |> Enum.sort()
 
     %{
+      memory_space_id: source.memory_space_id,
       host_id: source.host_id,
       client_id: source.client_id,
       scope: source.scope,

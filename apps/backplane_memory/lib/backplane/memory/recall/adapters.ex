@@ -43,6 +43,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         kind: :memory,
         memory_type: value(artifact, :memory_type),
         content: value(artifact, :content),
+        memory_space_id: value(partition, :memory_space_id),
         host_id: value(partition, :host_id),
         client_id: value(partition, :client_id),
         scope: value(partition, :scope),
@@ -75,6 +76,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         kind: :crystal,
         memory_type: :episodic,
         content: value(artifact, :content),
+        memory_space_id: value(partition, :memory_space_id),
         host_id: value(partition, :host_id),
         client_id: value(partition, :client_id),
         scope: value(partition, :scope),
@@ -148,6 +150,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         kind: :lesson,
         memory_type: :procedural,
         content: value(memory, :content),
+        memory_space_id: value(partition, :memory_space_id),
         host_id: value(partition, :host_id),
         client_id: value(partition, :client_id),
         scope: value(partition, :scope),
@@ -186,6 +189,7 @@ defmodule Backplane.Memory.Recall.Adapters do
       kind: kind,
       memory_type: memory_type,
       content: value(artifact, :content),
+      memory_space_id: value(partition, :memory_space_id),
       host_id: value(partition, :host_id),
       client_id: value(partition, :client_id),
       scope: value(partition, :scope),
@@ -239,29 +243,33 @@ defmodule Backplane.Memory.Recall.Adapters do
     do: {:error, :invalid_provenance}
 
   defp artifact_partition(artifact, partition) when is_map(partition) do
-    keys = [:host_id, :client_id, :scope, :namespace]
-
-    if Enum.all?(keys, &artifact_partition_matches?(artifact, partition, &1)),
-      do: :ok,
-      else: {:error, :partition_mismatch}
+    with {:ok, canonical} <- Backplane.Memory.PartitionIdentity.validate(partition),
+         true <-
+           Enum.all?(
+             [:memory_space_id, :scope, :namespace],
+             &artifact_partition_matches?(artifact, canonical, &1)
+           ) do
+      :ok
+    else
+      false -> {:error, :partition_mismatch}
+      {:error, _reason} -> {:error, :invalid_partition}
+    end
   end
 
   defp artifact_partition(_artifact, _partition), do: {:error, :invalid_partition}
 
   defp validate_empty_partition(partition) do
-    if Enum.all?(
-         [:host_id, :client_id, :scope, :namespace],
-         &valid_partition_value?(value(partition, &1))
-       ),
-       do: {:ok, []},
-       else: {:error, :invalid_partition}
+    case Backplane.Memory.PartitionIdentity.validate(partition) do
+      {:ok, _canonical} -> {:ok, []}
+      {:error, _reason} -> {:error, :invalid_partition}
+    end
   end
 
   defp artifact_partition_matches?(artifact, partition, key) do
     expected = value(partition, key)
     actual = value(artifact, key)
 
-    valid_partition_value?(expected) and (is_nil(actual) or actual == expected)
+    valid_partition_value?(expected) and actual == expected
   end
 
   defp valid_partition_value?(value), do: is_binary(value) and String.trim(value) != ""

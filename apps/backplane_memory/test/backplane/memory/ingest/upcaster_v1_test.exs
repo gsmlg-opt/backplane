@@ -10,6 +10,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
 
     assert attrs.id == raw["event_id"]
+    assert attrs.memory_space_id == memory_space_id("host-1")
     assert attrs.stream_id == "capture:host-1:session-1"
     assert attrs.namespace == "private"
     refute Map.has_key?(attrs, :sequence)
@@ -19,6 +20,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert attrs.idempotency_key == "capture:6:host-1:codex:session-1:1"
     assert attrs.raw_envelope["payload"] == raw["payload"]
     assert attrs.client_id == "host:host-1"
+    assert attrs.source_client_id == "codex-cli"
     assert attrs.raw_envelope["client_id"] == "host:host-1"
     assert attrs.scope == "proj_local"
     assert attrs.raw_envelope["scope"] == "proj_local"
@@ -105,6 +107,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
         host_id: host_id,
         auth_token_id: "token-1",
         partition: %{
+          memory_space_id: memory_space_id(host_id),
           host_id: host_id,
           partition_id: "host:#{host_id}",
           scope: "proj_local",

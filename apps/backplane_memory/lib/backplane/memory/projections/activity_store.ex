@@ -7,13 +7,22 @@ defmodule Backplane.Memory.Projections.ActivityStore do
   alias Backplane.Memory.Projections.{ActivityContribution, ActivityDaily}
 
   @processing_version "activity-v1"
-  @dimensions ~w(date project agent_id host_id client_id scope namespace event_type)a
+  @dimensions ~w(memory_space_id date project agent_id host_id client_id scope namespace event_type)a
   @counters ~w(event_count session_count memory_count lesson_count crystal_count recall_count action_count error_count)a
 
   @doc "Replaces one subject contribution inside the caller's database transaction."
-  def replace_subject!(subject_id, input_revision, projected_rows)
+  def replace_subject!(subject_id, input_revision, partition, projected_rows)
       when is_binary(subject_id) and is_binary(input_revision) and is_list(projected_rows) do
-    rows = Enum.map(projected_rows, &normalize_row!/1)
+    {:ok, partition} = Backplane.Memory.PartitionIdentity.validate(partition)
+
+    rows =
+      Enum.map(projected_rows, fn row ->
+        row
+        |> Map.put("memory_space_id", partition.memory_space_id)
+        |> Map.put("source_client_id", partition[:source_client_id])
+        |> normalize_row!()
+      end)
+
     old_keys = subject_keys(subject_id)
     new_keys = Enum.map(rows, &key/1)
     affected_keys = Enum.sort(Enum.uniq(old_keys ++ new_keys))
@@ -42,7 +51,7 @@ defmodule Backplane.Memory.Projections.ActivityStore do
     :ok
   end
 
-  def replace_subject!(_subject_id, _input_revision, _rows),
+  def replace_subject!(_subject_id, _input_revision, _partition, _rows),
     do: raise(ArgumentError, "invalid activity replacement")
 
   @doc false
@@ -56,11 +65,13 @@ defmodule Backplane.Memory.Projections.ActivityStore do
 
   defp normalize_row!(row) when is_map(row) do
     normalized = %{
+      memory_space_id: required_dimension!(value(row, :memory_space_id), :memory_space_id),
       date: date!(value(row, :date)),
       project: optional_dimension(value(row, :project)),
       agent_id: optional_dimension(value(row, :agent_id)),
       host_id: required_dimension!(value(row, :host_id), :host_id),
       client_id: required_dimension!(value(row, :client_id), :client_id),
+      source_client_id: optional_dimension(value(row, :source_client_id)),
       scope: required_dimension!(value(row, :scope), :scope),
       namespace: required_dimension!(value(row, :namespace), :namespace),
       event_type: required_dimension!(value(row, :event_type), :event_type)
@@ -104,6 +115,7 @@ defmodule Backplane.Memory.Projections.ActivityStore do
       from(c in ActivityContribution,
         where: c.subject_id == ^subject_id,
         select: {
+          c.memory_space_id,
           c.date,
           c.project,
           c.agent_id,
@@ -134,6 +146,7 @@ defmodule Backplane.Memory.Projections.ActivityStore do
       repo().one(
         from(c in query,
           select: %{
+            source_client_id: fragment("(array_agg(?))[1]", c.source_client_id),
             event_count: sum(c.event_count),
             session_count: sum(c.session_count),
             memory_count: sum(c.memory_count),
@@ -149,12 +162,23 @@ defmodule Backplane.Memory.Projections.ActivityStore do
     if is_nil(totals.event_count) do
       repo().delete_all(daily_key_query(key))
     else
-      totals = Map.new(totals, fn {counter, value} -> {counter, Decimal.to_integer(value)} end)
+      identity = Map.take(totals, [:source_client_id])
+
+      totals =
+        totals
+        |> Map.take(@counters)
+        |> Map.new(fn {counter, value} -> {counter, Decimal.to_integer(value)} end)
+
       dimensions = Map.new(Enum.zip(@dimensions, Tuple.to_list(key)))
 
       repo().insert_all(
         ActivityDaily,
-        [Map.merge(dimensions, totals) |> Map.merge(%{inserted_at: now, updated_at: now})],
+        [
+          dimensions
+          |> Map.merge(identity)
+          |> Map.merge(totals)
+          |> Map.merge(%{inserted_at: now, updated_at: now})
+        ],
         on_conflict: {:replace, @counters ++ [:updated_at]},
         conflict_target: @dimensions
       )

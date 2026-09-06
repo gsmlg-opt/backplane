@@ -3,6 +3,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
 
   alias Backplane.Memory.{Audit, Memories, Service}
   alias Backplane.Memory.Coordination.Action
+  alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
 
   @extended_tool_names ~w(
@@ -956,6 +957,8 @@ defmodule Backplane.Memory.ServiceToolsTest do
   end
 
   test "memory::action_create records each supplied provenance origin" do
+    partition = string_partition("service-action-owner", scope: "service-actions")
+
     ids = %{
       observation: Ecto.UUID.generate(),
       memory: Ecto.UUID.generate(),
@@ -964,14 +967,17 @@ defmodule Backplane.Memory.ServiceToolsTest do
     }
 
     assert {:ok, %{id: action_id}} =
-             Service.trusted_call("memory::action_create", %{
-               "title" => "Traceable tool action",
-               "source_observation_ids" => [ids.observation],
-               "source_memory_ids" => [ids.memory],
-               "source_session_ids" => ["session-a"],
-               "source_lesson_ids" => [ids.lesson],
-               "source_crystal_ids" => [ids.crystal]
-             })
+             Service.trusted_call(
+               "memory::action_create",
+               Map.merge(partition, %{
+                 "title" => "Traceable tool action",
+                 "source_observation_ids" => [ids.observation],
+                 "source_memory_ids" => [ids.memory],
+                 "source_session_ids" => ["session-a"],
+                 "source_lesson_ids" => [ids.lesson],
+                 "source_crystal_ids" => [ids.crystal]
+               })
+             )
 
     action = repo().get!(Action, action_id)
     assert action.source_observation_ids == [ids.observation]
@@ -993,11 +999,15 @@ defmodule Backplane.Memory.ServiceToolsTest do
       )
 
     client_id = "host:#{host.id}"
+    assert {:ok, partition} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
 
     assert {:ok, memory} =
-             Memories.remember("export secret",
+             Memories.remember(
+               "export secret",
+               memory_space_id: partition.memory_space_id,
                host_id: host.id,
                client_id: client_id,
+               source_client_id: client_id,
                scope: host.memory_scope,
                namespace: "private",
                agent_id: "export-agent"
@@ -1013,6 +1023,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
     assert {:ok, %{count: 1}} = Service.call("memory::export", %{}, auth)
 
     partition = %{
+      memory_space_id: partition.memory_space_id,
       host_id: host.id,
       client_id: client_id,
       scope: host.memory_scope,
@@ -1036,12 +1047,13 @@ defmodule Backplane.Memory.ServiceToolsTest do
   describe "handle_governance_delete/1" do
     test "soft-deletes a memory and writes an audit entry" do
       {:ok, mem} =
-        Memories.remember("temporary fact",
-          agent_id: "gov_agent",
-          host_id: "gov_host",
-          client_id: "gov_client",
-          scope: "gov_scope",
-          namespace: "private"
+        Memories.remember(
+          "temporary fact",
+          canonical_memory_opts("gov_host",
+            agent_id: "gov_agent",
+            client_id: "gov_client",
+            scope: "gov_scope"
+          )
         )
 
       assert {:ok, result} =
@@ -1071,12 +1083,13 @@ defmodule Backplane.Memory.ServiceToolsTest do
 
     test "governance audit failure rolls back tombstone and both audit writes" do
       {:ok, mem} =
-        Memories.remember("atomic governance",
-          agent_id: "gov_agent",
-          host_id: "gov_host",
-          client_id: "gov_client",
-          scope: "gov_scope",
-          namespace: "private"
+        Memories.remember(
+          "atomic governance",
+          canonical_memory_opts("gov_host",
+            agent_id: "gov_agent",
+            client_id: "gov_client",
+            scope: "gov_scope"
+          )
         )
 
       repo().query!("""
@@ -1126,14 +1139,20 @@ defmodule Backplane.Memory.ServiceToolsTest do
       on_exit(fn -> Backplane.Settings.set("memory.hard_delete_enabled", previous) end)
 
       {:ok, mem} =
-        Memories.remember("governance retained", agent_id: "gov_agent", host_id: "gov_host")
+        Memories.remember(
+          "governance retained",
+          canonical_memory_opts("gov_host", agent_id: "gov_agent")
+        )
 
       assert {:error, "memory provenance retained"} =
-               Service.trusted_call("memory::governance_delete", %{
-                 "memory_id" => mem.id,
-                 "actor" => "admin",
-                 "reason" => "must retain provenance"
-               })
+               Service.trusted_call(
+                 "memory::governance_delete",
+                 Map.merge(memory_partition(mem), %{
+                   "memory_id" => mem.id,
+                   "actor" => "admin",
+                   "reason" => "must retain provenance"
+                 })
+               )
 
       assert {:ok, ^mem} = Memories.trusted_get(mem.id)
 
@@ -1175,6 +1194,9 @@ defmodule Backplane.Memory.ServiceToolsTest do
             memory_scope: "scope:resources"
           })
         )
+
+      assert {:ok, _partition} =
+               MemorySpaces.provision_private_host(host.id, host.memory_scope)
 
       auth = %{
         kind: :client_token,
@@ -1276,10 +1298,17 @@ defmodule Backplane.Memory.ServiceToolsTest do
 
   defp memory_partition(memory) do
     %{
+      "memory_space_id" => memory.memory_space_id,
       "host_id" => memory.host_id,
       "client_id" => memory.client_id,
       "scope" => memory.scope,
       "namespace" => memory.namespace
     }
+  end
+
+  defp string_partition(host_id, opts) do
+    host_id
+    |> canonical_partition(opts)
+    |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
   end
 end

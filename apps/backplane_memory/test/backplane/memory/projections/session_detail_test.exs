@@ -87,8 +87,10 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
       |> Memory.changeset(%{
         content: "Session memory",
         memory_type: "semantic",
+        memory_space_id: partition.memory_space_id,
         host_id: host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         agent_id: "agent-1",
@@ -105,8 +107,10 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
       %Action{}
       |> Action.changeset(%{
         title: "Follow up",
+        memory_space_id: partition.memory_space_id,
         host_id: host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         project: project,
@@ -121,8 +125,10 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
       |> Crystal.changeset(%{
         memory_id: memory.id,
         subject_id: rebuilt.subject_id,
+        memory_space_id: partition.memory_space_id,
         host_id: host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         source_session_id: session_id,
@@ -145,7 +151,12 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
         content: "Implemented full session detail",
         observation_count: 3,
         subject_id: rebuilt.subject_id,
+        memory_space_id: partition.memory_space_id,
         host_id: host_id,
+        client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
+        scope: partition.scope,
+        namespace: partition.namespace,
         agent_id: "agent-1",
         processing_version: "summary-v1",
         input_revision: rebuilt.input_revision,
@@ -154,6 +165,11 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
       |> repo().insert!()
 
     repo().insert!(%State{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      source_client_id: partition.source_client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
       projector: "summary",
       subject_type: "captured_session",
       subject_id: rebuilt.subject_id,
@@ -238,12 +254,7 @@ defmodule Backplane.Memory.Projections.SessionDetailTest do
   end
 
   defp partition(host_id) do
-    %{
-      host_id: host_id,
-      client_id: "host:#{host_id}",
-      scope: "project:backplane",
-      namespace: "private"
-    }
+    canonical_partition(host_id, scope: "project:backplane")
   end
 
   defp unique(prefix),

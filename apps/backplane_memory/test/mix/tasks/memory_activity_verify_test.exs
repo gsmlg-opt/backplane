@@ -9,9 +9,13 @@ defmodule Mix.Tasks.Memory.Activity.VerifyTest do
   end
 
   test "verifies and repairs a bounded partition window" do
+    memory_space_id = canonical_partition("activity-verify-task").memory_space_id
+
     output =
       capture_io(fn ->
         run_task([
+          "--memory-space",
+          memory_space_id,
           "--client",
           "task-client",
           "--scope",
@@ -31,6 +35,7 @@ defmodule Mix.Tasks.Memory.Activity.VerifyTest do
     repaired =
       capture_io(fn ->
         run_task([
+          "--memory-space=#{memory_space_id}",
           "--client=task-client",
           "--scope=task-scope",
           "--namespace=private",

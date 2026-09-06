@@ -38,8 +38,14 @@ defmodule Backplane.Memory.Projections.RebuildTest do
 
   test "targeted rebuild writes four production read-model projections" do
     session_id = unique("target")
+    legacy_partition = canonical_partition("legacy-target")
 
     repo().insert!(%Session{
+      memory_space_id: legacy_partition.memory_space_id,
+      host_id: legacy_partition.host_id,
+      source_client_id: legacy_partition.source_client_id,
+      scope: legacy_partition.scope,
+      namespace: legacy_partition.namespace,
       session_id: session_id,
       project: "/legacy/project",
       started_at: ~U[2026-08-04 00:59:00.000000Z],
@@ -47,8 +53,25 @@ defmodule Backplane.Memory.Projections.RebuildTest do
       observation_count: 7
     })
 
-    repo().insert!(%Observation{session_id: session_id, content: "legacy one"})
-    repo().insert!(%Observation{session_id: session_id, content: "legacy two"})
+    repo().insert!(%Observation{
+      memory_space_id: legacy_partition.memory_space_id,
+      host_id: legacy_partition.host_id,
+      source_client_id: legacy_partition.source_client_id,
+      scope: legacy_partition.scope,
+      namespace: legacy_partition.namespace,
+      session_id: session_id,
+      content: "legacy one"
+    })
+
+    repo().insert!(%Observation{
+      memory_space_id: legacy_partition.memory_space_id,
+      host_id: legacy_partition.host_id,
+      source_client_id: legacy_partition.source_client_id,
+      scope: legacy_partition.scope,
+      namespace: legacy_partition.namespace,
+      session_id: session_id,
+      content: "legacy two"
+    })
 
     first = captured_event("host-target", session_id, 1, "agent.session.started")
 

@@ -6,6 +6,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   import Ecto.Query
 
   alias Backplane.Repo
+  alias Backplane.MemorySpaces
   alias Backplane.AgentTraces.Event
   alias Backplane.Memory.Events.Event, as: MemoryEvent
   alias Backplane.Memory.Ingest.EventValidator
@@ -44,12 +45,60 @@ defmodule Backplane.Api.HostAgentChannelTest do
   end
 
   test "joins only its own host topic", %{host: host, socket: socket} do
-    assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+    assert {:ok,
+            %{
+              "memory_partition" => %{
+                "memory_space_id" => memory_space_id,
+                "scope" => scope,
+                "namespace" => "private"
+              }
+            }, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+
+    assert memory_space_id == MemorySpaces.private_host_space_id(host.id)
+    assert scope == host.memory_scope
     assert {:ok, %{host: connected_host}} = AgentManage.get_agent(host.id)
     assert connected_host.id == host.id
 
     assert {:error, %{reason: "unauthorized"}} =
              subscribe_and_join(socket, "host_agent:00000000-0000-0000-0000-000000000000", %{})
+  end
+
+  test "memory negotiation rejects malformed offers explicitly", %{host: host, socket: socket} do
+    for payload <- [
+          %{"memory_v2" => 42},
+          %{"memory" => %{"protocol" => "host_memory.v1", "scopes" => "bad"}},
+          %{"memory" => %{"protocol" => "host_memory.v1", "scopes" => [%{"scope" => 42}]}}
+        ] do
+      assert {:error, %{"code" => "invalid_request", "retryable" => false}} =
+               subscribe_and_join(socket, "host_agent:#{host.id}", payload)
+    end
+  end
+
+  test "v2 disabled can select an offered v1 protocol but never downgrades a pinned v2 offer", %{
+    host: host,
+    socket: socket
+  } do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", false})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+
+    offer = %{
+      "memory" => %{"protocol" => "host_memory.v1", "scopes" => []},
+      "memory_v2" => %{"offers" => ["host_memory.v2"], "partitions" => []}
+    }
+
+    assert {:error, %{"code" => "protocol_disabled"}} =
+             subscribe_and_join(
+               socket,
+               "host_agent:#{host.id}",
+               Map.put(offer, "selected", "host_memory.v2")
+             )
+
+    assert {:ok, %{"selected" => "host_memory.v1"}, socket} =
+             subscribe_and_join(socket, "host_agent:#{host.id}", offer)
+
+    ref = push(socket, "memory_next", %{})
+    assert_reply(ref, :error, %{"code" => "unsupported_protocol"})
   end
 
   test "real channel capture keeps the host partition across assigned token rotation", %{
@@ -315,16 +364,44 @@ defmodule Backplane.Api.HostAgentChannelTest do
       ref =
         push(socket, "memory_call", %{
           "method" => "remember",
-          "arguments" => %{"content" => "hi", "agent_id" => "agt_1"}
+          "arguments" => %{
+            "content" => "hi",
+            "agent_id" => "agt_1"
+          }
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "remember"}})
       assert_received {:memory_service, {:remember, args, auth}}
       refute Map.has_key?(args, "host_id")
       refute Map.has_key?(args, "client_id")
-      assert auth.principal_metadata == %{"memory_partition_id" => "host:#{host.id}"}
+      refute Map.has_key?(args, "memory_space_id")
+      refute Map.has_key?(args, "scope")
+      refute Map.has_key?(args, "namespace")
+
+      assert auth.principal_metadata == %{
+               "memory_partition_id" => "host:#{host.id}",
+               "memory_space_id" => MemorySpaces.private_host_space_id(host.id),
+               "scope" => host.memory_scope,
+               "namespace" => "private"
+             }
+
       assert args["agent_id"] == "agt_1"
       assert args["content"] == "hi"
+    end
+
+    test "remember rejects caller-supplied canonical ownership", %{socket: socket} do
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "remember",
+          "arguments" => %{
+            "content" => "hi",
+            "agent_id" => "agt_1",
+            "memory_space_id" => Ecto.UUID.generate()
+          }
+        })
+
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_arguments"})
+      refute_received {:memory_service, _message}
     end
 
     test "lifecycle_context forwards only request data with authenticated host identity",
@@ -346,7 +423,13 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_received {:memory_service, {:lifecycle_context, ^args, auth}}
       assert auth.client_id == host.id
       assert auth.subject == host.id
-      assert auth.principal_metadata == %{"memory_partition_id" => "host:#{host.id}"}
+
+      assert auth.principal_metadata == %{
+               "memory_partition_id" => "host:#{host.id}",
+               "memory_space_id" => MemorySpaces.private_host_space_id(host.id),
+               "scope" => host.memory_scope,
+               "namespace" => "private"
+             }
     end
 
     test "lifecycle_context rejects spoofed ownership through the production handler",
@@ -433,19 +516,19 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
 
     # Hermes system_prompt_block / memory_list tool routes here.
-    test "list dispatches with scope+limit and host_id injected",
+    test "list dispatches with limit and authenticated partition injected",
          %{host: host, socket: socket} do
       ref =
         push(socket, "memory_call", %{
           "method" => "list",
-          "arguments" => %{"scope" => "/tmp/proj", "limit" => 10, "agent_id" => "agt_1"}
+          "arguments" => %{"limit" => 10, "agent_id" => "agt_1"}
         })
 
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "list"}})
       assert_received {:memory_service, {:list, args, auth}}
       refute Map.has_key?(args, "host_id")
       assert auth.client_id == host.id
-      assert args["scope"] == "/tmp/proj"
+      refute Map.has_key?(args, "scope")
       assert args["limit"] == 10
     end
 
@@ -1186,7 +1269,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       refute_received {:host_memory_sync, {:apply_sync_item, _, _}}
     end
 
-    test "facts and wipe acks are accepted", %{host: host, socket: socket} do
+    test "unissued facts and wipe acks fail closed", %{host: host, socket: socket} do
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
       facts_ref =
@@ -1202,8 +1285,8 @@ defmodule Backplane.Api.HostAgentChannelTest do
           "items" => [%{"content_hash" => "hash_wipe", "status" => "ok"}]
         })
 
-      assert_reply(facts_ref, :ok, %{"ok" => true})
-      assert_reply(wipe_ref, :ok, %{"ok" => true})
+      assert_reply(facts_ref, :error, %{"code" => "unsupported_protocol"})
+      assert_reply(wipe_ref, :error, %{"code" => "unsupported_protocol"})
     end
 
     test "memory_sync rejects malformed payloads", %{host: host, socket: socket} do

@@ -4,22 +4,15 @@ defmodule Backplane.Memory.ReplayTest do
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Projections.Rebuild
 
-  @partition %{
-    host_id: "replay-host",
-    client_id: "replay-client",
-    scope: "replay-scope",
-    namespace: "private"
-  }
-
   test "loads the current immutable projection through a bounded exact-partition cursor" do
     session = "replay-#{System.unique_integer([:positive])}"
     append!(session, 1, "agent.session.started", %{})
     append!(session, 2, "agent.prompt.submitted", %{"source" => %{"prompt" => "hello"}})
     append!(session, 3, "conversation.agent_message", %{"source" => %{"message" => "answer"}})
-    assert {:ok, _} = Rebuild.session(@partition.host_id, session)
+    assert {:ok, _} = Rebuild.session(partition().host_id, session)
 
     assert {:ok, %{events: [first, second], next_cursor: cursor}} =
-             Replay.load(@partition, session, limit: 2)
+             Replay.load(partition(), session, limit: 2)
 
     assert [first.kind, second.kind] == ["session_boundary", "prompt"]
     assert is_binary(cursor)
@@ -34,26 +27,26 @@ defmodule Backplane.Memory.ReplayTest do
            ]
 
     assert {:ok, %{events: [%{kind: "assistant_response"}], next_cursor: nil}} =
-             Replay.load(@partition, session, cursor: cursor, limit: 2)
+             Replay.load(partition(), session, cursor: cursor, limit: 2)
 
     append!(session, 4, "agent.session.ended", %{})
-    assert {:ok, _} = Rebuild.session(@partition.host_id, session)
-    assert {:error, :invalid_cursor} = Replay.load(@partition, session, cursor: cursor, limit: 2)
+    assert {:ok, _} = Rebuild.session(partition().host_id, session)
+    assert {:error, :invalid_cursor} = Replay.load(partition(), session, cursor: cursor, limit: 2)
 
     assert {:error, :not_found} =
-             Replay.load(Map.put(@partition, :host_id, "foreign"), session)
+             Replay.load(Map.put(partition(), :host_id, "foreign"), session)
 
     for key <- [:client_id, :scope, :namespace] do
       assert {:error, :not_found} =
-               Replay.load(Map.put(@partition, key, "foreign"), session)
+               Replay.load(Map.put(partition(), key, "foreign"), session)
     end
 
-    assert {:error, :invalid_options} = Replay.load(@partition, session, limit: 101)
-    assert {:error, :invalid_options} = Replay.load(@partition, session, unknown: true)
-    assert {:error, :invalid_cursor} = Replay.load(@partition, session, cursor: "not-base64")
+    assert {:error, :invalid_options} = Replay.load(partition(), session, limit: 101)
+    assert {:error, :invalid_options} = Replay.load(partition(), session, unknown: true)
+    assert {:error, :invalid_cursor} = Replay.load(partition(), session, cursor: "not-base64")
 
     assert {:error, :unauthorized} =
-             Replay.load(Map.delete(@partition, :namespace), session)
+             Replay.load(Map.delete(partition(), :namespace), session)
   end
 
   test "persisted structured tool detail redacts sensitive keys and values" do
@@ -66,8 +59,8 @@ defmodule Backplane.Memory.ReplayTest do
       }
     })
 
-    assert {:ok, _result} = Rebuild.session(@partition.host_id, session)
-    assert {:ok, %{events: [%{detail: detail}]}} = Replay.load(@partition, session)
+    assert {:ok, _result} = Rebuild.session(partition().host_id, session)
+    assert {:ok, %{events: [%{detail: detail}]}} = Replay.load(partition(), session)
     assert detail["tool_input"]["token"] == "[REDACTED]"
     refute inspect(detail) =~ "short-secret"
   end
@@ -76,11 +69,13 @@ defmodule Backplane.Memory.ReplayTest do
     assert {:ok, {:inserted, _}} =
              Store.append_tagged(%{
                id: Ecto.UUID.generate(),
-               stream_id: "capture:#{@partition.host_id}:#{session}",
-               host_id: @partition.host_id,
-               client_id: @partition.client_id,
-               scope: @partition.scope,
-               namespace: @partition.namespace,
+               memory_space_id: partition().memory_space_id,
+               stream_id: "capture:#{partition().host_id}:#{session}",
+               host_id: partition().host_id,
+               client_id: partition().client_id,
+               source_client_id: partition().source_client_id,
+               scope: partition().scope,
+               namespace: partition().namespace,
                session_id: session,
                sequence: sequence,
                source_sequence: sequence,
@@ -91,5 +86,14 @@ defmodule Backplane.Memory.ReplayTest do
                payload_hash: "sha256:#{session}:#{sequence}",
                schema_version: 1
              })
+  end
+
+  defp partition do
+    canonical_partition("replay-space-owner",
+      client_id: "replay-client",
+      source_client_id: "replay-client",
+      scope: "replay-scope"
+    )
+    |> Map.put(:host_id, "replay-host")
   end
 end

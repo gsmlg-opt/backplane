@@ -59,7 +59,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
       Task.async(fn ->
         unboxed(fn ->
           send(parent, :summary_waiting)
-          perform(host_id, session_id, initial.input_revision)
+          perform(host_id, session_id, initial)
         end)
       end)
 
@@ -117,13 +117,18 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
              )
   end
 
-  defp perform(host_id, session_id, input_revision) do
+  defp perform(host_id, session_id, projection) do
     SummaryWorker.perform(%Oban.Job{
       args: %{
+        "memory_space_id" => projection.memory_space_id,
         "host_id" => host_id,
+        "client_id" => projection.client_id,
+        "source_client_id" => projection.source_client_id,
+        "scope" => projection.scope,
+        "namespace" => projection.namespace,
         "session_id" => session_id,
         "processing_version" => "summary-v1",
-        "input_revision" => input_revision
+        "input_revision" => projection.input_revision
       }
     })
   end

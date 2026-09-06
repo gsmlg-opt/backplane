@@ -4,13 +4,6 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Workers.GraphExtractWorker
 
-  @partition %{
-    host_id: "host-test",
-    client_id: "host:host-test",
-    scope: "global",
-    namespace: "private"
-  }
-
   defmodule MockLLMEmpty do
     def extract_graph(_observations), do: {:ok, %{nodes: [], edges: []}}
   end
@@ -45,13 +38,15 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
   defp make_memories(session_id, count) do
     for i <- 1..count do
       {:ok, _mem} =
-        Memories.remember("observation #{i} for session #{session_id}",
-          agent_id: "agent-test",
-          host_id: "host-test",
-          client_id: "host:host-test",
-          scope: "global",
-          namespace: "private",
-          session_id: session_id
+        Memories.remember(
+          "observation #{i} for session #{session_id}",
+          canonical_memory_opts("host-test",
+            agent_id: "agent-test",
+            client_id: "host:host-test",
+            scope: "global",
+            namespace: "private",
+            session_id: session_id
+          )
         )
     end
   end
@@ -107,9 +102,25 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
     end
   end
 
+  test "fails closed when generator provenance is incomplete" do
+    incomplete = canonical_partition("graph-incomplete") |> Map.drop([:host_id, :client_id])
+
+    args =
+      incomplete
+      |> Map.merge(%{host_id: nil, client_id: nil})
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+
+    job = %Oban.Job{args: Map.put(args, "session_id", "session")}
+
+    assert {:discard, :incomplete_partition} = GraphExtractWorker.perform(job)
+    assert {:error, :incomplete_partition} = GraphExtractWorker.enqueue("session", incomplete)
+  end
+
   defp job(session_id) do
     args =
-      Map.new(@partition, fn {key, value} -> {Atom.to_string(key), value} end)
+      "host-test"
+      |> canonical_partition(client_id: "host:host-test", scope: "global")
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
       |> Map.put("session_id", session_id)
 
     %Oban.Job{args: args}

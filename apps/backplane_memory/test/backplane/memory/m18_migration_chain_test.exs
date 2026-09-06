@@ -10,6 +10,7 @@ defmodule Backplane.Memory.M18MigrationChainTest do
   @last_pre_m18_version 20_260_811_000_002
   @first_m18_version 20_260_812_000_001
   @last_m18_version 20_260_812_000_022
+  @host_id "8b248d32-820a-4ac7-87ed-dc8eceee9a68"
 
   @public_guard_tables ~w(
     llm_auto_models
@@ -59,6 +60,7 @@ defmodule Backplane.Memory.M18MigrationChainTest do
       public_before = public_snapshot(migration_repo)
 
       assert [_ | _] = migrate(migration_repo, prefix, to: @last_pre_m18_version)
+      seed_host!(migration_repo, prefix)
       seed_compatible_projection_inputs(migration_repo, prefix)
 
       before_id = insert_event!(migration_repo, prefix, 1)
@@ -135,11 +137,25 @@ defmodule Backplane.Memory.M18MigrationChainTest do
   end
 
   defp seed_compatible_projection_inputs(repo, prefix) do
-    repo.query!("""
-    INSERT INTO #{table(prefix, "bpm_streams")}
-      (stream_id, project, host_id, client_id, session_id, inserted_at, updated_at)
-    VALUES ('m18-live-stream', 'm18', 'host-m18', 'client-m18', 'session-m18', now(), now())
-    """)
+    repo.query!(
+      """
+      INSERT INTO #{table(prefix, "bpm_streams")}
+        (stream_id, project, host_id, client_id, session_id, inserted_at, updated_at)
+      VALUES ('m18-live-stream', 'm18', $1, 'client-m18', 'session-m18', now(), now())
+      """,
+      [@host_id]
+    )
+  end
+
+  defp seed_host!(repo, prefix) do
+    repo.query!(
+      """
+      INSERT INTO #{table(prefix, "skill_hosts")}
+        (id, name, memory_scope, inserted_at, updated_at)
+      VALUES ($1, 'm18-live-host', 'memory.write', now(), now())
+      """,
+      [Ecto.UUID.dump!(@host_id)]
+    )
   end
 
   defp insert_event!(repo, prefix, sequence) do
@@ -152,11 +168,11 @@ defmodule Backplane.Memory.M18MigrationChainTest do
         (id, stream_id, sequence, project, namespace, host_id, client_id, session_id,
          event_type, payload, schema_version, integration, scope, source_sequence,
          captured_at, occurred_at, inserted_at)
-      VALUES ($1, $2, $3, 'm18', 'private', 'host-m18', 'client-m18', 'session-m18',
+      VALUES ($1, $2, $3, 'm18', 'private', $5, 'client-m18', 'session-m18',
               'agent.prompt.submitted', $4, 1, 'claude_code', 'memory.write', $3,
               now(), now(), now())
       """,
-      [event_id, stream_id, sequence, %{"sequence" => sequence}]
+      [event_id, stream_id, sequence, %{"sequence" => sequence}, @host_id]
     )
 
     repo.query!(

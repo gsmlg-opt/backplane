@@ -9,16 +9,36 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
   import Backplane.Memory.IngestFixtures
 
+  @memory_space_id "20000000-0000-0000-0000-000000000001"
+  @foreign_memory_space_id "20000000-0000-0000-0000-000000000002"
   @partition %{
+    "memory_space_id" => @memory_space_id,
     "host" => "operator-host",
     "client" => "operator-client",
     "scope" => "operator-scope",
     "namespace" => "operator-namespace"
   }
 
-  test "partitioned operator pages fail closed until all four identity fields are selected", %{
-    conn: conn
-  } do
+  setup do
+    alias Backplane.MemorySpaces.MemorySpace
+
+    for memory_space_id <- [@memory_space_id, @foreign_memory_space_id] do
+      %MemorySpace{}
+      |> MemorySpace.changeset(%{
+        id: memory_space_id,
+        kind: "private",
+        status: "active"
+      })
+      |> Backplane.Repo.insert!(on_conflict: :nothing)
+    end
+
+    :ok
+  end
+
+  test "partitioned operator pages fail closed until canonical identity and provenance are selected",
+       %{
+         conn: conn
+       } do
     for {path, gate_id} <- [
           {"/memory/sessions", "sessions-partition"},
           {"/memory/timeline", "timeline-partition"},
@@ -30,6 +50,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         ] do
       {:ok, view, _html} = live(recycle(conn), path)
       assert has_element?(view, "##{gate_id}")
+      assert has_element?(view, "##{gate_id}-memory-space[required]")
       assert has_element?(view, "##{gate_id}-host[required]")
       assert has_element?(view, "##{gate_id}-client[required]")
       assert has_element?(view, "##{gate_id}-scope[required]")
@@ -58,6 +79,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     assert has_element?(profile, "#profile-pending")
 
     partition = %{
+      memory_space_id: @partition["memory_space_id"],
       host_id: @partition["host"],
       client_id: @partition["client"],
       scope: @partition["scope"],
@@ -72,7 +94,11 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
              )
 
     assert {:ok, _foreign} =
-             Action.create(%{"title" => "Foreign action"}, [], %{partition | client_id: "foreign"})
+             Action.create(
+               %{"title" => "Foreign action"},
+               [],
+               %{partition | memory_space_id: @foreign_memory_space_id, client_id: "foreign"}
+             )
 
     {:ok, actions, _html} =
       live(recycle(conn), "/memory/actions?" <> URI.encode_query(@partition))
@@ -83,6 +109,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
   test "action detail shows every origin and its active lease", %{conn: conn} do
     partition = %{
+      memory_space_id: @partition["memory_space_id"],
       host_id: @partition["host"],
       client_id: @partition["client"],
       scope: @partition["scope"],
@@ -190,6 +217,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     event_id = Ecto.UUID.generate()
 
     partition = %{
+      memory_space_id: @partition["memory_space_id"],
       host_id: @partition["host"],
       client_id: @partition["client"],
       scope: @partition["scope"],
@@ -304,6 +332,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     assert {:ok, _} = Rebuild.session(@partition["host"], session_id)
 
     detail_partition = %{
+      "memory_space_id" => @partition["memory_space_id"],
       "host" => @partition["host"],
       "client" => "host:#{@partition["host"]}",
       "scope" => @partition["scope"],
@@ -365,7 +394,6 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         "host_id" => @partition["host"],
         "client_id" => @partition["client"],
         "scope" => @partition["scope"],
-        "namespace" => @partition["namespace"],
         "agent_id" => "operator-agent",
         "integration" => "codex",
         "session_id" => session_id,
@@ -385,8 +413,13 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
                  host_id: @partition["host"],
                  auth_token_id: "admin-detail-token",
                  scopes: ["host_agent.capture"],
-                 partition_id: @partition["client"],
-                 memory_scope: @partition["scope"]
+                 partition: %{
+                   memory_space_id: @partition["memory_space_id"],
+                   host_id: @partition["host"],
+                   partition_id: "host:#{@partition["host"]}",
+                   scope: @partition["scope"],
+                   namespace: "private"
+                 }
                },
                %{
                  "batch_id" => Ecto.UUID.generate(),

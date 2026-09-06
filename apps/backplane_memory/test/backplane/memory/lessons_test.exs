@@ -9,11 +9,20 @@ defmodule Backplane.Memory.LessonsTest do
   alias Backplane.Skills.Hosts
 
   @partition %{
+    memory_space_id: "ac12cb7c-e315-199e-7379-922c63c6f4f8",
     host_id: "lesson-host",
     client_id: "host:lesson-host",
+    source_client_id: "host:lesson-host",
     scope: "personal",
     namespace: "private"
   }
+
+  setup do
+    assert Backplane.Memory.IngestFixtures.ensure_memory_space!(@partition.host_id) ==
+             @partition.memory_space_id
+
+    :ok
+  end
 
   test "manual save atomically creates an active procedural lesson with evidence" do
     assert {:ok, lesson} =
@@ -106,8 +115,10 @@ defmodule Backplane.Memory.LessonsTest do
                  content: "Unproven lesson",
                  memory_type: "procedural",
                  agent_id: "agent-1",
+                 memory_space_id: @partition.memory_space_id,
                  host_id: @partition.host_id,
                  client_id: @partition.client_id,
+                 source_client_id: @partition.source_client_id,
                  scope: @partition.scope,
                  namespace: @partition.namespace
                })
@@ -139,8 +150,10 @@ defmodule Backplane.Memory.LessonsTest do
                  content: "Semantic parent",
                  memory_type: "semantic",
                  agent_id: "agent-1",
+                 memory_space_id: @partition.memory_space_id,
                  host_id: @partition.host_id,
                  client_id: @partition.client_id,
+                 source_client_id: @partition.source_client_id,
                  scope: @partition.scope,
                  namespace: @partition.namespace
                })
@@ -168,7 +181,7 @@ defmodule Backplane.Memory.LessonsTest do
                @partition
              )
 
-    foreign = %{@partition | host_id: "foreign-host", client_id: "host:foreign-host"}
+    foreign = foreign_partition("foreign-host")
 
     assert {:ok, _foreign} =
              save(
@@ -214,7 +227,7 @@ defmodule Backplane.Memory.LessonsTest do
                @partition
              )
 
-    foreign = %{@partition | client_id: "foreign-client"}
+    foreign = foreign_partition("top-foreign-host")
 
     assert {:ok, _foreign} =
              save(save_attrs("top-foreign", "Never leak this foreign lesson"), foreign)
@@ -248,6 +261,13 @@ defmodule Backplane.Memory.LessonsTest do
     assert Enum.any?(rows, fn {candidate, _score} ->
              candidate.id == lesson.memory_id and candidate.kind == :lesson
            end)
+  end
+
+  defp foreign_partition(host_id) do
+    canonical_partition(host_id,
+      scope: @partition.scope,
+      namespace: @partition.namespace
+    )
   end
 
   test "manual save cannot bypass governed inactive lesson state" do

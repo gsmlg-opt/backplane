@@ -79,11 +79,19 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   end
 
   defp recall_partition(params) do
-    with {:ok, host_id} <- partition_value(params["host"]),
+    with {:ok, memory_space_id} <- partition_value(params["memory_space_id"]),
+         {:ok, host_id} <- partition_value(params["host"]),
          {:ok, client_id} <- partition_value(params["client"]),
          {:ok, scope} <- partition_value(params["scope"]),
          {:ok, namespace} <- partition_value(params["namespace"]) do
-      {:ok, %{host_id: host_id, client_id: client_id, scope: scope, namespace: namespace}}
+      {:ok,
+       %{
+         memory_space_id: memory_space_id,
+         host_id: host_id,
+         client_id: client_id,
+         scope: scope,
+         namespace: namespace
+       }}
     end
   end
 

@@ -11,8 +11,10 @@ defmodule Backplane.Memory.LessonGovernanceTest do
   alias Backplane.Memory.Projections.Rebuild
 
   @partition %{
+    memory_space_id: "cccfc391-ac5c-5cdc-737a-b9bd293d494e",
     host_id: "governance-host",
     client_id: "host:governance-host",
+    source_client_id: "host:governance-host",
     scope: "personal",
     namespace: "private"
   }
@@ -21,6 +23,11 @@ defmodule Backplane.Memory.LessonGovernanceTest do
     request_id: "request-governance",
     correlation_id: "correlation-governance"
   }
+
+  setup do
+    assert ensure_memory_space!(@partition.host_id) == @partition.memory_space_id
+    :ok
+  end
 
   test "automatic extraction stays candidate by default and promotion requires evidence" do
     assert {:ok, candidate} =
@@ -332,20 +339,25 @@ defmodule Backplane.Memory.LessonGovernanceTest do
              )
   end
 
-  test "strengthening rejects legacy observations that cannot prove exact partition ownership" do
+  test "strengthening accepts an observation only with exact partition ownership" do
     assert {:ok, candidate} = candidate("unverifiable-observation")
     {_event_id, session_id} = canonical_event!("shared-session")
 
     observation =
       %Observation{}
       |> Observation.changeset(%{
+        memory_space_id: @partition.memory_space_id,
+        host_id: @partition.host_id,
+        source_client_id: @partition.source_client_id,
+        scope: @partition.scope,
+        namespace: @partition.namespace,
         session_id: session_id,
         tool_name: "test",
         content: "unverifiable legacy evidence"
       })
       |> repo().insert!()
 
-    assert {:error, :strengthening_source_not_found} =
+    assert {:ok, _lesson} =
              Lessons.strengthen(
                candidate.memory_id,
                "independent_evidence",

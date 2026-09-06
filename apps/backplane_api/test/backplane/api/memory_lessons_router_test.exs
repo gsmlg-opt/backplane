@@ -3,6 +3,7 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
 
   alias Backplane.Skills.Host
   alias Backplane.Clients
+  alias Backplane.MemorySpaces
 
   setup do
     previous_tools = :ets.lookup(:backplane_settings, "memory.tools")
@@ -21,9 +22,12 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
         })
       )
 
+    assert {:ok, canonical_partition} =
+             MemorySpaces.provision_private_host(host.id, host.memory_scope)
+
     token = "lesson-rest-#{System.unique_integer([:positive])}"
 
-    {:ok, _client} =
+    {:ok, client} =
       Clients.create_client(%{
         name: "Memory lesson REST client",
         token: token,
@@ -32,7 +36,14 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
         metadata: %{"memory_partition_id" => "host:#{host.id}"}
       })
 
-    %{host: host, token: token}
+    partition =
+      Map.merge(canonical_partition, %{
+        host_id: host.id,
+        client_id: "host:#{host.id}",
+        source_client_id: client.id
+      })
+
+    %{host: host, token: token, partition: partition}
   end
 
   test "REST save and recall use the canonical lesson service boundary", %{
@@ -68,15 +79,8 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
   test "REST strengthen, promote, and archive use the canonical lesson service boundary", %{
     conn: conn,
     token: token,
-    host: host
+    partition: partition
   } do
-    partition = %{
-      host_id: host.id,
-      client_id: "host:#{host.id}",
-      scope: host.memory_scope,
-      namespace: "private"
-    }
-
     trace = %{actor: "seed", request_id: "rest-seed", correlation_id: "rest-seed"}
 
     assert {:ok, candidate} =
@@ -107,8 +111,10 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
     assert {:ok, source_memory} =
              Backplane.Memory.Memories.remember("REST independent evidence",
                type: "semantic",
+               memory_space_id: partition.memory_space_id,
                host_id: partition.host_id,
                client_id: partition.client_id,
+               source_client_id: partition.source_client_id,
                scope: partition.scope,
                namespace: partition.namespace,
                agent_id: "rest-source",

@@ -46,8 +46,27 @@ defmodule Backplane.Memory.Projections.SummaryInputTest do
     ingest!(event(host_id, session_id, project, 5, "agent.session.ended", "done"))
     assert {:ok, rebuild} = Rebuild.session(host_id, session_id)
 
-    repo().insert!(%Session{session_id: session_id, project: "legacy-decoy"})
-    repo().insert!(%Observation{session_id: session_id, content: "legacy decoy is longest"})
+    decoy = canonical_partition("summary-legacy-decoy")
+
+    repo().insert!(%Session{
+      session_id: session_id,
+      project: "legacy-decoy",
+      memory_space_id: decoy.memory_space_id,
+      host_id: decoy.host_id,
+      source_client_id: decoy.source_client_id,
+      scope: decoy.scope,
+      namespace: decoy.namespace
+    })
+
+    repo().insert!(%Observation{
+      session_id: session_id,
+      content: "legacy decoy is longest",
+      memory_space_id: decoy.memory_space_id,
+      host_id: decoy.host_id,
+      source_client_id: decoy.source_client_id,
+      scope: decoy.scope,
+      namespace: decoy.namespace
+    })
 
     assert {:ok, input} = ReadModels.summary_input(host_id, session_id, limit: 3)
     assert input.subject_id == Source.subject_id!(host_id, session_id)

@@ -3,7 +3,44 @@ defmodule Backplane.Memory.Events.StoreTest do
 
   import Ecto.Query
 
-  alias Backplane.Memory.Events.{Event, Store, Stream}
+  alias Backplane.Memory.Events.{Event, Stream}
+
+  defmodule Store do
+    def append(attrs, opts \\ []),
+      do:
+        Backplane.Memory.Events.Store.append(
+          Backplane.Memory.EventTestPartition.attrs(attrs),
+          opts
+        )
+
+    def append_batch(attrs_list, opts \\ [])
+
+    def append_batch(attrs_list, opts) when is_list(attrs_list),
+      do:
+        Backplane.Memory.Events.Store.append_batch(
+          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          opts
+        )
+
+    def append_batch(value, opts), do: Backplane.Memory.Events.Store.append_batch(value, opts)
+
+    def append_multi(multi, name, attrs),
+      do:
+        Backplane.Memory.Events.Store.append_multi(
+          multi,
+          name,
+          Backplane.Memory.EventTestPartition.attrs(attrs)
+        )
+
+    defdelegate close_stream(stream_id, opts \\ []), to: Backplane.Memory.Events.Store
+    defdelegate list(stream_id), to: Backplane.Memory.Events.Store
+    defdelegate emit_result(result, started_at), to: Backplane.Memory.Events.Store
+  end
+
+  setup do
+    Backplane.Memory.EventTestPartition.ensure!()
+    :ok
+  end
 
   test "append returns untagged events while append_multi keeps its internal result tag" do
     stream_id = unique("public")

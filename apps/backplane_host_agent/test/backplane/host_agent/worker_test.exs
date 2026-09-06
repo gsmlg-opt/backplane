@@ -252,8 +252,7 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive third_message
     assert {:http_child_spec_called, %{host_id: "host-authoritative"}} = third_message
-    assert_receive fourth_message
-    assert {:connect_failed, %{host_id: "host-authoritative"}} = fourth_message
+    assert_receive {:connect_failed, %{host_id: "host-authoritative"}}
     assert_receive {:http_child_started, http_child}
 
     assert %{

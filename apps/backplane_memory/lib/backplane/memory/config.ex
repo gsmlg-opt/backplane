@@ -73,24 +73,19 @@ defmodule Backplane.Memory.Config do
      :recall_trace_retention_days},
     {@recall_max_per_session, "Recall maximum per session", :integer, 1, 100,
      :recall_max_per_session},
-    {@lesson_auto_extract, "Lesson auto extraction", :boolean, nil, nil,
-     :lesson_auto_extract?},
-    {@lesson_auto_promote, "Lesson auto promotion", :boolean, nil, nil,
-     :lesson_auto_promote?},
+    {@lesson_auto_extract, "Lesson auto extraction", :boolean, nil, nil, :lesson_auto_extract?},
+    {@lesson_auto_promote, "Lesson auto promotion", :boolean, nil, nil, :lesson_auto_promote?},
     {@lesson_promote_confidence, "Lesson promotion confidence", :float, 0.0, 1.0,
      :lesson_promote_confidence},
     {@lesson_promote_sources, "Lesson promotion sources", :integer, 1, 100,
      :lesson_promote_sources},
     {@lesson_decay_enabled, "Lesson decay", :boolean, nil, nil, :lesson_decay_enabled?},
     {@crystals_enabled, "Crystals", :boolean, nil, nil, :crystals_enabled?},
-    {@crystal_session_enabled, "Session crystals", :boolean, nil, nil,
-     :crystal_session_enabled?},
-    {@crystal_action_enabled, "Action crystals", :boolean, nil, nil,
-     :crystal_action_enabled?},
+    {@crystal_session_enabled, "Session crystals", :boolean, nil, nil, :crystal_session_enabled?},
+    {@crystal_action_enabled, "Action crystals", :boolean, nil, nil, :crystal_action_enabled?},
     {@replay_enabled, "Replay", :boolean, nil, nil, :replay_enabled?},
     {@replay_import_enabled, "Replay import", :boolean, nil, nil, :replay_import_enabled?},
-    {@replay_max_events, "Replay maximum events", :integer, 1, 10_000,
-     :replay_max_events},
+    {@replay_max_events, "Replay maximum events", :integer, 1, 10_000, :replay_max_events},
     {@replay_import_max_files, "Replay import maximum files", :integer, 1, 1_000,
      :replay_import_max_files},
     {@replay_import_max_entries, "Replay import maximum entries", :integer, 1, 1_000_000,
@@ -115,7 +110,11 @@ defmodule Backplane.Memory.Config do
   end
 
   @doc "Validates, persists, and content-safely audits a trusted operator setting change."
-  def update_setting(key, raw_value, %{actor: actor, request_id: request_id, correlation_id: correlation_id})
+  def update_setting(key, raw_value, %{
+        actor: actor,
+        request_id: request_id,
+        correlation_id: correlation_id
+      })
       when is_binary(key) and is_binary(actor) and is_binary(request_id) and
              is_binary(correlation_id) do
     with {:ok, spec} <- fetch_setting_spec(key),
@@ -222,6 +221,12 @@ defmodule Backplane.Memory.Config do
   end
 
   def host_batch_max_events, do: bounded_integer(@host_batch_max_events, 100, 1, 100)
+  def host_sync_v1_enabled?, do: strict_boolean("memory.host_sync_v1.enabled", true)
+  def host_sync_v2_enabled?, do: strict_boolean("memory.host_sync_v2.enabled", false)
+
+  def host_sync_max_item_bytes,
+    do: bounded_integer("memory.host_sync_max_item_bytes", 262_144, 1, 262_144)
+
   def host_batch_max_bytes, do: bounded_integer(@host_batch_max_bytes, 524_288, 1, 524_288)
 
   def host_spool_max_bytes,

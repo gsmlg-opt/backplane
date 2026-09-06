@@ -1,12 +1,61 @@
 defmodule Backplane.Memory.ObservationsTest do
   use Backplane.Memory.DataCase, async: false
 
-  alias Backplane.Memory.Observations
   alias Backplane.Memory.Events.{Event, Store, Stream}
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Workers.SummaryWorker
 
   @settings_table :backplane_settings
+
+  defmodule Observations do
+    @partition %{
+      memory_space_id: "1736927c-befb-7a2f-a83b-40867f67c103",
+      host_id: "observations-test-host",
+      client_id: "host:observations-test-host",
+      source_client_id: "host:observations-test-host",
+      scope: "global",
+      namespace: "private"
+    }
+
+    def partition, do: @partition
+
+    def record(session_id, content, opts \\ []) do
+      ensure_space!()
+      Backplane.Memory.Observations.record(session_id, content, canonical_opts(opts))
+    end
+
+    def register_session(session_id, project, opts \\ []) do
+      ensure_space!()
+      Backplane.Memory.Observations.register_session(session_id, project, canonical_opts(opts))
+    end
+
+    def end_session(session_id, opts \\ []) do
+      ensure_space!()
+      Backplane.Memory.Observations.end_session(session_id, canonical_opts(opts))
+    end
+
+    def file_history(paths, opts \\ []) do
+      ensure_space!()
+      Backplane.Memory.Observations.file_history(paths, canonical_opts(opts))
+    end
+
+    defp canonical_opts(opts) do
+      Keyword.merge(opts,
+        memory_space_id: @partition.memory_space_id,
+        host_id: @partition.host_id,
+        client_id: @partition.client_id,
+        source_client_id: @partition.source_client_id,
+        scope: @partition.scope,
+        namespace: @partition.namespace,
+        trusted_partition: @partition
+      )
+    end
+
+    defp ensure_space! do
+      @partition.host_id
+      |> Backplane.Memory.IngestFixtures.ensure_memory_space!()
+    end
+  end
 
   setup do
     snapshot =
@@ -20,6 +69,9 @@ defmodule Backplane.Memory.ObservationsTest do
         if rows != [], do: :ets.insert(@settings_table, rows)
       end)
     end)
+
+    assert Backplane.Memory.IngestFixtures.ensure_memory_space!(Observations.partition().host_id) ==
+             Observations.partition().memory_space_id
 
     :ok
   end
@@ -197,8 +249,8 @@ defmodule Backplane.Memory.ObservationsTest do
       assert event.session_id == "explicit-session"
       assert event.project == "explicit-project"
       assert event.agent_id == "explicit-agent"
-      assert event.host_id == "explicit-host"
-      assert event.client_id == "explicit-client"
+      assert event.host_id == Observations.partition().host_id
+      assert event.client_id == Observations.partition().client_id
       assert event.run_id == "explicit-run"
       assert event.event_type == "task.created"
       assert event.tool_name == "CustomTool"
@@ -384,14 +436,11 @@ defmodule Backplane.Memory.ObservationsTest do
       key = "session.started:" <> session_id
 
       assert {:ok, _event} =
-               Store.append(
-                 %{
-                   stream_id: "other-register-stream",
-                   event_type: "session.started",
-                   idempotency_key: key
-                 },
-                 telemetry: false
-               )
+               append_event(%{
+                 stream_id: "other-register-stream",
+                 event_type: "session.started",
+                 idempotency_key: key
+               })
 
       assert {:error, :idempotency_conflict} =
                Observations.register_session(session_id, "project")
@@ -425,14 +474,11 @@ defmodule Backplane.Memory.ObservationsTest do
       key = "session.started:" <> failed_session
 
       assert {:ok, _} =
-               Store.append(
-                 %{
-                   stream_id: "conflicting-lifecycle-telemetry",
-                   event_type: "session.started",
-                   idempotency_key: key
-                 },
-                 telemetry: false
-               )
+               append_event(%{
+                 stream_id: "conflicting-lifecycle-telemetry",
+                 event_type: "session.started",
+                 idempotency_key: key
+               })
 
       assert {:error, :idempotency_conflict} =
                Observations.register_session(failed_session, "project")
@@ -501,14 +547,11 @@ defmodule Backplane.Memory.ObservationsTest do
                       %{event_type: "session.started"}}
 
       assert {:ok, _event} =
-               Store.append(
-                 %{
-                   stream_id: "other-end-stream",
-                   event_type: "session.ended",
-                   idempotency_key: key
-                 },
-                 telemetry: false
-               )
+               append_event(%{
+                 stream_id: "other-end-stream",
+                 event_type: "session.ended",
+                 idempotency_key: key
+               })
 
       assert {:error, :idempotency_conflict} = Observations.end_session(session_id)
 
@@ -535,14 +578,11 @@ defmodule Backplane.Memory.ObservationsTest do
                  Observations.register_session(failed_session_id, "project")
 
         assert {:ok, _event} =
-                 Store.append(
-                   %{
-                     stream_id: "other-summary-failure-stream",
-                     event_type: "session.ended",
-                     idempotency_key: "session.ended:" <> failed_session_id
-                   },
-                   telemetry: false
-                 )
+                 append_event(%{
+                   stream_id: "other-summary-failure-stream",
+                   event_type: "session.ended",
+                   idempotency_key: "session.ended:" <> failed_session_id
+                 })
 
         assert {:error, :idempotency_conflict} =
                  Observations.end_session(failed_session_id)
@@ -607,6 +647,11 @@ defmodule Backplane.Memory.ObservationsTest do
           %{
             id:
               "00000000-0000-0000-0000-#{String.pad_leading(Integer.to_string(suffix), 12, "0")}",
+            memory_space_id: Observations.partition().memory_space_id,
+            host_id: Observations.partition().host_id,
+            source_client_id: Observations.partition().source_client_id,
+            scope: Observations.partition().scope,
+            namespace: Observations.partition().namespace,
             session_id: "fh-tie",
             content: "tie #{suffix}",
             files: %{"paths" => ["lib/foo.ex"]},
@@ -638,6 +683,11 @@ defmodule Backplane.Memory.ObservationsTest do
           )
       )
     )
+  end
+
+  defp append_event(attrs) do
+    attrs = Map.merge(attrs, Observations.partition())
+    Store.append(attrs, telemetry: false)
   end
 
   defp enable_events_only do

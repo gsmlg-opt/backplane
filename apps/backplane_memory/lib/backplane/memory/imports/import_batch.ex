@@ -6,7 +6,11 @@ defmodule Backplane.Memory.Imports.ImportBatch do
   @foreign_key_type :binary_id
 
   schema "memory_import_batches" do
+    field(:memory_space_id, :binary_id)
     field(:host_id, :binary_id)
+    field(:source_client_id, :string)
+    field(:scope, :string)
+    field(:namespace, :string)
     field(:integration, :string)
     field(:source_format, :string)
     field(:source_path_fingerprint, :string)
@@ -26,7 +30,10 @@ defmodule Backplane.Memory.Imports.ImportBatch do
     |> cast(attrs, __schema__(:fields) -- [:inserted_at, :updated_at])
     |> validate_required([
       :id,
+      :memory_space_id,
       :host_id,
+      :scope,
+      :namespace,
       :integration,
       :source_format,
       :source_path_fingerprint,

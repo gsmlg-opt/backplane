@@ -495,6 +495,7 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
         |> Map.put(:event_type, "task.updated")
         |> Map.put(:content, Integer.to_string(sequence))
         |> Map.put_new(:idempotency_key, "#{stream_id}-#{sequence}-#{unique("event")}")
+        |> canonical_event_attrs()
       end
 
     assert {:ok, events} = Events.append_batch(events)
@@ -506,6 +507,7 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
       attrs
       |> Map.new()
       |> Map.put(:stream_id, stream_id)
+      |> canonical_event_attrs()
 
     %Stream{}
     |> struct(attrs)

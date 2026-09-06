@@ -9,7 +9,8 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
 
   describe "perform_with_client/2" do
     test "updates the embedding field of a memory row" do
-      {:ok, mem} = Memories.remember("London is in the UK.", agent_id: "a", host_id: "h")
+      {:ok, mem} =
+        Memories.remember("London is in the UK.", canonical_memory_opts("h", agent_id: "a"))
 
       embedding_before =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
@@ -30,7 +31,9 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
     end
 
     test "returns {:error, reason} when embed client fails so Oban retries" do
-      {:ok, mem} = Memories.remember("Madrid is in Spain.", agent_id: "a", host_id: "h")
+      {:ok, mem} =
+        Memories.remember("Madrid is in Spain.", canonical_memory_opts("h", agent_id: "a"))
+
       failing_embed = fn _texts, _mode, _opts -> {:error, "vLLM unavailable"} end
 
       assert {:error, "vLLM unavailable"} =

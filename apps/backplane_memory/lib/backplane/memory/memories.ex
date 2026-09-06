@@ -17,6 +17,7 @@ defmodule Backplane.Memory.Memories do
   alias Backplane.Memory.Memories.Verification
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Config
+  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.ProjectedObservation
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Summaries.SourceEvent
@@ -32,10 +33,12 @@ defmodule Backplane.Memory.Memories do
     :id,
     :content,
     :memory_type,
+    :memory_space_id,
     :scope,
     :agent_id,
     :host_id,
     :client_id,
+    :source_client_id,
     :session_id,
     :tags,
     :metadata,
@@ -85,9 +88,10 @@ defmodule Backplane.Memory.Memories do
     :telemetry.span([:backplane, :memory, :access], metadata, fn ->
       result =
         with :ok <- validate_idempotency_options(opts),
+             {:ok, partition} <- write_partition(opts),
              {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, [])),
              {:ok, filtered} <- Filter.apply(content),
-             attrs = build_attrs(filtered, opts),
+             attrs = build_attrs(filtered, opts, partition),
              {:ok, request_hash} <- CanonicalRequest.hash(attrs, evidence) do
           persist_remember(attrs, opts, request_hash, evidence)
         end
@@ -170,8 +174,9 @@ defmodule Backplane.Memory.Memories do
       query =
         from(m in MemorySchema,
           where:
-            m.id == ^id and is_nil(m.deleted_at) and m.host_id == ^partition.host_id and
-              m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+            m.id == ^id and is_nil(m.deleted_at) and
+              m.memory_space_id == ^partition.memory_space_id and
+              m.scope == ^partition.scope and
               m.namespace == ^partition.namespace,
           select: struct(m, ^@non_vector_fields)
         )
@@ -210,8 +215,8 @@ defmodule Backplane.Memory.Memories do
     case repo().one(
            from(m in MemorySchema,
              where:
-               m.id == ^id and m.host_id == ^partition.host_id and
-                 m.client_id == ^partition.client_id and m.scope == ^partition.scope and
+               m.id == ^id and m.memory_space_id == ^partition.memory_space_id and
+                 m.scope == ^partition.scope and
                  m.namespace == ^partition.namespace,
              select: struct(m, ^@non_vector_fields)
            )
@@ -544,7 +549,7 @@ defmodule Backplane.Memory.Memories do
            from(m in MemorySchema,
              where:
                m.id == ^memory_id and is_nil(m.deleted_at) and
-                 m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
+                 m.memory_space_id == ^partition.memory_space_id and
                  m.scope == ^partition.scope and m.namespace == ^partition.namespace
            ),
            set: [namespace: "team:#{team_id}"]
@@ -574,7 +579,7 @@ defmodule Backplane.Memory.Memories do
       from(m in MemorySchema,
         where:
           m.namespace == ^namespace and is_nil(m.deleted_at) and
-            m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
+            m.memory_space_id == ^partition.memory_space_id and
             m.scope == ^partition.scope,
         order_by: [desc: m.inserted_at],
         limit: ^limit,
@@ -619,7 +624,7 @@ defmodule Backplane.Memory.Memories do
     where(
       query,
       [m],
-      m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
+      m.memory_space_id == ^partition.memory_space_id and
         m.scope == ^partition.scope and m.namespace == ^partition.namespace
     )
   end
@@ -629,34 +634,45 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp exact_partition(partition) when is_map(partition) do
-    values = %{
-      host_id: Map.get(partition, :host_id) || Map.get(partition, "host_id"),
-      client_id: Map.get(partition, :client_id) || Map.get(partition, "client_id"),
-      scope: Map.get(partition, :scope) || Map.get(partition, "scope"),
-      namespace: Map.get(partition, :namespace) || Map.get(partition, "namespace")
-    }
-
-    if Enum.all?(Map.values(values), &(is_binary(&1) and &1 != "")) do
-      {:ok, values}
-    else
-      {:error, :unauthorized}
+    case PartitionIdentity.validate(partition) do
+      {:ok, values} -> {:ok, values}
+      {:error, _reason} -> {:error, :unauthorized}
     end
   end
 
   defp exact_partition(_partition), do: {:error, :unauthorized}
 
-  defp build_attrs(content, opts) do
+  defp write_partition(opts) do
+    partition = Map.new(opts)
+
+    with {:ok, partition} <- PartitionIdentity.validate(partition),
+         true <- valid_write_provenance?(partition) do
+      {:ok, partition}
+    else
+      false -> {:error, :incomplete_partition}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp valid_write_provenance?(%{host_id: host_id}),
+    do: is_binary(host_id) and String.trim(host_id) != ""
+
+  defp valid_write_provenance?(_partition), do: false
+
+  defp build_attrs(content, opts, partition) do
     %{
       content: content,
       memory_type: Keyword.get(opts, :type, "semantic"),
-      scope: Keyword.get(opts, :scope, "global"),
+      memory_space_id: partition.memory_space_id,
+      scope: partition.scope,
       agent_id: Keyword.get(opts, :agent_id, ""),
-      host_id: Keyword.get(opts, :host_id, ""),
-      client_id: Keyword.get(opts, :client_id),
+      host_id: partition.host_id,
+      client_id: partition[:client_id],
+      source_client_id: partition[:source_client_id],
       session_id: Keyword.get(opts, :session_id),
       tags: Keyword.get(opts, :tags, []),
       metadata: Keyword.get(opts, :metadata, %{}),
-      namespace: Keyword.get(opts, :namespace, "private")
+      namespace: partition.namespace
     }
   end
 
@@ -665,7 +681,7 @@ defmodule Backplane.Memory.Memories do
 
     MemorySchema
     |> where([m], m.content_hash == ^:crypto.hash(:sha256, attrs.content))
-    |> where([m], m.host_id == ^attrs.host_id)
+    |> where([m], m.memory_space_id == ^attrs.memory_space_id)
     |> where([m], m.scope == ^attrs.scope)
     |> where([m], m.namespace == ^attrs.namespace)
     |> where([m], m.memory_type == ^attrs.memory_type)
@@ -677,7 +693,6 @@ defmodule Backplane.Memory.Memories do
         m.metadata
       ) == ^project
     )
-    |> where([m], fragment("COALESCE(?, '')", m.client_id) == ^(attrs.client_id || ""))
     |> where([m], is_nil(m.deleted_at))
     |> select([m], struct(m, ^@non_vector_fields))
     |> lock("FOR KEY SHARE")
@@ -811,8 +826,10 @@ defmodule Backplane.Memory.Memories do
 
   defp partition_identity(memory) do
     %{
+      memory_space_id: memory.memory_space_id,
       host_id: memory.host_id,
       client_id: memory.client_id,
+      source_client_id: memory.source_client_id,
       scope: memory.scope,
       namespace: memory.namespace
     }
@@ -822,8 +839,10 @@ defmodule Backplane.Memory.Memories do
     trace = provenance_trace(memory)
 
     %{
+      memory_space_id: memory.memory_space_id,
       host_id: memory.host_id,
       client_id: memory.client_id,
+      source_client_id: memory.source_client_id,
       scope: memory.scope,
       namespace: memory.namespace,
       request_id: List.first(trace.request_ids),

@@ -97,8 +97,10 @@ defmodule Backplane.Memory.Workers.LessonCandidateWorker do
     }
 
     partition = %{
+      memory_space_id: row.memory_space_id,
       host_id: row.host_id,
       client_id: row.client_id,
+      source_client_id: row.source_client_id,
       scope: row.scope,
       namespace: row.namespace
     }
@@ -131,8 +133,8 @@ defmodule Backplane.Memory.Workers.LessonCandidateWorker do
     repo().one(
       from(previous in ProjectedObservation,
         where:
-          previous.host_id == ^row.host_id and previous.client_id == ^row.client_id and
-            previous.scope == ^row.scope and previous.namespace == ^row.namespace and
+          previous.memory_space_id == ^row.memory_space_id and previous.scope == ^row.scope and
+            previous.namespace == ^row.namespace and
             previous.session_id == ^row.session_id and previous.tool_name == ^row.tool_name and
             previous.source_sequence < ^row.source_sequence and
             previous.event_type in ^@tool_terminal_event_types,

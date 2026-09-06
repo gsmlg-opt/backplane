@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
+  import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
@@ -11,6 +12,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
 
   test "concurrent identical requests commit one effect" do
     key = unique("identical")
+    ensure_owner!()
     cleanup_on_exit(key)
 
     results =
@@ -36,6 +38,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
 
   test "concurrent independent requests reuse one candidate and retain every evidence row" do
     prefix = unique("independent")
+    ensure_owner!()
     cleanup_on_exit(prefix)
 
     results =
@@ -58,6 +61,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
 
   test "concurrent independent requests retain every request and one shared typed source" do
     prefix = unique("independent-typed")
+    ensure_owner!()
     cleanup_on_exit(prefix)
     source = session_evidence(prefix)
 
@@ -90,6 +94,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
     prefix = unique("remember-wins-delete-race")
     key = "#{prefix}:remember"
     lock_key = unique_lock_key()
+    ensure_owner!()
     cleanup_on_exit(prefix)
     restore_hard_delete_on_exit()
     legacy = insert_legacy_memory!(prefix)
@@ -117,6 +122,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
     prefix = unique("delete-wins-remember-race")
     key = "#{prefix}:remember"
     lock_key = unique_lock_key()
+    ensure_owner!()
     cleanup_on_exit(prefix)
     restore_hard_delete_on_exit()
     legacy = insert_legacy_memory!(prefix)
@@ -161,7 +167,15 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
   end
 
   defp direct_opts(key) do
-    [agent_id: "agent", host_id: "host", idempotency_scope: "direct", idempotency_key: key]
+    [
+      memory_space_id: memory_space_id("host"),
+      agent_id: "agent",
+      host_id: "host",
+      scope: "global",
+      namespace: "private",
+      idempotency_scope: "direct",
+      idempotency_key: key
+    ]
   end
 
   defp session_evidence(source_session_id) do
@@ -176,10 +190,19 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
   defp insert_legacy_memory!(content) do
     unboxed(fn ->
       %Memory{}
-      |> Memory.changeset(%{content: content, agent_id: "agent", host_id: "host"})
+      |> Memory.changeset(%{
+        content: content,
+        memory_space_id: memory_space_id("host"),
+        agent_id: "agent",
+        host_id: "host",
+        scope: "global",
+        namespace: "private"
+      })
       |> repo().insert!()
     end)
   end
+
+  defp ensure_owner!, do: unboxed(fn -> ensure_memory_space!("host") end)
 
   defp restore_hard_delete_on_exit do
     key = "memory.hard_delete_enabled"

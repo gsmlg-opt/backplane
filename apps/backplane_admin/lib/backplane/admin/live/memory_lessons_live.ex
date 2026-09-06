@@ -5,7 +5,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
   alias Backplane.Memory.Lessons
 
-  @partition_params ~w(host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace)
   @statuses ~w(candidate active disputed superseded archived)
   @per_page 25
 
@@ -127,6 +127,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           Host, client, scope, and namespace are all required. Lessons are never queried across partitions.
         </p>
         <.form id="lesson-partition-form" for={%{}} as={:partition} phx-submit="select_partition" class="mt-4 grid gap-3 sm:grid-cols-2">
+          <.dm_input id="lesson-memory-space" name="partition[memory_space_id]" label="Memory space ID" value="" required />
           <.dm_input id="lesson-host" name="partition[host]" label="Host" value="" required />
           <.dm_input id="lesson-client" name="partition[client]" label="Client" value="" required />
           <.dm_input id="lesson-scope" name="partition[scope]" label="Scope" value="" required />
@@ -262,6 +263,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
         do:
           {:ok,
            %{
+             memory_space_id: normalized["memory_space_id"],
              host_id: normalized["host"],
              client_id: normalized["client"],
              scope: normalized["scope"],
@@ -295,6 +297,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
   defp canonical_query(partition, filters) do
     %{
+      "memory_space_id" => partition.memory_space_id,
       "host" => partition.host_id,
       "client" => partition.client_id,
       "scope" => partition.scope,

@@ -25,8 +25,10 @@ defmodule Backplane.Memory.Projections.ActivityProjectorTest do
              "date" => "2026-08-12",
              "project" => "/workspace/backplane",
              "agent_id" => "agent-1",
+             "memory_space_id" => "00000000-0000-4000-8000-000000000001",
              "host_id" => "host-1",
              "client_id" => "client-1",
+             "source_client_id" => "source-client-1",
              "scope" => "scope:default",
              "namespace" => "private",
              "event_type" => "memory.recalled",
@@ -90,8 +92,10 @@ defmodule Backplane.Memory.Projections.ActivityProjectorTest do
       Map.merge(
         %{
           id: Ecto.UUID.generate(),
+          memory_space_id: "00000000-0000-4000-8000-000000000001",
           host_id: "host-1",
           client_id: "client-1",
+          source_client_id: "source-client-1",
           scope: "scope:default",
           namespace: "private",
           session_id: "session-1",

@@ -10,9 +10,25 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.GraphExtractWorker
 
-  @partition %{host_id: "host-a", client_id: "client-a", scope: "team", namespace: "private"}
-  @foreign %{host_id: "host-b", client_id: "client-a", scope: "team", namespace: "private"}
+  @partition %{
+    memory_space_id: "62a66140-e479-85c1-892d-8b6d6b77aba1",
+    host_id: "host-a",
+    client_id: "client-a",
+    scope: "team",
+    namespace: "private"
+  }
+  @foreign %{
+    @partition
+    | memory_space_id: "ac9100e2-86b0-91cf-8cdf-c6f51dcfebe3",
+      host_id: "host-b"
+  }
   @dim 2560
+
+  setup do
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("host-a")
+    Backplane.Memory.IngestFixtures.ensure_memory_space!("host-b")
+    :ok
+  end
 
   defmodule GraphLLM do
     def extract_graph(_contents),
@@ -109,6 +125,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     insert_event(event_id, @partition, "session-summary")
 
     repo().insert!(%ProjectedSession{
+      memory_space_id: @partition.memory_space_id,
       subject_id: "subject-summary",
       session_id: "session-summary",
       project: "backplane",
@@ -156,6 +173,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     now = DateTime.utc_now()
 
     victim = %{
+      memory_space_id: @partition.memory_space_id,
       host_id: @partition.host_id,
       client_id: "client-victim",
       scope: "personal",
@@ -163,6 +181,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     }
 
     repo().insert!(%ProjectedSession{
+      memory_space_id: @partition.memory_space_id,
       subject_id: "subject-attacker",
       session_id: "shared-session",
       project: "backplane",
@@ -194,7 +213,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     now = DateTime.utc_now()
 
     for {label, foreign} <- [
-          {"client", %{@partition | client_id: "other-client"}},
+          {"memory-space", %{@partition | memory_space_id: @foreign.memory_space_id}},
           {"scope", %{@partition | scope: "personal"}},
           {"namespace", %{@partition | namespace: "other-namespace"}}
         ] do
@@ -202,6 +221,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       session_id = "session-local-refs-#{label}"
 
       repo().insert!(%ProjectedSession{
+        memory_space_id: @partition.memory_space_id,
         subject_id: subject_id,
         session_id: session_id,
         project: "backplane",
@@ -431,6 +451,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       repo().insert!(
         Memory.changeset(%Memory{}, %{
           content: content,
+          memory_space_id: partition.memory_space_id,
           memory_type: Keyword.get(opts, :type, "semantic"),
           agent_id: "agent",
           host_id: partition.host_id,
@@ -475,6 +496,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
 
   defp observation(event_id, partition, content, session_id \\ nil) do
     repo().insert!(%ProjectedObservation{
+      memory_space_id: partition.memory_space_id,
       event_id: event_id,
       subject_id: "subject-#{event_id}",
       host_id: partition.host_id,
@@ -499,15 +521,19 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     repo().insert!(
       Stream.changeset(%Stream{}, %{
         stream_id: "stream-#{id}",
+        memory_space_id: partition.memory_space_id,
         project: "backplane",
         host_id: partition.host_id,
         client_id: partition.client_id,
+        scope: partition.scope,
+        namespace: partition.namespace,
         session_id: session_id
       })
     )
 
     repo().insert!(%Event{
       id: id,
+      memory_space_id: partition.memory_space_id,
       stream_id: "stream-#{id}",
       sequence: 1,
       project: "backplane",
@@ -527,11 +553,14 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
 
   defp summary_attrs(partition, session_id, content),
     do: %{
+      memory_space_id: partition.memory_space_id,
       session_id: session_id,
       project: "backplane",
       content: content,
       subject_id: "subject-summary",
       host_id: partition.host_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
       processing_version: "v1",
       input_revision: "i1",
       output_revision: "o1"
