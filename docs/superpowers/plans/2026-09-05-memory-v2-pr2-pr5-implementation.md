@@ -53,7 +53,11 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
 - Task 4: committed as `98636248` with notification-bound fix `1fbe5e9f`;
   specification and quality reviews approved. Real PostgreSQL storage/capture
   tests: 13/13; formatting, warnings-as-errors compilation, and diff checks passed.
-- Task 5: in progress. Tasks 6–20 remain outstanding; PR2–PR5 is not complete.
+- Task 5: committed as `0db5c1b9`; specification and quality reviews approved.
+  EdgeSync/Config tests: 43/43 after the final failure/rebuild race fix; full
+  Memory 1,141/1,141 before that isolated fix; affected System tests 19/19.
+  Formatting, warnings-as-errors compilation, and diff checks passed.
+- Task 6: in progress. Tasks 7–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
