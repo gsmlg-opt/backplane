@@ -57,7 +57,11 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   EdgeSync/Config tests: 43/43 after the final failure/rebuild race fix; full
   Memory 1,141/1,141 before that isolated fix; affected System tests 19/19.
   Formatting, warnings-as-errors compilation, and diff checks passed.
-- Task 6: in progress. Tasks 7–20 remain outstanding; PR2–PR5 is not complete.
+- Task 6: committed as `2d9e8d5f`; specification and quality reviews approved.
+  Full API tests: 234/234 with warnings-as-errors, repeated on the merged
+  `bd5bc830` state using the worktree PostgreSQL instance. Scoped formatting and
+  diff checks passed. Locally merged into main at the user's request; no push.
+- Task 7: in progress. Tasks 8–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
