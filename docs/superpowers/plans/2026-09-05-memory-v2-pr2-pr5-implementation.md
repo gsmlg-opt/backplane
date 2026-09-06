@@ -42,6 +42,16 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
 
 ## PR2 - Revisioned protocol and edge mirror
 
+### Execution record
+
+- Tasks 1–2: committed and reviewed through `65899099`.
+- Task 3: committed as `ff2b1c31`; specification and quality reviews approved.
+  Full scoped gates: Memory 1,109, API 224, System 412, Admin 270 tests, all passing.
+  Final review regressions: migration 4/4 (NULL scope/namespace INSERT and UPDATE
+  rejection across all 24 roots) and imports 4/4 (exact partition authorization).
+  Changed-file formatting, warnings-as-errors compilation, and diff checks passed.
+- Task 4: in progress. Tasks 5–20 remain outstanding; PR2–PR5 is not complete.
+
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
 **Files:**
