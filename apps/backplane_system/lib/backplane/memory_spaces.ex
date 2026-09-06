@@ -260,12 +260,34 @@ defmodule Backplane.MemorySpaces do
     end
   end
 
-  defp unresolved_partition_issue?(host_id, partition) do
+  @doc "Lists every active exact host entitlement, preserving shared spaces and namespaces."
+  def host_entitlements(host_id) do
+    with {:ok, host_id} <- normalize_host_id(host_id),
+         {:ok, _private_space} <- host_memory_space_id(host_id) do
+      {:ok,
+       Repo.all(
+         from(e in Entitlement,
+           join: s in MemorySpace,
+           on: s.id == e.memory_space_id,
+           where: e.host_id == ^host_id and e.status == "active" and s.status == "active",
+           order_by: [e.memory_space_id, e.scope, e.namespace],
+           select: %{memory_space_id: e.memory_space_id, scope: e.scope, namespace: e.namespace}
+         )
+       )}
+    end
+  end
+
+  @doc "Checks readiness; rebuilding exempts only initial-snapshot issues with this complete exact tuple."
+  def partition_ready?(host_id, partition, rebuilding_snapshot \\ false) do
+    not unresolved_partition_issue?(host_id, partition, rebuilding_snapshot)
+  end
+
+  defp unresolved_partition_issue?(host_id, partition, rebuilding_snapshot \\ false) do
     memory_space_id = partition.memory_space_id
     scope = partition.scope
     namespace = partition.namespace
 
-    Repo.exists?(
+    query =
       from(issue in BackfillIssue,
         where: issue.disposition == "pending",
         where:
@@ -276,7 +298,28 @@ defmodule Backplane.MemorySpaces do
             (fragment("nullif(btrim(? ->> 'namespace'), '') IS NULL", issue.details) or
                fragment("? ->> 'namespace' = ?", issue.details, ^namespace))
       )
-    )
+
+    query =
+      if rebuilding_snapshot do
+        where(
+          query,
+          [issue],
+          not (issue.source_table == "initial_snapshot" and
+                 fragment(
+                   "? @> ?::jsonb",
+                   issue.details,
+                   ^%{
+                     "memory_space_id" => memory_space_id,
+                     "scope" => scope,
+                     "namespace" => namespace
+                   }
+                 ))
+        )
+      else
+        query
+      end
+
+    Repo.exists?(query)
   end
 
   defp transaction(fun) do

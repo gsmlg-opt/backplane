@@ -8,6 +8,7 @@ defmodule Backplane.Memory.ConfigTest do
   @settings_table :backplane_settings
 
   @numeric_settings [
+    {:host_sync_max_item_bytes, "memory.host_sync_max_item_bytes", 262_144, 1, 262_144},
     {:event_gap_grace_seconds, "memory.event_gap_grace_seconds", 60, 1, 3_600},
     {:host_batch_max_events, "memory.host_batch_max_events", 100, 1, 100},
     {:host_batch_max_bytes, "memory.host_batch_max_bytes", 524_288, 1, 524_288},
@@ -24,11 +25,12 @@ defmodule Backplane.Memory.ConfigTest do
     {:replay_max_events, "memory.replay_max_events", 1_000, 1, 10_000},
     {:replay_import_max_files, "memory.replay_import_max_files", 200, 1, 1_000},
     {:replay_import_max_entries, "memory.replay_import_max_entries", 100_000, 1, 1_000_000},
-    {:replay_import_max_bytes, "memory.replay_import_max_bytes", 1_073_741_824, 1,
-     1_073_741_824}
+    {:replay_import_max_bytes, "memory.replay_import_max_bytes", 1_073_741_824, 1, 1_073_741_824}
   ]
 
   @recall_flags [
+    {:host_sync_v1_enabled?, "memory.host_sync_v1.enabled", true},
+    {:host_sync_v2_enabled?, "memory.host_sync_v2.enabled", false},
     {:recall_trace_enabled?, "memory.recall_trace_enabled", true},
     {:recall_reranker_enabled?, "memory.recall_reranker_enabled", false}
   ]

@@ -28,6 +28,7 @@ defmodule Backplane.Memory.Application do
         id: Backplane.Memory.EventNotifications
       ),
       EventNotifier,
+      Backplane.Memory.EdgeSync.Notifier,
       ActivityNotifier,
       ReplayNotifier,
       GeneratedSkills
