@@ -61,7 +61,13 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   Full API tests: 234/234 with warnings-as-errors, repeated on the merged
   `bd5bc830` state using the worktree PostgreSQL instance. Scoped formatting and
   diff checks passed. Locally merged into main at the user's request; no push.
-- Task 7: in progress. Tasks 8–20 remain outstanding; PR2–PR5 is not complete.
+- Task 7: committed as `d266228c` with schema-before-configuration hardening
+  `62738f48`; specification and quality reviews approved. Full host-agent suite:
+  406/406 with warnings-as-errors; independently repeated edge/supervisor/config
+  tests: 33/33. Formatting and diff checks passed. Production rejection,
+  command/capture path aliases, foreign database preservation, restart durability,
+  and normal supervised shutdown are covered.
+- Task 8: in progress. Tasks 9–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
