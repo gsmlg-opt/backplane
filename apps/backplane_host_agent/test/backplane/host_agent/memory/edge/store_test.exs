@@ -26,17 +26,26 @@ defmodule Backplane.HostAgent.Memory.Edge.StoreTest do
     ]
 
     {:ok, store} = Store.start_link(opts)
-    assert {:ok, _} = Store.execute(store, "CREATE TABLE marker (value TEXT)")
+    assert :ok = Backplane.HostAgent.Memory.Edge.Migrator.migrate(store)
 
     assert {:ok, :ok} =
              Store.transaction(store, fn conn ->
-               {:ok, _} = Store.execute(conn, "INSERT INTO marker VALUES (?)", ["durable"])
+               {:ok, _} =
+                 Store.execute(
+                   conn,
+                   "INSERT INTO edge_snapshot_chunks VALUES (?, ?, ?, ?)",
+                   ["durable", 0, "hash", "2026-09-07T00:00:00Z"]
+                 )
+
                :ok
              end)
 
     GenServer.stop(store)
     {:ok, store} = Store.start_link(opts)
-    assert {:ok, %{rows: [%{"value" => "durable"}]}} = Store.query(store, "SELECT * FROM marker")
+
+    assert {:ok, %{rows: [%{"snapshot_id" => "durable"}]}} =
+             Store.query(store, "SELECT snapshot_id FROM edge_snapshot_chunks")
+
     GenServer.stop(store)
   end
 end

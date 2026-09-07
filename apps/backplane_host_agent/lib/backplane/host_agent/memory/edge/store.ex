@@ -30,7 +30,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Store do
       # Supported database encryption is unavailable; Protection must precede this open.
       case Turso.start_link(Keyword.take(opts, [:database, :name]) ++ [pool_size: 1]) do
         {:ok, pid} ->
-          case Backplane.HostAgent.Memory.Store.configure(pid) do
+          case configure_edge(pid) do
             :ok ->
               {:ok, pid}
 
@@ -42,6 +42,12 @@ defmodule Backplane.HostAgent.Memory.Edge.Store do
         error ->
           error
       end
+    end
+  end
+
+  defp configure_edge(pid) do
+    with :ok <- Backplane.HostAgent.Memory.Edge.Migrator.validate_schema(pid) do
+      Backplane.HostAgent.Memory.Store.configure(pid)
     end
   end
 end

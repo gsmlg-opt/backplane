@@ -63,6 +63,11 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
     end
   end
 
+  @doc false
+  def validate_schema(store) do
+    with {:ok, current} <- current_version(store), do: validate_schema(store, current)
+  end
+
   defp validate_schema(store, current) do
     with {:ok, %{rows: rows}} <-
            Store.query(

@@ -4,6 +4,36 @@ defmodule Backplane.HostAgent.Memory.Edge.SupervisorTest do
   alias Backplane.HostAgent.Memory.Edge.{Supervisor, Migrator}
   @moduletag :tmp_dir
 
+  test "foreign database rejection leaves journal policy and contents untouched", %{tmp_dir: dir} do
+    database = Path.join(dir, "foreign.db")
+    {:ok, raw} = Turso.start_link(database: database, pool_size: 1)
+    {:ok, _} = Turso.execute(raw, "CREATE TABLE facts (content TEXT)")
+    {:ok, _} = Turso.execute(raw, "INSERT INTO facts VALUES ('untouched')")
+    {:ok, _} = Turso.execute(raw, "PRAGMA user_version = 1")
+
+    assert {:ok, %{rows: [%{"journal_mode" => original_mode}]}} =
+             Turso.query(raw, "PRAGMA journal_mode")
+
+    GenServer.stop(raw)
+
+    assert :ignore =
+             Supervisor.start_link(%{
+               enabled: true,
+               development_plaintext: true,
+               db_path: database,
+               name: nil
+             })
+
+    {:ok, raw} = Turso.start_link(database: database, pool_size: 1)
+
+    assert {:ok, %{rows: [%{"journal_mode" => ^original_mode}]}} =
+             Turso.query(raw, "PRAGMA journal_mode")
+
+    assert {:ok, %{rows: [%{"content" => "untouched"}]}} = Turso.query(raw, "SELECT * FROM facts")
+    assert {:ok, %{rows: [%{"user_version" => 1}]}} = Turso.query(raw, "PRAGMA user_version")
+    GenServer.stop(raw)
+  end
+
   test "parent shutdown terminates supervisor and pool normally", %{tmp_dir: dir} do
     config = %{
       enabled: true,
