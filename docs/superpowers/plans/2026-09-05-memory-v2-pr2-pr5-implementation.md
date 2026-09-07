@@ -278,6 +278,10 @@ The eligible shape is semantic/procedural, active/disputed, nondeleted, in an ex
 
 ### Task 7: Add the host protection gate and separate edge database
 
+Scope amendment approved by the user on 2026-09-07: update the two existing
+exact-map expectations in `apps/backplane_host_agent/test/backplane/host_agent/config_test.exs`
+to include the newly introduced host-sync configuration defaults.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/protection.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/store.ex`
