@@ -155,6 +155,19 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: Path.join(work_dir, "memory/host_agent_memory.db"),
+             host_sync_v1: %{enabled: false},
+             host_sync_v2: %{
+               enabled: false,
+               development_plaintext: false,
+               db_path: Path.join(work_dir, "memory/edge_memory.db"),
+               reserved_db_paths: [
+                 Path.join(work_dir, "memory/host_agent_memory.db"),
+                 Path.join(work_dir, "memory/capture_spool.db")
+               ],
+               max_frame_bytes: 524_288,
+               max_changes: 100,
+               sync_interval_ms: 5_000
+             },
              bound_scope: "proj_local",
              local_ttl_days: 90,
              sync_interval_ms: 5_000,
@@ -378,6 +391,16 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: db_path,
+             host_sync_v1: %{enabled: false},
+             host_sync_v2: %{
+               enabled: false,
+               development_plaintext: false,
+               db_path: Path.join(tmp_dir, "work/memory/edge_memory.db"),
+               reserved_db_paths: [db_path, Path.join(tmp_dir, "work/memory/capture_spool.db")],
+               max_frame_bytes: 524_288,
+               max_changes: 100,
+               sync_interval_ms: 5_000
+             },
              bound_scope: "proj_custom",
              local_ttl_days: 30,
              sync_interval_ms: 250,
