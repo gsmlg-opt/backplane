@@ -12,14 +12,20 @@ defmodule Backplane.LLM.UsageAccumulator do
           protocol_terminal: atom() | nil,
           error_code: String.t() | nil,
           error_type: String.t() | nil,
+          protocol: :legacy | :compact | :responses,
+          tool_calls: [map()],
+          partial: boolean(),
+          usage_complete: boolean(),
           metadata: map(),
           stream_chunks: non_neg_integer(),
           ttft_ms: non_neg_integer() | nil,
           stream_duration_ms: non_neg_integer() | nil
         }
 
-  @spec new() :: pid()
+  @spec new(:legacy | :compact | :responses | :openai_responses) :: pid()
   def new(protocol \\ :legacy)
+
+  def new(:responses), do: new(:openai_responses)
 
   def new(:openai_responses) do
     {:ok, pid} =
@@ -38,9 +44,18 @@ defmodule Backplane.LLM.UsageAccumulator do
   end
 
   def new(:legacy) do
+    new_legacy(:legacy)
+  end
+
+  def new(:compact) do
+    new_legacy(:compact)
+  end
+
+  defp new_legacy(protocol) do
     {:ok, pid} =
       Agent.start_link(fn ->
         %{
+          protocol: protocol,
           input_tokens: nil,
           output_tokens: nil,
           cached_tokens: nil,
@@ -126,6 +141,10 @@ defmodule Backplane.LLM.UsageAccumulator do
       protocol_terminal: nil,
       error_code: nil,
       error_type: nil,
+      protocol: legacy_protocol(state.protocol),
+      tool_calls: [],
+      partial: false,
+      usage_complete: complete_counters?(state[:input_tokens], state[:output_tokens]),
       metadata: %{}
     }
 
@@ -144,6 +163,11 @@ defmodule Backplane.LLM.UsageAccumulator do
           protocol_terminal: facts.protocol_terminal,
           error_code: facts.error_code,
           error_type: facts.error_type,
+          protocol: :responses,
+          tool_calls: Enum.map(facts.tool_calls, &normalize_tool_call/1),
+          partial: partial_observation?(facts),
+          usage_complete:
+            facts.observation_status == :complete and facts.usage_status == :complete,
           metadata: %{protocol_observation: sanitize_facts(facts)}
         })
 
@@ -246,8 +270,32 @@ defmodule Backplane.LLM.UsageAccumulator do
       :usage_status,
       :bytes_seen,
       :events_seen,
-      :diagnostics
+      :diagnostics,
+      :diagnostics_truncated,
+      :input_truncated
     ])
     |> Map.update(:implementation, nil, &inspect/1)
   end
+
+  defp normalize_tool_call(%{arguments: arguments} = tool) when is_binary(arguments) do
+    decoded =
+      case Jason.decode(arguments) do
+        {:ok, value} when is_map(value) -> value
+        _ -> arguments
+      end
+
+    %{tool | arguments: decoded}
+  end
+
+  defp partial_observation?(facts) do
+    facts.observation_status != :complete or
+      Enum.any?(facts.tool_calls, &(&1.complete != true))
+  end
+
+  defp complete_counters?(input, output) do
+    is_integer(input) and input >= 0 and is_integer(output) and output >= 0
+  end
+
+  defp legacy_protocol(:compact), do: :compact
+  defp legacy_protocol(_protocol), do: :legacy
 end

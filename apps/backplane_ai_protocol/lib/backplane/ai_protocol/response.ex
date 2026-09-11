@@ -108,9 +108,6 @@ defmodule Backplane.AiProtocol.Response do
 
       {:error, %Error{message: message}} ->
         {:error, Error.invalid!("Response usage: " <> message)}
-
-      _ ->
-        {:error, Error.invalid!("Response usage is invalid")}
     end
   end
 

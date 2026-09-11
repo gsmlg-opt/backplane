@@ -117,7 +117,6 @@ defmodule Backplane.AiProtocol.Error do
       {:ok, %{error | details: attrs[:details] || %{}}}
     else
       {:error, %__MODULE__{}} = invalid -> invalid
-      _ -> invalid("Invalid Error")
     end
   end
 

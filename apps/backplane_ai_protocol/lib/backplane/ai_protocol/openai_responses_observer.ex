@@ -7,9 +7,15 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
 
   alias Backplane.AiProtocol.{Error, SSE, Serialization}
 
+  @default_max_total_bytes 8_388_608
+  @default_max_diagnostics 32
+  @diagnostics_truncated "diagnostics_truncated"
+
   defstruct framer: nil,
-            max_total_bytes: 8_388_608,
+            max_total_bytes: @default_max_total_bytes,
+            max_diagnostics: @default_max_diagnostics,
             bytes_seen: 0,
+            input_truncated: false,
             events_seen: 0,
             protocol_terminal: nil,
             terminal_count: 0,
@@ -25,7 +31,8 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
             error_code: nil,
             error_type: nil,
             tool_calls: %{},
-            diagnostics: []
+            diagnostics: [],
+            diagnostics_truncated: false
 
   @type t :: %__MODULE__{}
 
@@ -35,23 +42,26 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   def new(opts \\ []) do
     %__MODULE__{
       framer: SSE.new(opts),
-      max_total_bytes: Keyword.get(opts, :max_total_bytes, 8_388_608)
+      max_total_bytes:
+        positive_limit(Keyword.get(opts, :max_total_bytes), @default_max_total_bytes),
+      max_diagnostics:
+        positive_limit(Keyword.get(opts, :max_diagnostics), @default_max_diagnostics)
     }
   end
 
-  @spec feed(t(), binary()) :: t()
+  @spec feed(t(), term()) :: t()
+  def feed(%__MODULE__{input_truncated: true} = state, _chunk), do: state
+
   def feed(%__MODULE__{} = state, chunk) when is_binary(chunk) do
     next_size = state.bytes_seen + byte_size(chunk)
 
     if next_size > state.max_total_bytes do
-      incomplete(state, "response_bytes_exceeded")
+      state
+      |> incomplete("response_bytes_exceeded")
+      |> Map.put(:input_truncated, true)
     else
       state = %{state | bytes_seen: next_size}
-
-      case SSE.feed(state.framer, chunk) do
-        {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
-        {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse")
-      end
+      observe_chunk(state, chunk)
     end
   end
 
@@ -61,12 +71,12 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   def finish(%__MODULE__{protocol_terminal: terminal} = state, _reason) when not is_nil(terminal),
     do: state
 
+  def finish(%__MODULE__{input_truncated: true} = state, reason) do
+    put_terminal(state, terminal_for_reason(reason))
+  end
+
   def finish(%__MODULE__{} = state, reason) do
-    state =
-      case SSE.finish(state.framer) do
-        {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
-        {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse_eof")
-      end
+    state = observe_finish(state)
 
     if state.protocol_terminal do
       state
@@ -92,7 +102,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
         true ->
           case Serialization.from_json(body, max_encoded_bytes: state.max_total_bytes) do
             {:ok, value} when is_map(value) ->
-              observe_document(%{state | bytes_seen: byte_size(body)}, value, status)
+              safely_observe_document(%{state | bytes_seen: byte_size(body)}, value, status)
 
             _ ->
               incomplete(%{state | bytes_seen: byte_size(body)}, "invalid_json")
@@ -121,9 +131,35 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
       error_type: state.error_type,
       tool_calls: state.tool_calls |> Map.values() |> Enum.sort_by(& &1.id),
       bytes_seen: state.bytes_seen,
+      input_truncated: state.input_truncated,
       events_seen: state.events_seen,
-      diagnostics: Enum.reverse(state.diagnostics)
+      diagnostics: Enum.reverse(state.diagnostics),
+      diagnostics_truncated: state.diagnostics_truncated
     }
+  end
+
+  defp observe_chunk(state, chunk) do
+    case SSE.feed(state.framer, chunk) do
+      {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
+      {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse")
+    end
+  rescue
+    _error -> incomplete(state, "observer_exception")
+  end
+
+  defp observe_finish(state) do
+    case SSE.finish(state.framer) do
+      {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
+      {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse_eof")
+    end
+  rescue
+    _error -> incomplete(state, "observer_exception")
+  end
+
+  defp safely_observe_document(state, document, status) do
+    observe_document(state, document, status)
+  rescue
+    _error -> incomplete(state, "observer_exception")
   end
 
   defp observe_sse(%{data: "[DONE]"}, state), do: state
@@ -140,6 +176,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
 
   defp observe_event(state, %{"type" => type} = event) when type in @known_events do
     state
+    |> validate_response_container(event)
     |> put_provider_id(event)
     |> put_usage(response_value(event))
     |> put_tool_event(event)
@@ -183,42 +220,22 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
     |> then(fn state ->
       if terminal == :unknown, do: incomplete(state, "unknown_document_terminal"), else: state
     end)
-  rescue
-    ArgumentError -> state |> incomplete("invalid_terminal") |> put_terminal(:unknown)
   end
 
   defp response_value(%{"response" => response}) when is_map(response), do: response
   defp response_value(event), do: event
 
-  defp put_usage(state, %{"usage" => usage}) when is_map(usage) do
-    input = integer(usage["input_tokens"])
-    output = integer(usage["output_tokens"])
-    total = integer(usage["total_tokens"])
-
-    %{
-      state
-      | input_tokens: choose(input, state.input_tokens),
-        output_tokens: choose(output, state.output_tokens),
-        cached_tokens:
-          choose(
-            integer(get_in(usage, ["input_tokens_details", "cached_tokens"])),
-            state.cached_tokens
-          ),
-        reasoning_tokens:
-          choose(
-            integer(get_in(usage, ["output_tokens_details", "reasoning_tokens"])),
-            state.reasoning_tokens
-          ),
-        native_total: choose(total, state.native_total),
-        usage_status:
-          if(is_integer(input) or is_integer(output), do: :complete, else: state.usage_status)
-    }
+  defp put_usage(state, value) when is_map(value) do
+    case Map.fetch(value, "usage") do
+      {:ok, usage} when is_map(usage) -> put_usage_map(state, usage)
+      {:ok, nil} -> state
+      {:ok, _invalid} -> incomplete(state, "invalid_usage")
+      :error -> state
+    end
   end
 
-  defp put_usage(state, _), do: state
-
   defp put_provider_id(state, value) do
-    id = value["id"] || get_in(value, ["response", "id"])
+    id = value["id"] || response_id(value["response"])
     if is_binary(id), do: %{state | provider_request_id: id}, else: state
   end
 
@@ -245,13 +262,24 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   defp put_terminal(state, _terminal), do: state
 
   defp maybe_finish_reason(state, value) do
-    reason = get_in(value, ["incomplete_details", "reason"]) || value["stop_reason"]
-    if is_binary(reason), do: %{state | finish_reason: reason}, else: state
+    case value["incomplete_details"] do
+      details when is_map(details) ->
+        put_finish_reason(state, details["reason"] || value["stop_reason"])
+
+      nil ->
+        put_finish_reason(state, value["stop_reason"])
+
+      _invalid ->
+        incomplete(state, "invalid_incomplete_details")
+    end
   end
 
   defp put_error(state, %{"error" => error}) when is_map(error) do
     %{state | error_code: safe_code(error["code"]), error_type: safe_code(error["type"])}
   end
+
+  defp put_error(state, %{"error" => nil}), do: state
+  defp put_error(state, %{"error" => _invalid}), do: incomplete(state, "invalid_error")
 
   defp put_error(state, error) when is_map(error) do
     %{state | error_code: safe_code(error["code"]), error_type: safe_code(error["type"])}
@@ -260,10 +288,9 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   defp put_document_tools(state, %{"output" => output}) when is_list(output),
     do: Enum.reduce(output, state, &put_output_item/2)
 
+  defp put_document_tools(state, %{"output" => nil}), do: state
+  defp put_document_tools(state, %{"output" => _invalid}), do: incomplete(state, "invalid_output")
   defp put_document_tools(state, _), do: state
-
-  defp put_tool_event(state, %{"item" => item}) when is_map(item),
-    do: put_output_item(item, state)
 
   defp put_tool_event(state, %{
          "type" => "response.function_call_arguments.delta",
@@ -276,14 +303,26 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
     end)
   end
 
+  defp put_tool_event(state, %{"type" => "response.function_call_arguments.delta"}),
+    do: incomplete(state, "invalid_tool_arguments_delta")
+
   defp put_tool_event(state, %{
          "type" => "response.function_call_arguments.done",
          "item_id" => id,
          "arguments" => args
        })
        when is_binary(id) and is_binary(args) do
-    update_tool(state, id, fn tool -> finish_tool(%{tool | arguments: args}) end)
+    finish_tool(state, id, args)
   end
+
+  defp put_tool_event(state, %{"type" => "response.function_call_arguments.done"}),
+    do: incomplete(state, "invalid_tool_arguments_done")
+
+  defp put_tool_event(state, %{"item" => item}) when is_map(item),
+    do: put_output_item(item, state)
+
+  defp put_tool_event(state, %{"item" => _invalid}),
+    do: incomplete(state, "invalid_output_item")
 
   defp put_tool_event(state, _), do: state
 
@@ -291,51 +330,191 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
     id = item["id"] || item["call_id"]
 
     if is_binary(id) do
+      {state, arguments} = tool_arguments(state, item)
+      {state, call_id} = optional_binary(state, item["call_id"], "invalid_tool_call_id")
+      {state, name} = optional_binary(state, item["name"], "invalid_tool_name")
+
       tool = %{
         id: id,
-        call_id: item["call_id"],
-        name: item["name"],
-        arguments: item["arguments"] || "",
+        call_id: call_id,
+        name: name,
+        arguments: arguments,
         complete: false
       }
 
-      tool = if item["status"] == "completed", do: finish_tool(tool), else: tool
-      %{state | tool_calls: Map.put(state.tool_calls, id, tool)}
+      state = %{state | tool_calls: Map.put(state.tool_calls, id, tool)}
+
+      if item["status"] == "completed" do
+        finish_tool(state, id, arguments)
+      else
+        state
+      end
     else
       incomplete(state, "tool_call_missing_id")
     end
   end
 
-  defp put_output_item(_item, state), do: state
+  defp put_output_item(item, state) when is_map(item), do: state
+  defp put_output_item(_item, state), do: incomplete(state, "invalid_output_item")
 
   defp update_tool(state, id, fun) do
     initial = %{id: id, call_id: nil, name: nil, arguments: "", complete: false}
     %{state | tool_calls: Map.update(state.tool_calls, id, fun.(initial), fun)}
   end
 
-  defp finish_tool(tool) do
-    case Jason.decode(tool.arguments) do
-      {:ok, value} when is_map(value) -> %{tool | complete: true}
-      _ -> %{tool | complete: false}
+  defp finish_tool(state, id, arguments) when is_binary(arguments) do
+    tool = Map.get(state.tool_calls, id, empty_tool(id))
+
+    case Jason.decode(arguments) do
+      {:ok, value} when is_map(value) ->
+        %{
+          state
+          | tool_calls:
+              Map.put(state.tool_calls, id, %{tool | arguments: arguments, complete: true})
+        }
+
+      _ ->
+        state
+        |> Map.put(
+          :tool_calls,
+          Map.put(state.tool_calls, id, %{tool | arguments: arguments, complete: false})
+        )
+        |> incomplete("invalid_tool_arguments")
     end
   end
 
   defp incomplete(state, diagnostic) do
-    %{
+    state = %{
       state
       | observation_status: :incomplete,
-        usage_status: if(state.usage_status == :complete, do: :partial, else: state.usage_status),
-        diagnostics: [diagnostic | state.diagnostics]
+        usage_status: usage_status(%{state | observation_status: :incomplete})
     }
+
+    retain_diagnostic(state, diagnostic)
   end
 
   defp terminal_for_reason(:cancelled), do: :cancelled
   defp terminal_for_reason(:error), do: :failed
   defp terminal_for_reason(_), do: :interrupted
-  defp integer(value) when is_integer(value) and value >= 0, do: value
-  defp integer(_), do: nil
   defp choose(nil, old), do: old
   defp choose(value, _old), do: value
   defp safe_code(value) when is_binary(value), do: String.slice(value, 0, 128)
   defp safe_code(_), do: nil
+
+  defp validate_response_container(state, event) do
+    case Map.fetch(event, "response") do
+      {:ok, response} when is_map(response) -> state
+      {:ok, _invalid} -> incomplete(state, "invalid_response")
+      :error -> state
+    end
+  end
+
+  defp put_usage_map(state, usage) do
+    {state, input} = counter(state, usage, "input_tokens")
+    {state, output} = counter(state, usage, "output_tokens")
+    {state, total} = counter(state, usage, "total_tokens")
+    {state, cached} = detail_counter(state, usage, "input_tokens_details", "cached_tokens")
+
+    {state, reasoning} =
+      detail_counter(state, usage, "output_tokens_details", "reasoning_tokens")
+
+    state = %{
+      state
+      | input_tokens: choose(input, state.input_tokens),
+        output_tokens: choose(output, state.output_tokens),
+        cached_tokens: choose(cached, state.cached_tokens),
+        reasoning_tokens: choose(reasoning, state.reasoning_tokens),
+        native_total: choose(total, state.native_total)
+    }
+
+    %{state | usage_status: usage_status(state)}
+  end
+
+  defp counter(state, map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_integer(value) and value >= 0 -> {state, value}
+      {:ok, nil} -> {state, nil}
+      {:ok, _invalid} -> {incomplete(state, "invalid_#{key}"), nil}
+      :error -> {state, nil}
+    end
+  end
+
+  defp detail_counter(state, usage, details_key, counter_key) do
+    case Map.fetch(usage, details_key) do
+      {:ok, details} when is_map(details) -> counter(state, details, counter_key)
+      {:ok, nil} -> {state, nil}
+      {:ok, _invalid} -> {incomplete(state, "invalid_#{details_key}"), nil}
+      :error -> {state, nil}
+    end
+  end
+
+  defp usage_status(%{observation_status: :complete, input_tokens: input, output_tokens: output})
+       when is_integer(input) and is_integer(output),
+       do: :complete
+
+  defp usage_status(state) do
+    if Enum.any?(
+         [
+           state.input_tokens,
+           state.output_tokens,
+           state.cached_tokens,
+           state.reasoning_tokens,
+           state.native_total
+         ],
+         &is_integer/1
+       ),
+       do: :partial,
+       else: :unknown
+  end
+
+  defp response_id(response) when is_map(response), do: response["id"]
+  defp response_id(_response), do: nil
+
+  defp put_finish_reason(state, reason) when is_binary(reason),
+    do: %{state | finish_reason: reason}
+
+  defp put_finish_reason(state, _reason), do: state
+
+  defp tool_arguments(state, item) do
+    case Map.fetch(item, "arguments") do
+      {:ok, arguments} when is_binary(arguments) -> {state, arguments}
+      :error -> {state, ""}
+      {:ok, _invalid} -> {incomplete(state, "invalid_tool_arguments"), ""}
+    end
+  end
+
+  defp optional_binary(state, value, _diagnostic) when is_binary(value) or is_nil(value),
+    do: {state, value}
+
+  defp optional_binary(state, _value, diagnostic), do: {incomplete(state, diagnostic), nil}
+
+  defp empty_tool(id),
+    do: %{id: id, call_id: nil, name: nil, arguments: "", complete: false}
+
+  defp retain_diagnostic(%{diagnostics_truncated: true} = state, _diagnostic), do: state
+
+  defp retain_diagnostic(state, diagnostic) do
+    cond do
+      diagnostic in state.diagnostics ->
+        state
+
+      length(state.diagnostics) < state.max_diagnostics ->
+        %{state | diagnostics: [diagnostic | state.diagnostics]}
+
+      true ->
+        retained =
+          state.diagnostics
+          |> Enum.reverse()
+          |> Enum.take(state.max_diagnostics - 1)
+
+        %{
+          state
+          | diagnostics: Enum.reverse(retained ++ [@diagnostics_truncated]),
+            diagnostics_truncated: true
+        }
+    end
+  end
+
+  defp positive_limit(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_limit(_value, default), do: default
 end

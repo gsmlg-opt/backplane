@@ -173,6 +173,29 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
   end
 
+  test "consumes malformed nested Responses facts without changing native bytes", %{
+    openai: openai
+  } do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "malformed-nested"
+      })
+
+    expected =
+      ~S({"id":"resp_obs_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+    assert conn.status == 200
+    assert conn.resp_body == expected
+    flush_logs!()
+
+    log = log_for_model(openai.model)
+    assert log.input_tokens == 2
+    assert log.output_tokens == 1
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
+    assert get_in(log.metadata, ["protocol_observation", "usage_status"]) == "partial"
+  end
+
   test "records Anthropic non-stream success", %{anthropic: anthropic} do
     conn =
       llm_request(:post, "/v1/messages", %{
@@ -493,6 +516,12 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
         conn.body_params["input"] == "malformed" ->
           conn |> put_resp_content_type("application/json") |> send_resp(200, "{malformed")
+
+        conn.body_params["input"] == "malformed-nested" ->
+          body =
+            ~S({"id":"resp_obs_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+          conn |> put_resp_content_type("application/json") |> send_resp(200, body)
 
         conn.body_params["stream"] ->
           responses_stream(conn)

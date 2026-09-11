@@ -77,7 +77,7 @@ defmodule Backplane.LLM.AccessEvent do
 
   @spec mark_stream(t()) :: t()
   def mark_stream(%__MODULE__{} = state) do
-    protocol = if shared_responses?(state), do: :openai_responses, else: :legacy
+    protocol = accumulator_protocol(state)
     %{state | stream?: true, usage_acc: UsageAccumulator.new(protocol)}
   end
 
@@ -211,7 +211,7 @@ defmodule Backplane.LLM.AccessEvent do
       finish_reason: usage.finish_reason,
       provider_request_id: usage.provider_request_id,
       attempt_count: state.attempt_count || 1,
-      metadata: usage.metadata || %{}
+      metadata: usage.metadata
     }
   end
 
@@ -286,12 +286,24 @@ defmodule Backplane.LLM.AccessEvent do
 
   defp shared_responses?(%__MODULE__{
          operation: "responses",
+         path: path,
          provider: %Provider{preset_key: preset}
        })
-       when preset != "openai-codex",
+       when preset != "openai-codex" and path != "/v1/responses/compact",
        do: true
 
   defp shared_responses?(_), do: false
+
+  defp accumulator_protocol(%__MODULE__{operation: "compact"}), do: :compact
+
+  defp accumulator_protocol(%__MODULE__{path: path})
+       when is_binary(path) and path != "/v1/responses" do
+    if String.ends_with?(path, "/responses/compact"), do: :compact, else: :legacy
+  end
+
+  defp accumulator_protocol(state) do
+    if shared_responses?(state), do: :openai_responses, else: :legacy
+  end
 
   defp observation_metadata(%{implementation: implementation} = observation) do
     safe =

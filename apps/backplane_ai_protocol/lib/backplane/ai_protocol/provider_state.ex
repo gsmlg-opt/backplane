@@ -87,9 +87,6 @@ defmodule Backplane.AiProtocol.ProviderState do
 
       {:error, %Error{message: message}} ->
         {:error, Error.invalid!("Provider state affinity: " <> message)}
-
-      _ ->
-        {:error, Error.invalid!("Provider state affinity is invalid")}
     end
   end
 

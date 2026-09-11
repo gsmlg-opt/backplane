@@ -140,6 +140,34 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
              end)
     end
 
+    test "malformed nested Responses JSON fails open with exact bytes and one submission", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-malformed")
+      legacy = "bp-malformed-json-token"
+      Application.put_env(:backplane, :auth_token, legacy)
+
+      conn =
+        public_llm_request(
+          :post,
+          "/v1/responses",
+          %{
+            "model" => "test-integration/responses-malformed",
+            "input" => "malformed-nested"
+          },
+          legacy
+        )
+
+      expected =
+        ~S({"id":"resp_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+      assert conn.status == 200
+      assert conn.resp_body == expected
+      assert Agent.get(auth_store, & &1.submissions) == 1
+    end
+
     test "proxies anthropic request end-to-end" do
       conn =
         llm_request(:post, "/v1/messages", %{
@@ -317,6 +345,42 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "response.completed"
+      assert Agent.get(auth_store, & &1.submissions) == 1
+    end
+
+    test "malformed nested Responses SSE fails open with exact chunks and one submission", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-malformed-stream")
+      legacy = "bp-malformed-sse-token"
+      Application.put_env(:backplane, :auth_token, legacy)
+
+      conn =
+        public_llm_request(
+          :post,
+          "/v1/responses",
+          %{
+            "model" => "test-integration/responses-malformed-stream",
+            "input" => "malformed-nested",
+            "stream" => true
+          },
+          legacy
+        )
+
+      expected =
+        [
+          ~S(data: {"type":"response.created","response":1}) <> "\n\n",
+          ~S(data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_bad","name":"lookup","arguments":{"q":"bad"},"status":"completed"}}) <>
+            "\n\n",
+          ~S(data: {"type":"response.completed","response":{"id":"resp_malformed_stream","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}) <>
+            "\n\n"
+        ]
+        |> IO.iodata_to_binary()
+
+      assert conn.status == 200
+      assert conn.resp_body == expected
       assert Agent.get(auth_store, & &1.submissions) == 1
     end
 

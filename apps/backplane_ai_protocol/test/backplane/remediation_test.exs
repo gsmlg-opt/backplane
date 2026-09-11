@@ -181,6 +181,7 @@ defmodule Backplane.AiProtocol.RemediationTest do
     }
 
     assert {:ok, plan} = Backplane.AiProtocol.Translation.plan(request, source, target, policy)
+
     assert [%{"source" => %{protocol: "backplane.v1", profile: "canonical"}} = diagnostic] =
              plan.diagnostics
 
@@ -232,6 +233,151 @@ defmodule Backplane.AiProtocol.RemediationTest do
       assert facts.observation_status == :incomplete
       assert facts.usage_status == :unknown
       assert facts.input_tokens == nil
+    end
+
+    test "fails open for malformed nested SSE response values" do
+      events = [
+        ~S({"type":"response.created","response":1}),
+        ~S({"type":"response.output_item.added","item":1}),
+        ~S({"type":"response.output_item.done","item":[]}),
+        ~S({"type":"response.in_progress","response":{"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1,"output_tokens_details":[]}}}),
+        ~S({"type":"response.output_item.added","item":{"type":"function_call","id":"map","name":"tool","arguments":{"key":"value"}}}),
+        ~S({"type":"response.output_item.added","item":{"type":"function_call","id":"integer","name":"tool","arguments":1}}),
+        ~S({"type":"response.output_item.added","item":{"type":"function_call","id":"null","name":"tool","arguments":null}}),
+        ~S({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1}}})
+      ]
+
+      observer =
+        Enum.reduce(events, OpenAIResponsesObserver.new(), fn event, observer ->
+          OpenAIResponsesObserver.feed(observer, "data: #{event}\n\n")
+        end)
+        |> OpenAIResponsesObserver.finish(:eof)
+
+      facts = OpenAIResponsesObserver.facts(observer)
+      assert facts.protocol_terminal == :completed
+      assert facts.input_tokens == 2
+      assert facts.output_tokens == 1
+      assert facts.observation_status == :incomplete
+      assert facts.usage_status == :partial
+      assert Enum.all?(facts.tool_calls, &(&1.complete == false))
+      assert facts.diagnostics != []
+    end
+
+    test "keeps malformed initial arguments incomplete through delta and done events" do
+      events = [
+        ~S({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_bad","name":"tool","arguments":{"bad":true}}}),
+        ~S({"type":"response.function_call_arguments.delta","item_id":"fc_bad","delta":"{\"ok\":"}),
+        ~S({"type":"response.function_call_arguments.done","item_id":"fc_bad","arguments":"{\"ok\":true}"}),
+        ~S({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}})
+      ]
+
+      facts =
+        Enum.reduce(events, OpenAIResponsesObserver.new(), fn event, observer ->
+          OpenAIResponsesObserver.feed(observer, "data: #{event}\n\n")
+        end)
+        |> OpenAIResponsesObserver.finish(:eof)
+        |> OpenAIResponsesObserver.facts()
+
+      assert facts.observation_status == :incomplete
+      assert facts.usage_status == :partial
+      assert [%{arguments: ~S({"ok":true}), complete: true}] = facts.tool_calls
+      assert "invalid_tool_arguments" in facts.diagnostics
+    end
+
+    test "fails open for equivalent malformed non-streaming values" do
+      malformed_documents = [
+        %{"id" => "resp", "status" => "completed", "usage" => 1},
+        %{
+          "id" => "resp",
+          "status" => "completed",
+          "usage" => %{"input_tokens" => 1, "output_tokens" => 2, "input_tokens_details" => 1}
+        },
+        %{"id" => "resp", "status" => "completed", "output" => 1},
+        %{
+          "id" => "resp",
+          "status" => "completed",
+          "output" => [%{"type" => "function_call", "id" => "fc", "arguments" => nil}]
+        },
+        %{"id" => "resp", "status" => "completed", "output" => [1, []]}
+      ]
+
+      for document <- malformed_documents do
+        body = Jason.encode!(document)
+        facts = OpenAIResponsesObserver.observe_response(200, body)
+
+        assert facts.bytes_seen == byte_size(body)
+        assert facts.observation_status == :incomplete
+        assert facts.diagnostics != []
+      end
+    end
+
+    test "requires both valid counters and complete observation for complete usage" do
+      partial =
+        OpenAIResponsesObserver.observe_response(
+          200,
+          ~S({"status":"completed","usage":{"input_tokens":3,"output_tokens":-1}})
+        )
+
+      assert partial.input_tokens == 3
+      assert partial.output_tokens == nil
+      assert partial.usage_status == :partial
+      assert partial.observation_status == :incomplete
+
+      interrupted =
+        OpenAIResponsesObserver.new()
+        |> OpenAIResponsesObserver.feed(
+          ~S(data: {"type":"response.in_progress","response":{"usage":{"input_tokens":3,"output_tokens":2}}}) <>
+            "\n\n"
+        )
+        |> OpenAIResponsesObserver.finish(:eof)
+        |> OpenAIResponsesObserver.facts()
+
+      assert interrupted.input_tokens == 3
+      assert interrupted.output_tokens == 2
+      assert interrupted.usage_status == :partial
+      assert interrupted.observation_status == :incomplete
+    end
+
+    test "bounds diagnostics and stops retaining chunks after the byte cap" do
+      observer =
+        [
+          ~S({"type":"response.created","response":1}),
+          ~S({"type":"response.function_call_arguments.delta"}),
+          ~S({"type":"response.function_call_arguments.done"}),
+          ~S({"type":"response.output_item.added","item":1}),
+          ~S({"type":"response.in_progress","usage":1}),
+          ~S({"type":"error","error":1}),
+          ~S({"type":"unknown"})
+        ]
+        |> Enum.reduce(OpenAIResponsesObserver.new(max_diagnostics: 4), fn event, observer ->
+          OpenAIResponsesObserver.feed(observer, "data: #{event}\n\n")
+        end)
+
+      observer =
+        Enum.reduce(1..20, observer, fn _, observer ->
+          OpenAIResponsesObserver.feed(observer, ~S(data: {"type":"unknown"}) <> "\n\n")
+        end)
+
+      facts = OpenAIResponsesObserver.facts(observer)
+      assert length(facts.diagnostics) == 4
+      assert List.last(facts.diagnostics) == "diagnostics_truncated"
+      assert facts.diagnostics_truncated
+
+      truncated =
+        OpenAIResponsesObserver.new(max_total_bytes: 8, max_diagnostics: 4)
+        |> OpenAIResponsesObserver.feed("123456789")
+
+      before = OpenAIResponsesObserver.facts(truncated)
+
+      after_facts =
+        Enum.reduce(1..100, truncated, fn _, observer ->
+          OpenAIResponsesObserver.feed(observer, "more malformed input")
+        end)
+        |> OpenAIResponsesObserver.facts()
+
+      assert after_facts == before
+      assert after_facts.input_truncated
+      assert after_facts.observation_status == :incomplete
     end
   end
 

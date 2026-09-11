@@ -251,34 +251,49 @@ defmodule Backplane.Test.TestLLMUpstream do
   end
 
   defp responses_non_stream(conn, model) do
-    body = %{
-      "id" => "resp_host_1",
-      "object" => "response",
-      "status" => "completed",
-      "model" => model,
-      "output" => [
-        %{
-          "type" => "function_call",
-          "id" => "fc_1",
-          "call_id" => "call_1",
-          "name" => "lookup",
-          "arguments" => ~S({"q":"fixture"}),
-          "status" => "completed"
-        }
-      ],
-      "usage" => %{
-        "input_tokens" => 13,
-        "input_tokens_details" => %{"cached_tokens" => 4},
-        "output_tokens" => 8,
-        "output_tokens_details" => %{"reasoning_tokens" => 2},
-        "total_tokens" => 21
-      }
-    }
+    if conn.body_params["input"] == "malformed-nested" do
+      body =
+        ~S({"id":"resp_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
 
-    conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+      conn |> put_resp_content_type("application/json") |> send_resp(200, body)
+    else
+      body = %{
+        "id" => "resp_host_1",
+        "object" => "response",
+        "status" => "completed",
+        "model" => model,
+        "output" => [
+          %{
+            "type" => "function_call",
+            "id" => "fc_1",
+            "call_id" => "call_1",
+            "name" => "lookup",
+            "arguments" => ~S({"q":"fixture"}),
+            "status" => "completed"
+          }
+        ],
+        "usage" => %{
+          "input_tokens" => 13,
+          "input_tokens_details" => %{"cached_tokens" => 4},
+          "output_tokens" => 8,
+          "output_tokens_details" => %{"reasoning_tokens" => 2},
+          "total_tokens" => 21
+        }
+      }
+
+      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+    end
   end
 
   defp responses_stream(conn, model) do
+    if conn.body_params["input"] == "malformed-nested" do
+      malformed_responses_stream(conn)
+    else
+      regular_responses_stream(conn, model)
+    end
+  end
+
+  defp regular_responses_stream(conn, model) do
     events = [
       %{
         "type" => "response.output_item.done",
@@ -309,6 +324,23 @@ defmodule Backplane.Test.TestLLMUpstream do
     ]
 
     send_sse(conn, events)
+  end
+
+  defp malformed_responses_stream(conn) do
+    chunks = [
+      ~S(data: {"type":"response.created","response":1}) <> "\n\n",
+      ~S(data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_bad","name":"lookup","arguments":{"q":"bad"},"status":"completed"}}) <>
+        "\n\n",
+      ~S(data: {"type":"response.completed","response":{"id":"resp_malformed_stream","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}) <>
+        "\n\n"
+    ]
+
+    conn = conn |> put_resp_content_type("text/event-stream") |> Plug.Conn.send_chunked(200)
+
+    Enum.reduce(chunks, conn, fn chunk, conn ->
+      {:ok, conn} = Plug.Conn.chunk(conn, chunk)
+      conn
+    end)
   end
 
   # ── SSE transport ──
