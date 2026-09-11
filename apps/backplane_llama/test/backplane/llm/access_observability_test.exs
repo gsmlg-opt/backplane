@@ -5,6 +5,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   import Plug.Test
 
   alias Backplane.Embedding
+
   alias Backplane.LLM.{
     ModelResolver,
     Provider,
@@ -39,7 +40,9 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     {:ok, openai_provider} = Provider.create(%{name: "obs-openai", credential: "obs-openai-cred"})
 
-    anthropic = setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+    anthropic =
+      setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+
     openai = setup_provider_api(openai_provider, :openai, openai_upstream.port, "gpt-obs")
 
     {:ok, embedding} =
@@ -96,6 +99,78 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert is_binary(log.request_id)
     assert log.raw_request == nil
     assert log.raw_response == nil
+  end
+
+  test "records shared Responses facts for non-streaming business logs", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "hi"
+      })
+
+    assert conn.status == 200
+    assert Jason.decode!(conn.resp_body)["id"] == "resp_obs"
+    flush_logs!()
+
+    log = log_for_model(openai.model)
+    assert log.operation == "responses"
+    assert log.input_tokens == 12
+    assert log.output_tokens == 7
+    assert log.cached_tokens == 4
+    assert log.reasoning_tokens == 2
+    assert log.provider_request_id == "resp_obs"
+
+    assert get_in(log.metadata, ["protocol_observation", "implementation"]) =~
+             "OpenAIResponsesObserver"
+
+    assert get_in(log.metadata, ["protocol_observation", "protocol_terminal"]) == "completed"
+  end
+
+  test "records shared Responses facts for SSE including trailing usage", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "hi",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    assert conn.resp_body =~ "response.completed"
+    flush_logs!()
+
+    log = log_for_model(openai.model)
+    assert log.stream == true
+    assert log.input_tokens == 6
+    assert log.output_tokens == 3
+    assert log.cached_tokens == 1
+    assert log.reasoning_tokens == 1
+    assert log.provider_request_id == "resp_obs_stream"
+    assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
+  end
+
+  test "uses shared sanitized Responses error classification", %{openai: openai} do
+    conn = llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "fail"})
+    assert conn.status == 400
+    flush_logs!()
+
+    log = log_for_model(openai.model)
+    assert log.outcome == "error"
+    assert log.error_code == "bad_fixture"
+    assert log.error_reason == "invalid_request_error"
+    refute log.error_reason =~ "secret"
+  end
+
+  test "preserves malformed native body and records incomplete observation", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "malformed"})
+
+    assert conn.status == 200
+    assert conn.resp_body == "{malformed"
+    flush_logs!()
+
+    log = log_for_model(openai.model)
+    assert log.input_tokens == nil
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
   end
 
   test "records Anthropic non-stream success", %{anthropic: anthropic} do
@@ -174,7 +249,10 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     {:ok, provider} = Provider.update(provider, %{rpm_limit: 1})
     ModelResolver.clear_cache()
 
-    body = %{"model" => "obs-openai/gpt-obs", "messages" => [%{"role" => "user", "content" => "hi"}]}
+    body = %{
+      "model" => "obs-openai/gpt-obs",
+      "messages" => [%{"role" => "user", "content" => "hi"}]
+    }
 
     assert llm_request(:post, "/v1/chat/completions", body).status == 200
 
@@ -192,6 +270,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
           limit: 1
         )
       )
+
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
     assert log.status == 429
@@ -401,6 +480,40 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       end
     end
 
+    post "/v1/responses" do
+      cond do
+        conn.body_params["input"] == "fail" ->
+          send_json(conn, 400, %{
+            "error" => %{
+              "type" => "invalid_request_error",
+              "code" => "bad_fixture",
+              "message" => "secret prompt must not be logged"
+            }
+          })
+
+        conn.body_params["input"] == "malformed" ->
+          conn |> put_resp_content_type("application/json") |> send_resp(200, "{malformed")
+
+        conn.body_params["stream"] ->
+          responses_stream(conn)
+
+        true ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs",
+            "object" => "response",
+            "status" => "completed",
+            "output" => [],
+            "usage" => %{
+              "input_tokens" => 12,
+              "input_tokens_details" => %{"cached_tokens" => 4},
+              "output_tokens" => 7,
+              "output_tokens_details" => %{"reasoning_tokens" => 2},
+              "total_tokens" => 19
+            }
+          })
+      end
+    end
+
     post "/v1/embeddings" do
       send_json(conn, 200, %{
         "object" => "list",
@@ -427,6 +540,22 @@ defmodule Backplane.LLM.AccessObservabilityTest do
         {:ok, conn} = chunk(conn, "data: #{chunk}\n\n")
         conn
       end)
+    end
+
+    defp responses_stream(conn) do
+      content_done =
+        ~s({"type":"response.output_text.done","text":"ok"})
+
+      protocol_done =
+        ~s({"type":"response.completed","response":{"id":"resp_obs_stream","status":"completed","usage":{"input_tokens":6,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}}})
+
+      conn = conn |> put_resp_content_type("text/event-stream") |> send_chunked(200)
+
+      {:ok, conn} =
+        chunk(conn, "event: response.output_text.done\r\ndata: #{content_done}\r\n\r\n")
+
+      {:ok, conn} = chunk(conn, "data: #{protocol_done}\n\n")
+      conn
     end
 
     defp send_json(conn, status, body) do

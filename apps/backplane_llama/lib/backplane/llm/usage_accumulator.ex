@@ -8,13 +8,36 @@ defmodule Backplane.LLM.UsageAccumulator do
           reasoning_tokens: integer() | nil,
           finish_reason: String.t() | nil,
           provider_request_id: String.t() | nil,
+          observation_status: atom() | nil,
+          protocol_terminal: atom() | nil,
+          error_code: String.t() | nil,
+          error_type: String.t() | nil,
+          metadata: map(),
           stream_chunks: non_neg_integer(),
           ttft_ms: non_neg_integer() | nil,
           stream_duration_ms: non_neg_integer() | nil
         }
 
   @spec new() :: pid()
-  def new do
+  def new(protocol \\ :legacy)
+
+  def new(:openai_responses) do
+    {:ok, pid} =
+      Agent.start_link(fn ->
+        %{
+          protocol: :openai_responses,
+          observer: Backplane.AiProtocol.OpenAIResponsesObserver.new(),
+          chunk_count: 0,
+          first_chunk_at: nil,
+          last_chunk_at: nil,
+          started_at: System.monotonic_time(:millisecond)
+        }
+      end)
+
+    pid
+  end
+
+  def new(:legacy) do
     {:ok, pid} =
       Agent.start_link(fn ->
         %{
@@ -39,14 +62,26 @@ defmodule Backplane.LLM.UsageAccumulator do
     now = System.monotonic_time(:millisecond)
 
     Agent.update(pid, fn state ->
-      state
-      |> Map.update!(:chunk_count, &(&1 + 1))
-      |> put_first_chunk(now)
-      |> Map.put(:last_chunk_at, now)
+      state =
+        state
+        |> Map.update!(:chunk_count, &(&1 + 1))
+        |> put_first_chunk(now)
+        |> Map.put(:last_chunk_at, now)
+
+      case state do
+        %{protocol: :openai_responses, observer: observer} ->
+          %{state | observer: Backplane.AiProtocol.OpenAIResponsesObserver.feed(observer, chunk)}
+
+        _ ->
+          state
+      end
     end)
 
-    if String.contains?(chunk, "\"usage\"") or String.contains?(chunk, "\"finish_reason\"") or
-         String.contains?(chunk, "\"stop_reason\"") or String.contains?(chunk, "\"id\"") do
+    state = Agent.get(pid, & &1)
+
+    if state[:protocol] != :openai_responses and
+         (String.contains?(chunk, "\"usage\"") or String.contains?(chunk, "\"finish_reason\"") or
+            String.contains?(chunk, "\"stop_reason\"") or String.contains?(chunk, "\"id\"")) do
       extract_usage_from_chunk(pid, chunk)
     end
 
@@ -62,22 +97,59 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @spec snapshot(pid()) :: snapshot()
   def snapshot(pid) do
-    state = Agent.get(pid, & &1)
+    state =
+      Agent.get_and_update(pid, fn
+        %{protocol: :openai_responses, observer: observer} = state ->
+          observer = Backplane.AiProtocol.OpenAIResponsesObserver.finish(observer, :eof)
+          next = %{state | observer: observer}
+          {next, next}
+
+        state ->
+          {state, state}
+      end)
+
     first = state.first_chunk_at
     last = state.last_chunk_at
     started = state.started_at
 
-    %{
-      input_tokens: state.input_tokens,
-      output_tokens: state.output_tokens,
-      cached_tokens: state.cached_tokens,
-      reasoning_tokens: state.reasoning_tokens,
-      finish_reason: state.finish_reason,
-      provider_request_id: state.provider_request_id,
+    base = %{
+      input_tokens: state[:input_tokens],
+      output_tokens: state[:output_tokens],
+      cached_tokens: state[:cached_tokens],
+      reasoning_tokens: state[:reasoning_tokens],
+      finish_reason: state[:finish_reason],
+      provider_request_id: state[:provider_request_id],
       stream_chunks: state.chunk_count,
       ttft_ms: if(first, do: first - started, else: nil),
-      stream_duration_ms: if(first && last, do: last - first, else: nil)
+      stream_duration_ms: if(first && last, do: last - first, else: nil),
+      observation_status: nil,
+      protocol_terminal: nil,
+      error_code: nil,
+      error_type: nil,
+      metadata: %{}
     }
+
+    case state do
+      %{protocol: :openai_responses, observer: observer} ->
+        facts = Backplane.AiProtocol.OpenAIResponsesObserver.facts(observer)
+
+        Map.merge(base, %{
+          input_tokens: facts.input_tokens,
+          output_tokens: facts.output_tokens,
+          cached_tokens: facts.cached_tokens,
+          reasoning_tokens: facts.reasoning_tokens,
+          finish_reason: facts.finish_reason || terminal_reason(facts.protocol_terminal),
+          provider_request_id: facts.provider_request_id,
+          observation_status: facts.observation_status,
+          protocol_terminal: facts.protocol_terminal,
+          error_code: facts.error_code,
+          error_type: facts.error_type,
+          metadata: %{protocol_observation: sanitize_facts(facts)}
+        })
+
+      _ ->
+        base
+    end
   end
 
   @spec stop(pid()) :: :ok
@@ -122,7 +194,8 @@ defmodule Backplane.LLM.UsageAccumulator do
     update_provider_request_id(pid, Map.get(data, "id"))
   end
 
-  defp extract_from_parsed(pid, %{"delta" => %{"stop_reason" => reason}}) when is_binary(reason) do
+  defp extract_from_parsed(pid, %{"delta" => %{"stop_reason" => reason}})
+       when is_binary(reason) do
     Agent.update(pid, fn state -> Map.put(state, :finish_reason, reason) end)
   end
 
@@ -156,4 +229,25 @@ defmodule Backplane.LLM.UsageAccumulator do
   end
 
   defp update_provider_request_id(_pid, _), do: :ok
+
+  defp terminal_reason(:completed), do: "stop"
+  defp terminal_reason(:incomplete), do: "incomplete"
+  defp terminal_reason(:failed), do: "failed"
+  defp terminal_reason(:cancelled), do: "cancelled"
+  defp terminal_reason(:interrupted), do: "interrupted"
+  defp terminal_reason(_), do: nil
+
+  defp sanitize_facts(facts) do
+    Map.take(facts, [
+      :implementation,
+      :observation_status,
+      :protocol_terminal,
+      :terminal_count,
+      :usage_status,
+      :bytes_seen,
+      :events_seen,
+      :diagnostics
+    ])
+    |> Map.update(:implementation, nil, &inspect/1)
+  end
 end

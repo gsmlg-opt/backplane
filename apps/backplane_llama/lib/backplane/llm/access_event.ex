@@ -1,8 +1,6 @@
 defmodule Backplane.LLM.AccessEvent do
   @moduledoc false
 
-  require Logger
-
   alias Backplane.LLM.{Provider, ProviderApi, UsageAccumulator}
   alias Backplane.Observability
   alias Backplane.Observability.{Context, Error, Event, Id}
@@ -58,7 +56,13 @@ defmodule Backplane.LLM.AccessEvent do
     %{state | requested_model: model}
   end
 
-  @spec put_resolution(t(), map() | Provider.t() | nil, String.t(), ProviderApi.t() | nil, keyword()) :: t()
+  @spec put_resolution(
+          t(),
+          map() | Provider.t() | nil,
+          String.t(),
+          ProviderApi.t() | nil,
+          keyword()
+        ) :: t()
   def put_resolution(%__MODULE__{} = state, provider, resolved_model, provider_api, opts \\ [])
       when is_binary(resolved_model) do
     %{
@@ -73,7 +77,8 @@ defmodule Backplane.LLM.AccessEvent do
 
   @spec mark_stream(t()) :: t()
   def mark_stream(%__MODULE__{} = state) do
-    %{state | stream?: true, usage_acc: UsageAccumulator.new()}
+    protocol = if shared_responses?(state), do: :openai_responses, else: :legacy
+    %{state | stream?: true, usage_acc: UsageAccumulator.new(protocol)}
   end
 
   @spec mark_upstream_start(t()) :: t()
@@ -188,8 +193,8 @@ defmodule Backplane.LLM.AccessEvent do
       status: status,
       outcome: outcome_string(outcome),
       error_kind: error_kind(outcome, opts),
-      error_code: error_code(outcome, opts, status),
-      error_reason: error_reason(outcome, opts),
+      error_code: observation_error_code(usage, error_code(outcome, opts, status)),
+      error_reason: observation_error_reason(usage, error_reason(outcome, opts)),
       stream: stream?,
       duration_ms: duration_ms,
       upstream_duration_ms: upstream_duration_ms,
@@ -206,7 +211,7 @@ defmodule Backplane.LLM.AccessEvent do
       finish_reason: usage.finish_reason,
       provider_request_id: usage.provider_request_id,
       attempt_count: state.attempt_count || 1,
-      metadata: %{}
+      metadata: usage.metadata || %{}
     }
   end
 
@@ -231,25 +236,84 @@ defmodule Backplane.LLM.AccessEvent do
     UsageAccumulator.snapshot(acc)
   end
 
-  defp stream_usage(_state, conn, opts) do
+  defp stream_usage(state, conn, opts) do
+    observation = non_stream_observation(state, conn)
+
     {input, output} =
-      case Keyword.get(opts, :tokens) do
-        {i, o} -> {i, o}
-        _ -> extract_tokens_from_resp(conn, api_surface_atom(opts, conn))
+      case observation do
+        %{input_tokens: input, output_tokens: output} ->
+          {input, output}
+
+        _ ->
+          case Keyword.get(opts, :tokens) do
+            {i, o} -> {i, o}
+            _ -> extract_tokens_from_resp(conn, api_surface_atom(opts, conn))
+          end
       end
 
     %{
       input_tokens: input,
       output_tokens: output,
-      cached_tokens: Keyword.get(opts, :cached_tokens),
-      reasoning_tokens: Keyword.get(opts, :reasoning_tokens),
-      finish_reason: Keyword.get(opts, :finish_reason),
-      provider_request_id: Keyword.get(opts, :provider_request_id),
+      cached_tokens: observation[:cached_tokens] || Keyword.get(opts, :cached_tokens),
+      reasoning_tokens: observation[:reasoning_tokens] || Keyword.get(opts, :reasoning_tokens),
+      finish_reason: observation[:finish_reason] || Keyword.get(opts, :finish_reason),
+      provider_request_id:
+        observation[:provider_request_id] || Keyword.get(opts, :provider_request_id),
+      observation_status: observation[:observation_status],
+      protocol_terminal: observation[:protocol_terminal],
+      error_code: observation[:error_code],
+      error_type: observation[:error_type],
+      metadata: observation_metadata(observation),
       ttft_ms: nil,
       stream_duration_ms: nil,
       stream_chunks: nil
     }
   end
+
+  defp non_stream_observation(%__MODULE__{stream?: stream?} = state, conn)
+       when stream? != true and is_binary(conn.resp_body) do
+    if shared_responses?(state) do
+      Backplane.AiProtocol.OpenAIResponsesObserver.observe_response(
+        conn.status || 0,
+        conn.resp_body
+      )
+    else
+      %{}
+    end
+  end
+
+  defp non_stream_observation(_state, _conn), do: %{}
+
+  defp shared_responses?(%__MODULE__{
+         operation: "responses",
+         provider: %Provider{preset_key: preset}
+       })
+       when preset != "openai-codex",
+       do: true
+
+  defp shared_responses?(_), do: false
+
+  defp observation_metadata(%{implementation: implementation} = observation) do
+    safe =
+      Map.take(observation, [
+        :observation_status,
+        :protocol_terminal,
+        :terminal_count,
+        :usage_status,
+        :bytes_seen,
+        :events_seen,
+        :diagnostics
+      ])
+
+    %{protocol_observation: Map.put(safe, :implementation, inspect(implementation))}
+  end
+
+  defp observation_metadata(_), do: %{}
+
+  defp observation_error_code(%{error_code: code}, _fallback) when is_binary(code), do: code
+  defp observation_error_code(_, fallback), do: fallback
+  defp observation_error_reason(%{error_type: type}, nil) when is_binary(type), do: type
+  defp observation_error_reason(_, fallback), do: fallback
 
   defp api_surface_atom(opts, _conn) do
     case Keyword.get(opts, :api_surface) do
@@ -327,7 +391,9 @@ defmodule Backplane.LLM.AccessEvent do
   defp response_bytes(%Plug.Conn{resp_body: body}) when is_binary(body), do: byte_size(body)
   defp response_bytes(_), do: nil
 
-  defp total_tokens(input, output) when is_integer(input) and is_integer(output), do: input + output
+  defp total_tokens(input, output) when is_integer(input) and is_integer(output),
+    do: input + output
+
   defp total_tokens(_, _), do: nil
 
   defp outcome_string(:success), do: "success"

@@ -107,6 +107,39 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   end
 
   describe "non-streaming proxy" do
+    test "ordinary Responses uses the real public proxy path once", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-test")
+      legacy = "bp-first-consumer-token"
+      Application.put_env(:backplane, :auth_token, legacy)
+
+      conn =
+        public_llm_request(
+          :post,
+          "/v1/responses",
+          %{"model" => "test-integration/responses-test", "input" => "hello"},
+          legacy
+        )
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["id"] == "resp_host_1"
+
+      captured = Agent.get(auth_store, & &1)
+      assert captured.submissions == 1
+      assert captured.path == "/v1/responses"
+      assert captured.body["model"] == "responses-test"
+
+      assert Enum.filter(captured.headers, &(elem(&1, 0) == "authorization")) ==
+               [{"authorization", "Bearer sk-test-integration"}]
+
+      refute Enum.any?(captured.headers, fn {name, value} ->
+               name == "x-api-key" or value == "Bearer #{legacy}"
+             end)
+    end
+
     test "proxies anthropic request end-to-end" do
       conn =
         llm_request(:post, "/v1/messages", %{
@@ -268,6 +301,25 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
   end
 
   describe "streaming proxy" do
+    test "streams ordinary Responses without a second submission", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-stream")
+
+      conn =
+        llm_request(:post, "/v1/responses", %{
+          "model" => "test-integration/responses-stream",
+          "input" => "hello",
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "response.completed"
+      assert Agent.get(auth_store, & &1.submissions) == 1
+    end
+
     test "streams anthropic SSE events to client" do
       conn =
         llm_request(:post, "/v1/messages", %{
@@ -339,6 +391,28 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       true ->
         flunk("PAT last_seen_at did not change within 1000ms for client #{client_id}")
     end
+  end
+
+  defp setup_openai_model(provider, port, model_name) do
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "http://localhost:#{port}"
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: provider.id, model: model_name, source: :manual})
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    ModelResolver.clear_cache()
+    model
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
