@@ -30,6 +30,9 @@ defmodule Backplane.Skills.Skill do
     field(:source_kind, :string)
     field(:source_uri, :string)
     field(:source_rev, :string)
+    field(:current_revision, :string)
+    field(:publication_status, :string, default: "pending")
+    field(:publication_diagnostic, :map, default: %{})
 
     timestamps()
   end
@@ -45,12 +48,34 @@ defmodule Backplane.Skills.Skill do
     |> validate_required(@required_fields)
     |> validate_archive_ref()
     |> unique_constraint(:slug)
+    |> mark_publication_pending()
   end
 
   @spec update_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def update_changeset(skill, attrs) do
     skill
     |> cast(attrs, ~w(content content_hash description tags category enabled)a)
+    |> mark_publication_pending()
+  end
+
+  @spec publication_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
+  def publication_changeset(skill, attrs) do
+    skill
+    |> cast(attrs, ~w(current_revision publication_status publication_diagnostic)a)
+    |> validate_inclusion(:publication_status, ~w(ready invalid pending withdrawn))
+  end
+
+  defp mark_publication_pending(changeset) do
+    publication_fields =
+      ~w(name description tags content content_hash version license homepage author meta archive_ref source_kind source_uri source_rev)a
+
+    if Enum.any?(publication_fields, &Map.has_key?(changeset.changes, &1)) do
+      changeset
+      |> put_change(:publication_status, "pending")
+      |> put_change(:publication_diagnostic, %{"code" => "publication_pending"})
+    else
+      changeset
+    end
   end
 
   defp validate_archive_ref(changeset) do

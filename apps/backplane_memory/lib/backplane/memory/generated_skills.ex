@@ -8,7 +8,7 @@ defmodule Backplane.Memory.GeneratedSkills do
   alias Backplane.Memory.Service
   alias Backplane.Repo
   alias Backplane.Settings
-  alias Backplane.Skills.{Registry, Skill}
+  alias Backplane.Skills.{Publication, Registry, Skill}
 
   @visibility_settings ~w(services.memory.enabled memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
 
@@ -145,10 +145,10 @@ defmodule Backplane.Memory.GeneratedSkills do
 
     case Repo.get_by(Skill, slug: spec.slug) do
       nil ->
-        %Skill{id: spec.id} |> Skill.changeset(attrs) |> Repo.insert()
+        Publication.publish_generated(attrs)
 
-      %Skill{id: id} = skill when id == spec.id ->
-        skill |> Skill.changeset(attrs) |> Repo.update()
+      %Skill{id: id} when id == spec.id ->
+        Publication.publish_generated(attrs)
 
       %Skill{} ->
         {:error, :reserved_slug_conflict}

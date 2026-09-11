@@ -5,19 +5,21 @@ defmodule Backplane.Auth.Resources do
 
   alias Backplane.WebOrigins
 
-  @type key :: :mcp | :v1
+  @type key :: :mcp | :skill_protocol | :v1
 
-  @keys [:mcp, :v1]
+  @keys [:mcp, :skill_protocol, :v1]
   @identity_scopes ["openid", "profile", "email"]
   @local_http_hosts ["localhost", "127.0.0.1", "::1"]
   @operation_scope_pattern ~r/\A(?:\*|[\w-]+::(?:\*|[\w-]+))\z/
   @v1_scopes ["llm::models", "llm::invoke", "llm::*", "*"]
+  @skill_protocol_scopes ["skill::read", "skill::*", "*"]
 
   @spec keys() :: [key()]
   def keys, do: @keys
 
   @spec path(key()) :: String.t()
   def path(:mcp), do: "/mcp"
+  def path(:skill_protocol), do: "/skill-protocol/v1"
   def path(:v1), do: "/v1"
 
   @spec uri(key()) :: String.t()
@@ -29,6 +31,7 @@ defmodule Backplane.Auth.Resources do
 
   @spec documentation_uri(key()) :: String.t()
   def documentation_uri(:mcp), do: WebOrigins.api_url("/docs/mcp")
+  def documentation_uri(:skill_protocol), do: WebOrigins.api_url("/docs/skills")
   def documentation_uri(:v1), do: WebOrigins.api_url("/docs/llm")
 
   @spec from_uri(String.t()) :: {:ok, key()} | :error
@@ -67,10 +70,12 @@ defmodule Backplane.Auth.Resources do
   def valid_scope?(_key, "system::" <> _rest), do: false
   def valid_scope?(_key, scope) when scope in ["openid", "profile", "email"], do: true
   def valid_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
+  def valid_scope?(:skill_protocol, scope), do: scope in @skill_protocol_scopes
   def valid_scope?(:v1, scope), do: scope in @v1_scopes
 
   @spec operation_scope?(key(), String.t()) :: boolean()
   def operation_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
+  def operation_scope?(:skill_protocol, scope), do: scope in @skill_protocol_scopes
   def operation_scope?(:v1, scope), do: scope in @v1_scopes
 
   @spec protected_operation_scope?(String.t()) :: boolean()
@@ -102,6 +107,7 @@ defmodule Backplane.Auth.Resources do
 
   defp normalize_key(key) when key in @keys, do: {:ok, key}
   defp normalize_key("mcp"), do: {:ok, :mcp}
+  defp normalize_key("skill_protocol"), do: {:ok, :skill_protocol}
   defp normalize_key("v1"), do: {:ok, :v1}
   defp normalize_key(_value), do: :error
 

@@ -23,7 +23,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   @impl true
   def init(opts) do
     resource = Keyword.fetch!(opts, :resource)
-    true = resource in [:mcp, :v1]
+    true = resource in Resources.keys()
 
     %{
       resource: resource,
@@ -128,7 +128,8 @@ defmodule Backplane.Auth.ResourceAuthPlug do
     |> assign(:tool_scopes, auth.scopes)
   end
 
-  defp assign_success(conn, :v1, auth), do: assign(conn, :resource_auth, auth)
+  defp assign_success(conn, resource, auth) when resource in [:skill_protocol, :v1],
+    do: assign(conn, :resource_auth, auth)
 
   defp oauth_reject(conn, resource, opts, challenge_error) do
     challenge_opts =

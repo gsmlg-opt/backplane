@@ -3,12 +3,17 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
 
   alias Backplane.Memory.GeneratedSkills
   alias Backplane.Skills
+  alias Backplane.Skills.Publication
   alias Backplane.Settings
 
   @settings ~w(services.memory.enabled memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
+  @blob_setting "skills.blob.local_root"
+  @moduletag :tmp_dir
 
-  setup do
+  setup %{tmp_dir: tmp_dir} do
     snapshot = Map.new(@settings, &{&1, :ets.lookup(:backplane_settings, &1)})
+    previous_blob_root = :ets.lookup(:backplane_settings, @blob_setting)
+    :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
 
     put_settings(%{
       "services.memory.enabled" => true,
@@ -23,6 +28,9 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
         :ets.delete(:backplane_settings, key)
         if rows != [], do: :ets.insert(:backplane_settings, rows)
       end)
+
+      :ets.delete(:backplane_settings, @blob_setting)
+      if previous_blob_root != [], do: :ets.insert(:backplane_settings, previous_blob_root)
     end)
 
     :ok
@@ -54,6 +62,38 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     assert {:ok, second} = Skills.get_by_slug("lessons")
     assert second.id == first.id
     assert second.content_hash == first.content_hash
+    assert second.current_revision == first.current_revision
+    assert second.publication_status == "ready"
+    assert {:ok, published} = Publication.resolve(second.id, second.current_revision)
+    assert published.manifest["document_metadata"]["name"] == "lessons"
+  end
+
+  test "changed generated content publishes a new revision while retaining the exact old snapshot" do
+    assert :ok = GeneratedSkills.reconcile()
+    assert {:ok, first} = Skills.get_by_slug("lessons")
+    revision_a = first.current_revision
+    content_a = first.content
+
+    assert {:ok, published_a} = Publication.resolve(first.id, revision_a)
+    assert {:ok, bytes_a} = Publication.artifact(first.id, revision_a)
+
+    put_settings(%{"memory.tools" => "core"})
+    assert :ok = GeneratedSkills.reconcile()
+    assert {:ok, second} = Skills.get_by_slug("lessons")
+    revision_b = second.current_revision
+
+    refute second.content == content_a
+    refute revision_b == revision_a
+    assert second.publication_status == "ready"
+
+    assert {:ok, published_b} = Publication.resolve(second.id, revision_b)
+    assert {:ok, bytes_b} = Publication.artifact(second.id, revision_b)
+    refute published_b.artifact_digest == published_a.artifact_digest
+    refute bytes_b == bytes_a
+
+    assert Publication.resolve(first.id, revision_a) == {:ok, published_a}
+    assert Publication.artifact(first.id, revision_a) == {:ok, bytes_a}
+    assert published_a.manifest["artifact_digest"] == published_a.artifact_digest
   end
 
   test "reconciles the activity reference skill from live bounded contracts" do
