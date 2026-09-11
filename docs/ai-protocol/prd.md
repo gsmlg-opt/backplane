@@ -186,6 +186,24 @@ Required initial outputs are a source/dependency/caller inventory, actual baseli
 
 The fourteen design risks R01–R14 remain active until their corresponding acceptance evidence exists. The most consequential are semantic loss in translation, false terminal/retry certainty, OAuth rotation races, Codex API conflation, WS resource behavior, and cross-account model capabilities.
 
+## PR #32 remediation acceptance amendment
+
+This milestone has two non-substitutable gates. Gate A requires bounded recursive validation,
+opaque serialization isolation, provider-state affinity, strict translation preflight,
+production JSON dependencies, execution/wire invariants, an executable Protocol Lab, CI contract
+coverage, and clean artifact consumers. Gate B requires the existing ordinary OpenAI Responses
+proxy route to invoke the shared observer in normal application wiring and persist the resulting
+usage, error, terminal, and observation facts through Backplane's existing logging path.
+
+Success is scoped to native OpenAI Responses observation for providers whose preset is not
+`openai-codex`. The provider response body remains authoritative for forwarding. An observation
+failure records bounded incomplete diagnostics without converting an upstream success into a
+generation failure. One inbound attempt produces one upstream submission and one durable usage
+record; no comparison replay or duplicate accounting is permitted.
+
+The milestone does not claim full V1, all T01-T28, active translation, live provider
+compatibility, or migration of Chat Completions, Anthropic Messages, or Codex-specific routes.
+
 Dependency decisions that must be resolved rather than guessed are the pinned source versions, WS backend, exact wire/control ordering, provider-specific auth compatibility inputs, final byte/concurrency limits, and host refresh-ownership/storage integration. Model capacities and effort strings must come from versioned sources or remain unknown; no hard-coded current-model table is specified by this PRD.
 
 ## 11. Success criteria

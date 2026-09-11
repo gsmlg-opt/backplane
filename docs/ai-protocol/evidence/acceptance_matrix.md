@@ -13,3 +13,20 @@
 | T23 | `in_progress` | Protocol dependency tree is empty and release composition is unchanged; release/process inspection remains W5/W8. See `w1_1_report.md`. |
 
 R01–R14 remain active until corresponding evidence exists.
+
+## PR #32 remediation ledger (2026-09-11)
+
+| Acceptance | Status | Evidence |
+| --- | --- | --- |
+| Gate A | `partial` | Core `51 passed`, TestKit `2 passed`, Protocol Lab and clean artifacts pass, but Dialyzer reports four warnings attributable to this diff and the actual Backplane release is environment-blocked. |
+| Gate B | `passed for ordinary Responses native observation` | Real `/v1/responses` socket-backed fake upstream tests submit once; shared facts reach durable `llm_logs` for non-stream, SSE trailing usage, errors, and malformed observations. |
+| BP01-BP04 | `passed` | Public route/auth/model rewrite and one submission; preserved bodies; split/coalesced SSE; trailing usage and one protocol terminal. |
+| BP05-BP08 | `passed for selected fixtures` | Parallel canonical tool identities and incomplete arguments; refusal/output-limit distinctions; HTTP/protocol errors; malformed/oversized observation remains incomplete without rewriting native output. |
+| BP09 | `passed at shared Relayixir transport seam` | Relayixir downstream-disconnect test proves upstream stream closure/no replay; Codex regression proves host cleanup. No live provider was called. |
+| BP10-BP12 | `passed for selected observer` | Unknown versus observed usage, cache/reasoning fields, bounded synchronous observation, shared implementation label and package-derived durable values. |
+| BP13 | `passed for deterministic scope` | Legacy parser, ordinary proxy, Codex/compact, disconnect and workflow contract regressions pass; live Codex/provider evidence remains not run. |
+| BP14 | `partial` | Normal routing and clean consumer release composition pass; actual Backplane release build is blocked by the local macOS SDK/bcrypt linker failure. |
+| T01-T28 full V1 | `not complete` | Three bidirectional codecs, translated routes, OAuth/catalog migration, complete WS service, Sigma/Synapsis adoption, and live compatibility remain future work. |
+
+Exact commands, counts, hashes, limitations, and rollback are in
+`docs/ai-protocol/evidence/pr32_remediation_report.md`.

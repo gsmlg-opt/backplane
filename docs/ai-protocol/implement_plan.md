@@ -72,6 +72,20 @@ W3 is deliberately split: API-key transport/catalog work need not wait for live 
 
 ## 3. W0 — Pin sources and establish the baseline
 
+### PR #32 remediation execution order
+
+For this delivery, the dependency-complete order is A0 baseline/integration map; A1 validation
+and serialization; A2 packaging, Protocol Lab, and CI; A3 affinity/preflight; A4 execution/wire;
+B1 bounded native Responses observer; B2 normal Backplane proxy consumption; and C integrated
+acceptance/evidence. This order supersedes the previous W1-only stopping point and brings forward
+only the minimum W2/W5/W7.1 work needed by the Backplane consumer.
+
+B2 is complete only when the actual `/v1/responses` route forwards once through Relayixir and
+package-derived facts reach `AccessEvent`/Observability/`llm_logs`. A dependency declaration,
+test-only switch, Protocol Lab result, or unused adapter is not completion. Rollback selects the
+legacy observation path for subsequent ordinary Responses requests; it must not replay an
+in-flight request.
+
 **Goal:** Know what will be extracted, preserved, and tested. No production behavior changes.
 
 | Task | Output | Dependency / acceptance |

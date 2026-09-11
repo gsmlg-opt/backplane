@@ -1,5 +1,9 @@
 # W1 Contract Foundation Report
 
+> Historical report for the W1-only checkpoint. Its no-route-change and dependency statements
+> are superseded by `pr32_remediation_report.md`; do not use this file as current acceptance
+> evidence for PR #32.
+
 ## Scope
 
 Implemented W1.1 through W1.6. Canonical contracts, lifecycle, preflight, wire contract, and backend selection are frozen. Codecs, transport, auth, catalogs, WebSocket client/server, and full artifact installation are intentionally not implemented.

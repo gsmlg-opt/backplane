@@ -544,6 +544,24 @@ No unconditional dependency on absent root config, sibling applications, reposit
 
 ## 17. Migration and rollout
 
+### 17.0 PR #32 remediation amendment
+
+The first production consumer is now Backplane's ordinary OpenAI Responses native proxy path
+(`POST /v1/responses`, excluding the `openai-codex` preset). This scoped decision supersedes the
+earlier W1-only and Sigma-first ordering, but does not move routing, authorization, credential
+storage, transport, or durable logging into the package.
+
+The normal data path remains `Backplane.Api.Endpoint` -> `Backplane.LLM.ProxyPlug` ->
+`Backplane.LLM.Router` -> Relayixir. Relayixir forwards the native response bytes and exposes the
+same chunks to `Backplane.AiProtocol.OpenAIResponsesObserver`; `Backplane.LLM.AccessEvent` projects
+the observer's usage, error, terminal, and observation-completeness facts into the existing
+observability event and `llm_logs`. Observation never submits or replays a generation and never
+rewrites the forwarded body.
+
+Only bounded OpenAI Responses JSON/SSE observation is brought forward from W2. OpenAI Chat,
+Anthropic Messages, Codex-specific Responses, active cross-protocol translation, OAuth/catalog
+migration, and a complete WebSocket implementation remain on their existing paths.
+
 ### 17.1 Principles
 
 Pin all three source repositories and inventory providers, codecs, auth, catalogs, callers, and persisted formats before extraction. Historical note test counts are not a fresh baseline. [N1]
