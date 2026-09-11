@@ -13,9 +13,9 @@
 - New source hashes: observer `c771b54ab5bb89de74d5021022a8468cd4196cacaca570426bdea8de712902dd`,
   SSE `dd78dbd4143e0be364ee6afc2ad71474831a0bbde02e8a471a2cf2cd8dec541a`,
   remediation tests `73d15a15e0a627fb51daa7e5fe14d08f77eb5aab9f2a6ecd0bc0750554523cb8`.
-- The checkout is intentionally uncommitted. The supplied handoff and unrelated changes were
-  preserved. No commit, push, publish, deploy, live provider call, credential import, or other
-  repository modification occurred.
+- At the original remediation snapshot, the checkout was intentionally uncommitted. The supplied
+  handoff and unrelated changes were preserved; the later PR delivery commits are recorded below.
+  No publish, deploy, live provider call, or credential import occurred.
 
 ## Finding dispositions
 
@@ -29,7 +29,7 @@
 | R06 | Fixed | Finished execution handles cannot be claimed; lifecycle/ownership tests retain one terminal. |
 | R07 | Fixed | The tracked lab module contains the real CLI; `/protocol_lab` ignore is anchored; clean build output runs package APIs and independent raw fixtures; accidental BEAM artifact is removed. |
 | R08 | Fixed at pure contract layer | Handshake/admission, bounded IDs, negotiated limits, encoded-envelope credit, sequencing, correlation, terminal cleanup and draining are enforced. A complete WS server remains out of scope. |
-| R09 | Partial | Package matrix ordering/TestKit execution and Credo pass, but Dialyzer reports four warnings attributable to this diff. Repository-wide warnings-as-errors also remains blocked by existing MCP protocol warnings. |
+| R09 | Fixed for the PR diff | Package matrix ordering/TestKit execution and Credo pass. The four earlier diff-attributable warnings were removed; final CI reports only the same `backplane_memory` Dialyzer warnings as `main`. Local Elixir 1.20 warnings-as-errors remains blocked by existing MCP protocol warnings. |
 | R10 | Fixed for ordinary non-Codex Responses | The normal Backplane route uses shared JSON/SSE observation and consumes package facts in durable logs. |
 
 ## Actual integration call graph
@@ -135,6 +135,16 @@ The complete runs still print pre-existing `Backplane.Settings.Credentials.Vault
 warnings from unrelated asynchronous credential cache reloads. They do not fail the application
 suite and are not represented as fixed by this follow-up.
 
+Delivery commit `97112cea3160b9f06ed3448b65204c0b4a4e0816` and seeded-verification report commit
+`c1e55867003ef02d907891d9a8a8cd65597be936` were pushed to `feature/ai-protocol`. CI on
+`c1e55867003ef02d907891d9a8a8cd65597be936` passed `Test (backplane_llama)` with 247 tests and
+zero failures (seed `593568`),
+along with both protocol package jobs. Compile, format, Credo, and workflow-contract jobs also
+passed on the same SHA. The overall workflows remain red on the same app-test job set and the same
+12 `backplane_memory` Dialyzer warnings demonstrated on `main` SHA
+`bd5bc83005fded6f67beefe3fa8abac31eae506a`; no final-SHA Dialyzer warning names
+`backplane_ai_protocol` or `backplane_llama`.
+
 ## Artifact evidence
 
 - Core `backplane_ai_protocol-0.1.0.tar` SHA-256:
@@ -154,9 +164,11 @@ OpenAI Chat Completions, Anthropic Messages, and all Codex-specialized paths ret
 Cross-protocol request/response translation, complete codecs, OAuth/catalog migration, a real WS
 service, Sigma/Synapsis adoption, and live-provider compatibility are not implemented or claimed.
 Repository-wide warnings-as-errors, Dialyzer, the actual Backplane release, and the full umbrella
-suite are not passing evidence in this report. The four diff-attributable Dialyzer warnings above
-must be corrected before Gate A can be accepted. Existing warnings, the macOS SDK linker failure,
-and the Observability sandbox race require separate ownership or a matching baseline environment.
+suite are not passing evidence in this report. The four earlier diff-attributable Dialyzer warnings
+were removed before the final delivery; final-SHA CI is blocked by the demonstrated
+`backplane_memory` baseline warnings instead. Existing warnings, the macOS SDK linker failure, and
+the remaining cross-app sandbox races require separate ownership or a matching baseline
+environment.
 
 ## Rollback
 
