@@ -12,7 +12,6 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     ProviderApi,
     ProviderModel,
     ProviderModelSurface,
-    ProxyRequest,
     RateLimiter,
     Router
   }
@@ -89,7 +88,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "chat_completions"
     assert log.outcome == "success"
     assert log.requested_model == openai.model
@@ -112,7 +111,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert Jason.decode!(conn.resp_body)["id"] == "resp_obs"
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.operation == "responses"
     assert log.input_tokens == 12
     assert log.output_tokens == 7
@@ -138,7 +137,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.resp_body =~ "response.completed"
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.stream == true
     assert log.input_tokens == 6
     assert log.output_tokens == 3
@@ -153,7 +152,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 400
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_code == "bad_fixture"
     assert log.error_reason == "invalid_request_error"
@@ -168,7 +167,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.resp_body == "{malformed"
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.input_tokens == nil
     assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
   end
@@ -189,7 +188,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.resp_body == expected
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.input_tokens == 2
     assert log.output_tokens == 1
     assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
@@ -207,7 +206,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "messages"
     assert log.outcome == "success"
     assert log.api_surface == "anthropic"
@@ -227,7 +226,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "embeddings"
     assert log.outcome == "success"
     assert log.requested_model == model_id
@@ -243,7 +242,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 404
     flush_logs!()
 
-    log = log_for_model("missing/model")
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_kind == "routing"
     assert log.status == 404
@@ -261,7 +260,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 400
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_kind == "routing"
     assert log.error_code == "api_type_mismatch"
@@ -269,7 +268,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   test "records rate limit rejection", %{openai_provider: provider} do
-    {:ok, provider} = Provider.update(provider, %{rpm_limit: 1})
+    {:ok, _provider} = Provider.update(provider, %{rpm_limit: 1})
     ModelResolver.clear_cache()
 
     body = %{
@@ -283,16 +282,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 429
     flush_logs!()
 
-    import Ecto.Query
-
-    log =
-      Backplane.Repo.one(
-        from(l in ProxyRequest,
-          where: l.status == 429,
-          order_by: [desc: l.inserted_at],
-          limit: 1
-        )
-      )
+    log = log_for_request(conn)
 
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
@@ -339,7 +329,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 503
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.error_kind == "auth"
     assert log.error_code == "credential_missing"
   end
@@ -354,7 +344,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 500
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.status == 500
   end
@@ -370,7 +360,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.stream == true
     assert log.outcome == "success"
     assert log.stream_chunks >= 2
@@ -393,17 +383,18 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.request_id == "req-obs-1"
     assert log.trace_id == String.duplicate("a", 32)
   end
 
   defp llm_request(method, path, body, context \\ nil) do
     payload = Jason.encode!(body)
+    context = context || Context.root()
 
     conn(method, path, payload)
     |> put_req_header("content-type", "application/json")
-    |> then(fn conn -> if context, do: Context.put(conn, context), else: conn end)
+    |> Context.put(context)
     |> Router.call(Router.init([]))
   end
 
