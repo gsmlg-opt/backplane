@@ -1,8 +1,8 @@
-# W1 Foundation Report
+# W1 Contract Foundation Report
 
 ## Scope
 
-Implemented W1.1, W1.2, W1.3, W1.4, and the W1.5 wire contract. Codecs, transport, auth, catalogs, WebSocket client/server, and full artifact installation are intentionally not implemented.
+Implemented W1.1 through W1.6. Canonical contracts, lifecycle, preflight, wire contract, and backend selection are frozen. Codecs, transport, auth, catalogs, WebSocket client/server, and full artifact installation are intentionally not implemented.
 
 ## Changed paths
 
@@ -46,6 +46,12 @@ The test workflow matrix gained only `backplane_ai_protocol` and `backplane_ai_p
 2. Canonical contract semantics are deferred to W1.2.
 3. Artifact installation into fresh consumers remains T22/T23 work for W5/W8.
 
+## Evidence files
+
+- `wire_contract.md` — W1.5 frozen envelope/ordering/flow-control rules.
+- `w1_6_review.md` — W1.6 contract review, WS backend selection, extension/version policy.
+- `contract_decisions.md` — updated W1 frozen/deferred boundary.
+
 ## Readiness
 
-The W1.2-W1.4 contracts and W1.5 initial wire state machine are executable. W1.5 needs fixture/schema documentation and W1.6 needs contract review/backend spike before the G0 exit gate. No production route change was made.
+G0 exit gate is ready for review: standalone skeleton works, contracts and initial invariant tests are executable, and no existing production path changed. W2 codec work may begin after PR merge.

@@ -13,4 +13,4 @@
 
 ## Deferred to W1.2+
 
-Request versus execution context, message/content/tool/state types, error/usage/capability types, pure lifecycle gate, translation preflight, and initial wire state machine are implemented; framing details, auth, model catalog, cancellation/retry, and TestKit public API details remain open until their assigned work packages.
+Request versus execution context, message/content/tool/state types, error/usage/capability types, pure lifecycle gate, translation preflight, wire contract, and WS backend selection are frozen. Framing details, auth, model catalog, cancellation/retry, and TestKit public API details remain open until their assigned work packages.
