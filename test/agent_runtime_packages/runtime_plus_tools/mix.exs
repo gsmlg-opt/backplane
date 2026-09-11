@@ -15,8 +15,11 @@ defmodule RuntimePlusTools.MixProject do
 
   defp deps do
     [
-      {:backplane_agent_runtime, path: "../backplane_agent_runtime"},
-      {:backplane_agent_tools, path: "../../apps/backplane_agent_tools"}
+      {:backplane_agent_runtime,
+       path: System.get_env("AGENT_RUNTIME_PATH", "../backplane_agent_runtime"),
+       override: true},
+      {:backplane_agent_tools,
+       path: System.get_env("AGENT_TOOLS_PATH", "../../apps/backplane_agent_tools")}
     ]
   end
 end

@@ -24,6 +24,9 @@ defmodule Backplane.AgentRuntime.CommandTest do
 
     @impl Backplane.AgentRuntime.Command
     def cancel(_command, _invocation), do: :ok
+
+    @impl Backplane.AgentRuntime.Command
+    def read(_command, _invocation, _job, _opts), do: {:ok, %{}}
   end
 
   defmodule JobAdapter do

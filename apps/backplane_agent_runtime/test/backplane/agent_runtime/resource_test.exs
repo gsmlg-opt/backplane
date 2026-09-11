@@ -15,6 +15,18 @@ defmodule Backplane.AgentRuntime.ResourceTest do
     def write(_resource, reference, _content, _opts) do
       {:ok, %{revision: reference.expected_revision + 1, written: true}}
     end
+
+    @impl Backplane.AgentRuntime.Resource
+    def list_dir(_resource, _reference, _opts), do: {:ok, %{provenance: "fake"}}
+
+    @impl Backplane.AgentRuntime.Resource
+    def glob(_resource, _reference, _pattern, _opts), do: {:ok, %{provenance: "fake"}}
+
+    @impl Backplane.AgentRuntime.Resource
+    def grep(_resource, _reference, _opts), do: {:ok, %{provenance: "fake"}}
+
+    @impl Backplane.AgentRuntime.Resource
+    def file_edit(_resource, _reference, _content, _opts), do: {:ok, %{provenance: "fake"}}
   end
 
   describe "scoped resource operations" do

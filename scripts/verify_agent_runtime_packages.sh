@@ -36,16 +36,18 @@ for fixture in runtime_only runtime_plus_tools; do
   mkdir -p "$fixture_dir/lib"
   cp -R "$script_dir/../test/agent_runtime_packages/$fixture/." "$fixture_dir/"
 
-  runtime_path="$work_root/local_hex/backplane_agent_runtime"
-  tools_path="$work_root/local_hex/backplane_agent_tools"
-
-  sed -i.bak \
-    -e "s#path: [\"'][^\"']*[\"']#path: \"$runtime_path\"#g" \
-    -e "s#path: [\"'][^\"']*[\"']#path: \"$tools_path\"#g" \
-    "$fixture_dir/mix.exs"
-  rm "$fixture_dir/mix.exs.bak"
-
-  (cd "$fixture_dir" && MIX_ENV=prod mix deps.get && MIX_ENV=prod mix compile --warnings-as-errors && MIX_ENV=prod mix run -e 'IO.puts("artifact consumer passed")')
+  (
+    cd "$fixture_dir"
+    AGENT_RUNTIME_PATH="$work_root/local_hex/backplane_agent_runtime" \
+    AGENT_TOOLS_PATH="$work_root/local_hex/backplane_agent_tools" \
+    MIX_ENV=prod mix deps.get
+    AGENT_RUNTIME_PATH="$work_root/local_hex/backplane_agent_runtime" \
+    AGENT_TOOLS_PATH="$work_root/local_hex/backplane_agent_tools" \
+    MIX_ENV=prod mix compile --warnings-as-errors
+    AGENT_RUNTIME_PATH="$work_root/local_hex/backplane_agent_runtime" \
+    AGENT_TOOLS_PATH="$work_root/local_hex/backplane_agent_tools" \
+    MIX_ENV=prod mix run -e 'IO.puts("artifact consumer passed")'
+  )
 done
 
 printf 'Agent runtime package checks passed.\n'

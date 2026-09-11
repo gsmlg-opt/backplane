@@ -13,6 +13,8 @@ defmodule Backplane.AgentRuntime.RecoveryHarness do
 
   @type t :: map()
 
+  @crash_windows [:before_dispatch, :after_mutation, :before_result, :after_terminal]
+
   @spec run(module(), term(), map(), map()) ::
           {:ok, map()} | {:error, Error.t()}
   def run(impl, context, record, meta)
@@ -42,6 +44,34 @@ defmodule Backplane.AgentRuntime.RecoveryHarness do
 
         {:ok, _committed} ->
           {:error, Error.new(:unknown_outcome, "failed commit was falsely acknowledged")}
+      end
+    end
+  end
+
+  @spec crash_window(atom()) ::
+          :before_dispatch | :after_mutation | :before_result | :after_terminal
+  def crash_window(window) when window in @crash_windows, do: window
+
+  def crash_window(_window) do
+    {:error, Error.new(:validation, "invalid crash window")}
+  end
+
+  @spec crash(module(), term(), map(), map(), atom()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def crash(impl, context, record, meta, window) do
+    with {:ok, staged} <- Store.stage(impl, context, record, meta) do
+      case window do
+        :before_dispatch ->
+          {:ok, %{accepted?: false, window: window, stage: staged.stage, safe_to_resume?: true}}
+
+        :after_mutation ->
+          {:ok, %{accepted?: false, window: window, stage: staged.stage, safe_to_resume?: false}}
+
+        :before_result ->
+          {:ok, %{accepted?: false, window: window, stage: staged.stage, safe_to_resume?: false}}
+
+        :after_terminal ->
+          {:ok, %{accepted?: true, window: window, stage: staged.stage, safe_to_resume?: false}}
       end
     end
   end

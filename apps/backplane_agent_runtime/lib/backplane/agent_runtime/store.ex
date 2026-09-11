@@ -53,7 +53,7 @@ defmodule Backplane.AgentRuntime.Store do
   def acknowledge_commit(impl, context, stage, meta)
       when is_atom(impl) and is_map(stage) and is_map(meta) do
     with {:ok, mode} <- validate_mode(impl),
-         {:ok, _capabilities} <- validate_capabilities(impl),
+         {:ok, _capabilities} <- validate_durable_or_ephemeral_capabilities(impl),
          {:ok, stage_revision} <- validate_stage_revision(stage),
          %{revision: revision} <- impl.acknowledge_commit(context, stage, meta) do
       if mode == :durable or stage_revision == revision do
@@ -76,7 +76,7 @@ defmodule Backplane.AgentRuntime.Store do
   def store(impl, context, record, meta)
       when is_atom(impl) and is_map(record) and is_map(meta) do
     with {:ok, mode} <- validate_mode(impl),
-         {:ok, _capabilities} <- validate_capabilities(impl),
+         {:ok, _capabilities} <- validate_durable_or_ephemeral_capabilities(impl),
          {:ok, revision} <- expected_revision(record) do
       case impl.store(context, record, meta) do
         {:ok, %{revision: committed_revision} = result}
@@ -117,9 +117,9 @@ defmodule Backplane.AgentRuntime.Store do
   def validate_capabilities(impl) when is_atom(impl) do
     capabilities = impl.capabilities()
 
-    if is_map(capabilities) and Map.has_key?(capabilities, :expected_revision) and
-         Map.has_key?(capabilities, :transition_events) and
-         Map.has_key?(capabilities, :outbox_intents) do
+    required = [:expected_revision, :transition_events, :outbox_intents]
+
+    if is_map(capabilities) and Enum.all?(required, &(Map.get(capabilities, &1) == true)) do
       {:ok, capabilities}
     else
       {:error,
@@ -127,6 +127,35 @@ defmodule Backplane.AgentRuntime.Store do
          :unsupported_capability,
          "store must declare expected_revision, transition_events, and outbox_intents"
        )}
+    end
+  end
+
+  @spec validate_durable_capabilities(module()) :: {:ok, map()} | {:error, Error.t()}
+  def validate_durable_capabilities(impl) when is_atom(impl) do
+    with {:ok, capabilities} <- validate_capabilities(impl) do
+      required = [
+        :atomic_transition_outbox,
+        :recovery_records,
+        :artifact_references
+      ]
+
+      if Enum.all?(required, &(Map.get(capabilities, &1) == true)) do
+        {:ok, capabilities}
+      else
+        {:error,
+         Error.new(
+           :unsupported_capability,
+           "durable store must declare atomic_transition_outbox, recovery_records, and artifact_references"
+         )}
+      end
+    end
+  end
+
+  defp validate_durable_or_ephemeral_capabilities(impl) do
+    if impl.mode() == :durable do
+      validate_durable_capabilities(impl)
+    else
+      validate_capabilities(impl)
     end
   end
 

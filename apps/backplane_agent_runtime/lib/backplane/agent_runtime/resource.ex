@@ -14,6 +14,14 @@ defmodule Backplane.AgentRuntime.Resource do
 
   @callback write(map(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
 
+  @callback list_dir(map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+
+  @callback glob(map(), map(), binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+
+  @callback grep(map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+
+  @callback file_edit(map(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+
   @default_output_limit 1_048_576
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
@@ -28,7 +36,7 @@ defmodule Backplane.AgentRuntime.Resource do
   def read(resource, reference, opts \\ []) when is_map(resource) and is_map(reference) do
     with {:ok, _} <- validate_reference(resource, reference),
          {:ok, result} <- resource.adapter.read(resource, reference, opts) do
-      validate_output(result, opts)
+      validate_output(result, opts, Keyword.get(opts, :partial_output?, false))
     end
   end
 
@@ -42,6 +50,36 @@ defmodule Backplane.AgentRuntime.Resource do
       else
         resource.adapter.write(resource, reference, content, opts)
       end
+    end
+  end
+
+  @spec list_dir(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def list_dir(resource, reference, opts \\ []) when is_map(resource) and is_map(reference) do
+    with {:ok, _} <- validate_reference(resource, reference) do
+      resource.adapter.list_dir(resource, reference, opts)
+    end
+  end
+
+  @spec glob(t(), map(), binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def glob(resource, reference, pattern, opts \\ [])
+      when is_map(resource) and is_map(reference) and is_binary(pattern) and is_list(opts) do
+    with {:ok, _} <- validate_reference(resource, reference) do
+      resource.adapter.glob(resource, reference, pattern, opts)
+    end
+  end
+
+  @spec grep(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def grep(resource, reference, opts \\ []) when is_map(resource) and is_map(reference) do
+    with {:ok, _} <- validate_reference(resource, reference) do
+      resource.adapter.grep(resource, reference, opts)
+    end
+  end
+
+  @spec file_edit(t(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def file_edit(resource, reference, content, opts \\ [])
+      when is_map(resource) and is_map(reference) and is_map(content) and is_list(opts) do
+    with {:ok, _} <- validate_reference(resource, reference) do
+      resource.adapter.file_edit(resource, reference, content, opts)
     end
   end
 
@@ -66,11 +104,11 @@ defmodule Backplane.AgentRuntime.Resource do
     end
   end
 
-  defp validate_output(result, opts) do
+  defp validate_output(result, opts, allow_partial_output?) do
     limit = Keyword.get(opts, :output_limit, @default_output_limit)
     size = :erlang.external_size(result)
 
-    if size > limit do
+    if not allow_partial_output? and size > limit do
       {:error,
        Error.new(:resource_conflict, "resource output exceeds the configured bound",
          details: %{limit: limit, size: size}

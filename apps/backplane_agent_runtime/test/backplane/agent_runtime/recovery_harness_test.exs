@@ -93,6 +93,27 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
 
       assert result.accepted? == false
     end
+
+    test "classifies deterministic crash windows conservatively" do
+      {:ok, context} = ValidDurableStore.new(1)
+      record = base_record()
+      meta = %{command: {:admit, 10, %{state: :running}}}
+
+      assert {:ok, %{accepted?: false, safe_to_resume?: true}} =
+               RecoveryHarness.crash(ValidDurableStore, context, record, meta, :before_dispatch)
+
+      assert {:ok, %{accepted?: false, safe_to_resume?: false}} =
+               RecoveryHarness.crash(ValidDurableStore, context, record, meta, :after_mutation)
+
+      assert {:ok, %{accepted?: false, safe_to_resume?: false}} =
+               RecoveryHarness.crash(ValidDurableStore, context, record, meta, :before_result)
+
+      assert {:ok, %{accepted?: true, safe_to_resume?: false}} =
+               RecoveryHarness.crash(ValidDurableStore, context, record, meta, :after_terminal)
+
+      assert {:error, %Error{class: :validation}} =
+               RecoveryHarness.crash_window(:unsupported)
+    end
   end
 
   defp base_record do

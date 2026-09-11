@@ -15,7 +15,8 @@ defmodule RuntimeOnly.MixProject do
 
   defp deps do
     [
-      {:backplane_agent_runtime, path: "../backplane_agent_runtime"}
+      {:backplane_agent_runtime,
+       path: System.get_env("AGENT_RUNTIME_PATH", "../backplane_agent_runtime")}
     ]
   end
 end
