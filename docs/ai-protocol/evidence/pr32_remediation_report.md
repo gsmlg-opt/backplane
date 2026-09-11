@@ -88,6 +88,53 @@ run can flush stale global-buffer records after sandbox rollback and hit `llm_lo
 the six new cases pass in isolated processes. This is an existing test-isolation issue, not a passed
 repository-wide gate.
 
+## PR #32 persistence follow-up (2026-09-11)
+
+This section supersedes the durable-log sandbox limitation immediately above for the
+`backplane_llama` test application. Verification started from local and remote branch HEAD
+`a176974a0436e70988836fbcc65fb698350f526d`; the shared Responses observer integration and the
+dedicated compact legacy path were retained.
+
+The CI seed reproduced the reported result before the follow-up fix:
+
+| Command | Result |
+| --- | --- |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test --seed 181124` | `242/247 passed`, five failures, exit 1 (inner app exit 2). |
+
+There were two test-boundary causes. First, `Buffer.try_enqueue/2` reserves capacity and sends the
+event asynchronously, while `LogWriter.flush/0` asks a different process to drain the buffer. The
+drain could overtake the accepted enqueue. Second, the explicit test-only v2 disable flag was
+unset, allowing runtime Settings to start a global writer outside an ExUnit sandbox owner. Delayed
+records then crossed test transactions and could fail a later batch with a provider foreign-key
+violation. Broad latest-row/model queries could consequently select another request. The legacy
+`UsageCollector` test was also subject to the same runtime v2 policy and could intentionally no-op.
+
+The follow-up disables v2 in the `backplane_llama` test bootstrap and terminates only the Llama
+supervisor's globally booted writer/buffer children. Tagged observability tests then own their
+supervised writer/buffer lifecycle under the active sandbox. The flush helper establishes a buffer
+mailbox barrier, and persisted access records are selected by the exact request ID carried in the
+test connection. The legacy collector test explicitly selects its path and preserves the
+pre-existing telemetry handler and flag state.
+
+Final local results for the follow-up changes:
+
+| Command | Result |
+| --- | --- |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test --seed 181124` | `247 passed`, exit 0. |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test --seed 424242` | `247 passed`, exit 0. |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test --seed 987654` | `247 passed`, exit 0. |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test test/backplane/llm/access_observability_test.exs test/backplane/llm/streaming_integration_test.exs` | `26 passed`, seed `660367`, exit 0. |
+| `MIX_ENV=test mix do --app backplane_ai_protocol cmd mix test` | `56 passed`, seed `955158`, exit 0. |
+| `MIX_ENV=test mix do --app backplane_ai_protocol_testkit test` | `2 passed`, seed `863320`, exit 0; existing unrelated compile warnings were emitted. |
+| `mix format --check-formatted` | Passed, exit 0. |
+| `git diff --check` | Passed, exit 0. |
+| `mix compile --warnings-as-errors` | Failed, exit 1, on the existing `backplane_mcp_protocol` dynamic `profile/0` and Elixir 1.20 bitstring pin warnings; no follow-up file was reported. |
+| `MIX_ENV=test mix do --app backplane_telemetry cmd mix test` | Baseline limitation: `30/32 passed`; two existing `FlagsTest` expectations conflict with enabled runtime Settings defaults. No Llama test-bootstrap code is loaded by this command. |
+
+The complete runs still print pre-existing `Backplane.Settings.Credentials.Vault` sandbox-owner
+warnings from unrelated asynchronous credential cache reloads. They do not fail the application
+suite and are not represented as fixed by this follow-up.
+
 ## Artifact evidence
 
 - Core `backplane_ai_protocol-0.1.0.tar` SHA-256:
