@@ -367,9 +367,10 @@ defmodule Backplane.SkillProtocol.CacheSourceTest do
 
   defp start_cache_owner(root, owner) do
     elixir = System.find_executable("elixir") || flunk("elixir executable is unavailable")
-    ebin = :backplane_skill_protocol |> :code.lib_dir(:ebin) |> List.to_string()
+    ebin = :backplane_skill_protocol |> :code.lib_dir() |> Path.join("ebin")
 
     expression = """
+    {:ok, _coordinator} = Backplane.SkillProtocol.Cache.Ownership.start_link([])
     root = hd(System.argv())
     owner = System.argv() |> tl() |> hd()
 
@@ -385,10 +386,12 @@ defmodule Backplane.SkillProtocol.CacheSourceTest do
 
     Port.open(
       {:spawn_executable, elixir},
-      binary: true,
-      exit_status: true,
-      stderr_to_stdout: true,
-      args: ["-pa", ebin, "-e", expression, "--", root, owner]
+      [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: ["-pa", ebin, "-e", expression, "--", root, owner]
+      ]
     )
   end
 

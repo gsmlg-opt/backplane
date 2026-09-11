@@ -14,9 +14,10 @@ defmodule Backplane.SkillProtocol.Cache do
     Wire
   }
 
+  alias Backplane.SkillProtocol.Cache.Ownership
+
   @default_max_bytes 512 * 1024 * 1024
   @state_version 1
-  @process_owner_file ".process-owner"
   @block_codes %{
     "unauthorized" => :unauthorized,
     "forbidden" => :forbidden,
@@ -37,9 +38,8 @@ defmodule Backplane.SkillProtocol.Cache do
     with :ok <- nonempty(owner, "cache owner"),
          root = Path.expand(root),
          :ok <- File.mkdir_p(root),
-         :ok <- claim(root, owner),
-         :ok <- claim_process(root),
-         :ok <- ensure_layout(root) do
+         {:ok, root} <- Ownership.canonical_root(root),
+         :ok <- Ownership.acquire(root, owner) do
       {:ok,
        %__MODULE__{
          root: root,
@@ -51,6 +51,24 @@ defmodule Backplane.SkillProtocol.Cache do
     else
       {:error, %Error{} = reason} ->
         {:error, reason}
+
+      {:error, :busy} ->
+        error(:invalid_request, "cache root is owned by another OS process")
+
+      {:error, :different_owner} ->
+        error(:invalid_request, "cache root is owned by another consumer")
+
+      {:error, :legacy_process_owner} ->
+        error(:invalid_request, "legacy cache ownership requires quiescent migration")
+
+      {:error, {:legacy_process_owner, reason}} ->
+        error(:invalid_request, "legacy cache ownership cannot be inspected", %{reason: reason})
+
+      {:error, :unavailable} ->
+        error(:temporarily_unavailable, "cache ownership backend is unavailable")
+
+      {:error, :invalid_path} ->
+        error(:invalid_request, "cache ownership lock path is invalid")
 
       {:error, reason} ->
         error(:invalid_request, "cache root cannot be initialized", %{reason: inspect(reason)})
@@ -461,115 +479,6 @@ defmodule Backplane.SkillProtocol.Cache do
       case File.lstat(path) do
         {:ok, %{type: :regular, size: size}} -> total + size
         _ -> total
-      end
-    end)
-  end
-
-  defp claim(root, owner) do
-    path = Path.join(root, ".owner")
-
-    case File.open(path, [:write, :exclusive]) do
-      {:ok, io} ->
-        result = IO.binwrite(io, owner)
-        File.close(io)
-        result
-
-      {:error, :eexist} ->
-        case File.read(path) do
-          {:ok, ^owner} -> :ok
-          {:ok, _other} -> error(:invalid_request, "cache root is owned by another consumer")
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp claim_process(root) do
-    path = Path.join(root, @process_owner_file)
-    candidate = path <> ".candidate." <> unique_id()
-
-    try do
-      with :ok <- File.write(candidate, System.pid(), [:binary, :exclusive]) do
-        case File.link(candidate, path) do
-          :ok -> :ok
-          {:error, :eexist} -> verify_process_claim(path, root)
-          {:error, reason} -> process_claim_error(reason)
-        end
-      else
-        {:error, reason} -> process_claim_error(reason)
-      end
-    after
-      File.rm(candidate)
-    end
-  end
-
-  defp verify_process_claim(path, root) do
-    case File.read(path) do
-      {:ok, pid} when pid == System.pid() ->
-        :ok
-
-      {:ok, pid} ->
-        with {:ok, pid} <- valid_os_pid(pid) do
-          if os_process_alive?(pid),
-            do: error(:invalid_request, "cache root is owned by another OS process"),
-            else: reclaim_process_claim(path, root)
-        end
-
-      {:error, :enoent} ->
-        claim_process(root)
-
-      {:error, reason} ->
-        process_claim_error(reason)
-    end
-  end
-
-  defp reclaim_process_claim(path, root) do
-    stale = path <> ".stale." <> unique_id()
-
-    case File.rename(path, stale) do
-      :ok ->
-        File.rm(stale)
-        claim_process(root)
-
-      {:error, :enoent} ->
-        claim_process(root)
-
-      {:error, reason} ->
-        process_claim_error(reason)
-    end
-  end
-
-  defp valid_os_pid(pid) do
-    case Integer.parse(pid) do
-      {number, ""} when number > 0 -> {:ok, Integer.to_string(number)}
-      _ -> error(:invalid_request, "cache process ownership metadata is invalid")
-    end
-  end
-
-  defp os_process_alive?(pid) do
-    with {:unix, _name} <- :os.type(),
-         executable when is_binary(executable) <- System.find_executable("kill"),
-         {_output, status} <- System.cmd(executable, ["-0", pid], stderr_to_stdout: true) do
-      status == 0
-    else
-      _ -> true
-    end
-  rescue
-    _exception -> true
-  end
-
-  defp process_claim_error(reason),
-    do:
-      error(:invalid_request, "cache process ownership cannot be established", %{reason: reason})
-
-  defp ensure_layout(root) do
-    Enum.reduce_while(~w(.staging artifacts prepared associations blocks), :ok, fn directory,
-                                                                                   :ok ->
-      case File.mkdir_p(Path.join(root, directory)) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
