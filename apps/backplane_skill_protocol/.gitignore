@@ -2,3 +2,4 @@
 /deps/
 /tmp/
 /mix.lock
+/priv/cache_native_lock.so
