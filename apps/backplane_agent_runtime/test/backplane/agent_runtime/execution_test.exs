@@ -1,0 +1,112 @@
+defmodule Backplane.AgentRuntime.ExecutionTest do
+  use ExUnit.Case, async: true
+
+  alias Backplane.AgentRuntime.EphemeralStore
+  alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.Execution
+
+  defmodule NoEffectAdapter do
+    @behaviour Backplane.AgentRuntime.Provider
+    @behaviour Backplane.AgentRuntime.ToolEffects
+
+    @impl Backplane.AgentRuntime.Provider
+    def start(_request), do: {:ok, %{started: true}}
+
+    @impl Backplane.AgentRuntime.ToolEffects
+    def execute(_invocation), do: {:ok, %{completed: true}}
+
+    @impl Backplane.AgentRuntime.ToolEffects
+    def cancel(_invocation), do: :ok
+
+    @impl Backplane.AgentRuntime.Provider
+    def chunks(_chunks), do: {:ok, %{type: :completed}}
+  end
+
+  describe "store-first execution" do
+    test "admits a run without dispatching an external effect" do
+      {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
+      record = base_record()
+
+      assert {:ok, committed, %{effects: [], fenced: []}} =
+               Execution.run(
+                 EphemeralStore,
+                 context,
+                 record,
+                 %{command: {:admit, 10, %{state: :running}}},
+                 adapter: NoEffectAdapter
+               )
+
+      assert committed.revision == 1
+      assert committed.mode == :ephemeral
+    end
+
+    test "dispatches a provider effect only after commit" do
+      {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
+      record = %{base_record() | state: :running, expected_revision: 0}
+
+      assert {:ok, _committed, %{effects: [%{started: true}]}} =
+               Execution.run(
+                 EphemeralStore,
+                 context,
+                 record,
+                 %{
+                   command: {:provider_started, 10, %{step_id: "step_1", attempt_id: "attempt_1"}}
+                 },
+                 adapter: NoEffectAdapter
+               )
+    end
+
+    test "dispatches a tool effect only after commit" do
+      {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
+      record = %{base_record() | state: :running}
+
+      assert {:ok, _committed, %{effects: [%{completed: true}]}} =
+               Execution.run(
+                 EphemeralStore,
+                 context,
+                 record,
+                 %{command: {:tool_invoked, 10, tool_invocation()}},
+                 adapter: NoEffectAdapter
+               )
+    end
+
+    test "does not dispatch when the store rejects the transition" do
+      {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
+      record = %{base_record() | state: :completed}
+
+      assert {:error, %Error{class: :validation}} =
+               Execution.run(
+                 EphemeralStore,
+                 context,
+                 record,
+                 %{
+                   command: {:provider_started, 10, %{step_id: "step_1", attempt_id: "attempt_1"}}
+                 },
+                 adapter: NoEffectAdapter
+               )
+    end
+  end
+
+  defp base_record do
+    %{
+      run_id: "run_#{System.unique_integer([:positive])}",
+      expected_revision: 0,
+      state: :queued,
+      deadline: nil,
+      outcome: nil,
+      children: []
+    }
+  end
+
+  defp tool_invocation do
+    %{
+      invocation_id: "tool_1",
+      run_id: "run_1",
+      tool_name: "example",
+      tool_revision: 1,
+      arguments: %{},
+      state: :admitted,
+      result: nil
+    }
+  end
+end

@@ -22,7 +22,7 @@ defmodule Backplane.Umbrella.MixProject do
   end
 
   defp deps do
-    []
+    [{:backplane_agent_runtime, path: "apps/backplane_agent_runtime"}]
   end
 
   defp aliases do
