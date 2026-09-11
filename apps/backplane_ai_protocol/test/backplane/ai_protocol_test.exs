@@ -643,12 +643,22 @@ defmodule Backplane.AiProtocolTest do
 
       source = %{
         protocol: "backplane.v1",
-        capabilities: %{"text" => :supported, "image" => :supported, "tool_calls" => :supported}
+        capabilities: %{
+          "role_user" => :supported,
+          "text" => :supported,
+          "image" => :supported,
+          "tool_calls" => :supported
+        }
       }
 
       target = %{
         protocol: "openai-chat",
-        capabilities: %{"text" => :supported, "image" => :supported, "tool_calls" => :supported}
+        capabilities: %{
+          "role_user" => :supported,
+          "text" => :supported,
+          "image" => :supported,
+          "tool_calls" => :supported
+        }
       }
 
       assert {:ok, %Backplane.AiProtocol.TranslationPlan{} = plan} =
@@ -675,12 +685,12 @@ defmodule Backplane.AiProtocolTest do
 
       source = %{
         protocol: "backplane.v1",
-        capabilities: %{"image" => :supported}
+        capabilities: %{"role_user" => :supported, "image" => :supported}
       }
 
       target = %{
         protocol: "anthropic",
-        capabilities: %{"image" => :unsupported}
+        capabilities: %{"role_user" => :supported, "image" => :unsupported}
       }
 
       assert {:error,
@@ -692,7 +702,7 @@ defmodule Backplane.AiProtocolTest do
                Backplane.AiProtocol.Translation.plan(request, source, target, %{})
     end
 
-    test "allows named downgrade with warning" do
+    test "requires a caller-permitted executable host downgrade rule" do
       {:ok, request} =
         Request.new(%{
           model: "public-model",
@@ -707,12 +717,12 @@ defmodule Backplane.AiProtocolTest do
 
       source = %{
         protocol: "backplane.v1",
-        capabilities: %{"image" => :supported}
+        capabilities: %{"role_user" => :supported, "image" => :supported}
       }
 
       target = %{
         protocol: "anthropic",
-        capabilities: %{"image" => :unsupported}
+        capabilities: %{"role_user" => :supported, "image" => :unsupported}
       }
 
       assert {:ok, plan} =
@@ -720,12 +730,22 @@ defmodule Backplane.AiProtocolTest do
                  request,
                  source,
                  target,
-                 %{}
+                 %{
+                   downgrade_rules: %{
+                     "image_to_text" => %{
+                       field: "image",
+                       revision: "1",
+                       effective: "text_placeholder",
+                       operation: %{op: "replace_image_with_caller_text"}
+                     }
+                   }
+                 }
                )
 
       assert plan.executable == true
-      assert plan.downgrades == ["image"]
-      assert plan.diagnostics != []
+      assert plan.downgrades == ["image_to_text"]
+      assert plan.operations == [%{op: "replace_image_with_caller_text"}]
+      assert [%{"rule_id" => "image_to_text", "rule_revision" => "1"}] = plan.diagnostics
     end
 
     test "rejects unknown downgrade rule" do
@@ -787,15 +807,18 @@ defmodule Backplane.AiProtocolTest do
     test "builds valid hello and welcome envelopes with negotiated limits" do
       assert {:ok, hello} =
                Backplane.AiProtocol.Wire.hello(%{
+                 message_id: "hello-1",
                  protocol: "backplane.ai.v1",
                  wire: %{major: 1, minor: 0}
                })
 
-      assert hello.type == "hello"
-      assert hello.wire == %{major: 1, minor: 0}
+      assert hello["type"] == "hello"
+      assert hello["classification"] == "control"
+      assert hello["wire"] == %{"major" => 1, "minor" => 0}
 
       assert {:ok, welcome} =
                Backplane.AiProtocol.Wire.welcome(%{
+                 message_id: "welcome-1",
                  protocol: "backplane.ai.v1",
                  wire: %{major: 1, minor: 0},
                  limits: %{
@@ -811,37 +834,64 @@ defmodule Backplane.AiProtocolTest do
                  flow_control: :per_request_credit
                })
 
-      assert welcome.type == "welcome"
-      assert welcome.flow_control == :per_request_credit
-      assert welcome.limits.initial_request_credit_bytes == 262_144
+      assert welcome["type"] == "welcome"
+      assert welcome["payload"]["flow_control"] == "per_request_credit"
+      assert welcome["payload"]["limits"]["initial_request_credit_bytes"] == 262_144
+
+      assert {:error, %Error{kind: :invalid_request, stage: :wire}} =
+               Backplane.AiProtocol.Wire.hello(%{
+                 protocol: "backplane.ai.v1",
+                 wire: %{major: 1, minor: 0}
+               })
     end
 
     test "rejects hello version outside supported envelope" do
       assert {:error, %Error{kind: :incompatible, stage: :wire}} =
                Backplane.AiProtocol.Wire.hello(%{
+                 message_id: "hello-invalid-version",
                  protocol: "backplane.ai.v1",
                  wire: %{major: 0, minor: 9}
                })
     end
 
-    test "builds command response and classifies terminal separately from control" do
-      command = Backplane.AiProtocol.Wire.command_response(%{accepted: true, request_id: "req-1"})
-      assert command.type == "command.response"
-      assert command.terminal == false
-
-      terminal =
-        Backplane.AiProtocol.Wire.terminal(%{
-          status: :cancelled,
-          upstream_outcome: :unknown,
-          output_completeness: :incomplete
+    test "builds correlated control and terminal envelopes" do
+      command =
+        Backplane.AiProtocol.Wire.command_response(%{
+          accepted: true,
+          message_id: "msg-control",
+          request_id: "req-1"
         })
 
-      assert terminal.type == "request.finished"
-      assert terminal.terminal == true
+      assert command["type"] == "command.response"
+      assert command["classification"] == "control"
+
+      wire = negotiated_wire()
+      {:ok, wire} = Backplane.AiProtocol.Wire.accept_request(wire, "req-1")
+
+      assert {:ok, wire, terminal} =
+               Backplane.AiProtocol.Wire.terminal(wire, %{
+                 message_id: "msg-terminal",
+                 request_id: "req-1",
+                 status: :cancelled,
+                 upstream_outcome: :unknown,
+                 output_completeness: :incomplete
+               })
+
+      assert terminal["type"] == "request.finished"
+      assert terminal["request_id"] == "req-1"
+      assert terminal["classification"] == "terminal"
+      assert Backplane.AiProtocol.Wire.active_ids(wire) == []
+      assert Backplane.AiProtocol.Wire.credit(wire, "req-1") == 0
     end
 
-    test "rejects duplicate request ids without resubmission" do
-      wire = Backplane.AiProtocol.Wire.new()
+    test "requires handshake and rejects duplicate request ids" do
+      assert {:error, %Error{stage: :wire}} =
+               Backplane.AiProtocol.Wire.accept_request(
+                 Backplane.AiProtocol.Wire.new(),
+                 "request-1"
+               )
+
+      wire = negotiated_wire()
 
       {:ok, wire} = Backplane.AiProtocol.Wire.accept_request(wire, "request-1")
 
@@ -852,29 +902,83 @@ defmodule Backplane.AiProtocolTest do
       assert Backplane.AiProtocol.Wire.seen_ids(wire) == ["request-1", "request-2"]
     end
 
-    test "retires connection when bounded seen-id set exceeds capacity" do
-      wire =
-        Enum.reduce(1..33, Backplane.AiProtocol.Wire.new(), fn index, wire ->
-          case Backplane.AiProtocol.Wire.accept_request(wire, "request-#{index}") do
-            {:ok, wire} -> wire
-            {:error, _error} -> wire
-          end
-        end)
+    test "returns explicit draining state at lifetime capacity" do
+      wire = negotiated_wire(max_seen_ids: 2)
+      {:ok, wire} = Backplane.AiProtocol.Wire.accept_request(wire, "request-1")
+      {:ok, wire, _} = terminal(wire, "request-1")
+      {:ok, wire} = Backplane.AiProtocol.Wire.accept_request(wire, "request-2")
+      {:ok, wire, _} = terminal(wire, "request-2")
 
-      assert Backplane.AiProtocol.Wire.retire?(wire)
+      assert {:error, %Error{stage: :wire}, draining} =
+               Backplane.AiProtocol.Wire.accept_request(wire, "request-3")
+
+      assert Backplane.AiProtocol.Wire.retire?(draining)
+      refute "request-3" in Backplane.AiProtocol.Wire.seen_ids(draining)
     end
 
-    test "uses per-request byte credit for data envelopes" do
-      wire = Backplane.AiProtocol.Wire.new()
-      {:ok, wire} = Backplane.AiProtocol.Wire.grant_credit(wire, "request-1", 262_144)
+    test "charges encoded envelope bytes and rejects unknown credit targets" do
+      wire = negotiated_wire(data_event_bytes: 512, initial_request_credit_bytes: 1_024)
+      {:ok, wire} = Backplane.AiProtocol.Wire.accept_request(wire, "request-1")
+      before = Backplane.AiProtocol.Wire.credit(wire, "request-1")
 
-      event_bytes = 65_536
-      {:ok, wire} = Backplane.AiProtocol.Wire.consume_credit(wire, "request-1", event_bytes)
-      assert Backplane.AiProtocol.Wire.credit(wire, "request-1") == 196_608
+      assert {:ok, wire, envelope} =
+               Backplane.AiProtocol.Wire.send_data(wire, %{
+                 message_id: "msg-1",
+                 request_id: "request-1",
+                 sequence: 0,
+                 payload: %{"text" => "hello"}
+               })
 
-      {:error, %Error{kind: :invalid_request, stage: :wire}} =
-        Backplane.AiProtocol.Wire.send_data(wire, "request-1", 200_000)
+      {:ok, encoded} = Serialization.to_json(envelope)
+      assert Backplane.AiProtocol.Wire.credit(wire, "request-1") == before - byte_size(encoded)
+
+      assert {:error, %Error{stage: :wire}} =
+               Backplane.AiProtocol.Wire.grant_credit(wire, "unknown", 10)
+
+      assert {:error, %Error{stage: :wire}} =
+               Backplane.AiProtocol.Wire.send_data(wire, %{
+                 message_id: "msg-duplicate",
+                 request_id: "request-1",
+                 sequence: 0,
+                 payload: %{}
+               })
     end
+  end
+
+  defp negotiated_wire(overrides \\ []) do
+    limits =
+      %{
+        inbound_request_bytes: 8_388_608,
+        data_event_bytes: 65_536,
+        initial_request_credit_bytes: 262_144,
+        pending_request_buffer_bytes: 524_288,
+        pending_connection_buffer_bytes: 8_388_608,
+        concurrent_requests: 8,
+        control_reserve_bytes: 65_536
+      }
+      |> Map.merge(Map.new(Keyword.drop(overrides, [:max_seen_ids])))
+
+    {:ok, wire} =
+      Backplane.AiProtocol.Wire.handshake(Backplane.AiProtocol.Wire.new(), %{
+        message_id: "welcome-handshake",
+        protocol: "backplane.ai.v1",
+        wire: %{major: 1, minor: 0},
+        limits: limits,
+        max_seen_ids: Keyword.get(overrides, :max_seen_ids),
+        flow_control: :per_request_credit
+      })
+
+    wire
+  end
+
+  defp terminal(wire, request_id) do
+    Backplane.AiProtocol.Wire.terminal(wire, %{
+      message_id: "terminal-#{request_id}",
+      request_id: request_id,
+      status: :completed,
+      upstream_outcome: :known,
+      output_completeness: :complete
+    })
   end
 
   defp deep_map(0, value), do: value

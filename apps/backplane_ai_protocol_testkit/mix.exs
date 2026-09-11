@@ -30,7 +30,8 @@ defmodule Backplane.AiProtocolTestkit.MixProject do
 
   defp deps do
     [
-      {:backplane_ai_protocol, in_umbrella: true}
+      {:backplane_ai_protocol, "~> 0.1.0",
+       in_umbrella: true, hex: :backplane_ai_protocol}
     ]
   end
 

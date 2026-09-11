@@ -50,9 +50,11 @@ defmodule Backplane.AiProtocol.ContentBlock do
   defp split_extensions(attrs) do
     core = core_attrs(attrs)
     core_keys = core_keys(attrs)
-    extensions = Map.filter(attrs, fn {key, _value} -> key not in core_keys end)
+    discovered = Map.filter(attrs, fn {key, _value} -> key not in core_keys end)
+    explicit = Map.get(core, :extensions, %{})
+    extensions = if is_map(explicit), do: Map.merge(explicit, discovered), else: explicit
 
-    {core, extensions}
+    {Map.delete(core, :extensions), extensions}
   end
 
   defp core_keys(attrs) do
@@ -103,7 +105,15 @@ defmodule Backplane.AiProtocol.ContentBlock do
 
   defp build(:refusal, attrs), do: required_string(attrs, :text, :refusal)
 
-  defp build(:provider_state, attrs), do: required_map(attrs, :state)
+  defp build(:provider_state, attrs) do
+    case Backplane.AiProtocol.ProviderState.new(Map.get(attrs, :state, %{})) do
+      {:ok, state} ->
+        {:ok, %__MODULE__{type: :provider_state, state: state}}
+
+      {:error, %Error{message: message}} ->
+        {:error, Error.invalid!("Provider state content: " <> message)}
+    end
+  end
 
   defp required_string(attrs, key, type) do
     case Map.get(attrs, key) do
@@ -114,13 +124,6 @@ defmodule Backplane.AiProtocol.ContentBlock do
 
       _ ->
         {:error, Error.invalid!("Content #{key} must be a non-empty string")}
-    end
-  end
-
-  defp required_map(attrs, key) do
-    case Map.get(attrs, key) do
-      value when is_map(value) -> {:ok, %__MODULE__{type: :provider_state, state: value}}
-      _ -> {:error, Error.invalid!("Provider state content requires a state map")}
     end
   end
 

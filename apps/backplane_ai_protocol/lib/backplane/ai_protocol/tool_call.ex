@@ -93,7 +93,12 @@ defmodule Backplane.AiProtocol.ToolCall do
     end
   end
 
-  defp structured_arguments(value) when is_map(value), do: {:ok, 0}
+  defp structured_arguments(value) when is_map(value) do
+    case Backplane.AiProtocol.Validation.term(value) do
+      :ok -> {:ok, 0}
+      error -> error
+    end
+  end
 
   defp structured_arguments(_value),
     do: {:error, Error.invalid!("Structured tool call arguments must be a map")}
@@ -106,9 +111,6 @@ defmodule Backplane.AiProtocol.ToolCall do
   defp validated_arguments(nil), do: :ok
 
   defp validated_arguments(value) do
-    case Backplane.AiProtocol.Validation.term(value) do
-      {:ok, _bytes} -> :ok
-      error -> error
-    end
+    Backplane.AiProtocol.Validation.term(value)
   end
 end

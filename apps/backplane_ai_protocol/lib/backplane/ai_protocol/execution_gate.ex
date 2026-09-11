@@ -24,13 +24,18 @@ defmodule Backplane.AiProtocol.ExecutionGate do
   @spec claim(t()) :: {:ok, t()} | {:error, Error.t()}
   def claim(%__MODULE__{handle: nil}), do: {:error, Error.invalid!("Execution gate is not open")}
 
+  def claim(%__MODULE__{finished: true}),
+    do: {:error, Error.invalid!("Execution already finished")}
+
   def claim(%__MODULE__{claimed: true}), do: {:error, Error.invalid!("Execution already claimed")}
 
   def claim(%__MODULE__{} = gate), do: {:ok, %{gate | claimed: true}}
 
   @spec finish(t()) :: {:ok, t()} | {:error, Error.t()}
   def finish(%__MODULE__{handle: nil}), do: {:error, Error.invalid!("Execution gate is not open")}
-  def finish(%__MODULE__{finished: true}), do: {:error, Error.invalid!("Execution already finished")}
+
+  def finish(%__MODULE__{finished: true}),
+    do: {:error, Error.invalid!("Execution already finished")}
 
   def finish(%__MODULE__{} = gate), do: {:ok, %{gate | finished: true}}
 end

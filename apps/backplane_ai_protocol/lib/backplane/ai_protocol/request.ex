@@ -50,21 +50,22 @@ defmodule Backplane.AiProtocol.Request do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, model} <- model(Map.get(attrs, :model)),
          {:ok, input} <- input(Map.get(attrs, :input)),
-         :ok <- tools(attrs[:tools]),
+         {:ok, tools} <- tools(attrs[:tools]),
          :ok <- optional_map(attrs, :settings),
          :ok <- optional_map(attrs, :output_constraints),
          :ok <- optional_map(attrs, :correlation),
-         :ok <- provider_state_references(attrs[:provider_state_references]),
+         {:ok, provider_state_references} <-
+           provider_state_references(attrs[:provider_state_references]),
          :ok <- downgrades(attrs[:permitted_downgrades]),
          :ok <- extensions(attrs[:extensions]) do
       {:ok,
        %__MODULE__{
          model: model,
          input: input,
-         tools: attrs[:tools] || [],
+         tools: tools,
          settings: attrs[:settings],
          output_constraints: attrs[:output_constraints],
-         provider_state_references: attrs[:provider_state_references] || [],
+         provider_state_references: provider_state_references,
          permitted_downgrades: attrs[:permitted_downgrades] || [],
          correlation: attrs[:correlation] || %{},
          extensions: attrs[:extensions] || %{}
@@ -105,15 +106,19 @@ defmodule Backplane.AiProtocol.Request do
     end
   end
 
-  defp tools(nil), do: :ok
+  defp tools(nil), do: {:ok, []}
 
   defp tools(tools) when is_list(tools) do
-    Enum.reduce_while(tools, :ok, fn tool, :ok ->
+    Enum.reduce_while(tools, {:ok, []}, fn tool, {:ok, acc} ->
       case ToolDefinition.new(tool) do
-        {:ok, _tool} -> {:cont, :ok}
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         error -> {:halt, error}
       end
     end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      error -> error
+    end
   end
 
   defp tools(_value), do: {:error, Error.invalid!("Request tools must be a list")}
@@ -126,15 +131,19 @@ defmodule Backplane.AiProtocol.Request do
     end
   end
 
-  defp provider_state_references(nil), do: :ok
+  defp provider_state_references(nil), do: {:ok, []}
 
   defp provider_state_references(states) when is_list(states) do
-    Enum.reduce_while(states, :ok, fn state, :ok ->
+    Enum.reduce_while(states, {:ok, []}, fn state, {:ok, acc} ->
       case ProviderState.new(state) do
-        {:ok, _state} -> {:cont, :ok}
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         error -> {:halt, error}
       end
     end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      error -> error
+    end
   end
 
   defp provider_state_references(_value),

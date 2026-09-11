@@ -1,6 +1,8 @@
 # Protocol Lab
 
-An independent Mix consumer used to verify the `backplane_ai_protocol` skeleton without the Backplane umbrella root configuration.
+An independent Mix consumer used to verify `backplane_ai_protocol` public APIs without the
+Backplane umbrella root configuration.
 
-The lab currently starts no network service and depends only on the production protocol package. TestKit integration is deferred to its assigned work package.
-
+The lab starts no network service. It constructs and serializes a portable request, then observes
+an independently authored TestKit Responses fixture. TestKit is a development-only dependency and
+does not enter the generated production escript's runtime as a separate service.

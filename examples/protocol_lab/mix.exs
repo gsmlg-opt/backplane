@@ -18,7 +18,9 @@ defmodule ProtocolLab.MixProject do
 
   defp deps do
     [
-      {:backplane_ai_protocol, path: "../../apps/backplane_ai_protocol"}
+      {:backplane_ai_protocol, path: "../../apps/backplane_ai_protocol"},
+      {:backplane_ai_protocol_testkit,
+       path: "../../apps/backplane_ai_protocol_testkit", only: :dev}
     ]
   end
 
@@ -26,4 +28,3 @@ defmodule ProtocolLab.MixProject do
     [main_module: ProtocolLab.CLI]
   end
 end
-

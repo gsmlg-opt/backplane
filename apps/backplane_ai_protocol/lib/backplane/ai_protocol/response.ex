@@ -76,8 +76,14 @@ defmodule Backplane.AiProtocol.Response do
   def keys, do: @keys
 
   defp output(output) when is_list(output) do
-    case Backplane.AiProtocol.Validation.term(output) do
-      :ok -> {:ok, output}
+    Enum.reduce_while(output, {:ok, []}, fn item, {:ok, acc} ->
+      case Backplane.AiProtocol.ContentBlock.new(item) do
+        {:ok, block} -> {:cont, {:ok, [block | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, blocks} -> {:ok, Enum.reverse(blocks)}
       error -> error
     end
   end

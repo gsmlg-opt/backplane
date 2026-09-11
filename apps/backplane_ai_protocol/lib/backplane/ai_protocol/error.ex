@@ -109,8 +109,8 @@ defmodule Backplane.AiProtocol.Error do
   @spec new(map()) :: {:ok, t()} | {:error, t()}
   def new(attrs) when is_map(attrs) do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
-         {:ok, _kind} <- atom(attrs, :kind),
-         {:ok, _stage} <- atom(attrs, :stage),
+         {:ok, _kind} <- enum(attrs, :kind, kinds()),
+         {:ok, _stage} <- enum(attrs, :stage, stages()),
          :ok <- Backplane.AiProtocol.Validation.bounded_map(attrs[:details] || %{}),
          :ok <- Backplane.AiProtocol.Validation.bounded_map(attrs[:compatibility] || %{}) do
       error = struct(__MODULE__, Map.take(attrs, @keys))
@@ -124,10 +124,32 @@ defmodule Backplane.AiProtocol.Error do
   @doc false
   def keys, do: @keys
 
-  defp atom(attrs, key) do
+  defp enum(attrs, key, values) do
     case Map.get(attrs, key) do
-      value when is_atom(value) -> {:ok, value}
-      _ -> {:error, invalid!("Error #{key} must be an atom")}
+      value when is_atom(value) ->
+        if value in values,
+          do: {:ok, value},
+          else: {:error, invalid!("Error #{key} must be a supported atom")}
+
+      _ ->
+        {:error, invalid!("Error #{key} must be a supported atom")}
     end
   end
+
+  defp kinds,
+    do: [
+      :invalid_request,
+      :authentication,
+      :authorization,
+      :not_found,
+      :rate_limited,
+      :upstream_error,
+      :incompatible,
+      :timeout,
+      :cancelled,
+      :internal
+    ]
+
+  defp stages,
+    do: [:validation, :translation, :wire, :request, :execution, :response, :observation]
 end

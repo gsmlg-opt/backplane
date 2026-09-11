@@ -5,7 +5,15 @@ defmodule Backplane.AiProtocol.TranslationPlan do
   Produces an executable plan or structured refusal without any request-emission side effects.
   """
 
-  defstruct [:request, executable: true, diagnostics: [], downgrades: []]
+  defstruct [
+    :request,
+    :source,
+    :target,
+    executable: true,
+    diagnostics: [],
+    downgrades: [],
+    operations: []
+  ]
 
   @type diagnostic :: map()
 
@@ -13,6 +21,9 @@ defmodule Backplane.AiProtocol.TranslationPlan do
           request: Backplane.AiProtocol.Request.t(),
           executable: boolean(),
           diagnostics: [diagnostic()],
-          downgrades: [String.t()]
+          downgrades: [String.t()],
+          operations: [map()],
+          source: map() | nil,
+          target: map() | nil
         }
 end

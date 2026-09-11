@@ -1,65 +1,38 @@
 defmodule Backplane.AiProtocol.Validation do
   @moduledoc """
-  Size, depth, field, and atom-safety boundaries for canonical contracts.
+  Structural limits for portable protocol values.
 
-  String keys are never converted to atoms. Bounded extension maps keep their string keys.
+  These limits apply after decoding. Encoded JSON is bounded separately by
+  `Backplane.AiProtocol.Serialization.from_json/2`.
   """
 
   alias Backplane.AiProtocol.Error
 
-  @max_depth 32
-  @max_map_entries 512
-  @max_list_length 4_096
-  @max_bytes 1_048_576
-  @max_string_bytes 262_144
+  @defaults %{
+    max_depth: 32,
+    max_map_entries: 512,
+    max_list_length: 4_096,
+    max_bytes: 1_048_576,
+    max_string_bytes: 262_144,
+    max_nodes: 16_384
+  }
 
-  @type limits :: %{
-          optional(:max_depth) => pos_integer(),
-          optional(:max_map_entries) => pos_integer(),
-          optional(:max_list_length) => pos_integer(),
-          optional(:max_bytes) => pos_integer(),
-          optional(:max_string_bytes) => pos_integer()
-        }
+  @type limits :: %{optional(atom()) => pos_integer()}
 
   @spec reject_unknown(map(), [atom()]) :: :ok | {:error, Error.t()}
   def reject_unknown(attrs, allowed_keys) do
     allowed_strings = MapSet.new(allowed_keys, &Atom.to_string/1)
 
-    attrs
-    |> Map.keys()
-    |> Enum.reduce_while(:ok, fn
-      key, :ok when is_atom(key) ->
-        if Enum.member?(allowed_keys, key) do
-          {:cont, :ok}
-        else
-          {:halt, {:error, Error.invalid!("Unknown or invalid field: #{inspect(key)}")}}
-        end
-
-      key, :ok when is_binary(key) ->
-        if MapSet.member?(allowed_strings, key) do
-          {:cont, :ok}
-        else
-          {:halt, {:error, Error.invalid!("Unknown or invalid field: #{inspect(key)}")}}
-        end
-
-      key, :ok ->
-        {:halt, {:error, Error.invalid!("Unknown or invalid field: #{inspect(key)}")}}
+    Enum.reduce_while(Map.keys(attrs), :ok, fn
+      key, :ok when is_atom(key) -> continue_if(key in allowed_keys, key)
+      key, :ok when is_binary(key) -> continue_if(MapSet.member?(allowed_strings, key), key)
+      key, :ok -> {:halt, {:error, Error.invalid!("Unknown or invalid field: #{inspect(key)}")}}
     end)
   end
 
   @spec bounded_map(term(), limits()) :: :ok | {:error, Error.t()}
   def bounded_map(value, limits \\ %{})
-
-  def bounded_map(value, limits) when is_map(value) do
-    max_entries = Map.get(limits, :max_map_entries, @max_map_entries)
-
-    if map_size(value) <= max_entries do
-      :ok
-    else
-      {:error, Error.invalid!("Map exceeds #{max_entries} entries")}
-    end
-  end
-
+  def bounded_map(value, limits) when is_map(value), do: term(value, limits)
   def bounded_map(_value, _limits), do: {:error, Error.invalid!("Expected a map")}
 
   @spec bounded_extension(String.t(), term(), limits()) :: :ok | {:error, Error.t()}
@@ -74,132 +47,112 @@ defmodule Backplane.AiProtocol.Validation do
 
   @spec term(term(), limits()) :: :ok | {:error, Error.t()}
   def term(value, limits \\ %{}) do
-    case term(value, Map.get(limits, :max_depth, @max_depth), 1, {:ok, 0}, limits) do
-      {:ok, _bytes} -> :ok
-      error -> error
+    case walk(value, 1, %{bytes: 0, nodes: 0}, Map.merge(@defaults, limits)) do
+      {:ok, _budget} -> :ok
+      {:error, %Error{}} = error -> error
     end
   end
 
-  @doc """
-  Returns the default validation limits used by canonical constructors.
-  """
   @spec default_limits() :: limits()
-  def default_limits do
-    %{
-      max_depth: @max_depth,
-      max_map_entries: @max_map_entries,
-      max_list_length: @max_list_length,
-      max_bytes: @max_bytes,
-      max_string_bytes: @max_string_bytes
-    }
-  end
+  def default_limits, do: @defaults
 
-  defp term(value, max_depth, depth, {:ok, bytes}, limits) when is_map(value) do
-    with :ok <- depth(depth, max_depth),
-         :ok <-
-           size(
-             map_size(value),
-             Map.get(limits, :max_map_entries, @max_map_entries),
-             "map entries"
-           ),
-         {:ok, bytes} <- strings(value, bytes, limits),
-         {:ok, bytes} <- values(Map.values(value), bytes, limits, max_depth, depth) do
-      {:ok, bytes}
+  defp walk(value, depth, budget, limits) when is_map(value) and not is_struct(value) do
+    with :ok <- within(depth, limits.max_depth, "Payload nesting", "levels"),
+         :ok <- within(map_size(value), limits.max_map_entries, "Map", "entries"),
+         {:ok, budget} <- add_node(budget, limits),
+         {:ok, budget} <- map_keys(Map.keys(value), budget, limits) do
+      values(Map.values(value), depth, budget, limits)
     end
   end
 
-  defp term(value, max_depth, depth, {:ok, bytes}, limits) when is_list(value) do
-    max_length = Map.get(limits, :max_list_length, @max_list_length)
-
-    with :ok <- depth(depth, max_depth),
-         :ok <- size(length(value), max_length, "list items"),
-         {:ok, bytes} <- strings(value, bytes, limits),
-         {:ok, bytes} <- values(value, bytes, limits, max_depth, depth) do
-      {:ok, bytes}
+  defp walk(value, depth, budget, limits) when is_list(value) do
+    with :ok <- within(depth, limits.max_depth, "Payload nesting", "levels"),
+         :ok <- within(length(value), limits.max_list_length, "List", "items"),
+         {:ok, budget} <- add_node(budget, limits) do
+      values(value, depth, budget, limits)
     end
   end
 
-  defp term(value, _max_depth, _depth, {:ok, bytes}, limits) when is_binary(value) do
-    add_bytes(
-      bytes,
-      value,
-      Map.get(limits, :max_bytes, @max_bytes),
-      Map.get(limits, :max_string_bytes, @max_string_bytes)
-    )
+  defp walk(value, _depth, budget, limits) when is_binary(value) do
+    with {:ok, budget} <- add_node(budget, limits), do: add_bytes(budget, value, limits)
   end
 
-  defp term(value, _max_depth, _depth, {:ok, _bytes}, _limits) when is_atom(value) do
-    if value in [nil, true, false] or is_existing_atom(value) do
-      {:ok, 0}
-    else
-      {:error, Error.invalid!("Non-existing atoms are not accepted from external input")}
-    end
-  end
+  defp walk(value, _depth, budget, limits)
+       when is_integer(value) or is_float(value) or value in [nil, true, false],
+       do: add_node(budget, limits)
 
-  defp term(_value, _max_depth, _depth, {:ok, _bytes}, _limits), do: {:ok, 0}
+  defp walk(%module{}, _depth, _budget, _limits),
+    do: {:error, Error.invalid!("Unsupported struct: #{inspect(module)}")}
 
-  defp strings(map, bytes, limits) when is_map(map) do
-    Enum.reduce_while(Map.keys(map), {:ok, bytes}, fn
-      key, {:ok, bytes} when is_binary(key) ->
-        case add_string(bytes, key, limits) do
-          {:ok, bytes} -> {:cont, {:ok, bytes}}
+  defp walk(value, _depth, _budget, _limits) when is_atom(value),
+    do: {:error, Error.invalid!("Atoms are not portable values: #{inspect(value)}")}
+
+  defp walk(value, _depth, _budget, _limits),
+    do: {:error, Error.invalid!("Unsupported portable value: #{inspect_type(value)}")}
+
+  defp map_keys(keys, budget, limits) do
+    Enum.reduce_while(keys, {:ok, budget}, fn
+      key, {:ok, budget} when is_binary(key) ->
+        case add_bytes(budget, key, limits) do
+          {:ok, next} -> {:cont, {:ok, next}}
           error -> {:halt, error}
         end
 
-      key, _acc when is_atom(key) ->
-        {:cont, :ok}
+      key, {:ok, budget} when is_atom(key) ->
+        case add_bytes(budget, Atom.to_string(key), limits) do
+          {:ok, next} -> {:cont, {:ok, next}}
+          error -> {:halt, error}
+        end
 
-      _key, _acc ->
-        {:halt, {:error, Error.invalid!("Map key must be a string")}}
+      key, _acc ->
+        {:halt, {:error, Error.invalid!("Map key must be a string, got: #{inspect(key)}")}}
     end)
   end
 
-  defp strings(list, bytes, _limits) when is_list(list), do: {:ok, bytes}
-
-  defp strings(_value, bytes, _limits), do: {:ok, bytes}
-
-  defp values(values, bytes, limits, max_depth, depth) do
-    Enum.reduce_while(values, {:ok, bytes}, fn value, {:ok, bytes} ->
-      case term(value, max_depth, depth + 1, {:ok, bytes}, limits) do
-        {:ok, bytes} -> {:cont, {:ok, bytes}}
+  defp values(values, depth, budget, limits) do
+    Enum.reduce_while(values, {:ok, budget}, fn value, {:ok, budget} ->
+      case walk(value, depth + 1, budget, limits) do
+        {:ok, next} -> {:cont, {:ok, next}}
         error -> {:halt, error}
       end
     end)
   end
 
-  defp add_string(bytes, value, limits) do
-    add_bytes(
-      bytes,
-      value,
-      Map.get(limits, :max_bytes, @max_bytes),
-      Map.get(limits, :max_string_bytes, @max_string_bytes)
-    )
-  end
+  defp add_node(%{nodes: nodes} = budget, %{max_nodes: max}) when nodes + 1 <= max,
+    do: {:ok, %{budget | nodes: nodes + 1}}
 
-  defp add_bytes(bytes, value, max_bytes, max_string_bytes) do
-    if byte_size(value) > max_string_bytes do
-      {:error, Error.invalid!("String exceeds #{max_string_bytes} bytes")}
-    else
-      next_bytes = bytes + byte_size(value)
+  defp add_node(_budget, %{max_nodes: max}),
+    do: {:error, Error.invalid!("Payload exceeds #{max} nodes")}
 
-      if next_bytes <= max_bytes do
-        {:ok, next_bytes}
-      else
-        {:error, Error.invalid!("Payload exceeds #{max_bytes} bytes")}
-      end
+  defp add_bytes(%{bytes: bytes} = budget, value, limits) do
+    cond do
+      not String.valid?(value) ->
+        {:error, Error.invalid!("String is not valid UTF-8")}
+
+      byte_size(value) > limits.max_string_bytes ->
+        {:error, Error.invalid!("String exceeds #{limits.max_string_bytes} bytes")}
+
+      bytes + byte_size(value) > limits.max_bytes ->
+        {:error, Error.invalid!("Payload exceeds #{limits.max_bytes} bytes")}
+
+      true ->
+        {:ok, %{budget | bytes: bytes + byte_size(value)}}
     end
   end
 
-  defp depth(depth, max_depth) when depth <= max_depth, do: :ok
+  defp within(value, max, _label, _unit) when value <= max, do: :ok
 
-  defp depth(_depth, max_depth),
-    do: {:error, Error.invalid!("Payload nesting exceeds #{max_depth} levels")}
+  defp within(value, max, label, unit),
+    do: {:error, Error.invalid!("#{label} exceeds #{max} #{unit}: #{value}")}
 
-  defp size(count, max_count, _label) when count <= max_count, do: :ok
+  defp continue_if(true, _key), do: {:cont, :ok}
 
-  defp size(count, max_count, label),
-    do: {:error, Error.invalid!("#{label} exceeds #{max_count}: #{count}")}
+  defp continue_if(false, key),
+    do: {:halt, {:error, Error.invalid!("Unknown or invalid field: #{inspect(key)}")}}
 
-  defp is_existing_atom(atom),
-    do: atom in [nil, true, false] or (is_atom(atom) and Code.ensure_loaded?(atom))
+  defp inspect_type(value) when is_function(value), do: "function"
+  defp inspect_type(value) when is_pid(value), do: "pid"
+  defp inspect_type(value) when is_reference(value), do: "reference"
+  defp inspect_type(value) when is_tuple(value), do: "tuple"
+  defp inspect_type(_value), do: "term"
 end

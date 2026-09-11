@@ -1,106 +1,160 @@
 defmodule Backplane.AiProtocol.Serialization do
   @moduledoc """
-  JSON encoding for canonical portable structures.
+  Safe JSON encoding for portable values and explicitly approved public projections.
 
-  Structs are rejected rather than guessed, so a caller explicitly marks public structs as
-  serializable. Secrets and opaque state are excluded from this generic encoding.
+  Provider state, reasoning state, and execution context require protocol-specific encoders and
+  are rejected here even when nested.
   """
 
-  alias Backplane.AiProtocol.Error
+  alias Backplane.AiProtocol.{
+    ContentBlock,
+    Error,
+    Message,
+    Request,
+    ToolCall,
+    ToolDefinition,
+    Usage,
+    Validation
+  }
 
-  @opaque_structs [Backplane.AiProtocol.ProviderState, Backplane.AiProtocol.ContentBlock]
-
-  @json_lib Mix.Project.config()[:json_library] || :"Elixir.Jason"
+  @default_max_encoded_bytes 2_097_152
+  @denied_structs [
+    Backplane.AiProtocol.ExecutionContext,
+    Backplane.AiProtocol.ProviderState,
+    Backplane.AiProtocol.Affinity
+  ]
 
   @spec to_json(term()) :: {:ok, String.t()} | {:error, Error.t()}
-  def to_json(value) when is_binary(value) do
-    @json_lib.encode(value)
-  end
-
-  def to_json(%module{}) when module in @opaque_structs do
-    {:error,
-     Error.invalid!(
-       "#{module} cannot be serialized generically because it may contain opaque data"
-     )}
-  end
-
   def to_json(value) do
-    with {:ok, normalized} <- normalize(value) do
-      @json_lib.encode(normalized)
+    with {:ok, normalized} <- normalize(value), {:ok, json} <- encode(normalized), do: {:ok, json}
+  end
+
+  @spec from_json(String.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
+  def from_json(json, opts \\ [])
+
+  def from_json(json, opts) when is_binary(json) do
+    max_bytes = Keyword.get(opts, :max_encoded_bytes, @default_max_encoded_bytes)
+
+    cond do
+      byte_size(json) > max_bytes ->
+        {:error, Error.invalid!("Encoded JSON exceeds #{max_bytes} bytes")}
+
+      not String.valid?(json) ->
+        {:error, Error.invalid!("Invalid UTF-8 JSON")}
+
+      true ->
+        case Jason.decode(json) do
+          {:ok, value} -> {:ok, value}
+          _ -> {:error, Error.invalid!("Invalid JSON")}
+        end
     end
   end
 
-  @spec from_json(String.t()) :: {:ok, term()} | {:error, Error.t()}
-  def from_json(json) when is_binary(json) do
-    case @json_lib.decode(json) do
-      {:ok, value} -> {:ok, value}
-      _ -> {:error, Error.invalid!("Invalid JSON")}
-    end
-  end
+  def from_json(_value, _opts), do: {:error, Error.invalid!("JSON payload must be a string")}
 
-  def from_json(value) when is_map(value), do: {:ok, value}
-
-  @spec decode_and_validate(term(), (map() -> {:ok, term()} | {:error, Error.t()})) ::
+  @spec decode_and_validate(term(), (map() -> {:ok, term()} | {:error, Error.t()}), keyword()) ::
           {:ok, term()} | {:error, Error.t()}
-  def decode_and_validate(json, validator) when is_binary(json) and is_function(validator, 1) do
-    with {:ok, value} <- from_json(json),
-         :ok <- Backplane.AiProtocol.Validation.term(value) do
+  def decode_and_validate(json, validator, opts \\ [])
+
+  def decode_and_validate(json, validator, opts)
+      when is_binary(json) and is_function(validator, 1) do
+    with {:ok, value} <- from_json(json, opts),
+         :ok <- Validation.term(value, Keyword.get(opts, :limits, %{})) do
       validator.(value)
     end
+  rescue
+    _ -> {:error, Error.invalid!("JSON validation failed")}
   end
 
-  def decode_and_validate(_json, _validator),
+  def decode_and_validate(_json, _validator, _opts),
     do: {:error, Error.invalid!("JSON payload must be a string")}
+
+  defp normalize(%module{}) when module in @denied_structs,
+    do: {:error, Error.invalid!("#{module} cannot be serialized generically")}
+
+  defp normalize(%ContentBlock{type: type}) when type in [:reasoning, :provider_state],
+    do: {:error, Error.invalid!("Opaque #{type} content cannot be serialized generically")}
+
+  defp normalize(%Request{} = value), do: project(value, Request.keys())
+  defp normalize(%Message{} = value), do: project(value, Message.keys())
+  defp normalize(%ContentBlock{} = value), do: project(value, ContentBlock.keys())
+
+  defp normalize(%ToolCall{} = value) do
+    raw_arguments =
+      case value.raw_arguments do
+        {:json, json} -> %{"encoding" => "json", "value" => json}
+        {:structured, structured} -> %{"encoding" => "structured", "value" => structured}
+      end
+
+    value
+    |> Map.take(ToolCall.keys())
+    |> Map.put(:raw_arguments, raw_arguments)
+    |> Enum.reject(fn {_key, item} -> is_nil(item) end)
+    |> Map.new()
+    |> normalize()
+  end
+
+  defp normalize(%ToolDefinition{} = value), do: project(value, ToolDefinition.keys())
+  defp normalize(%Usage{} = value), do: project(value, Usage.keys())
+
+  defp normalize(%module{}),
+    do: {:error, Error.invalid!("Unsupported struct: #{inspect(module)}")}
 
   defp normalize(nil), do: {:ok, nil}
   defp normalize(true), do: {:ok, true}
   defp normalize(false), do: {:ok, false}
   defp normalize(value) when is_atom(value), do: {:ok, Atom.to_string(value)}
-  defp normalize(value) when is_integer(value), do: {:ok, value}
-  defp normalize(value) when is_float(value), do: {:ok, value}
-  defp normalize(value) when is_binary(value), do: {:ok, value}
+
+  defp normalize(value) when is_integer(value) or is_float(value) or is_binary(value),
+    do: {:ok, value}
 
   defp normalize(value) when is_map(value) do
-    Enum.reduce_while(Map.to_list(value), {:ok, %{}}, fn
-      {key, value}, {:ok, acc} when is_binary(key) ->
-        case normalize(value) do
-          {:ok, value} -> {:cont, {:ok, Map.put(Map.delete(acc, key), key, value)}}
-          error -> {:halt, error}
-        end
+    Enum.reduce_while(value, {:ok, %{}}, fn {key, item}, {:ok, acc} ->
+      with {:ok, string_key} <- normalize_key(key),
+           false <- Map.has_key?(acc, string_key),
+           {:ok, normalized} <- normalize(item) do
+        {:cont, {:ok, Map.put(acc, string_key, normalized)}}
+      else
+        true ->
+          {:halt, {:error, Error.invalid!("Duplicate normalized JSON key: #{string_key(key)}")}}
 
-      {key, _value}, {:ok, acc} when is_atom(key) ->
-        string_key = Atom.to_string(key)
-
-        case normalize(Map.fetch!(value, key)) do
-          {:ok, normalized} -> {:cont, {:ok, Map.put(acc, string_key, normalized)}}
-          error -> {:halt, error}
-        end
-
-      _entry, _acc ->
-        {:halt, {:error, Error.invalid!("JSON map keys must be strings or atoms")}}
+        {:error, %Error{}} = error ->
+          {:halt, error}
+      end
     end)
   end
 
-  defp normalize(value) when is_list(value), do: list(value, [])
-
-  defp normalize(%module{}),
-    do: {:error, Error.invalid!("Unsupported struct: #{inspect(module)}")}
-
-  defp normalize(%Date{} = value), do: {:ok, Date.to_iso8601(value)}
-  defp normalize(%DateTime{} = value), do: {:ok, DateTime.to_iso8601(value)}
-  defp normalize(%NaiveDateTime{} = value), do: {:ok, NaiveDateTime.to_iso8601(value)}
-
-  defp normalize(value) when is_tuple(value),
-    do: {:error, Error.invalid!("JSON tuples are not supported")}
-
+  defp normalize(value) when is_list(value), do: normalize_list(value, [])
   defp normalize(_value), do: {:error, Error.invalid!("Unsupported JSON value")}
 
-  defp list([], acc), do: {:ok, Enum.reverse(acc)}
+  defp project(struct, keys) do
+    struct
+    |> Map.take(keys)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+    |> normalize()
+  end
 
-  defp list([value | rest], acc) do
+  defp normalize_key(key) when is_binary(key), do: {:ok, key}
+  defp normalize_key(key) when is_atom(key), do: {:ok, Atom.to_string(key)}
+  defp normalize_key(_key), do: {:error, Error.invalid!("JSON map keys must be strings or atoms")}
+  defp string_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp string_key(key), do: to_string(key)
+  defp normalize_list([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp normalize_list([value | rest], acc) do
     case normalize(value) do
-      {:ok, normalized} -> list(rest, [normalized | acc])
+      {:ok, normalized} -> normalize_list(rest, [normalized | acc])
       error -> error
     end
+  end
+
+  defp encode(value) do
+    case Jason.encode(value) do
+      {:ok, json} -> {:ok, json}
+      _ -> {:error, Error.invalid!("JSON encoding failed")}
+    end
+  rescue
+    _ -> {:error, Error.invalid!("JSON encoding failed")}
   end
 end

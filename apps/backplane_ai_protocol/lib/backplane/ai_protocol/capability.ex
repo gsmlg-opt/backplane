@@ -69,10 +69,7 @@ defmodule Backplane.AiProtocol.Capability do
         :ok
 
       value when is_binary(value) ->
-        case Backplane.AiProtocol.Validation.term(value) do
-          {:ok, _bytes} -> :ok
-          error -> error
-        end
+        Backplane.AiProtocol.Validation.term(value)
 
       _ ->
         {:error, Error.invalid!("Capability #{key} must be a string")}

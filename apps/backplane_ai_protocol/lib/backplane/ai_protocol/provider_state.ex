@@ -113,6 +113,13 @@ defmodule Backplane.AiProtocol.ProviderState do
   end
 
   defp validate_payload(nil), do: :ok
+
+  defp validate_payload(value) when is_binary(value) do
+    if byte_size(value) <= Backplane.AiProtocol.Validation.default_limits().max_bytes,
+      do: :ok,
+      else: {:error, Error.invalid!("Opaque provider state exceeds byte limit")}
+  end
+
   defp validate_payload(value), do: Backplane.AiProtocol.Validation.term(value)
 
   defp constraints(value), do: bounded_map(value, :constraints)
