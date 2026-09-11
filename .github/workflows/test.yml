@@ -32,6 +32,8 @@ jobs:
           - backplane
           - backplane_admin
           - backplane_api
+          - backplane_ai_protocol
+          - backplane_ai_protocol_testkit
           - backplane_auth
           - backplane_data_case
           - backplane_host_agent
