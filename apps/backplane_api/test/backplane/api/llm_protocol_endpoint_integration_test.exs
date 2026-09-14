@@ -25,6 +25,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       record_submission(conn)
 
       cond do
+        conn.body_params["input"] == "chunked-json" ->
+          chunked_json(conn, chunked_json_body(), true)
+
+        conn.body_params["input"] == "chunked-overflow" ->
+          chunked_json(conn, oversized_chunked_json_body(), false)
+
         conn.body_params["input"] == "error" ->
           send_json(conn, 400, %{
             "error" => %{
@@ -83,9 +89,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     defp record_submission(conn) do
       Agent.update(Backplane.Api.LLMProtocolEndpointIntegrationTest.Store, fn captured ->
         %{
-          submissions: captured.submissions + 1,
-          headers: conn.req_headers,
-          body: conn.body_params
+          captured
+          | submissions: captured.submissions + 1,
+            headers: conn.req_headers,
+            body: conn.body_params
         }
       end)
     end
@@ -102,6 +109,45 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       {:ok, conn} = chunk(conn, "data: " <> binary_part(completion, 0, 57))
       {:ok, conn} = chunk(conn, binary_part(completion, 57, byte_size(completion) - 57) <> "\n\n")
       conn
+    end
+
+    defp chunked_json(conn, body, pause_before_completion?) do
+      {first, rest} = String.split_at(body, 37)
+      {second, third} = String.split_at(rest, 83)
+
+      conn =
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> send_chunked(200)
+
+      {:ok, conn} = chunk(conn, first)
+      {:ok, conn} = chunk(conn, second)
+
+      if pause_before_completion? do
+        test_pid =
+          Agent.get(Backplane.Api.LLMProtocolEndpointIntegrationTest.Store, & &1.test_pid)
+
+        send(test_pid, {:chunked_json_partial, self()})
+
+        receive do
+          :release_chunked_json -> :ok
+        after
+          2_000 -> raise "timed out waiting to complete chunked JSON response"
+        end
+      end
+
+      {:ok, conn} = chunk(conn, third)
+      conn
+    end
+
+    def chunked_json_body do
+      ~S({"id":"resp_endpoint_chunked","object":"response","status":"completed","output":[{"type":"message","id":"msg_endpoint_chunked","status":"completed","role":"assistant","content":[{"type":"output_text","text":"chunked endpoint output","annotations":[]}]}],"usage":{"input_tokens":13,"input_tokens_details":{"cached_tokens":4},"output_tokens":9,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":22}})
+    end
+
+    def oversized_chunked_json_body do
+      ~S({"id":"resp_endpoint_overflow","status":"completed","output":[],"padding":") <>
+        String.duplicate("x", 8_388_608) <>
+        ~S(","usage":{"input_tokens":99,"output_tokens":88}})
     end
 
     defp truncated_stream(conn) do
@@ -170,8 +216,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     LogWriter.detach()
     LogWriter.attach()
 
+    test_pid = self()
+
     {:ok, store} =
-      Agent.start_link(fn -> %{submissions: 0, headers: [], body: nil} end,
+      Agent.start_link(fn -> %{submissions: 0, headers: [], body: nil, test_pid: test_pid} end,
         name: __MODULE__.Store
       )
 
@@ -283,6 +331,67 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert observation["protocol_terminal"] == "completed"
     assert observation["bytes_seen"] in 1..8_388_608
     assert length(observation["diagnostics"]) <= 32
+  end
+
+  test "semantic non-stream JSON over chunked transfer is observed exactly once", %{
+    endpoint_port: endpoint_port
+  } do
+    request =
+      Task.async(fn ->
+        post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-json"))
+      end)
+
+    assert_receive {:chunked_json_partial, upstream_pid}, 2_000
+    assert endpoint_logs() == []
+    send(upstream_pid, :release_chunked_json)
+
+    response = Task.await(request, 5_000)
+    {headers, body} = split_http_response(response)
+    native_body = OpenAIUpstream.chunked_json_body()
+
+    headers = String.downcase(headers)
+    assert String.contains?(headers, "transfer-encoding: chunked")
+    refute String.contains?(headers, "content-length:")
+    assert decode_chunked_body(body) == native_body
+    assert submission_count() == 1
+
+    log = one_log!()
+    assert log.input_tokens == 13
+    assert log.output_tokens == 9
+    assert log.cached_tokens == 4
+    assert log.reasoning_tokens == 3
+    assert log.provider_request_id == "resp_endpoint_chunked"
+
+    observation = get_in(log.metadata, ["protocol_observation"])
+    assert observation["implementation"] =~ "OpenAIResponsesObserver"
+    assert observation["observation_status"] == "complete"
+    assert observation["protocol_terminal"] == "completed"
+    assert observation["bytes_seen"] == byte_size(native_body)
+  end
+
+  test "chunked non-stream overflow preserves bytes and records incomplete unknown usage", %{
+    endpoint_port: endpoint_port
+  } do
+    response = post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-overflow"))
+    {headers, body} = split_http_response(response)
+    native_body = OpenAIUpstream.oversized_chunked_json_body()
+
+    headers = String.downcase(headers)
+    assert String.contains?(headers, "transfer-encoding: chunked")
+    refute String.contains?(headers, "content-length:")
+    assert decode_chunked_body(body) == native_body
+    assert submission_count() == 1
+
+    log = one_log!()
+    assert log.input_tokens == nil
+    assert log.output_tokens == nil
+    assert log.provider_request_id == nil
+
+    observation = get_in(log.metadata, ["protocol_observation"])
+    assert observation["observation_status"] == "incomplete"
+    assert observation["protocol_terminal"] == "incomplete"
+    assert observation["bytes_seen"] == byte_size(native_body)
+    assert "response_bytes_exceeded" in observation["diagnostics"]
   end
 
   test "fragmented Responses SSE retains trailing usage through the listening endpoint", %{
@@ -424,10 +533,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     :sys.get_state(:llm_proxy)
     :ok = LogWriter.flush()
 
-    logs =
-      Backplane.Repo.all(
-        from(l in ProxyRequest, where: l.requested_model == "endpoint-provider/endpoint-model")
-      )
+    logs = endpoint_logs()
 
     cond do
       length(logs) == 1 ->
@@ -440,6 +546,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       true ->
         flunk("expected exactly one durable endpoint log, got: #{length(logs)}")
     end
+  end
+
+  defp endpoint_logs do
+    Backplane.Repo.all(
+      from(l in ProxyRequest, where: l.requested_model == "endpoint-provider/endpoint-model")
+    )
   end
 
   defp post_over_socket(port, path, body) do
@@ -500,6 +612,27 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     case :gen_tcp.recv(socket, 0, 2_000) do
       {:ok, chunk} -> receive_all(socket, [chunk | chunks])
       {:error, :closed} -> chunks |> Enum.reverse() |> IO.iodata_to_binary()
+    end
+  end
+
+  defp split_http_response(response) do
+    case :binary.split(response, "\r\n\r\n") do
+      [headers, body] -> {headers, body}
+      _ -> flunk("expected an HTTP response with headers and body")
+    end
+  end
+
+  defp decode_chunked_body(body), do: decode_chunked_body(body, [])
+
+  defp decode_chunked_body(body, chunks) do
+    [size_line, rest] = :binary.split(body, "\r\n")
+    size = size_line |> :binary.split(";") |> hd() |> String.to_integer(16)
+
+    if size == 0 do
+      chunks |> Enum.reverse() |> IO.iodata_to_binary()
+    else
+      <<chunk::binary-size(size), "\r\n", remaining::binary>> = rest
+      decode_chunked_body(remaining, [chunk | chunks])
     end
   end
 
