@@ -89,9 +89,8 @@ defmodule Backplane.SkillProtocol.TelemetryTest do
     started_at = Telemetry.start()
 
     assert :ok =
-             Telemetry.emit(:cache, :install, :ok, started_at,
+             Telemetry.emit(:source, :prepare, :ok, started_at,
                metadata: %{
-                 cache_outcome: :hit,
                  credential: "telemetry-secret",
                  path: "/private/consumer/cache"
                },
@@ -101,10 +100,9 @@ defmodule Backplane.SkillProtocol.TelemetryTest do
     assert_receive {:skill_protocol_telemetry, @event,
                     %{artifact_bytes: 0, duration_ms: duration, prepared_bytes: 99},
                     %{
-                      phase: :cache,
-                      operation: :install,
-                      outcome: :ok,
-                      cache_outcome: :hit
+                      phase: :source,
+                      operation: :prepare,
+                      outcome: :ok
                     } = metadata}
 
     assert duration >= 0

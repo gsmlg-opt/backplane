@@ -1,4 +1,4 @@
-alias Backplane.SkillProtocol.{Bundle, Cache, Client, Resource, SkillRef, Wire}
+alias Backplane.SkillProtocol.{Bundle, Client, Resource, SkillRef, Wire}
 alias Backplane.SkillProtocol.Source.Backplane, as: BackplaneSource
 
 root = System.fetch_env!("SKILL_PROTOCOL_VERIFY_ROOT")
@@ -84,9 +84,13 @@ client =
   )
 
 {:ok, %{data: [%{name: "verifier-skill"}], next_cursor: nil}} = Client.catalog(client)
-cache = Cache.new!(Path.join(root, "cache"), owner: "consumer-verifier")
-source = BackplaneSource.new!(client, cache)
-{:ok, remote} = BackplaneSource.prepare(source, "opaque/id", "r1")
+source = BackplaneSource.new!(client)
+
+{:ok, remote} =
+  BackplaneSource.prepare(source, "opaque/id", "r1",
+    destination: Path.join(root, "remote-prepared")
+  )
+
 {:ok, "verified resource"} = Resource.read(remote, "references/guide.md")
 
 receive do

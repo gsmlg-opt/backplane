@@ -392,7 +392,7 @@ defmodule Backplane.SkillProtocol.Bundle do
     try do
       with :ok <- write_files(bundle.files, stage, opts),
            :ok <- cancelled(opts),
-           false <- File.exists?(destination),
+           false <- path_exists?(destination),
            :ok <- File.rename(stage, destination) do
         {:ok,
          %PreparedSkill{
@@ -429,6 +429,8 @@ defmodule Backplane.SkillProtocol.Bundle do
       end
     end)
   end
+
+  defp path_exists?(path), do: match?({:ok, _stat}, File.lstat(path))
 
   defp collect_directory(root, opts) do
     root

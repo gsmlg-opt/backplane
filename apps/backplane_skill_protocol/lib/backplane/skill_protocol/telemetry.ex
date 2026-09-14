@@ -1,5 +1,5 @@
 defmodule Backplane.SkillProtocol.Telemetry do
-  @moduledoc "Bounded operational telemetry for Skill Protocol reads and cache operations."
+  @moduledoc "Bounded operational telemetry for Skill Protocol operations."
 
   alias Backplane.SkillProtocol.Error
 
@@ -13,7 +13,6 @@ defmodule Backplane.SkillProtocol.Telemetry do
     :skill_id,
     :revision,
     :artifact_digest,
-    :cache_outcome,
     :http_status
   ]
   @measurement_keys [

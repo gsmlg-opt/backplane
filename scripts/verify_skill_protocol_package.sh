@@ -33,6 +33,10 @@ copy_package "$copied"
   tar -tf "$artifact" | grep -qx 'contents.tar.gz'
   test -f "$unpacked/README.md"
   test -f "$unpacked/priv/schemas/catalog-v1.schema.json"
+  test ! -e "$unpacked/c_src"
+  test ! -e "$unpacked/Makefile"
+  test ! -e "$unpacked/lib/backplane/skill_protocol/cache"
+  test ! -e "$unpacked/priv/cache_native_lock.so"
 )
 
 snapshot="$work_root/source"

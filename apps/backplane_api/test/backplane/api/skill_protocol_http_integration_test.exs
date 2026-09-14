@@ -2,7 +2,7 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
   use Backplane.Api.ConnCase, async: false
 
   alias Backplane.Clients
-  alias Backplane.SkillProtocol.{Cache, Client, Error, Resource}
+  alias Backplane.SkillProtocol.{Client, Error, Resource}
   alias Backplane.SkillProtocol.Source.Backplane, as: BackplaneSource
   alias Backplane.Skills
 
@@ -39,7 +39,7 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     %{endpoint: "http://127.0.0.1:#{port}"}
   end
 
-  test "real client retains and prepares exact revisions and persists denial offline", %{
+  test "real client searches and prepares each exact revision into a fresh destination", %{
     endpoint: endpoint,
     tmp_dir: tmp_dir
   } do
@@ -69,8 +69,12 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     assert {:ok, skill_a} = Skills.ingest_archive(archive_a, [])
 
     client = client(endpoint, token)
-    cache = Cache.new!(Path.join(tmp_dir, "cache"), owner: "http-integration-consumer")
-    source = BackplaneSource.new!(client, cache, offline_policy: {:age_bounded, 60_000})
+    source = BackplaneSource.new!(client)
+
+    assert {:ok, %{data: [search_result], next_cursor: nil}} =
+             BackplaneSource.catalog(source, q: "opaque-http", limit: 10)
+
+    assert search_result.ref.skill_id == skill_a.id
 
     assert {:ok, %{data: [page_one], next_cursor: cursor}} = Client.catalog(client, limit: 1)
     assert is_binary(cursor)
@@ -101,7 +105,9 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     assert exact_a_bytes == File.read!(archive_a)
 
     assert {:ok, prepared_a} =
-             BackplaneSource.prepare(source, skill_a.id, manifest_a.ref.revision)
+             BackplaneSource.prepare(source, skill_a.id, manifest_a.ref.revision,
+               destination: Path.join(tmp_dir, "prepared-a")
+             )
 
     assert prepared_a.manifest.ref == manifest_a.ref
     assert prepared_a.manifest.document_metadata["description"] == "revision A"
@@ -117,7 +123,9 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     refute manifest_b.artifact_digest == manifest_a.artifact_digest
 
     assert {:ok, prepared_b} =
-             BackplaneSource.prepare(source, skill_b.id, manifest_b.ref.revision)
+             BackplaneSource.prepare(source, skill_b.id, manifest_b.ref.revision,
+               destination: Path.join(tmp_dir, "prepared-b")
+             )
 
     refute prepared_b.root == prepared_a.root
     assert prepared_b.manifest.document_metadata["description"] == "revision B"
@@ -127,15 +135,20 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     assert {:ok, disabled} = Skills.update(skill_b, %{enabled: false})
 
     assert {:error, %Error{code: :revision_unavailable, retryable: false}} =
-             BackplaneSource.prepare(source, disabled.id, manifest_a.ref.revision)
+             BackplaneSource.prepare(source, disabled.id, manifest_a.ref.revision,
+               destination: Path.join(tmp_dir, "denied")
+             )
 
     offline_client = client("http://127.0.0.1:1", token)
 
-    offline_source =
-      BackplaneSource.new!(offline_client, cache, offline_policy: {:age_bounded, 60_000})
+    unavailable_source = BackplaneSource.new!(offline_client)
 
-    assert {:error, %Error{code: :revision_unavailable, retryable: false}} =
-             BackplaneSource.prepare(offline_source, disabled.id, manifest_a.ref.revision)
+    assert {:error, %Error{code: :temporarily_unavailable}} =
+             BackplaneSource.prepare(unavailable_source, disabled.id, manifest_a.ref.revision,
+               destination: Path.join(tmp_dir, "unavailable")
+             )
+
+    assert {:ok, "reference A"} = Resource.read(prepared_a, "references/guide.md")
   end
 
   defp client(endpoint, token) do
