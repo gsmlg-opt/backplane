@@ -64,6 +64,16 @@ defmodule Backplane.Skills.Archive do
   defp legacy_error(%Error{code: :invalid_request}, _max), do: :invalid_archive_path
 
   defp legacy_error(
+         %Error{
+           code: :invalid_bundle,
+           message: "archive cannot be read",
+           context: %{reason: ":enoent"}
+         },
+         _max
+       ),
+       do: :enoent
+
+  defp legacy_error(
          %Error{code: :invalid_document, context: %{diagnostics: diagnostics}},
          _max
        ) do

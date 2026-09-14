@@ -7,6 +7,8 @@ defmodule Backplane.Skills.Revision do
   @primary_key false
   @timestamps_opts [type: :utc_datetime_usec, updated_at: false]
 
+  @type t :: %__MODULE__{}
+
   schema "skill_revisions" do
     field(:skill_id, :string, primary_key: true)
     field(:revision, :string, primary_key: true)
