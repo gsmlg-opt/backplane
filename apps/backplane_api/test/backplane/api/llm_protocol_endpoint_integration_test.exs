@@ -71,6 +71,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
         conn.body_params["input"] == "disconnect" ->
           disconnect_stream(conn)
 
+        conn.body_params["input"] == "chunked-json" ->
+          chunked_json(conn)
+
+        conn.body_params["input"] == "oversized" ->
+          oversized_chunked_json(conn)
+
         conn.body_params["stream"] == true ->
           completed_stream(conn)
 
@@ -177,6 +183,38 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
         {:ok, conn} -> conn
         {:error, :closed} -> conn
       end
+    end
+
+    defp chunked_json(conn) do
+      conn = conn |> Plug.Conn.put_resp_content_type("application/json") |> send_chunked(200)
+
+      body =
+        ~S({"id":"resp_endpoint_chunked","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"chunked"}]}],"usage":{"input_tokens":13,"input_tokens_details":{"cached_tokens":4},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":21}})
+
+      split_at = div(byte_size(body), 3)
+      first = binary_part(body, 0, split_at)
+      second = binary_part(body, split_at, split_at)
+      third = binary_part(body, split_at * 2, byte_size(body) - split_at * 2)
+
+      {:ok, conn} = chunk(conn, first)
+      {:ok, conn} = chunk(conn, second)
+      {:ok, conn} = chunk(conn, third)
+      conn
+    end
+
+    defp oversized_chunked_json(conn) do
+      conn = conn |> Plug.Conn.put_resp_content_type("application/json") |> send_chunked(200)
+
+      prefix =
+        ~S({"id":"resp_endpoint_oversized","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"})
+
+      suffix =
+        ~S({"}]}],"usage":{"input_tokens":19,"input_tokens_details":{"cached_tokens":5},"output_tokens":11,"output_tokens_details":{"reasoning_tokens":4},"total_tokens":30}})
+
+      payload = prefix <> String.duplicate("x", 8_388_700) <> suffix
+      {:ok, conn} = chunk(conn, binary_part(payload, 0, 1024))
+      {:ok, conn} = chunk(conn, binary_part(payload, 1024, byte_size(payload) - 1024))
+      conn
     end
 
     defp send_json(conn, status, body) do
@@ -417,6 +455,53 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
   end
 
+  test "fragmented non-streaming chunked JSON is observed without conn.resp_body", %{
+    endpoint_port: endpoint_port
+  } do
+    response = post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-json"))
+
+    expected_body =
+      ~S({"id":"resp_endpoint_chunked","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"chunked"}]}],"usage":{"input_tokens":13,"input_tokens_details":{"cached_tokens":4},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":21}})
+
+    assert response =~ "HTTP/1.1 200 OK"
+    assert native_response_body(response) == expected_body
+    assert submission_count() == 1
+
+    log = one_log!()
+    assert log.input_tokens == 13
+    assert log.output_tokens == 8
+    assert log.cached_tokens == 4
+    assert log.reasoning_tokens == 3
+    assert log.provider_request_id == "resp_endpoint_chunked"
+
+    observation = get_in(log.metadata, ["protocol_observation"])
+    assert observation["observation_status"] == "complete"
+    assert observation["usage_status"] == "complete"
+    assert observation["protocol_terminal"] == "completed"
+  end
+
+  test "oversized non-streaming observation is bounded and incomplete", %{
+    endpoint_port: endpoint_port
+  } do
+    response = post_over_socket(endpoint_port, "/v1/responses", request_body("oversized"))
+
+    assert response =~ "HTTP/1.1 200 OK"
+    assert response =~ ~S("id":"resp_endpoint_oversized")
+    assert response =~ String.duplicate("x", 1024)
+    assert submission_count() == 1
+
+    log = one_log!()
+    assert log.input_tokens == nil
+    assert log.output_tokens == nil
+
+    observation = get_in(log.metadata, ["protocol_observation"])
+    assert observation["observation_status"] == "incomplete"
+    assert observation["usage_status"] == "unknown"
+    assert observation["input_truncated"] == "true"
+    assert observation["bytes_seen"] > 8_388_608
+    assert Enum.any?(observation["diagnostics"], &(&1 == "response_bytes_exceeded"))
+  end
+
   test "native errors remain observable without rewriting", %{endpoint_port: endpoint_port} do
     response = post_over_socket(endpoint_port, "/v1/responses", request_body("error"))
 
@@ -563,6 +648,31 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       receive_all(socket, [])
     after
       :gen_tcp.close(socket)
+    end
+  end
+
+  defp native_response_body(response) do
+    [headers, body] = String.split(response, "\r\n\r\n", parts: 2)
+
+    if String.contains?(String.downcase(headers), "transfer-encoding: chunked") do
+      decode_chunked_body(body, [])
+    else
+      body
+    end
+  end
+
+  defp decode_chunked_body(<<>>, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+
+  defp decode_chunked_body(body, acc) do
+    [size, rest] = String.split(body, "\r\n", parts: 2)
+    size = String.to_integer(size, 16)
+
+    if size == 0 do
+      acc |> Enum.reverse() |> IO.iodata_to_binary()
+    else
+      chunk = binary_part(rest, 0, size)
+      <<"\r\n", tail::binary>> = binary_part(rest, size, byte_size(rest) - size)
+      decode_chunked_body(tail, [chunk | acc])
     end
   end
 
