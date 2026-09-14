@@ -33,6 +33,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     {:ok, anthropic_upstream} = start_upstream(__MODULE__.AnthropicUpstream)
     {:ok, openai_upstream} = start_upstream(__MODULE__.OpenaiUpstream)
+    {:ok, submission_store} = Agent.start_link(fn -> 0 end, name: __MODULE__.SubmissionStore)
 
     {:ok, anthropic_provider} =
       Provider.create(%{name: "obs-anthropic", credential: "obs-anthropic-cred"})
@@ -65,6 +66,13 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       Provider.soft_delete(openai_provider)
       stop_upstream(anthropic_upstream)
       stop_upstream(openai_upstream)
+
+      try do
+        Agent.stop(submission_store)
+      catch
+        :exit, _ -> :ok
+      end
+
       restore_env(:auth_token, auth_token)
       restore_env(:auth_tokens, auth_tokens)
     end)
@@ -147,6 +155,37 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
   end
 
+  test "records an ordinary Responses downstream disconnect once as cancelled", %{openai: openai} do
+    payload = Jason.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
+    context = Context.root()
+
+    conn =
+      :post
+      |> conn("/v1/responses", payload)
+      |> put_req_header("content-type", "application/json")
+      |> Context.put(context)
+
+    {_adapter, adapter_state} = conn.adapter
+    conn = %{conn | adapter: {__MODULE__.ClosedChunkAdapter, adapter_state}}
+    conn = Router.call(conn, Router.init([]))
+
+    assert conn.private[:relayixir_downstream_disconnected] == true
+    assert Agent.get(__MODULE__.SubmissionStore, & &1) == 1
+    flush_logs!()
+
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 1
+
+    log = log_for_request(conn)
+    assert log.outcome == "cancelled"
+    assert log.error_kind == "client_disconnect"
+    assert log.error_code == "client_disconnect"
+
+    assert get_in(log.metadata, ["protocol_observation", "implementation"]) =~
+             "OpenAIResponsesObserver"
+
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
+  end
+
   test "uses shared sanitized Responses error classification", %{openai: openai} do
     conn = llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "fail"})
     assert conn.status == 400
@@ -157,6 +196,36 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert log.error_code == "bad_fixture"
     assert log.error_reason == "invalid_request_error"
     refute log.error_reason =~ "secret"
+  end
+
+  test "records shared Responses refusal and output-limit meanings", %{openai: openai} do
+    refusal =
+      llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "refusal"})
+
+    assert refusal.status == 200
+    assert Jason.decode!(refusal.resp_body)["status"] == "completed"
+    flush_logs!()
+
+    refusal_log = log_for_request(refusal)
+    assert refusal_log.outcome == "success"
+    assert refusal_log.finish_reason == "refusal"
+
+    output_limit =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "output-limit"
+      })
+
+    assert output_limit.status == 200
+    assert Jason.decode!(output_limit.resp_body)["status"] == "incomplete"
+    flush_logs!()
+
+    output_limit_log = log_for_request(output_limit)
+    assert output_limit_log.outcome == "success"
+    assert output_limit_log.finish_reason == "max_output_tokens"
+
+    assert get_in(output_limit_log.metadata, ["protocol_observation", "protocol_terminal"]) ==
+             "incomplete"
   end
 
   test "preserves malformed native body and records incomplete observation", %{openai: openai} do
@@ -495,6 +564,10 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     end
 
     post "/v1/responses" do
+      if Process.whereis(Backplane.LLM.AccessObservabilityTest.SubmissionStore) do
+        Agent.update(Backplane.LLM.AccessObservabilityTest.SubmissionStore, &(&1 + 1))
+      end
+
       cond do
         conn.body_params["input"] == "fail" ->
           send_json(conn, 400, %{
@@ -513,6 +586,26 @@ defmodule Backplane.LLM.AccessObservabilityTest do
             ~S({"id":"resp_obs_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
 
           conn |> put_resp_content_type("application/json") |> send_resp(200, body)
+
+        conn.body_params["input"] == "refusal" ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs_refusal",
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "refusal", "refusal" => "not allowed"}]
+              }
+            ]
+          })
+
+        conn.body_params["input"] == "output-limit" ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs_limit",
+            "status" => "incomplete",
+            "incomplete_details" => %{"reason" => "max_output_tokens"},
+            "output" => []
+          })
 
         conn.body_params["stream"] ->
           responses_stream(conn)
@@ -581,5 +674,26 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     defp send_json(conn, status, body) do
       conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
     end
+  end
+
+  defmodule ClosedChunkAdapter do
+    @behaviour Plug.Conn.Adapter
+
+    defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+
+    defdelegate send_file(state, status, headers, path, offset, length),
+      to: Plug.Adapters.Test.Conn
+
+    defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+    defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
+    defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
+    defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
+
+    def chunk(_state, _body), do: {:error, :closed}
   end
 end

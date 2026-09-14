@@ -81,6 +81,20 @@ defmodule Backplane.LLM.AccessEvent do
     %{state | stream?: true, usage_acc: UsageAccumulator.new(protocol)}
   end
 
+  @spec prepare_response_observation(t()) :: t()
+  def prepare_response_observation(%__MODULE__{usage_acc: acc} = state) when is_pid(acc),
+    do: state
+
+  def prepare_response_observation(%__MODULE__{} = state) do
+    case accumulator_protocol(state) do
+      :openai_responses -> %{state | usage_acc: UsageAccumulator.new(:openai_responses_body)}
+      _ -> state
+    end
+  end
+
+  @spec response_observation?(t()) :: boolean()
+  def response_observation?(%__MODULE__{usage_acc: acc}), do: is_pid(acc)
+
   @spec mark_upstream_start(t()) :: t()
   def mark_upstream_start(%__MODULE__{} = state) do
     %{state | upstream_started_at_mono: System.monotonic_time(:millisecond)}
@@ -232,8 +246,15 @@ defmodule Backplane.LLM.AccessEvent do
     |> maybe_put(:stream_chunks, usage.stream_chunks)
   end
 
-  defp stream_usage(%__MODULE__{usage_acc: acc}, _conn, _opts) when is_pid(acc) do
-    UsageAccumulator.snapshot(acc)
+  defp stream_usage(%__MODULE__{usage_acc: acc, stream?: stream?}, conn, _opts)
+       when is_pid(acc) do
+    usage = UsageAccumulator.snapshot(acc, conn.status || 0)
+
+    if stream? do
+      usage
+    else
+      %{usage | ttft_ms: nil, stream_duration_ms: nil, stream_chunks: nil}
+    end
   end
 
   defp stream_usage(state, conn, opts) do

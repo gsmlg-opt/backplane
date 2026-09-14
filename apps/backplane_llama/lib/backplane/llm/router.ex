@@ -384,16 +384,25 @@ defmodule Backplane.LLM.Router do
       access
       |> AccessEvent.put_resolution(provider, raw_model, provider_api_from_upstream(upstream))
       |> then(fn acc -> if stream?, do: AccessEvent.mark_stream(acc), else: acc end)
+      |> AccessEvent.prepare_response_observation()
       |> AccessEvent.mark_upstream_start()
 
-    on_chunk =
-      if stream? do
+    response_observer =
+      if AccessEvent.response_observation?(access) do
         fn chunk -> AccessEvent.scan_stream_chunk(access, chunk) end
       end
 
     opts =
       [body: rewritten_body]
-      |> then(fn o -> if on_chunk, do: Keyword.put(o, :on_response_chunk, on_chunk), else: o end)
+      |> then(fn opts ->
+        if response_observer do
+          opts
+          |> Keyword.put(:on_response_chunk, response_observer)
+          |> Keyword.put(:on_response_body, response_observer)
+        else
+          opts
+        end
+      end)
       |> Keyword.merge(extra_opts)
 
     conn =
@@ -403,7 +412,7 @@ defmodule Backplane.LLM.Router do
 
     result_conn = HttpPlug.call(conn, upstream, opts)
 
-    finalize_access(access, result_conn, outcome_for_status(result_conn.status),
+    finalize_access(access, result_conn, outcome_for_conn(result_conn),
       api_surface: api_type,
       status: result_conn.status
     )
@@ -444,6 +453,11 @@ defmodule Backplane.LLM.Router do
 
   defp outcome_for_status(status) when status in 200..299, do: :success
   defp outcome_for_status(_), do: :error
+
+  defp outcome_for_conn(%Plug.Conn{private: %{relayixir_downstream_disconnected: true}}),
+    do: :cancelled
+
+  defp outcome_for_conn(%Plug.Conn{status: status}), do: outcome_for_status(status)
 
   defp error_code_for_model_error(:no_model), do: "missing_required_parameter"
   defp error_code_for_model_error(:invalid_json), do: "invalid_json"
