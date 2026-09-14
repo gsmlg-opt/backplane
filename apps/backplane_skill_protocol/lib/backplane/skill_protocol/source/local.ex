@@ -44,8 +44,7 @@ defmodule Backplane.SkillProtocol.Source.Local do
              approved_root,
              source_id,
              precedence,
-             0,
-             max_depth,
+             {0, max_depth},
              remaining,
              MapSet.new(),
              []
@@ -60,15 +59,15 @@ defmodule Backplane.SkillProtocol.Source.Local do
     end
   end
 
-  defp walk(_path, _root, _source, _precedence, _depth, _max_depth, remaining, _seen, _acc)
+  defp walk(_path, _root, _source, _precedence, _depth_budget, remaining, _seen, _acc)
        when remaining < 1,
        do: {:error, Error.new(:limit_exceeded, :discovery, "local scan entry limit exceeded")}
 
-  defp walk(_path, _root, _source, _precedence, depth, max_depth, _remaining, _seen, _acc)
+  defp walk(_path, _root, _source, _precedence, {depth, max_depth}, _remaining, _seen, _acc)
        when depth > max_depth,
        do: {:error, Error.new(:limit_exceeded, :discovery, "local scan depth limit exceeded")}
 
-  defp walk(path, root, source, precedence, depth, max_depth, remaining, seen, acc) do
+  defp walk(path, root, source, precedence, {depth, max_depth}, remaining, seen, acc) do
     with {:ok, canonical} <- realpath(path),
          :ok <- contained(canonical, root),
          false <- MapSet.member?(seen, canonical),
@@ -84,8 +83,7 @@ defmodule Backplane.SkillProtocol.Source.Local do
                root,
                source,
                precedence,
-               depth,
-               max_depth,
+               {depth, max_depth},
                remaining - count,
                visited,
                items
@@ -115,13 +113,13 @@ defmodule Backplane.SkillProtocol.Source.Local do
     end
   end
 
-  defp inspect_child(path, root, source, precedence, depth, max_depth, remaining, seen, acc) do
+  defp inspect_child(path, root, source, precedence, {depth, max_depth}, remaining, seen, acc) do
     cond do
       remaining < 1 ->
         {:error, Error.new(:limit_exceeded, :discovery, "local scan entry limit exceeded")}
 
       File.dir?(path) ->
-        walk(path, root, source, precedence, depth + 1, max_depth, remaining, seen, acc)
+        walk(path, root, source, precedence, {depth + 1, max_depth}, remaining, seen, acc)
 
       Path.basename(path) == "SKILL.md" ->
         parse_descriptor(path, root, source, precedence, acc, seen)

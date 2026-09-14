@@ -396,16 +396,41 @@ defmodule Backplane.SkillProtocol.ClientTest do
     workers =
       for index <- 1..20 do
         assert_receive {:completed_worker, ^index, worker}, 500
-        {worker, Process.monitor(worker)}
+        worker
       end
 
     assert_receive {:operation_cleanup, initial_monitors, final_monitors, {:messages, []}}, 500
     assert final_monitors == initial_monitors
     assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 500
 
-    for {worker, monitor} <- workers do
+    for worker <- workers do
+      monitor = Process.monitor(worker)
       assert_receive {:DOWN, ^monitor, :process, ^worker, :noproc}, 500
     end
+  end
+
+  test "a live transport worker completes normally under a preinstalled monitor" do
+    parent = self()
+
+    transport = fn _request ->
+      send(parent, {:held_worker, self()})
+
+      receive do
+        :complete -> {:ok, %{status: 200, headers: %{}, body: catalog_body()}}
+      end
+    end
+
+    caller =
+      spawn(fn -> send(parent, {:held_result, Client.catalog(client(transport))}) end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:held_worker, worker}, 500
+    worker_monitor = Process.monitor(worker)
+    send(worker, :complete)
+
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :normal}, 500
+    assert_receive {:held_result, {:ok, %{data: []}}}, 500
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 500
   end
 
   test "redirects are terminal and credentials are never sent to the location" do
