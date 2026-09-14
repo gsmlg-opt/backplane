@@ -1,9 +1,9 @@
-defmodule RuntimeOnly.MixProject do
+defmodule BundledBasic.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :runtime_only,
+      app: :bundled_basic,
       version: "0.1.0",
       deps: deps()
     ]
@@ -15,8 +15,7 @@ defmodule RuntimeOnly.MixProject do
 
   defp deps do
     [
-      {:backplane_agent_runtime,
-       path: System.get_env("AGENT_RUNTIME_PATH", "../backplane_agent_runtime")}
+      {:backplane_agent_runtime, path: System.fetch_env!("AGENT_RUNTIME_PATH")}
     ]
   end
 end

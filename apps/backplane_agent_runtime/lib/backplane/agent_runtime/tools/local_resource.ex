@@ -1,4 +1,4 @@
-defmodule Backplane.AgentTools.LocalResource do
+defmodule Backplane.AgentRuntime.Tools.LocalResource do
   use GenServer
 
   @behaviour Backplane.AgentRuntime.Resource
@@ -85,6 +85,8 @@ defmodule Backplane.AgentTools.LocalResource do
 
   @impl Backplane.AgentRuntime.Resource
   def grep(resource, reference, opts) do
+    opts = Map.new(opts)
+
     with {:ok, root} <- confined_path(resource.scope, Map.get(reference, :path)),
          {:ok, pattern} <- regex(opts) do
       matches =
@@ -101,15 +103,15 @@ defmodule Backplane.AgentTools.LocalResource do
   end
 
   @impl Backplane.AgentRuntime.Resource
-  def file_edit(resource, reference, content, _opts) do
+  def file_edit(resource, reference, edit, _opts) do
     with {:ok, path} <- confined_path(resource.scope, Map.get(reference, :path)),
-         {:ok, expected} <- expected_revision(reference, content),
-         {:ok, find} <- require_binary(content, :find, "find"),
-         {:ok, content} <- regular_content(path) do
+         {:ok, expected} <- expected_revision(reference, edit),
+         {:ok, find} <- require_binary(edit, :find, "find"),
+         {:ok, existing_content} <- regular_content(path) do
       if revision(resource, path) == expected do
-        replace_all? = Map.get(content, :replace_all, false)
+        replace_all? = Map.get(edit, :replace_all, false)
 
-        case replace_text(content, find, Map.get(content, :replace, ""), replace_all?) do
+        case replace_text(existing_content, find, Map.get(edit, :replace, ""), replace_all?) do
           nil ->
             {:error, Error.new(:resource_conflict, "resource text was not found")}
 
@@ -166,7 +168,8 @@ defmodule Backplane.AgentTools.LocalResource do
   defp encode_payload(payload), do: {:ok, JSON.encode!(payload)}
 
   defp replace_text(content, find, replace, replace_all?) do
-    replaced = :binary.replace(content, find, replace, global: replace_all?)
+    options = if replace_all?, do: [:global], else: []
+    replaced = :binary.replace(content, find, replace, options)
 
     if replaced == content and !String.contains?(content, find), do: nil, else: replaced
   end
@@ -208,7 +211,12 @@ defmodule Backplane.AgentTools.LocalResource do
   defp entry(resource, path) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: type, size: size}} ->
-        %{path: resource_path(resource.scope, path), type: type, size: size, revision: revision(resource, path)}
+        %{
+          path: resource_path(resource.scope, path),
+          type: type,
+          size: size,
+          revision: revision(resource, path)
+        }
 
       {:error, _reason} ->
         %{path: resource_path(resource.scope, path), type: :missing}

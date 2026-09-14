@@ -1,15 +1,17 @@
 # Shared Agent Runtime — Design
 
-**Packages:** `backplane_agent_runtime`, `backplane_agent_tools`  
+**Package:** `backplane_agent_runtime`  
 **Repository:** `gsmlg-opt/backplane`  
 **Date:** 2026-09-10  
-**Status:** Proposed implementation specification; not an implementation-complete claim  
+**Updated:** 2026-09-14  
+**Document revision:** 1.4 — verified bounded consolidation  
+**Status:** Proposed implementation specification; bounded package consolidation verified  
 **Language:** English  
 **Companion documents:** [Product requirements](prd.md), [Implementation plan](implement_plan.md)
 
 ## 1. Decision and scope
 
-Build an independently consumable, embedded Elixir/OTP runtime for **agents with independent contexts, bounded executions, temporary nested subagents, and communication between independently hosted agents**. Ship collaboration tools with the runtime and reusable environment tools in a separate optional package.
+Build an independently consumable, embedded Elixir/OTP runtime for **agents with independent contexts, bounded executions, temporary nested subagents, and communication between independently hosted agents**. Ship collaboration tools and reusable file/resource, command, plan, and backend-dependent memory/Skill tools in the same `backplane_agent_runtime` package. Maintain one Mix application, namespace root, package version, changelog, and release artifact. Tool families are opt-in registrations, not separate installations.
 
 The three required consumers are:
 
@@ -27,12 +29,12 @@ The runtime shares execution and collaboration mechanisms. Products retain role 
 
 This design is based on the explicit requirements in the current discussion, the earlier static repository excerpts, and the attached `Repo Analysis Request.txt`.
 
-1. The user's current multi-agent requirements and the accepted runtime/tools split define the target.
+1. The user's current multi-agent requirements and latest single-package decision define the target. This revision supersedes the earlier runtime/tools packaging split; it does not change the multi-agent execution, ownership, or security contracts.
 2. Earlier repository excerpts identify migration seams, not the current state of every branch.
 3. The attachment describes an earlier **single local daemon** reduction. Its separation of cheap liveness from model-driven heartbeat/reflection and its conservative tool profiles remain useful host-level concepts. Its singleton product target, database/table suggestions, Oban assumptions, and historical bug claims are **not adopted as requirements for this package**.
 4. The shared AI and Skill protocol packages are adjacent proposals. Their availability, exact public types, and versions must be verified before adding dependencies.
 
-No repository was modified and no repository tests were executed to produce these documents. All new module names, APIs, invariants, and release gates below are proposed contracts. Implementation starts with a fresh baseline inventory, not an assumption that the historical snapshots are current.
+The original 2026-09-10 observations were documentation-only and remain historical. The current branch has since applied a bounded single-package consolidation, with focused results and unresolved failures recorded in [baseline.md](baseline.md). Proposed module names, APIs, invariants, and release gates below remain target contracts unless the current mapping explicitly identifies an implemented module.
 
 ## 2. Architectural decisions
 
@@ -45,7 +47,7 @@ No repository was modified and no repository tests were executed to produce thes
 | D05 | Run-owned subagents use structured lifetime management. Delegation to a hosted peer creates work, not ownership of the peer. |
 | D06 | All direct and model-visible tool calls enter the same validation, policy, budget, execution, and result pipeline. |
 | D07 | Built-in collaboration tools are supplied but not automatically registered or authorized. |
-| D08 | `backplane_agent_tools` depends on the runtime. The runtime never depends on the tools package or Backplane service applications. |
+| D08 | Publish one `backplane_agent_runtime` package. Concrete tools live under `Backplane.AgentRuntime.Tools.*`; the kernel depends on generic tool contracts/ports, not concrete tool implementations. Optional backends and Backplane service applications are not mandatory dependencies. |
 | D09 | V1 routes collaboration within one BEAM node/runtime instance. Remote routing, failover, and cross-node placement are not V1 features. |
 | D10 | Provide explicit ephemeral and durable storage modes; do not advertise a process mailbox as a durable queue. |
 | D11 | Preserve unknown external outcomes. No exactly-once external side-effect claim and no blind replay of mutations. |
@@ -59,19 +61,31 @@ The package does not replicate OpenClaw or Pi feature-for-feature. It does not i
 
 Agent CLI dispatch and ACP/MCP/application-server transports are separate integrations. An external agent that owns its own execution loop may later be addressed through an adapter; this design does not claim to control its internal tool loop or cancellation guarantees.
 
-## 4. Packages, dependencies, and ownership
+## 4. Package, dependencies, and ownership
 
-### 4.1 Package structure
+### 4.1 Single package and internal layers
 
-| Package / namespace | Contents |
+The sole distribution unit is **`backplane_agent_runtime`**, with the OTP application `:backplane_agent_runtime` and namespace root `Backplane.AgentRuntime`. Maintain it at **`apps/backplane_agent_runtime`** in Backplane. Do not create a second tools Mix application, release artifact, version stream, or compatibility matrix.
+
+| Internal layer / proposed namespace | Contents and dependency boundary |
 | --- | --- |
-| `backplane_agent_runtime` / `Backplane.AgentRuntime` | Domain contracts, kernel, effect lifecycle, managed hosting, context/run coordination, admission and budgets, messaging/delegation, storage interfaces, event interfaces, tool gateway, built-in collaboration tools. |
-| `backplane_agent_tools` / `Backplane.AgentTools` | Optional resource/file tools, command execution, scoped plans, and backend-dependent memory/Skill bridges. |
-| Consumer applications | Storage/provider/context/policy adapters, role profiles, presentation, schedules, domain tools, historical format adapters. |
+| `Backplane.AgentRuntime` execution/hosting modules | Domain contracts, deterministic kernel, effect lifecycle, managed/embedded hosting, context/run coordination, admission and budgets, messaging/delegation, recovery and events. |
+| `Backplane.AgentRuntime.Tool.*` | Generic tool descriptors, registry, schema/policy gateway, scheduling, cancellation, progress and result contracts. No dependency on a particular concrete tool family. |
+| `Backplane.AgentRuntime.Tools.Collaboration.*` | Opt-in wrappers for agent discovery/spawn/delegation/messaging, run status/wait/cancel, and user information requests. |
+| `Backplane.AgentRuntime.Tools.Resource.*` / `Tools.Command.*` / `Tools.Plan.*` | Bundled file/resource, command/job, and task-local plan implementations using the shared gateway and ports. |
+| `Backplane.AgentRuntime.Tools.Memory.*` / `Tools.Skill.*` | Bundled, backend-conditional wrappers. They do not own memory storage, Skill parsing, distribution, or activation policy. |
+| `Backplane.AgentRuntime.Ports.*` / `Adapters.*` | Behaviour boundaries and reference adapters with explicit capabilities. Generic contracts do not require every optional backend library to be installed. |
+| Consumer applications | Storage/provider/context/policy/backend adapters, role profiles, presentation, schedules, domain tools, and historical format adapters. These remain outside the package. |
 
-Maintain the packages at `apps/backplane_agent_runtime` and `apps/backplane_agent_tools` in Backplane unless the baseline inventory establishes a better existing independent-package convention. Each directory must be a standalone Mix project when built from its release artifact.
+The layer names in this table describe the target decomposition and do not assert that every proposed namespace exists today. In the current bounded refactor, the existing `Backplane.AgentRuntime.Tools` facade remains canonical. The local adapters are `Backplane.AgentRuntime.Tools.LocalResource` and `Backplane.AgentRuntime.Tools.LocalCommand`; they are private decomposition permitted by this design, rather than evidence that the proposed `Tools.Resource.*` and `Tools.Command.*` families are complete. The old `Backplane.AgentTools` forwarding facade and second Mix application have been removed from the working tree without a compatibility namespace.
 
-Both packages have independent versions and explicit dependency declarations. Neither may assume umbrella-relative build/config/dependency/lockfile locations outside umbrella development. Package releases must not require another application's `Application.get_env` values, global registered names, database, Phoenix endpoint, or startup callback.
+The current Linux command adapter uses `setsid --fork --wait` and a fixed POSIX launcher that blocks before payload execution. It acknowledges the launcher only after verifying the nonce, positive PID, launcher parent, and equal PID/process-group/session IDs through `/proc`. Startup failures and cancellation close the pending launch without running the payload; active cancellation targets the recorded owner group and preserves uncertainty as an error. This is cooperative descendant cleanup, not an OS sandbox, and a payload that deliberately creates a new session remains unsupported. The focused package tests and fresh-consumer artifact harness pass; see [baseline.md](baseline.md) for exact commands, counts, hash, and remaining scope.
+
+Concrete tools implement the generic tool contract and use approved runtime operations or ports. The kernel and generic gateway must not call or branch on `Tools.Resource.*`, `Tools.Command.*`, or any other concrete implementation. Registration is a host composition step; merely loading the package does not populate a tool registry, start backend clients, open a workspace, launch a subprocess, or activate service agents. Domain tools use the same contract without being moved into the shared package.
+
+**One package, one version, one release.** Runtime contract and bundled-tool changes are reviewed, tested, and released together; a tool-only fix also updates the package version. Versioned tool descriptors, event schemas, context revisions, and authorization grants retain their separate meanings—they are not replaced by the package version.
+
+The package directory must build as a standalone Mix project from its actual release artifact. Declare all dependencies explicitly; do not assume umbrella-relative build/config/dependency/lockfile locations outside umbrella development. The release must not require another application's `Application.get_env` values, global registered names, database, Phoenix endpoint, or startup callback. Use one package changelog and one release pipeline; independent protocol siblings retain their own existing release boundaries.
 
 ### 4.2 Provider and Skill boundaries
 
@@ -79,7 +93,7 @@ Use the proposed `backplane_ai_protocol` canonical request/message/event contrac
 
 `ProviderPort` is the runtime's execution-facing behaviour. It wraps the canonical provider contracts with runtime execution identity and lifecycle control. It must not introduce a competing full message schema or another OpenAI/Anthropic parser. Pin the exact sibling dependency/API in the baseline decision record before implementing this boundary. If the sibling is unavailable, continue independent kernel/tool work using a scripted test port; do not ship a production parser copy as a workaround.
 
-The runtime does not require `backplane_skill_protocol`. A host or optional Skill bridge resolves a versioned bundle and submits selected content/resources through the normal context and capability boundaries. Skill declarations are content and requests for capabilities, not authorization grants.
+The package does not require `backplane_skill_protocol`. The bundled `Tools.Skill.*` wrappers depend on SkillPort; a host adapter resolves a versioned bundle and submits selected content/resources through the normal context and capability boundaries. A verified in-package sibling adapter may use an explicitly optional dependency only if the absent-dependency build passes. Skill declarations are content and requests for capabilities, not authorization grants.
 
 ### 4.3 Ports
 
@@ -96,6 +110,20 @@ The runtime does not require `backplane_skill_protocol`. A host or optional Skil
 | EventSink | Consume canonical events or a bounded subscription. Never owns runtime state. | Optional observation |
 
 A production port must declare unsupported capabilities explicitly. The runtime must not silently downgrade durable delivery, resource confinement, cancellation, or schema validation.
+
+### 4.4 Dependencies and activation are separate
+
+Bundling tool source does not require bundling every service implementation. Prefer host-injected ports for memory, Skills, MCP, storage, and product services. A backend-specific dependency is allowed only when explicitly declared and reviewed; optional-library adapters must compile without that library installed and report availability before registration. Generic contracts and bundled wrappers must not reference optional-library structs or compile-time facilities in a way that makes that library compulsory.
+
+Disabling a tool is not a dependency-isolation mechanism. Inspect the actual production dependency graph and application startup behaviour: an unused mandatory dependency is still mandatory. Do not add Phoenix, a database driver/service, a memory service, an MCP client/hub, a Skill service, or a command helper to the unconditional dependency set merely because a wrapper exists. Command helper executables, where required by a backend, are capability-checked when that backend is selected; they are not required to compile or boot a zero-tool agent.
+
+Registration distinguishes optional availability from an explicit requirement:
+
+- An empty tool profile is valid. A host may select optional families from an eligible catalog; unavailable backend-dependent entries are omitted and the selection result explains why.
+- If a host explicitly requires a tool or family whose backend is missing or incapable, profile validation fails with a typed `missing_backend` or `unsupported_capability` configuration error. Do not silently accept a degraded profile or advertise a nonfunctional descriptor.
+- A configured backend supplies capability, not authority. Every registered invocation still passes the common policy gateway. Backend loss after registration yields an explicit execution error, not automatic backend substitution or expanded permissions.
+
+CI must install the same release artifact into fresh consumers with (a) no tools and no optional backends, (b) selected bundled basic tools, and (c) configured fake MemoryPort/SkillPort bridges. Also test explicit missing-backend configuration errors and any declared optional-library adapter with that dependency absent and present. This proves a single distribution can support different tool profiles without multiple package releases.
 
 ## 5. Domain model
 
@@ -274,11 +302,11 @@ Tools can emit progress and a final normalized result. Failure classes include v
 
 Trusted callers and model-visible wrappers both use the same gateway. Trusted identity comes from a host-authenticated execution context, not a boolean argument such as `trusted: true` supplied by a model.
 
-Implementing a tool in a package, registering it for an agent, and permitting a particular invocation are three independent decisions. The empty tool set is valid.
+Bundling a tool implementation, registering it for an agent, and permitting a particular invocation are three independent decisions. Every consumer installs the same package; its role/task profile chooses exposure and PolicyPort authorizes each invocation. The empty tool set is valid. Explicitly required tools with missing backends fail configuration under section 4.4.
 
 ### 10.4 Built-in collaboration tools
 
-These implementations live in the runtime but are opt-in registrations:
+These implementations live under `Backplane.AgentRuntime.Tools.Collaboration.*` in the single package but are opt-in registrations:
 
 | Tool | Contract |
 | --- | --- |
@@ -301,20 +329,20 @@ Delegation to a service-role agent requires a separate **delegation policy**: pe
 
 All task-derived work uses an authorized root budget account. A recipient may have additional host capacity limits, but cannot silently reset the caller's task budget. A trusted host can fund a genuinely separate task with a new account and explicit causation; a model cannot mint one.
 
-## 11. Optional general tools
+## 11. Bundled general tools with opt-in activation
 
 ### 11.1 V1 tool families
 
 | Family | Proposed tools | V1 treatment |
 | --- | --- | --- |
-| Resource/file | `file_read`, `list_dir`, `glob`, `grep`, `file_write`, `file_edit` | Required in optional package; local workspace adapter plus a fake resource adapter in tests. |
-| Command | `exec`, `job_read`, `job_cancel` | Required opt-in family. Jobs belong to their initiating run, with bounded output and cleanup. Unsupported platform/isolation capabilities fail closed. |
-| Plan | `plan_read`, `plan_update` | Required optional family; scope to the current task/run with expected revision. Not a project scheduler. |
-| Memory | `memory_search`, `memory_store` | Backend-conditional wrappers tested against a fake port; real storage and scope policy belong to hosts. |
-| Skill | `skill_list`, `skill_load` | Backend-conditional wrappers for versioned bundles; discovery/loading does not authorize arbitrary execution. |
+| Resource/file | `file_read`, `list_dir`, `glob`, `grep`, `file_write`, `file_edit` | Required bundled implementation; opt-in registration. Local workspace adapter plus a fake resource adapter in tests. |
+| Command | `exec`, `job_read`, `job_cancel` | Required bundled implementation; opt-in registration. Jobs belong to their initiating run, with bounded output and cleanup. Unsupported platform/isolation capabilities fail closed. |
+| Plan | `plan_read`, `plan_update` | Required bundled implementation; opt-in registration. Scope to the current task/run with expected revision. Not a project scheduler. |
+| Memory | `memory_search`, `memory_store` | Required bundled wrappers, registered only with a configured capable port; tested against a fake port. Real storage and scope policy belong to hosts. |
+| Skill | `skill_list`, `skill_load` | Required bundled wrappers, registered only with a configured capable port; versioned discovery/loading does not authorize arbitrary execution. |
 | Network/search | `http_fetch`, search services | Deferred implementation. Reserve an extension boundary, not placeholder tools advertised as working. |
 
-No tool is enabled merely because `backplane_agent_tools` is installed. A backend-conditional tool is omitted from the registry when its required backend/capabilities are absent.
+All in-scope implementations and wrappers ship in `backplane_agent_runtime`; optional activation is not permission to defer their V1 implementation. No tool is enabled merely because the package is installed. Backend-dependent entries are omitted from optional selections when unavailable; an explicit requirement for an unavailable tool fails profile validation as specified in section 4.4. Host business tools remain outside the package.
 
 ### 11.2 Resource operations
 
@@ -481,7 +509,7 @@ This is a category contract, not a promise that exact exported function arities 
 
 Earlier excerpts identify `Sigma.Agent`, `Runtime`, `PublicRuntime`, the repository/session supervisors, and `Sigma.Coding.Dispatcher` as integration seams [SRC-SIG]. Preserve repository-owned session lifetime, JSONL/session operations, UI/headless protocol, context files, coding hooks, and storage compatibility.
 
-First adapt the existing provider/dispatcher and make a session's agent an embedded runtime endpoint. Then replace duplicate execution lifecycle, cancellation, budget, and nested-child handling with common components. Sigma's public prompt/steer/follow-up/cancel/fork interfaces remain compatible.
+First adapt the existing provider/dispatcher and make a session's agent an embedded runtime endpoint. Then replace duplicate execution lifecycle, cancellation, budget, and nested-child handling with common components. Register compatible bundled tools under `Backplane.AgentRuntime.Tools.*` through Sigma-selected profiles; keep product-specific tools in Sigma. No separate tools package is installed. Sigma's public prompt/steer/follow-up/cancel/fork interfaces remain compatible.
 
 Existing hooks are not bypasses. Hook changes to tool arguments require revalidation/reauthorization. Stop-hook continuation and steering consume the same execution budget and enter only at defined safe boundaries. Subagent creation is a new run-owned relation, not an assumption that every current Sigma agent already supports nested subagents.
 
@@ -491,7 +519,7 @@ Keep daemon/routine triggers, role definitions, product graph nodes, workspace/m
 
 Migrate QueryLoop and graph paths explicitly. `Session.Worker` can remain the authoritative embedded state owner during migration. Graph nodes reuse shared model/tool effects and events; the product graph remains product-owned. Do not ship a migration that covers QueryLoop but leaves graph tools outside shared authorization/cancellation/accounting.
 
-Independent role agents receive stable identities and separate context namespaces. Delegated tasks create target runs and do not become lifecycle children of the sender. Scheduled/heartbeat/reflection work is an ordinary host-submitted task using an appropriate restricted profile. The runtime does not import a scheduler dependency.
+Independent role agents receive stable identities and separate context namespaces. Delegated tasks create target runs and do not become lifecycle children of the sender. Scheduled/heartbeat/reflection work is an ordinary host-submitted task using an appropriate restricted profile. The runtime does not import a scheduler dependency. Roles select bundled `Tools.*` implementations or host tools through the same registry; sharing one package does not give every role the same tool profile.
 
 ### 16.3 Backplane
 
@@ -499,7 +527,7 @@ Add an opt-in service integration outside the runtime package to register limite
 
 A first configuration workflow should read current state, produce a validation/preview result and proposed revision-bound change, then apply only through an existing domain-service validation/authorization/audit boundary with an authorized decision. A content workflow uses scoped content query/update tools. The runtime does not write Backplane tables or configuration files directly.
 
-These consumers prove that repository paths, sessions, shells, and memory services are optional. Installing the package must not start these service agents.
+These consumers prove that repository paths, sessions, shells, and memory services are optional even though their tool wrappers ship in the same artifact. Installing the package must not start these service agents, register coding tools, open filesystem resources, or start optional backend clients.
 
 ### 16.4 Rollout and rollback
 
@@ -528,14 +556,14 @@ Remove duplicate implementations only after their path's parity/conformance gate
 | I13 | Status/progress/acknowledgement messages do not automatically trigger model inference. |
 | I14 | Queues, streams, output, retries, descendants, and total work have explicit finite bounds. |
 | I15 | Slow/disconnected observers do not own execution lifetime or require unbounded buffering. |
-| I16 | Empty tools and absent optional backends are valid, explicit configurations. |
+| I16 | Empty tools and unselected optional backends are valid. Explicitly requiring an unavailable tool fails configuration; bundling never implies registration or authorization. |
 | I17 | Context inheritance, data visibility, and action authorization are separate decisions. |
 | I18 | Tool/argument/policy revisions and approval identities are validated before effects. |
 | I19 | File writes are revision-checked and resource backends state their real confinement guarantees. |
 | I20 | Hosted role agents survive cancellation of unrelated delegated work. |
 | I21 | All provider, tool, compaction, retry, and descendant usage is attributed without double counting. |
 | I22 | Recovery reconstructs state before admitting effects; pure replay does not execute them. |
-| I23 | Both packages compile/test as standalone release artifacts without umbrella/service leakage. |
+| I23 | One package artifact includes the runtime and all in-scope bundled tool implementations, compiles/boots without optional backends, and supports distinct tool profiles without umbrella/service leakage or kernel-to-concrete-tool dependencies. |
 | I24 | Both Synapsis execution paths and Sigma use the shared enforcement boundaries after migration. |
 
 ## 18. Validation and release strategy
@@ -544,7 +572,7 @@ The PRD defines acceptance scenarios and the implementation plan maps them to wo
 
 Test the pure kernel with generated transition sequences and controllable clocks. Test providers/tools through scripted ports, cancellation acknowledgements, duplicate/late events, malformed payloads, and deterministic fault injection. Durable adapters need real-store restart tests at intent/dispatch/result/terminal boundaries, not only mock assertions.
 
-Test two runtime instances in the same VM, resource traversal/symlink races, process descendant cleanup on declared platforms, blocked approval/headless behaviour, peer cycles, root budget races, inbox/outbox deduplication, observer overload, package artifacts, and consumer compatibility.
+Test two runtime instances in the same VM, resource traversal/symlink races, process descendant cleanup on declared platforms, blocked approval/headless behaviour, peer cycles, root budget races, inbox/outbox deduplication, observer overload, the single package artifact, and consumer compatibility. Run fresh-consumer fixtures with empty, bundled-basic, and fake-backend tool profiles against the same artifact/version. Inspect package contents, dependency/startup graphs, and internal kernel/gateway dependencies; test absent/present optional libraries and explicit missing-backend configuration errors. Merely disabling tools in a full umbrella build does not pass this gate.
 
 Do not use live billable providers in required CI. Optional live smoke tests require explicit credentials and are outside deterministic release acceptance. The complete shared architecture is accepted only when both Synapsis paths, Sigma nesting, and a sessionless Backplane agent pass.
 
@@ -552,18 +580,18 @@ Do not use live billable providers in required CI. Optional live smoke tests req
 
 Remote addressing/transports, cross-node agent activation/failover, durable distributed ownership leases, autonomous detached jobs, richer team scheduling, speculative streaming tools, universal workflow graphs, network/search tool implementations, and shared long-term-memory storage are deferred.
 
-Interfaces preserve room for these features, but V1 must not add empty production modules, claim remote delivery guarantees, or introduce policy switches without a tested consumer requirement.
+Interfaces preserve room for these features, but V1 must not add empty production modules, claim remote delivery guarantees, or introduce policy switches without a tested consumer requirement. A future tool family may be extracted only after a concrete heavy-dependency, independent-consumer, or release-cadence need is demonstrated and approved. Do not pre-create a second tools app or publishing pipeline for that possibility.
 
 ## 20. Source register and baseline follow-up
 
 | Source ID | Material and use |
 | --- | --- |
-| SRC-USER | Current discussion: Sigma session/main-agent with nested children; Synapsis independent communicating role agents; future Backplane config/content agents; accepted runtime + optional tools packaging. Authoritative target requirements. |
+| SRC-USER | Current discussion: Sigma session/main-agent with nested children; Synapsis independent communicating role agents; future Backplane config/content agents; latest accepted single-package distribution with bundled, opt-in tools. Authoritative target requirements. |
 | SRC-LEGACY | Attached `Repo Analysis Request.txt`. Historical single-daemon proposal. Host-level trigger/profile concepts only; conflicting singleton/storage/scheduler assumptions are explicitly not adopted. |
 | SRC-SIG | Earlier static excerpts at `gsmlg-opt/sigma@a7cbf4acf63f8ad1357c492e1eee49817f302cba`: `apps/sigma_agent/lib/sigma_agent.ex`, `runtime.ex`, `public_runtime.ex`, `apps/sigma_agent/mix.exs`, `apps/sigma_coding/lib/sigma_coding/dispatcher.ex`. Evidence for integration seams, not proof of target feature completeness. |
 | SRC-SYN-CONTROL | Earlier static excerpts at `gsmlg-opt/Synapsis@fe4ebf7d70d58ec46c1055f22e7c13cb455d8700`: `apps/synapsis_agent/lib/synapsis/agent/daemon.ex`, `run_coordinator.ex`, `apps/synapsis_agent/mix.exs`. |
 | SRC-SYN-EXEC | Same Synapsis snapshot: `apps/synapsis_agent/lib/synapsis/session/worker.ex`, `agent/query_loop.ex`, `agent/query_loop/executor.ex`, `agent/runtime/engine.ex`, `agent/graphs/coding_loop.ex`. Evidence for two migration paths and embedded state ownership. |
-| SRC-BP | Earlier Backplane root `mix.exs` excerpt: umbrella/service and host-agent releases. It was read at `main`, not a pinned commit. Verify current SHA before implementation. |
+| SRC-BP | Earlier Backplane root `mix.exs` excerpt: umbrella/service and host-agent releases. The current bounded consolidation is based on `feature/agent-runtime` at base `c36ccf619e0083c3de1f112e2c54ae6ef50289dd`; its focused test evidence and limits are in [baseline.md](baseline.md). This does not refresh consumer or sibling-package inventories. |
 | SRC-SIBLING | Earlier shared AI/Skill package discussions, including proposed `backplane_ai_protocol`, `Backplane.AiProtocol`, and `backplane_skill_protocol`. Proposed adjacent interfaces, not verified published dependencies. |
 
-Implementation must record current SHAs, actual toolchain/dependency versions, current module paths, current tests, provider/Skill contract availability, storage capabilities, and platform support. If source observations differ, update the migration inventory and adapters; do not silently weaken the requirements or replace the product target.
+Implementation must record current SHAs, actual toolchain/dependency versions, current module paths, current tests, provider/Skill contract availability, storage capabilities, and platform support. The current Backplane base and blocked package test do not make the 2026-09-10 toolchain or consumer searches current. If source observations differ, update the migration inventory and adapters; do not silently weaken the requirements or replace the product target.
