@@ -67,6 +67,22 @@ defmodule Backplane.SkillProtocol.DocumentTest do
     assert {:ok, _} = Validator.validate(document, supported_capabilities: ["network"])
   end
 
+  test "malformed capability extension metadata returns diagnostics instead of raising" do
+    for extension <- ["scalar", true, 42, %{"required-capabilities" => false}, %{"required-capabilities" => ["network", 1]}] do
+      bytes = "---\nname: example\ndescription: Example\nbackplane: " <> JSON.encode!(extension) <> "\n---\nBody"
+      assert {:ok, document} = Parser.parse(bytes)
+      assert {:error, %Error{code: :invalid_document, context: %{diagnostics: diagnostics}}} = Validator.validate(document)
+      assert diagnostics != []
+    end
+
+    for extension <- [%{}, %{"required-capabilities" => []}, nil] do
+      value = if is_nil(extension), do: "null", else: JSON.encode!(extension)
+      bytes = "---\nname: example\ndescription: Example\nbackplane: " <> value <> "\n---\nBody"
+      assert {:ok, document} = Parser.parse(bytes)
+      assert {:ok, _} = Validator.validate(document, supported_capabilities: ["network"])
+    end
+  end
+
   test "manual-only and host-disabled eligibility are separate and grant no tools" do
     bytes = "---\nname: example\ndescription: Example\ndisable-model-invocation: true\n---\nBody"
     assert {:ok, document} = Parser.parse(bytes)

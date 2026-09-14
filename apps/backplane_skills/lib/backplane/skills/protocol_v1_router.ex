@@ -16,14 +16,15 @@ defmodule Backplane.Skills.ProtocolV1Router do
   get "/catalog" do
     conn = fetch_query_params(conn)
 
-    with {:ok, limit} <- parse_limit(conn.query_params["limit"]),
-         {:ok, after_id} <- decode_cursor(conn.query_params["cursor"], conn, conn.query_params) do
+    with {:ok, params} <- scalar_params(conn.query_params, ~w(limit cursor q tag)),
+         {:ok, limit} <- parse_limit(params["limit"]),
+         {:ok, after_id} <- decode_cursor(params["cursor"], conn, params) do
       result =
         Publication.catalog(
           limit: limit,
           after: after_id,
-          q: conn.query_params["q"],
-          tag: conn.query_params["tag"]
+          q: params["q"],
+          tag: params["tag"]
         )
 
       next_cursor =
@@ -45,8 +46,12 @@ defmodule Backplane.Skills.ProtocolV1Router do
     skill_id = conn.query_params["skill_id"]
     revision = conn.query_params["revision"]
 
-    if is_binary(skill_id) and skill_id != "" do
-      case Publication.resolve(skill_id, normalize_revision(revision)) do
+    valid = valid_query_shape?(conn.query_params, ~w(skill_id revision))
+    valid = valid and is_binary(skill_id) and skill_id != ""
+    valid = valid and (is_nil(revision) or is_binary(revision)) and revision != ""
+
+    if valid do
+      case Publication.resolve(skill_id, revision) do
         {:ok, published} ->
           json(conn, 200, published.manifest)
 
@@ -57,7 +62,7 @@ defmodule Backplane.Skills.ProtocolV1Router do
           error(conn, 410, :revision_unavailable, "skill revision is unavailable")
       end
     else
-      error(conn, 400, :invalid_request, "skill_id is required")
+      error(conn, 400, :invalid_request, "skill_id and revision parameters are invalid")
     end
   end
 
@@ -66,7 +71,7 @@ defmodule Backplane.Skills.ProtocolV1Router do
     skill_id = conn.query_params["skill_id"]
     revision = conn.query_params["revision"]
 
-    if is_binary(skill_id) and skill_id != "" and is_binary(revision) and revision != "" do
+    if valid_query_shape?(conn.query_params, ~w(skill_id revision)) and is_binary(skill_id) and skill_id != "" and is_binary(revision) and revision != "" do
       serve_artifact(conn, skill_id, revision)
     else
       error(conn, 400, :invalid_request, "skill_id and revision are required")
@@ -181,15 +186,26 @@ defmodule Backplane.Skills.ProtocolV1Router do
 
   defp parse_limit(nil), do: {:ok, 20}
 
-  defp parse_limit(value) do
+  defp parse_limit(value) when is_binary(value) do
     case Integer.parse(value) do
       {limit, ""} when limit >= 1 and limit <= 100 -> {:ok, limit}
       _ -> {:error, :invalid_request}
     end
   end
 
-  defp normalize_revision(value) when value in [nil, ""], do: nil
-  defp normalize_revision(value), do: value
+  defp parse_limit(_value), do: {:error, :invalid_request}
+
+  defp scalar_params(params, keys) do
+    if valid_query_shape?(params, keys) and Enum.all?(keys, fn key -> is_nil(params[key]) or is_binary(params[key]) end),
+      do: {:ok, params},
+      else: {:error, :invalid_request}
+  end
+
+  defp valid_query_shape?(params, keys) do
+    Enum.all?(Map.keys(params), fn key ->
+      not Enum.any?(keys, fn allowed -> String.starts_with?(key, allowed <> "[") end)
+    end)
+  end
 
   defp encode_cursor(nil, _conn, _params), do: nil
 

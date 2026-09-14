@@ -139,6 +139,15 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     end
   end
 
+  test "array and empty query parameters return structured invalid requests", %{conn: conn, tmp_dir: tmp_dir} do
+    skill = ingest!(tmp_dir, "malformed-query", "Query")
+    for query <- ["limit[]=1", "cursor[]=x", "q[]=x", "tag[]=x", "skill_id[]=#{skill.id}", "revision[]=old", "revision[key]=old", "revision="] do
+      path = if String.starts_with?(query, "skill_id") or String.starts_with?(query, "revision"), do: "/skill-protocol/v1/resolve?skill_id=#{URI.encode_www_form(skill.id)}&#{query}", else: "/skill-protocol/v1/catalog?#{query}"
+      response = conn |> recycle() |> get(path) |> json_response(400)
+      assert get_in(response, ["error", "code"]) == "invalid_request"
+    end
+  end
+
   test "catalog filters committed metadata by query and tag", %{conn: conn, tmp_dir: tmp_dir} do
     alpha = ingest!(tmp_dir, "alpha-filter", "Alpha")
     _beta = ingest!(tmp_dir, "beta-filter", "Beta")

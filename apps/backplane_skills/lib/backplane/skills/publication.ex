@@ -90,7 +90,9 @@ defmodule Backplane.Skills.Publication do
   end
 
   @spec resolve(String.t(), String.t() | nil) :: {:ok, Revision.t()} | {:error, atom()}
-  def resolve(skill_id, revision \\ nil) when is_binary(skill_id) do
+  def resolve(skill_id, revision \\ nil)
+
+  def resolve(skill_id, revision) when is_binary(skill_id) and (is_nil(revision) or (is_binary(revision) and revision != "")) do
     query =
       from(r in Revision,
         join: s in Skill,
@@ -110,6 +112,8 @@ defmodule Backplane.Skills.Publication do
       %Revision{} = published -> {:ok, published}
     end
   end
+
+  def resolve(_skill_id, _revision), do: {:error, :invalid_request}
 
   @spec artifact(String.t(), String.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def artifact(skill_id, revision, opts \\ []) do
@@ -229,11 +233,7 @@ defmodule Backplane.Skills.Publication do
   end
 
   defp with_temp_bundle(attrs, callback) do
-    base =
-      Path.join(
-        System.tmp_dir!(),
-        "backplane-generated-skill-#{System.unique_integer([:positive, :monotonic])}"
-      )
+    base = temporary_directory!("backplane-generated-skill")
 
     root = Path.join(base, fetch(attrs, :slug))
     archive = Path.join(base, "skill.tar.gz")
@@ -316,20 +316,29 @@ defmodule Backplane.Skills.Publication do
   end
 
   defp archive_to_temp(blob_ref, blob_opts, callback) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "skill-backfill-#{System.unique_integer([:positive, :monotonic])}.tar.gz"
-      )
+    base = temporary_directory!("skill-backfill")
+    path = Path.join(base, "artifact.tar.gz")
 
     try do
       with {:ok, stream} <- Blob.get(blob_ref, blob_opts),
-           :ok <- File.write(path, Enum.into(stream, <<>>)) do
+           :ok <- File.write(path, Enum.into(stream, <<>>), [:binary, :exclusive]) do
         callback.(path)
       end
     after
-      File.rm(path)
+      File.rm_rf(base)
     end
+  end
+
+  defp temporary_directory!(prefix) do
+    Enum.reduce_while(1..5, nil, fn _, _acc ->
+      path = Path.join(System.tmp_dir!(), prefix <> "." <> (:crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)))
+
+      case File.mkdir(path) do
+        :ok -> {:halt, path}
+        {:error, :eexist} -> {:cont, nil}
+        {:error, reason} -> raise "temporary storage cannot be allocated: #{inspect(reason)}"
+      end
+    end) || raise "temporary storage collision limit exceeded"
   end
 
   defp add_report(report, kind, skill, detail) do

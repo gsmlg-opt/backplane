@@ -39,6 +39,14 @@ defmodule Backplane.Skills.PublicationTest do
              {:ok, bytes_a}
   end
 
+  test "resolve rejects malformed or empty explicit revisions", %{tmp_dir: tmp_dir} do
+    path = archive(tmp_dir, "revision-shape", "Revision shape", "Revision shape", "revision.txt")
+    assert {:ok, _skill} = Ingest.ingest(path, blob: [root: Path.join(tmp_dir, "blobs")])
+    assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", [])
+    assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", "")
+    assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", %{"old" => true})
+  end
+
   test "publication is idempotent and invalid replacement leaves current unchanged", %{
     tmp_dir: tmp_dir
   } do

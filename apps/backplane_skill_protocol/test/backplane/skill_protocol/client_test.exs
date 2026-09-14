@@ -131,6 +131,39 @@ defmodule Backplane.SkillProtocol.ClientTest do
              )
   end
 
+  test "deadline and cancellation kill a transport that never returns" do
+    parent = self()
+
+    stalled = fn _request ->
+      send(parent, {:started, self()})
+      receive do
+        :never -> {:ok, %{status: 200, headers: %{}, body: ""}}
+      end
+    end
+
+    started_at = System.monotonic_time(:millisecond)
+    assert {:error, %Error{code: :timeout}} =
+             Client.catalog(client(stalled, overall_timeout_ms: 60))
+    elapsed = System.monotonic_time(:millisecond) - started_at
+    assert elapsed < 500
+    assert_receive {:started, worker}, 100
+    refute Process.alive?(worker)
+
+    {:ok, flag} = Agent.start_link(fn -> false end)
+    cancelled = fn _request ->
+      send(parent, {:cancel_started, self()})
+      receive do
+        :never -> {:ok, %{status: 200, headers: %{}, body: ""}}
+      end
+    end
+
+    task = Task.async(fn -> Client.catalog(client(cancelled, cancelled?: fn -> Agent.get(flag, & &1) end, overall_timeout_ms: 1_000)) end)
+    assert_receive {:cancel_started, cancel_worker}, 100
+    Agent.update(flag, fn _ -> true end)
+    assert {:error, %Error{code: :cancelled}} = Task.await(task, 1_000)
+    refute Process.alive?(cancel_worker)
+  end
+
   test "redirects are terminal and credentials are never sent to the location" do
     parent = self()
 

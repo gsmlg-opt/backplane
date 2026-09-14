@@ -70,28 +70,40 @@ defmodule Backplane.SkillProtocol.Validator do
   end
 
   defp validate_capabilities(acc, %Document{metadata: metadata}, opts) do
-    required = get_in(metadata, ["backplane", "required-capabilities"]) || []
     supported = MapSet.new(Keyword.get(opts, :supported_capabilities, []))
+    case Map.fetch(metadata, "backplane") do
+      :error -> acc
+      {:ok, nil} -> acc
+      {:ok, []} -> acc
+      {:ok, extension} when is_map(extension) -> validate_required_capabilities(acc, extension, supported)
+      {:ok, _extension} -> [diag(:invalid_backplane_extension, "backplane metadata must be an object") | acc]
+    end
+  end
 
-    missing =
-      if is_list(required),
-        do: Enum.reject(required, &(is_binary(&1) and MapSet.member?(supported, &1))),
-        else: []
+  defp validate_required_capabilities(acc, extension, supported) do
+    case Map.fetch(extension, "required-capabilities") do
+      :error -> acc
+      {:ok, nil} -> acc
+      {:ok, required} when is_list(required) ->
+        invalid = Enum.reject(required, &is_binary/1)
+        missing = Enum.reject(required, &(MapSet.member?(supported, &1)))
 
-    cond do
-      not is_list(required) ->
-        [diag(:invalid_required_capabilities, "required capabilities must be a list") | acc]
-
-      missing != [] ->
-        [
-          diag(:unsupported_capability, "a required capability is unsupported", :error, %{
-            capabilities: missing
-          })
-          | acc
-        ]
-
-      true ->
         acc
+        |> then(fn current ->
+          if invalid == [],
+            do: current,
+            else: [
+              diag(:invalid_required_capabilities, "required capabilities must be a list of strings", :error, %{invalid: invalid})
+              | current
+            ]
+        end)
+        |> then(fn current ->
+          if invalid == [] and missing != [],
+            do: [diag(:unsupported_capability, "a required capability is unsupported", :error, %{capabilities: missing}) | current],
+            else: current
+        end)
+
+      {:ok, _required} -> [diag(:invalid_required_capabilities, "required capabilities must be a list of strings") | acc]
     end
   end
 

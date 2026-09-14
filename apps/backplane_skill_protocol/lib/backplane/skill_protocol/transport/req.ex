@@ -11,6 +11,9 @@ defmodule Backplane.SkillProtocol.Transport.Req do
         request.cancelled?.() ->
           {:halt, {req, put_result(response, {:error, :cancelled}, size)}}
 
+        System.monotonic_time(:millisecond) >= request.deadline ->
+          {:halt, {req, put_result(response, {:error, :timeout}, size)}}
+
         size > request.max_bytes ->
           {:halt, {req, put_result(response, {:error, :response_too_large}, size)}}
 

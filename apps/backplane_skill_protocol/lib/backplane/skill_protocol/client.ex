@@ -81,7 +81,7 @@ defmodule Backplane.SkillProtocol.Client do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
     {result, response_bytes} =
-      case get(client, "/skill-protocol/v1/catalog", params, client.max_json_bytes) do
+      case get(client, "/skill-protocol/v1/catalog", params, client.max_json_bytes, opts) do
         {:ok, body} -> {Wire.decode_catalog(body, client.source_id), byte_size(body)}
         {:error, %Error{} = reason} -> {{:error, reason}, 0}
       end
@@ -99,7 +99,7 @@ defmodule Backplane.SkillProtocol.Client do
     params = [skill_id: skill_id] ++ if(is_nil(revision), do: [], else: [revision: revision])
 
     {result, response_bytes} =
-      case get(client, "/skill-protocol/v1/resolve", params, client.max_json_bytes) do
+      case get(client, "/skill-protocol/v1/resolve", params, client.max_json_bytes, opts) do
         {:ok, body} ->
           result =
             Wire.decode_manifest(body, client.source_id,
@@ -120,17 +120,20 @@ defmodule Backplane.SkillProtocol.Client do
     )
   end
 
-  @spec artifact(t(), SkillRef.t()) :: {:ok, binary()} | {:error, Error.t()}
+  @spec artifact(t(), SkillRef.t(), keyword()) :: {:ok, binary()} | {:error, Error.t()}
+  def artifact(client, ref, opts \\ [])
+
   def artifact(
         %__MODULE__{} = client,
-        %SkillRef{skill_id: skill_id, revision: revision, artifact_digest: digest}
+        %SkillRef{skill_id: skill_id, revision: revision, artifact_digest: digest},
+        opts
       )
       when is_binary(revision) and is_binary(digest) do
     started_at = Telemetry.start()
     params = [skill_id: skill_id, revision: revision]
 
     {result, response_bytes} =
-      case get(client, "/skill-protocol/v1/artifact", params, client.max_artifact_bytes) do
+      case get(client, "/skill-protocol/v1/artifact", params, client.max_artifact_bytes, opts) do
         {:ok, bytes} ->
           result =
             if Bundle.artifact_digest(bytes) == digest,
@@ -154,27 +157,22 @@ defmodule Backplane.SkillProtocol.Client do
     )
   end
 
-  def artifact(%__MODULE__{}, _ref),
+  def artifact(%__MODULE__{}, _ref, _opts),
     do: error(:invalid_request, "artifact fetch requires an exact reference")
 
-  defp get(client, path, params, max_bytes) do
+  defp get(client, path, params, max_bytes, opts) do
     deadline = client.clock.() + client.overall_timeout_ms
     url = build_url(client.endpoint, path, params)
-    request(client, url, max_bytes, deadline, 1)
+    cancelled? = combine_cancellation(client.cancelled?, Keyword.get(opts, :cancelled?))
+    request(%{client | cancelled?: cancelled?}, url, max_bytes, deadline, 1)
   end
 
   defp request(client, url, max_bytes, deadline, attempt) do
     with :ok <- available(client, deadline),
          {:ok, headers} <- headers(client),
          remaining when remaining > 0 <- deadline - client.clock.(),
-         result <-
-           invoke(client.transport, %{
-             url: url,
-             headers: headers,
-             timeout_ms: remaining,
-             max_bytes: max_bytes,
-             cancelled?: client.cancelled?
-           }),
+         result <- invoke_bounded(client, %{url: url, headers: headers, timeout_ms: remaining,
+             deadline: deadline, max_bytes: max_bytes, cancelled?: client.cancelled?}),
          :ok <- available(client, deadline),
          result <- normalize_result(result, max_bytes) do
       case result do
@@ -232,6 +230,9 @@ defmodule Backplane.SkillProtocol.Client do
 
   defp normalize_result({:error, :cancelled}, _max_bytes),
     do: error(:cancelled, "request was cancelled")
+
+  defp normalize_result({:error, :timeout}, _max_bytes),
+    do: error(:timeout, "request deadline was exceeded")
 
   defp normalize_result({:error, :response_too_large}, _max_bytes),
     do: error(:limit_exceeded, "response exceeds byte limit")
@@ -314,6 +315,53 @@ defmodule Backplane.SkillProtocol.Client do
 
   defp invoke(transport, request) when is_function(transport, 1), do: transport.(request)
   defp invoke(transport, request) when is_atom(transport), do: transport.request(request)
+
+  defp invoke_bounded(client, request) do
+    parent = self()
+    ref = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn -> send(parent, {ref, invoke(client.transport, request)}) end)
+
+    await_response(pid, monitor, ref, client, request.deadline)
+  end
+
+  defp await_response(pid, monitor, ref, client, deadline) do
+    remaining = max(deadline - client.clock.(), 0)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(monitor, [:flush])
+        result
+
+      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+        {:error, :transport_crashed}
+    after
+      min(remaining, 25) ->
+        cond do
+          client.cancelled?.() ->
+            Process.exit(pid, :kill)
+            Process.demonitor(monitor, [:flush])
+            {:error, :cancelled}
+
+          client.clock.() >= deadline ->
+            Process.exit(pid, :kill)
+            Process.demonitor(monitor, [:flush])
+            {:error, :timeout}
+
+          true ->
+            await_response(pid, monitor, ref, client, deadline)
+        end
+    end
+  end
+
+  defp combine_cancellation(client_cancelled?, nil), do: client_cancelled?
+
+  defp combine_cancellation(client_cancelled?, call_cancelled?) when is_function(call_cancelled?, 0) do
+    fn -> client_cancelled?.() or call_cancelled?.() end
+  end
+
+  defp combine_cancellation(client_cancelled?, _), do: client_cancelled?
 
   defp build_url(endpoint, path, []), do: endpoint <> path
   defp build_url(endpoint, path, params), do: endpoint <> path <> "?" <> URI.encode_query(params)

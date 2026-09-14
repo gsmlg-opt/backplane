@@ -120,8 +120,7 @@ defmodule Backplane.SkillProtocol.Bundle do
         artifact_digest: artifact_digest(archive_bytes),
         compressed_bytes: compressed_bytes,
         unpacked_bytes: Enum.sum(Enum.map(relative_files, & &1.bytes)),
-        required_capabilities:
-          get_in(document.metadata, ["backplane", "required-capabilities"]) || [],
+        required_capabilities: required_capabilities(document.metadata),
         files: relative_files
       }
 
@@ -157,53 +156,60 @@ defmodule Backplane.SkillProtocol.Bundle do
   end
 
   defp with_tar(gzip_path, opts, callback) do
-    tmp =
-      Path.join(
-        System.tmp_dir!(),
-        "backplane-skill-protocol-#{System.unique_integer([:positive, :monotonic])}.tar"
-      )
+    with {:ok, dir} <- temporary_directory("backplane-skill-protocol") do
+      tmp = Path.join(dir, "archive.tar")
 
-    try do
-      with :ok <- inflate_bounded(gzip_path, tmp, opts), do: callback.(tmp)
-    after
-      File.rm(tmp)
+      try do
+        with :ok <- inflate_bounded(gzip_path, tmp, opts), do: callback.(tmp)
+      after
+        File.rm_rf(dir)
+      end
     end
   end
 
   defp inflate_bounded(source, target, opts) do
     max = limit(opts, :max_expanded_bytes, @default_max_expanded_bytes)
 
-    with {:ok, input} <- File.open(source, [:read, :binary]),
-         {:ok, output} <- File.open(target, [:write, :binary]) do
-      z = :zlib.open()
+    case File.open(source, [:read, :binary]) do
+      {:ok, input} ->
+        case File.open(target, [:write, :binary, :exclusive]) do
+          {:ok, output} ->
+            z = :zlib.open()
 
-      try do
-        :ok = :zlib.inflateInit(z, 31)
+            try do
+              :ok = :zlib.inflateInit(z, 31)
 
-        input
-        |> IO.binstream(64 * 1024)
-        |> Enum.reduce_while({:ok, 0}, fn chunk, {:ok, total} ->
-          with :ok <- cancelled(opts),
-               inflated = z |> :zlib.inflate(chunk) |> IO.iodata_to_binary(),
-               next = total + byte_size(inflated),
-               :ok <- maximum(next, max, :expanded_bytes),
-               :ok <- IO.binwrite(output, inflated) do
-            {:cont, {:ok, next}}
-          else
-            {:error, _} = error -> {:halt, error}
+              input
+              |> IO.binstream(64 * 1024)
+              |> Enum.reduce_while({:ok, 0}, fn chunk, {:ok, total} ->
+                with :ok <- cancelled(opts),
+                     inflated = z |> :zlib.inflate(chunk) |> IO.iodata_to_binary(),
+                     next = total + byte_size(inflated),
+                     :ok <- maximum(next, max, :expanded_bytes),
+                     :ok <- IO.binwrite(output, inflated) do
+                  {:cont, {:ok, next}}
+                else
+                  {:error, _} = error -> {:halt, error}
+                end
+              end)
+              |> case do
+                {:ok, _total} -> :ok
+                {:error, _} = error -> error
+              end
+            catch
+              _, _ -> error(:invalid_bundle, "archive gzip stream is malformed")
+            after
+              :zlib.close(z)
+              File.close(input)
+              File.close(output)
+            end
+
+          {:error, reason} ->
+            File.close(input)
+            {:error, reason}
           end
-        end)
-        |> case do
-          {:ok, _total} -> :ok
-          {:error, _} = error -> error
-        end
-      catch
-        _, _ -> error(:invalid_bundle, "archive gzip stream is malformed")
-      after
-        :zlib.close(z)
-        File.close(input)
-        File.close(output)
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -373,20 +379,46 @@ defmodule Backplane.SkillProtocol.Bundle do
     end
   end
 
+  defp required_capabilities(metadata) do
+    case Map.get(metadata, "backplane") do
+      extension when is_map(extension) ->
+        case Map.get(extension, "required-capabilities") do
+          values when is_list(values) -> values
+          _ -> []
+        end
+
+      _ -> []
+    end
+  end
+
   defp ensure_bundle(%__MODULE__{} = bundle, _opts), do: {:ok, bundle}
   defp ensure_bundle(path, opts), do: inspect(path, opts)
 
   defp staging_path(destination) do
     parent = Path.dirname(Path.expand(destination))
 
-    stage =
-      Path.join(
-        parent,
-        ".#{Path.basename(destination)}.stage.#{System.unique_integer([:positive, :monotonic])}"
-      )
-
-    with :ok <- File.mkdir_p(parent), :ok <- File.mkdir(stage), do: {:ok, stage}
+    with :ok <- File.mkdir_p(parent),
+         {:ok, stage} <- temporary_directory(parent, ".#{Path.basename(destination)}.stage") do
+      {:ok, stage}
+    end
   end
+
+  defp temporary_directory(prefix), do: temporary_directory(System.tmp_dir!(), prefix)
+
+  defp temporary_directory(parent, prefix) do
+    Enum.reduce_while(1..5, {:error, :collision}, fn _, _acc ->
+      name = prefix <> "." <> random_suffix()
+      path = Path.join(parent, name)
+
+      case File.mkdir(path) do
+        :ok -> {:halt, {:ok, path}}
+        {:error, :eexist} -> {:cont, {:error, :collision}}
+        {:error, reason} -> {:halt, error(:invalid_bundle, "temporary storage cannot be allocated", %{reason: Kernel.inspect(reason)})}
+      end
+    end)
+  end
+
+  defp random_suffix, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
 
   defp write_and_publish(bundle, stage, destination, opts) do
     try do

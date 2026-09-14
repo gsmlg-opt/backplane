@@ -18,13 +18,15 @@ Status: the 2026-09-14 user-directed consumer scope correction is implemented an
 | --- | --- |
 | `apps/backplane_skill_protocol`: `mix deps.get` | Passed; package runtime dependencies resolved without direct `elixir_make`. |
 | `apps/backplane_skill_protocol`: `mix clean && mix compile --warnings-as-errors` | Passed from fresh development build; 22 library files compiled. |
-| `apps/backplane_skill_protocol`: `mix test` | Passed, 32/32 tests. This includes parser, validator, discovery, bundle safety, client, resource, telemetry, and cache-free remote Source coverage. |
+| `apps/backplane_skill_protocol`: `mix test` | Passed, 35/35 tests. This includes parser, validator, discovery, bundle safety, client deadline/cancellation, resource, telemetry, and cache-free remote Source coverage. |
 | `apps/backplane_skill_protocol`: `MIX_ENV=prod mix clean && MIX_ENV=prod mix compile --warnings-as-errors` | Passed from fresh production build; 22 library files compiled. |
 | repository root: `bash scripts/verify_skill_protocol_package.sh` | Passed. Copied package compiled/tested; Hex artifact built and unpacked; schemas and README present; C source, Makefile, cache directory, and native lock binary absent; fresh production sparse Git consumer compiled and completed parser, bundle/resource, and loopback cache-free Source use. |
-| repository root: `mix test apps/backplane_skills/test/backplane/skills/loader_test.exs apps/backplane_skills/test/backplane/skills/archive_test.exs apps/backplane_skills/test/backplane/skills/ingest_test.exs apps/backplane_skills/test/backplane/skills/publication_test.exs apps/backplane_memory/test/backplane/memory/generated_skills_test.exs apps/backplane_api/test/backplane/api/skill_protocol_http_integration_test.exs apps/backplane_api/test/backplane/api/skill_protocol_router_test.exs apps/backplane_api/test/backplane/api/skill_protocol_telemetry_test.exs` | Passed: 59/59 Skills loader/archive/ingest/publication tests, 9/9 generated-Skill tests, and 9/9 API/router/telemetry/real-loopback HTTP tests. |
+| repository root: focused Skills/API suites | The focused loader/archive/ingest/publication, generated-Skill, HTTP integration, router, and telemetry suites passed in the clean verification run. The standalone protocol package and the new malformed-query/router regression file pass independently (35/35 and 8/8 respectively). |
 | repository root: `mix format --check-formatted` | Passed. |
 | repository root: `git diff --check` | Passed after the final documentation update. |
-| repository root: `mix credo` | Failed with exit 8 after scanning 1,423 files. It reported four pre-existing arity-9 refactoring opportunities in unchanged `apps/backplane_skill_protocol/lib/backplane/skill_protocol/source/local.ex`; no finding was in this change. |
+| repository root: `mix credo --strict` | Failed with exit 12 after scanning 1,423 files. Two line-length findings were fixed in this change; the remaining report is four pre-existing arity-9 refactoring opportunities in unchanged `apps/backplane_skill_protocol/lib/backplane/skill_protocol/source/local.ex`. |
+| repository root: `mix test` (full umbrella) | Failed with unrelated existing MCP, telemetry, memory, and Ecto sandbox-owner failures; no failure was reported from the focused protocol package or router regression tests. |
+| repository root: `mix dialyzer` | Not completed: first-run PLT construction remained CPU-bound for over 20 minutes and was interrupted; no diagnostic result was obtained. |
 
 The standalone verifier emitted `yamerl` deprecation warnings under OTP 29. The umbrella test run emitted existing compile warnings and asynchronous Ecto sandbox-owner shutdown logs after tests. All listed ExUnit suites still exited 0. These were not changed because their source is outside this correction.
 
@@ -65,6 +67,6 @@ The 2026-09-11 verification recorded 35 package tests, consumer cache/offline/ow
 
 ## Not Run
 
-- Full umbrella `mix test`, migration tests, authorization suites, CI workflow-contract tests, and Dialyzer were not rerun because this correction changes the independent consumer package, its direct API integration caller, and related documentation only.
+- Migration tests, authorization suites, and CI workflow-contract tests were not rerun. Dialyzer was attempted but did not complete during the first-run PLT build. The full umbrella `mix test` was run and failed on unrelated existing MCP, telemetry, memory, and Ecto sandbox-owner paths as recorded above.
 - Sigma, Synapsis, Samgita, and host-agent adoption remain deferred.
 - No package publication, deployment, or production migration was performed.

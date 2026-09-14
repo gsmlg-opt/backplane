@@ -39,17 +39,22 @@ defmodule Backplane.SkillProtocol.Source.Backplane do
   end
 
   defp one_shot_prepare(source, skill_id, revision, opts) do
-    with {:ok, destination} <- destination(opts),
-         {:ok, manifest} <- Client.resolve(source.client, skill_id, revision, opts),
+    effective_opts = Keyword.put(opts, :cancelled?, cancellation(opts, source.client))
+
+    with {:ok, destination} <- destination(effective_opts),
+         :ok <- cancelled(effective_opts),
+         {:ok, manifest} <- Client.resolve(source.client, skill_id, revision, effective_opts),
          :ok <- exact_manifest(source.client, manifest),
-         {:ok, bytes} <- Client.artifact(source.client, manifest.ref),
-         {:ok, archive} <- stage_archive(bytes) do
+         :ok <- cancelled(effective_opts),
+         {:ok, bytes} <- Client.artifact(source.client, manifest.ref, effective_opts),
+         :ok <- cancelled(effective_opts),
+         {:ok, {archive, archive_dir}} <- stage_archive(bytes) do
       try do
-        with {:ok, bundle} <- Bundle.inspect(archive, Keyword.put(opts, :ref, manifest.ref)),
+        with {:ok, bundle} <- Bundle.inspect(archive, Keyword.put(effective_opts, :ref, manifest.ref)),
              :ok <- same_manifest(bundle.manifest, manifest),
-             do: Bundle.prepare(bundle, destination, opts)
+             do: Bundle.prepare(bundle, destination, effective_opts)
       after
-        File.rm(archive)
+        File.rm_rf(archive_dir)
       end
     end
   end
@@ -78,20 +83,41 @@ defmodule Backplane.SkillProtocol.Source.Backplane do
   defp path_exists?(path), do: match?({:ok, _stat}, File.lstat(path))
 
   defp stage_archive(bytes) do
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "backplane-skill-protocol-source-#{System.unique_integer([:positive, :monotonic])}.tar.gz"
-      )
-
-    case File.write(path, bytes, [:binary, :exclusive]) do
-      :ok ->
-        {:ok, path}
-
-      {:error, reason} ->
-        File.rm(path)
-        error(:invalid_bundle, "artifact staging failed", %{reason: inspect(reason)})
+    with {:ok, dir} <- temporary_directory(),
+         path = Path.join(dir, "artifact.tar.gz") do
+      case File.write(path, bytes, [:binary, :exclusive]) do
+        :ok -> {:ok, {path, dir}}
+        {:error, reason} ->
+          File.rm_rf(dir)
+          error(:invalid_bundle, "artifact staging failed", %{reason: inspect(reason)})
+      end
+    else
+      {:error, %Error{} = reason} -> {:error, reason}
+      {:error, reason} -> error(:invalid_bundle, "artifact staging failed", %{reason: inspect(reason)})
     end
+  end
+
+  defp temporary_directory do
+    Enum.reduce_while(1..5, {:error, :collision}, fn _, _acc ->
+      path = Path.join(System.tmp_dir!(), "backplane-skill-protocol-source." <> random_suffix())
+
+      case File.mkdir(path) do
+        :ok -> {:halt, {:ok, path}}
+        {:error, :eexist} -> {:cont, {:error, :collision}}
+        {:error, reason} -> {:halt, error(:invalid_bundle, "temporary storage cannot be allocated", %{reason: inspect(reason)})}
+      end
+    end)
+  end
+
+  defp random_suffix, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
+
+  defp cancellation(opts, client) do
+    per_call = Keyword.get(opts, :cancelled?, fn -> false end)
+    fn -> per_call.() or client.cancelled?.() end
+  end
+
+  defp cancelled(opts) do
+    if Keyword.get(opts, :cancelled?, fn -> false end).(), do: error(:cancelled, "preparation was cancelled"), else: :ok
   end
 
   defp exact_manifest(client, %{ref: %SkillRef{} = ref} = manifest) do

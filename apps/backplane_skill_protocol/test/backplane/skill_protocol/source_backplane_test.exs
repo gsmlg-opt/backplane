@@ -141,6 +141,32 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
     refute File.exists?(cancelled_destination)
   end
 
+  test "client and per-call cancellation stop between remote phases", %{tmp_dir: tmp_dir} do
+    {manifest, _bytes} = bundle_fixture(tmp_dir)
+    {:ok, cancelled} = Agent.start_link(fn -> false end)
+    parent = self()
+
+    transport = fn request ->
+      send(parent, {:request, request.url})
+
+      case URI.parse(request.url).path do
+        "/skill-protocol/v1/resolve" ->
+          Agent.update(cancelled, fn _ -> true end)
+          {:ok, %{status: 200, headers: %{}, body: JSON.encode!(Wire.manifest_map(manifest))}}
+
+        "/skill-protocol/v1/artifact" ->
+          flunk("artifact must not run after cancellation")
+      end
+    end
+
+    source = BackplaneSource.new!(client(transport, cancelled?: fn -> Agent.get(cancelled, & &1) end))
+    assert {:error, %Error{code: :cancelled, retryable: false}} =
+             BackplaneSource.prepare(source, "opaque/id", "r1", destination: Path.join(tmp_dir, "cancelled"), cancelled?: fn -> false end)
+    assert_receive {:request, resolve_url}
+    assert URI.parse(resolve_url).path == "/skill-protocol/v1/resolve"
+    refute_receive {:request, _}
+  end
+
   test "destination is required, must be fresh, and leaves existing files untouched", %{
     tmp_dir: tmp_dir
   } do
