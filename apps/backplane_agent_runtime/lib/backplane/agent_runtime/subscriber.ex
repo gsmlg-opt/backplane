@@ -12,7 +12,7 @@ defmodule Backplane.AgentRuntime.Subscriber do
 
   @spec new(non_neg_integer()) :: {:ok, t()} | {:error, Backplane.AgentRuntime.Error.t()}
   def new(retention) when is_integer(retention) and retention >= 0 do
-    {:ok, %{retention: retention, events: [], cursor_floor: 0}}
+    EventStream.new(retention)
   end
 
   @spec append(t(), map()) :: {:ok, t()} | {:error, Backplane.AgentRuntime.Error.t()}
@@ -28,7 +28,7 @@ defmodule Backplane.AgentRuntime.Subscriber do
 
   @spec gap(t(), non_neg_integer()) :: {:ok, %{gap: boolean(), from: non_neg_integer()}}
   def gap(subscriber, cursor) when is_integer(cursor) and cursor >= 0 do
-    floor = subscriber.cursor_floor + subscriber.retention
+    floor = subscriber.cursor_floor
     from = if cursor < floor, do: floor, else: cursor
 
     {:ok, %{gap: cursor < floor, from: from}}

@@ -4,8 +4,8 @@
 **Repository:** `gsmlg-opt/backplane`  
 **Date:** 2026-09-10  
 **Updated:** 2026-09-14  
-**Document revision:** 1.4 — verified bounded consolidation  
-**Status:** Proposed; bounded package consolidation verified, full product acceptance pending  
+**Document revision:** 1.5 — PR #33 correctness review
+**Status:** Proposed; focused correctness repairs remain incomplete
 **Companion documents:** [Design](design.md), [Implementation plan](implement_plan.md)
 
 ## 1. Product definition
@@ -22,7 +22,20 @@ The current user requirements supersede the older singleton-agent target in the 
 
 Consumer and sibling-package observations remain the earlier static excerpts described in the source register in [design.md](design.md); they were not refreshed by the current bounded Backplane review. Shared AI/Skill package names describe adjacent proposed boundaries, and their availability and versions remain unverified.
 
-The current Backplane working tree has consolidated the draft package surface around the existing `Backplane.AgentRuntime.Tools` facade and the `Tools.LocalResource` and `Tools.LocalCommand` adapters, removing the old `Backplane.AgentTools` forwarding facade and second Mix application. The Linux command adapter admits a payload only after a nonce handshake and verified launcher parent/process-group/session identity. Focused tests pass 14/0 and the full package passes 123/0. The complete verifier builds one artifact and exercises fresh empty-tool, bundled-basic, and fake-backend consumers against the same recorded hash, including an actual bundled resource and command operation. The implementation remains uncommitted and unpublished at this evidence point. See [baseline.md](baseline.md) for commands and exact limits. This verifies the bounded consolidation, not a full milestone or the complete PRD acceptance matrix.
+The current Backplane branch retains the single package, existing
+`Backplane.AgentRuntime.Tools` facade, and local resource/command adapters.
+PR #33 exists at the reviewed commit, while the present correctness repairs
+were uncommitted at verification time. The subsequent Git commit and remote
+branch state are authoritative for publication status. Store, kernel,
+ownership, collaboration disclosure, and resource repairs have focused passing
+evidence. Execution and command cleanup
+still have review-blocking defects even though their scoped tests pass. Event
+retention has focused passing evidence. The current package suite passes 170
+tests and the three fresh consumers pass against one verified artifact, but
+these mechanical results do not resolve the two blocked implementation scopes.
+The earlier 123-test artifact hash remains historical. See
+[baseline.md](baseline.md) for the finding-by-finding disposition, commands,
+repair counters, and exact limits.
 
 ## 2. Problem and intended value
 

@@ -21,6 +21,28 @@ defmodule Backplane.AgentRuntime.DependencyTest do
       assert {:error, %Error{}} = Dependency.wait(deps, "run_b", "run_a")
     end
 
+    test "rejects a transitive dependency cycle" do
+      {:ok, deps} = Dependency.new(3)
+      assert {:ok, deps, _} = Dependency.wait(deps, "run_a", "run_b")
+      assert {:ok, deps, _} = Dependency.wait(deps, "run_b", "run_c")
+
+      assert {:error, %Error{class: :validation, message: "dependency cycle rejected"}} =
+               Dependency.wait(deps, "run_c", "run_a")
+    end
+
+    test "accepts an acyclic dependency chain" do
+      {:ok, deps} = Dependency.new(3)
+      assert {:ok, deps, _} = Dependency.wait(deps, "run_a", "run_b")
+      assert {:ok, deps, _} = Dependency.wait(deps, "run_b", "run_c")
+      assert {:ok, deps, _} = Dependency.wait(deps, "run_c", "run_d")
+
+      assert deps.waits == [
+               %{waiter: "run_a", target: "run_b"},
+               %{waiter: "run_b", target: "run_c"},
+               %{waiter: "run_c", target: "run_d"}
+             ]
+    end
+
     test "resolves each waiter once and preserves target result" do
       {:ok, deps} = Dependency.new(2)
       {:ok, deps, %{status: :waiting}} = Dependency.wait(deps, "run_a", "run_b")

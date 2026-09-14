@@ -4,8 +4,8 @@
 **Repository:** `gsmlg-opt/backplane`  
 **Date:** 2026-09-10  
 **Updated:** 2026-09-14  
-**Document revision:** 1.4 — verified bounded consolidation  
-**Status:** Proposed implementation specification; bounded package consolidation verified  
+**Document revision:** 1.5 — PR #33 correctness review
+**Status:** Proposed implementation specification; focused repairs in progress
 **Language:** English  
 **Companion documents:** [Product requirements](prd.md), [Implementation plan](implement_plan.md)
 
@@ -34,7 +34,35 @@ This design is based on the explicit requirements in the current discussion, the
 3. The attachment describes an earlier **single local daemon** reduction. Its separation of cheap liveness from model-driven heartbeat/reflection and its conservative tool profiles remain useful host-level concepts. Its singleton product target, database/table suggestions, Oban assumptions, and historical bug claims are **not adopted as requirements for this package**.
 4. The shared AI and Skill protocol packages are adjacent proposals. Their availability, exact public types, and versions must be verified before adding dependencies.
 
-The original 2026-09-10 observations were documentation-only and remain historical. The current branch has since applied a bounded single-package consolidation, with focused results and unresolved failures recorded in [baseline.md](baseline.md). Proposed module names, APIs, invariants, and release gates below remain target contracts unless the current mapping explicitly identifies an implemented module.
+The original 2026-09-10 observations and the earlier 123-test artifact result
+are historical. PR #33 is now undergoing a focused correctness repair on
+`feature/agent-runtime`; current dispositions, scoped evidence, and blocked
+areas are recorded in [baseline.md](baseline.md). Proposed module names, APIs,
+invariants, and release gates below remain target contracts unless the current
+mapping explicitly identifies an implemented module.
+
+### 1.2 Current bounded implementation contract
+
+The current kernel uses additive, injected identities for provider attempts,
+tool invocations, waits, child settlement, and cancellation cleanup. A default
+admission remains queued until start. Dependency results resume their exact
+continuation. Provider completion declares whether it is a continuation or a
+final outcome, and a successful terminal is rejected while required owned work
+remains unsettled. Cancellation and deadline acceptance enter cleanup;
+confirmed cleanup reaches `cancelled` or `timed_out`, while unresolved
+cleanup reaches `unknown_outcome` with evidence.
+
+The ephemeral store now commits exact-next revisions atomically and applies the
+same compare-and-set rule to staged acknowledgements. Invalid acknowledgement
+shapes or revisions do not authorize effects.
+
+The execution controller and command cleanup implementations are still under
+repair. Passing focused tests do not override the unresolved defects listed in
+the baseline. The current 170-test package suite and three same-artifact
+consumer fixtures pass, but those mechanical checks do not close the blocked
+scopes. Unsupported collaboration operations fail explicitly and are not part
+of the working tool catalog. None of this establishes production durable
+storage, consumer readiness, or complete V1 acceptance.
 
 ## 2. Architectural decisions
 
@@ -591,7 +619,7 @@ Interfaces preserve room for these features, but V1 must not add empty productio
 | SRC-SIG | Earlier static excerpts at `gsmlg-opt/sigma@a7cbf4acf63f8ad1357c492e1eee49817f302cba`: `apps/sigma_agent/lib/sigma_agent.ex`, `runtime.ex`, `public_runtime.ex`, `apps/sigma_agent/mix.exs`, `apps/sigma_coding/lib/sigma_coding/dispatcher.ex`. Evidence for integration seams, not proof of target feature completeness. |
 | SRC-SYN-CONTROL | Earlier static excerpts at `gsmlg-opt/Synapsis@fe4ebf7d70d58ec46c1055f22e7c13cb455d8700`: `apps/synapsis_agent/lib/synapsis/agent/daemon.ex`, `run_coordinator.ex`, `apps/synapsis_agent/mix.exs`. |
 | SRC-SYN-EXEC | Same Synapsis snapshot: `apps/synapsis_agent/lib/synapsis/session/worker.ex`, `agent/query_loop.ex`, `agent/query_loop/executor.ex`, `agent/runtime/engine.ex`, `agent/graphs/coding_loop.ex`. Evidence for two migration paths and embedded state ownership. |
-| SRC-BP | Earlier Backplane root `mix.exs` excerpt: umbrella/service and host-agent releases. The current bounded consolidation is based on `feature/agent-runtime` at base `c36ccf619e0083c3de1f112e2c54ae6ef50289dd`; its focused test evidence and limits are in [baseline.md](baseline.md). This does not refresh consumer or sibling-package inventories. |
+| SRC-BP | Earlier Backplane root `mix.exs` excerpt: umbrella/service and host-agent releases. The current PR #33 review started from `feature/agent-runtime` at `f9a8ef339fb267127aa41eac7fab45dc8254a66b`; its focused evidence, blocked repairs, and limits are in [baseline.md](baseline.md). This does not refresh consumer or sibling-package inventories. |
 | SRC-SIBLING | Earlier shared AI/Skill package discussions, including proposed `backplane_ai_protocol`, `Backplane.AiProtocol`, and `backplane_skill_protocol`. Proposed adjacent interfaces, not verified published dependencies. |
 
 Implementation must record current SHAs, actual toolchain/dependency versions, current module paths, current tests, provider/Skill contract availability, storage capabilities, and platform support. The current Backplane base and blocked package test do not make the 2026-09-10 toolchain or consumer searches current. If source observations differ, update the migration inventory and adapters; do not silently weaken the requirements or replace the product target.

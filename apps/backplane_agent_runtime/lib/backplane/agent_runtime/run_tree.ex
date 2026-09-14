@@ -54,7 +54,7 @@ defmodule Backplane.AgentRuntime.RunTree do
           {:ok, t(), %{cancelled: list(), untouched: list()}} | {:error, Error.t()}
   def cancel(tree, run_id) when is_map(tree) and is_binary(run_id) do
     if Map.has_key?(tree.nodes, run_id) do
-      descendants = descendants(tree, run_id)
+      descendants = owned_descendants(tree, run_id)
 
       nodes =
         Enum.reduce(descendants, tree.nodes, fn child_run_id, nodes ->
@@ -109,20 +109,18 @@ defmodule Backplane.AgentRuntime.RunTree do
     end
   end
 
-  defp depth(_nodes, "root", depth), do: depth
-
   defp depth(nodes, run_id, current) do
     case Map.get(nodes, run_id) do
-      %{parent: nil} -> current + 1
+      %{parent: nil} -> current
       %{parent: parent} -> depth(nodes, parent, current + 1)
       _ -> current
     end
   end
 
-  defp descendants(tree, run_id) do
+  defp owned_descendants(tree, run_id) do
     tree.nodes
-    |> Enum.filter(fn {_run_id, node} -> node.parent == run_id end)
+    |> Enum.filter(fn {_run_id, node} -> node.parent == run_id and node.owner == :run end)
     |> Enum.map(&elem(&1, 0))
-    |> Enum.flat_map(&[&1 | descendants(tree, &1)])
+    |> Enum.flat_map(&[&1 | owned_descendants(tree, &1)])
   end
 end

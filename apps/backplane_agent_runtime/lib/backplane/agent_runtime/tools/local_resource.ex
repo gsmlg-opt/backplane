@@ -16,8 +16,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
   @max_read_bytes 1_048_576
   @max_output_entries 100
 
-  def start_link(_state \\ %{}) do
-    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  def start_link(opts \\ %{}) do
+    case Map.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, %{})
+      name -> GenServer.start_link(__MODULE__, %{}, name: name)
+    end
   end
 
   @impl Backplane.AgentRuntime.Resource
@@ -39,15 +42,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
   @impl Backplane.AgentRuntime.Resource
   def write(resource, reference, content, _opts) do
     with {:ok, path} <- confined_path(resource.scope, Map.get(reference, :path)),
-         {:ok, expected} <- expected_revision(reference, content) do
-      if Map.get(reference, :create_only?, false) and File.exists?(path) do
-        {:error, Error.new(:resource_conflict, "resource already exists")}
-      else
-        case current_revision(resource, path) do
-          ^expected -> atomic_write(resource, path, content)
-          current -> revision_conflict(expected, current)
-        end
-      end
+         {:ok, expected} <- expected_revision(reference, content),
+         {:ok, payload} <- encode_payload(Map.get(content, :payload)) do
+      key = revision_key(resource, path)
+
+      GenServer.call(
+        server(resource),
+        {:write, key, path, expected, Map.get(reference, :create_only?, false), payload}
+      )
     end
   end
 
@@ -88,14 +90,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
     opts = Map.new(opts)
 
     with {:ok, root} <- confined_path(resource.scope, Map.get(reference, :path)),
-         {:ok, pattern} <- regex(opts) do
+         {:ok, pattern} <- regex(opts),
+         {:ok, full_pattern} <-
+           confined_pattern(resource.scope, root, Map.get(opts, :pattern, "*")) do
       matches =
-        root
-        |> Path.join(Map.get(opts, :pattern, "*"))
+        full_pattern
         |> Path.wildcard(unescape: true)
         |> Enum.sort()
         |> Enum.take(limit(opts))
-        |> Enum.flat_map(&matches(resource, &1, pattern))
+        |> Enum.flat_map(fn candidate ->
+          if inside_scope?(resource.scope, candidate),
+            do: matches(resource, candidate, pattern),
+            else: []
+        end)
         |> Enum.take(limit(opts))
 
       {:ok, %{matches: matches, provenance: "local_filesystem"}}
@@ -106,21 +113,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
   def file_edit(resource, reference, edit, _opts) do
     with {:ok, path} <- confined_path(resource.scope, Map.get(reference, :path)),
          {:ok, expected} <- expected_revision(reference, edit),
-         {:ok, find} <- require_binary(edit, :find, "find"),
-         {:ok, existing_content} <- regular_content(path) do
-      if revision(resource, path) == expected do
-        replace_all? = Map.get(edit, :replace_all, false)
+         {:ok, find} <- require_binary(edit, :find, "find") do
+      key = revision_key(resource, path)
 
-        case replace_text(existing_content, find, Map.get(edit, :replace, ""), replace_all?) do
-          nil ->
-            {:error, Error.new(:resource_conflict, "resource text was not found")}
-
-          updated ->
-            atomic_write(resource, path, %{payload: updated, expected_revision: expected})
-        end
-      else
-        revision_conflict(expected, revision(resource, path))
-      end
+      GenServer.call(
+        server(resource),
+        {:edit, key, path, expected, find, Map.get(edit, :replace, ""),
+         Map.get(edit, :replace_all, false)}
+      )
     end
   end
 
@@ -137,22 +137,25 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
     end
   end
 
-  defp atomic_write(resource, path, content) do
-    with {:ok, payload} <- encode_payload(Map.get(content, :payload)),
-         temp = temporary_path(path),
-         :ok <- File.write(temp, payload),
-         {:ok, %File.Stat{type: :regular}} <- File.lstat(temp) do
-      case File.rename(temp, path) do
-        :ok ->
-          bump_revision(resource, path)
-          {:ok, %{written: true, revision: revision(resource, path)}}
+  defp atomic_write(path, payload) do
+    temp = temporary_path(path)
 
+    try do
+      with :ok <- File.write(temp, payload),
+           {:ok, %File.Stat{type: :regular}} <- File.lstat(temp) do
+        case File.rename(temp, path) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            {:error, Error.new(:resource_conflict, "local resource write failed", cause: reason)}
+        end
+      else
         {:error, reason} ->
           {:error, Error.new(:resource_conflict, "local resource write failed", cause: reason)}
       end
-    else
-      {:error, reason} ->
-        {:error, Error.new(:resource_conflict, "local resource write failed", cause: reason)}
+    after
+      File.rm(temp)
     end
   end
 
@@ -255,10 +258,6 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
       else: {:error, Error.new(:validation, "#{label} is required")}
   end
 
-  defp current_revision(resource, path) do
-    if File.exists?(path), do: revision(resource, path), else: 0
-  end
-
   defp revision_conflict(expected, current) do
     {:error,
      Error.new(:resource_conflict, "resource revision conflict",
@@ -267,14 +266,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
   end
 
   defp revision(resource, path) do
-    key = {resource.namespace, path}
-    GenServer.call(__MODULE__, {:revision, key})
+    GenServer.call(server(resource), {:revision, revision_key(resource, path)})
   end
 
-  defp bump_revision(resource, path) do
-    key = {resource.namespace, path}
-    GenServer.cast(__MODULE__, {:bump_revision, key})
-  end
+  defp revision_key(resource, path), do: {resource.namespace, path}
+
+  defp server(resource), do: Map.get(resource.namespace, :server, __MODULE__)
 
   defp confined_path(scope, path) when is_binary(scope) do
     with {:ok, _} <- require_binary(%{path: path}, :path, "path") do
@@ -315,7 +312,54 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
   end
 
   @impl GenServer
-  def handle_cast({:bump_revision, key}, state) do
-    {:noreply, Map.update(state, key, 1, &(&1 + 1))}
+  def handle_call({:write, key, path, expected, create_only?, payload}, _from, state) do
+    current = current_revision(state, key, path)
+
+    cond do
+      create_only? and File.exists?(path) ->
+        {:reply, {:error, Error.new(:resource_conflict, "resource already exists")}, state}
+
+      current != expected ->
+        {:reply, revision_conflict(expected, current), state}
+
+      true ->
+        commit_write(state, key, path, current, payload)
+    end
+  end
+
+  @impl GenServer
+  def handle_call({:edit, key, path, expected, find, replace, replace_all?}, _from, state) do
+    current = current_revision(state, key, path)
+
+    if current == expected do
+      with {:ok, existing_content} <- regular_content(path),
+           updated when not is_nil(updated) <-
+             replace_text(existing_content, find, replace, replace_all?) do
+        commit_write(state, key, path, current, updated)
+      else
+        nil ->
+          {:reply, {:error, Error.new(:resource_conflict, "resource text was not found")}, state}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:reply, revision_conflict(expected, current), state}
+    end
+  end
+
+  defp current_revision(state, key, path) do
+    if File.exists?(path), do: Map.get(state, key, 0), else: 0
+  end
+
+  defp commit_write(state, key, path, current, payload) do
+    case atomic_write(path, payload) do
+      :ok ->
+        revision = current + 1
+        {:reply, {:ok, %{written: true, revision: revision}}, Map.put(state, key, revision)}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
   end
 end

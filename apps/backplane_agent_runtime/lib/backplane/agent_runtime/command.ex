@@ -31,7 +31,8 @@ defmodule Backplane.AgentRuntime.Command do
          job_limit: Map.get(namespace, :job_limit, 1),
          output_limit: Map.get(namespace, :output_limit, @default_output_limit),
          deadline_limit: Map.get(namespace, :deadline_limit, @default_deadline_limit),
-         workspace_key: Map.get(namespace, :workspace_key)
+         workspace_key: Map.get(namespace, :workspace_key),
+         server: Map.get(namespace, :server)
        }}
     end
   end

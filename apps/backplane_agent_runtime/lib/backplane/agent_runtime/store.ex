@@ -54,21 +54,60 @@ defmodule Backplane.AgentRuntime.Store do
       when is_atom(impl) and is_map(stage) and is_map(meta) do
     with {:ok, mode} <- validate_mode(impl),
          {:ok, _capabilities} <- validate_durable_or_ephemeral_capabilities(impl),
-         {:ok, stage_revision} <- validate_stage_revision(stage),
-         %{revision: revision} <- impl.acknowledge_commit(context, stage, meta) do
-      if mode == :durable or stage_revision == revision do
-        {:ok, %{revision: revision, outbox: Map.get(stage, :outbox, []), mode: mode}}
-      else
-        {:error, Error.new(:resource_conflict, "invalid stage revision")}
-      end
+         {:ok, stage_revision} <- validate_stage(stage) do
+      validate_staged_acknowledgement(
+        impl.acknowledge_commit(context, stage, meta),
+        stage_revision,
+        stage,
+        mode
+      )
     end
   end
 
-  defp validate_stage_revision(stage) do
-    case Map.get(stage, :revision) do
-      revision when is_integer(revision) and revision >= 0 -> {:ok, revision}
-      _ -> {:error, Error.new(:validation, "invalid stage revision")}
+  defp validate_stage(stage) do
+    run = Map.get(stage, :run)
+    revision = Map.get(stage, :revision)
+
+    if is_map(run) and not is_nil(Map.get(run, :run_id)) and is_integer(revision) and
+         revision > 0 and Map.get(run, :expected_revision) == revision and
+         is_map(Map.get(stage, :transition)) and is_list(Map.get(stage, :effects)) and
+         is_list(Map.get(stage, :outbox)) do
+      {:ok, revision}
+    else
+      {:error, Error.new(:validation, "invalid stage")}
     end
+  end
+
+  defp validate_staged_acknowledgement(
+         {:ok, %{revision: revision}},
+         revision,
+         stage,
+         mode
+       ) do
+    {:ok, %{revision: revision, outbox: Map.fetch!(stage, :outbox), mode: mode}}
+  end
+
+  defp validate_staged_acknowledgement(
+         {:ok, %{revision: received}},
+         expected,
+         _stage,
+         _mode
+       )
+       when is_integer(received) do
+    {:error,
+     Error.new(:resource_conflict, "invalid stage revision",
+       details: %{expected: expected, received: received}
+     )}
+  end
+
+  defp validate_staged_acknowledgement({:error, %Error{} = error}, _expected, _stage, _mode),
+    do: {:error, error}
+
+  defp validate_staged_acknowledgement(other, _expected, _stage, _mode) do
+    {:error,
+     Error.new(:execution_failure, "store returned an invalid acknowledgement",
+       details: %{received: other}
+     )}
   end
 
   @spec store(module(), term(), map(), map()) ::
@@ -78,15 +117,30 @@ defmodule Backplane.AgentRuntime.Store do
     with {:ok, mode} <- validate_mode(impl),
          {:ok, _capabilities} <- validate_durable_or_ephemeral_capabilities(impl),
          {:ok, revision} <- expected_revision(record) do
+      expected_committed_revision = revision + 1
+
       case impl.store(context, record, meta) do
-        {:ok, %{revision: committed_revision} = result}
-        when is_integer(committed_revision) and committed_revision > revision ->
+        {:ok, %{revision: ^expected_committed_revision, outbox: outbox} = result}
+        when is_list(outbox) ->
           {:ok, Map.put(result, :mode, mode)}
+
+        {:ok, %{revision: ^expected_committed_revision} = result} ->
+          {:error,
+           Error.new(:execution_failure, "store returned an invalid acknowledgement",
+             details: %{received: result}
+           )}
+
+        {:ok, %{revision: committed_revision}}
+        when is_integer(committed_revision) ->
+          {:error,
+           Error.new(:resource_conflict, "store returned an invalid revision",
+             details: %{expected: expected_committed_revision, received: committed_revision}
+           )}
 
         {:ok, result} ->
           {:error,
-           Error.new(:resource_conflict, "store returned an invalid revision",
-             details: %{expected: revision + 1, received: Map.get(result, :revision)}
+           Error.new(:execution_failure, "store returned an invalid acknowledgement",
+             details: %{received: result}
            )}
 
         {:error, %Error{} = error} ->

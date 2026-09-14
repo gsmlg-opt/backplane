@@ -41,9 +41,30 @@ defmodule Backplane.AgentRuntime.SubscriberTest do
                  occurred_at: 10
                })
 
-      assert {:ok, %{gap: false, from: 6}} = Subscriber.gap(subscriber, 6)
+      assert {:ok, %{gap: false, from: 5}} = Subscriber.gap(subscriber, 5)
 
-      assert {:ok, %{gap: true, from: 6}} = Subscriber.gap(subscriber, 5)
+      assert {:ok, %{gap: true, from: 5}} = Subscriber.gap(subscriber, 4)
+      assert {:ok, [%{sequence: 5}], [floor: 5]} = Subscriber.replay(subscriber, 5)
+      assert {:error, %Error{class: :not_found}} = Subscriber.replay(subscriber, 4)
+    end
+
+    test "empty and zero-retention subscribers report the actual replay floor" do
+      {:ok, empty} = Subscriber.new(0)
+      assert {:ok, %{gap: false, from: 0}} = Subscriber.gap(empty, 0)
+      assert {:ok, [], [floor: 0]} = Subscriber.replay(empty, 0)
+
+      {:ok, subscriber} =
+        Subscriber.append(empty, %{
+          event_id: "event_0",
+          aggregate_id: "run_1",
+          sequence: 0,
+          type: "run.started",
+          occurred_at: 10
+        })
+
+      assert subscriber.events == []
+      assert {:ok, %{gap: true, from: 1}} = Subscriber.gap(subscriber, 0)
+      assert {:ok, %{gap: false, from: 1}} = Subscriber.gap(subscriber, 1)
     end
 
     test "rejects invalid event envelopes" do

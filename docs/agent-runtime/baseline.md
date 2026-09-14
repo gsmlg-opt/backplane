@@ -13,20 +13,84 @@
 
 These toolchain values, package count, and consumer searches are dated evidence from 2026-09-10. They were not refreshed on 2026-09-14 and must not be read as a current environment inventory.
 
-## Current checkout and bounded consolidation (2026-09-14)
+## Current checkout and PR #33 review (2026-09-14)
 
 | Item | Evidence |
 | --- | --- |
-| Backplane branch / base SHA | `feature/agent-runtime` / `c36ccf619e0083c3de1f112e2c54ae6ef50289dd` |
-| Worktree boundary | The three single-package documents had pre-existing user revisions. The bounded consolidation and this evidence update remain uncommitted. |
+| Backplane branch / reviewed HEAD | `feature/agent-runtime` / `f9a8ef339fb267127aa41eac7fab45dc8254a66b` |
+| Pull request base | PR #33 targets `main` at `bd5bc83005fded6f67beefe3fa8abac31eae506a` for this review. |
+| Toolchain | Elixir 1.18.4 / OTP 28 / ERTS 16.4.0.1. |
+| Worktree boundary | The checkout was clean at review entry. At verification time, the focused repairs and this evidence update were uncommitted. |
 | Sole target application | `apps/backplane_agent_runtime` / `:backplane_agent_runtime` |
 | Canonical tool facade | Existing `Backplane.AgentRuntime.Tools` remains the facade for optional port-backed tool families. |
 | Bundled local adapters | `Backplane.AgentRuntime.Tools.LocalResource` and `Backplane.AgentRuntime.Tools.LocalCommand` |
 | Removed tracked split surface | The `:backplane_agent_tools` Mix project, `Backplane.AgentTools` forwarding facade, duplicate facade tests, and both committed generated package archives were removed from the working tree. No compatibility namespace is retained. |
 | Package harness | `scripts/verify_agent_runtime_package.sh` builds one temporary artifact and exercises fresh `empty_tool`, `bundled_basic`, and `fake_backend` consumers against its unchanged SHA-256 hash. |
-| Publication state | The consolidation remains staged/unstaged and uncommitted at this evidence point. No push or pull request has occurred; publication is a separate authorized step after review. |
+| Publication state | PR #33 already existed at the reviewed HEAD. At verification time, the current correctness repairs had not yet been committed or pushed; the subsequent Git commit and remote branch state are authoritative for publication status. |
 
 This is a bounded consolidation of an existing draft implementation. It does not implement T18 or later consumer adoption, complete all V1 tool families, or establish a milestone gate.
+
+### Review finding disposition
+
+All eight original findings were reproduced through source inspection or a
+focused regression before repair. The table below records their post-repair
+disposition. Already-correct fixes were retained rather than rewritten and are
+listed after the table.
+
+| Finding | Disposition at current working tree | Focused evidence / remaining issue |
+| --- | --- | --- |
+| 1. Store transitions and staged acknowledgements | **Fixed** | Atomic ETS insert/replace, exact-next revision validation, and stale-stage fencing; 19 tests, 0 failures. |
+| 2. Kernel lifecycle and external-result fencing | **Fixed for the supported kernel contract** | Queued admission/start, continuation resume, exact provider/tool/wait identities, owned-child settlement, and explicit cleanup terminals; 41 tests, 0 failures. |
+| 3. Runtime execution path | **Partial — blocked implementation review** | Registry/schema/policy/approval/budget gates, store-first dispatch, supervised controller barriers, and a real LocalResource multi-step fixture were added; 69 adjacent tests pass. Review still found lost task metadata on backend crash, non-persisted budget accounting, raw rather than authoritative normalized committed operations, missing active-provider rejection at tool preparation, and no finite worker timeout. These defects prevent claiming the execution boundary correct. |
+| 4. Ownership and dependency handling | **Fixed** | Opaque roots/depth, ownership-only cancellation, and transitive cycle detection; 12 tests, 0 failures. |
+| 5. Collaboration responses | **Fixed or explicitly deferred** | Hosted admission and recorded status/settlement are observable. Spawn, delegation, send, wait, cancel, and ask-user wrappers return typed unsupported/unavailable results and are not advertised as working; 13 tests, 0 failures. |
+| 6. Local resource tools | **Fixed** | Grep confinement and complete coordinated write/edit/create-only mutations, with optional instance handle; 15 tests, 0 failures. |
+| 7. Local command tool | **Partial — blocked implementation review** | Focused command tests pass 16/0, but an unmonitored cleanup task can leave a job pending indefinitely. A job moved to completed with an uncertain cleanup result can still own a live process group, while termination signals only jobs in the active map. Cleanup correctness is therefore not complete. |
+| 8. Event retention and instance naming | **Fixed** | Events are physically evicted per aggregate, replay floors and gaps agree, zero retention preserves sequence, and optional adapter handles isolate instances; 10 tests, 0 failures. |
+
+Already-correct code retained in this review includes the single
+`backplane_agent_runtime` package and existing Tools facade, the fixed command
+launcher handshake with literal argv/environment filtering and verified
+PID/process-group/session identity, and the LocalResource file-edit shadowing
+and replacement-option fixes.
+
+### Review task routing and repair counters
+
+| Task | Initial / current worker | Sol escalated | Repair rounds | Status |
+| --- | --- | --- | ---: | --- |
+| `store-1` | Sol / Sol | false | 2 | Fixed |
+| `kernel-2` | Sol / Sol | false | 2 | Fixed |
+| `execution-3` | Sol / Sol | false | 2 | Blocked after review |
+| `ownership-4` | Terra planned; Sol executed / Sol | false | 0 | Fixed; Terra was not started because the thread limit forced a direct reroute |
+| `collaboration-5` | Sol / Sol | false | 1 | Fixed/deferred honestly |
+| `resource-1` | Sol / Sol | false | 0 | Fixed |
+| `command-7` | Sol / Sol | false | 2 | Blocked after review |
+| `events-8` | Sol / Sol | false | 0 | Fixed |
+
+The fresh pre-repair baseline was 123 tests with 0 failures
+(`/tmp/backplane-pr33-baseline-tests.log`). Focused counts above establish
+only their named scopes.
+
+### Current post-repair verification
+
+All required mechanical checks completed successfully on the working tree
+before publication. These results show that the package builds, its current tests
+pass, and the single artifact works in the three fixture profiles. They do not
+resolve the execution and command correctness blockers above.
+
+| Command / working directory | Observed result |
+| --- | --- |
+| `mix format --check-formatted` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix compile --warnings-as-errors` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix test` / `apps/backplane_agent_runtime` | Exit 0; 170 tests, 0 failures; seed 648652; 4.0 seconds. |
+| `bash -n scripts/verify_agent_runtime_package.sh` / repository root | Exit 0. |
+| `bash scripts/verify_agent_runtime_package.sh` / repository root | Exit 0; repeated 170 tests with 0 failures (seed 780691), built version 0.1.0 with 39 modules, and ran all three fresh same-artifact consumers. SHA-256: `9dffb4c7e37762896f73247e7f264ef0370564d1032d7ffcf6de3d268259634f`. Log: `/tmp/backplane-pr33-final-artifact.log`. |
+| `git diff --check` / repository root | Exit 0. |
+
+The reviewed Git HEAD remains
+`f9a8ef339fb267127aa41eac7fab45dc8254a66b`. The repairs were uncommitted
+and unpushed at verification time despite these passing checks;
+the subsequent Git commit and remote branch state are authoritative.
 
 ## Consumer repositories
 
@@ -70,9 +134,14 @@ build/config/dependency assumptions and must not resolve a second tools package.
 
 The verifier's dependency scan is limited to the extracted Mix manifest, avoiding false matches against ordinary resource maps. The complete verifier passed on 2026-09-14. It confirmed the bundled adapters and launcher, one Mix application, no old tools namespace, no umbrella source dependency, an empty production dependency list, the selected generic-layer boundary, and identical artifact hash across all three fresh consumers. The fixtures cover inert empty-tool startup, an actual local resource read and local command invocation plus plan revisions, and fake Memory/Skill ports with a cross-scope denial. They do not represent the full V1 acceptance matrix.
 
-## Focused test evidence
+## Historical bounded-consolidation test evidence
 
-Direct application tests used C1 from the named application directory. Verifier commands used the repository root. No explicit environment assignment was supplied; `COREUTILS` was unset during the pre-refactor tools baseline.
+The following results predate the current PR #33 correctness repairs. They
+remain useful consolidation history but are not fresh verification of the
+working tree. Direct application tests used C1 from the named application
+directory. Verifier commands used the repository root. No explicit environment
+assignment was supplied; `COREUTILS` was unset during the pre-refactor tools
+baseline.
 
 ```sh
 # C1

@@ -54,9 +54,12 @@ defmodule Backplane.AgentRuntime.EphemeralStore do
     revision = Map.get(stage, :revision)
     effects = Map.get(stage, :effects)
 
-    if is_map(run) and is_integer(revision) do
-      :ets.insert(table, {run.run_id, %{run: run, revision: revision, effects: effects}})
-      {:ok, %{revision: revision}}
+    if is_map(run) and not is_nil(Map.get(run, :run_id)) and is_integer(revision) and
+         revision > 0 and Map.get(run, :expected_revision) == revision and is_list(effects) do
+      case compare_and_swap(table, run, revision - 1, nil, effects) do
+        {:ok, ^revision} -> {:ok, %{revision: revision}}
+        {:error, %Error{} = error} -> {:error, error}
+      end
     else
       {:error, Error.new(:validation, "invalid stage")}
     end
@@ -65,25 +68,47 @@ defmodule Backplane.AgentRuntime.EphemeralStore do
   defp compare_and_swap(table, run, expected, _transition, effects) do
     new_revision = expected + 1
 
+    replacement = %{run: run, revision: new_revision, effects: effects}
+
     case :ets.lookup(table, run.run_id) do
-      [] ->
-        insert(table, run, new_revision, effects)
-        {:ok, new_revision}
+      [] when expected == 0 ->
+        if :ets.insert_new(table, {run.run_id, replacement}) do
+          {:ok, new_revision}
+        else
+          revision_conflict(table, run.run_id, expected)
+        end
 
-      [{run_id, current}] when current.revision == expected ->
-        insert(table, run_id, new_revision, effects)
-        {:ok, new_revision}
+      [{run_id, %{revision: ^expected} = current}] ->
+        match_spec = [
+          {
+            {run_id, :"$1"},
+            [{:==, :"$1", {:const, current}}],
+            [{:const, {run_id, replacement}}]
+          }
+        ]
 
-      [{_run_id, current}] ->
-        {:error,
-         Error.new(:resource_conflict, "ephemeral revision conflict",
-           details: %{expected: expected, current: current.revision}
-         )}
+        if :ets.select_replace(table, match_spec) == 1 do
+          {:ok, new_revision}
+        else
+          revision_conflict(table, run_id, expected)
+        end
+
+      _ ->
+        revision_conflict(table, run.run_id, expected)
     end
   end
 
-  defp insert(table, run, revision, effects) do
-    :ets.insert(table, {run.run_id, %{run: run, revision: revision, effects: effects}})
+  defp revision_conflict(table, run_id, expected) do
+    current =
+      case :ets.lookup(table, run_id) do
+        [{^run_id, record}] -> record.revision
+        [] -> nil
+      end
+
+    {:error,
+     Error.new(:resource_conflict, "ephemeral revision conflict",
+       details: %{expected: expected, current: current}
+     )}
   end
 
   defp expected_revision(%{expected_revision: revision})

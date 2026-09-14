@@ -44,7 +44,7 @@ defmodule Backplane.AgentRuntime.Resource do
   def write(resource, reference, content, opts \\ [])
       when is_map(resource) and is_map(reference) and is_map(content) do
     with {:ok, _} <- validate_reference(resource, reference),
-         {:ok, revision} <- require_expected_revision(reference) do
+         {:ok, revision} <- require_write_revision(reference) do
       if revision != Map.get(content, :expected_revision, revision) do
         {:error, Error.new(:resource_conflict, "resource revision conflict")}
       else
@@ -101,6 +101,15 @@ defmodule Backplane.AgentRuntime.Resource do
       {:ok, revision}
     else
       {:error, Error.new(:validation, "expected_revision is required")}
+    end
+  end
+
+  defp require_write_revision(reference) do
+    if Map.get(reference, :create_only?, false) and
+         is_nil(Map.get(reference, :expected_revision)) do
+      {:ok, 0}
+    else
+      require_expected_revision(reference)
     end
   end
 

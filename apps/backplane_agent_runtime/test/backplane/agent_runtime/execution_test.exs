@@ -2,8 +2,10 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
   use ExUnit.Case, async: true
 
   alias Backplane.AgentRuntime.EphemeralStore
+  alias Backplane.AgentRuntime.Budget
   alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.Execution
+  alias Backplane.AgentRuntime.ToolRegistry
 
   defmodule NoEffectAdapter do
     @behaviour Backplane.AgentRuntime.Provider
@@ -43,6 +45,7 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
     test "dispatches a provider effect only after commit" do
       {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
       record = %{base_record() | state: :running, expected_revision: 0}
+      {:ok, budget} = Budget.new(%{work: 1})
 
       assert {:ok, _committed, %{effects: [%{started: true}]}} =
                Execution.run(
@@ -50,23 +53,38 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
                  context,
                  record,
                  %{
-                   command: {:provider_started, 10, %{step_id: "step_1", attempt_id: "attempt_1"}}
+                   command: {:provider_started, 10, provider_identity(record)}
                  },
-                 adapter: NoEffectAdapter
+                 adapter: NoEffectAdapter,
+                 budget: budget
                )
     end
 
     test "dispatches a tool effect only after commit" do
       {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
-      record = %{base_record() | state: :running}
+
+      record =
+        base_record()
+        |> Map.put(:state, :running)
+        |> Map.put(:current_step, %{step_id: "step_1", attempt_id: "attempt_1"})
+
+      {:ok, budget} = Budget.new(%{work: 1})
+      {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, descriptor())
 
       assert {:ok, _committed, %{effects: [%{completed: true}]}} =
                Execution.run(
                  EphemeralStore,
                  context,
                  record,
-                 %{command: {:tool_invoked, 10, tool_invocation()}},
-                 adapter: NoEffectAdapter
+                 %{command: {:tool_invoked, 10, tool_invocation(record)}},
+                 registry: registry,
+                 authority: %{
+                   caller: "host",
+                   run_id: record.run_id,
+                   grants: ["example"],
+                   tool_revision: 1
+                 },
+                 budget: budget
                )
     end
 
@@ -80,7 +98,7 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
                  context,
                  record,
                  %{
-                   command: {:provider_started, 10, %{step_id: "step_1", attempt_id: "attempt_1"}}
+                   command: {:provider_started, 10, provider_identity(record)}
                  },
                  adapter: NoEffectAdapter
                )
@@ -90,6 +108,7 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
   defp base_record do
     %{
       run_id: "run_#{System.unique_integer([:positive])}",
+      incarnation: 1,
       expected_revision: 0,
       state: :queued,
       deadline: nil,
@@ -98,15 +117,37 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
     }
   end
 
-  defp tool_invocation do
+  defp tool_invocation(record) do
     %{
       invocation_id: "tool_1",
-      run_id: "run_1",
+      run_id: record.run_id,
+      incarnation: record.incarnation,
+      step_id: "step_1",
+      attempt_id: "attempt_1",
       tool_name: "example",
       tool_revision: 1,
       arguments: %{},
       state: :admitted,
       result: nil
+    }
+  end
+
+  defp provider_identity(record) do
+    %{
+      run_id: record.run_id,
+      incarnation: record.incarnation,
+      step_id: "step_1",
+      attempt_id: "attempt_1"
+    }
+  end
+
+  defp descriptor do
+    %{
+      tool_name: "example",
+      tool_revision: 1,
+      schema: %{type: "object", properties: %{}, additionalProperties: true},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: true},
+      backend: NoEffectAdapter
     }
   end
 end

@@ -5,8 +5,8 @@
 **Consumer repositories:** `gsmlg-opt/sigma`, `gsmlg-opt/Synapsis`, `gsmlg-opt/backplane`  
 **Date:** 2026-09-10  
 **Updated:** 2026-09-14  
-**Document revision:** 1.4 — verified bounded consolidation  
-**Status:** Plan approved; bounded package consolidation verified; T18 and later work not started  
+**Document revision:** 1.5 — PR #33 correctness review
+**Status:** Plan approved; focused repairs incomplete; consumer work remains separate
 **Companion documents:** [Design](design.md), [PRD and acceptance scenarios](prd.md)
 
 ## 1. Execution contract
@@ -19,7 +19,25 @@ Work in small PRs. A task is complete only with code, focused tests, exact evide
 
 The 2026-09-14 bounded consolidation keeps the existing `Backplane.AgentRuntime.Tools` facade, moves the local adapters to `Backplane.AgentRuntime.Tools.LocalResource` and `Backplane.AgentRuntime.Tools.LocalCommand`, and removes the `Backplane.AgentTools` forwarding facade and second Mix application. These actual names are the current private decomposition; broader `Tools.Resource.*`, `Tools.Command.*`, and other family names in this plan remain proposed task scopes.
 
-The final focused adapter run passes 14 tests with 0 failures, including repaired file edits and the approved command-launch handshake. The full package passes formatting, warnings-as-errors compilation, and 123 tests with 0 failures. The complete verifier builds one 0.1.0 artifact and runs fresh empty-tool, bundled-basic, and fake-backend consumers against SHA-256 `49ab63d8ff12ebd18389cafa388e04c81179f35e42e673eb1395bd4005d62213`; the bundled-basic fixture performs an actual local resource read and local command invocation. This bounded result does not complete T01, T13, T14, T23, or any milestone. The implementation remains uncommitted at this evidence point; push and pull-request creation follow separate review and publication steps. Exact commands and limits are recorded in [baseline.md](baseline.md).
+The earlier 123-test, single-artifact result records the package consolidation
+before this correctness review. It is historical evidence and must not be
+reported as verification of the current working tree. PR #33 already exists;
+the focused repairs after reviewed commit
+`f9a8ef339fb267127aa41eac7fab45dc8254a66b` were uncommitted at verification
+time. The subsequent Git commit and remote branch state are authoritative for
+publication status. Store, kernel, ownership, collaboration disclosure, and
+resource scopes currently have passing focused evidence. Execution and command
+cleanup remain blocked by
+reviewed correctness defects; event retention has focused passing evidence. The
+current package suite and single-artifact consumer verifier pass, but those
+mechanical checks do not close the blocked scopes. Exact dispositions, repair
+counters, commands, and results are recorded in [baseline.md](baseline.md).
+
+This bounded review repairs demonstrated defects in the existing architecture.
+It does not complete the broad T01–T17 milestones below. T18 and later consumer
+integration, production durable-store certification, sibling provider/Skill
+protocol adoption, Backplane service agents, and full V1 acceptance remain
+separate work.
 
 ### 1.1 Global guardrails
 

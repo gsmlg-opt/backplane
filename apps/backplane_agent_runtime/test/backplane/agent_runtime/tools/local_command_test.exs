@@ -2,6 +2,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
   use ExUnit.Case, async: false
 
   alias Backplane.AgentRuntime.Command
+  alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.Tools.LocalCommand
 
   setup do
@@ -41,7 +42,35 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
     {:ok, command} =
       Command.new(%{adapter: LocalCommand, allowed_environment: %{"BACKPLANE_TEST" => "value"}})
 
+    on_exit(fn -> cleanup_backend(LocalCommand) end)
+
     %{command: command, workspace: workspace, child_path: child_path, sleep_path: sleep_path}
+  end
+
+  defp cleanup_backend(server) do
+    with pid when is_pid(pid) <- GenServer.whereis(server),
+         true <- Process.alive?(pid) do
+      state = :sys.get_state(pid)
+
+      Enum.each(state.pending, fn {port, pending} ->
+        Port.close(port)
+        System.cmd("kill", ["-KILL", Integer.to_string(pending.launcher_pid)])
+      end)
+
+      (Map.values(state.active) ++ Map.values(state.completed))
+      |> Enum.map(& &1.process_group_id)
+      |> Enum.uniq()
+      |> Enum.each(fn process_group_id ->
+        System.cmd("kill", ["-KILL", "--", "-#{process_group_id}"], stderr_to_stdout: true)
+      end)
+
+      GenServer.stop(pid)
+    else
+      _other -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
+    :error, :badarg -> :ok
   end
 
   defp wait_until_stopped(pids, deadline) do
@@ -84,7 +113,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
 
   defp wait_for_status(command, invocation, job, status, deadline) do
     case Command.read(command, invocation, job, cursor: 0) do
-      {:ok, %{status: ^status}} = result ->
+      {:ok, %{status: ^status, cleanup_status: cleanup_status}} = result
+      when cleanup_status in [:confirmed, :uncertain] ->
         result
 
       result ->
@@ -152,6 +182,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
 
     assert {:ok, %{output: ["hello"], cursor: 1}} =
              wait_for_output(command, invocation, job, 0, deadline)
+
+    assert {:ok, %{status: :completed}} =
+             wait_for_status(command, invocation, job, :completed, deadline)
 
     forbidden_invocation =
       Map.put(invocation, :environment, %{"BACKPLANE_TEST" => "value", "SECRET" => "leak"})
@@ -329,6 +362,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
                System.monotonic_time(:millisecond) + 1_000
              )
 
+    assert {:ok, %{status: :completed}} =
+             wait_for_status(
+               command,
+               request,
+               job,
+               :completed,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+
     refute File.exists?(marker)
 
     sentinel = "BACKPLANE_INHERITED_SENTINEL_#{System.unique_integer([:positive])}"
@@ -403,5 +445,212 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
 
     assert :ok =
              wait_until_stopped([second_launcher], System.monotonic_time(:millisecond) + 1_000)
+  end
+
+  test "records zero and nonzero exit statuses", %{command: command, workspace: workspace} do
+    zero = invocation(workspace, Path.join(workspace, "env"), "zero", ["true"])
+    assert {:ok, zero_job} = Command.start(command, zero, deadline_limit: 1_000)
+
+    assert {:ok, %{status: :completed, exit_status: 0, cleanup_status: :confirmed}} =
+             wait_for_status(
+               command,
+               zero,
+               zero_job,
+               :completed,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+
+    failure_workspace = Path.join(workspace, "failure")
+    File.mkdir_p!(failure_workspace)
+    failure_script = Path.join(failure_workspace, "exit-seven")
+    File.write!(failure_script, "#!/bin/sh\nexit 7\n")
+    File.chmod!(failure_script, 0o700)
+    failure = invocation(failure_workspace, failure_script, "failure")
+    assert {:ok, failure_job} = Command.start(command, failure, deadline_limit: 1_000)
+
+    assert {:ok, %{status: :failed, exit_status: 7, cleanup_status: :confirmed}} =
+             wait_for_status(
+               command,
+               failure,
+               failure_job,
+               :failed,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+  end
+
+  test "blank-line floods count toward the output limit", %{
+    command: command,
+    workspace: workspace
+  } do
+    flood = Path.join(workspace, "blank-flood")
+
+    File.write!(flood, """
+    #!/bin/sh
+    count=0
+    while [ "$count" -lt 1000 ]; do
+      printf '\n'
+      count=$((count + 1))
+    done
+    """)
+
+    File.chmod!(flood, 0o700)
+    request = invocation(workspace, flood, "blank-flood")
+    assert {:ok, job} = Command.start(command, request, deadline_limit: 1_000, output_limit: 64)
+
+    assert {:ok,
+            %{
+              status: :output_limit_exceeded,
+              output_limit_exceeded?: true,
+              cleanup_status: :confirmed,
+              output: output
+            }} =
+             wait_for_status(
+               command,
+               request,
+               job,
+               :output_limit_exceeded,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+
+    assert length(output) <= 8
+  end
+
+  test "ignored TERM is escalated before cancellation releases the workspace", %{
+    command: command,
+    workspace: workspace,
+    sleep_path: sleep_path
+  } do
+    ignores_term = Path.join(workspace, "ignores-term")
+    pid_file = Path.join(workspace, "ignored.pid")
+
+    File.write!(ignores_term, """
+    #!/bin/sh
+    trap '' TERM
+    printf '%s' "$$" > '#{pid_file}'
+    while :; do "#{sleep_path}" 1; done
+    """)
+
+    File.chmod!(ignores_term, 0o700)
+    request = invocation(workspace, ignores_term, "ignored-term")
+    assert {:ok, job} = Command.start(command, request, deadline_limit: 5_000)
+    assert :ok = wait_for_file(pid_file, System.monotonic_time(:millisecond) + 1_000)
+    process_group_id = pid_file |> File.read!() |> String.to_integer()
+
+    on_exit(fn ->
+      System.cmd("kill", ["-KILL", "--", "-#{process_group_id}"], stderr_to_stdout: true)
+    end)
+
+    started = System.monotonic_time(:millisecond)
+    assert :ok = Command.cancel(command, request)
+    assert System.monotonic_time(:millisecond) - started < 250
+
+    assert {:error, %{class: :resource_conflict}} =
+             Command.start(command, %{request | owner_run_id: "too-early"})
+
+    assert {:ok,
+            %{status: :cancelled, termination_status: :requested, cleanup_status: :confirmed}} =
+             wait_for_status(
+               command,
+               request,
+               job,
+               :cancelled,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+
+    assert :ok =
+             wait_until_stopped([process_group_id], System.monotonic_time(:millisecond) + 1_000)
+
+    reuse = invocation(workspace, Path.join(workspace, "env"), "reuse", ["true"])
+    assert {:ok, _job} = Command.start(command, reuse, deadline_limit: 1_000)
+  end
+
+  test "uncertain cleanup remains visible and retains workspace ownership", %{
+    command: command,
+    workspace: workspace,
+    sleep_path: sleep_path
+  } do
+    ignores_term = Path.join(workspace, "uncertain-cleanup")
+
+    File.write!(ignores_term, """
+    #!/bin/sh
+    trap '' TERM
+    while :; do "#{sleep_path}" 1; done
+    """)
+
+    File.chmod!(ignores_term, 0o700)
+    request = invocation(workspace, ignores_term, "uncertain-cleanup")
+    assert {:ok, job} = Command.start(command, request, deadline_limit: 5_000)
+    assert :ok = Command.cancel(command, request)
+
+    %{cleanup_token: token} = :sys.get_state(LocalCommand).active[job.port]
+
+    send(
+      LocalCommand,
+      {:cleanup_result, job.port, token,
+       {:error, Error.new(:resource_conflict, "injected cleanup uncertainty")}}
+    )
+
+    assert {:ok,
+            %{
+              status: :cleanup_failed,
+              cleanup_status: :uncertain,
+              cleanup_error: %Error{class: :resource_conflict}
+            }} = Command.read(command, request, job, cursor: 0)
+
+    assert {:error, %{class: :resource_conflict}} =
+             Command.start(command, %{request | owner_run_id: "blocked-reuse"})
+  end
+
+  test "independent command servers do not collide or cross-cancel", %{
+    workspace: workspace,
+    sleep_path: sleep_path
+  } do
+    {:ok, first_server} = LocalCommand.start_link(name: nil)
+    {:ok, second_server} = LocalCommand.start_link(name: nil)
+    on_exit(fn -> cleanup_backend(first_server) end)
+    on_exit(fn -> cleanup_backend(second_server) end)
+
+    {:ok, first_command} =
+      Command.new(%{adapter: LocalCommand, allowed_environment: %{}, server: first_server})
+
+    {:ok, second_command} =
+      Command.new(%{adapter: LocalCommand, allowed_environment: %{}, server: second_server})
+
+    second_workspace = Path.join(workspace, "second-instance")
+    File.mkdir_p!(second_workspace)
+    first = invocation(workspace, sleep_path, "same-owner", ["30"])
+    second = invocation(second_workspace, sleep_path, "same-owner", ["30"])
+    assert {:ok, first_job} = Command.start(first_command, first, deadline_limit: 5_000)
+    assert {:ok, second_job} = Command.start(second_command, second, deadline_limit: 5_000)
+
+    assert :ok = Command.cancel(first_command, first)
+
+    assert {:ok, %{status: :cancelled}} =
+             wait_for_status(
+               first_command,
+               first,
+               first_job,
+               :cancelled,
+               System.monotonic_time(:millisecond) + 1_000
+             )
+
+    assert {:ok, %{status: :running}} =
+             Command.read(second_command, second, second_job, cursor: 0)
+
+    assert :ok = Command.cancel(second_command, second)
+  end
+
+  defp wait_for_file(path, deadline) do
+    cond do
+      File.exists?(path) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :timeout}
+
+      true ->
+        Process.sleep(10)
+        wait_for_file(path, deadline)
+    end
   end
 end

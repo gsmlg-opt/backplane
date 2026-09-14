@@ -16,36 +16,54 @@ defmodule Backplane.AgentRuntime.KernelTest do
       assert transition.expected_revision == 1
       assert [%{type: "run.admitted"}] = transition.events
 
+      provider = provider_identity("step_1", "attempt_1")
+
+      {:ok, run, _, []} =
+        Kernel.execute(run, {:provider_started, 11, provider})
+
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 1},
-          {:tool_invoked, 12, tool_invocation()}
+          run,
+          {:provider_completed, 12, provider |> Map.put(:final?, false) |> Map.put(:result, %{})}
+        )
+
+      {:ok, run, _, []} =
+        Kernel.execute(
+          run,
+          {:tool_invoked, 13, tool_invocation()}
         )
 
       assert run.state == :running
 
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 2},
-          {:tool_completed, 13, %{invocation_id: "tool_1", result: %{"text" => "ok"}}}
+          run,
+          {:tool_completed, 14,
+           tool_invocation()
+           |> Map.take([:run_id, :incarnation, :step_id, :attempt_id, :invocation_id])
+           |> Map.put(:result, %{"text" => "ok"})}
         )
 
       assert run.state == :running
+
+      {:ok, run, _, []} =
+        Kernel.execute(
+          run,
+          {:provider_started, 15, provider_identity("step_2", "attempt_2")}
+        )
 
       {:ok, run, transition, []} =
         Kernel.execute(
-          %{run | expected_revision: 3},
-          {:provider_completed, 14,
-           %{
-             step_id: "step_1",
-             attempt_id: "attempt_1",
-             outcome: %{"text" => "done"}
-           }}
+          run,
+          {:provider_completed, 16,
+           provider_identity("step_2", "attempt_2")
+           |> Map.put(:final?, true)
+           |> Map.put(:outcome, %{"text" => "done"})}
         )
 
       assert run.state == :completed
       assert run.outcome == %{"text" => "done"}
-      assert transition.expected_revision == 4
+      assert transition.expected_revision == 7
       assert transition.state == :completed
 
       assert [%{type: "run.completed"}] = transition.events
@@ -56,28 +74,21 @@ defmodule Backplane.AgentRuntime.KernelTest do
 
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 1},
-          {:wait_started, 12, %{target_run_id: "run_child"}}
+          run,
+          {:wait_started, 12, wait_identity()}
         )
 
       assert run.state == :waiting_result
 
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 2},
-          {:wait_resolved, 13,
-           %{
-             target_run_id: "run_child",
-             result: %{"text" => "child settled"}
-           }}
+          run,
+          {:wait_resolved, 13, Map.put(wait_identity(), :result, %{"text" => "child settled"})}
         )
 
-      assert run.state == :completed
-
-      assert run.outcome == %{
-               "target_run_id" => "run_child",
-               "result" => %{"text" => "child settled"}
-             }
+      assert run.state == :running
+      assert run.outcome == nil
+      assert run.continuation_results["continuation_1"] == %{"text" => "child settled"}
     end
 
     test "rejects invalid, duplicate, late, and terminal inputs" do
@@ -92,30 +103,37 @@ defmodule Backplane.AgentRuntime.KernelTest do
       assert {:error, %Backplane.AgentRuntime.Error{}} =
                Kernel.execute(%{run | expected_revision: 1}, {:provider_completed, 12, %{}})
 
+      provider = provider_identity("step_1", "attempt_1")
+      {:ok, run, _, []} = Kernel.execute(run, {:provider_started, 12, provider})
+
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 1},
-          {:provider_completed, 12,
-           %{step_id: "step_1", attempt_id: "attempt_1", outcome: %{"text" => "done"}}}
+          run,
+          {:provider_completed, 13,
+           provider |> Map.put(:final?, true) |> Map.put(:outcome, %{"text" => "done"})}
         )
 
       assert Kernel.terminal?(:completed)
 
       assert {:error, %Backplane.AgentRuntime.Error{}} =
-               Kernel.execute(%{run | expected_revision: 2}, {:cancel, 13})
+               Kernel.execute(run, {:cancel, 14})
     end
 
-    test "cancellation is not cleanup completion and deadline has terminal precedence" do
+    test "deadline is terminal only after confirmed cleanup" do
       {:ok, run, _, []} = Kernel.execute(base_run(), {:admit, 10, %{state: :running}})
 
       {:ok, run, transition, []} =
-        Kernel.execute(%{run | expected_revision: 1}, {:cancel, 11})
+        Kernel.execute(run, {:deadline_exceeded, 11})
 
       assert run.state == :cancelling
       assert [%{type: "run.cancelling"}] = transition.events
 
       {:ok, run, _, []} =
-        Kernel.execute(%{run | expected_revision: 2}, {:deadline_exceeded, 12})
+        Kernel.execute(
+          run,
+          {:cleanup_settled, 12,
+           %{certainty: :confirmed, settled: Kernel.cleanup_requirements(run)}}
+        )
 
       assert run.state == :timed_out
       assert Kernel.terminal?(:timed_out)
@@ -129,22 +147,14 @@ defmodule Backplane.AgentRuntime.KernelTest do
 
       result =
         Kernel.execute(
-          %{run | expected_revision: 1},
-          {:provider_started, 11,
-           %{
-             step_id: "step_1",
-             attempt_id: "attempt_1"
-           }}
+          run,
+          {:provider_started, 11, provider_identity("step_1", "attempt_1")}
         )
 
       assert result ==
                Kernel.execute(
-                 %{run | expected_revision: 1},
-                 {:provider_started, 11,
-                  %{
-                    step_id: "step_1",
-                    attempt_id: "attempt_1"
-                  }}
+                 run,
+                 {:provider_started, 11, provider_identity("step_1", "attempt_1")}
                )
 
       assert {:ok, _, _, []} = result
@@ -153,36 +163,45 @@ defmodule Backplane.AgentRuntime.KernelTest do
 
     test "terminal precedence cannot be reopened by stale external results" do
       {:ok, run, _, []} = Kernel.execute(base_run(), {:admit, 10, %{state: :running}})
+      provider = provider_identity("step_1", "attempt_1")
+      {:ok, run, _, []} = Kernel.execute(run, {:provider_started, 11, provider})
 
       {:ok, run, _, []} =
         Kernel.execute(
-          %{run | expected_revision: 1},
-          {:provider_completed, 11, %{step_id: "step_1", attempt_id: "attempt_1", outcome: %{}}}
+          run,
+          {:provider_completed, 12, provider |> Map.put(:final?, true) |> Map.put(:outcome, %{})}
         )
 
       assert {:error, %Backplane.AgentRuntime.Error{}} =
                Kernel.execute(
-                 %{run | expected_revision: 2},
-                 {:tool_completed, 12, %{invocation_id: "tool_1", result: %{}}}
+                 run,
+                 {:tool_completed, 13,
+                  tool_invocation()
+                  |> Map.take([:run_id, :incarnation, :step_id, :attempt_id, :invocation_id])
+                  |> Map.put(:result, %{})}
                )
     end
 
     test "cancellation can still be fenced to an explicit terminal" do
       {:ok, run, _, []} = Kernel.execute(base_run(), {:admit, 10, %{state: :running}})
+      provider = provider_identity("step_1", "attempt_1")
+      {:ok, run, _, []} = Kernel.execute(run, {:provider_started, 11, provider})
 
-      {:ok, run, _, []} = Kernel.execute(%{run | expected_revision: 1}, {:cancel, 11})
+      {:ok, run, _, []} = Kernel.execute(run, {:cancel, 12})
 
       assert {:error, %Backplane.AgentRuntime.Error{}} =
                Kernel.execute(
-                 %{run | expected_revision: 2},
-                 {:provider_completed, 12,
-                  %{step_id: "step_1", attempt_id: "attempt_1", outcome: %{}}}
+                 run,
+                 {:provider_completed, 13,
+                  provider |> Map.put(:final?, true) |> Map.put(:outcome, %{})}
                )
     end
   end
 
   defp base_run do
     %{
+      run_id: "run_1",
+      incarnation: 1,
       expected_revision: 0,
       state: :queued,
       deadline: nil,
@@ -195,11 +214,27 @@ defmodule Backplane.AgentRuntime.KernelTest do
     %{
       invocation_id: "tool_1",
       run_id: "run_1",
+      incarnation: 1,
+      step_id: "step_1",
+      attempt_id: "attempt_1",
       tool_name: "example",
       tool_revision: 1,
       arguments: %{},
       state: :admitted,
       result: nil
+    }
+  end
+
+  defp provider_identity(step_id, attempt_id) do
+    %{run_id: "run_1", incarnation: 1, step_id: step_id, attempt_id: attempt_id}
+  end
+
+  defp wait_identity do
+    %{
+      run_id: "run_1",
+      incarnation: 1,
+      continuation_id: "continuation_1",
+      target_run_id: "run_child"
     }
   end
 end

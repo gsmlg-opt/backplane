@@ -101,4 +101,174 @@ defmodule Backplane.AgentRuntime.Tools.LocalResourceTest do
     assert {:error, %Error{class: :resource_conflict}} =
              Backplane.AgentRuntime.Resource.write(resource, reference, %{payload: "stale"})
   end
+
+  @tag :tmp_dir
+  test "rejects grep patterns that escape the declared scope", %{scope: fixture_root} do
+    scope = Path.join(fixture_root, "workspace")
+    private = Path.join(fixture_root, "private")
+    File.mkdir_p!(scope)
+    File.mkdir_p!(private)
+    File.write!(Path.join(private, "secret.txt"), "do not read")
+
+    {:ok, resource} =
+      Backplane.AgentRuntime.Resource.new(%{scope: scope, adapter: LocalResource})
+
+    assert {:error, %Error{class: :forbidden}} =
+             Backplane.AgentRuntime.Resource.grep(
+               resource,
+               %{path: scope},
+               query: "do not read",
+               pattern: "../private/*.txt"
+             )
+  end
+
+  @tag :tmp_dir
+  test "only one competing write at the same revision commits", %{resource: resource} do
+    path = Path.join(resource.scope, "race.txt")
+
+    results =
+      compete(fn payload ->
+        Backplane.AgentRuntime.Resource.write(
+          resource,
+          %{path: path, expected_revision: 0},
+          %{payload: payload}
+        )
+      end)
+
+    assert_single_committed_content(results, path)
+  end
+
+  @tag :tmp_dir
+  test "only one competing edit at the same revision commits", %{resource: resource} do
+    path = Path.join(resource.scope, "edit-race.txt")
+    File.write!(path, "base")
+
+    results =
+      compete(fn replacement ->
+        Backplane.AgentRuntime.Resource.file_edit(
+          resource,
+          %{path: path, expected_revision: 0},
+          %{find: "base", replace: replacement}
+        )
+      end)
+
+    assert_single_committed_content(results, path)
+  end
+
+  @tag :tmp_dir
+  test "create-only contention creates the file once", %{resource: resource} do
+    path = Path.join(resource.scope, "create-race.txt")
+
+    results =
+      compete(fn payload ->
+        Backplane.AgentRuntime.Resource.write(
+          resource,
+          %{path: path, expected_revision: 0, create_only?: true},
+          %{payload: payload}
+        )
+      end)
+
+    assert_single_committed_content(results, path)
+  end
+
+  @tag :tmp_dir
+  test "create-only writes do not require an expected revision", %{resource: resource} do
+    path = Path.join(resource.scope, "create-only.txt")
+    reference = %{path: path, create_only?: true}
+
+    assert {:ok, %{revision: 1, written: true}} =
+             Backplane.AgentRuntime.Resource.write(resource, reference, %{payload: "created"})
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             Backplane.AgentRuntime.Resource.write(resource, reference, %{payload: "duplicate"})
+
+    assert File.read!(path) == "created"
+  end
+
+  @tag :tmp_dir
+  test "independently named coordinators do not collide or share revisions", %{
+    scope: fixture_root
+  } do
+    {:ok, first_server} = LocalResource.start_link(%{name: nil})
+    {:ok, second_server} = LocalResource.start_link(%{name: nil})
+
+    first_scope = Path.join(fixture_root, "first")
+    second_scope = Path.join(fixture_root, "second")
+    File.mkdir_p!(first_scope)
+    File.mkdir_p!(second_scope)
+
+    {:ok, first} =
+      Backplane.AgentRuntime.Resource.new(%{
+        scope: first_scope,
+        adapter: LocalResource,
+        server: first_server
+      })
+
+    {:ok, second} =
+      Backplane.AgentRuntime.Resource.new(%{
+        scope: second_scope,
+        adapter: LocalResource,
+        server: second_server
+      })
+
+    assert {:ok, %{revision: 1}} =
+             Backplane.AgentRuntime.Resource.write(
+               first,
+               %{path: Path.join(first_scope, "value.txt"), expected_revision: 0},
+               %{payload: "first"}
+             )
+
+    assert {:ok, %{revision: 1}} =
+             Backplane.AgentRuntime.Resource.write(
+               second,
+               %{path: Path.join(second_scope, "value.txt"), expected_revision: 0},
+               %{payload: "second"}
+             )
+
+    GenServer.stop(first_server)
+
+    assert {:ok, %{revision: 2}} =
+             Backplane.AgentRuntime.Resource.write(
+               second,
+               %{path: Path.join(second_scope, "value.txt"), expected_revision: 1},
+               %{payload: "still running"}
+             )
+  end
+
+  defp compete(operation) do
+    parent = self()
+
+    tasks =
+      for payload <- ["first", "second"] do
+        Task.async(fn ->
+          send(parent, {:ready, self()})
+
+          result =
+            receive do
+              :go -> operation.(payload)
+            end
+
+          {payload, result}
+        end)
+      end
+
+    pids =
+      for _ <- tasks do
+        assert_receive {:ready, pid}, 1_000
+        pid
+      end
+
+    Enum.each(pids, &send(&1, :go))
+    Enum.map(tasks, &Task.await/1)
+  end
+
+  defp assert_single_committed_content(results, path) do
+    assert [{winner, {:ok, %{revision: 1, written: true}}}] =
+             Enum.filter(results, &match?({_payload, {:ok, _result}}, &1))
+
+    assert [{_loser, {:error, %Error{class: :resource_conflict}}}] =
+             Enum.filter(results, &match?({_payload, {:error, _error}}, &1))
+
+    assert File.read!(path) == winner
+  end
 end

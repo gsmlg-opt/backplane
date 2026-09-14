@@ -17,33 +17,43 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @completion_retention_ms 5_000
   @default_startup_timeout_ms 1_000
   @handshake_prefix "BACKPLANE_LOCAL_COMMAND"
+  @cleanup_poll_ms 10
+  @term_grace_ms 150
+  @kill_grace_ms 300
+  @output_entry_overhead 8
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
+
+    case name do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
   end
 
   @impl Backplane.AgentRuntime.Command
-  def start(_command, request, _opts) do
+  def start(command, request, _opts) do
     if supported?() do
-      GenServer.call(__MODULE__, {:start, request}, request.deadline_limit + 1_000)
+      GenServer.call(server(command), {:start, request}, request.deadline_limit + 1_000)
     else
       {:error, Error.new(:unsupported_capability, "local command backend is not supported")}
     end
   end
 
   @impl Backplane.AgentRuntime.Command
-  def read(_command, _invocation, job, opts) do
-    GenServer.call(__MODULE__, {:read, job, Keyword.get(opts, :cursor, 0)})
+  def read(command, _invocation, job, opts) do
+    GenServer.call(server(command), {:read, job, Keyword.get(opts, :cursor, 0)})
   end
 
   @impl Backplane.AgentRuntime.Command
-  def cancel(_command, invocation) do
-    GenServer.call(__MODULE__, {:cancel_owner, invocation.owner_run_id})
+  def cancel(command, invocation) do
+    GenServer.call(server(command), {:cancel_owner, invocation.owner_run_id})
   end
 
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
+    {:ok, cleanup_supervisor} = Task.Supervisor.start_link()
 
     {:ok,
      %{
@@ -51,6 +61,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
        completed: %{},
        pending: %{},
        workspaces: MapSet.new(),
+       cleanup_supervisor: cleanup_supervisor,
        launcher_script:
          Keyword.get(
            opts,
@@ -77,6 +88,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         :use_stdio,
         :stderr_to_stdout,
         :hide,
+        :exit_status,
         {:line, 1024},
         {:args,
          ["--fork", "--wait", sh_path!(), state.launcher_script, nonce, request.executable] ++
@@ -125,6 +137,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             cursor: length(current.output),
             status: current.status,
             exit_status: current.exit_status,
+            termination_status: current.termination_status,
+            cleanup_status: current.cleanup_status,
+            cleanup_error: current.cleanup_error,
             output_limit_exceeded?: current.status == :output_limit_exceeded
           }}, state}
     end
@@ -146,17 +161,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         )
       end)
 
-    active = Enum.filter(state.active, fn {_port, job} -> job.owner_run_id == owner_run_id end)
-
-    result =
-      Enum.reduce_while(active, :ok, fn {port, job}, :ok ->
-        case terminate_process_group(port, job) do
-          :ok -> {:cont, :ok}
-          {:error, _error} = error -> {:halt, error}
-        end
+    state =
+      state.active
+      |> Enum.filter(fn {_port, job} -> job.owner_run_id == owner_run_id end)
+      |> Enum.reduce(state, fn {port, _job}, current ->
+        request_cleanup(port, :cancelled, current)
       end)
 
-    {:reply, result, state}
+    {:reply, :ok, state}
   end
 
   @impl GenServer
@@ -182,10 +194,20 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         bytes: 0,
         status: :running,
         exit_status: nil,
-        timer: timer
+        timer: timer,
+        settle_timer: nil,
+        terminal_status: nil,
+        cleanup_token: nil,
+        cleanup_status: :not_started,
+        cleanup_error: nil,
+        termination_status: :not_requested,
+        port_closed?: false
       }
 
-      GenServer.reply(pending.from, {:ok, Map.drop(job, [:process_group_id, :timer])})
+      GenServer.reply(
+        pending.from,
+        {:ok, Map.drop(job, [:process_group_id, :timer, :settle_timer, :cleanup_token])}
+      )
 
       {:noreply,
        %{
@@ -219,15 +241,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({port, {:data, {mode, data}}}, state)
       when mode in [:eol, :noeol] and is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
-    size = IO.iodata_length(data)
+    line = IO.iodata_to_binary(data)
+    size = byte_size(line) + @output_entry_overhead
 
     if job.bytes + size > job.output_limit do
-      case terminate_process_group(port, job) do
-        :ok -> {:noreply, complete_job(port, :output_limit_exceeded, state)}
-        {:error, _error} -> {:noreply, complete_job(port, :cleanup_failed, state)}
-      end
+      {:noreply, request_cleanup(port, :output_limit_exceeded, state)}
     else
-      line = IO.iodata_to_binary(data)
       job = %{job | output: job.output ++ [line], bytes: job.bytes + size}
       {:noreply, %{state | active: Map.put(state.active, port, job)}}
     end
@@ -235,11 +254,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   def handle_info({port, {:exit_status, status}}, state) when is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
-    {:noreply, %{state | active: Map.put(state.active, port, %{job | exit_status: status})}}
+    cancel_timer(job.settle_timer)
+    state = %{state | active: Map.put(state.active, port, %{job | exit_status: status})}
+    terminal_status = if status == 0, do: :completed, else: :failed
+    {:noreply, request_cleanup(port, terminal_status, state)}
+  end
+
+  def handle_info({port, {:exit_status, status}}, state) when is_map_key(state.completed, port) do
+    completed = Map.update!(state.completed, port, &%{&1 | exit_status: status})
+    {:noreply, %{state | completed: completed}}
   end
 
   def handle_info({port, :closed}, state) when is_map_key(state.active, port) do
-    {:noreply, complete_job(port, :closed, state)}
+    {:noreply, mark_port_closed(port, state)}
   end
 
   def handle_info({port, :closed}, state) when is_map_key(state.pending, port) do
@@ -259,12 +286,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({:startup_timeout, _port}, state), do: {:noreply, state}
 
   def handle_info({:timeout, port}, state) when is_map_key(state.active, port) do
-    job = Map.fetch!(state.active, port)
-
-    case terminate_process_group(port, job) do
-      :ok -> {:noreply, complete_job(port, :deadline_exceeded, state)}
-      {:error, _error} -> {:noreply, complete_job(port, :cleanup_failed, state)}
-    end
+    {:noreply, request_cleanup(port, :deadline_exceeded, state)}
   end
 
   def handle_info({:timeout, _port}, state), do: {:noreply, state}
@@ -281,8 +303,47 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   def handle_info({:EXIT, port, _reason}, state) when is_map_key(state.active, port) do
-    {:noreply, complete_job(port, :exited, state)}
+    {:noreply, mark_port_closed(port, state)}
   end
+
+  def handle_info({:settle_exit, port}, state) when is_map_key(state.active, port) do
+    job = Map.fetch!(state.active, port)
+
+    if is_nil(job.exit_status) and is_nil(job.cleanup_token) do
+      {:noreply, request_cleanup(port, :execution_failure, state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:settle_exit, _port}, state), do: {:noreply, state}
+
+  def handle_info({:termination_requested, port, token}, state)
+      when is_map_key(state.active, port) do
+    job = Map.fetch!(state.active, port)
+
+    if job.cleanup_token == token do
+      updated = %{job | termination_status: :requested}
+      {:noreply, %{state | active: Map.put(state.active, port, updated)}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:termination_requested, _port, _token}, state), do: {:noreply, state}
+
+  def handle_info({:cleanup_result, port, token, result}, state)
+      when is_map_key(state.active, port) do
+    job = Map.fetch!(state.active, port)
+
+    if job.cleanup_token == token do
+      {:noreply, settle_job(port, result, state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:cleanup_result, _port, _token, _result}, state), do: {:noreply, state}
 
   def handle_info({:cleanup_completed, port}, state) do
     {:noreply, %{state | completed: Map.delete(state.completed, port)}}
@@ -296,7 +357,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @impl GenServer
   def terminate(_reason, state) do
     Enum.each(state.pending, fn {port, _pending} -> close_port(port) end)
-    Enum.each(state.active, fn {port, job} -> terminate_process_group(port, job) end)
+
+    state.active
+    |> Map.values()
+    |> Enum.map(& &1.process_group_id)
+    |> Enum.uniq()
+    |> Enum.each(&signal_process_group(&1, "-KILL"))
+
+    if Process.alive?(state.cleanup_supervisor), do: Supervisor.stop(state.cleanup_supervisor)
+
     :ok
   end
 
@@ -318,23 +387,120 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp complete_job(port, status, state) do
+  defp request_cleanup(port, requested_status, state) do
+    job = Map.fetch!(state.active, port)
+    terminal_status = choose_terminal_status(job.terminal_status, requested_status)
+    status = cleanup_pending_status(terminal_status)
+
+    if job.cleanup_token do
+      updated = %{job | terminal_status: terminal_status, status: status}
+      %{state | active: Map.put(state.active, port, updated)}
+    else
+      Process.cancel_timer(job.timer)
+      token = make_ref()
+      owner = self()
+
+      case Task.Supervisor.start_child(state.cleanup_supervisor, fn ->
+             result = reconcile_process_group(owner, port, token, job.process_group_id)
+             send(owner, {:cleanup_result, port, token, result})
+           end) do
+        {:ok, _pid} ->
+          updated = %{
+            job
+            | cleanup_token: token,
+              cleanup_status: :pending,
+              terminal_status: terminal_status,
+              status: status
+          }
+
+          %{state | active: Map.put(state.active, port, updated)}
+
+        {:error, reason} ->
+          settle_job(
+            port,
+            {:error,
+             Error.new(:resource_conflict, "local command cleanup could not start", cause: reason)},
+            %{
+              state
+              | active: Map.put(state.active, port, %{job | terminal_status: terminal_status})
+            }
+          )
+      end
+    end
+  end
+
+  defp settle_job(port, cleanup_result, state) do
     case Map.pop(state.active, port) do
       {nil, _active} ->
         state
 
       {job, active} ->
         Process.cancel_timer(job.timer)
-        Process.send_after(self(), {:cleanup_completed, port}, @completion_retention_ms)
+        cancel_timer(job.settle_timer)
+
+        {job, release_workspace?} =
+          case cleanup_result do
+            :ok ->
+              {%{
+                 job
+                 | status: job.terminal_status,
+                   cleanup_status: :confirmed,
+                   cleanup_error: nil
+               }, true}
+
+            {:error, %Error{} = error} ->
+              {%{job | status: :cleanup_failed, cleanup_status: :uncertain, cleanup_error: error},
+               false}
+          end
+
+        if release_workspace?,
+          do: Process.send_after(self(), {:cleanup_completed, port}, @completion_retention_ms)
 
         %{
           state
           | active: active,
-            completed: Map.put(state.completed, port, %{job | status: status}),
-            workspaces: MapSet.delete(state.workspaces, job.workspace)
+            completed: Map.put(state.completed, port, job),
+            workspaces:
+              if(release_workspace?,
+                do: MapSet.delete(state.workspaces, job.workspace),
+                else: state.workspaces
+              )
         }
     end
   end
+
+  defp choose_terminal_status(:cancelled, _requested), do: :cancelled
+  defp choose_terminal_status(_current, :cancelled), do: :cancelled
+
+  defp choose_terminal_status(current, requested)
+       when current in [:completed, :failed, :execution_failure] and
+              requested in [:deadline_exceeded, :output_limit_exceeded],
+       do: requested
+
+  defp choose_terminal_status(nil, requested), do: requested
+  defp choose_terminal_status(current, _requested), do: current
+
+  defp cleanup_pending_status(:cancelled), do: :cancelling
+
+  defp cleanup_pending_status(status) when status in [:deadline_exceeded, :output_limit_exceeded],
+    do: status
+
+  defp cleanup_pending_status(_status), do: :settling
+
+  defp mark_port_closed(port, state) do
+    job = Map.fetch!(state.active, port)
+
+    if job.port_closed? do
+      state
+    else
+      settle_timer = Process.send_after(self(), {:settle_exit, port}, 25)
+      updated = %{job | port_closed?: true, settle_timer: settle_timer}
+      %{state | active: Map.put(state.active, port, updated)}
+    end
+  end
+
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(timer), do: Process.cancel_timer(timer)
 
   defp parse_handshake(line, nonce) do
     case String.split(IO.iodata_to_binary(line), " ", parts: 3) do
@@ -418,26 +584,61 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     removed ++ allowed
   end
 
-  defp terminate_process_group(port, job) do
-    close_port(port)
-    group = "-#{job.process_group_id}"
-
-    case System.cmd(kill_path!(), ["-TERM", "--", group], stderr_to_stdout: true) do
-      {_output, 0} ->
+  defp reconcile_process_group(owner, port, token, process_group_id) do
+    case process_group_exists?(process_group_id) do
+      {:ok, false} ->
         :ok
 
-      {terminate_output, _status} ->
-        case process_group_exists?(job.process_group_id) do
-          {:ok, false} ->
+      {:ok, true} ->
+        send(owner, {:termination_requested, port, token})
+        terminate = signal_process_group(process_group_id, "-TERM")
+
+        case wait_for_group_absence(process_group_id, @term_grace_ms) do
+          :ok ->
             :ok
 
-          {:ok, true} ->
-            termination_error(job.process_group_id, terminate_output, nil)
+          {:error, :still_running} ->
+            kill = signal_process_group(process_group_id, "-KILL")
 
-          {:error, probe_error} ->
-            termination_error(job.process_group_id, terminate_output, probe_error)
+            case wait_for_group_absence(process_group_id, @kill_grace_ms) do
+              :ok -> :ok
+              {:error, reason} -> cleanup_error(process_group_id, terminate, kill, reason)
+            end
+
+          {:error, reason} ->
+            cleanup_error(process_group_id, terminate, nil, reason)
         end
+
+      {:error, reason} ->
+        cleanup_error(process_group_id, nil, nil, reason)
     end
+  end
+
+  defp wait_for_group_absence(process_group_id, limit_ms) do
+    deadline = System.monotonic_time(:millisecond) + limit_ms
+    wait_for_group_absence_until(process_group_id, deadline)
+  end
+
+  defp wait_for_group_absence_until(process_group_id, deadline) do
+    case process_group_exists?(process_group_id) do
+      {:ok, false} ->
+        :ok
+
+      {:ok, true} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :still_running}
+        else
+          Process.sleep(@cleanup_poll_ms)
+          wait_for_group_absence_until(process_group_id, deadline)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp signal_process_group(process_group_id, signal) do
+    System.cmd(kill_path!(), [signal, "--", "-#{process_group_id}"], stderr_to_stdout: true)
   end
 
   defp process_group_exists?(process_group_id) do
@@ -460,17 +661,18 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end)
   end
 
-  defp termination_error(process_group_id, terminate_output, probe_error) do
+  defp cleanup_error(process_group_id, terminate, kill, probe_error) do
     details = %{
       process_group_id: process_group_id,
-      terminate_output: terminate_output
+      terminate: inspect(terminate),
+      kill: inspect(kill),
+      probe_error: inspect(probe_error)
     }
 
-    details =
-      if probe_error, do: Map.put(details, :probe_error, inspect(probe_error)), else: details
-
     {:error,
-     Error.new(:resource_conflict, "local command process group could not be terminated",
+     Error.new(
+       :resource_conflict,
+       "local command process group cleanup could not be confirmed",
        details: details
      )}
   end
@@ -488,6 +690,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   defp active_workspace?(state, workspace) do
     MapSet.member?(state.workspaces, workspace)
   end
+
+  defp server(command), do: Map.get(command, :server) || __MODULE__
 
   defp supported? do
     match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") and

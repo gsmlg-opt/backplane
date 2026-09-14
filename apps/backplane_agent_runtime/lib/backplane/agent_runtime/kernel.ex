@@ -4,24 +4,17 @@ defmodule Backplane.AgentRuntime.Kernel do
   @moduledoc """
   Deterministic execution kernel for Backplane agent runtime runs.
 
-  Transforms state + command + event into new state + transitions + effects.
+  External results are accepted only when their run, incarnation, step,
+  attempt, invocation, or continuation identities match the authoritative run
+  state. Cancellation remains nonterminal until an exact cleanup snapshot is
+  confirmed or uncertainty is explicitly retained.
   """
-
-  @run_states [
-    :queued,
-    :running,
-    :waiting_approval,
-    :waiting_result,
-    :cancelling,
-    :completed,
-    :failed,
-    :cancelled,
-    :timed_out,
-    :unknown_outcome
-  ]
 
   @terminal_states [:completed, :failed, :cancelled, :timed_out, :unknown_outcome]
   @active_states [:queued, :running, :waiting_approval, :waiting_result]
+  @provider_identity [:run_id, :incarnation, :step_id, :attempt_id]
+  @tool_identity @provider_identity ++ [:invocation_id]
+  @wait_identity [:run_id, :incarnation, :continuation_id, :target_run_id]
 
   @two_arg_commands [
     :provider_started,
@@ -29,7 +22,9 @@ defmodule Backplane.AgentRuntime.Kernel do
     :tool_invoked,
     :tool_completed,
     :wait_started,
-    :wait_resolved
+    :wait_resolved,
+    :child_settled,
+    :cleanup_settled
   ]
   @one_arg_commands [:start, :cancel, :deadline_exceeded]
 
@@ -45,61 +40,376 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   @spec terminal?(atom()) :: boolean()
-  def terminal?(state) when state in @terminal_states, do: true
-  def terminal?(_), do: false
+  def terminal?(state), do: state in @terminal_states
+
+  @doc """
+  Returns the exact authoritative work identities a trusted controller must
+  reconcile before confirmed cancellation cleanup can settle.
+  """
+  @spec cleanup_requirements(map()) :: map()
+  def cleanup_requirements(run) when is_map(run) do
+    %{
+      provider: Map.get(run, :active_provider),
+      tools:
+        run
+        |> Map.get(:active_tools, %{})
+        |> Map.values()
+        |> Enum.map(&Map.take(&1, @tool_identity))
+        |> Enum.sort_by(&to_string(&1.invocation_id)),
+      children: outstanding_children(run),
+      dependencies: Map.get(run, :dependencies, []) |> Enum.uniq() |> Enum.sort()
+    }
+  end
 
   # -- dispatch ----------------------------------------------------------------
+
   defp transition(run, :admit, at, input) do
-    if run.state == :queued do
-      do_transition(run, :admit, at, input)
+    if run.state == :queued and not Map.get(run, :admitted, false) do
+      admit(run, at, input)
     else
       invalid(run, :admit)
     end
   end
 
-  defp transition(run, :start, at, input), do: require_state(run, :running, :start, at, input)
+  defp transition(run, :start, at, input) do
+    cond do
+      run.state == :queued and Map.get(run, :admitted, false) ->
+        commit(run, :running, :start, at, input)
 
-  defp transition(run, :provider_started, at, input),
-    do: require_state(run, :running, :provider_started, at, input)
+      run.state == :running and Map.get(run, :admitted, false) ->
+        commit(run, :running, :start, at, input)
 
-  defp transition(run, :provider_completed, at, input),
-    do: require_state(run, :running, :provider_completed, at, input)
+      true ->
+        invalid(run, :start)
+    end
+  end
 
-  defp transition(run, :tool_invoked, at, input),
-    do: require_state(run, :running, :tool_invoked, at, input)
+  defp transition(run, :provider_started, at, input) do
+    with :ok <- require_state(run, :running, :provider_started),
+         :ok <- validate_run_identity(run, input),
+         :ok <- ensure_provider_start_allowed(run),
+         {:ok, identity} <- identity(input, @provider_identity, "provider") do
+      run
+      |> Map.put(:active_provider, identity)
+      |> Map.put(:current_step, Map.take(identity, [:step_id, :attempt_id]))
+      |> commit(:running, :provider_started, at, input)
+    end
+  end
 
-  defp transition(run, :tool_completed, at, input),
-    do: require_state(run, :running, :tool_completed, at, input)
+  defp transition(run, :provider_completed, at, input) do
+    with :ok <- require_state(run, :running, :provider_completed),
+         :ok <- validate_run_identity(run, input),
+         {:ok, identity} <- identity(input, @provider_identity, "provider"),
+         :ok <- match_identity(Map.get(run, :active_provider), identity, "provider attempt"),
+         {:ok, final?} <- required_boolean(input, :final?, "provider final?") do
+      complete_provider(run, at, input, final?)
+    end
+  end
 
-  defp transition(run, :wait_started, at, input),
-    do: require_state(run, :running, :wait_started, at, input)
+  defp transition(run, :tool_invoked, at, input) do
+    with :ok <- require_state(run, :running, :tool_invoked),
+         :ok <- validate_run_identity(run, input),
+         {:ok, identity} <- identity(input, @tool_identity, "tool"),
+         :ok <- match_current_step(run, identity),
+         :ok <- ensure_new_invocation(run, identity.invocation_id) do
+      invocation = Map.merge(input, identity)
+      active_tools = Map.put(Map.get(run, :active_tools, %{}), identity.invocation_id, invocation)
 
-  defp transition(run, :wait_resolved, at, input),
-    do: require_state(run, :waiting_result, :wait_resolved, at, input)
+      run
+      |> Map.put(:active_tools, active_tools)
+      |> commit(:running, :tool_invoked, at, input)
+    end
+  end
+
+  defp transition(run, :tool_completed, at, input) do
+    with :ok <- require_state(run, :running, :tool_completed),
+         :ok <- validate_run_identity(run, input),
+         {:ok, identity} <- identity(input, @tool_identity, "tool"),
+         {:ok, invocation} <- active_invocation(run, identity.invocation_id),
+         :ok <- match_identity(Map.take(invocation, @tool_identity), identity, "tool invocation"),
+         {:ok, result} <- required(input, :result, "tool result") do
+      active_tools = Map.delete(Map.get(run, :active_tools, %{}), identity.invocation_id)
+      tool_results = Map.put(Map.get(run, :tool_results, %{}), identity.invocation_id, result)
+
+      run
+      |> Map.put(:active_tools, active_tools)
+      |> Map.put(:tool_results, tool_results)
+      |> commit(:running, :tool_completed, at, input)
+    end
+  end
+
+  defp transition(run, :wait_started, at, input) do
+    with :ok <- require_state(run, :running, :wait_started),
+         :ok <- validate_run_identity(run, input),
+         {:ok, identity} <- identity(input, @wait_identity, "wait"),
+         :ok <- ensure_no_active_wait(run) do
+      dependencies = [identity.target_run_id | Map.get(run, :dependencies, [])] |> Enum.uniq()
+
+      run
+      |> Map.put(:active_wait, identity)
+      |> Map.put(:dependencies, dependencies)
+      |> commit(:waiting_result, :wait_started, at, input)
+    end
+  end
+
+  defp transition(run, :wait_resolved, at, input) do
+    with :ok <- require_state(run, :waiting_result, :wait_resolved),
+         :ok <- validate_run_identity(run, input),
+         {:ok, identity} <- identity(input, @wait_identity, "wait"),
+         :ok <- match_identity(Map.get(run, :active_wait), identity, "continuation"),
+         {:ok, result} <- required(input, :result, "wait result") do
+      results =
+        Map.put(Map.get(run, :continuation_results, %{}), identity.continuation_id, result)
+
+      dependencies = List.delete(Map.get(run, :dependencies, []), identity.target_run_id)
+
+      run
+      |> Map.put(:active_wait, nil)
+      |> Map.put(:dependencies, dependencies)
+      |> Map.put(:continuation_results, results)
+      |> commit(:running, :wait_resolved, at, input)
+    end
+  end
+
+  defp transition(run, :child_settled, at, input) do
+    with :ok <- require_state(run, :running, :child_settled),
+         :ok <- validate_run_identity(run, input),
+         {:ok, child_run_id} <- required(input, :child_run_id, "child run id"),
+         :ok <- require_unsettled_child(run, child_run_id) do
+      settled_children = [child_run_id | Map.get(run, :settled_children, [])] |> Enum.uniq()
+
+      child_results =
+        case fetch_field(input, :result) do
+          {:ok, result} -> Map.put(Map.get(run, :child_results, %{}), child_run_id, result)
+          :error -> Map.get(run, :child_results, %{})
+        end
+
+      run
+      |> Map.put(:settled_children, settled_children)
+      |> Map.put(:child_results, child_results)
+      |> commit(:running, :child_settled, at, input)
+    end
+  end
 
   defp transition(run, :cancel, at, input) do
     if run.state in @active_states do
-      do_transition(run, :cancelling, at, input)
+      begin_cancellation(run, :cancelled, at, input)
     else
       invalid(run, :cancel)
     end
   end
 
   defp transition(run, :deadline_exceeded, at, input) do
-    if run.state in @active_states or run.state == :cancelling do
-      do_transition(run, :timed_out, at, input)
+    if run.state in @active_states do
+      begin_cancellation(run, :deadline_exceeded, at, input)
     else
       invalid(run, :deadline_exceeded)
     end
   end
 
-  # -- guards ------------------------------------------------------------------
-  defp require_state(run, expected, kind, at, input) do
-    if run.state == expected do
-      do_transition(run, kind, at, input)
-    else
-      invalid(run, kind)
+  defp transition(run, :cleanup_settled, at, input) do
+    with :ok <- require_state(run, :cancelling, :cleanup_settled),
+         {:ok, certainty} <- cleanup_certainty(input) do
+      settle_cleanup(run, at, input, certainty)
     end
+  end
+
+  # -- transitions -------------------------------------------------------------
+
+  defp admit(run, at, input) do
+    target_state = field(input, :state) || :queued
+
+    if target_state in [:queued, :running] do
+      run =
+        run
+        |> Map.put(:admitted, true)
+        |> Map.put(:state, target_state)
+        |> Map.put(:input, field(input, :input) || %{})
+        |> Map.put(:deadline, field(input, :deadline))
+        |> Map.put(:outcome, nil)
+        |> Map.put_new(:incarnation, 0)
+        |> Map.put_new(:context, %{})
+        |> Map.put_new(:active_provider, nil)
+        |> Map.put_new(:current_step, nil)
+        |> Map.put_new(:active_tools, %{})
+        |> Map.put_new(:active_wait, nil)
+        |> Map.put_new(:dependencies, [])
+        |> Map.put_new(:settled_children, [])
+        |> Map.put_new(:continuation_results, %{})
+        |> Map.put_new(:tool_results, %{})
+
+      commit(run, target_state, :admitted, at, input)
+    else
+      validation_error("admission state must be queued or running")
+    end
+  end
+
+  defp complete_provider(run, at, input, false) do
+    with {:ok, result} <- required(input, :result, "provider result"),
+         {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
+      run
+      |> Map.put(:active_provider, nil)
+      |> Map.put(:last_provider_result, result)
+      |> Map.put(:context, context)
+      |> commit(:running, :provider_completed, at, input)
+    end
+  end
+
+  defp complete_provider(run, at, input, true) do
+    with :ok <- ensure_no_unsettled_work(run),
+         {:ok, outcome} <- required(input, :outcome, "provider outcome"),
+         {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
+      run
+      |> Map.put(:active_provider, nil)
+      |> Map.put(:current_step, nil)
+      |> Map.put(:context, context)
+      |> Map.put(:outcome, outcome)
+      |> commit(:completed, :completed, at, outcome)
+    end
+  end
+
+  defp begin_cancellation(run, reason, at, input) do
+    run
+    |> Map.put(:stop_reason, reason)
+    |> Map.put(:cleanup_required, cleanup_requirements(run))
+    |> commit(:cancelling, :cancelling, at, input)
+  end
+
+  defp settle_cleanup(run, at, input, :confirmed) do
+    expected = cleanup_requirements(run)
+
+    if field(input, :settled) == expected do
+      terminal = if run.stop_reason == :deadline_exceeded, do: :timed_out, else: :cancelled
+
+      outcome = %{
+        "stop_reason" => Atom.to_string(run.stop_reason),
+        "cleanup" => %{"certainty" => "confirmed"}
+      }
+
+      run
+      |> clear_active_work()
+      |> Map.put(:outcome, outcome)
+      |> commit(terminal, terminal, at, outcome)
+    else
+      conflict("cleanup settlement does not match authoritative work")
+    end
+  end
+
+  defp settle_cleanup(run, at, input, :uncertain) do
+    with {:ok, evidence} <- required_map(input, :evidence, "cleanup evidence") do
+      outcome = %{
+        "stop_reason" => Atom.to_string(run.stop_reason),
+        "cleanup" => %{"certainty" => "uncertain", "evidence" => deep_stringify_keys(evidence)}
+      }
+
+      run
+      |> Map.put(:outcome, outcome)
+      |> commit(:unknown_outcome, :unknown_outcome, at, outcome)
+    end
+  end
+
+  defp clear_active_work(run) do
+    run
+    |> Map.put(:active_provider, nil)
+    |> Map.put(:active_tools, %{})
+    |> Map.put(:active_wait, nil)
+    |> Map.put(:dependencies, [])
+    |> Map.put(:settled_children, Map.get(run, :children, []))
+  end
+
+  defp commit(run, state, event_kind, at, payload) do
+    revision = run.expected_revision + 1
+    run = run |> Map.put(:state, state) |> Map.put(:expected_revision, revision)
+    event = event(at, "run.#{event_kind}", state, payload)
+    {:ok, run, %{expected_revision: revision, state: state, events: [event]}, []}
+  end
+
+  # -- fencing -----------------------------------------------------------------
+
+  defp validate_run_identity(run, input) do
+    expected = %{run_id: Map.get(run, :run_id), incarnation: Map.get(run, :incarnation, 0)}
+    received = %{run_id: field(input, :run_id), incarnation: field(input, :incarnation)}
+    match_identity(expected, received, "run incarnation")
+  end
+
+  defp match_current_step(run, identity) do
+    match_identity(
+      Map.get(run, :current_step),
+      Map.take(identity, [:step_id, :attempt_id]),
+      "provider step"
+    )
+  end
+
+  defp match_identity(expected, received, kind) do
+    if is_map(expected) and expected == received do
+      :ok
+    else
+      conflict("#{kind} identity does not match authoritative state")
+    end
+  end
+
+  defp ensure_new_invocation(run, invocation_id) do
+    if Map.has_key?(Map.get(run, :active_tools, %{}), invocation_id) or
+         Map.has_key?(Map.get(run, :tool_results, %{}), invocation_id) do
+      conflict("tool invocation is duplicate")
+    else
+      :ok
+    end
+  end
+
+  defp active_invocation(run, invocation_id) do
+    case Map.fetch(Map.get(run, :active_tools, %{}), invocation_id) do
+      {:ok, invocation} -> {:ok, invocation}
+      :error -> conflict("tool invocation is not active")
+    end
+  end
+
+  defp ensure_no_active_wait(run) do
+    if is_nil(Map.get(run, :active_wait)),
+      do: :ok,
+      else: conflict("a continuation is already active")
+  end
+
+  defp ensure_provider_start_allowed(run) do
+    if map_size(Map.get(run, :active_tools, %{})) == 0 and
+         is_nil(Map.get(run, :active_wait)) do
+      :ok
+    else
+      conflict("provider cannot start while tool or continuation work is active")
+    end
+  end
+
+  defp require_unsettled_child(run, child_run_id) do
+    cond do
+      child_run_id not in Map.get(run, :children, []) ->
+        conflict("child is not owned by this run")
+
+      child_run_id in Map.get(run, :settled_children, []) ->
+        conflict("child is already settled")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_no_unsettled_work(run) do
+    unsettled? =
+      map_size(Map.get(run, :active_tools, %{})) > 0 or
+        not is_nil(Map.get(run, :active_wait)) or
+        Map.get(run, :dependencies, []) != [] or
+        outstanding_children(run) != []
+
+    if unsettled?, do: conflict("required work remains unsettled"), else: :ok
+  end
+
+  defp outstanding_children(run) do
+    Map.get(run, :children, []) -- Map.get(run, :settled_children, [])
+  end
+
+  # -- validation --------------------------------------------------------------
+
+  defp require_state(run, expected, kind) do
+    if run.state == expected, do: :ok, else: invalid(run, kind)
   end
 
   defp invalid(run, kind) do
@@ -109,55 +419,141 @@ defmodule Backplane.AgentRuntime.Kernel do
      )}
   end
 
-  # -- transitions -------------------------------------------------------------
-  defp do_transition(run, :admit, at, input) do
-    run_input = Map.get(input, :input, %{})
-    target_state = Map.get(input, :state) || :queued
+  defp conflict(message), do: {:error, Error.new(:resource_conflict, message)}
 
-    run =
-      run
-      |> Map.put(:state, target_state)
-      |> Map.put(:input, run_input)
-      |> Map.put(:deadline, Map.get(input, :deadline))
-      |> Map.put(:outcome, nil)
+  defp revision(%{expected_revision: revision}) when is_integer(revision) and revision >= 0,
+    do: {:ok, revision}
 
-    new_revision = run.expected_revision + 1
-    run = Map.put(run, :expected_revision, new_revision)
+  defp revision(_run), do: validation_error("run expected revision is required")
 
-    event = event(at, "run.admitted", run.state, run_input)
-    {:ok, run, new_transition(new_revision, run.state, [event]), []}
+  defp occurred_at(at) when is_integer(at) and at >= 0, do: {:ok, at}
+  defp occurred_at(_at), do: validation_error("command timestamp is required")
+
+  defp command_input(:admit, [_, input]) when is_map(input), do: {:ok, input}
+  defp command_input(:admit, _), do: validation_error("admit input is required")
+  defp command_input(kind, [_]) when kind in @one_arg_commands, do: {:ok, %{}}
+
+  defp command_input(kind, [_, input]) when kind in @two_arg_commands and is_map(input),
+    do: validate_command_input(kind, input)
+
+  defp command_input(kind, [_, _]) when kind in @two_arg_commands,
+    do: validation_error("#{kind} input must be a map")
+
+  defp command_input(_kind, _), do: validation_error("command arity is invalid")
+
+  defp validate_command_input(:provider_started, input) do
+    with {:ok, _} <- identity(input, @provider_identity, "provider"), do: {:ok, input}
   end
 
-  defp do_transition(run, :provider_completed, at, input) do
-    outcome = Map.get(input, :outcome) || Map.get(input, "outcome") || input
-    run = %{run | state: :completed, outcome: outcome}
-    event = event(at, "run.completed", :completed, outcome)
-    new_revision = run.expected_revision + 1
-    run = Map.put(run, :expected_revision, new_revision)
-    {:ok, run, new_transition(new_revision, :completed, [event]), []}
+  defp validate_command_input(:provider_completed, input) do
+    with {:ok, _} <- identity(input, @provider_identity, "provider"),
+         {:ok, _} <- required_boolean(input, :final?, "provider final?") do
+      {:ok, input}
+    end
   end
 
-  defp do_transition(run, state, at, input) do
-    run = %{run | state: normalize_state(state)}
-
-    run =
-      if state == :wait_resolved,
-        do: %{run | outcome: deep_stringify_keys(input)},
-        else: run
-
-    event = event(at, "run.#{state}", state, input)
-    new_revision = run.expected_revision + 1
-    run = Map.put(run, :expected_revision, new_revision)
-    {:ok, run, new_transition(new_revision, state, [event]), []}
+  defp validate_command_input(:tool_invoked, input) do
+    with {:ok, _} <- identity(input, @tool_identity, "tool"),
+         {:ok, _} <- required(input, :tool_name, "tool name"),
+         {:ok, _} <- required(input, :tool_revision, "tool revision"),
+         {:ok, _} <- required_map(input, :arguments, "tool arguments") do
+      {:ok, input}
+    end
   end
 
-  defp normalize_state(:start), do: :running
-  defp normalize_state(:provider_started), do: :running
-  defp normalize_state(:tool_invoked), do: :running
-  defp normalize_state(:tool_completed), do: :running
-  defp normalize_state(:wait_started), do: :waiting_result
-  defp normalize_state(:wait_resolved), do: :completed
-  defp normalize_state(state), do: state
+  defp validate_command_input(:tool_completed, input) do
+    with {:ok, _} <- identity(input, @tool_identity, "tool"),
+         {:ok, _} <- required(input, :result, "tool result") do
+      {:ok, input}
+    end
+  end
+
+  defp validate_command_input(:wait_started, input) do
+    with {:ok, _} <- identity(input, @wait_identity, "wait"), do: {:ok, input}
+  end
+
+  defp validate_command_input(:wait_resolved, input) do
+    with {:ok, _} <- identity(input, @wait_identity, "wait"),
+         {:ok, _} <- required(input, :result, "wait result") do
+      {:ok, input}
+    end
+  end
+
+  defp validate_command_input(:child_settled, input) do
+    with {:ok, _} <- identity(input, [:run_id, :incarnation], "child"),
+         {:ok, _} <- required(input, :child_run_id, "child run id") do
+      {:ok, input}
+    end
+  end
+
+  defp validate_command_input(:cleanup_settled, input) do
+    with {:ok, _} <- cleanup_certainty(input), do: {:ok, input}
+  end
+
+  defp identity(input, keys, kind) do
+    Enum.reduce_while(keys, {:ok, %{}}, fn key, {:ok, identity} ->
+      case required(input, key, "#{kind} #{key}") do
+        {:ok, value} -> {:cont, {:ok, Map.put(identity, key, value)}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp required(input, key, label) do
+    case fetch_field(input, key) do
+      {:ok, nil} -> validation_error("#{label} is required")
+      {:ok, value} -> {:ok, value}
+      :error -> validation_error("#{label} is required")
+    end
+  end
+
+  defp required_boolean(input, key, label) do
+    case required(input, key, label) do
+      {:ok, value} when is_boolean(value) -> {:ok, value}
+      {:ok, _value} -> validation_error("#{label} must be a boolean")
+      error -> error
+    end
+  end
+
+  defp required_map(input, key, label) do
+    case required(input, key, label) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _value} -> validation_error("#{label} must be a map")
+      error -> error
+    end
+  end
+
+  defp optional_map(input, key, default) do
+    case fetch_field(input, key) do
+      :error -> {:ok, default}
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _value} -> validation_error("#{key} must be a map")
+    end
+  end
+
+  defp cleanup_certainty(input) do
+    case field(input, :certainty) do
+      certainty when certainty in [:confirmed, "confirmed"] -> {:ok, :confirmed}
+      certainty when certainty in [:uncertain, "uncertain"] -> {:ok, :uncertain}
+      _ -> validation_error("cleanup certainty must be confirmed or uncertain")
+    end
+  end
+
+  defp field(input, key) do
+    case fetch_field(input, key) do
+      {:ok, value} -> value
+      :error -> nil
+    end
+  end
+
+  defp fetch_field(input, key) do
+    case Map.fetch(input, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(input, Atom.to_string(key))
+    end
+  end
+
+  defp validation_error(message), do: {:error, Error.new(:validation, message)}
 
   defp deep_stringify_keys(term) when is_map(term) do
     Map.new(term, fn {key, value} ->
@@ -168,10 +564,6 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp deep_stringify_keys(term) when is_list(term), do: Enum.map(term, &deep_stringify_keys/1)
   defp deep_stringify_keys(term), do: term
-
-  defp new_transition(expected_revision, state, events) do
-    %{expected_revision: expected_revision, state: state, events: events}
-  end
 
   defp event(at, type, state, payload) do
     %{
@@ -184,129 +576,5 @@ defmodule Backplane.AgentRuntime.Kernel do
       causation_id: nil,
       payload: %{"state" => state, "input" => payload}
     }
-  end
-
-  # -- validation --------------------------------------------------------------
-  defp revision(%{expected_revision: revision}) when is_integer(revision) and revision >= 0,
-    do: {:ok, revision}
-
-  defp revision(_run), do: {:error, Error.new(:validation, "run expected revision is required")}
-
-  defp occurred_at(at) when is_integer(at) and at >= 0, do: {:ok, at}
-  defp occurred_at(_at), do: {:error, Error.new(:validation, "command timestamp is required")}
-
-  defp command_input(:admit, [_, input]), do: admit_input(input)
-  defp command_input(:admit, _), do: validation_error("admit input is required")
-  defp command_input(:cancel, [_]), do: {:ok, %{}}
-  defp command_input(:deadline_exceeded, [_]), do: {:ok, %{}}
-
-  defp command_input(kind, [_, input]) when kind in @two_arg_commands,
-    do: input_input(kind, input)
-
-  defp command_input(kind, [_]) when kind in @two_arg_commands,
-    do: validation_error("#{kind} input is required")
-
-  defp command_input(kind, [_]) when kind in @one_arg_commands, do: {:ok, %{}}
-  defp command_input(_kind, _), do: validation_error("command arity is invalid")
-
-  defp input_input(kind, input) when is_map(input) do
-    case kind do
-      :tool_invoked -> validate_tool_invocation(input)
-      :tool_completed -> validate_tool_completion(input)
-      :wait_started -> validate_wait(input)
-      :wait_resolved -> validate_wait_resolution(input)
-      :provider_started -> validate_provider(input)
-      :provider_completed -> validate_provider(input)
-      _ -> validation_error("invalid command")
-    end
-  end
-
-  defp input_input(kind, _input) do
-    {:error, Error.new(:validation, "#{kind} input must be a map")}
-  end
-
-  defp admit_input(input) when is_map(input) do
-    with {:ok, state} <- optional_state(input),
-         {:ok, run_input} <- optional_run_input(input) do
-      {:ok,
-       %{
-         state: state,
-         input: run_input,
-         deadline: Map.get(input, :deadline) || Map.get(input, "deadline")
-       }}
-    end
-  end
-
-  defp admit_input(_input), do: {:error, Error.new(:validation, "admit input must be a map")}
-
-  defp optional_state(input) do
-    state = Map.get(input, :state) || Map.get(input, "state")
-
-    if state in @run_states or is_nil(state),
-      do: {:ok, state},
-      else: validation_error("invalid run state")
-  end
-
-  defp optional_run_input(input) do
-    run_input = Map.get(input, :input) || Map.get(input, "input")
-
-    if is_map(run_input) or is_nil(run_input),
-      do: {:ok, run_input || %{}},
-      else: validation_error("run input must be a map")
-  end
-
-  defp validate_tool_invocation(input) do
-    with {:ok, _} <- validate_required(input, :invocation_id, "tool"),
-         {:ok, _} <- validate_required(input, :run_id, "tool"),
-         {:ok, _} <- validate_required(input, :tool_name, "tool"),
-         {:ok, _} <- validate_required(input, :tool_revision, "tool") do
-      {:ok, input}
-    end
-  end
-
-  defp validate_tool_completion(input) do
-    with {:ok, _} <- validate_required(input, :invocation_id, "tool"),
-         {:ok, _} <- validate_required(input, :result, "tool") do
-      {:ok, input}
-    end
-  end
-
-  defp validate_wait(input) do
-    with {:ok, _} <- validate_required(input, :target_run_id, "wait") do
-      {:ok, input}
-    end
-  end
-
-  defp validate_wait_resolution(input) do
-    with {:ok, _} <- validate_required(input, :target_run_id, "wait"),
-         {:ok, _} <- validate_required(input, :result, "wait") do
-      {:ok, input}
-    end
-  end
-
-  defp validate_provider(input) do
-    with {:ok, _} <- validate_required(input, :step_id, "provider"),
-         {:ok, _} <- validate_required(input, :attempt_id, "provider") do
-      {:ok, input}
-    end
-  end
-
-  defp validate_required(input, key, kind) when is_map(input) do
-    value = input[key] || input[Atom.to_string(key)]
-
-    cond do
-      not Map.has_key?(input, key) and not Map.has_key?(input, Atom.to_string(key)) ->
-        validation_error("#{kind} #{key} is required")
-
-      value == nil ->
-        validation_error("#{kind} #{key} is required")
-
-      true ->
-        {:ok, value}
-    end
-  end
-
-  defp validation_error(message) do
-    {:error, Error.new(:validation, message)}
   end
 end
