@@ -178,3 +178,145 @@ remove the `backplane_llama` dependency only after no runtime references remain.
 Relayixir, routing, authorization, credential storage, and logging. Never replay or resubmit an
 in-flight generation during rollback; existing requests finish or terminate under their original
 attempt identity.
+
+## Current-source review follow-up (2026-09-14)
+
+This section supersedes the historical status statements above for the current review. Earlier
+SHAs, findings, artifact hashes, environments, and check results remain historical evidence only.
+
+### Source and delivery state
+
+- Review checkout: `feature/ai-protocol` at
+  `635ad1c86e341b6864e03befa38397b1740717d3`; the worktree was clean before this review.
+- GitHub PR #32 head: `635ad1c86e341b6864e03befa38397b1740717d3`; base branch `main` at
+  `bd5bc83005fded6f67beefe3fa8abac31eae506a`. GitHub reported the PR open, mergeable, and
+  `UNSTABLE`.
+- Historical reviewed SHA `9bfa152da0971e029173876134cc3761eef3f298` was not used as
+  evidence for current behavior.
+- Current toolchain: devenv input 2.1.2, Elixir/Mix 1.18.4, OTP 28 / ERTS 16.4.0.1, Git 2.54.0.
+  Root `mix.lock` SHA-256:
+  `773ba7d426e45e62dfe098956f0afc41f16bf3bdf86b0a37f1b89f88a9c9416a`.
+- The reviewed PR-head diff has 71 files, 8,047 insertions, and 67 deletions. The review repairs are
+  recorded in `5535d21748ade438dd36977d1b083f242d1da7a3`,
+  `9e1f9db981d01821905979f948173669c0b8e2d2`, and
+  `fd7435fa1fb9072a201f6f679abff823aaebcaec`. The review patch SHA-256 against the starting HEAD
+  (tracked `apps/` plus `examples/protocol_lab`, excluding this evidence) is
+  `26a77217dc69f22a634f20bb13c01e60a54e8f774c1314d2e225097a69bb336d`; the new real-endpoint
+  test SHA-256 is `d58c8827e7a94ce4ab6db47c6159b9a312d29970f92d2a9377bebc968fd722e9`.
+- No merge, deploy, live-provider call, quota use, or personal-credential import was performed.
+
+### Current finding dispositions
+
+| Finding | Current disposition | Current evidence |
+| --- | --- | --- |
+| R01 | Fixed | Recursive validation re-enters every declared container; depth, node, byte, and collection budgets are cumulative. Current core suite: 62 tests, zero failures. |
+| R02 | Fixed after review repair | Prebuilt `ContentBlock`, `Message`, `ToolDefinition`, `ToolCall`, `ProviderState`, and `Usage` values are revalidated; atom/string core-key collisions are rejected; recursive serialization isolation remains covered. The new tests failed before the constructor repairs and pass after them. |
+| R03 | Fixed | Positive preservation and negative affinity checks cover protocol, profile, provider, endpoint, account, workspace, and model across all declared request/response/message/content/tool carriers. |
+| R04 | Fixed for the declared pure-preflight subset | Unknown target capability remains unverified, executable host rules require revisions, and host denial wins over caller downgrade permission. No translated production route is claimed. |
+| R05 | Fixed | Actual core and TestKit archives installed from a signed local registry into a fresh external consumer. Test and production compile passed; production releases contain core/Jason and exclude TestKit/ExUnit. |
+| R06 | Fixed after review repair | `cancel/2` now rejects invalid certainty; `interrupt/2` provides the declared interrupted terminal; repeated and late terminal transitions are rejected; finished handles cannot be claimed. |
+| R07 | Fixed | Protocol Lab source is tracked, `/protocol_lab` ignore is anchored, and an isolated warnings-as-errors build plus escript execution used the package observer and fixture. |
+| R08 | Fixed at declared wire-contract scope after review repair | Admission, correlation, credit, sequencing, terminal cleanup, draining, and negotiated limits remain covered; `max_seen_ids` now rejects zero, negative, and non-integer values. A production WebSocket server is not claimed. |
+| R09 | Not verified for the repaired source state | Local compile, format, Credo, scoped tests, package consumers, releases, and diff checks pass. Dialyzer still exits 2 with the exact 12 `backplane_memory` warnings and counts reproduced at base. Available completed GitHub CI is for unrepaired PR head `635ad1c...` and is red; matching CI for the repair commits has not completed. |
+| R10 | Fixed for the declared ordinary non-Codex Responses native-observation path | A real listening `Backplane.Api.Endpoint` routed `/v1/responses` to a deterministic fake upstream once with model rewrite and credential replacement. Shared observer facts drive durable usage/error logs while Relayixir and native response bytes remain host-owned. |
+
+### Confirmed current defects and repairs
+
+1. Constructor composition trusted already-constructed structs, and `ContentBlock` allowed mixed
+   atom/string core-key collisions. Regression tests first failed, then constructors were changed to
+   project and revalidate their own structs. Malformed prebuilt provider state and usage are now
+   rejected without rejecting valid composed values.
+2. `Wire.new/1` accepted invalid `max_seen_ids` values. A failing regression established that zero,
+   negative, and non-integer values must return structured validation errors; the option is now
+   restricted to positive integers or the documented default.
+3. The lifecycle declared `:interrupted` but exposed no transition, and cancellation accepted an
+   arbitrary certainty. Failing lifecycle tests preceded the minimal `interrupt/2` transition and
+   certainty validation.
+4. An ordinary Responses refusal encoded directly as an output item was not observed as a refusal.
+   A failing fixture preceded refusal detection for direct output items and message content.
+5. Relayixir marked downstream disconnects in `conn.private`, but the LLM router derived the durable
+   outcome only from HTTP status and wrote `success`. A real streaming regression failed with that
+   value before the router began mapping the disconnect marker to `cancelled`. The test asserts one
+   upstream submission and one durable `ProxyRequest` row.
+6. The new Relayixir closed-chunk test adapter was defined outside its async test module. In a clean
+   build the test could execute before the adapter module was loaded and raised
+   `UndefinedFunctionError`. Nesting the adapter under the test module removed that ordering race;
+   the full Relayixir suite then passed from a fresh build.
+7. Ten newly-added files had blank lines at EOF and failed `git diff --check`. Only those trailing
+   blank lines were removed.
+8. The real Bandit endpoint exposed that a semantic non-stream Responses result can use HTTP
+   chunked transfer. Relayixir forwards such a response without retaining `conn.resp_body`, so the
+   prior non-stream observer path wrote a successful log with nil usage and empty observation
+   metadata. The failing socket test preceded an observation-only Relayixir body callback and a
+   bounded Backplane body accumulator. Collected bodies and forwarded chunks now enter the same
+   shared observer without mapping native bytes; the real endpoint writes exactly one record with
+   the provider ID, token/cache/reasoning facts, terminal, implementation identity, and bounded
+   diagnostics.
+
+### Gate B and BP01-BP14 on current source
+
+The production-capable call graph remains:
+
+`Backplane.Api.Endpoint` -> `Backplane.LLM.ProxyPlug` -> `Backplane.LLM.Router` -> host
+authorization/model/credential binding -> Relayixir -> one upstream submission -> unchanged native
+response. Ordinary non-Codex Responses observation enters
+`Backplane.LLM.AccessEvent`/`UsageAccumulator` ->
+`Backplane.AiProtocol.OpenAIResponsesObserver` -> durable observability consumers. Translation,
+Codex-specialized transport, credential ownership, routing, and forwarding remain host-native.
+
+| ID | Current result | Evidence boundary |
+| --- | --- | --- |
+| BP01 | Passed | A socket client reached an actual listening Backplane endpoint; fake upstream saw one request, rewritten model, and only the synthetic provider bearer. Inbound bearer/API-key values did not leak. |
+| BP02 | Passed | Native non-stream body was returned unchanged while shared implementation identity, provider response ID, usage, cache, and reasoning values reached the durable record. |
+| BP03 | Passed | Core split/coalesced CRLF and UTF-8 fixture tests plus socket-backed Relayixir streaming retain SSE fragmentation without body rewriting. |
+| BP04 | Passed | Trailing usage after content deltas is retained and exactly one terminal is projected. |
+| BP05 | Passed | Parallel call identities remain distinct; malformed partial arguments remain incomplete; the observer performs no execution. |
+| BP06 | Passed after review repair | Direct and message-content refusals are distinguished from output-limit completion. Both meanings reach host durable logs without converting native HTTP success into transport failure. |
+| BP07 | Passed | HTTP and protocol errors retain native forwarding; only sanitized code/type values are projected. |
+| BP08 | Passed | Truncated, malformed, and oversized observations remain bounded/incomplete while native response forwarding is unchanged. |
+| BP09 | Passed after review repair | A downstream disconnect closes observation, writes `cancelled`, submits once, and writes once; Relayixir performs no replay. |
+| BP10 | Passed | Tests assert exact submission and durable-write counts, snapshot/trailing usage, and explicit unknown rather than fabricated token values. |
+| BP11 | Passed for bounded synchronous observation | Frame, buffer, and total-byte limits are exercised. The Relayixir callback is synchronous and creates no unbounded observer mailbox. Full transport-capacity testing is not claimed. |
+| BP12 | Passed | Durable consumers use shared-package observer identity and facts unavailable from the legacy Responses parser. |
+| BP13 | Passed for deterministic scope | Non-target native Chat, Anthropic, Codex Responses/compact, disconnect, and routing regressions remain deterministic. Live providers were explicitly prohibited and were not called. |
+| BP14 | Passed on the current Linux toolchain | Actual Backplane release and fresh external-consumer test/production releases build. Host release includes core/Jason; TestKit and ExUnit are absent. |
+
+This is not full proxy migration. Only ordinary non-Codex OpenAI Responses native observation is
+migrated. Chat Completions, Anthropic Messages, Codex-specialized paths, cross-protocol translation,
+OAuth/catalog work, a production WebSocket service, and the remaining T01-T28 V1 program remain
+outside this PR's declared migrated path.
+
+### Current verification results
+
+| Command | Current result |
+| --- | --- |
+| `MIX_ENV=test mix do --app backplane_ai_protocol cmd mix test` | 62 tests, zero failures. |
+| `MIX_ENV=test mix do --app backplane_ai_protocol_testkit test` | 2 tests, zero failures. |
+| `MIX_ENV=test mix do --app backplane_api cmd mix test test/backplane/api/llm_protocol_endpoint_integration_test.exs --seed <seed>` | 8 tests, zero failures for seeds 0, 424242, and 987654. Actual listening endpoint covers normal JSON, fragmented SSE/trailing usage, native errors, malformed JSON, refusal, output limit, truncated SSE, downstream disconnect, one deterministic fake-upstream submission per case, one durable write per case, shared facts, and bounded observation. |
+| `MIX_ENV=test mix do --app backplane_api cmd mix test` | Failed: 235 tests, 6 failures. Five failures report host-memory storage unavailable or missing `bpm_host_memory_compat_receipts`; one related channel assertion receives the same storage error. None of the failing files differ between PR head and base, and the PR-head GitHub `backplane_api` job passes. This local schema/environment failure is not labeled passing or repaired. |
+| `MIX_ENV=test mix do --app backplane_llama cmd mix test` | 251 tests, zero failures. Existing asynchronous credentials/log-writer sandbox diagnostics were emitted and are not represented as repaired. |
+| `MIX_ENV=test mix do --app relayixir cmd mix test` | 247 tests, zero failures after the adapter-ordering and response-body observation repairs. |
+| `mix compile --force --warnings-as-errors` | Passed, exit 0. |
+| `mix format --check-formatted` | Passed, exit 0, after the final evidence update. |
+| `mix credo --strict` | 1,415 source files / 19,520 mods and functions, no issues, exit 0, after the final source update. |
+| `mix dialyzer --format raw` | Failed, exit 2: 160 total, 148 skipped, 30 unnecessary skips; all 12 emitted warnings are unchanged `backplane_memory` warnings also reproduced at base. No reviewed file is named. |
+| `MIX_ENV=prod mix release backplane --path /tmp/backplane-pr32-host-release --overwrite` | Passed, exit 0. |
+| Protocol Lab isolated compile/escript/run | Passed; `request_model=fixture-model`, shared observer, `terminal=completed input_tokens=11 output_tokens=7`. |
+| Fresh external consumer test and production release | 1 doctest plus 1 test, zero failures; production compile passed with warnings as errors. Core tar SHA-256 `e425866a3ff887359d52e01af2376e5a29faf3fba7e1b9d22e9302639bf263a8`; TestKit tar SHA-256 `f662c1772b89a2d28157c8ef0dc3e8e4487e46ce6ee10aefc0a77e03e2783187`. |
+
+### CI and remaining review limitation
+
+At the pre-delivery PR head `635ad1c...`, GitHub reports Compile, Format Check, Workflow Contract, Credo, both
+protocol package tests, and the listed unaffected app jobs passing. Dialyzer and nine app-test jobs
+are red. Eight red app jobs match the base-branch red set; `backplane_mcp_protocol` and Relayixir are
+additional at PR head, while `backplane_llama` changed from base red to PR-head green.
+
+The Relayixir failure is repaired and passes locally. The `backplane_mcp_protocol` failure is
+outside the PR diff and is independently reproducible from a clean build: its 2026-07-03 test calls
+`function_exported?(ToolWithOutputSchema, :output_schema, 0)` without first loading the support
+module, yielding 1 failure in 1,329 tests plus 33 doctests. It is reported as a pre-existing test
+ordering defect and is intentionally not modified under this PR's scope rule.
+
+Because no matching GitHub CI run has completed for the repaired commits, R09 is not verified
+against the exact tested source state. The review therefore remains incomplete and does not approve
+merge, despite both functional gates passing locally for the declared scope.
