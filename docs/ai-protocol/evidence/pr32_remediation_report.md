@@ -205,6 +205,31 @@ SHAs, findings, artifact hashes, environments, and check results remain historic
   test SHA-256 is `d58c8827e7a94ce4ab6db47c6159b9a312d29970f92d2a9377bebc968fd722e9`.
 - No merge, deploy, live-provider call, quota use, or personal-credential import was performed.
 
+### Current-source verification (2026-09-14 follow-up)
+
+- `git fetch origin feature/ai-protocol` confirms the remote PR head remains
+  `70b9609dab87eb5beea59d90a521ab1541d94839`; PR #32 reports the same head and base
+  `bd5bc83005fded6f67beefe3fa8abac31eae506a`.
+- The required chunked non-streaming and >8 MiB endpoint regressions were absent from that
+  remote source. They are now implemented locally in
+  `apps/backplane_api/test/backplane/api/llm_protocol_endpoint_integration_test.exs` and committed
+  as `91a3d72a78150defcd53c786de9d64e42af65f07`; this commit is not on the remote PR because push
+  was explicitly disallowed.
+- Local endpoint verification on the working tree passed 10 tests for seeds `0`, `424242`, and
+  `987654`. The chunked case reconstructs and compares the exact native response body, records one
+  upstream submission and one durable log, and verifies complete usage. The overflow case verifies
+  native forwarding, one submission, bounded/incomplete observation, unknown usage, byte count over
+  `8_388_608`, and the stable `response_bytes_exceeded` diagnostic.
+- The detached clean worktree was advanced to `91a3d72a`, but cannot execute tests because it has no
+  downloaded Mix dependencies; the command fails before compilation with `mix deps.get` required.
+  This is an environment limitation, not passing clean-worktree evidence.
+- Current PR CI run `34795930657` tested SHA `70b9609d` (not `91a3d72a`) and still fails the
+  `backplane`, `backplane_admin`, `backplane_mcp`, `backplane_memory`, `backplane_skills`,
+  `backplane_system`, `backplane_telemetry`, and Dialyzer jobs. GitHub log retrieval returned a
+  results-receiver connection error in this environment, so per-test stack traces and equivalent
+  base reproductions remain unverified here. Passing checks include `backplane_api`, `backplane_llama`,
+  both protocol jobs, Relayixir, compile, format, Credo, and workflow contract.
+
 ### Current finding dispositions
 
 | Finding | Current disposition | Current evidence |
