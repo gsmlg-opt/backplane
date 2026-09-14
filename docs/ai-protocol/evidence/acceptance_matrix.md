@@ -50,3 +50,24 @@ above remain useful only for their tested source states.
 Exact current commands, counts, artifact hashes, defect dispositions, and limitations are in the
 `Current-source review follow-up (2026-09-14)` section of
 `docs/ai-protocol/evidence/pr32_remediation_report.md`.
+
+## Endpoint regression coverage ledger (2026-09-15)
+
+This section supersedes the delivery status immediately above. It is bound to remote head
+`70b9609dab87eb5beea59d90a521ab1541d94839`, base
+`bd5bc83005fded6f67beefe3fa8abac31eae506a`, and the local uncommitted regression/evidence changes.
+
+| Acceptance | Current status | Evidence |
+| --- | --- | --- |
+| Current committed production repairs | `covered by remote CI` | Runs `34795930919` and `34795930657` test the tree-identical merge commit `f9eff712...`; push run `34795927803` tests exact head `70b9609d...`. The earlier no-matching-CI statement is superseded. |
+| Fragmented chunked semantic JSON | `passed locally; not yet remote` | The real endpoint test pauses after two incomplete JSON chunks, observes no premature durable facts, then verifies byte-exact forwarding, exact `bytes_seen`, one submission, one row, and complete usage/terminal facts after the final chunk. |
+| Chunked observation above 8 MiB | `passed locally; not yet remote` | The real endpoint forwards the entire native body while bounded observation becomes incomplete, usage/response identity remain unknown, and `response_bytes_exceeded` is recorded. |
+| Endpoint suite | `passed locally` | 10 tests, zero failures at seeds 0, 424242, and 987654. |
+| Normal `backplane_api` test command | `passed locally` | 244 tests, zero failures at seed 0; both new cases are discovered by the normal application command. |
+| PR-scope functional checks | `passed locally` | Protocol 62/62, TestKit 2/2, Llama 251/251, Relayixir 247/247, workflow contract 4/4, strict compile, format, Credo, Protocol Lab, external consumer and host release. |
+| Repository-wide CI | `red; base-equivalent failures` | Dialyzer and seven application jobs remain red with matching base failures. They are outside this PR's scoped implementation and are not represented as green or waived. |
+| Migration boundary | `ordinary non-Codex Responses native observation only` | Native forwarding and host routing/credential ownership remain unchanged; full translation/proxy migration is not claimed. |
+| Merge review | `incomplete` | The two new endpoint regressions and evidence are still local-only, and repository-wide required CI remains red. |
+
+Exact run/job IDs and failure boundaries are recorded in the `Endpoint regression coverage update
+(2026-09-15)` section of `docs/ai-protocol/evidence/pr32_remediation_report.md`.

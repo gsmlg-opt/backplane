@@ -320,3 +320,58 @@ ordering defect and is intentionally not modified under this PR's scope rule.
 Because no matching GitHub CI run has completed for the repaired commits, R09 is not verified
 against the exact tested source state. The review therefore remains incomplete and does not approve
 merge, despite both functional gates passing locally for the declared scope.
+
+## Endpoint regression coverage update (2026-09-15)
+
+This section supersedes the current-delivery statements above. The current remote PR head is
+`70b9609dab87eb5beea59d90a521ab1541d94839`, the base is
+`bd5bc83005fded6f67beefe3fa8abac31eae506a`, and GitHub's merge-test commit is
+`f9eff712430f9fc5d143fa50667ca21716fadd93`. The head and merge-test commits have the same source
+tree, `77410169d3159930f2d321aa9e754c37fd3413f3`. GitHub CI runs `34795930919` and
+`34795930657` therefore cover the committed production repairs at the current PR head; the earlier
+statement that the latest repaired source had no matching CI run is no longer current.
+
+Two required real-endpoint cases were still absent from that committed source. They have been added
+locally to `apps/backplane_api/test/backplane/api/llm_protocol_endpoint_integration_test.exs` without
+changing production code:
+
+1. A semantic non-stream Responses JSON body is split inside JSON tokens across three HTTP chunks.
+   The fake upstream pauses after the second chunk; the test confirms that no completed durable log
+   exists before the final fragment. After completion, it asserts byte-exact native forwarding, one
+   upstream submission, one durable row, the provider response ID, input/output/cache/reasoning
+   usage, a complete observation, a completed terminal, and exact semantic `bytes_seen`.
+2. A transport-valid chunked JSON body larger than 8 MiB is forwarded byte-for-byte without changing
+   Relayixir's transport limits. The observer records the actual bytes presented, returns an
+   incomplete observation with `response_bytes_exceeded`, and does not claim usage or provider
+   response identity from the discarded oversized semantic body.
+
+The endpoint file now contains 10 tests and passes under seeds 0, 424242, and 987654. The normal
+`backplane_api` application test command discovers both cases and passes with 244 tests at seed 0.
+These two tests and this evidence update are local working-tree changes and are not covered by the
+current remote runs until committed and pushed.
+
+### Current PR and base-equivalent CI boundary
+
+PR CI run `34795930919` and Test run `34795930657` are associated with head `70b9609d...` and check
+the tree-identical merge-test commit `f9eff712...`; push run `34795927803` checks the exact head.
+Compile, format, workflow contract, Credo, protocol, TestKit, API, Llama, and Relayixir jobs pass.
+Dialyzer and seven application jobs remain red. Comparison with base runs `34214605966` and
+`34214605975`, plus equivalent local head/base reproductions, established the following failures as
+base-equivalent rather than introduced by this PR:
+
+| Current failed job | PR job ID | Base job ID | Failure boundary |
+| --- | ---: | ---: | --- |
+| Dialyzer | `103828898194` | `102023295355` | Same 12 emitted `backplane_memory` warnings; 160 total, 148 skipped, 30 unnecessary skips. Exact-head push job `103828888672` matches. |
+| `backplane_telemetry` | `103828897578` | `102023295694` | Same two `FlagsTest` default/master-switch failures. |
+| `backplane_admin` | `103828897672` | `102023295686` | Same ten memory-recall canonical-partition failures. |
+| `backplane_skills` | `103828897708` | `102023295587` | Same `LocalFS :bad_name` and unavailable API endpoint failures. |
+| `backplane_system` | `103828897729` | `102023295749` | Same 22 Tzdata/Boruta/Oban/ETS/cache/mock-runtime failures. |
+| `backplane` | `103828897792` | `102023295750` | Same two memory MCP `:incomplete_partition` failures. |
+| `backplane_memory` | `103828897796` | `102023295668` | Same 40 canonical-partition failures. |
+| `backplane_mcp` | `103828897822` | `102023295767` | Same four remote-IP, skill-load, and batch failures. |
+
+These failures are not repaired by this scoped change, are not reported as passing, and keep the
+repository-wide CI gate red unless repository policy separately waives or fixes them. The verified
+migration boundary remains ordinary non-Codex OpenAI Responses native observation. Relayixir owns
+forwarding, and Backplane retains authorization, routing, credentials, observation and persistence;
+no full proxy migration or cross-protocol translation is claimed.
