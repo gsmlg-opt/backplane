@@ -56,7 +56,7 @@ Enable `:skill_protocol_v1_enabled`, restart or deploy through the normal config
 
 ## Withdrawal
 
-Withdrawal or live disablement makes the affected revision unavailable. Exact requests return `revision_unavailable` (HTTP 410 where disclosure policy permits) or concealed not-found/authorization errors. The server never falls back to latest, and clients must persist known denial/withdrawal state for offline decisions.
+Withdrawal or live disablement makes the affected revision unavailable. Exact requests return `revision_unavailable` (HTTP 410 where disclosure policy permits) or concealed not-found/authorization errors. The server never falls back to latest. One-shot consumers return that remote error and never reuse content from an earlier invocation as fallback.
 
 Retain immutable rows and blobs unless an explicit retention policy proves that no supported consumer can reference them. Withdrawal is an availability decision, not permission to rewrite a revision or silently substitute another artifact.
 

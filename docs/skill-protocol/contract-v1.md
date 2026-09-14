@@ -34,6 +34,12 @@ Profile `backplane.skill-bundle.v1` is one logical root with root `SKILL.md`. Ne
 
 Default limits are those in the implementation plan: 2 MiB document, 256 KiB frontmatter, nesting 32, scan depth 16/10,000 entries, 16 MiB compressed, 64 MiB expanded, 8 MiB per file, 1,000 archive entries, and path depth 16. Gzip expansion is bounded while processing. Preparation writes to operation-owned same-filesystem staging and renames only after verification. The caller owns the immutable prepared-root lifetime. Resource reads recheck inventory and canonical containment. Script/template bytes are readable but never executed.
 
+## Consumer Preparation
+
+`Source.Backplane.new/1` accepts a configured client. `prepare/4` requires a fresh `:destination` whose parent exists. It resolves at most once, fetches the artifact for that exact reference, checks source/ref/digest and manifest/bundle agreement, then prepares the complete bundle. Missing, invalid, or existing destinations fail without overwriting or deleting them.
+
+Every invocation performs a new remote fetch. There is no consumer-side persistent cache, offline fallback, ownership coordinator, quota, eviction, or background cleanup. A remote failure is returned even when another destination already contains the same revision. Successful destinations remain host-owned until host cleanup. These consumer semantics do not alter the server's retained immutable publication artifacts.
+
 ## Errors
 
 Expected failures are tagged errors with stable code, phase, bounded message/context, and retryability. V1 codes are `invalid_request`, `invalid_document`, `invalid_bundle`, `ambiguous_skill`, `not_found`, `revision_unavailable`, `unauthorized`, `forbidden`, `unsupported_protocol`, `unsupported_capability`, `integrity_mismatch`, `limit_exceeded`, `capacity_exceeded`, `timeout`, `cancelled`, and `temporarily_unavailable`. BP-04 freezes HTTP mappings against existing disclosure policy.

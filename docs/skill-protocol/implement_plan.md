@@ -8,7 +8,7 @@ Launch instructions: [codex_prompt.md](codex_prompt.md)
 
 ## 1. Assignment and completion boundary
 
-Implement `apps/backplane_skill_protocol`, adopt it inside Backplane, add immutable Skill distribution and a read SDK/cache, and prove independent consumption. Complete BP-00 through BP-06 in dependency order. Do not treat package scaffolding, a parser extraction, or mock-only HTTP tests as completion.
+Implement `apps/backplane_skill_protocol`, adopt it inside Backplane, add immutable Skill distribution and a read client with one-shot preparation, and prove independent consumption. Complete BP-00 through BP-06 in dependency order. Do not treat package scaffolding, a parser extraction, or mock-only HTTP tests as completion.
 
 This plan supersedes the earlier SKP-00 through SKP-08 cross-repository assignment **for this Backplane run**. External migrations formerly assigned to Sigma/Synapsis are deferred, not silently counted as done. Those repositories, Samgita, and host-agent must not be modified or required to execute this plan. The local consumer fixtures below are the portability gate.
 
@@ -23,7 +23,7 @@ The prior source snapshot is historical. Inspect the actual checkout first, reus
 | BP-02 | Complete bundles, bounded materialization, resource access | BP-00; integrate BP-01 | Complete resources and adversarial inputs |
 | BP-03 | Real Backplane adoption via thin facades | BP-01, BP-02 | Existing production paths delegate to library |
 | BP-04 | Retained revisions, generated snapshots, backfill, v1 server | BP-03 | Resolve A, publish B, fetch A safely |
-| BP-05 | Client/source adapter, cache, bounded retry/offline policy | BP-01, BP-02; real integration BP-04 | Real client/server and cache behavior |
+| BP-05 | Client/source adapter, bounded retry, one-shot verified preparation | BP-01, BP-02; real integration BP-04 | Real client/server and fresh-download behavior |
 | BP-06 | Release qualification, CI, migration/rollback and consumer handoff | BP-03, BP-04, BP-05 | All PRD acceptance gates with evidence |
 
 One contract owner controls public structs, errors, wire schemas, and shared fixtures. BP-01/BP-02 may run in parallel after BP-00; merge the integrated path before BP-03. BP-04/BP-05 may run in parallel after M1. A single Codex session can execute the same sequence serially.
@@ -47,11 +47,10 @@ Public namespace: `Backplane.SkillProtocol`. Keep the implementation small; modu
 | Eligibility | `Eligibility` | Pure evaluation of trigger, recognized extension flags, and host policy. No execution grants. |
 | Resources | `Bundle`, `BundleManifest`, `PreparedSkill`, `Resource` | Inspect/pack/prepare/read bounded content within a verified root. |
 | Remote | `Client`, `Source.Backplane`, `Wire`, `Error` | Host-owned configuration; shared v1 schemas; normalized results/errors. |
-| Cache | `Cache` | Explicit root/context/lifetime, atomic installation, capacity and offline policy. |
 
 Public operations return tagged success/error results. Expected bad inputs do not raise uncontrolled exceptions. Keep exception recovery narrow enough that programming bugs are not disguised as valid empty catalogs.
 
-No global mutable catalog is required. Do not add an application-start scan, polling loop, globally named cache, or hidden credential lookup. A host may explicitly start an instance-scoped helper if the implementation genuinely needs supervision.
+No global mutable catalog is required. Do not add an application-start scan, polling loop, destination manager, or hidden credential lookup. The package needs no application process for remote preparation.
 
 ### 3.2 Document and compatibility rules
 
@@ -120,8 +119,8 @@ These are configurable Backplane defaults, not Agent Skills standard limits. Ver
 | Overall remote operation deadline | 30 seconds, including retry delays |
 | Maximum remote attempts | 3 total, not 3 additional retries |
 | Bundle preparation deadline | 30 seconds |
-| Managed cache capacity | 512 MiB, including staging/reservations |
-| Offline reuse | Disabled unless the host opts in with a maximum age |
+| Consumer persistent cache | None; every remote use downloads again |
+| Prepared lifetime | Caller-owned until explicit host cleanup |
 
 Configure per-read/connect budgets below the remaining total deadline. Disk usage and archive budgets account for simultaneous staging. If the YAML/archive library cannot enforce a needed bound directly, contain its input or use a bounded intermediate representation; do not claim safety from checking sizes after unbounded allocation.
 
@@ -172,7 +171,7 @@ Choose a deliberately supported tar profile. Handle PAX/GNU extension records ex
 
 Verify every actual file and total expanded bytes. Test traversal, encoded/alternate separators according to the frozen path profile, absolute/drive paths, symlinks, hardlinks, devices, duplicate files, file/directory conflicts, and target collisions on supported filesystems. Ignore archive ownership and unsafe mode metadata. Preserve ordinary resource bytes, including binary assets.
 
-Prepare into an owned staging directory. Validation must finish before atomic publication on the same filesystem. Cancellation/error removes only operation-owned temporary files; never an existing verified cache entry. Test resource access after preparation, including stale/escaped paths.
+Prepare into an owned staging directory. Validation must finish before atomic publication on the same filesystem. Cancellation/error removes only operation-owned temporary files; never an existing caller path. Test resource access after preparation, including stale/escaped paths.
 
 Provide an explicit lifetime API or host-managed immutable-root contract. Do not add automatic garbage collection in this work package. A prepared Skill exposes content and resource access, not a command to execute scripts.
 
@@ -230,9 +229,9 @@ Preserve and test legacy reserved routes, including export/import and archive ha
 
 **Acceptance:** AC-08–11, server portion of AC-18. Include crash/concurrent-publication and shared-blob retention tests. M2 still requires BP-05 actual client integration.
 
-## 9. BP-05 — Implement the remote source, client, and cache
+## 9. BP-05 — Implement the remote source and client
 
-**Owned areas:** shared Client/Source.Backplane/Cache modules and tests. Develop with fixtures in parallel with BP-04, but finish against the real server.
+**Owned areas:** shared Client/Source.Backplane modules and tests. Develop with fixtures in parallel with BP-04, but finish against the real server.
 
 ### 9.1 Client and transport
 
@@ -242,21 +241,19 @@ Implement page-at-a-time catalog, resolve, and exact artifact fetch. Decode supp
 
 Use only the configured endpoint and frozen relative routes. Reject cross-origin redirects by default; never forward credentials to an unapproved location. Properly encode opaque IDs. Validate the digest and manifest association even when the server reports success. No silent legacy or latest fallback.
 
-### 9.2 Cache and offline behavior
+### 9.2 One-shot preparation
 
-Separate immutable artifact bytes from scoped reference/verification metadata. Index associations by source identity, access-context identity, Skill ID, revision, and digest. Do not conflate display slug with identity. A verified manifest/ref mismatch is terminal.
+Require a fresh caller-owned destination for each `Source.Backplane.prepare/4` call. Resolve once, fetch the exact returned reference, validate source/ref/digest and bundle-manifest agreement, and atomically prepare the complete bundle. Forward cancellation, limits, and supported capabilities through inspection and preparation.
 
-Use unique staging and atomic final installation. Coordinate concurrent prepares so no reader sees partial content, and quota reservations include concurrent temporary data. A VM-local lock is not a cross-process guarantee: either enforce exclusive cache-root ownership or implement and test safe shared-root coordination. Distinct consumers may use private roots in v1.
+Use only operation-owned temporary archive/staging files and remove them after success or failure. Never overwrite or delete an existing destination. Successful prepared roots remain host-owned until explicit host cleanup; the library does not track them.
 
-Use conservative retention and explicit cleanup; automatic LRU eviction is not required. Active prepared views are protected. Capacity exhaustion returns a typed error rather than deleting active revisions. Define how prior verification survives restart and detect missing/corrupt cached files before returning them as verified.
-
-Offline mode is explicit and age-bounded. It only uses a previously verified exact association. Do not silently resolve an unpinned `current` to an arbitrary old cache entry. Known denial/withdrawal must inhibit fallback for the affected access context until explicit successful revalidation, including across restart where offline cache state persists. Integrity failure is not a network outage.
+Every call downloads again. A remote denial, outage, cancellation, or integrity failure returns its error without offline fallback or reuse of an earlier destination. Do not add cache state, quota/eviction, an ownership coordinator, cross-process locking, or another destination manager.
 
 ### 9.3 Real integration, not only stubs
 
 Start the actual Backplane v1 router through the repository's HTTP test setup on loopback and point the package's real transport at it. Use a test DB/blob backend and deterministic fixtures; no external LLM/Backplane deployment is needed.
 
-Run the sequence: publish A with reference/asset/script files; enumerate and resolve A; publish B; fetch/prepare A; read A's resources; prepare B separately; deny or withdraw A; verify known-denial behavior. Add pagination, interruption, checksum mismatch, malformed JSON, retry budget, cancellation, and concurrent cache tests. Deterministic transport fault fixtures may supplement but never replace the real server/client success/retention path.
+Run the sequence: publish A with reference/asset/script files; search and resolve A; publish B; fetch/prepare A; read A's resources; prepare B separately; deny or withdraw A; verify the remote error and that A's earlier destination remains unchanged. Add pagination, repeated-download request counts, interruption, checksum mismatch, malformed JSON, retry budget, cancellation, and destination safety tests. Deterministic transport fault fixtures may supplement but never replace the real server/client success/retention path.
 
 **Acceptance:** AC-11–15 and cross-path AC-17. **M2 gate:** the implementation, not only schemas/mocks, interoperates over HTTP.
 
@@ -272,13 +269,13 @@ Complete `scripts/verify_skill_protocol_package.sh` (or a documented repository-
 4. Exercise parser, local bundle resources, and an available test endpoint using the shared public API. Fail rather than silently skipping a promised check.
 5. Verify package contents and build a package artifact using repository tooling where available. Building is not publishing; record the artifact/checksum and any environment blocker honestly.
 
-The core isolation fixture must not need a DB. Real service integration runs in a separate CI job using the normal test database/blob backend. Cache dependencies as the repository does; do not make ordinary tests depend on public network availability or live credentials.
+The core isolation fixture must not need a DB. Real service integration runs in a separate CI job using the normal test database/blob backend. Reuse the repository's dependency-fetch conventions; do not make ordinary tests depend on public network availability or live credentials.
 
 Publish documentation under `docs/skill-protocol/`:
 
 - `baseline.md` and final `contract-v1.md`.
 - `verification.md`: environment, checkout SHA, executed commands/results, AC matrix, skipped checks, blockers, and artifact provenance.
-- `consumer-handoff.md`: supported APIs, explicit source/credential/cache ownership, dependency mechanism, declared compatibility profile, and deferred Sigma/Synapsis/Samgita work.
+- `consumer-handoff.md`: supported APIs, explicit source/credential/destination ownership, dependency mechanism, declared compatibility profile, and deferred Sigma/Synapsis/Samgita work.
 - `migration.md`: feature switch, backfill dry-run/report, publication sequencing, retention, withdrawal, rollback, and unavailable-history limits.
 
 Keep the original PRD and plan accurate. Mark progress as implemented/verified/blocked per task; do not convert a skipped test into a passed requirement. Remove migrated duplicate mechanisms only after their replacements are covered, retaining genuine compatibility facades.
@@ -305,7 +302,7 @@ Minimum fixture families:
 | Malicious bundle | Traversal, absolute/drive names, links/devices, duplicate/colliding paths, expansion limit |
 | Publication | A/B revision race, shared digest, failed publisher, repeat backfill, mutable metadata writer |
 | Generated | Valid stable snapshot, update creates new revision, missing required metadata |
-| Transport/cache | Page cursor, opaque ID, denial, timeout, cancellation, partial data, corruption, concurrent prepare, offline expiry |
+| Transport/source | Page cursor, opaque ID, denial, timeout, cancellation, partial data, corruption, repeated downloads, fresh destinations |
 
 A failure to access another repository is not an implementation blocker. Missing local compiler/dependencies/DB may block a particular verification gate; continue independent work and report exactly what remains unverified.
 

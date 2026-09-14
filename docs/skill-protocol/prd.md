@@ -147,13 +147,13 @@ Implement a page-at-a-time catalog operation, exact resolution, and bounded stre
 
 Retries are limited to classified transient failures under one overall deadline. Honor cancellation and bounded retry delays. Authentication/authorization denial, malformed protocol data, unsupported required capabilities, and integrity failures are terminal for the attempt. No implicit downgrade to the legacy API, no different-version substitution, and no model-mediated retry loop.
 
-### R-10 — Cache, isolation, and offline policy
+### R-10 — One-shot retrieval and caller-owned destinations
 
-Maintain exact-reference associations scoped by source instance and host-supplied access context. Raw credentials must not appear in cache keys or logs. Reusing identical bytes does not transfer an authorization decision between contexts.
+Each remote use requires a fresh destination under a caller-owned task or work directory. Resolve the requested Skill once, download that exact artifact on every invocation, verify the manifest and complete bundle, then publish atomically into the unused destination. Missing, invalid, or existing destinations fail explicitly and are never overwritten, removed, or reused.
 
-Install atomically, handle concurrent preparation safely, and enforce a disk budget. For v1, conservative retention with no automatic eviction is acceptable and preferred to deleting active resources. An active prepared view must survive ordinary refresh/cleanup. Cleanup and cross-process ownership assumptions must be explicit and tested.
+A remote or validation failure returns an error and no usable `PreparedSkill`; it never falls back to content from an earlier invocation. Operation-owned temporary files are removed after success or failure. A successful prepared directory remains available until the host removes it, and the library does not scan, migrate, clean, or otherwise manage previous destinations.
 
-Default offline use is disabled. A host may opt into an age-bounded policy for an already verified, exact cached revision. A known denial/withdrawal or integrity failure must not be converted into offline success. A subsequent explicit successful revalidation may restore access. Unknown revocations cannot be detected while disconnected; document that limitation rather than promising immediate offline revocation.
+This requirement removes consumer-side durable caching, offline policy, quota/eviction, ownership coordination, and native locking. It does not change server-side retained publication artifacts, immutable revisions, authorization, or the versioned HTTP API.
 
 ### R-11 — Backplane actually uses the library
 
@@ -165,7 +165,7 @@ Server-side mappings to legacy schemas and API fields remain in `backplane_skill
 
 Provide deterministic fixtures, a package-isolation runner, server/client contract tests over actual loopback HTTP, and migration/retention tests. No real LLM or external consumer checkout is required. Service integration may require the repository's normal test database; that must not leak into standalone package tests.
 
-Use existing logging/telemetry conventions for phase, error code, exact reference, cache outcome, duration, and bounded byte counts. Do not log credentials, full Skill bodies, or private host paths by default. The status report must separate implemented code, executed tests, skipped tests, and deferred external adoption.
+Use existing logging/telemetry conventions for phase, error code, exact reference, operation outcome, duration, and bounded byte counts. Do not log credentials, full Skill bodies, or private host paths by default. The status report must separate implemented code, executed tests, skipped tests, and deferred external adoption.
 
 ## 6. Acceptance matrix
 
@@ -182,10 +182,10 @@ Use existing logging/telemetry conventions for phase, error code, exact referenc
 | AC-09 | Backfill is idempotent; failed/concurrent publishers cannot corrupt current or delete another retained blob. | R-07 |
 | AC-10 | Valid generated content has a stable immutable artifact; invalid/missing-source records are reported honestly. | R-03, R-07 |
 | AC-11 | Real server/client tests cover pagination, opaque IDs, legacy route regressions, missing revisions, and disabled/deleted/denied reads. | R-08, R-09 |
-| AC-12 | Interrupted and concurrent downloads never expose partial cache entries or damage existing verified entries. | R-09, R-10 |
+| AC-12 | One-shot preparation either returns a complete verified destination or an error; interrupted work exposes no partial result and does not damage existing files. | R-09, R-10 |
 | AC-13 | Timeouts/retries/cancellation terminate within budgets; malformed data and integrity failures are terminal; redirects do not leak credentials. | R-09 |
-| AC-14 | Exact offline reuse requires explicit policy; wrong source/context, expiry, known denial, or changed revision does not produce fallback success. | R-10 |
-| AC-15 | Active prepared resources survive refresh/cleanup; capacity failure is explicit and does not trigger unsafe eviction. | R-10 |
+| AC-14 | Every remote use downloads again, including the same exact revision; a remote error never falls back to content from an earlier use. | R-10 |
+| AC-15 | Returned resources remain readable until host cleanup, and preparing or failing another destination does not modify earlier or unrelated destinations. | R-10 |
 | AC-16 | Normal Backplane ingestion/loading uses the shared implementation and preserves covered legacy behavior. | R-11 |
 | AC-17 | Backplane and independent consumer fixtures produce equivalent normalized content for the same bytes/revision. No claim of real Sigma/Synapsis adoption. | R-01, R-12 |
 | AC-18 | Migration/rollback documentation prevents old replacement cleanup from deleting retained revisions; evidence distinguishes pass/skip/block. | R-07, R-12 |
@@ -196,7 +196,7 @@ These are required tests, not statements that tests have passed.
 
 **M1 — Shared core in real Backplane use:** BP-00 through BP-03. Standalone package, shared content/bundle behavior, and Backplane migration pass their gates.
 
-**M2 — Backplane distribution works:** BP-04 and BP-05. Retained revisions, generated snapshots, v1 API, SDK/cache, and actual server/client integration pass.
+**M2 — Backplane distribution works:** BP-04 and BP-05. Retained revisions, generated snapshots, v1 API, client/one-shot source, and actual server/client integration pass.
 
 **M3 — Backplane consumer-ready handoff:** BP-06. Packaging/CI, full acceptance evidence, upgrade/rollback guidance, and a documented external integration contract are complete.
 

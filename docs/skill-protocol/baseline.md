@@ -27,4 +27,4 @@ Recorded 2026-09-11 before BP-00 implementation.
 - Legacy Loader permits a nonempty string name, missing description, numeric author version, and defaults missing version to `1.0.0`; it does not fabricate description in the shared document.
 - Unsafe archive paths and entry types are security invariants and do not receive compatibility exceptions.
 
-BP-04 owns revision persistence, publication state, authorization, and v1 routes. BP-05 owns remote transport/cache. They are intentionally absent from M1.
+BP-04 owns revision persistence, publication state, authorization, and v1 routes. BP-05 owns remote transport and one-shot preparation. They are intentionally absent from M1.
