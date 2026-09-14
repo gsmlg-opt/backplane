@@ -1,5 +1,46 @@
 # Shared Agent Runtime Baseline
 
+## Six-blocker follow-up (2026-09-14)
+
+This follow-up started from a clean `feature/agent-runtime` checkout at
+`e0ded87171439d3ea7ec10c855b6f1ed681e92b8`; PR #33 targets `main` at
+`bd5bc83005fded6f67beefe3fa8abac31eae506a`. The observed toolchain was Elixir
+1.18.4, OTP 28, and ERTS 16.4.0.1. The fresh entry baseline was 170 tests with
+0 failures (seed 356328). At verification time, the resulting changes remained
+uncommitted and unpushed, so Git HEAD was unchanged; the subsequent Git commit
+and remote branch state are authoritative for publication status.
+
+| Follow-up finding | Current disposition | Evidence / limit |
+| --- | --- | --- |
+| 1–4. Execution, persistence, fencing, and finite effect lifecycle | **Fixed for the supported shared execution path** | The dispatcher uses the configured Store, persists canonical serializable intent, execution budget, and status, and gates tools while a provider is active. Supervised effects correlate exactly one result or `DOWN`, use finite deadlines derived from the absolute run expiry, and persist uncertainty independently from cleanup. Expiry after a successful intent commit but before dispatch now records finite uncertain cleanup without invoking the backend. Focused execution tests passed 59/0 (seed 237382), including the correctness subset at 15/0 (seed 557201). |
+| 5–6. Local command cleanup worker and shutdown ownership | **Implemented, but acceptance remains blocked** | Cleanup workers are monitored with deadlines and verified process-group ownership is retained independently from bounded result retention. The fresh combined command run failed 1 of 20 tests (seed 1): the crash regression reads `active_job` after an immediate worker crash has already settled it, so line 37 matches `nil`. Explicit late-result-after-watchdog and separate descendant-PID shutdown assertions also remain absent. The historical command task used 2 repair rounds and its explicitly reopened pass used 2 more; both are exhausted. |
+
+The execution task used 2 historical repair rounds and 2 explicitly reopened
+rounds. Both execution and command work were performed by Sol without an
+implementation escalation. The supported end-to-end regression uses the shared
+store/kernel/dispatcher path from a scripted provider through a real scoped
+LocalResource operation, provider continuation, and terminal settlement. The
+same path proves denial prevents tool invocation; scripted worker crashes and
+timeouts exercise its finite failure boundary.
+
+### Fresh follow-up verification
+
+| Command / working directory | Observed result |
+| --- | --- |
+| `mix format --check-formatted` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix compile --warnings-as-errors` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix test` / `apps/backplane_agent_runtime` | Exit 2; 192 tests, 1 failure; seed 866553; 8.7 seconds. The sole failure is the LocalCommand crash-test race described above. |
+| `bash -n scripts/verify_agent_runtime_package.sh` / repository root | Exit 0. |
+| `bash scripts/verify_agent_runtime_package.sh` / repository root | Exit 2 during its package test gate; 192 tests, 1 failure; seed 206900; 8.0 seconds. Log: `/tmp/backplane-six-blockers-final-artifact.log`. It stopped before artifact construction, so no fresh hash exists and the three same-artifact fixtures were not run. |
+| `git diff --check` / repository root | Exit 0 after this documentation update. |
+
+The existing empty-tool, bundled-basic, and fake-backend fixture definitions are
+unchanged, but their earlier successful runs are historical evidence only. This
+follow-up does not establish production durable-store certification, published
+provider protocols, Sigma or Synapsis migration, full V1 acceptance, or an OS
+sandbox. LocalCommand can also emit a misleading shutdown-signal error when its
+signal races a group that has already exited.
+
 ## Historical local inventory (2026-09-10)
 
 | Item | Evidence |
@@ -13,7 +54,7 @@
 
 These toolchain values, package count, and consumer searches are dated evidence from 2026-09-10. They were not refreshed on 2026-09-14 and must not be read as a current environment inventory.
 
-## Current checkout and PR #33 review (2026-09-14)
+## Historical PR #33 review snapshot (2026-09-14)
 
 | Item | Evidence |
 | --- | --- |
@@ -71,7 +112,7 @@ The fresh pre-repair baseline was 123 tests with 0 failures
 (`/tmp/backplane-pr33-baseline-tests.log`). Focused counts above establish
 only their named scopes.
 
-### Current post-repair verification
+### Historical post-review verification
 
 All required mechanical checks completed successfully on the working tree
 before publication. These results show that the package builds, its current tests

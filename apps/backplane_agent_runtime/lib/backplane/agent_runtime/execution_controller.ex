@@ -15,9 +15,17 @@ defmodule Backplane.AgentRuntime.ExecutionController do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
-    case Keyword.get(opts, :name) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    with {:ok, _limits} <- Execution.validate_limits(opts),
+         run when is_map(run) <- Keyword.get(opts, :run),
+         :ok <- Execution.validate_deadline(run, opts) do
+      case Keyword.get(opts, :name) do
+        nil -> GenServer.start_link(__MODULE__, opts)
+        name -> GenServer.start_link(__MODULE__, opts, name: name)
+      end
+    else
+      nil -> {:error, Error.new(:validation, "run is required")}
+      {:error, %Error{} = error} -> {:error, error}
+      _ -> {:error, Error.new(:validation, "run is required")}
     end
   end
 
@@ -45,24 +53,40 @@ defmodule Backplane.AgentRuntime.ExecutionController do
   @impl GenServer
   def init(opts) do
     {:ok, supervisor} = Task.Supervisor.start_link()
+    {:ok, limits} = Execution.validate_limits(opts)
+    run = Keyword.fetch!(opts, :run)
 
-    {:ok,
-     %{
-       store: Keyword.fetch!(opts, :store),
-       context: Keyword.fetch!(opts, :context),
-       run: Keyword.fetch!(opts, :run),
-       budget: Keyword.get(opts, :budget),
-       execution_opts: Keyword.drop(opts, [:store, :context, :run, :name]),
-       supervisor: supervisor,
-       tasks: %{},
-       intent_ref: nil,
-       control_ref: nil,
-       phase: :idle,
-       cancel_requested: nil,
-       last_result: nil,
-       waiters: [],
-       state_waiters: []
-     }}
+    monotonic_clock =
+      Keyword.get(opts, :monotonic_now, fn -> System.monotonic_time(:millisecond) end)
+
+    wall_clock = Keyword.get(opts, :wall_now, fn -> System.system_time(:millisecond) end)
+
+    state =
+      %{
+        store: Keyword.fetch!(opts, :store),
+        context: Keyword.fetch!(opts, :context),
+        run: run,
+        budget: Map.get(run, :execution_budget) || Keyword.get(opts, :budget),
+        execution_opts: Keyword.drop(opts, [:store, :context, :run, :name]),
+        limits: limits,
+        monotonic_clock: monotonic_clock,
+        wall_clock: wall_clock,
+        supervisor: supervisor,
+        tasks: %{},
+        intent_ref: nil,
+        control_ref: nil,
+        phase: :idle,
+        cancel_requested: nil,
+        last_result: nil,
+        waiters: [],
+        state_waiters: [],
+        run_timer: nil,
+        run_live_deadline: nil,
+        run_deadline: nil,
+        cleanup_timer: nil
+      }
+
+    {:ok, arm_run_timer(state)}
   end
 
   @impl GenServer
@@ -90,7 +114,12 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         {:reply, {:ok, %{status: :accepted}}, state}
 
       true ->
-        state = %{state | cancel_requested: %{at: at}, phase: :cancelling}
+        state = %{
+          state
+          | cancel_requested: %{at: at, kind: :cancelled, reason: "cancellation requested"},
+            phase: :cancelling
+        }
+
         state = maybe_start_cancellation(state)
         {:reply, {:ok, %{status: :accepted}}, state}
     end
@@ -136,6 +165,7 @@ defmodule Backplane.AgentRuntime.ExecutionController do
 
       {%{task: task, role: role, data: data}, tasks} ->
         Process.demonitor(task.ref, [:flush])
+        cancel_entry_timer(Map.fetch!(state.tasks, ref))
         state = %{state | tasks: tasks}
         state = handle_task_result(role, result, data, state)
         {:noreply, notify_waiters(state)}
@@ -147,13 +177,74 @@ defmodule Backplane.AgentRuntime.ExecutionController do
       {nil, _tasks} ->
         {:noreply, state}
 
-      {%{role: role}, tasks} ->
+      {%{role: role, data: data} = entry, tasks} ->
+        cancel_entry_timer(entry)
         error = Error.new(:execution_failure, "execution worker exited", cause: reason)
         state = %{state | tasks: tasks}
-        state = handle_task_result(role, {:error, error}, %{}, state)
+        result = if role == :effect, do: {:worker_exit, error}, else: {:error, error}
+        state = handle_task_result(role, result, data, state)
         {:noreply, notify_waiters(state)}
     end
   end
+
+  def handle_info({:task_timeout, ref, token}, state) do
+    case Map.get(state.tasks, ref) do
+      %{timer_token: ^token} = entry ->
+        Process.demonitor(ref, [:flush])
+        Process.exit(entry.task.pid, :kill)
+        state = %{state | tasks: Map.delete(state.tasks, ref)}
+        state = handle_task_timeout(entry, state)
+        {:noreply, notify_waiters(state)}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:run_timeout, token}, %{run_timer: %{token: token}} = state) do
+    state = %{state | run_timer: nil}
+
+    if Kernel.terminal?(state.run.state) or state.cancel_requested do
+      {:noreply, state}
+    else
+      state = request_internal_cancellation(state, :deadline_exceeded, "run deadline exceeded")
+      {:noreply, notify_waiters(state)}
+    end
+  end
+
+  def handle_info({:run_timeout, _token}, state), do: {:noreply, state}
+
+  def handle_info({:cleanup_timeout, token}, %{cleanup_timer: %{token: token}} = state) do
+    state = %{state | cleanup_timer: nil}
+
+    cond do
+      state.run.state != :cancelling ->
+        {:noreply, state}
+
+      not is_nil(state.control_ref) ->
+        state = stop_control_task(state)
+
+        error =
+          Error.new(:timeout, "cleanup deadline exceeded", details: %{certainty: :uncertain})
+
+        {:noreply, notify_waiters(%{state | phase: :uncertain, last_result: {:error, error}})}
+
+      true ->
+        settlement = %{
+          certainty: :uncertain,
+          evidence: %{
+            "reason" => "cleanup deadline exceeded",
+            "required" => Kernel.cleanup_requirements(state.run)
+          }
+        }
+
+        meta = %{command: {:cleanup_settled, now(state), settlement}}
+        {state, ref} = start_commit(state, meta, :cleanup_commit)
+        {:noreply, %{state | control_ref: ref, phase: :cleanup}}
+    end
+  end
+
+  def handle_info({:cleanup_timeout, _token}, state), do: {:noreply, state}
 
   defp handle_task_result(:intent_commit, {:ok, committed, prepared}, _data, state) do
     state = %{
@@ -163,6 +254,8 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         intent_ref: nil,
         last_result: {:ok, committed, result(prepared, [])}
     }
+
+    state = arm_run_timer(state)
 
     if state.cancel_requested do
       state
@@ -174,8 +267,18 @@ defmodule Backplane.AgentRuntime.ExecutionController do
           %{state | phase: next_phase(prepared.run)}
 
         _effect ->
-          {state, ref} = start_effect(state, committed, prepared)
-          %{state | phase: :effect, intent_ref: ref}
+          case start_effect(state, committed, prepared) do
+            {:ok, state, ref} ->
+              %{state | phase: :effect, intent_ref: ref}
+
+            {:error, %Error{} = error, state} ->
+              request_internal_cancellation(
+                state,
+                :deadline_exceeded,
+                "run deadline exceeded before dispatch",
+                error
+              )
+          end
       end
     end
   end
@@ -186,6 +289,22 @@ defmodule Backplane.AgentRuntime.ExecutionController do
     if state.cancel_requested,
       do: maybe_start_cancellation(%{state | phase: :cancelling}),
       else: %{state | phase: :idle}
+  end
+
+  defp handle_task_result(
+         :effect,
+         {:worker_exit, %Error{} = error},
+         %{committed: committed, prepared: prepared},
+         state
+       ) do
+    state = %{
+      state
+      | intent_ref: nil,
+        last_result: {:ok, committed, result(prepared, [], [%{status: :uncertain}])},
+        phase: :cancelling
+    }
+
+    request_internal_cancellation(state, :cancelled, "effect worker exited", error)
   end
 
   defp handle_task_result(
@@ -218,7 +337,7 @@ defmodule Backplane.AgentRuntime.ExecutionController do
   end
 
   defp handle_task_result(:cancel_commit, {:ok, committed, prepared}, _data, state) do
-    %{
+    state = %{
       state
       | run: prepared.run,
         budget: prepared.budget,
@@ -226,6 +345,8 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         phase: :cancelling,
         last_result: {:ok, committed, result(prepared, [])}
     }
+
+    arm_cleanup_timer(state)
   end
 
   defp handle_task_result(:cancel_commit, {:error, %Error{} = error}, data, state) do
@@ -239,7 +360,7 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         maybe_start_cancellation(state)
 
       true ->
-        state
+        %{state | phase: :uncertain}
     end
   end
 
@@ -253,18 +374,23 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         last_result: {:ok, committed, result(prepared, [])}
     }
 
-    fence_stale_workers(state)
+    state
+    |> cancel_cleanup_timer()
+    |> cancel_run_timer()
+    |> fence_stale_workers()
   end
 
   defp handle_task_result(:cleanup_commit, {:error, %Error{} = error}, _data, state) do
-    %{state | control_ref: nil, phase: :cancelling, last_result: {:error, error}}
+    state
+    |> cancel_cleanup_timer()
+    |> Map.merge(%{control_ref: nil, phase: :uncertain, last_result: {:error, error}})
   end
 
   defp start_commit(state, meta, role) do
     opts = Keyword.put(state.execution_opts, :budget, state.budget)
     data = %{expected_revision: state.run.expected_revision}
 
-    start_task(state, role, data, fn ->
+    start_task(state, role, data, state.limits.commit, fn ->
       Execution.commit(state.store, state.context, state.run, meta, opts)
     end)
   end
@@ -272,14 +398,23 @@ defmodule Backplane.AgentRuntime.ExecutionController do
   defp start_effect(state, committed, prepared) do
     opts = Keyword.put(state.execution_opts, :budget, prepared.budget)
 
-    start_task(state, :effect, %{committed: committed, prepared: prepared}, fn ->
-      Execution.dispatch(prepared, opts)
-    end)
+    with {:ok, timeout} <- effective_effect_timeout(state) do
+      {state, ref} =
+        start_task(state, :effect, %{committed: committed, prepared: prepared}, timeout, fn ->
+          Execution.dispatch(prepared, opts)
+        end)
+
+      {:ok, state, ref}
+    else
+      {:error, %Error{} = error} -> {:error, error, state}
+    end
   end
 
-  defp start_task(state, role, data, function) do
+  defp start_task(state, role, data, timeout, function) do
     task = Task.Supervisor.async_nolink(state.supervisor, function)
-    entry = %{task: task, role: role, data: data}
+    token = make_ref()
+    timer = Process.send_after(self(), {:task_timeout, task.ref, token}, timeout)
+    entry = %{task: task, role: role, data: data, timer: timer, timer_token: token}
     {%{state | tasks: Map.put(state.tasks, task.ref, entry)}, task.ref}
   end
 
@@ -287,7 +422,13 @@ defmodule Backplane.AgentRuntime.ExecutionController do
 
   defp maybe_start_cancellation(state) do
     if state.run.state in [:queued, :running, :waiting_approval, :waiting_result] do
-      meta = %{command: {:cancel, state.cancel_requested.at}}
+      command =
+        case state.cancel_requested.kind do
+          :deadline_exceeded -> {:deadline_exceeded, state.cancel_requested.at}
+          :cancelled -> {:cancel, state.cancel_requested.at}
+        end
+
+      meta = %{command: command}
       {state, ref} = start_commit(state, meta, :cancel_commit)
       %{state | control_ref: ref, phase: :cancelling}
     else
@@ -346,11 +487,125 @@ defmodule Backplane.AgentRuntime.ExecutionController do
         entry.role in [:intent_commit, :effect]
       end)
 
-    Enum.each(stale, fn {ref, %{task: task}} ->
+    Enum.each(stale, fn {ref, %{task: task} = entry} ->
+      cancel_entry_timer(entry)
       Process.demonitor(ref, [:flush])
       Process.exit(task.pid, :kill)
     end)
 
     %{state | tasks: Map.new(retained), intent_ref: nil}
   end
+
+  defp handle_task_timeout(%{role: :effect, data: data}, state) do
+    error =
+      Error.new(:timeout, "effect deadline exceeded",
+        details: %{certainty: :uncertain, identity: effect_identity(data)}
+      )
+
+    state
+    |> Map.put(:intent_ref, nil)
+    |> Map.put(:last_result, {:error, error})
+    |> request_internal_cancellation(:deadline_exceeded, "effect deadline exceeded", error)
+  end
+
+  defp handle_task_timeout(%{role: role}, state) do
+    error =
+      Error.new(:timeout, "#{role} deadline exceeded", details: %{certainty: :uncertain})
+
+    state = %{state | last_result: {:error, error}, phase: :uncertain}
+
+    case role do
+      :intent_commit -> %{state | intent_ref: nil}
+      _ -> %{state | control_ref: nil}
+    end
+  end
+
+  defp request_internal_cancellation(state, kind, reason, error \\ nil) do
+    state = %{
+      state
+      | cancel_requested: %{at: now(state), kind: kind, reason: reason},
+        phase: :cancelling,
+        last_result: if(error, do: {:error, error}, else: state.last_result)
+    }
+
+    maybe_start_cancellation(state)
+  end
+
+  defp effect_identity(%{prepared: %{intent: %{reservation: %{reservation_id: id}}}}), do: id
+  defp effect_identity(_data), do: nil
+
+  defp effective_effect_timeout(state) do
+    case state.run_live_deadline do
+      deadline when is_integer(deadline) ->
+        remaining = deadline - monotonic_now(state)
+
+        if remaining > 0,
+          do: {:ok, min(state.limits.effect, remaining)},
+          else: {:error, Error.new(:timeout, "run deadline has expired")}
+
+      _ ->
+        {:ok, state.limits.effect}
+    end
+  end
+
+  defp arm_run_timer(%{run: %{deadline: deadline}, run_deadline: deadline} = state)
+       when is_integer(deadline),
+       do: state
+
+  defp arm_run_timer(%{run: %{deadline: deadline}} = state) when is_integer(deadline) do
+    state = cancel_run_timer(state)
+    token = make_ref()
+    remaining = max(0, deadline - wall_now(state))
+    live_deadline = monotonic_now(state) + remaining
+    timer = Process.send_after(self(), {:run_timeout, token}, remaining)
+
+    %{
+      state
+      | run_timer: %{timer: timer, token: token},
+        run_live_deadline: live_deadline,
+        run_deadline: deadline
+    }
+  end
+
+  defp arm_run_timer(state), do: state
+
+  defp arm_cleanup_timer(state) do
+    state = cancel_cleanup_timer(state)
+    token = make_ref()
+    timer = Process.send_after(self(), {:cleanup_timeout, token}, state.limits.cleanup)
+    %{state | cleanup_timer: %{timer: timer, token: token}}
+  end
+
+  defp cancel_run_timer(%{run_timer: nil} = state), do: state
+
+  defp cancel_run_timer(%{run_timer: %{timer: timer}} = state) do
+    Process.cancel_timer(timer)
+    %{state | run_timer: nil, run_live_deadline: nil, run_deadline: nil}
+  end
+
+  defp cancel_cleanup_timer(%{cleanup_timer: nil} = state), do: state
+
+  defp cancel_cleanup_timer(%{cleanup_timer: %{timer: timer}} = state) do
+    Process.cancel_timer(timer)
+    %{state | cleanup_timer: nil}
+  end
+
+  defp cancel_entry_timer(%{timer: timer}), do: Process.cancel_timer(timer)
+
+  defp stop_control_task(state) do
+    case Map.pop(state.tasks, state.control_ref) do
+      {nil, tasks} ->
+        %{state | tasks: tasks, control_ref: nil}
+
+      {%{task: task} = entry, tasks} ->
+        cancel_entry_timer(entry)
+        Process.demonitor(task.ref, [:flush])
+        Process.exit(task.pid, :kill)
+        %{state | tasks: tasks, control_ref: nil}
+    end
+  end
+
+  defp now(state), do: state.wall_clock.()
+  defp wall_now(state), do: state.wall_clock.()
+  defp monotonic_now(state), do: state.monotonic_clock.()
 end

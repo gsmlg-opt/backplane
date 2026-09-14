@@ -92,6 +92,7 @@ defmodule Backplane.AgentRuntime.Kernel do
       run
       |> Map.put(:active_provider, identity)
       |> Map.put(:current_step, Map.take(identity, [:step_id, :attempt_id]))
+      |> record_execution_intent(input)
       |> commit(:running, :provider_started, at, input)
     end
   end
@@ -109,6 +110,7 @@ defmodule Backplane.AgentRuntime.Kernel do
   defp transition(run, :tool_invoked, at, input) do
     with :ok <- require_state(run, :running, :tool_invoked),
          :ok <- validate_run_identity(run, input),
+         :ok <- ensure_no_active_provider(run),
          {:ok, identity} <- identity(input, @tool_identity, "tool"),
          :ok <- match_current_step(run, identity),
          :ok <- ensure_new_invocation(run, identity.invocation_id) do
@@ -117,6 +119,7 @@ defmodule Backplane.AgentRuntime.Kernel do
 
       run
       |> Map.put(:active_tools, active_tools)
+      |> record_execution_intent(input)
       |> commit(:running, :tool_invoked, at, input)
     end
   end
@@ -134,6 +137,7 @@ defmodule Backplane.AgentRuntime.Kernel do
       run
       |> Map.put(:active_tools, active_tools)
       |> Map.put(:tool_results, tool_results)
+      |> settle_execution_intent("tool:#{identity.invocation_id}", :consumed)
       |> commit(:running, :tool_completed, at, input)
     end
   end
@@ -251,6 +255,7 @@ defmodule Backplane.AgentRuntime.Kernel do
       |> Map.put(:active_provider, nil)
       |> Map.put(:last_provider_result, result)
       |> Map.put(:context, context)
+      |> settle_execution_intent("provider:#{field(input, :attempt_id)}", :consumed)
       |> commit(:running, :provider_completed, at, input)
     end
   end
@@ -264,6 +269,7 @@ defmodule Backplane.AgentRuntime.Kernel do
       |> Map.put(:current_step, nil)
       |> Map.put(:context, context)
       |> Map.put(:outcome, outcome)
+      |> settle_execution_intent("provider:#{field(input, :attempt_id)}", :consumed)
       |> commit(:completed, :completed, at, outcome)
     end
   end
@@ -288,6 +294,7 @@ defmodule Backplane.AgentRuntime.Kernel do
 
       run
       |> clear_active_work()
+      |> settle_started_execution_intents(:cancelled)
       |> Map.put(:outcome, outcome)
       |> commit(terminal, terminal, at, outcome)
     else
@@ -303,6 +310,7 @@ defmodule Backplane.AgentRuntime.Kernel do
       }
 
       run
+      |> settle_started_execution_intents(:uncertain)
       |> Map.put(:outcome, outcome)
       |> commit(:unknown_outcome, :unknown_outcome, at, outcome)
     end
@@ -376,6 +384,68 @@ defmodule Backplane.AgentRuntime.Kernel do
       :ok
     else
       conflict("provider cannot start while tool or continuation work is active")
+    end
+  end
+
+  defp ensure_no_active_provider(run) do
+    if is_nil(Map.get(run, :active_provider)),
+      do: :ok,
+      else: conflict("tool cannot start while a provider attempt is active")
+  end
+
+  defp record_execution_intent(run, input) do
+    case {fetch_field(input, :execution_intent), fetch_field(input, :execution_budget)} do
+      {{:ok, %{reservation: %{reservation_id: reservation_id}} = intent}, {:ok, budget}}
+      when is_binary(reservation_id) and is_map(budget) ->
+        run
+        |> Map.put(:execution_budget, budget)
+        |> Map.update(:execution_intents, %{reservation_id => intent}, fn intents ->
+          Map.put(intents, reservation_id, intent)
+        end)
+        |> maybe_put_execution_deadline(input)
+
+      _ ->
+        run
+    end
+  end
+
+  defp maybe_put_execution_deadline(run, input) do
+    case {Map.get(run, :deadline), fetch_field(input, :execution_deadline)} do
+      {nil, {:ok, deadline}} when is_integer(deadline) -> Map.put(run, :deadline, deadline)
+      _ -> run
+    end
+  end
+
+  defp settle_execution_intent(run, reservation_id, status) do
+    with {:ok, intents} <- Map.fetch(run, :execution_intents),
+         {:ok, intent} <- Map.fetch(intents, reservation_id) do
+      Map.put(
+        run,
+        :execution_intents,
+        Map.put(intents, reservation_id, Map.put(intent, :status, status))
+      )
+    else
+      :error -> run
+    end
+  end
+
+  defp settle_started_execution_intents(run, status) do
+    case Map.fetch(run, :execution_intents) do
+      {:ok, intents} ->
+        updated =
+          Map.new(intents, fn {reservation_id, intent} ->
+            updated =
+              if Map.get(intent, :status) == :started,
+                do: Map.put(intent, :status, status),
+                else: intent
+
+            {reservation_id, updated}
+          end)
+
+        Map.put(run, :execution_intents, updated)
+
+      :error ->
+        run
     end
   end
 

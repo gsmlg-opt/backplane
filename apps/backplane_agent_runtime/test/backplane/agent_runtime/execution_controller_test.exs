@@ -117,6 +117,10 @@ defmodule Backplane.AgentRuntime.ExecutionControllerTest do
 
     assert {:ok, _, %{run: %{state: :unknown_outcome}}} =
              ExecutionController.await(controller)
+
+    assert {:ok, stored} = EphemeralStore.load(table, "run_1")
+    refute Map.has_key?(stored.run, :execution_budget)
+    assert Map.get(stored.run, :execution_intents, %{}) == %{}
   end
 
   test "scripted provider and real scoped resource tool complete through committed steps" do
