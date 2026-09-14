@@ -551,6 +551,7 @@ defmodule Backplane.AiProtocolTest do
             {:complete, :completed},
             {{:incomplete, :max_output_tokens}, :incomplete},
             {:cancel, :cancelled},
+            {:interrupt, :interrupted},
             {{:error, :upstream_error}, :failed}
           ] do
         lifecycle = Backplane.AiProtocol.Lifecycle.new()
@@ -571,6 +572,11 @@ defmodule Backplane.AiProtocolTest do
               lifecycle
               |> Backplane.AiProtocol.Lifecycle.start_attempt()
               |> Backplane.AiProtocol.Lifecycle.cancel(:unknown)
+
+            :interrupt ->
+              lifecycle
+              |> Backplane.AiProtocol.Lifecycle.start_attempt()
+              |> Backplane.AiProtocol.Lifecycle.interrupt(:unknown)
 
             {:error, kind} ->
               lifecycle
@@ -596,7 +602,18 @@ defmodule Backplane.AiProtocolTest do
                Backplane.AiProtocol.Lifecycle.finish(lifecycle, :complete, :stop)
 
       assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.cancel(lifecycle, :unknown)
+      assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.interrupt(lifecycle, :unknown)
       assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.fail(lifecycle, :upstream_error)
+    end
+
+    test "rejects invalid upstream certainty and repeated cancellation" do
+      lifecycle = Backplane.AiProtocol.Lifecycle.new()
+
+      assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.cancel(lifecycle, :maybe)
+      assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.interrupt(lifecycle, :maybe)
+
+      assert {:ok, cancelled} = Backplane.AiProtocol.Lifecycle.cancel(lifecycle, :known)
+      assert {:error, %Error{}} = Backplane.AiProtocol.Lifecycle.cancel(cancelled, :known)
     end
   end
 
@@ -761,6 +778,45 @@ defmodule Backplane.AiProtocolTest do
 
       assert {:error, %Error{kind: :incompatible, stage: :translation}} =
                Backplane.AiProtocol.Translation.plan(request, source, target, %{})
+    end
+
+    test "treats unknown support as unverified and lets host denial override caller permission" do
+      {:ok, request} =
+        Request.new(%{
+          model: "public-model",
+          input: [
+            %{role: :user, content: [%{type: :image, data: "base64-data"}]}
+          ],
+          permitted_downgrades: ["image_to_text"]
+        })
+
+      source = %{
+        protocol: "backplane.v1",
+        capabilities: %{"role_user" => :supported, "image" => :supported}
+      }
+
+      target = %{
+        protocol: "anthropic",
+        capabilities: %{"role_user" => :supported, "image" => :unknown}
+      }
+
+      policy = %{
+        denied_downgrades: ["image_to_text"],
+        downgrade_rules: %{
+          "image_to_text" => %{
+            field: "image",
+            revision: "1",
+            effective: "text_placeholder",
+            operation: %{op: "replace_image_with_caller_text"}
+          }
+        }
+      }
+
+      assert {:error,
+              %Error{
+                kind: :incompatible,
+                compatibility: %{"reason" => "target_unknown"}
+              }} = Backplane.AiProtocol.Translation.plan(request, source, target, policy)
     end
 
     test "rejects provider state with cross-origin affinity" do

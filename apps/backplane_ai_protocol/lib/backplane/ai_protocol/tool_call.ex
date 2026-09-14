@@ -26,6 +26,8 @@ defmodule Backplane.AiProtocol.ToolCall do
   @keys [:id, :native_id, :name, :raw_arguments, :validated_arguments]
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
+  def new(%__MODULE__{} = call), do: call |> Map.from_struct() |> new()
+
   def new(attrs) when is_map(attrs) do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, id} <- identity(attrs, :id),

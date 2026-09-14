@@ -2,13 +2,19 @@ defmodule Backplane.AiProtocol.RemediationTest do
   use ExUnit.Case, async: true
 
   alias Backplane.AiProtocol.{
+    ContentBlock,
     Error,
     ExecutionContext,
     ExecutionGate,
+    Message,
     OpenAIResponsesObserver,
     ProviderState,
     Request,
+    Response,
     Serialization,
+    ToolCall,
+    ToolDefinition,
+    Usage,
     Validation
   }
 
@@ -63,6 +69,117 @@ defmodule Backplane.AiProtocol.RemediationTest do
 
       assert {:ok, json} = Serialization.to_json(request)
       assert %{"model" => "m", "input" => [%{"role" => "user"}]} = Jason.decode!(json)
+    end
+  end
+
+  describe "constructor composition" do
+    test "composes validated canonical structs without trusting malformed structs" do
+      {:ok, block} = ContentBlock.new(%{type: :text, text: "hello"})
+      {:ok, message} = Message.new(%{role: :user, content: [%{type: :text, text: "hello"}]})
+      {:ok, tool} = ToolDefinition.new(%{name: "lookup"})
+
+      {:ok, call} =
+        ToolCall.new(%{id: "call-1", name: "lookup", raw_arguments: {:json, "{}"}})
+
+      {:ok, state} =
+        ProviderState.new(%{
+          source_profile: "openai-platform",
+          source_protocol: "openai-responses",
+          kind: "reasoning",
+          affinity: %{profile: "openai-platform", protocol: "openai-responses"},
+          payload: "opaque"
+        })
+
+      assert {:ok, %ContentBlock{tool_call: ^call}} =
+               ContentBlock.new(%{type: :tool_call, tool_call: call})
+
+      assert {:ok,
+              %Request{input: [^message], tools: [^tool], provider_state_references: [^state]}} =
+               Request.new(%{
+                 model: "model",
+                 input: [message],
+                 tools: [tool],
+                 provider_state_references: [state]
+               })
+
+      assert {:ok, %Response{output: [^block]}} =
+               Response.new(%{
+                 output: [block],
+                 stop_reason: :stop,
+                 completeness: :complete
+               })
+
+      assert {:ok, %Response{usage: %Usage{input_tokens: 1}}} =
+               Response.new(%{
+                 output: [],
+                 stop_reason: :stop,
+                 completeness: :complete,
+                 usage: %Usage{
+                   mode: :snapshot,
+                   status: :complete,
+                   source: "test",
+                   input_tokens: 1
+                 }
+               })
+
+      malformed = %ProviderState{
+        source_profile: "openai-platform",
+        source_protocol: "openai-responses",
+        kind: "reasoning",
+        affinity: nil,
+        payload: "opaque"
+      }
+
+      assert {:error, %Error{kind: :invalid_request}} =
+               Request.new(%{
+                 model: "model",
+                 input: [],
+                 provider_state_references: [malformed]
+               })
+
+      malformed_usage = %Usage{
+        mode: :snapshot,
+        status: :complete,
+        source: "test",
+        input_tokens: -1
+      }
+
+      assert {:error, %Error{kind: :invalid_request}} =
+               Response.new(%{
+                 output: [],
+                 stop_reason: :stop,
+                 completeness: :complete,
+                 usage: malformed_usage
+               })
+    end
+
+    test "rejects colliding atom and string fields" do
+      assert {:error, %Error{kind: :invalid_request}} =
+               ContentBlock.new(%{"type" => :reasoning, type: :text, text: "hello"})
+    end
+  end
+
+  test "wire handshake rejects invalid lifetime request id limits" do
+    limits = %{
+      inbound_request_bytes: 8_388_608,
+      data_event_bytes: 65_536,
+      initial_request_credit_bytes: 262_144,
+      pending_request_buffer_bytes: 524_288,
+      pending_connection_buffer_bytes: 8_388_608,
+      concurrent_requests: 8,
+      control_reserve_bytes: 65_536
+    }
+
+    for max_seen_ids <- [0, -1, "2"] do
+      assert {:error, %Error{kind: :invalid_request}} =
+               Backplane.AiProtocol.Wire.handshake(Backplane.AiProtocol.Wire.new(), %{
+                 message_id: "welcome-1",
+                 protocol: "backplane.ai.v1",
+                 wire: %{major: 1, minor: 0},
+                 limits: limits,
+                 flow_control: :per_request_credit,
+                 max_seen_ids: max_seen_ids
+               })
     end
   end
 
@@ -189,6 +306,26 @@ defmodule Backplane.AiProtocol.RemediationTest do
   end
 
   describe "Responses observer" do
+    test "preserves refusal and output-limit terminal meanings in non-streaming responses" do
+      refusal =
+        OpenAIResponsesObserver.observe_response(
+          200,
+          ~S({"id":"resp_refusal","status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"not allowed"}]}]})
+        )
+
+      assert refusal.protocol_terminal == :completed
+      assert refusal.finish_reason == "refusal"
+
+      output_limit =
+        OpenAIResponsesObserver.observe_response(
+          200,
+          ~S({"id":"resp_limit","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}})
+        )
+
+      assert output_limit.protocol_terminal == :incomplete
+      assert output_limit.finish_reason == "max_output_tokens"
+    end
+
     test "frames split/coalesced CRLF SSE and retains trailing usage" do
       completed =
         ~S({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":8}}})

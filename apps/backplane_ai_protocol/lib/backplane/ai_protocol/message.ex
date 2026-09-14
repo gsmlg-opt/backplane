@@ -23,6 +23,8 @@ defmodule Backplane.AiProtocol.Message do
   @keys [:role, :content, :tool_call_id, :status, :extensions]
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
+  def new(%__MODULE__{} = message), do: message |> Map.from_struct() |> new()
+
   def new(attrs) when is_map(attrs) do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, role} <- role(Map.get(attrs, :role)),

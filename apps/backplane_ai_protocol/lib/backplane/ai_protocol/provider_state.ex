@@ -43,7 +43,7 @@ defmodule Backplane.AiProtocol.ProviderState do
   ]
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = state), do: {:ok, state}
+  def new(%__MODULE__{} = state), do: state |> Map.from_struct() |> new()
 
   def new(attrs) when is_map(attrs) do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
@@ -78,7 +78,7 @@ defmodule Backplane.AiProtocol.ProviderState do
     end
   end
 
-  defp affinity(%Affinity{} = affinity), do: {:ok, affinity}
+  defp affinity(%Affinity{} = affinity), do: affinity |> Map.from_struct() |> Affinity.new()
 
   defp affinity(attrs) when is_map(attrs) do
     case Affinity.new(attrs) do

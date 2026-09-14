@@ -47,11 +47,33 @@ defmodule Backplane.AiProtocol.Lifecycle do
 
   def cancel({:error, _error} = error, _upstream_outcome), do: error
 
-  def cancel(%__MODULE__{terminal: nil}, upstream_outcome) do
+  def cancel(%__MODULE__{terminal: nil}, upstream_outcome)
+      when upstream_outcome in [:known, :unknown] do
     {:ok, %__MODULE__{terminal: %{status: :cancelled, upstream_outcome: upstream_outcome}}}
   end
 
+  def cancel(%__MODULE__{terminal: nil}, _upstream_outcome),
+    do: {:error, Error.invalid!("Cancellation upstream outcome must be known or unknown")}
+
   def cancel(%__MODULE__{}, _upstream_outcome),
+    do: {:error, Error.invalid!("Lifecycle already finished")}
+
+  @spec interrupt(t() | {:ok, t()} | {:error, Error.t()}, :known | :unknown) ::
+          {:ok, t()} | {:error, Error.t()}
+  def interrupt({:ok, %__MODULE__{} = lifecycle}, upstream_outcome),
+    do: interrupt(lifecycle, upstream_outcome)
+
+  def interrupt({:error, _error} = error, _upstream_outcome), do: error
+
+  def interrupt(%__MODULE__{terminal: nil}, upstream_outcome)
+      when upstream_outcome in [:known, :unknown] do
+    {:ok, %__MODULE__{terminal: %{status: :interrupted, upstream_outcome: upstream_outcome}}}
+  end
+
+  def interrupt(%__MODULE__{terminal: nil}, _upstream_outcome),
+    do: {:error, Error.invalid!("Interruption upstream outcome must be known or unknown")}
+
+  def interrupt(%__MODULE__{}, _upstream_outcome),
     do: {:error, Error.invalid!("Lifecycle already finished")}
 
   @spec fail(t() | {:ok, t()} | {:error, Error.t()}, atom()) :: {:ok, t()} | {:error, Error.t()}

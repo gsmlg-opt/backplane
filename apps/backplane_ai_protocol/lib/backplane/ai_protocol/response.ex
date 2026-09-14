@@ -99,7 +99,7 @@ defmodule Backplane.AiProtocol.Response do
     do: {:error, Error.invalid!("Response completeness must be complete, partial, or unknown")}
 
   defp usage(nil), do: {:ok, nil}
-  defp usage(%Usage{} = usage), do: {:ok, usage}
+  defp usage(%Usage{} = usage), do: usage |> Map.from_struct() |> usage()
 
   defp usage(attrs) when is_map(attrs) do
     case Usage.new(attrs) do

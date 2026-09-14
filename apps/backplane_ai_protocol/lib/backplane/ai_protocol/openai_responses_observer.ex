@@ -354,6 +354,19 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
     end
   end
 
+  defp put_output_item(%{"type" => "refusal"}, state),
+    do: %{state | finish_reason: "refusal"}
+
+  defp put_output_item(%{"type" => "message", "content" => content}, state)
+       when is_list(content) do
+    if Enum.any?(content, &match?(%{"type" => "refusal"}, &1)),
+      do: %{state | finish_reason: "refusal"},
+      else: state
+  end
+
+  defp put_output_item(%{"type" => "message", "content" => _invalid}, state),
+    do: incomplete(state, "invalid_output_content")
+
   defp put_output_item(item, state) when is_map(item), do: state
   defp put_output_item(_item, state), do: incomplete(state, "invalid_output_item")
 

@@ -67,7 +67,8 @@ defmodule Backplane.AiProtocol.Wire do
 
   @spec handshake(t(), map()) :: {:ok, t()} | {:error, Error.t()}
   def handshake(%__MODULE__{handshake?: false} = state, welcome_attrs) do
-    with {:ok, _welcome} <- welcome(welcome_attrs) do
+    with {:ok, _welcome} <- welcome(welcome_attrs),
+         :ok <- validate_max_seen_ids(value(welcome_attrs, :max_seen_ids)) do
       {:ok,
        %{
          state
@@ -141,7 +142,8 @@ defmodule Backplane.AiProtocol.Wire do
     with :ok <- validate_message_id(message_id),
          {:ok, request} <- fetch_active(state, request_id),
          :ok <- validate_sequence(sequence, request.next_sequence),
-         envelope <- envelope("response.event", message_id, request_id, sequence, "data", payload),
+         envelope <-
+           envelope("response.event", message_id, request_id, sequence, "data", payload),
          {:ok, encoded} <- Serialization.to_json(envelope),
          :ok <- within_bytes(encoded, state.limits.data_event_bytes),
          :ok <- has_credit(state, request_id, byte_size(encoded)) do
@@ -239,6 +241,12 @@ defmodule Backplane.AiProtocol.Wire do
 
   defp validate_flow_control(_), do: {:error, Error.invalid!("Unsupported flow control")}
 
+  defp validate_max_seen_ids(nil), do: :ok
+  defp validate_max_seen_ids(value) when is_integer(value) and value > 0, do: :ok
+
+  defp validate_max_seen_ids(_),
+    do: {:error, Error.invalid!("Wire max_seen_ids must be a positive integer")}
+
   defp validate_request_id(id)
        when is_binary(id) and byte_size(id) > 0 and byte_size(id) <= @max_request_id_bytes do
     if String.valid?(id),
@@ -252,7 +260,8 @@ defmodule Backplane.AiProtocol.Wire do
   defp validate_message_id(id), do: validate_request_id(id)
 
   defp validate_sequence(sequence, expected)
-       when is_integer(sequence) and sequence >= 0 and sequence == expected, do: :ok
+       when is_integer(sequence) and sequence >= 0 and sequence == expected,
+       do: :ok
 
   defp validate_sequence(_, _), do: {:error, Error.wire!("Invalid or duplicate request sequence")}
   defp within_bytes(encoded, max) when byte_size(encoded) <= max, do: :ok

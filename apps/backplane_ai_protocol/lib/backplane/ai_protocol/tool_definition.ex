@@ -20,6 +20,8 @@ defmodule Backplane.AiProtocol.ToolDefinition do
   @keys [:name, :description, :input_schema, :extensions]
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
+  def new(%__MODULE__{} = tool), do: tool |> Map.from_struct() |> new()
+
   def new(attrs) when is_map(attrs) do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, name} <- tool_name(Map.get(attrs, :name)),

@@ -26,10 +26,12 @@ defmodule Backplane.AiProtocol.ContentBlock do
   @keys [:type, :text, :data, :tool_call, :reason, :state, :extensions]
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(attrs) when is_map(attrs) do
-    {core_attrs, extension_attrs} = split_extensions(attrs)
+  def new(%__MODULE__{} = block), do: block |> Map.from_struct() |> new()
 
-    with :ok <- Backplane.AiProtocol.Validation.reject_unknown(core_attrs, @keys),
+  def new(attrs) when is_map(attrs) do
+    with :ok <- reject_core_collisions(attrs),
+         {core_attrs, extension_attrs} = split_extensions(attrs),
+         :ok <- Backplane.AiProtocol.Validation.reject_unknown(core_attrs, @keys),
          {:ok, type} <- type(Map.get(core_attrs, :type)),
          {:ok, block} <- build(type, core_attrs),
          :ok <- extensions(extension_attrs) do
@@ -40,6 +42,13 @@ defmodule Backplane.AiProtocol.ContentBlock do
 
   @doc false
   def keys, do: @keys
+
+  defp reject_core_collisions(attrs) do
+    case Enum.find(@keys, &(Map.has_key?(attrs, &1) and Map.has_key?(attrs, Atom.to_string(&1)))) do
+      nil -> :ok
+      key -> {:error, Error.invalid!("Duplicate normalized field: #{key}")}
+    end
+  end
 
   defp type(value)
        when value in [:text, :image, :reasoning, :tool_call, :refusal, :provider_state],
