@@ -116,52 +116,296 @@ defmodule Backplane.SkillProtocol.ClientTest do
     assert Agent.get(calls, & &1) == 3
   end
 
-  test "one overall deadline and cancellation terminate attempts" do
-    slow = fn _request ->
-      Process.sleep(10)
-      {:error, :timeout}
+  test "ordinary retry succeeds and terminal errors do not retry" do
+    parent = self()
+    retry_counter = :atomics.new(1, [])
+
+    retrying = fn _request ->
+      attempt = :atomics.add_get(retry_counter, 1, 1)
+      send(parent, {:attempt, attempt})
+
+      if attempt == 1 do
+        {:ok, %{status: 503, headers: %{}, body: error_body("temporarily_unavailable", true)}}
+      else
+        {:ok, %{status: 200, headers: %{}, body: catalog_body()}}
+      end
     end
 
-    assert {:error, %Error{code: :timeout}} =
-             Client.catalog(client(slow, overall_timeout_ms: 1, retry_delays_ms: [0, 0]))
+    assert {:ok, %{data: []}} = Client.catalog(client(retrying, retry_delays_ms: [0]))
+    assert_receive {:attempt, 1}
+    assert_receive {:attempt, 2}
 
+    terminal_counter = :atomics.new(1, [])
+
+    terminal = fn _request ->
+      :atomics.add_get(terminal_counter, 1, 1)
+      {:ok, %{status: 403, headers: %{}, body: error_body("forbidden", false)}}
+    end
+
+    assert {:error, %Error{code: :forbidden, retryable: false}} =
+             Client.catalog(client(terminal, retry_delays_ms: [0, 0]))
+
+    assert :atomics.get(terminal_counter, 1) == 1
+  end
+
+  for cancellation_scope <- [:client, :call] do
+    test "#{cancellation_scope} cancellation interrupts retry backoff" do
+      parent = self()
+      cancelled = :atomics.new(1, [])
+      calls = :atomics.new(1, [])
+
+      transport = fn _request ->
+        attempt = :atomics.add_get(calls, 1, 1)
+
+        if attempt == 1 do
+          {:ok, %{status: 503, headers: %{}, body: error_body("temporarily_unavailable", true)}}
+        else
+          flunk("a cancelled backoff must not start another request")
+        end
+      end
+
+      sleep = fn interval ->
+        send(parent, {:backoff_started, self()})
+        Process.sleep(interval)
+      end
+
+      cancellation = fn -> :atomics.get(cancelled, 1) == 1 end
+
+      {client_opts, call_opts} =
+        case unquote(cancellation_scope) do
+          :client -> {[cancelled?: cancellation], []}
+          :call -> {[], [cancelled?: cancellation]}
+        end
+
+      task =
+        Task.async(fn ->
+          Client.catalog(
+            client(
+              transport,
+              Keyword.merge(
+                [retry_delays_ms: [5_000], overall_timeout_ms: 10_000, sleep: sleep],
+                client_opts
+              )
+            ),
+            call_opts
+          )
+        end)
+
+      task_pid = task.pid
+      assert_receive {:backoff_started, ^task_pid}, 500
+      :atomics.put(cancelled, 1, 1)
+      started_at = System.monotonic_time(:millisecond)
+
+      assert {:error, %Error{code: :cancelled}} = Task.await(task, 500)
+      assert System.monotonic_time(:millisecond) - started_at < 250
+      assert :atomics.get(calls, 1) == 1
+    end
+  end
+
+  test "retry backoff uses the original absolute deadline" do
+    now = :atomics.new(1, [])
+    calls = :atomics.new(1, [])
+
+    transport = fn _request ->
+      :atomics.add_get(calls, 1, 1)
+      {:ok, %{status: 503, headers: %{}, body: error_body("temporarily_unavailable", true)}}
+    end
+
+    clock = fn -> :atomics.get(now, 1) end
+    sleep = fn interval -> :atomics.add_get(now, 1, interval) end
+
+    assert {:error, %Error{code: :timeout}} =
+             Client.catalog(
+               client(transport,
+                 clock: clock,
+                 sleep: sleep,
+                 overall_timeout_ms: 50,
+                 retry_delays_ms: [50]
+               )
+             )
+
+    assert :atomics.get(calls, 1) == 1
+    assert :atomics.get(now, 1) == 0
+  end
+
+  test "cancellation before an attempt does not start transport work" do
     assert {:error, %Error{code: :cancelled}} =
              Client.catalog(
                client(fn _ -> flunk("transport must not run") end, cancelled?: fn -> true end)
              )
   end
 
-  test "deadline and cancellation kill a transport that never returns" do
+  test "an active request uses the operation's absolute deadline" do
     parent = self()
+    now = :atomics.new(1, [])
 
     stalled = fn _request ->
       send(parent, {:started, self()})
+
       receive do
         :never -> {:ok, %{status: 200, headers: %{}, body: ""}}
       end
     end
 
-    started_at = System.monotonic_time(:millisecond)
-    assert {:error, %Error{code: :timeout}} =
-             Client.catalog(client(stalled, overall_timeout_ms: 60))
-    elapsed = System.monotonic_time(:millisecond) - started_at
-    assert elapsed < 500
-    assert_receive {:started, worker}, 100
-    refute Process.alive?(worker)
+    task =
+      Task.async(fn ->
+        Client.catalog(
+          client(stalled,
+            clock: fn -> :atomics.get(now, 1) end,
+            overall_timeout_ms: 100
+          )
+        )
+      end)
+
+    assert_receive {:started, worker}, 500
+    worker_monitor = Process.monitor(worker)
+    :atomics.put(now, 1, 100)
+
+    assert {:error, %Error{code: :timeout}} = Task.await(task, 500)
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 500
+  end
+
+  test "explicit cancellation terminates and confirms a blocking transport worker" do
+    parent = self()
 
     {:ok, flag} = Agent.start_link(fn -> false end)
+
     cancelled = fn _request ->
       send(parent, {:cancel_started, self()})
+
       receive do
         :never -> {:ok, %{status: 200, headers: %{}, body: ""}}
       end
     end
 
-    task = Task.async(fn -> Client.catalog(client(cancelled, cancelled?: fn -> Agent.get(flag, & &1) end, overall_timeout_ms: 1_000)) end)
+    task =
+      Task.async(fn ->
+        Client.catalog(
+          client(cancelled,
+            cancelled?: fn -> Agent.get(flag, & &1) end,
+            overall_timeout_ms: 1_000
+          )
+        )
+      end)
+
     assert_receive {:cancel_started, cancel_worker}, 100
+    cancel_monitor = Process.monitor(cancel_worker)
     Agent.update(flag, fn _ -> true end)
     assert {:error, %Error{code: :cancelled}} = Task.await(task, 1_000)
-    refute Process.alive?(cancel_worker)
+    assert_receive {:DOWN, ^cancel_monitor, :process, ^cancel_worker, :killed}, 500
+  end
+
+  test "normal caller exit stops active transport work" do
+    parent = self()
+
+    transport = fn _request ->
+      send(parent, {:owner_request_started, self()})
+
+      receive do
+        :never -> {:ok, %{status: 200, headers: %{}, body: catalog_body()}}
+      end
+    end
+
+    caller =
+      spawn(fn ->
+        cancelled? = fn ->
+          receive do
+            :exit_normally -> exit(:normal)
+          after
+            0 -> false
+          end
+        end
+
+        Client.catalog(
+          client(transport,
+            cancelled?: cancelled?,
+            max_attempts: 1,
+            overall_timeout_ms: 10_000
+          )
+        )
+      end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:owner_request_started, worker}, 500
+    worker_monitor = Process.monitor(worker)
+    send(caller, :exit_normally)
+
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 500
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 500
+  end
+
+  test "abnormal caller termination stops active transport work" do
+    parent = self()
+
+    transport = fn _request ->
+      send(parent, {:owner_request_started, self()})
+
+      receive do
+        :never -> {:ok, %{status: 200, headers: %{}, body: catalog_body()}}
+      end
+    end
+
+    caller =
+      spawn(fn ->
+        Client.catalog(client(transport, max_attempts: 1, overall_timeout_ms: 10_000))
+      end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:owner_request_started, worker}, 500
+    worker_monitor = Process.monitor(worker)
+    Process.exit(caller, :kill)
+
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :killed}, 500
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 500
+  end
+
+  test "transport crashes are isolated from the caller" do
+    assert {:error, %Error{code: :temporarily_unavailable, retryable: true}} =
+             Client.catalog(client(fn _request -> exit(:transport_boom) end, max_attempts: 1))
+
+    assert Process.alive?(self())
+  end
+
+  test "completed operations leave no operation monitors or late replies" do
+    parent = self()
+    body = catalog_body()
+
+    caller =
+      spawn(fn ->
+        initial_monitors = Process.info(self(), :monitors)
+
+        for index <- 1..20 do
+          transport = fn _request ->
+            send(parent, {:completed_worker, index, self()})
+            {:ok, %{status: 200, headers: %{}, body: body}}
+          end
+
+          {:ok, %{data: []}} = Client.catalog(client(transport))
+        end
+
+        send(parent, {
+          :operation_cleanup,
+          initial_monitors,
+          Process.info(self(), :monitors),
+          Process.info(self(), :messages)
+        })
+      end)
+
+    caller_monitor = Process.monitor(caller)
+
+    workers =
+      for index <- 1..20 do
+        assert_receive {:completed_worker, ^index, worker}, 500
+        {worker, Process.monitor(worker)}
+      end
+
+    assert_receive {:operation_cleanup, initial_monitors, final_monitors, {:messages, []}}, 500
+    assert final_monitors == initial_monitors
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}, 500
+
+    for {worker, monitor} <- workers do
+      assert_receive {:DOWN, ^monitor, :process, ^worker, :noproc}, 500
+    end
   end
 
   test "redirects are terminal and credentials are never sent to the location" do
@@ -252,5 +496,9 @@ defmodule Backplane.SkillProtocol.ClientTest do
       "protocol_version" => "1",
       "error" => %{"code" => code, "message" => code, "retryable" => retryable, "context" => %{}}
     })
+  end
+
+  defp catalog_body do
+    JSON.encode!(%{"protocol_version" => "1", "data" => [], "next_cursor" => nil})
   end
 end

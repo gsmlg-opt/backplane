@@ -23,6 +23,7 @@ copy_package "$copied"
   mix deps.get
   mix compile --warnings-as-errors
   mix test
+  MIX_ENV=prod mix compile --warnings-as-errors
 
   artifact="$artifact_root/backplane_skill_protocol-0.1.0.tar"
   unpacked="$artifact_root/unpacked"

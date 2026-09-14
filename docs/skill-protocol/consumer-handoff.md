@@ -1,6 +1,6 @@
 # Skill Protocol v1 Consumer Handoff
 
-Status: consumer-ready package and Backplane server; external product adoption is deferred.
+Status: protocol package and Backplane server are available for consumer integration, but PR #34 lifecycle acceptance remains incomplete pending the dedicated concurrent-request and owner-death startup regressions; external product adoption is deferred.
 
 ## Supported Surface
 

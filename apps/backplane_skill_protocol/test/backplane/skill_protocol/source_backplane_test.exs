@@ -60,6 +60,8 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
     assert {:ok, "guide"} == Resource.read(prepared, "references/guide.md")
     assert {:ok, <<0, 1, 2, 255>>} == Resource.read(prepared, "assets/pixel.bin")
     assert {:ok, "#!/bin/sh\necho must-not-run\n"} == Resource.read(prepared, "scripts/run.sh")
+    assert_private_permission(prepared.root, 0o700)
+    assert_private_permission(Path.join(prepared.root, "SKILL.md"), 0o600)
     refute File.exists?(Path.join(tmp_dir, "must-not-run"))
   end
 
@@ -159,9 +161,15 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
       end
     end
 
-    source = BackplaneSource.new!(client(transport, cancelled?: fn -> Agent.get(cancelled, & &1) end))
+    source =
+      BackplaneSource.new!(client(transport, cancelled?: fn -> Agent.get(cancelled, & &1) end))
+
     assert {:error, %Error{code: :cancelled, retryable: false}} =
-             BackplaneSource.prepare(source, "opaque/id", "r1", destination: Path.join(tmp_dir, "cancelled"), cancelled?: fn -> false end)
+             BackplaneSource.prepare(source, "opaque/id", "r1",
+               destination: Path.join(tmp_dir, "cancelled"),
+               cancelled?: fn -> false end
+             )
+
     assert_receive {:request, resolve_url}
     assert URI.parse(resolve_url).path == "/skill-protocol/v1/resolve"
     refute_receive {:request, _}
@@ -193,6 +201,60 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
              )
 
     assert File.read!(marker) == "untouched"
+  end
+
+  test "remote artifact staging is private in progress and cleaned after cancellation", %{
+    tmp_dir: tmp_dir
+  } do
+    {manifest, bytes} = bundle_fixture(tmp_dir)
+
+    existing =
+      System.tmp_dir!()
+      |> Path.join("backplane-skill-protocol-source.*")
+      |> Path.wildcard()
+      |> MapSet.new()
+
+    {:ok, observed} = Agent.start_link(fn -> nil end)
+
+    cancelled? = fn ->
+      candidate =
+        System.tmp_dir!()
+        |> Path.join("backplane-skill-protocol-source.*")
+        |> Path.wildcard()
+        |> Enum.reject(&MapSet.member?(existing, &1))
+        |> Enum.find(fn directory ->
+          case File.read(Path.join(directory, "artifact.tar.gz")) do
+            {:ok, ^bytes} -> true
+            _ -> false
+          end
+        end)
+
+      if candidate do
+        Agent.update(observed, fn _ ->
+          {candidate, permission(candidate), permission(Path.join(candidate, "artifact.tar.gz"))}
+        end)
+
+        true
+      else
+        false
+      end
+    end
+
+    source =
+      BackplaneSource.new!(
+        client(sequence([manifest_response(manifest), artifact_response(bytes)]))
+      )
+
+    assert {:error, %Error{code: :cancelled}} =
+             BackplaneSource.prepare(source, "opaque/id", "r1",
+               destination: Path.join(tmp_dir, "cancelled-private"),
+               cancelled?: cancelled?
+             )
+
+    assert {staging, directory_mode, file_mode} = Agent.get(observed, & &1)
+    assert_expected_mode(directory_mode, 0o700)
+    assert_expected_mode(file_mode, 0o600)
+    refute File.exists?(staging)
   end
 
   defp bundle_fixture(tmp_dir) do
@@ -254,5 +316,22 @@ defmodule Backplane.SkillProtocol.Source.BackplaneTest do
       if calls, do: Agent.update(calls, &[URI.parse(request.url).path | &1])
       Agent.get_and_update(queue, fn [next | rest] -> {next, rest} end)
     end
+  end
+
+  defp permission(path) do
+    {:ok, stat} = File.stat(path)
+    Bitwise.band(stat.mode, 0o777)
+  end
+
+  defp assert_private_permission(path, expected) do
+    if match?({:unix, _}, :os.type()),
+      do: assert(permission(path) == expected),
+      else: assert(File.exists?(path))
+  end
+
+  defp assert_expected_mode(actual, expected) do
+    if match?({:unix, _}, :os.type()),
+      do: assert(actual == expected),
+      else: assert(is_integer(actual))
   end
 end

@@ -11,6 +11,7 @@ defmodule Backplane.SkillProtocol.Bundle do
     PathSafety,
     PreparedSkill,
     SkillRef,
+    TemporaryStorage,
     Validator
   }
 
@@ -172,7 +173,7 @@ defmodule Backplane.SkillProtocol.Bundle do
 
     case File.open(source, [:read, :binary]) do
       {:ok, input} ->
-        case File.open(target, [:write, :binary, :exclusive]) do
+        case TemporaryStorage.open_file(target) do
           {:ok, output} ->
             z = :zlib.open()
 
@@ -207,7 +208,8 @@ defmodule Backplane.SkillProtocol.Bundle do
           {:error, reason} ->
             File.close(input)
             {:error, reason}
-          end
+        end
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -387,7 +389,8 @@ defmodule Backplane.SkillProtocol.Bundle do
           _ -> []
         end
 
-      _ -> []
+      _ ->
+        []
     end
   end
 
@@ -406,19 +409,16 @@ defmodule Backplane.SkillProtocol.Bundle do
   defp temporary_directory(prefix), do: temporary_directory(System.tmp_dir!(), prefix)
 
   defp temporary_directory(parent, prefix) do
-    Enum.reduce_while(1..5, {:error, :collision}, fn _, _acc ->
-      name = prefix <> "." <> random_suffix()
-      path = Path.join(parent, name)
+    case TemporaryStorage.directory(parent, prefix) do
+      {:ok, path} ->
+        {:ok, path}
 
-      case File.mkdir(path) do
-        :ok -> {:halt, {:ok, path}}
-        {:error, :eexist} -> {:cont, {:error, :collision}}
-        {:error, reason} -> {:halt, error(:invalid_bundle, "temporary storage cannot be allocated", %{reason: Kernel.inspect(reason)})}
-      end
-    end)
+      {:error, reason} ->
+        error(:invalid_bundle, "temporary storage cannot be allocated", %{
+          reason: Kernel.inspect(reason)
+        })
+    end
   end
-
-  defp random_suffix, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
 
   defp write_and_publish(bundle, stage, destination, opts) do
     try do
@@ -453,13 +453,33 @@ defmodule Backplane.SkillProtocol.Bundle do
     Enum.reduce_while(Enum.sort(files), :ok, fn {relative, bytes}, :ok ->
       with :ok <- cancelled(opts),
            path = Path.join(stage, relative),
-           :ok <- File.mkdir_p(Path.dirname(path)),
-           :ok <- File.write(path, bytes, [:binary]) do
+           :ok <- ensure_parent_directories(stage, relative),
+           :ok <- TemporaryStorage.write_file(path, bytes) do
         {:cont, :ok}
       else
         {:error, _} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp ensure_parent_directories(stage, relative) do
+    relative
+    |> Path.dirname()
+    |> Path.split()
+    |> Enum.reject(&(&1 == "."))
+    |> Enum.reduce_while({:ok, stage}, fn segment, {:ok, parent} ->
+      path = Path.join(parent, segment)
+
+      case TemporaryStorage.ensure_directory(path) do
+        :ok -> {:cont, {:ok, path}}
+        {:ok, ^path} -> {:cont, {:ok, path}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, _path} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp path_exists?(path), do: match?({:ok, _stat}, File.lstat(path))

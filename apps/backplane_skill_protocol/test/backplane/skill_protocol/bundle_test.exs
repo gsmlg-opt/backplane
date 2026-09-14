@@ -197,4 +197,86 @@ defmodule Backplane.SkillProtocol.BundleTest do
     assert {:ok, bundle} = Bundle.pack(root, archive)
     assert Enum.map(bundle.manifest.files, & &1.path) == ["SKILL.md", "references/info.md"]
   end
+
+  test "owned staging is private while populated and is removed after cancellation", %{
+    tmp_dir: tmp_dir
+  } do
+    archive =
+      archive!(tmp_dir, [
+        {"example-skill/SKILL.md", skill_md()},
+        {"example-skill/references/guide.md", "guide"}
+      ])
+
+    assert {:ok, bundle} = Bundle.inspect(archive)
+    destination = Path.join(tmp_dir, "private-prepared")
+    {:ok, checks} = Agent.start_link(fn -> 0 end)
+
+    cancelled? = fn ->
+      check = Agent.get_and_update(checks, &{&1, &1 + 1})
+
+      if check == 2 do
+        [stage] =
+          Path.wildcard(Path.join(tmp_dir, ".private-prepared.stage.*"), match_dot: true)
+
+        assert_private_permission(stage, 0o700)
+        assert_private_permission(Path.join(stage, "SKILL.md"), 0o600)
+        true
+      else
+        false
+      end
+    end
+
+    assert {:error, %Error{code: :cancelled}} =
+             Bundle.prepare(bundle, destination, cancelled?: cancelled?)
+
+    assert Path.wildcard(Path.join(tmp_dir, ".private-prepared.stage.*"), match_dot: true) == []
+    refute File.exists?(destination)
+  end
+
+  test "private permissions hold under a permissive subprocess umask", %{tmp_dir: tmp_dir} do
+    if match?({:unix, _}, :os.type()) do
+      archive =
+        archive!(tmp_dir, [
+          {"example-skill/SKILL.md", skill_md()},
+          {"example-skill/references/guide.md", "guide"}
+        ])
+
+      package_root = Path.expand("../../..", __DIR__)
+      destination = Path.join(tmp_dir, "subprocess-prepared")
+
+      {output, 0} =
+        System.cmd(
+          "/bin/sh",
+          [
+            "-c",
+            "umask 022; exec mix run --no-compile test/support/temporary_permissions_probe.exs"
+          ],
+          cd: package_root,
+          env: [
+            {"MIX_ENV", "test"},
+            {"SKILL_PROTOCOL_PROBE_ARCHIVE", archive},
+            {"SKILL_PROTOCOL_PROBE_DESTINATION", destination}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert String.trim(output) ==
+               "source=700/600/clean inflate=700/600/clean prepare=700/600/clean"
+
+      refute File.exists?(destination)
+    else
+      assert true
+    end
+  end
+
+  defp permission(path) do
+    {:ok, stat} = File.stat(path)
+    Bitwise.band(stat.mode, 0o777)
+  end
+
+  defp assert_private_permission(path, expected) do
+    if match?({:unix, _}, :os.type()),
+      do: assert(permission(path) == expected),
+      else: assert(File.exists?(path))
+  end
 end

@@ -171,8 +171,15 @@ defmodule Backplane.SkillProtocol.Client do
     with :ok <- available(client, deadline),
          {:ok, headers} <- headers(client),
          remaining when remaining > 0 <- deadline - client.clock.(),
-         result <- invoke_bounded(client, %{url: url, headers: headers, timeout_ms: remaining,
-             deadline: deadline, max_bytes: max_bytes, cancelled?: client.cancelled?}),
+         result <-
+           invoke_bounded(client, %{
+             url: url,
+             headers: headers,
+             timeout_ms: remaining,
+             deadline: deadline,
+             max_bytes: max_bytes,
+             cancelled?: client.cancelled?
+           }),
          :ok <- available(client, deadline),
          result <- normalize_result(result, max_bytes) do
       case result do
@@ -197,14 +204,31 @@ defmodule Backplane.SkillProtocol.Client do
     remaining = deadline - client.clock.()
 
     if delay < remaining do
-      client.sleep.(delay)
-      request(client, url, max_bytes, deadline, attempt + 1)
+      with :ok <- wait_for_retry(client, deadline, delay) do
+        request(client, url, max_bytes, deadline, attempt + 1)
+      end
     else
       {:error, %{reason | code: :timeout, message: "request deadline was exceeded"}}
     end
   end
 
   defp retry(_client, _url, _max_bytes, _deadline, _attempt, reason), do: {:error, reason}
+
+  defp wait_for_retry(client, deadline, remaining_delay) when remaining_delay > 0 do
+    with :ok <- available(client, deadline) do
+      case deadline - client.clock.() do
+        deadline_remaining when deadline_remaining > 0 ->
+          interval = Enum.min([remaining_delay, 25, deadline_remaining])
+          client.sleep.(interval)
+          wait_for_retry(client, deadline, remaining_delay - interval)
+
+        _expired ->
+          error(:timeout, "request deadline was exceeded")
+      end
+    end
+  end
+
+  defp wait_for_retry(client, deadline, 0), do: available(client, deadline)
 
   defp normalize_result({:ok, %{status: 200, body: body}}, max_bytes) do
     with {:ok, bytes} <- collect_body(body, max_bytes), do: {:ok, bytes}
@@ -317,47 +341,124 @@ defmodule Backplane.SkillProtocol.Client do
   defp invoke(transport, request) when is_atom(transport), do: transport.request(request)
 
   defp invoke_bounded(client, request) do
-    parent = self()
+    owner = self()
     ref = make_ref()
 
-    {pid, monitor} =
-      spawn_monitor(fn -> send(parent, {ref, invoke(client.transport, request)}) end)
+    {guardian, monitor} =
+      spawn_monitor(fn -> operation_guardian(owner, ref, client.transport, request) end)
 
-    await_response(pid, monitor, ref, client, request.deadline)
+    await_response(guardian, monitor, ref, client, request.deadline)
   end
 
-  defp await_response(pid, monitor, ref, client, deadline) do
+  defp operation_guardian(owner, ref, transport, request) do
+    Process.flag(:trap_exit, true)
+    owner_monitor = Process.monitor(owner)
+    guardian = self()
+
+    {worker, worker_monitor} =
+      :erlang.spawn_opt(
+        fn -> send(guardian, {:transport_result, ref, invoke(transport, request)}) end,
+        [:link, :monitor]
+      )
+
+    guard_operation(owner, owner_monitor, worker, worker_monitor, ref, :pending)
+  end
+
+  defp guard_operation(owner, owner_monitor, worker, worker_monitor, ref, result) do
+    receive do
+      {:transport_result, ^ref, transport_result} ->
+        guard_operation(
+          owner,
+          owner_monitor,
+          worker,
+          worker_monitor,
+          ref,
+          {:result, transport_result}
+        )
+
+      {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
+        result = operation_result(result, reason)
+        send(owner, {ref, result})
+        await_owner_ack(owner_monitor, ref)
+
+      {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
+        terminate_worker(worker, worker_monitor)
+
+      {:stop, ^ref} ->
+        terminate_worker(worker, worker_monitor)
+    end
+  end
+
+  defp await_owner_ack(owner_monitor, ref) do
+    receive do
+      {:ack, ^ref} -> Process.demonitor(owner_monitor, [:flush])
+      {:stop, ^ref} -> Process.demonitor(owner_monitor, [:flush])
+      {:DOWN, ^owner_monitor, :process, _owner, _reason} -> :ok
+    end
+  end
+
+  defp terminate_worker(worker, worker_monitor) do
+    Process.exit(worker, :kill)
+
+    receive do
+      {:DOWN, ^worker_monitor, :process, ^worker, _reason} -> :ok
+    end
+  end
+
+  defp operation_result({:result, result}, _reason), do: result
+  defp operation_result(:pending, _reason), do: {:error, :transport_crashed}
+
+  defp await_response(guardian, monitor, ref, client, deadline) do
     remaining = max(deadline - client.clock.(), 0)
 
     receive do
       {^ref, result} ->
-        Process.demonitor(monitor, [:flush])
+        send(guardian, {:ack, ref})
+        await_guardian(monitor, guardian, ref)
         result
 
-      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+      {:DOWN, ^monitor, :process, ^guardian, _reason} ->
         {:error, :transport_crashed}
     after
       min(remaining, 25) ->
         cond do
           client.cancelled?.() ->
-            Process.exit(pid, :kill)
-            Process.demonitor(monitor, [:flush])
+            stop_operation(guardian, monitor, ref)
             {:error, :cancelled}
 
           client.clock.() >= deadline ->
-            Process.exit(pid, :kill)
-            Process.demonitor(monitor, [:flush])
+            stop_operation(guardian, monitor, ref)
             {:error, :timeout}
 
           true ->
-            await_response(pid, monitor, ref, client, deadline)
+            await_response(guardian, monitor, ref, client, deadline)
         end
+    end
+  end
+
+  defp stop_operation(guardian, monitor, ref) do
+    send(guardian, {:stop, ref})
+    await_guardian(monitor, guardian, ref)
+  end
+
+  defp await_guardian(monitor, guardian, ref) do
+    receive do
+      {:DOWN, ^monitor, :process, ^guardian, _reason} -> flush_operation_reply(ref)
+    end
+  end
+
+  defp flush_operation_reply(ref) do
+    receive do
+      {^ref, _result} -> :ok
+    after
+      0 -> :ok
     end
   end
 
   defp combine_cancellation(client_cancelled?, nil), do: client_cancelled?
 
-  defp combine_cancellation(client_cancelled?, call_cancelled?) when is_function(call_cancelled?, 0) do
+  defp combine_cancellation(client_cancelled?, call_cancelled?)
+       when is_function(call_cancelled?, 0) do
     fn -> client_cancelled?.() or call_cancelled?.() end
   end
 

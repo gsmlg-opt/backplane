@@ -158,6 +158,7 @@ defmodule Backplane.CIWorkflowTest do
       "Install native build dependencies",
       "Restore dependencies cache",
       "Install dependencies",
+      "Install standalone package dependencies",
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
       "Run tests"
@@ -171,6 +172,12 @@ defmodule Backplane.CIWorkflowTest do
     })
 
     assert_step(job, %{"name" => "Prepare test database", "run" => "mix ecto.setup"})
+
+    assert_step(job, %{
+      "name" => "Install standalone package dependencies",
+      "if" => "matrix.app == 'backplane_skill_protocol'",
+      "run" => "mix do --app backplane_skill_protocol cmd mix deps.get"
+    })
 
     assert_step(job, %{
       "name" => "Run tests",
