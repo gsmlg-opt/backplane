@@ -11,4 +11,3 @@
 ## W1.1 package notices
 
 Both new packages declare MIT and include a source-note file. Since no Sigma or Synapsis implementation code was copied, the new MIT declaration covers only the Backplane skeleton. Later extraction must add and verify exact upstream notices before copying any code.
-

@@ -14,4 +14,3 @@ The package must not absorb Backplane credential storage, production routing, na
 transport, or host-owned persistence. Sigma agent loops, Synapsis agent topology, tools,
 approvals, daemon/background work, persistence, PubSub, and credential/config ownership remain
 host-owned.
-

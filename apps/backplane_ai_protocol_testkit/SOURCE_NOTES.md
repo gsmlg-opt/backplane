@@ -5,4 +5,3 @@ This package is prepared from the pinned Backplane, Sigma, and Synapsis inventor
 
 Host-owned behavior remains outside the TestKit: Backplane credential storage and routing, Sigma
 agent loops and logging, and Synapsis persistence, PubSub, daemon/background work, and tools.
-
