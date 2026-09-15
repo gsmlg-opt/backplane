@@ -436,14 +436,16 @@ This section supersedes the preceding current-source status while retaining its 
 `origin/main` was merged into `feature/ai-protocol`; five conflicts were resolved with the shared
 ordinary OpenAI Responses path, Relayixir transport, and host routing/authorization/credential
 ownership preserved. Checker repairs are in `cb742426`, the merge is `07e20f50`, and test isolation
-is `bb1f86ef`. The exact remote PR head is `bb1f86ef8f8418d8a9965b6dd14237a8b1bf5635`; base is
+is `bb1f86ef`. Follow-up fixture loading for reflection-order independence is `1a84d9cc`. The tested
+remote source is `1a84d9cc70071785e7a2953140eef3b20e4c4678`; base is
 `1d3901183848d94fd2c731e97fb66069bb93d1a0`.
 
-The previously red seven application jobs and Dialyzer issues were repaired. Exact-head GitHub
-Test run `34934919942` passed all 18 jobs, including `Test (backplane_api)`. PR CI run
-`34934919764` and push CI run `34934916645` passed Compile, Format, Credo, Workflow Contract, and
-Dialyzer. PR Skill Protocol run `34934919887` passed. These results apply to the current remote
-source, rather than the historical `70b9609...` or `6465319...` sources.
+The previously red seven application jobs and Dialyzer issues were repaired. GitHub Test run
+`34936404796` passed all 18 jobs at tested source `1a84d9cc`, including `Test (backplane_api)` and
+the repaired `Test (backplane_mcp_protocol)` job `104275155335`. PR CI run `34936404664` and push
+CI run `34936401283` passed Compile, Format, Credo, Workflow Contract, and Dialyzer. PR Skill
+Protocol run `34936404706` passed. These results apply to the tested remote source, rather than the
+historical `70b9609...` or `6465319...` sources.
 
 ### Verification results
 

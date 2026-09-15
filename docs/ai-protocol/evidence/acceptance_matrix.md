@@ -93,13 +93,13 @@ fixtures, tests, and decoder clauses without changing production code.
 This section supersedes the preceding current-source status. `origin/main` was merged into the PR
 branch and five conflicts were resolved while preserving the shared ordinary Responses path and
 existing Relayixir/host ownership boundaries. Repair commit `cb742426`, merge commit `07e20f50`,
-and test isolation commit `bb1f86ef` are included in exact remote PR head
-`bb1f86ef8f8418d8a9965b6dd14237a8b1bf5635`; base is
+test isolation commit `bb1f86ef`, and MCP fixture-load commit `1a84d9cc` are included in tested
+remote source `1a84d9cc70071785e7a2953140eef3b20e4c4678`; base is
 `1d3901183848d94fd2c731e97fb66069bb93d1a0`.
 
 | Acceptance | Current status | Evidence |
 | --- | --- | --- |
-| PR checker repair | `passed` | Exact-head Test run `34934919942` passed all 18 jobs, including `backplane_api`. PR CI `34934919764` and push CI `34934916645` passed Compile, Format, Credo, Workflow Contract, and Dialyzer. PR Skill Protocol run `34934919887` passed. |
+| PR checker repair | `passed` | Test run `34936404796` passed all 18 jobs at tested source `1a84d9cc`, including `backplane_api` and the repaired `backplane_mcp_protocol` job. PR CI `34936404664` and push CI `34936401283` passed Compile, Format, Credo, Workflow Contract, and Dialyzer. PR Skill Protocol run `34936404706` passed. |
 | Application suites | `passed locally` | Backplane 22, admin 275, MCP 663, memory 1,143 plus 5 excluded, skills 191, system 408, telemetry 33, AI protocol 62, TestKit 2, API 255, Llama 251, and Relayixir 247 tests passed. |
 | Endpoint regressions | `passed locally` | The endpoint suite has 10 tests and passed at seeds 0, 424242, and 987654, including fragmented semantic JSON and the >8 MiB observation overflow case. |
 | Repository checks | `passed locally` | Format check, Credo strict, workflow contract, and `git diff --check` passed. Local Dialyzer under Elixir 1.20/OTP 29 exits 2 on three known guard warnings in `web_live_search.ex:511`, `web_search.ex:320`, and `web_x_search.ex:227`; target CI Elixir 1.18/OTP 28 Dialyzer passed. |
