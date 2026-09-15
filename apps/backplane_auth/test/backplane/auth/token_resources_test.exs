@@ -60,6 +60,31 @@ defmodule Backplane.Auth.TokenResourcesTest do
     end
   end
 
+  test "persists and resolves the Skill Protocol resource" do
+    client = oauth_client_fixture!()
+
+    token =
+      insert_token!(
+        client_id: client.id,
+        type: "access_token",
+        value: unique("skill-protocol")
+      )
+
+    assert {:ok, binding} =
+             TokenResources.bind_issued(
+               "access_token",
+               client.id,
+               token.value,
+               :skill_protocol
+             )
+
+    assert binding.resource == "skill_protocol"
+    assert {:ok, :skill_protocol} = TokenResources.resource_for_token(token)
+
+    assert {:ok, ^token, :skill_protocol} =
+             TokenResources.lookup_access_token(client.id, token.value)
+  end
+
   test "deleting an OAuth token cascades to its resource mapping" do
     client = oauth_client_fixture!()
     token = insert_token!(client_id: client.id, type: "code", value: unique("cascade"))

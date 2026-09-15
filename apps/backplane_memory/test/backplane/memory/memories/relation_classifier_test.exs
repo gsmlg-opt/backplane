@@ -7,6 +7,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.RelationClassifier
   alias Backplane.Memory.Memories.Relations
+  alias Backplane.Memory.Projections.ProjectedSession
 
   defmodule MockLLM do
     def classify_relation(source, target) do
@@ -347,6 +348,8 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   end
 
   test "insufficient support remains reviewable and later strong evidence confirms replacement" do
+    Enum.each(~w(weak-old weak-new strong-old strong-new), &insert_source_session!/1)
+
     weak = %{evidence_kind: "supports", support_score: 0.4}
 
     older =
@@ -762,6 +765,26 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
       )
 
     memory
+  end
+
+  defp insert_source_session!(session_id) do
+    partition = canonical_partition("host", scope: "scope", namespace: "private")
+
+    repo().insert!(%ProjectedSession{
+      memory_space_id: partition.memory_space_id,
+      subject_id: "relation-source:#{session_id}",
+      session_id: session_id,
+      project: "backplane",
+      host_id: partition.host_id,
+      client_id: partition.client_id,
+      source_client_id: partition.source_client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
+      status: "closed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "relation-classifier-test",
+      input_revision: "r1"
+    })
   end
 
   defp classified_source_contents(contents) do

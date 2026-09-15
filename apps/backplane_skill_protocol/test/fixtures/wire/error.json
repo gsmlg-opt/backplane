@@ -1,0 +1,4 @@
+{
+  "protocol_version": "1",
+  "error": {"code": "revision_unavailable", "message": "revision is unavailable", "retryable": false, "context": {"skill_id": "skill/opaque/id", "revision": "r0"}}
+}

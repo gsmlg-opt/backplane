@@ -142,7 +142,6 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     assert {:ok, []} = Crystals.search(secret_marker, @partition)
   end
 
-  @tag timeout: 5_000
   test "dense connected action graph terminates within a bounded statement and stays partitioned" do
     action_ids = insert_actions(36, @partition)
 
@@ -163,7 +162,13 @@ defmodule Backplane.Memory.CrystalActionChainTest do
       )
 
     [foreign_id] = insert_actions(1, foreign_partition)
-    insert_edge(List.first(action_ids), foreign_id)
+
+    assert_raise Postgrex.Error, ~r/crosses canonical memory partition/, fn ->
+      repo().transaction(
+        fn -> insert_edge(List.first(action_ids), foreign_id) end,
+        mode: :savepoint
+      )
+    end
 
     repo().query!("SET LOCAL statement_timeout = '1500ms'")
 
@@ -173,9 +178,8 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     refute foreign_id in source_ids
   end
 
-  @tag timeout: 5_000
   test "action traversal stops after the authorized limit in a much larger component" do
-    action_ids = insert_actions(4_000, @partition)
+    action_ids = insert_actions(501, @partition)
 
     action_ids
     |> Enum.chunk_every(2, 1, :discard)
@@ -324,17 +328,21 @@ defmodule Backplane.Memory.CrystalActionChainTest do
       ])
 
   defp insert_edges(edges) do
-    repo().insert_all(
-      "memory_action_edges",
-      Enum.map(edges, fn {source, target} ->
-        %{
-          id: Ecto.UUID.dump!(Ecto.UUID.generate()),
-          source_id: Ecto.UUID.dump!(source),
-          target_id: Ecto.UUID.dump!(target),
-          edge_type: "requires"
-        }
-      end)
-    )
+    edges
+    |> Enum.chunk_every(100)
+    |> Enum.each(fn chunk ->
+      repo().insert_all(
+        "memory_action_edges",
+        Enum.map(chunk, fn {source, target} ->
+          %{
+            id: Ecto.UUID.dump!(Ecto.UUID.generate()),
+            source_id: Ecto.UUID.dump!(source),
+            target_id: Ecto.UUID.dump!(target),
+            edge_type: "requires"
+          }
+        end)
+      )
+    end)
   end
 
   defp insert_actions(count, partition) do

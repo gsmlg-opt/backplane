@@ -206,8 +206,6 @@ defmodule Backplane.Memory.Graph do
     )
   end
 
-  defp string_partition_attrs(nil), do: %{}
-
   defp string_partition_attrs(partition) when is_map(partition),
     do:
       Map.new(

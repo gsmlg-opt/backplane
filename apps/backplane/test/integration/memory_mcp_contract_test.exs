@@ -5,6 +5,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
   alias Backplane.Memory.Facets.Facet
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Skills.Hosts
@@ -93,9 +94,13 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
   test "memory::apply is hidden from read-only clients and callable by writers", %{
     host: host
   } do
+    assert {:ok, partition} =
+             MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private")
+
     assert {:ok, memory} =
              Memories.remember("apply transport procedure",
                type: "procedural",
+               memory_space_id: partition.memory_space_id,
                scope: host.memory_scope,
                agent_id: "contract-agent",
                host_id: host.id,
@@ -419,8 +424,19 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
         "memory_scope" => "global"
       })
 
+    assert {:ok, own_partition} =
+             MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private")
+
+    assert {:ok, decoy_partition} =
+             MemorySpaces.resolve_host_partition(
+               other_host.id,
+               other_host.memory_scope,
+               "private"
+             )
+
     assert {:ok, own} =
              Memories.remember("own partition fact",
+               memory_space_id: own_partition.memory_space_id,
                scope: "global",
                agent_id: "agent",
                host_id: host.id,
@@ -430,6 +446,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
 
     assert {:ok, _decoy} =
              Memories.remember("foreign partition secret",
+               memory_space_id: decoy_partition.memory_space_id,
                scope: "global",
                agent_id: "agent",
                host_id: other_host.id,

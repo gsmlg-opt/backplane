@@ -5,6 +5,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   import Plug.Test
 
   alias Backplane.Embedding
+
   alias Backplane.LLM.{
     ModelResolver,
     Provider,
@@ -39,7 +40,9 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     {:ok, openai_provider} = Provider.create(%{name: "obs-openai", credential: "obs-openai-cred"})
 
-    anthropic = setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+    anthropic =
+      setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+
     openai = setup_provider_api(openai_provider, :openai, openai_upstream.port, "gpt-obs")
 
     {:ok, embedding} =
@@ -171,27 +174,51 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   test "records rate limit rejection", %{openai_provider: provider} do
+    handler_id = "llm-rate-limit-test-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:backplane, :llm_proxy, :request, :stop],
+        fn _event, _measurements, metadata, pid -> send(pid, {:llm_stop, metadata}) end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     {:ok, provider} = Provider.update(provider, %{rpm_limit: 1})
+    provider_id = provider.id
     ModelResolver.clear_cache()
 
-    body = %{"model" => "obs-openai/gpt-obs", "messages" => [%{"role" => "user", "content" => "hi"}]}
+    body = %{
+      "model" => "obs-openai/gpt-obs",
+      "messages" => [%{"role" => "user", "content" => "hi"}]
+    }
 
     assert llm_request(:post, "/v1/chat/completions", body).status == 200
+    assert_receive {:llm_stop, %{attributes: %{"status" => 200, "provider_id" => ^provider_id}}}
 
     conn = llm_request(:post, "/v1/chat/completions", body)
     assert conn.status == 429
-    flush_logs!()
+    assert_receive {:llm_stop, %{attributes: %{"status" => 429, "provider_id" => ^provider_id}}}
+    assert %Provider{id: ^provider_id} = Backplane.Repo.get(Provider, provider_id)
 
     import Ecto.Query
 
     log =
-      Backplane.Repo.one(
-        from(l in ProxyRequest,
-          where: l.status == 429,
-          order_by: [desc: l.inserted_at],
-          limit: 1
+      eventually(fn ->
+        flush_logs!()
+
+        Backplane.Repo.one(
+          from(l in ProxyRequest,
+            where: l.status == 429,
+            order_by: [desc: l.inserted_at],
+            limit: 1
+          )
         )
-      )
+      end)
+
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
     assert log.status == 429
@@ -303,6 +330,20 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     |> put_req_header("content-type", "application/json")
     |> then(fn conn -> if context, do: Context.put(conn, context), else: conn end)
     |> Router.call(Router.init([]))
+  end
+
+  defp eventually(fun, attempts \\ 20)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        eventually(fun, attempts - 1)
+
+      value ->
+        value
+    end
   end
 
   defp setup_provider_api(provider, api_surface, port, model_name) do

@@ -19,13 +19,17 @@ defmodule Backplane.Auth.ResourcesTest do
     end)
   end
 
-  test "builds the two canonical resource surfaces" do
-    assert Resources.keys() == [:mcp, :v1]
+  test "builds the canonical resource surfaces" do
+    assert Resources.keys() == [:mcp, :skill_protocol, :v1]
     assert Resources.path(:mcp) == "/mcp"
     assert Resources.path(:v1) == "/v1"
+    assert Resources.path(:skill_protocol) == "/skill-protocol/v1"
 
     assert Resources.uri(:mcp) == "https://backplane.example.test/mcp"
     assert Resources.uri(:v1) == "https://backplane.example.test/v1"
+
+    assert Resources.uri(:skill_protocol) ==
+             "https://backplane.example.test/skill-protocol/v1"
 
     assert Resources.metadata_uri(:mcp) ==
              "https://backplane.example.test/.well-known/oauth-protected-resource/mcp"
@@ -36,8 +40,12 @@ defmodule Backplane.Auth.ResourcesTest do
     assert Resources.documentation_uri(:mcp) == "https://backplane.example.test/docs/mcp"
     assert Resources.documentation_uri(:v1) == "https://backplane.example.test/docs/llm"
 
+    assert Resources.documentation_uri(:skill_protocol) ==
+             "https://backplane.example.test/docs/skills"
+
     assert Resources.from_uri(Resources.uri(:mcp)) == {:ok, :mcp}
     assert Resources.from_uri(Resources.uri(:v1)) == {:ok, :v1}
+    assert Resources.from_uri(Resources.uri(:skill_protocol)) == {:ok, :skill_protocol}
 
     for invalid <- [
           "https://backplane.example.test/v1/",
@@ -70,8 +78,10 @@ defmodule Backplane.Auth.ResourcesTest do
     for scope <- ["openid", "profile", "email"] do
       assert Resources.valid_scope?(:mcp, scope)
       assert Resources.valid_scope?(:v1, scope)
+      assert Resources.valid_scope?(:skill_protocol, scope)
       refute Resources.operation_scope?(:mcp, scope)
       refute Resources.operation_scope?(:v1, scope)
+      refute Resources.operation_scope?(:skill_protocol, scope)
     end
 
     assert Resources.valid_scope?(:mcp, "github::search")
@@ -83,6 +93,13 @@ defmodule Backplane.Auth.ResourcesTest do
       assert Resources.valid_scope?(:v1, scope)
       assert Resources.operation_scope?(:v1, scope)
     end
+
+    for scope <- ["skill::read", "skill::*", "*"] do
+      assert Resources.valid_scope?(:skill_protocol, scope)
+      assert Resources.operation_scope?(:skill_protocol, scope)
+    end
+
+    refute Resources.valid_scope?(:skill_protocol, "skill::write")
 
     assert Resources.operation_scope?(:mcp, "github::search")
     assert Resources.operation_scope?(:mcp, "github::*")

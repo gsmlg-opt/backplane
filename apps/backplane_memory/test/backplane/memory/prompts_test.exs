@@ -25,6 +25,8 @@ defmodule Backplane.Memory.PromptsTest do
   end
 
   test "recall_context returns only live exact-partition memories with bounded citations" do
+    insert_source_session!("session-a")
+
     authorized =
       remember!("authorized-needle real persisted context",
         client_id: "client-a",
@@ -36,7 +38,7 @@ defmodule Backplane.Memory.PromptsTest do
           %{
             source_session_id: "session-a",
             session_id: "session-a",
-            host_id: "host",
+            host_id: host_id(),
             evidence_kind: "supports",
             support_score: 1.0
           }
@@ -92,6 +94,26 @@ defmodule Backplane.Memory.PromptsTest do
     refute text =~ "deleted"
     refute text =~ "Search memory"
     assert String.length(text) <= 8_000
+  end
+
+  defp insert_source_session!(session_id) do
+    partition = exact_partition()
+
+    repo().insert!(%ProjectedSession{
+      memory_space_id: partition.memory_space_id,
+      subject_id: "prompt-source:#{session_id}",
+      session_id: session_id,
+      project: "project-a",
+      host_id: host_id(),
+      client_id: partition_id(),
+      source_client_id: partition.source_client_id,
+      scope: entitled_scope(),
+      namespace: partition.namespace,
+      status: "closed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "prompts-test",
+      input_revision: "r1"
+    })
   end
 
   test "recall_context returns an explicit factual empty result and rejects ownership args" do

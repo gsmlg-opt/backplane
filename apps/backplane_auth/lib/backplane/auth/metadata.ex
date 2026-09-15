@@ -42,6 +42,12 @@ defmodule Backplane.Auth.Metadata do
     protected_resource_metadata(:mcp, "Backplane MCP Hub")
   end
 
+  def protected_resource(:skill_protocol) do
+    :skill_protocol
+    |> protected_resource_metadata("Backplane Skill Protocol")
+    |> Map.put(:scopes_supported, ["skill::read"])
+  end
+
   def protected_resource(:v1) do
     :v1
     |> protected_resource_metadata("Backplane LLM API")

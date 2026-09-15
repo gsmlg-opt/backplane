@@ -76,6 +76,22 @@ defmodule Backplane.Api.Auth.DiscoveryControllerTest do
            }
   end
 
+  test "publishes Skill Protocol protected-resource metadata", %{conn: conn} do
+    body =
+      conn
+      |> get("/.well-known/oauth-protected-resource/skill_protocol")
+      |> json_response(200)
+
+    assert body == %{
+             "resource" => Resources.uri(:skill_protocol),
+             "authorization_servers" => [WebOrigins.api_base_url()],
+             "bearer_methods_supported" => ["header"],
+             "resource_name" => "Backplane Skill Protocol",
+             "resource_documentation" => Resources.documentation_uri(:skill_protocol),
+             "scopes_supported" => ["skill::read"]
+           }
+  end
+
   test "does not publish metadata for unknown or non-canonical resource paths", %{conn: conn} do
     for path <- [
           "/.well-known/oauth-protected-resource/unknown",

@@ -408,7 +408,9 @@ defmodule Backplane.Memory.Qualification.Runner do
          duplicate_effects: persisted - distinct_effects,
          retryable_failures_observed: retryable_failures_observed,
          permanent_failures:
-           Enum.count(delivery_results, &(&1["status"] in ["failed", "rejected"])),
+           Enum.count(delivery_results, fn result ->
+             result["status"] == "rejected" and result["retryable"] == false
+           end),
          contention_workers: contention_workers
        }}
     else

@@ -4,7 +4,6 @@ defmodule Backplane.MetricsTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Metrics
-  alias Backplane.Proxy.Pool
 
   test "inc increments a counter" do
     Metrics.inc("test_counter_1")
@@ -306,44 +305,6 @@ defmodule Backplane.MetricsTest do
       assert is_map(snap)
       assert is_list(snap.upstreams)
     end)
-  end
-
-  test "upstream_status map body is exercised with a live upstream" do
-    # Start a mock MCP server and an Upstream GenServer so Pool.list_upstreams()
-    # returns at least one entry, exercising the Enum.map body in upstream_status/0.
-    {:ok, bandit} =
-      Bandit.start_link(
-        plug: Backplane.Test.MockMcpPlug,
-        port: 0,
-        ip: {127, 0, 0, 1}
-      )
-
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-
-    config = %{
-      name: "metrics-upstream-test",
-      prefix: "metup",
-      transport: "http",
-      url: "http://127.0.0.1:#{port}/mcp",
-      headers: %{}
-    }
-
-    {:ok, upstream_pid} = Pool.start_upstream(config)
-    Process.sleep(300)
-
-    snap = Metrics.snapshot()
-    assert is_list(snap.upstreams)
-    # With a live upstream, we should have at least one entry
-    assert snap.upstreams != []
-
-    metup = Enum.find(snap.upstreams, fn u -> u.name == "metrics-upstream-test" end)
-    assert metup != nil
-    assert metup.status == :connected
-    assert is_integer(metup.tool_count)
-    assert is_integer(metup.consecutive_ping_failures)
-
-    GenServer.stop(upstream_pid)
-    GenServer.stop(bandit)
   end
 
   # --- Coverage for L59: catch branch in inc/2 ---

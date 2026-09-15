@@ -89,7 +89,7 @@ defmodule Backplane.Memory.Memories do
       result =
         with :ok <- validate_idempotency_options(opts),
              {:ok, partition} <- write_partition(opts),
-             {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, [])),
+             {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, []), partition),
              {:ok, filtered} <- Filter.apply(content),
              attrs = build_attrs(filtered, opts, partition),
              {:ok, request_hash} <- CanonicalRequest.hash(attrs, evidence) do
@@ -780,6 +780,13 @@ defmodule Backplane.Memory.Memories do
       {:error, reason} ->
         {:error, reason}
     end
+  rescue
+    error in Ecto.ConstraintError ->
+      if error.constraint == "bpm_memory_evidence_canonical_partition" do
+        {:error, :partition_mismatch}
+      else
+        reraise(error, __STACKTRACE__)
+      end
   end
 
   defp relation_classifiable?(memory), do: memory.memory_type in ~w(semantic procedural)
@@ -947,6 +954,21 @@ defmodule Backplane.Memory.Memories do
     end)
   end
 
+  defp canonicalize_evidence_provenance(evidence, partition) do
+    evidence
+    |> Enum.reduce_while({:ok, []}, fn attrs, {:ok, acc} ->
+      case Map.get(attrs, :host_id) do
+        nil -> {:cont, {:ok, [Map.put(attrs, :host_id, partition.host_id) | acc]}}
+        host_id when host_id == partition.host_id -> {:cont, {:ok, [attrs | acc]}}
+        _conflicting_host -> {:halt, {:error, :partition_mismatch}}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      error -> error
+    end
+  end
+
   defp ensure_stored_evidence_matches!(memory_id, attrs) do
     stored =
       Evidence
@@ -977,10 +999,10 @@ defmodule Backplane.Memory.Memories do
   defp evidence_source_query(query, {:session, host_id, session_id}),
     do: where(query, [e], e.host_id == ^host_id and e.source_session_id == ^session_id)
 
-  defp normalize_evidence(evidence) when is_list(evidence) do
+  defp normalize_evidence(evidence, partition) when is_list(evidence) do
     evidence
     |> Enum.reduce_while({:ok, %{}}, fn item, {:ok, sources} ->
-      with {:ok, normalized} <- normalize_evidence_item(item) do
+      with {:ok, normalized} <- normalize_evidence_item(item, partition) do
         identity = evidence_source_identity(normalized)
 
         case Map.fetch(sources, identity) do
@@ -1001,10 +1023,11 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
-  defp normalize_evidence(_evidence), do: {:error, :invalid_evidence}
+  defp normalize_evidence(_evidence, _partition), do: {:error, :invalid_evidence}
 
-  defp normalize_evidence_item(item) when is_map(item) and not is_struct(item) do
+  defp normalize_evidence_item(item, partition) when is_map(item) and not is_struct(item) do
     with {:ok, attrs} <- normalize_evidence_keys(item),
+         {:ok, [attrs]} <- canonicalize_evidence_provenance([attrs], partition),
          :ok <- validate_evidence_source(attrs),
          changeset =
            Evidence.changeset(
@@ -1014,11 +1037,12 @@ defmodule Backplane.Memory.Memories do
          {:ok, evidence} <- Ecto.Changeset.apply_action(changeset, :validate) do
       {:ok, evidence |> Map.from_struct() |> Map.take(@evidence_input_fields)}
     else
+      {:error, :partition_mismatch} = error -> error
       _ -> {:error, :invalid_evidence}
     end
   end
 
-  defp normalize_evidence_item(_item), do: {:error, :invalid_evidence}
+  defp normalize_evidence_item(_item, _partition), do: {:error, :invalid_evidence}
 
   defp normalize_evidence_keys(item) do
     Enum.reduce_while(item, {:ok, %{}}, fn

@@ -4,7 +4,6 @@ defmodule Backplane.Memory.Recall.StoreTest do
   import Ecto.Query
 
   alias Backplane.Memory.Recall.{
-    Candidate,
     Packer,
     PostFusion,
     QueryPlan,
@@ -128,7 +127,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
     assert row.candidate_id == candidate.id
 
     assert row.source_refs == %{
-             "refs" => [%{"type" => "event", "id" => hd(candidate.source_ids)}]
+             "refs" => [%{"type" => "memory", "id" => hd(candidate.source_ids)}]
            }
 
     assert row.pre_reranker_rank == 1
@@ -254,7 +253,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
       reranker_duration_ms: 7
     ]
 
-    assert {:ok, %Run{status: "complete", tokens_used: 2, result_count: 1} = complete} =
+    assert {:ok, %Run{status: "complete", tokens_used: 1, result_count: 1} = complete} =
              Store.finalize(run.id, @partition, [trace], attrs)
 
     refute inspect(complete) =~ "do-not-store"
@@ -511,18 +510,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
   defp plan(query), do: QueryPlan.new(Map.put(@partition, :query, query))
 
   defp candidate(content) do
-    source_id = Ecto.UUID.generate()
-
-    Candidate.new(
-      Map.merge(@partition, %{
-        id: Ecto.UUID.generate(),
-        kind: :memory,
-        memory_type: :semantic,
-        content: content,
-        source_ids: [source_id],
-        source_refs: [%{type: :event, id: source_id}]
-      })
-    )
+    canonical_recall_candidate(@partition, content)
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

@@ -153,6 +153,7 @@ defmodule Backplane.Skills.SkillTest do
 
     test "returns explicit errors for unavailable archive operations" do
       assert {:error, :enoent} = SkillsContext.ingest_archive("archive bytes", %{})
+
       assert {:error, :not_found} = SkillsContext.archive_stream("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.export("test/context-skill")
       assert {:error, :not_implemented} = SkillsContext.import("archive bytes", %{})

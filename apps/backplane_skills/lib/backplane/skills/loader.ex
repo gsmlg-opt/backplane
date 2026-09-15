@@ -5,44 +5,19 @@ defmodule Backplane.Skills.Loader do
 
   require Logger
 
+  alias Backplane.SkillProtocol.{Parser, Validator}
+
   @doc """
   Parse a SKILL.md file's content into a skill entry map.
   Returns {:ok, map} or {:error, reason}.
   """
   @spec parse(String.t()) :: {:ok, map()} | {:error, atom()}
   def parse(content) when is_binary(content) do
-    case extract_frontmatter(content) do
-      {:ok, yaml_str, body} ->
-        case YamlElixir.read_from_string(yaml_str) do
-          {:ok, meta} when is_map(meta) ->
-            build_entry(meta, body)
-
-          {:ok, _} ->
-            {:error, :malformed_frontmatter}
-
-          {:error, _} ->
-            {:error, :malformed_frontmatter}
-        end
-
-      :error ->
-        {:error, :missing_frontmatter}
-    end
-  end
-
-  defp extract_frontmatter(content) do
-    case String.split(content, ~r/^---\s*$/m, parts: 3) do
-      ["", yaml, body] ->
-        {:ok, yaml, String.trim(body)}
-
-      [before, yaml, body] ->
-        if String.trim(before) == "" do
-          {:ok, yaml, String.trim(body)}
-        else
-          :error
-        end
-
-      _ ->
-        :error
+    with {:ok, document} <- Parser.parse(content),
+         {:ok, document} <- Validator.validate(document, profile: :legacy) do
+      build_entry(document.metadata, String.trim(document.body_raw))
+    else
+      {:error, %{code: code}} -> {:error, legacy_error(code)}
     end
   end
 
@@ -116,4 +91,9 @@ defmodule Backplane.Skills.Loader do
 
   defp version_string(nil), do: "1.0.0"
   defp version_string(value), do: to_string(value)
+
+  defp legacy_error(code) when code in [:missing_frontmatter, :missing_name, :invalid_document],
+    do: :missing_frontmatter
+
+  defp legacy_error(_code), do: :malformed_frontmatter
 end
