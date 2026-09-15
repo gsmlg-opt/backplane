@@ -147,6 +147,36 @@ defmodule Backplane.Skills.ArchiveTest do
                Archive.inspect(archive)
     end
 
+    test "concurrent symlink archive creation preserves the process working directory", %{
+      tmp_dir: tmp_dir
+    } do
+      cwd = File.cwd!()
+
+      archives =
+        1..64
+        |> Task.async_stream(
+          fn index ->
+            archive_dir = Path.join(tmp_dir, Integer.to_string(index))
+            File.mkdir_p!(archive_dir)
+            create_symlink_archive!(archive_dir)
+          end,
+          max_concurrency: 16,
+          ordered: false,
+          timeout: 5_000
+        )
+        |> Enum.map(fn result ->
+          assert {:ok, archive} = result
+          archive
+        end)
+
+      assert File.cwd!() == cwd
+
+      Enum.each(archives, fn archive ->
+        assert {:error, {:unsupported_entry_type, "skill/link.md", :symlink}} =
+                 Archive.inspect(archive)
+      end)
+    end
+
     test "rejects archives above configured max file count", %{tmp_dir: tmp_dir} do
       archive =
         create_archive!(tmp_dir, [

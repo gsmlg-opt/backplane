@@ -445,17 +445,23 @@ defmodule Backplane.Proxy.Upstream do
   end
 
   defp refresh_now(state) do
+    client = current_client(state)
+
     case fetch_catalog(state) do
       {:ok, tools} ->
-        ToolRegistry.register_upstream(state.prefix, self(), tools)
-        broadcast_tools_refreshed(state, tools)
+        if current_client(state) == client and is_pid(client) do
+          ToolRegistry.register_upstream(state.prefix, self(), tools)
+          broadcast_tools_refreshed(state, tools)
 
-        state
-        |> Map.merge(%{tools: tools, status: :connected, reconnect_attempts: 0})
-        |> schedule_refresh()
+          state
+          |> Map.merge(%{tools: tools, status: :connected, reconnect_attempts: 0})
+          |> schedule_refresh()
+        else
+          disconnect(state, :client_replaced_during_refresh)
+        end
 
       {:error, reason} ->
-        if client_tree_available?(state) do
+        if current_client(state) == client and is_pid(client) and client_tree_available?(state) do
           schedule_refresh(state)
         else
           disconnect(state, reason)
@@ -639,6 +645,12 @@ defmodule Backplane.Proxy.Upstream do
       is_pid(GenServer.whereis(state.client))
   catch
     :exit, _reason -> false
+  end
+
+  defp current_client(state) do
+    GenServer.whereis(state.client)
+  catch
+    :exit, _reason -> nil
   end
 
   defp safe_client_call(fun) do

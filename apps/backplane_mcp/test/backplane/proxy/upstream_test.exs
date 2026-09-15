@@ -641,7 +641,24 @@ defmodule Backplane.Proxy.UpstreamTest do
       [{client, _value}] =
         Registry.lookup(Backplane.Proxy.ProcessRegistry, {"die-refresh", :client})
 
-      Process.exit(client, :kill)
+      :erlang.suspend_process(pid)
+
+      try do
+        Process.exit(client, :kill)
+
+        assert eventually(fn ->
+                 case Registry.lookup(
+                        Backplane.Proxy.ProcessRegistry,
+                        {"die-refresh", :client}
+                      ) do
+                   [{replacement, _value}] -> replacement != client
+                   [] -> false
+                 end
+               end)
+      after
+        :erlang.resume_process(pid)
+      end
+
       assert eventually(fn -> ToolRegistry.lookup("die-refresh::echo") == nil end)
       assert_receive {:catalog_waiting, 3}, 5_000
       Agent.update(gate, &%{&1 | released?: true})

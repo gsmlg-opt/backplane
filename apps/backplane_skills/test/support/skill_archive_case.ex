@@ -42,14 +42,12 @@ defmodule Backplane.SkillArchiveCase do
     File.write!(Path.join(stage_dir, "skill/SKILL.md"), skill_md())
     File.ln_s!("SKILL.md", Path.join(stage_dir, "skill/link.md"))
 
-    File.cd!(stage_dir, fn ->
-      :ok =
-        :erl_tar.create(
-          String.to_charlist(archive_path),
-          [~c"skill/SKILL.md", ~c"skill/link.md"],
-          [:compressed]
-        )
-    end)
+    entries = [
+      {~c"skill/SKILL.md", String.to_charlist(Path.join(stage_dir, "skill/SKILL.md"))},
+      {~c"skill/link.md", String.to_charlist(Path.join(stage_dir, "skill/link.md"))}
+    ]
+
+    :ok = :erl_tar.create(String.to_charlist(archive_path), entries, [:compressed])
 
     archive_path
   end

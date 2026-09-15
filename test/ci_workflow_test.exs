@@ -53,6 +53,40 @@ defmodule Backplane.CIWorkflowTest do
 
   @native_build_run "sudo apt-get update\nsudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev\n"
 
+  @runtime_command_setup_run ~S"""
+  sudo apt-get install -y --no-install-recommends ca-certificates curl perl procps util-linux xz-utils
+  coreutils_version="9.4"
+  coreutils_sha256="ea613a4cf44612326e917201bbbcdfbd301de21ffc3b59b6e5c07e040b275e52"
+  coreutils_archive="$RUNNER_TEMP/coreutils-${coreutils_version}.tar.xz"
+  coreutils_source="$RUNNER_TEMP/coreutils-${coreutils_version}"
+  curl --fail --location --silent --show-error \
+    --output "$coreutils_archive" \
+    "https://ftp.gnu.org/gnu/coreutils/coreutils-${coreutils_version}.tar.xz"
+  echo "${coreutils_sha256}  ${coreutils_archive}" | sha256sum --check -
+  tar -xJf "$coreutils_archive" -C "$RUNNER_TEMP"
+  (
+    cd "$coreutils_source"
+    ./configure --disable-nls --without-selinux --enable-single-binary=symlinks
+    make -j"$(nproc)"
+  )
+  coreutils_path="$coreutils_source/src/coreutils"
+  test -x "$coreutils_path"
+  test "$(uname -s)" = "Linux"
+  test -r /proc/self/stat
+  for command_name in setsid sh kill; do
+    command_path="$(type -P "$command_name")"
+    test -x "$command_path"
+  done
+  smoke_dir="$(mktemp -d)"
+  trap 'rm -rf "$smoke_dir"' EXIT
+  ln -s "$coreutils_path" "$smoke_dir/env"
+  ln -s "$coreutils_path" "$smoke_dir/printf"
+  ln -s "$coreutils_path" "$smoke_dir/sleep"
+  test "$("$smoke_dir/env" "$smoke_dir/printf" '%s' runtime)" = "runtime"
+  "$smoke_dir/sleep" 0
+  echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
+  """
+
   @postgres_run ~S"""
   sudo install -d /usr/share/postgresql-common/pgdg
   sudo curl --fail --silent --show-error \
@@ -158,6 +192,7 @@ defmodule Backplane.CIWorkflowTest do
       "Set up Elixir",
       "Set up Rust",
       "Install native build dependencies",
+      "Set up agent runtime command prerequisites",
       "Restore dependencies cache",
       "Install dependencies",
       "Install standalone package dependencies",
@@ -167,6 +202,12 @@ defmodule Backplane.CIWorkflowTest do
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+
+    assert_step(job, %{
+      "name" => "Set up agent runtime command prerequisites",
+      "if" => "matrix.app == 'backplane_agent_runtime'",
+      "run" => @runtime_command_setup_run
+    })
 
     assert_step(job, %{
       "name" => "Start PostgreSQL 17 with pgvector",

@@ -139,8 +139,13 @@ defmodule Backplane.ClientsTest do
       assert Task.await(first_refresh, 1_000) == :ok
 
       case second_result do
-        {:ok, :ok} -> :ok
-        nil -> assert Task.await(second_refresh, 1_000) == :ok
+        {:ok, :ok} ->
+          :ok
+
+        nil ->
+          # OTP global locks retry with randomized backoff capped at eight seconds;
+          # releasing the lock does not wake a task already in that backoff.
+          assert Task.await(second_refresh, 10_000) == :ok
       end
 
       assert :ets.lookup(:backplane_clients_cache, client.id) == []
