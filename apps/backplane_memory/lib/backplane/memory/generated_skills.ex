@@ -147,6 +147,14 @@ defmodule Backplane.Memory.GeneratedSkills do
       nil ->
         Publication.publish_generated(attrs)
 
+      %Skill{id: id, enabled: false} = skill when id == spec.id ->
+        with {:ok, _skill} <-
+               skill
+               |> Ecto.Changeset.change(enabled: true)
+               |> Repo.update() do
+          Publication.publish_generated(attrs)
+        end
+
       %Skill{id: id} when id == spec.id ->
         Publication.publish_generated(attrs)
 

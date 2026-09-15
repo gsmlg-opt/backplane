@@ -112,13 +112,15 @@ defmodule Backplane.Memory.SlotsTest do
         if previous != [], do: :ets.insert(:backplane_settings, previous)
       end)
 
+      initial_count = repo().aggregate(Slot, :count)
+
       :ets.insert(:backplane_settings, {key, "true"})
       assert {:skip, :incomplete_partition} = Reflect.run("session-without-partition")
-      assert repo().aggregate(Slot, :count) == 0
+      assert repo().aggregate(Slot, :count) == initial_count
 
       :ets.insert(:backplane_settings, {key, "false"})
       assert {:skip, :disabled} = Reflect.run("session-without-partition")
-      assert repo().aggregate(Slot, :count) == 0
+      assert repo().aggregate(Slot, :count) == initial_count
     end
   end
 end

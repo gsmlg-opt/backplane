@@ -72,6 +72,21 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     assert published.manifest["document_metadata"]["name"] == "lessons"
   end
 
+  test "reconciliation reenables an unchanged generated skill" do
+    assert :ok = GeneratedSkills.reconcile()
+    assert {:ok, handoff} = Skills.get_by_slug("handoff")
+    assert handoff.enabled
+
+    handoff
+    |> Ecto.Changeset.change(enabled: false)
+    |> repo().update!()
+
+    assert :ok = GeneratedSkills.reconcile()
+    assert {:ok, handoff} = Skills.get_by_slug("handoff")
+    assert handoff.enabled
+    assert Enum.any?(Skills.list(), &(&1.id == handoff.id))
+  end
+
   test "changed generated content publishes a new revision while retaining the exact old snapshot" do
     assert :ok = GeneratedSkills.reconcile()
     assert {:ok, first} = Skills.get_by_slug("lessons")

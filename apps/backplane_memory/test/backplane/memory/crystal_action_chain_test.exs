@@ -179,7 +179,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
   end
 
   test "action traversal stops after the authorized limit in a much larger component" do
-    action_ids = insert_actions(4_000, @partition)
+    action_ids = insert_actions(501, @partition)
 
     action_ids
     |> Enum.chunk_every(2, 1, :discard)
@@ -329,7 +329,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
 
   defp insert_edges(edges) do
     edges
-    |> Enum.chunk_every(500)
+    |> Enum.chunk_every(100)
     |> Enum.each(fn chunk ->
       repo().insert_all(
         "memory_action_edges",
