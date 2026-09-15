@@ -21,6 +21,9 @@ defmodule Relayixir.Proxy.HttpPlug do
       response chunk in the streaming path (no content-length), before `Plug.Conn.chunk/2`
       forwards it to the client. Does not affect non-streaming (content-length) responses.
 
+    * `:on_response_body` (`(binary() -> :ok) | nil`) — when present, called once with a
+      collected response body before the unchanged body is sent downstream.
+
     * `:map_response_chunk` — when present, maps each upstream streaming chunk to
       zero or more downstream chunks before forwarding.
 
@@ -323,6 +326,8 @@ defmodule Relayixir.Proxy.HttpPlug do
             |> IO.iodata_to_binary()
             |> maybe_map_response_body(opts)
 
+          observe_response_body(body, opts)
+
           conn =
             conn
             |> put_response_headers(body_response_headers(response_headers, opts))
@@ -447,6 +452,13 @@ defmodule Relayixir.Proxy.HttpPlug do
     case opts[:map_response_body] do
       mapper when is_function(mapper, 1) -> mapper.(body)
       _ -> body
+    end
+  end
+
+  defp observe_response_body(body, opts) do
+    case opts[:on_response_body] do
+      observer when is_function(observer, 1) -> observer.(body)
+      _ -> :ok
     end
   end
 

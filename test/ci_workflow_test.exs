@@ -110,6 +110,8 @@ defmodule Backplane.CIWorkflowTest do
   @test_run ~S"""
   if [ "${{ matrix.app }}" = "backplane_memory" ]; then
     mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+  elif [ "${{ matrix.app }}" = "backplane_ai_protocol_testkit" ]; then
+    mix do --app backplane_ai_protocol_testkit test
   else
     mix do --app ${{ matrix.app }} cmd mix test
   fi

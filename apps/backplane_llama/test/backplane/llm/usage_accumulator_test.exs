@@ -71,4 +71,110 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
       assert {nil, nil} = UsageAccumulator.get_tokens(pid)
     end
   end
+
+  describe "Responses observer projection" do
+    test "observes fragmented non-streaming JSON bodies" do
+      pid = UsageAccumulator.new(:openai_responses_body)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      body =
+        ~S({"id":"resp_body","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":5}})
+
+      {first, second} = String.split_at(body, 41)
+      UsageAccumulator.scan_chunk(pid, first)
+      UsageAccumulator.scan_chunk(pid, second)
+
+      snapshot = UsageAccumulator.snapshot(pid, 200)
+      assert snapshot.input_tokens == 8
+      assert snapshot.output_tokens == 5
+      assert snapshot.provider_request_id == "resp_body"
+      assert snapshot.protocol_terminal == :completed
+      assert snapshot.metadata.protocol_observation.implementation =~ "OpenAIResponsesObserver"
+    end
+
+    test "bounds non-streaming JSON accumulation" do
+      pid = UsageAccumulator.new(:openai_responses_body)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(pid, String.duplicate("x", 8_388_609))
+
+      assert Agent.get(pid, &(IO.iodata_length(&1.body_chunks) == 0))
+
+      snapshot = UsageAccumulator.snapshot(pid, 200)
+      assert snapshot.input_tokens == nil
+      assert snapshot.output_tokens == nil
+      assert snapshot.partial == true
+      assert snapshot.metadata.protocol_observation.input_truncated == true
+
+      assert "response_bytes_exceeded" in snapshot.metadata.protocol_observation.diagnostics
+    end
+
+    test "normalizes tool call keys while retaining nested JSON string keys" do
+      pid = UsageAccumulator.new(:openai_responses)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S(data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","name":"lookup","arguments":"{\"query\":{\"term\":\"elixir\"}}","status":"completed"}}) <>
+          "\n\n"
+      )
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S(data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}) <>
+          "\n\n"
+      )
+
+      snapshot = UsageAccumulator.snapshot(pid)
+
+      assert [%{name: "lookup", arguments: %{"query" => %{"term" => "elixir"}}}] =
+               snapshot.tool_calls
+
+      assert snapshot.protocol == :responses
+      assert snapshot.partial == false
+      assert snapshot.usage_complete == true
+    end
+
+    test "propagates malformed arguments and interrupted usage as partial" do
+      pid = UsageAccumulator.new(:openai_responses)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S(data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","name":"lookup","arguments":"{" ,"status":"completed"}}) <>
+          "\n\n"
+      )
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S(data: {"type":"response.in_progress","response":{"usage":{"input_tokens":2}}}) <>
+          "\n\n"
+      )
+
+      snapshot = UsageAccumulator.snapshot(pid)
+      assert snapshot.input_tokens == 2
+      assert snapshot.output_tokens == nil
+      assert snapshot.partial == true
+      assert snapshot.usage_complete == false
+      assert [%{complete: false}] = snapshot.tool_calls
+      assert snapshot.metadata.protocol_observation.diagnostics != []
+      assert Process.alive?(pid)
+    end
+
+    test "keeps compact on its dedicated legacy parser identity" do
+      pid = UsageAccumulator.new(:compact)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S(data: {"usage":{"prompt_tokens":4,"completion_tokens":2}}) <> "\n\n"
+      )
+
+      snapshot = UsageAccumulator.snapshot(pid)
+      assert snapshot.protocol == :compact
+      assert snapshot.input_tokens == 4
+      assert snapshot.output_tokens == 2
+      assert snapshot.metadata == %{}
+    end
+  end
 end

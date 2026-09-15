@@ -69,7 +69,7 @@ defmodule Backplane.Skills.IngestTest do
       assert first.id == second.id
       assert first.content_hash == second.content_hash
       assert first.archive_ref == second.archive_ref
-      assert Repo.aggregate(Skill, :count, :id) == 1
+      assert skill_count("noop-skill") == 1
     end
 
     test "stores archive from the upload path with unchanged hash and ref semantics", %{
@@ -134,7 +134,7 @@ defmodule Backplane.Skills.IngestTest do
       assert second.homepage == "https://example.com/replace"
       assert second.size_bytes == File.stat!(second_archive).size
       assert second.file_count == 2
-      assert Repo.aggregate(Skill, :count, :id) == 1
+      assert skill_count("replace-skill") == 1
     end
 
     test "same slug and different hash preserves old blob when another skill references it", %{
@@ -202,7 +202,7 @@ defmodule Backplane.Skills.IngestTest do
                Ingest.ingest(archive, blob: [root: blob_root])
 
       refute File.exists?(Path.join(blob_root, "sha256"))
-      assert Repo.aggregate(Skill, :count, :id) == 1
+      assert skill_count("conflict-skill") == 1
       assert Repo.get!(Skill, "db/conflict-skill").source_kind == "db"
     end
 
@@ -234,11 +234,12 @@ defmodule Backplane.Skills.IngestTest do
     test "invalid archive does not write a blob", %{tmp_dir: tmp_dir} do
       archive = Path.join(tmp_dir, "invalid.tar.gz")
       blob_root = blob_root(tmp_dir)
+      initial_count = Repo.aggregate(Skill, :count, :id)
       File.write!(archive, "not a tarball")
 
       assert {:error, _reason} = Ingest.ingest(archive, blob: [root: blob_root])
       refute File.exists?(Path.join(blob_root, "sha256"))
-      assert Repo.aggregate(Skill, :count, :id) == 0
+      assert Repo.aggregate(Skill, :count, :id) == initial_count
     end
 
     test "successful ingest refreshes registry and broadcasts prompt list changes", %{
@@ -299,6 +300,12 @@ defmodule Backplane.Skills.IngestTest do
   end
 
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp skill_count(slug) do
+    Skill
+    |> where([skill], skill.slug == ^slug)
+    |> Repo.aggregate(:count, :id)
+  end
 
   defp sha256_stream(stream) do
     stream

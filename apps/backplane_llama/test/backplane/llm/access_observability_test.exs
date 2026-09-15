@@ -12,7 +12,6 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     ProviderApi,
     ProviderModel,
     ProviderModelSurface,
-    ProxyRequest,
     RateLimiter,
     Router
   }
@@ -34,6 +33,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     {:ok, anthropic_upstream} = start_upstream(__MODULE__.AnthropicUpstream)
     {:ok, openai_upstream} = start_upstream(__MODULE__.OpenaiUpstream)
+    {:ok, submission_store} = Agent.start_link(fn -> 0 end, name: __MODULE__.SubmissionStore)
 
     {:ok, anthropic_provider} =
       Provider.create(%{name: "obs-anthropic", credential: "obs-anthropic-cred"})
@@ -66,6 +66,13 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       Provider.soft_delete(openai_provider)
       stop_upstream(anthropic_upstream)
       stop_upstream(openai_upstream)
+
+      try do
+        Agent.stop(submission_store)
+      catch
+        :exit, _ -> :ok
+      end
+
       restore_env(:auth_token, auth_token)
       restore_env(:auth_tokens, auth_tokens)
     end)
@@ -89,7 +96,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "chat_completions"
     assert log.outcome == "success"
     assert log.requested_model == openai.model
@@ -99,6 +106,162 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert is_binary(log.request_id)
     assert log.raw_request == nil
     assert log.raw_response == nil
+  end
+
+  test "records shared Responses facts for non-streaming business logs", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "hi"
+      })
+
+    assert conn.status == 200
+    assert Jason.decode!(conn.resp_body)["id"] == "resp_obs"
+    flush_logs!()
+
+    log = log_for_request(conn)
+    assert log.operation == "responses"
+    assert log.input_tokens == 12
+    assert log.output_tokens == 7
+    assert log.cached_tokens == 4
+    assert log.reasoning_tokens == 2
+    assert log.provider_request_id == "resp_obs"
+
+    assert get_in(log.metadata, ["protocol_observation", "implementation"]) =~
+             "OpenAIResponsesObserver"
+
+    assert get_in(log.metadata, ["protocol_observation", "protocol_terminal"]) == "completed"
+  end
+
+  test "records shared Responses facts for SSE including trailing usage", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "hi",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    assert conn.resp_body =~ "response.completed"
+    flush_logs!()
+
+    log = log_for_request(conn)
+    assert log.stream == true
+    assert log.input_tokens == 6
+    assert log.output_tokens == 3
+    assert log.cached_tokens == 1
+    assert log.reasoning_tokens == 1
+    assert log.provider_request_id == "resp_obs_stream"
+    assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
+  end
+
+  test "records an ordinary Responses downstream disconnect once as cancelled", %{openai: openai} do
+    payload = Jason.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
+    context = Context.root()
+
+    conn =
+      :post
+      |> conn("/v1/responses", payload)
+      |> put_req_header("content-type", "application/json")
+      |> Context.put(context)
+
+    {_adapter, adapter_state} = conn.adapter
+    conn = %{conn | adapter: {__MODULE__.ClosedChunkAdapter, adapter_state}}
+    conn = Router.call(conn, Router.init([]))
+
+    assert conn.private[:relayixir_downstream_disconnected] == true
+    assert Agent.get(__MODULE__.SubmissionStore, & &1) == 1
+    flush_logs!()
+
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 1
+
+    log = log_for_request(conn)
+    assert log.outcome == "cancelled"
+    assert log.error_kind == "client_disconnect"
+    assert log.error_code == "client_disconnect"
+
+    assert get_in(log.metadata, ["protocol_observation", "implementation"]) =~
+             "OpenAIResponsesObserver"
+
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
+  end
+
+  test "uses shared sanitized Responses error classification", %{openai: openai} do
+    conn = llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "fail"})
+    assert conn.status == 400
+    flush_logs!()
+
+    log = log_for_request(conn)
+    assert log.outcome == "error"
+    assert log.error_code == "bad_fixture"
+    assert log.error_reason == "invalid_request_error"
+    refute log.error_reason =~ "secret"
+  end
+
+  test "records shared Responses refusal and output-limit meanings", %{openai: openai} do
+    refusal =
+      llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "refusal"})
+
+    assert refusal.status == 200
+    assert Jason.decode!(refusal.resp_body)["status"] == "completed"
+    flush_logs!()
+
+    refusal_log = log_for_request(refusal)
+    assert refusal_log.outcome == "success"
+    assert refusal_log.finish_reason == "refusal"
+
+    output_limit =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "output-limit"
+      })
+
+    assert output_limit.status == 200
+    assert Jason.decode!(output_limit.resp_body)["status"] == "incomplete"
+    flush_logs!()
+
+    output_limit_log = log_for_request(output_limit)
+    assert output_limit_log.outcome == "success"
+    assert output_limit_log.finish_reason == "max_output_tokens"
+
+    assert get_in(output_limit_log.metadata, ["protocol_observation", "protocol_terminal"]) ==
+             "incomplete"
+  end
+
+  test "preserves malformed native body and records incomplete observation", %{openai: openai} do
+    conn =
+      llm_request(:post, "/v1/responses", %{"model" => openai.model, "input" => "malformed"})
+
+    assert conn.status == 200
+    assert conn.resp_body == "{malformed"
+    flush_logs!()
+
+    log = log_for_request(conn)
+    assert log.input_tokens == nil
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
+  end
+
+  test "consumes malformed nested Responses facts without changing native bytes", %{
+    openai: openai
+  } do
+    conn =
+      llm_request(:post, "/v1/responses", %{
+        "model" => openai.model,
+        "input" => "malformed-nested"
+      })
+
+    expected =
+      ~S({"id":"resp_obs_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+    assert conn.status == 200
+    assert conn.resp_body == expected
+    flush_logs!()
+
+    log = log_for_request(conn)
+    assert log.input_tokens == 2
+    assert log.output_tokens == 1
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "incomplete"
+    assert get_in(log.metadata, ["protocol_observation", "usage_status"]) == "partial"
   end
 
   test "records Anthropic non-stream success", %{anthropic: anthropic} do
@@ -112,7 +275,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "messages"
     assert log.outcome == "success"
     assert log.api_surface == "anthropic"
@@ -132,7 +295,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.operation == "embeddings"
     assert log.outcome == "success"
     assert log.requested_model == model_id
@@ -148,7 +311,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 404
     flush_logs!()
 
-    log = log_for_model("missing/model")
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_kind == "routing"
     assert log.status == 404
@@ -166,7 +329,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 400
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_kind == "routing"
     assert log.error_code == "api_type_mismatch"
@@ -203,22 +366,9 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 429
     assert_receive {:llm_stop, %{attributes: %{"status" => 429, "provider_id" => ^provider_id}}}
     assert %Provider{id: ^provider_id} = Backplane.Repo.get(Provider, provider_id)
+    flush_logs!()
 
-    import Ecto.Query
-
-    log =
-      eventually(fn ->
-        flush_logs!()
-
-        Backplane.Repo.one(
-          from(l in ProxyRequest,
-            where: l.status == 429,
-            order_by: [desc: l.inserted_at],
-            limit: 1
-          )
-        )
-      end)
-
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
     assert log.status == 429
@@ -264,7 +414,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 503
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.error_kind == "auth"
     assert log.error_code == "credential_missing"
   end
@@ -279,7 +429,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 500
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.outcome == "error"
     assert log.status == 500
   end
@@ -295,7 +445,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = log_for_model(openai.model)
+    log = log_for_request(conn)
     assert log.stream == true
     assert log.outcome == "success"
     assert log.stream_chunks >= 2
@@ -318,32 +468,19 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert conn.status == 200
     flush_logs!()
 
-    log = latest_log()
+    log = log_for_request(conn)
     assert log.request_id == "req-obs-1"
     assert log.trace_id == String.duplicate("a", 32)
   end
 
   defp llm_request(method, path, body, context \\ nil) do
     payload = Jason.encode!(body)
+    context = context || Context.root()
 
     conn(method, path, payload)
     |> put_req_header("content-type", "application/json")
-    |> then(fn conn -> if context, do: Context.put(conn, context), else: conn end)
+    |> Context.put(context)
     |> Router.call(Router.init([]))
-  end
-
-  defp eventually(fun, attempts \\ 20)
-  defp eventually(fun, 0), do: fun.()
-
-  defp eventually(fun, attempts) do
-    case fun.() do
-      nil ->
-        Process.sleep(25)
-        eventually(fun, attempts - 1)
-
-      value ->
-        value
-    end
   end
 
   defp setup_provider_api(provider, api_surface, port, model_name) do
@@ -442,6 +579,70 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       end
     end
 
+    post "/v1/responses" do
+      if Process.whereis(Backplane.LLM.AccessObservabilityTest.SubmissionStore) do
+        Agent.update(Backplane.LLM.AccessObservabilityTest.SubmissionStore, &(&1 + 1))
+      end
+
+      cond do
+        conn.body_params["input"] == "fail" ->
+          send_json(conn, 400, %{
+            "error" => %{
+              "type" => "invalid_request_error",
+              "code" => "bad_fixture",
+              "message" => "secret prompt must not be logged"
+            }
+          })
+
+        conn.body_params["input"] == "malformed" ->
+          conn |> put_resp_content_type("application/json") |> send_resp(200, "{malformed")
+
+        conn.body_params["input"] == "malformed-nested" ->
+          body =
+            ~S({"id":"resp_obs_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+          conn |> put_resp_content_type("application/json") |> send_resp(200, body)
+
+        conn.body_params["input"] == "refusal" ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs_refusal",
+            "status" => "completed",
+            "output" => [
+              %{
+                "type" => "message",
+                "content" => [%{"type" => "refusal", "refusal" => "not allowed"}]
+              }
+            ]
+          })
+
+        conn.body_params["input"] == "output-limit" ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs_limit",
+            "status" => "incomplete",
+            "incomplete_details" => %{"reason" => "max_output_tokens"},
+            "output" => []
+          })
+
+        conn.body_params["stream"] ->
+          responses_stream(conn)
+
+        true ->
+          send_json(conn, 200, %{
+            "id" => "resp_obs",
+            "object" => "response",
+            "status" => "completed",
+            "output" => [],
+            "usage" => %{
+              "input_tokens" => 12,
+              "input_tokens_details" => %{"cached_tokens" => 4},
+              "output_tokens" => 7,
+              "output_tokens_details" => %{"reasoning_tokens" => 2},
+              "total_tokens" => 19
+            }
+          })
+      end
+    end
+
     post "/v1/embeddings" do
       send_json(conn, 200, %{
         "object" => "list",
@@ -470,8 +671,45 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       end)
     end
 
+    defp responses_stream(conn) do
+      content_done =
+        ~s({"type":"response.output_text.done","text":"ok"})
+
+      protocol_done =
+        ~s({"type":"response.completed","response":{"id":"resp_obs_stream","status":"completed","usage":{"input_tokens":6,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}}})
+
+      conn = conn |> put_resp_content_type("text/event-stream") |> send_chunked(200)
+
+      {:ok, conn} =
+        chunk(conn, "event: response.output_text.done\r\ndata: #{content_done}\r\n\r\n")
+
+      {:ok, conn} = chunk(conn, "data: #{protocol_done}\n\n")
+      conn
+    end
+
     defp send_json(conn, status, body) do
       conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
     end
+  end
+
+  defmodule ClosedChunkAdapter do
+    @behaviour Plug.Conn.Adapter
+
+    defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+
+    defdelegate send_file(state, status, headers, path, offset, length),
+      to: Plug.Adapters.Test.Conn
+
+    defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+    defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
+    defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
+    defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
+
+    def chunk(_state, _body), do: {:error, :closed}
   end
 end

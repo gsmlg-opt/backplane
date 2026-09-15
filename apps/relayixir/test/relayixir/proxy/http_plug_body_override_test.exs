@@ -175,6 +175,20 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
     end
   end
 
+  describe "on_response_body: opt" do
+    test "observes a collected response without changing native bytes", %{port: port} do
+      upstream = build_upstream(port)
+      parent = self()
+      conn = conn(:get, "/with-content-length")
+
+      result = HttpPlug.call(conn, upstream, on_response_body: &send(parent, {:body, &1}))
+
+      assert result.status == 200
+      assert result.resp_body == "Hello, World!"
+      assert_receive {:body, "Hello, World!"}
+    end
+  end
+
   describe "combined opts" do
     test "body: + on_response_chunk: work together", %{port: port} do
       upstream = build_upstream(port)
