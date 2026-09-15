@@ -120,6 +120,17 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       assert result.status == 200
     end
 
+    test "observer exceptions do not truncate a native stream", %{port: port} do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/chunked")
+
+      result =
+        HttpPlug.call(conn, upstream, on_response_chunk: fn _chunk -> raise "observer failed" end)
+
+      assert result.status == 200
+      assert result.resp_body == "chunk1chunk2"
+    end
+
     test "marks and reports downstream disconnects while closing the upstream stream", %{
       port: port
     } do
@@ -186,6 +197,17 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       assert result.status == 200
       assert result.resp_body == "Hello, World!"
       assert_receive {:body, "Hello, World!"}
+    end
+
+    test "observer exceptions do not fail a collected native response", %{port: port} do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/with-content-length")
+
+      result =
+        HttpPlug.call(conn, upstream, on_response_body: fn _body -> raise "observer failed" end)
+
+      assert result.status == 200
+      assert result.resp_body == "Hello, World!"
     end
   end
 

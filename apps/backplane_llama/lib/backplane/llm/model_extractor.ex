@@ -41,4 +41,20 @@ defmodule Backplane.LLM.ModelExtractor do
         {:error, :invalid_json}
     end
   end
+
+  @doc """
+  Replace a routed model only when its client-facing and upstream identifiers differ.
+
+  Returning the original binary for an unchanged model is the native passthrough
+  exception: routing may inspect JSON, but must not use parsed data as the forwarded body.
+  """
+  @spec replace_model(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, :invalid_json}
+  def replace_model(body, model, model)
+      when is_binary(body) and is_binary(model),
+      do: {:ok, body}
+
+  def replace_model(body, _requested_model, upstream_model)
+      when is_binary(body) and is_binary(upstream_model),
+      do: replace_model(body, upstream_model)
 end

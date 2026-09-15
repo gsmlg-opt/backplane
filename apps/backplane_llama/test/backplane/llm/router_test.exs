@@ -545,7 +545,7 @@ defmodule Backplane.LLM.RouterTest do
       assert body["error"]["code"] == "api_type_mismatch"
     end
 
-    test "omits disabled thinking for Moonshot K2.7 code models" do
+    test "preserves Moonshot OpenAI extensions and the upstream error body" do
       {:ok, store} = Agent.start_link(fn -> %{} end)
       {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
       {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
@@ -604,14 +604,15 @@ defmodule Backplane.LLM.RouterTest do
           "thinking" => %{"type" => "disabled"}
         })
 
-      assert conn.status == 200
+      assert conn.status == 400
+      assert json_body(conn)["error"]["message"] =~ "invalid thinking"
 
       request = Agent.get(store, & &1)
       assert request.body["model"] == "kimi-k2.7-code"
-      refute Map.has_key?(request.body, "thinking")
+      assert request.body["thinking"] == %{"type" => "disabled"}
     end
 
-    test "omits disabled thinking for Moonshot Anthropic K2.7 code models" do
+    test "preserves Moonshot Anthropic extensions and the upstream error body" do
       {:ok, store} = Agent.start_link(fn -> %{} end)
       {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
       {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
@@ -671,11 +672,12 @@ defmodule Backplane.LLM.RouterTest do
           "thinking" => %{"type" => "disabled"}
         })
 
-      assert conn.status == 200
+      assert conn.status == 400
+      assert json_body(conn)["error"]["message"] =~ "invalid thinking"
 
       request = Agent.get(store, & &1)
       assert request.body["model"] == "kimi-k2.7-code"
-      refute Map.has_key?(request.body, "thinking")
+      assert request.body["thinking"] == %{"type" => "disabled"}
     end
 
     test "rejects OpenAI Codex OAuth chat completions without upstream" do
@@ -898,7 +900,8 @@ defmodule Backplane.LLM.RouterTest do
     test "only includes entries that resolve on their enabled API surface" do
       create_provider_model("openai-listed", :openai, "gpt-listed", "router-openai-cred")
 
-      provider = create_provider_model("openai-hidden", :openai, "gpt-hidden", "router-openai-cred")
+      provider =
+        create_provider_model("openai-hidden", :openai, "gpt-hidden", "router-openai-cred")
 
       provider = Provider.get(provider.id)
       model = Enum.find(provider.models, &(&1.model == "gpt-hidden"))

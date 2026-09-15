@@ -134,6 +134,42 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     end
   end
 
+  test "provider-scoped Codex routes honor environment proxy policy and NO_PROXY", %{
+    provider: provider
+  } do
+    proxy_vars = ~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy)
+    previous = Map.new(proxy_vars, &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end)
+
+    Enum.each(~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy), fn name ->
+      System.put_env(name, "http://127.0.0.1:1")
+    end)
+
+    Enum.each(~w(NO_PROXY no_proxy), &System.delete_env/1)
+
+    blocked =
+      :post
+      |> conn("/v1/providers/#{provider.name}/responses", "raw-body")
+      |> OpenAICodexProxyPlug.call([])
+
+    assert blocked.status == 502
+
+    System.put_env("NO_PROXY", "127.0.0.1")
+
+    bypassed =
+      :post
+      |> conn("/v1/providers/#{provider.name}/responses", "raw-body")
+      |> OpenAICodexProxyPlug.call([])
+
+    assert bypassed.status == 201
+  end
+
   test "disabled providers return a local error without contacting upstream", %{
     provider: provider
   } do

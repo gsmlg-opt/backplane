@@ -19,8 +19,11 @@ defmodule Backplane.LLM.AccessEventTest do
 
     access =
       conn
-      |> AccessEvent.start("chat_completions", :openai)
+      |> AccessEvent.start("chat_completions", :openai_chat_completions)
       |> AccessEvent.put_requested_model("demo/model")
+      |> AccessEvent.prepare_response_observation()
+
+    AccessEvent.scan_stream_chunk(access, conn.resp_body)
 
     :ok = AccessEvent.finalize(access, conn, :success, status: 200)
     flush_logs!()
@@ -52,7 +55,7 @@ defmodule Backplane.LLM.AccessEventTest do
 
     access =
       conn
-      |> AccessEvent.start("responses", :openai)
+      |> AccessEvent.start("responses", :openai_responses)
       |> AccessEvent.put_resolution(%Provider{preset_key: "openai"}, "gpt", nil)
       |> AccessEvent.mark_stream()
 

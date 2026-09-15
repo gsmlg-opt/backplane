@@ -32,7 +32,9 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
           chunked_json(conn, oversized_chunked_json_body(), false)
 
         conn.body_params["input"] == "error" ->
-          send_json(conn, 400, %{
+          conn
+          |> Plug.Conn.put_resp_header("x-upstream-request-id", "upstream-error-123")
+          |> send_json(400, %{
             "error" => %{
               "code" => "endpoint_bad_request",
               "type" => "invalid_request_error",
@@ -70,6 +72,9 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
 
         conn.body_params["input"] == "disconnect" ->
           disconnect_stream(conn)
+
+        conn.body_params["input"] == "early-stream" ->
+          early_stream(conn)
 
         conn.body_params["stream"] == true ->
           completed_stream(conn)
@@ -179,6 +184,42 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       end
     end
 
+    defp early_stream(conn) do
+      conn = conn |> Plug.Conn.put_resp_content_type("text/event-stream") |> send_chunked(200)
+      {first, second} = early_stream_events()
+      {:ok, conn} = chunk(conn, first)
+
+      test_pid = Agent.get(Backplane.Api.LLMProtocolEndpointIntegrationTest.Store, & &1.test_pid)
+      send(test_pid, {:early_stream_partial, self()})
+
+      receive do
+        :release_early_stream -> :ok
+      after
+        2_000 -> raise "timed out waiting to complete early stream"
+      end
+
+      {:ok, conn} = chunk(conn, binary_part(second, 0, 41))
+      {:ok, conn} = chunk(conn, binary_part(second, 41, byte_size(second) - 41))
+      conn
+    end
+
+    def early_stream_body do
+      early_stream_events() |> Tuple.to_list() |> IO.iodata_to_binary()
+    end
+
+    defp early_stream_events do
+      unknown =
+        ~S(event: provider.future) <>
+          "\r\n" <>
+          ~S(data: {"type":"provider.future","extension":{"snow":"雪"}}) <> "\r\n\r\n"
+
+      completed =
+        ~S(data: {"type":"response.completed","response":{"id":"resp_endpoint_early","status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}) <>
+          "\n\n"
+
+      {unknown, completed}
+    end
+
     defp send_json(conn, status, body) do
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
@@ -238,7 +279,8 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       ProviderApi.create(%{
         provider_id: provider.id,
         api_surface: :openai,
-        base_url: "http://127.0.0.1:#{upstream_port}"
+        base_url: "http://127.0.0.1:#{upstream_port}",
+        native_protocols: [:openai_responses]
       })
 
     {:ok, model} =
@@ -391,7 +433,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert observation["observation_status"] == "incomplete"
     assert observation["protocol_terminal"] == "incomplete"
     assert observation["bytes_seen"] == byte_size(native_body)
-    assert "response_bytes_exceeded" in observation["diagnostics"]
+    assert "observation_chunks_dropped" in observation["diagnostics"]
   end
 
   test "fragmented Responses SSE retains trailing usage through the listening endpoint", %{
@@ -417,10 +459,51 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
   end
 
+  test "native SSE forwards unknown events before the upstream completes and preserves bytes", %{
+    endpoint_port: endpoint_port
+  } do
+    {:ok, socket} =
+      :gen_tcp.connect(
+        {127, 0, 0, 1},
+        endpoint_port,
+        [:binary, active: false, packet: :raw],
+        2_000
+      )
+
+    try do
+      :ok =
+        :gen_tcp.send(
+          socket,
+          http_request("/v1/responses", request_body("early-stream", %{"stream" => true}))
+        )
+
+      assert_receive {:early_stream_partial, upstream_pid}, 2_000
+      assert {:ok, early_bytes} = receive_until_bytes(socket, "provider.future", [], 2_000)
+      assert early_bytes =~ "provider.future"
+      refute early_bytes =~ "response.completed"
+
+      send(upstream_pid, :release_early_stream)
+      response = early_bytes <> receive_all(socket, [])
+      {headers, body} = split_http_response(response)
+
+      assert String.downcase(headers) =~ "transfer-encoding: chunked"
+      assert decode_chunked_body(body) == OpenAIUpstream.early_stream_body()
+    after
+      :gen_tcp.close(socket)
+    end
+
+    assert submission_count() == 1
+    log = one_log!()
+    assert log.input_tokens == 4
+    assert log.output_tokens == 2
+    assert get_in(log.metadata, ["protocol_observation", "protocol_terminal"]) == "completed"
+  end
+
   test "native errors remain observable without rewriting", %{endpoint_port: endpoint_port} do
     response = post_over_socket(endpoint_port, "/v1/responses", request_body("error"))
 
     assert response =~ "HTTP/1.1 400 Bad Request"
+    assert String.downcase(response) =~ "x-upstream-request-id: upstream-error-123"
     assert response =~ "secret upstream detail"
     assert submission_count() == 1
 
@@ -585,6 +668,22 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
           :ok
         else
           receive_until(socket, needle, chunks, timeout)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp receive_until_bytes(socket, needle, chunks, timeout) do
+    case :gen_tcp.recv(socket, 0, timeout) do
+      {:ok, chunk} ->
+        bytes = [chunks, chunk] |> IO.iodata_to_binary()
+
+        if String.contains?(bytes, needle) do
+          {:ok, bytes}
+        else
+          receive_until_bytes(socket, needle, bytes, timeout)
         end
 
       {:error, reason} ->

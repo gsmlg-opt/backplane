@@ -345,8 +345,8 @@ defmodule Backplane.Admin.ProviderShowLive do
                enabled: truthy?(params["enabled"]),
                default_headers: decode_json_map(params["default_headers"])
              }),
-           :ok <- upsert_api(updated_provider.id, :openai, params),
-           :ok <- upsert_api(updated_provider.id, :anthropic, params) do
+           :ok <- upsert_api(updated_provider, :openai, params),
+           :ok <- upsert_api(updated_provider, :anthropic, params) do
         Provider.get(updated_provider.id)
       else
         {:error, %Ecto.Changeset{} = changeset} -> Repo.rollback(changeset_errors(changeset))
@@ -356,12 +356,15 @@ defmodule Backplane.Admin.ProviderShowLive do
     end)
   end
 
-  defp upsert_api(provider_id, surface, params) do
+  defp upsert_api(provider, surface, params) do
     prefix = Atom.to_string(surface)
-    existing = Enum.find(ProviderApi.list_for_provider(provider_id), &(&1.api_surface == surface))
+    existing = Enum.find(ProviderApi.list_for_provider(provider.id), &(&1.api_surface == surface))
+
+    default_protocols =
+      if existing, do: existing.native_protocols, else: native_protocols(provider, surface)
 
     attrs = %{
-      provider_id: provider_id,
+      provider_id: provider.id,
       api_surface: surface,
       base_url: params["#{prefix}_base_url"],
       enabled: truthy?(params["#{prefix}_enabled"]),
@@ -369,6 +372,13 @@ defmodule Backplane.Admin.ProviderShowLive do
       model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
       model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"])
     }
+
+    attrs =
+      Map.put(
+        attrs,
+        :native_protocols,
+        native_protocols_from_params(params, surface, default_protocols)
+      )
 
     cond do
       existing ->
@@ -385,6 +395,16 @@ defmodule Backplane.Admin.ProviderShowLive do
 
       true ->
         :ok
+    end
+  end
+
+  defp native_protocols(provider, surface) do
+    case ProviderPreset.get(provider.preset_key || "custom") do
+      nil ->
+        if(surface == :anthropic, do: [:anthropic_messages], else: [:openai_chat_completions])
+
+      preset ->
+        ProviderPreset.native_protocols(preset, surface)
     end
   end
 
@@ -535,6 +555,9 @@ defmodule Backplane.Admin.ProviderShowLive do
       "default_headers" => encode_json_map(provider.default_headers),
       "openai_enabled" => api_enabled(api_by_surface[:openai]),
       "openai_base_url" => api_value(api_by_surface[:openai], :base_url),
+      "openai_chat_completions_enabled" =>
+        protocol_enabled(api_by_surface[:openai], :openai_chat_completions),
+      "openai_responses_enabled" => protocol_enabled(api_by_surface[:openai], :openai_responses),
       "openai_model_discovery_enabled" =>
         api_enabled(api_by_surface[:openai], :model_discovery_enabled),
       "openai_model_discovery_path" => api_value(api_by_surface[:openai], :model_discovery_path),
@@ -699,6 +722,7 @@ defmodule Backplane.Admin.ProviderShowLive do
             <span>Credential: <code>{@provider.credential}</code></span>
           </div>
         </div>
+
       </div>
 
       <.dm_card variant="bordered" class="mb-6">
@@ -990,6 +1014,31 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.error errors={@errors} field={"#{@key}_base_url"} />
         </div>
 
+        <div :if={@key == "openai"} class="space-y-2">
+          <p class="text-sm font-medium">Native wire protocols</p>
+          <input
+            type="hidden"
+            name="provider[openai_chat_completions_enabled]"
+            value="false"
+          />
+          <.dm_checkbox
+            id="provider-openai-chat-completions-enabled"
+            name="provider[openai_chat_completions_enabled]"
+            label="Chat Completions"
+            value="true"
+            checked={field_value(@form, "openai", "chat_completions_enabled") in [true, "true", "on"]}
+          />
+          <input type="hidden" name="provider[openai_responses_enabled]" value="false" />
+          <.dm_checkbox
+            id="provider-openai-responses-enabled"
+            name="provider[openai_responses_enabled]"
+            label="Responses"
+            value="true"
+            checked={field_value(@form, "openai", "responses_enabled") in [true, "true", "on"]}
+          />
+          <.error errors={@errors} field="openai_native_protocols" />
+        </div>
+
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
         <.dm_checkbox
           id={"provider-#{@key}-discovery-enabled"}
@@ -1086,6 +1135,32 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp field_value(form, key, suffix) do
     form[String.to_atom("#{key}_#{suffix}")].value
   end
+
+  defp protocol_enabled(nil, _protocol), do: "false"
+
+  defp protocol_enabled(api, protocol) do
+    checkbox_value(protocol in api.native_protocols)
+  end
+
+  defp native_protocols_from_params(_params, :anthropic, _default), do: [:anthropic_messages]
+
+  defp native_protocols_from_params(params, :openai, default) do
+    keys = ["openai_chat_completions_enabled", "openai_responses_enabled"]
+
+    if Enum.any?(keys, &Map.has_key?(params, &1)) do
+      []
+      |> maybe_add_protocol(
+        truthy?(params["openai_chat_completions_enabled"]),
+        :openai_chat_completions
+      )
+      |> maybe_add_protocol(truthy?(params["openai_responses_enabled"]), :openai_responses)
+    else
+      default
+    end
+  end
+
+  defp maybe_add_protocol(protocols, true, protocol), do: protocols ++ [protocol]
+  defp maybe_add_protocol(protocols, false, _protocol), do: protocols
 
   defp form_value(form, key), do: form[key].value
 end

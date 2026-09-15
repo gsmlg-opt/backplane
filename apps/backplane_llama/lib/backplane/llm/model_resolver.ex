@@ -110,14 +110,14 @@ defmodule Backplane.LLM.ModelResolver do
       not provider.enabled ->
         {:error, :no_provider}
 
+      provider_model_available?(provider, api_type, raw_model) ->
+        {:ok, provider, raw_model}
+
       provider_model_exists_on_other_surface?(provider, raw_model, api_type) ->
         {:error, :api_type_mismatch, provider}
 
-      not provider_model_available?(provider, api_type, raw_model) ->
-        {:error, :no_provider}
-
       true ->
-        {:ok, provider, raw_model}
+        {:error, :no_provider}
     end
   end
 

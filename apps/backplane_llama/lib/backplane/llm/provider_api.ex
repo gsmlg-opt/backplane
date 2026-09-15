@@ -21,6 +21,10 @@ defmodule Backplane.LLM.ProviderApi do
 
   schema "llm_provider_apis" do
     field(:api_surface, Ecto.Enum, values: [:openai, :anthropic])
+    field(:native_protocols, {:array, Ecto.Enum},
+      values: [:openai_chat_completions, :openai_responses, :anthropic_messages],
+      default: []
+    )
     field(:base_url, :string)
     field(:enabled, :boolean, default: true)
     field(:default_headers, :map, default: %{})
@@ -35,14 +39,17 @@ defmodule Backplane.LLM.ProviderApi do
   end
 
   @required_fields ~w(provider_id api_surface base_url)a
-  @optional_fields ~w(enabled default_headers model_discovery_enabled model_discovery_path last_discovered_at)a
+  @optional_fields ~w(native_protocols enabled default_headers model_discovery_enabled model_discovery_path last_discovered_at)a
 
   @doc "Changeset for creating or updating a provider API surface."
   def changeset(api, attrs) do
     api
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> update_change(:base_url, &trim_trailing_slash/1)
+    |> put_default_native_protocols()
     |> validate_required(@required_fields)
+    |> validate_length(:native_protocols, min: 1)
+    |> validate_native_protocols()
     |> Provider.validate_api_url(:base_url)
     |> validate_default_headers()
     |> foreign_key_constraint(:provider_id)
@@ -99,6 +106,45 @@ defmodule Backplane.LLM.ProviderApi do
 
   defp trim_trailing_slash(url) when is_binary(url), do: String.trim_trailing(url, "/")
   defp trim_trailing_slash(url), do: url
+
+  defp put_default_native_protocols(changeset) do
+    case fetch_change(changeset, :native_protocols) do
+      {:ok, _protocols} ->
+        changeset
+
+      :error ->
+        case get_field(changeset, :native_protocols) do
+          protocols when is_list(protocols) and protocols != [] ->
+            changeset
+
+          _ ->
+            case get_field(changeset, :api_surface) do
+              :openai -> put_change(changeset, :native_protocols, [:openai_chat_completions])
+              :anthropic -> put_change(changeset, :native_protocols, [:anthropic_messages])
+              _ -> changeset
+            end
+        end
+    end
+  end
+
+  defp validate_native_protocols(changeset) do
+    validate_change(changeset, :native_protocols, fn :native_protocols, protocols ->
+      api_surface = get_field(changeset, :api_surface)
+
+      allowed =
+        case api_surface do
+          :openai -> [:openai_chat_completions, :openai_responses]
+          :anthropic -> [:anthropic_messages]
+          _ -> []
+        end
+
+      if Enum.all?(protocols, &(&1 in allowed)) do
+        []
+      else
+        [native_protocols: "must use protocols from the selected API family"]
+      end
+    end)
+  end
 
   defp validate_default_headers(changeset) do
     validate_change(changeset, :default_headers, fn

@@ -146,4 +146,28 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert moonshot.openai.discovery_path == "/models"
     refute moonshot.anthropic.enabled
   end
+
+  test "declares concrete native wire protocols instead of inferring them from family" do
+    assert ProviderPreset.native_protocols(ProviderPreset.fetch!("openai"), :openai) == [
+             :openai_chat_completions,
+             :openai_responses
+           ]
+
+    assert ProviderPreset.native_protocols(ProviderPreset.fetch!("openai-codex"), :openai) == [
+             :openai_responses
+           ]
+
+    assert ProviderPreset.native_protocols(ProviderPreset.fetch!("deepseek"), :openai) == [
+             :openai_chat_completions
+           ]
+
+    assert ProviderPreset.native_protocols(ProviderPreset.fetch!("deepseek"), :anthropic) == [
+             :anthropic_messages
+           ]
+
+    assert ProviderPreset.native_protocols(ProviderPreset.fetch!("custom"), :openai) == [
+             :openai_chat_completions,
+             :openai_responses
+           ]
+  end
 end

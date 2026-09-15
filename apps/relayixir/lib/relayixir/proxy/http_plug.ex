@@ -457,7 +457,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp observe_response_body(body, opts) do
     case opts[:on_response_body] do
-      observer when is_function(observer, 1) -> observer.(body)
+      observer when is_function(observer, 1) -> safe_observe(observer, body)
       _ -> :ok
     end
   end
@@ -478,7 +478,7 @@ defmodule Relayixir.Proxy.HttpPlug do
     chunk
     |> mapped_response_chunks(opts)
     |> Enum.reduce_while({:ok, conn}, fn mapped_chunk, {:ok, acc} ->
-      if response_callback, do: response_callback.(mapped_chunk)
+      if response_callback, do: safe_observe(response_callback, mapped_chunk)
 
       case Plug.Conn.chunk(acc, mapped_chunk) do
         {:ok, acc} -> {:cont, {:ok, acc}}
@@ -503,6 +503,21 @@ defmodule Relayixir.Proxy.HttpPlug do
   defp normalize_mapped_chunks(chunk) when is_binary(chunk), do: [chunk]
   defp normalize_mapped_chunks(chunks) when is_list(chunks), do: chunks
   defp normalize_mapped_chunks(_chunk), do: []
+
+  # Observation receives copies of already-forwardable bytes. An observer is not
+  # part of transport correctness and must never fail the native relay.
+  defp safe_observe(observer, bytes) do
+    observer.(bytes)
+    :ok
+  rescue
+    error ->
+      Logger.warning("response observer raised: #{Exception.message(error)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("response observer stopped: #{kind}=#{inspect(reason)}")
+      :ok
+  end
 
   defp put_response_headers(conn, headers) do
     Enum.reduce(headers, conn, fn {name, value}, conn ->

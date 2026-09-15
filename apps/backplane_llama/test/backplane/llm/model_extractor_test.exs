@@ -49,4 +49,25 @@ defmodule Backplane.LLM.ModelExtractorTest do
       assert {:error, :invalid_json} = ModelExtractor.replace_model("bad json", "gpt-4o")
     end
   end
+
+  describe "replace_model/3" do
+    test "returns the original bytes when routing does not change the model" do
+      body = "{\n  \"model\": \"native-model\", \"unknown\": \"雪\"\n}\n"
+
+      assert {:ok, ^body} = ModelExtractor.replace_model(body, "native-model", "native-model")
+    end
+
+    test "changes only the model value semantically when routing maps it" do
+      body =
+        ~S({ "model" : "public/model", "unknown": {"tool": {"arguments": {"雪": true}}}})
+
+      assert {:ok, rewritten} =
+               ModelExtractor.replace_model(body, "public/model", "upstream-model")
+
+      assert Jason.decode!(rewritten) == %{
+               "model" => "upstream-model",
+               "unknown" => %{"tool" => %{"arguments" => %{"雪" => true}}}
+             }
+    end
+  end
 end

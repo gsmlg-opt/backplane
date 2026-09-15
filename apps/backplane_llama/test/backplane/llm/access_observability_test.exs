@@ -98,6 +98,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     log = log_for_request(conn)
     assert log.operation == "chat_completions"
+    assert log.api_surface == "openai_chat_completions"
     assert log.outcome == "success"
     assert log.requested_model == openai.model
     assert log.input_tokens == 3
@@ -278,7 +279,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     log = log_for_request(conn)
     assert log.operation == "messages"
     assert log.outcome == "success"
-    assert log.api_surface == "anthropic"
+    assert log.api_surface == "anthropic_messages"
     assert log.input_tokens == 4
     assert log.output_tokens == 6
   end
@@ -488,6 +489,11 @@ defmodule Backplane.LLM.AccessObservabilityTest do
       ProviderApi.create(%{
         provider_id: provider.id,
         api_surface: api_surface,
+        native_protocols:
+          if(api_surface == :openai,
+            do: [:openai_chat_completions, :openai_responses],
+            else: [:anthropic_messages]
+          ),
         base_url: "http://localhost:#{port}"
       })
 

@@ -10,7 +10,7 @@ defmodule Backplane.LLM.Router do
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
-  - POST _                             — catch-all forwarded as :openai
+  - POST _                             — supported repeated-prefix compatibility routes
   """
 
   use Plug.Router
@@ -26,9 +26,9 @@ defmodule Backplane.LLM.Router do
     ModelAlias,
     ModelExtractor,
     ModelResolver,
-    MoonshotCompat,
     Provider,
     ProviderApi,
+    ProtocolRoute,
     RateLimiter
   }
 
@@ -71,7 +71,7 @@ defmodule Backplane.LLM.Router do
   end
 
   post "/v1/messages" do
-    proxy_request(conn, :anthropic)
+    proxy_request(conn, :anthropic_messages)
   end
 
   post "/v1/embeddings" do
@@ -79,15 +79,27 @@ defmodule Backplane.LLM.Router do
   end
 
   post "/v1/chat/completions" do
-    proxy_request(conn, :openai)
+    proxy_request(conn, :openai_chat_completions)
   end
 
   post "/v1/responses" do
-    proxy_request(conn, :openai)
+    proxy_request(conn, :openai_responses)
   end
 
   post _ do
-    proxy_request(conn, :openai)
+    case ProtocolRoute.client_protocol(conn.request_path) do
+      :unknown ->
+        send_json(conn, 404, %{
+          "error" => %{
+            "message" => "Unsupported LLM API route",
+            "type" => "invalid_request_error",
+            "code" => "unsupported_api_route"
+          }
+        })
+
+      client_protocol ->
+        proxy_request(conn, client_protocol)
+    end
   end
 
   match _ do
@@ -115,8 +127,9 @@ defmodule Backplane.LLM.Router do
     |> Map.put(:request_path, "/" <> Enum.join(path_info, "/"))
   end
 
-  defp proxy_request(conn, api_type) do
-    access = AccessEvent.start(conn, operation_for_path(conn.request_path), api_type)
+  defp proxy_request(conn, client_protocol) do
+    api_type = api_type(client_protocol)
+    access = AccessEvent.start(conn, operation_for_path(conn.request_path), client_protocol)
     raw_body = conn.assigns[:raw_body] || ""
 
     case ModelExtractor.extract(raw_body) do
@@ -137,16 +150,11 @@ defmodule Backplane.LLM.Router do
         with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- reject_codex_chat_completions(conn, provider),
+             {:ok, :native} <- ProtocolRoute.select(client_protocol, provider_api),
              :ok <- check_rate_limit(provider),
-             {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
-             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type),
              {:ok, rewritten_body} <-
-               MoonshotCompat.normalize_request_body(
-                 provider,
-                 provider_api,
-                 raw_model,
-                 rewritten_body
-               ) do
+               ModelExtractor.replace_model(raw_body, model_string, raw_model),
+             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
           conn = upstream_request_conn(conn, api_type, provider_api)
           upstream = build_upstream(provider_api, auth_headers)
           do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access)
@@ -165,8 +173,25 @@ defmodule Backplane.LLM.Router do
           {:error, :codex_requires_responses_api} ->
             send_codex_rejection(conn)
 
+          {:error, {:unsupported_translation, requested_protocol, native_protocols}} ->
+            conn =
+              send_unsupported_translation(
+                conn,
+                api_type,
+                requested_protocol,
+                native_protocols
+              )
+
+            finalize_access(access, conn, :error,
+              error_kind: :routing,
+              error_code: "unsupported_protocol_translation",
+              error_reason: :unsupported_protocol_translation
+            )
+
+            conn
+
           {:error, :api_type_mismatch, provider} ->
-            conn = send_api_type_mismatch(conn, api_type, model_string, provider)
+            conn = send_api_type_mismatch(conn, client_protocol, model_string, provider)
 
             finalize_access(access, conn, :error,
               error_kind: :routing,
@@ -242,7 +267,8 @@ defmodule Backplane.LLM.Router do
         access = AccessEvent.put_requested_model(access, model_string)
 
         with {:ok, provider, raw_model} <- Embedding.resolve_model(model_string),
-             {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
+             {:ok, rewritten_body} <-
+               ModelExtractor.replace_model(raw_body, model_string, raw_model),
              {:ok, auth_headers} <- Embedding.build_auth_headers(provider) do
           access =
             AccessEvent.put_resolution(access, provider, raw_model, nil)
@@ -336,6 +362,7 @@ defmodule Backplane.LLM.Router do
       connect_timeout: 10_000,
       max_request_body_size: 50_000_000,
       max_response_body_size: 50_000_000,
+      proxy: :environment,
       inject_request_headers: auth_headers,
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{provider_api_id: provider_api.id, api_surface: provider_api.api_surface}
@@ -363,6 +390,7 @@ defmodule Backplane.LLM.Router do
       connect_timeout: 10_000,
       max_request_body_size: 50_000_000,
       max_response_body_size: 50_000_000,
+      proxy: :environment,
       inject_request_headers: auth_headers,
       host_forward_mode: :rewrite_to_upstream,
       metadata: %{embedding_provider_id: provider.id}
@@ -406,10 +434,7 @@ defmodule Backplane.LLM.Router do
       end)
       |> Keyword.merge(extra_opts)
 
-    conn =
-      conn
-      |> delete_req_header("authorization")
-      |> delete_req_header("x-api-key")
+    conn = strip_client_authentication(conn)
 
     result_conn = HttpPlug.call(conn, upstream, opts)
 
@@ -424,10 +449,7 @@ defmodule Backplane.LLM.Router do
   defp do_embedding_proxy(conn, upstream, rewritten_body, access) do
     access = AccessEvent.mark_upstream_start(access)
 
-    conn =
-      conn
-      |> delete_req_header("authorization")
-      |> delete_req_header("x-api-key")
+    conn = strip_client_authentication(conn)
 
     result_conn = HttpPlug.call(conn, upstream, body: rewritten_body)
 
@@ -451,6 +473,28 @@ defmodule Backplane.LLM.Router do
   defp operation_for_path("/v1/responses"), do: "responses"
   defp operation_for_path("/v1/embeddings"), do: "embeddings"
   defp operation_for_path(_), do: "proxy"
+
+  defp api_type(:anthropic_messages), do: :anthropic
+
+  defp api_type(protocol) when protocol in [:openai_chat_completions, :openai_responses],
+    do: :openai
+
+  # Client authentication is a Backplane concern. Remove every supported inbound
+  # credential carrier before Relayixir injects the selected provider credential.
+  defp strip_client_authentication(conn) do
+    Enum.reduce(
+      [
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "cookie",
+        "proxy-authorization"
+      ],
+      conn,
+      &delete_req_header(&2, &1)
+    )
+  end
 
   defp outcome_for_status(status) when status in 200..299, do: :success
   defp outcome_for_status(_), do: :error
@@ -637,22 +681,29 @@ defmodule Backplane.LLM.Router do
     })
   end
 
-  defp send_api_type_mismatch(conn, :anthropic, model, _provider) do
+  defp send_api_type_mismatch(conn, :anthropic_messages, model, _provider) do
     send_json(conn, 400, %{
       "type" => "error",
       "error" => %{
         "type" => "invalid_request_error",
         "message" =>
-          "Model '#{model}' is not available via the Anthropic Messages API. Use /v1/chat/completions instead."
+          "Model '#{model}' is not available via the Anthropic Messages API, and no complete translation route is configured. Use a model with a native Anthropic Messages surface."
       }
     })
   end
 
-  defp send_api_type_mismatch(conn, :openai, model, _provider) do
+  defp send_api_type_mismatch(conn, client_protocol, model, _provider)
+       when client_protocol in [:openai_chat_completions, :openai_responses] do
+    api_name =
+      case client_protocol do
+        :openai_chat_completions -> "OpenAI Chat Completions API"
+        :openai_responses -> "OpenAI Responses API"
+      end
+
     send_json(conn, 400, %{
       "error" => %{
         "message" =>
-          "Model '#{model}' is not available via the OpenAI Chat Completions API. Use /v1/messages instead.",
+          "Model '#{model}' is not available via the #{api_name}, and no complete translation route is configured. Use a model with a native #{api_name} surface.",
         "type" => "invalid_request_error",
         "code" => "api_type_mismatch"
       }
@@ -667,6 +718,36 @@ defmodule Backplane.LLM.Router do
         "message" => "OpenAI Codex providers support the Responses API only."
       }
     })
+  end
+
+  defp send_unsupported_translation(conn, api_type, requested_protocol, native_protocols) do
+    available = native_protocols |> Enum.map_join(", ", &to_string/1)
+
+    message =
+      "The selected provider does not expose #{requested_protocol} natively, and Backplane " <>
+        "has no complete translation route for this protocol pair. Available native protocols: " <>
+        if(available == "", do: "none", else: available)
+
+    case api_type do
+      :anthropic ->
+        send_json(conn, 422, %{
+          "type" => "error",
+          "error" => %{
+            "type" => "unsupported_api_surface",
+            "code" => "unsupported_protocol_translation",
+            "message" => message
+          }
+        })
+
+      :openai ->
+        send_json(conn, 422, %{
+          "error" => %{
+            "type" => "unsupported_api_surface",
+            "code" => "unsupported_protocol_translation",
+            "message" => message
+          }
+        })
+    end
   end
 
   defp send_model_error(conn, :anthropic, :no_model) do

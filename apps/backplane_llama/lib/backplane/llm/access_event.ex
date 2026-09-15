@@ -78,7 +78,7 @@ defmodule Backplane.LLM.AccessEvent do
   @spec mark_stream(t()) :: t()
   def mark_stream(%__MODULE__{} = state) do
     protocol = accumulator_protocol(state)
-    %{state | stream?: true, usage_acc: UsageAccumulator.new(protocol)}
+    %{state | stream?: true, usage_acc: new_usage_accumulator(protocol)}
   end
 
   @spec prepare_response_observation(t()) :: t()
@@ -86,9 +86,15 @@ defmodule Backplane.LLM.AccessEvent do
     do: state
 
   def prepare_response_observation(%__MODULE__{} = state) do
-    case accumulator_protocol(state) do
-      :openai_responses -> %{state | usage_acc: UsageAccumulator.new(:openai_responses_body)}
-      _ -> state
+    case response_accumulator_protocol(state) do
+      :openai_responses ->
+        %{state | usage_acc: new_usage_accumulator(:openai_responses_body)}
+
+      protocol when protocol in [:openai_json_body, :anthropic_json_body] ->
+        %{state | usage_acc: new_usage_accumulator(protocol)}
+
+      nil ->
+        state
     end
   end
 
@@ -111,8 +117,9 @@ defmodule Backplane.LLM.AccessEvent do
   @doc "Finalizes a terminal proxy outcome and emits observability events."
   @spec finalize(t(), Plug.Conn.t(), atom(), keyword()) :: :ok
   def finalize(%__MODULE__{} = state, %Plug.Conn{} = conn, outcome, opts \\ []) do
-    record = build_record(state, conn, outcome, opts)
-    measurements = build_measurements(state, conn, opts)
+    usage = stream_usage(state, conn, opts)
+    record = build_record(state, conn, outcome, opts, usage)
+    measurements = build_measurements(state, usage)
 
     if Observability.llm_write?() do
       emit_v2(state, record, measurements, opts)
@@ -120,8 +127,13 @@ defmodule Backplane.LLM.AccessEvent do
       emit_legacy(state, conn, record, measurements)
     end
 
-    cleanup_usage_acc(state)
     :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  after
+    cleanup_usage_acc(state)
   end
 
   defp emit_v2(%__MODULE__{} = state, record, measurements, opts) do
@@ -180,10 +192,9 @@ defmodule Backplane.LLM.AccessEvent do
     end
   end
 
-  defp build_record(%__MODULE__{} = state, conn, outcome, opts) do
+  defp build_record(%__MODULE__{} = state, conn, outcome, opts, usage) do
     status = Keyword.get(opts, :status, conn.status)
     stream? = state.stream? || false
-    usage = stream_usage(state, conn, opts)
     duration_ms = duration_ms(state)
     upstream_duration_ms = upstream_duration_ms(state, duration_ms)
 
@@ -229,15 +240,13 @@ defmodule Backplane.LLM.AccessEvent do
     }
   end
 
-  defp build_measurements(%__MODULE__{} = state, conn, opts) do
+  defp build_measurements(%__MODULE__{} = state, usage) do
     duration_ms = duration_ms(state)
 
     base = %{
       duration_ms: duration_ms,
       system_time: System.system_time()
     }
-
-    usage = stream_usage(state, conn, opts)
 
     base
     |> maybe_put(:upstream_duration_ms, upstream_duration_ms(state, duration_ms))
@@ -257,61 +266,35 @@ defmodule Backplane.LLM.AccessEvent do
     end
   end
 
-  defp stream_usage(state, conn, opts) do
-    observation = non_stream_observation(state, conn)
-
-    {input, output} =
-      case observation do
-        %{input_tokens: input, output_tokens: output} ->
-          {input, output}
-
-        _ ->
-          case Keyword.get(opts, :tokens) do
-            {i, o} -> {i, o}
-            _ -> extract_tokens_from_resp(conn, api_surface_atom(opts, conn))
-          end
-      end
+  defp stream_usage(_state, _conn, opts) do
+    {input, output} = Keyword.get(opts, :tokens, {nil, nil})
 
     %{
       input_tokens: input,
       output_tokens: output,
-      cached_tokens: observation[:cached_tokens] || Keyword.get(opts, :cached_tokens),
-      reasoning_tokens: observation[:reasoning_tokens] || Keyword.get(opts, :reasoning_tokens),
-      finish_reason: observation[:finish_reason] || Keyword.get(opts, :finish_reason),
-      provider_request_id:
-        observation[:provider_request_id] || Keyword.get(opts, :provider_request_id),
-      observation_status: observation[:observation_status],
-      protocol_terminal: observation[:protocol_terminal],
-      error_code: observation[:error_code],
-      error_type: observation[:error_type],
-      metadata: observation_metadata(observation),
+      cached_tokens: Keyword.get(opts, :cached_tokens),
+      reasoning_tokens: Keyword.get(opts, :reasoning_tokens),
+      finish_reason: Keyword.get(opts, :finish_reason),
+      provider_request_id: Keyword.get(opts, :provider_request_id),
+      observation_status: :unavailable,
+      protocol_terminal: :incomplete,
+      error_code: nil,
+      error_type: nil,
+      metadata: %{observation: %{unavailable: true}},
       ttft_ms: nil,
       stream_duration_ms: nil,
       stream_chunks: nil
     }
   end
 
-  defp non_stream_observation(%__MODULE__{stream?: stream?} = state, conn)
-       when stream? != true and is_binary(conn.resp_body) do
-    if shared_responses?(state) do
-      Backplane.AiProtocol.OpenAIResponsesObserver.observe_response(
-        conn.status || 0,
-        conn.resp_body
-      )
-    else
-      %{}
-    end
-  end
-
-  defp non_stream_observation(_state, _conn), do: %{}
-
   defp shared_responses?(%__MODULE__{
-         operation: "responses",
+         api_surface: "openai_responses",
          path: path,
          provider: %Provider{preset_key: preset}
        })
-       when preset != "openai-codex" and path != "/v1/responses/compact",
-       do: true
+       when preset != "openai-codex" do
+    not String.ends_with?(path, "/responses/compact")
+  end
 
   defp shared_responses?(_), do: false
 
@@ -326,62 +309,37 @@ defmodule Backplane.LLM.AccessEvent do
     if shared_responses?(state), do: :openai_responses, else: :legacy
   end
 
-  defp observation_metadata(%{implementation: implementation} = observation) do
-    safe =
-      Map.take(observation, [
-        :observation_status,
-        :protocol_terminal,
-        :terminal_count,
-        :usage_status,
-        :bytes_seen,
-        :events_seen,
-        :diagnostics
-      ])
-
-    %{protocol_observation: Map.put(safe, :implementation, inspect(implementation))}
+  defp response_accumulator_protocol(state) do
+    cond do
+      shared_responses?(state) -> :openai_responses
+      state.api_surface in ["openai_chat_completions", "openai"] -> :openai_json_body
+      state.api_surface == "anthropic_messages" -> :anthropic_json_body
+      true -> nil
+    end
   end
 
-  defp observation_metadata(_), do: %{}
+  defp new_usage_accumulator(protocol) do
+    factory =
+      Application.get_env(
+        :backplane_llama,
+        :usage_accumulator_factory,
+        &UsageAccumulator.new/1
+      )
+
+    case factory.(protocol) do
+      pid when is_pid(pid) -> pid
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
 
   defp observation_error_code(%{error_code: code}, _fallback) when is_binary(code), do: code
   defp observation_error_code(_, fallback), do: fallback
   defp observation_error_reason(%{error_type: type}, nil) when is_binary(type), do: type
   defp observation_error_reason(_, fallback), do: fallback
-
-  defp api_surface_atom(opts, _conn) do
-    case Keyword.get(opts, :api_surface) do
-      surface when surface in [:openai, :anthropic] -> surface
-      "openai" -> :openai
-      "anthropic" -> :anthropic
-      _ -> :openai
-    end
-  end
-
-  defp extract_tokens_from_resp(conn, :anthropic) do
-    body = conn.resp_body
-
-    with true <- is_binary(body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(body),
-         input when is_integer(input) <- Map.get(usage, "input_tokens"),
-         output when is_integer(output) <- Map.get(usage, "output_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  defp extract_tokens_from_resp(conn, :openai) do
-    body = conn.resp_body
-
-    with true <- is_binary(body),
-         {:ok, %{"usage" => usage}} <- Jason.decode(body),
-         input when is_integer(input) <- Map.get(usage, "prompt_tokens"),
-         output when is_integer(output) <- Map.get(usage, "completion_tokens") do
-      {input, output}
-    else
-      _ -> {nil, nil}
-    end
-  end
 
   defp build_fallback_context(conn) do
     request_id =

@@ -80,8 +80,8 @@ defmodule Backplane.Admin.ProviderNewLive do
                rpm_limit: parse_optional_integer(params["rpm_limit"]),
                default_headers: decode_json_map(params["default_headers"])
              }),
-           :ok <- create_api(provider.id, :openai, params),
-           :ok <- create_api(provider.id, :anthropic, params) do
+           :ok <- create_api(provider.id, preset, :openai, params),
+           :ok <- create_api(provider.id, preset, :anthropic, params) do
         provider
       else
         {:error, %Ecto.Changeset{} = changeset} ->
@@ -96,13 +96,19 @@ defmodule Backplane.Admin.ProviderNewLive do
     end)
   end
 
-  defp create_api(provider_id, surface, params) do
+  defp create_api(provider_id, preset, surface, params) do
     prefix = Atom.to_string(surface)
 
     if truthy?(params["#{prefix}_enabled"]) or not blank?(params["#{prefix}_base_url"]) do
       attrs = %{
         provider_id: provider_id,
         api_surface: surface,
+        native_protocols:
+          native_protocols_from_params(
+            params,
+            surface,
+            ProviderPreset.native_protocols(preset, surface)
+          ),
         base_url: params["#{prefix}_base_url"],
         enabled: truthy?(params["#{prefix}_enabled"]),
         default_headers: decode_json_map(params["#{prefix}_default_headers"]),
@@ -131,6 +137,12 @@ defmodule Backplane.Admin.ProviderNewLive do
         "default_headers" => "{}",
         "openai_enabled" => checkbox_value(preset.openai.enabled),
         "openai_base_url" => Map.get(params, "openai_base_url", preset.openai.base_url),
+        "openai_chat_completions_enabled" =>
+          checkbox_value(
+            :openai_chat_completions in ProviderPreset.native_protocols(preset, :openai)
+          ),
+        "openai_responses_enabled" =>
+          checkbox_value(:openai_responses in ProviderPreset.native_protocols(preset, :openai)),
         "openai_model_discovery_enabled" => checkbox_value(!is_nil(preset.openai.discovery_path)),
         "openai_model_discovery_path" => preset.openai.discovery_path || "",
         "openai_default_headers" => "{}",
@@ -328,6 +340,7 @@ defmodule Backplane.Admin.ProviderNewLive do
             Choose a provider preset, select a credential, then adjust OpenAI and Anthropic API surfaces.
           </p>
         </div>
+
         <.link navigate={~p"/llama/providers"} class="no-underline">
           <.dm_btn size="sm">Cancel</.dm_btn>
         </.link>
@@ -485,6 +498,31 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.error errors={@errors} field={"#{@key}_base_url"} />
         </div>
 
+        <div :if={@key == "openai"} class="space-y-2">
+          <p class="text-sm font-medium">Native wire protocols</p>
+          <input
+            type="hidden"
+            name="provider[openai_chat_completions_enabled]"
+            value="false"
+          />
+          <.dm_checkbox
+            id="provider-openai-chat-completions-enabled"
+            name="provider[openai_chat_completions_enabled]"
+            label="Chat Completions"
+            value="true"
+            checked={field_value(@form, "openai", "chat_completions_enabled") in [true, "true", "on"]}
+          />
+          <input type="hidden" name="provider[openai_responses_enabled]" value="false" />
+          <.dm_checkbox
+            id="provider-openai-responses-enabled"
+            name="provider[openai_responses_enabled]"
+            label="Responses"
+            value="true"
+            checked={field_value(@form, "openai", "responses_enabled") in [true, "true", "on"]}
+          />
+          <.error errors={@errors} field="openai_native_protocols" />
+        </div>
+
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
         <.dm_checkbox
           id={"provider-#{@key}-discovery-enabled"}
@@ -521,4 +559,24 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp field_value(form, key, suffix) do
     form[String.to_atom("#{key}_#{suffix}")].value
   end
+
+  defp native_protocols_from_params(_params, :anthropic, _default), do: [:anthropic_messages]
+
+  defp native_protocols_from_params(params, :openai, default) do
+    keys = ["openai_chat_completions_enabled", "openai_responses_enabled"]
+
+    if Enum.any?(keys, &Map.has_key?(params, &1)) do
+      []
+      |> maybe_add_protocol(
+        truthy?(params["openai_chat_completions_enabled"]),
+        :openai_chat_completions
+      )
+      |> maybe_add_protocol(truthy?(params["openai_responses_enabled"]), :openai_responses)
+    else
+      default
+    end
+  end
+
+  defp maybe_add_protocol(protocols, true, protocol), do: protocols ++ [protocol]
+  defp maybe_add_protocol(protocols, false, _protocol), do: protocols
 end

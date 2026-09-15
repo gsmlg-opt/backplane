@@ -50,6 +50,21 @@ defmodule Backplane.LLM.ModelResolverTest do
                ModelResolver.resolve(:openai, "anthropic-provider/claude-sonnet")
     end
 
+    test "resolves each requested native surface when the model is exposed through multiple APIs" do
+      provider = create_provider_model("multi-surface-provider", :openai, "gpt-4o")
+      add_provider_surface(provider, :anthropic, "gpt-4o")
+
+      assert {:ok, openai_provider, "gpt-4o"} =
+               ModelResolver.resolve(:openai, "multi-surface-provider/gpt-4o")
+
+      assert openai_provider.id == provider.id
+
+      assert {:ok, anthropic_provider, "gpt-4o"} =
+               ModelResolver.resolve(:anthropic, "multi-surface-provider/gpt-4o")
+
+      assert anthropic_provider.id == provider.id
+    end
+
     test "skips disabled providers" do
       provider = create_provider_model("anthropic-provider", :anthropic, "claude-sonnet")
       {:ok, _} = Provider.update(provider, %{enabled: false})
@@ -155,5 +170,26 @@ defmodule Backplane.LLM.ModelResolverTest do
       })
 
     provider
+  end
+
+  defp add_provider_surface(provider, api_surface, model_id) do
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: api_surface,
+        base_url: "https://api.example.com/v1"
+      })
+
+    model =
+      ProviderModel
+      |> Ecto.Query.where([model], model.provider_id == ^provider.id and model.model == ^model_id)
+      |> Backplane.Repo.one!()
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
   end
 end

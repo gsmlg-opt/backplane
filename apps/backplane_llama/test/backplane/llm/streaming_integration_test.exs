@@ -9,6 +9,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
   alias Backplane.LLM.{
     ModelResolver,
+    AutoModel,
     Provider,
     ProviderApi,
     ProviderModel,
@@ -103,10 +104,72 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{bearer}")
     |> put_req_header("x-api-key", "inbound-key-must-not-leak")
+    |> put_req_header("api-key", "inbound-api-key-must-not-leak")
+    |> put_req_header("x-goog-api-key", "inbound-google-key-must-not-leak")
+    |> put_req_header("cookie", "session=inbound-cookie-must-not-leak")
     |> Backplane.LLM.ProxyPlug.call(Backplane.LLM.ProxyPlug.init([]))
   end
 
+  defp raw_llm_request(method, path, body) do
+    method
+    |> conn(path, body)
+    |> put_req_header("content-type", "application/json")
+    |> Router.call(Router.init([]))
+  end
+
   describe "non-streaming proxy" do
+    test "native APIs preserve original request bytes when model routing needs no rewrite", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      model = setup_openai_model(provider, port, "fast")
+
+      anthropic_api =
+        provider.id
+        |> ProviderApi.list_for_provider()
+        |> Enum.find(&(&1.api_surface == :anthropic))
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: anthropic_api.id,
+          enabled: true
+        })
+
+      assert {:ok, %{target_count: 2}} = AutoModel.configure_targets("fast", ["fast"])
+      ModelResolver.clear_cache()
+
+      requests = [
+        {"/v1/responses",
+         "{\n  \"model\": \"fast\", \"input\": \"雪\", \"future_extension\": {\"tool\": {\"arguments\": {\"x\": 1}}}\n}\n"},
+        {"/v1/chat/completions",
+         "{ \"model\" : \"fast\", \"messages\": [{\"role\":\"user\",\"content\":\"雪\"}], \"provider_extension\": true }"},
+        {"/v1/messages",
+         "{\n\t\"model\":\"fast\",\"messages\":[{\"role\":\"user\",\"content\":\"雪\"}],\"max_tokens\":8,\"future\":{\"nested\":true}}"}
+      ]
+
+      :erlang.trace_pattern(
+        {Backplane.AiProtocol.Translation, :plan, 4},
+        [{:_, [], [{:return_trace}]}],
+        []
+      )
+
+      :erlang.trace(self(), true, [:call])
+
+      on_exit(fn ->
+        :erlang.trace(self(), false, [:call])
+        :erlang.trace_pattern({Backplane.AiProtocol.Translation, :plan, 4}, false, [])
+      end)
+
+      for {path, body} <- requests do
+        assert %{status: 200} = raw_llm_request(:post, path, body)
+        assert Agent.get(auth_store, & &1.raw_body) == body
+      end
+
+      refute_receive {:trace, _, :call, {Backplane.AiProtocol.Translation, :plan, _}}
+    end
+
     test "ordinary Responses uses the real public proxy path once", %{
       auth_store: auth_store,
       port: port,
@@ -182,18 +245,29 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       assert body["usage"]["input_tokens"] == 10
     end
 
-    test "rewrites model field in forwarded body" do
+    test "model mapping changes only the model field semantically", %{auth_store: auth_store} do
+      client_body = %{
+        "model" => "test-integration/claude-test",
+        "messages" => [
+          %{
+            "role" => "user",
+            "content" => "雪",
+            "tool_result" => %{"arguments" => %{"nested" => [1, true, nil]}}
+          }
+        ],
+        "max_tokens" => 10,
+        "provider_extension" => %{"future" => true}
+      }
+
       conn =
-        llm_request(:post, "/v1/messages", %{
-          "model" => "test-integration/claude-test",
-          "messages" => [%{"role" => "user", "content" => "hi"}],
-          "max_tokens" => 10
-        })
+        llm_request(:post, "/v1/messages", client_body)
 
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
-      # Model should be "claude-test" (stripped prefix), echoed back by test server
       assert body["model"] == "claude-test"
+
+      assert Agent.get(auth_store, & &1.body) ==
+               Map.put(client_body, "model", "claude-test")
     end
 
     test "proxies openai request without duplicating provider base URL version path", %{
@@ -323,8 +397,173 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
         assert authorization_values == ["Bearer sk-test-integration"]
         assert x_api_key_values == []
+
+        refute Enum.any?(captured.headers, fn {name, _value} ->
+                 name in ["api-key", "x-goog-api-key", "cookie", "proxy-authorization"]
+               end)
+
         refute "Bearer #{inbound_bearer}" in authorization_values
       end
+    end
+
+    test "rejects an unavailable cross-protocol route before contacting upstream", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "http://localhost:#{port}",
+          native_protocols: [:openai_responses]
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "responses-only",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true
+        })
+
+      ModelResolver.clear_cache()
+
+      conn =
+        raw_llm_request(
+          :post,
+          "/v1/chat/completions",
+          ~S({"model":"test-integration/responses-only","messages":[{"role":"user","content":"hi"}]})
+        )
+
+      assert conn.status == 422
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "unsupported_protocol_translation"
+      assert Agent.get(auth_store, &Map.get(&1, :submissions, 0)) == 0
+    end
+
+    test "ordinary routes honor environment proxy policy and NO_PROXY", %{
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "proxy-policy")
+
+      proxy_vars = ~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy)
+      previous = Map.new(proxy_vars, &{&1, System.get_env(&1)})
+
+      on_exit(fn ->
+        Enum.each(previous, fn
+          {name, nil} -> System.delete_env(name)
+          {name, value} -> System.put_env(name, value)
+        end)
+      end)
+
+      Enum.each(~w(HTTP_PROXY http_proxy ALL_PROXY all_proxy), fn name ->
+        System.put_env(name, "http://127.0.0.1:1")
+      end)
+
+      Enum.each(~w(NO_PROXY no_proxy), &System.delete_env/1)
+
+      blocked =
+        raw_llm_request(
+          :post,
+          "/v1/chat/completions",
+          ~S({"model":"test-integration/proxy-policy","messages":[]})
+        )
+
+      assert blocked.status == 502
+
+      System.put_env("NO_PROXY", "localhost")
+
+      bypassed =
+        raw_llm_request(
+          :post,
+          "/v1/chat/completions",
+          ~S({"model":"test-integration/proxy-policy","messages":[]})
+        )
+
+      assert bypassed.status == 200
+    end
+
+    test "observer startup failure and observer exit do not fail native forwarding", %{
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "observer-failure")
+      previous = Application.get_env(:backplane_llama, :usage_accumulator_factory)
+
+      on_exit(fn ->
+        restore_app_env(:backplane_llama, :usage_accumulator_factory, previous)
+      end)
+
+      Application.put_env(:backplane_llama, :usage_accumulator_factory, fn _protocol ->
+        raise "observer startup failed"
+      end)
+
+      conn =
+        raw_llm_request(
+          :post,
+          "/v1/responses",
+          ~S({"model":"test-integration/observer-failure","input":"still forwarded","stream":true})
+        )
+
+      assert conn.status == 200
+
+      Application.put_env(:backplane_llama, :usage_accumulator_factory, fn protocol ->
+        pid = Backplane.LLM.UsageAccumulator.new(protocol)
+        Process.exit(pid, :kill)
+        pid
+      end)
+
+      conn =
+        raw_llm_request(
+          :post,
+          "/v1/responses",
+          ~S({"model":"test-integration/observer-failure","input":"still forwarded","stream":true})
+        )
+
+      assert conn.status == 200
+    end
+
+    test "observer timeout is bounded and does not stall native forwarding", %{
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "observer-timeout")
+      previous = Application.get_env(:backplane_llama, :usage_accumulator_factory)
+      observer_store = start_supervised!({Agent, fn -> [] end})
+
+      on_exit(fn ->
+        restore_app_env(:backplane_llama, :usage_accumulator_factory, previous)
+      end)
+
+      Application.put_env(:backplane_llama, :usage_accumulator_factory, fn protocol ->
+        pid = Backplane.LLM.UsageAccumulator.new(protocol, snapshot_timeout: 5)
+        Agent.update(observer_store, &[pid | &1])
+        :erlang.suspend_process(pid)
+        pid
+      end)
+
+      started = System.monotonic_time(:millisecond)
+
+      conn =
+        raw_llm_request(
+          :post,
+          "/v1/responses",
+          ~S({"model":"test-integration/observer-timeout","input":"still forwarded","stream":true})
+        )
+
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      assert conn.status == 200
+      assert elapsed < 250
+      assert [pid] = Agent.get(observer_store, & &1)
+      refute Process.alive?(pid)
     end
   end
 
@@ -462,7 +701,8 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       ProviderApi.create(%{
         provider_id: provider.id,
         api_surface: :openai,
-        base_url: "http://localhost:#{port}"
+        base_url: "http://localhost:#{port}",
+        native_protocols: [:openai_chat_completions, :openai_responses]
       })
 
     {:ok, model} =
@@ -481,4 +721,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
   defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
+
+  defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
 end

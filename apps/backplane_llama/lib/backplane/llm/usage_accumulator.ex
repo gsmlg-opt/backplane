@@ -23,70 +23,104 @@ defmodule Backplane.LLM.UsageAccumulator do
         }
 
   @max_response_body_bytes 8_388_608
+  @max_observation_chunk_bytes 1_048_576
+  @default_max_queue 256
+  @default_snapshot_timeout 50
+  @meta_key {__MODULE__, :meta}
 
-  @spec new(:legacy | :compact | :responses | :openai_responses | :openai_responses_body) :: pid()
+  @spec new(
+          :legacy
+          | :compact
+          | :responses
+          | :openai_responses
+          | :openai_responses_body
+          | :openai_json_body
+          | :anthropic_json_body
+        ) :: pid()
   def new(protocol \\ :legacy)
 
-  def new(:responses), do: new(:openai_responses)
+  def new(protocol), do: new(protocol, [])
 
-  def new(:openai_responses) do
+  @spec new(
+          :legacy
+          | :compact
+          | :responses
+          | :openai_responses
+          | :openai_responses_body
+          | :openai_json_body
+          | :anthropic_json_body,
+          keyword()
+        ) :: pid()
+  def new(protocol, opts) do
+    max_queue = Keyword.get(opts, :max_queue, @default_max_queue)
+    snapshot_timeout = Keyword.get(opts, :snapshot_timeout, @default_snapshot_timeout)
+
+    state =
+      case protocol do
+        :responses -> responses_state()
+        :openai_responses -> responses_state()
+        :openai_responses_body -> response_body_state()
+        :openai_json_body -> json_body_state(:openai_json_body)
+        :anthropic_json_body -> json_body_state(:anthropic_json_body)
+        :legacy -> legacy_state(:legacy)
+        :compact -> legacy_state(:compact)
+      end
+
+    start_owner(state, max_queue, snapshot_timeout)
+  end
+
+  defp responses_state do
+    %{
+      protocol: :openai_responses,
+      observer: Backplane.AiProtocol.OpenAIResponsesObserver.new(),
+      chunk_count: 0,
+      first_chunk_at: nil,
+      last_chunk_at: nil,
+      started_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp response_body_state do
+    %{
+      protocol: :openai_responses_body,
+      body_chunks: [],
+      body_bytes: 0,
+      body_truncated: false,
+      chunk_count: 0,
+      first_chunk_at: nil,
+      last_chunk_at: nil,
+      started_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp json_body_state(protocol) do
+    response_body_state()
+    |> Map.put(:protocol, protocol)
+  end
+
+  defp legacy_state(protocol) do
+    %{
+      protocol: protocol,
+      input_tokens: nil,
+      output_tokens: nil,
+      cached_tokens: nil,
+      reasoning_tokens: nil,
+      finish_reason: nil,
+      provider_request_id: nil,
+      chunk_count: 0,
+      first_chunk_at: nil,
+      last_chunk_at: nil,
+      started_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp start_owner(state, max_queue, snapshot_timeout) do
+    atomics = :atomics.new(5, [])
+
     {:ok, pid} =
-      Agent.start_link(fn ->
-        %{
-          protocol: :openai_responses,
-          observer: Backplane.AiProtocol.OpenAIResponsesObserver.new(),
-          chunk_count: 0,
-          first_chunk_at: nil,
-          last_chunk_at: nil,
-          started_at: System.monotonic_time(:millisecond)
-        }
-      end)
-
-    pid
-  end
-
-  def new(:openai_responses_body) do
-    {:ok, pid} =
-      Agent.start_link(fn ->
-        %{
-          protocol: :openai_responses_body,
-          body_chunks: [],
-          body_bytes: 0,
-          body_truncated: false,
-          chunk_count: 0,
-          first_chunk_at: nil,
-          last_chunk_at: nil,
-          started_at: System.monotonic_time(:millisecond)
-        }
-      end)
-
-    pid
-  end
-
-  def new(:legacy) do
-    new_legacy(:legacy)
-  end
-
-  def new(:compact) do
-    new_legacy(:compact)
-  end
-
-  defp new_legacy(protocol) do
-    {:ok, pid} =
-      Agent.start_link(fn ->
-        %{
-          protocol: protocol,
-          input_tokens: nil,
-          output_tokens: nil,
-          cached_tokens: nil,
-          reasoning_tokens: nil,
-          finish_reason: nil,
-          provider_request_id: nil,
-          chunk_count: 0,
-          first_chunk_at: nil,
-          last_chunk_at: nil,
-          started_at: System.monotonic_time(:millisecond)
-        }
+      Agent.start(fn ->
+        Process.put(@meta_key, {atomics, max_queue, snapshot_timeout})
+        state
       end)
 
     pid
@@ -94,36 +128,42 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @spec scan_chunk(pid(), binary()) :: :ok
   def scan_chunk(pid, chunk) when is_binary(chunk) do
-    now = System.monotonic_time(:millisecond)
+    case accumulator_meta(pid) do
+      {:ok, atomics, max_queue, _timeout} ->
+        if byte_size(chunk) > @max_observation_chunk_bytes do
+          :atomics.add(atomics, 1, 1)
+          :atomics.add(atomics, 4, 1)
+          :atomics.add(atomics, 5, byte_size(chunk))
+        else
+          enqueue_chunk(pid, chunk, atomics, max_queue)
+        end
 
-    Agent.update(pid, fn state ->
-      state =
-        state
-        |> Map.update!(:chunk_count, &(&1 + 1))
-        |> put_first_chunk(now)
-        |> Map.put(:last_chunk_at, now)
-
-      case state do
-        %{protocol: :openai_responses, observer: observer} ->
-          %{state | observer: Backplane.AiProtocol.OpenAIResponsesObserver.feed(observer, chunk)}
-
-        %{protocol: :openai_responses_body} ->
-          put_response_body_chunk(state, chunk)
-
-        _ ->
-          state
-      end
-    end)
-
-    state = Agent.get(pid, & &1)
-
-    if state[:protocol] not in [:openai_responses, :openai_responses_body] and
-         (String.contains?(chunk, "\"usage\"") or String.contains?(chunk, "\"finish_reason\"") or
-            String.contains?(chunk, "\"stop_reason\"") or String.contains?(chunk, "\"id\"")) do
-      extract_usage_from_chunk(pid, chunk)
+      _ ->
+        :ok
     end
 
     :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp enqueue_chunk(pid, chunk, atomics, max_queue) do
+    pending = :atomics.add_get(atomics, 3, 1)
+
+    if not Process.alive?(pid) or pending > max_queue do
+      :atomics.add(atomics, 1, 1)
+      :atomics.put(atomics, 2, 1)
+      :atomics.add(atomics, 5, byte_size(chunk))
+      :atomics.sub(atomics, 3, 1)
+    else
+      Agent.cast(pid, fn state ->
+        try do
+          scan_state(state, chunk)
+        after
+          :atomics.sub(atomics, 3, 1)
+        end
+      end)
+    end
   end
 
   @spec get_tokens(pid()) :: {integer() | nil, integer() | nil}
@@ -136,16 +176,30 @@ defmodule Backplane.LLM.UsageAccumulator do
   @spec snapshot(pid(), non_neg_integer()) :: snapshot()
   def snapshot(pid, status \\ 200) do
     state =
-      Agent.get_and_update(pid, fn
-        %{protocol: :openai_responses, observer: observer} = state ->
-          observer = Backplane.AiProtocol.OpenAIResponsesObserver.finish(observer, :eof)
-          next = %{state | observer: observer}
-          {next, next}
+      try do
+        Agent.get_and_update(
+          pid,
+          fn
+            %{protocol: :openai_responses, observer: observer} = state ->
+              observer = Backplane.AiProtocol.OpenAIResponsesObserver.finish(observer, :eof)
+              next = %{state | observer: observer}
+              {next, next}
 
-        state ->
-          {state, state}
-      end)
+            state ->
+              {state, state}
+          end,
+          snapshot_timeout(pid)
+        )
+      catch
+        :exit, _ -> :unavailable
+      end
 
+    if state == :unavailable,
+      do: unavailable_snapshot(pid),
+      else: snapshot_from_state(state, status, pid)
+  end
+
+  defp snapshot_from_state(state, status, pid) do
     first = state.first_chunk_at
     last = state.last_chunk_at
     started = state.started_at
@@ -171,21 +225,84 @@ defmodule Backplane.LLM.UsageAccumulator do
       metadata: %{}
     }
 
-    case state do
-      %{protocol: :openai_responses, observer: observer} ->
-        facts = Backplane.AiProtocol.OpenAIResponsesObserver.facts(observer)
+    snapshot =
+      case state do
+        %{protocol: :openai_responses, observer: observer} ->
+          facts = Backplane.AiProtocol.OpenAIResponsesObserver.facts(observer)
 
-        merge_observer_facts(base, facts)
+          merge_observer_facts(base, facts)
 
-      %{protocol: :openai_responses_body} = state ->
-        facts = response_body_facts(state, status)
+        %{protocol: :openai_responses_body} = state ->
+          facts = response_body_facts(state, status)
 
-        merge_observer_facts(base, facts)
+          merge_observer_facts(base, facts)
 
-      _ ->
-        base
-    end
+        %{protocol: protocol} = state
+        when protocol in [:openai_json_body, :anthropic_json_body] ->
+          merge_json_body_usage(base, state)
+
+        _ ->
+          base
+      end
+
+    snapshot
+    |> mark_parser_failure(state)
+    |> apply_observation_limits(pid)
   end
+
+  defp merge_json_body_usage(base, state) do
+    body = state.body_chunks |> Enum.reverse() |> IO.iodata_to_binary()
+
+    decoded =
+      case Jason.decode(body) do
+        {:ok, data} when is_map(data) -> data
+        _ -> %{}
+      end
+
+    usage = if is_map(decoded["usage"]), do: decoded["usage"], else: %{}
+
+    input = usage["input_tokens"] || usage["prompt_tokens"]
+    output = usage["output_tokens"] || usage["completion_tokens"]
+
+    %{
+      base
+      | input_tokens: input,
+        output_tokens: output,
+        cached_tokens:
+          get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
+            usage["cache_read_input_tokens"],
+        reasoning_tokens:
+          get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) ||
+            usage["reasoning_tokens"],
+        finish_reason: json_finish_reason(decoded),
+        provider_request_id: decoded["id"],
+        observation_status: if(state.body_truncated, do: :incomplete, else: :complete),
+        partial: state.body_truncated,
+        usage_complete: not state.body_truncated and complete_counters?(input, output),
+        metadata:
+          if(state.body_truncated,
+            do: %{observation: %{body_truncated: true, bytes_seen: state.body_bytes}},
+            else: %{}
+          )
+    }
+  end
+
+  defp json_finish_reason(%{"choices" => [%{"finish_reason" => reason} | _]}), do: reason
+  defp json_finish_reason(%{"stop_reason" => reason}), do: reason
+  defp json_finish_reason(_), do: nil
+
+  defp mark_parser_failure(snapshot, %{observer_error: true}) do
+    %{
+      snapshot
+      | observation_status: :incomplete,
+        protocol_terminal: :incomplete,
+        partial: true,
+        usage_complete: false,
+        metadata: Map.put(snapshot.metadata, :observation, %{parser_failed: true})
+    }
+  end
+
+  defp mark_parser_failure(snapshot, _state), do: snapshot
 
   defp merge_observer_facts(base, facts) do
     Map.merge(base, %{
@@ -250,7 +367,7 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @spec stop(pid()) :: :ok
   def stop(pid) do
-    if Process.alive?(pid), do: Agent.stop(pid, :normal, :infinity)
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
     :ok
   catch
     :exit, _ -> :ok
@@ -260,71 +377,212 @@ defmodule Backplane.LLM.UsageAccumulator do
     if state.first_chunk_at, do: state, else: Map.put(state, :first_chunk_at, now)
   end
 
-  defp extract_usage_from_chunk(pid, chunk) do
+  defp scan_state(state, chunk) do
+    now = System.monotonic_time(:millisecond)
+
+    state =
+      state
+      |> Map.update!(:chunk_count, &(&1 + 1))
+      |> put_first_chunk(now)
+      |> Map.put(:last_chunk_at, now)
+
+    try do
+      case state do
+        %{protocol: :openai_responses, observer: observer} ->
+          %{state | observer: Backplane.AiProtocol.OpenAIResponsesObserver.feed(observer, chunk)}
+
+        %{protocol: :openai_responses_body} ->
+          put_response_body_chunk(state, chunk)
+
+        %{protocol: protocol} when protocol in [:openai_json_body, :anthropic_json_body] ->
+          put_response_body_chunk(state, chunk)
+
+        _ ->
+          extract_usage_from_chunk(state, chunk)
+      end
+    rescue
+      _ -> Map.put(state, :observer_error, true)
+    end
+  end
+
+  defp extract_usage_from_chunk(state, chunk) do
     chunk
     |> String.split("\n")
     |> Enum.filter(&String.starts_with?(&1, "data: "))
-    |> Enum.each(fn line ->
+    |> Enum.reduce(state, fn line, state ->
       json_str = String.trim_leading(line, "data: ")
 
       case Jason.decode(json_str) do
-        {:ok, data} -> extract_from_parsed(pid, data)
-        _ -> :ok
+        {:ok, data} -> extract_from_parsed(state, data)
+        _ -> state
       end
     end)
   end
 
-  defp extract_from_parsed(pid, %{"message" => %{"usage" => usage}} = data) do
-    update_tokens(pid, usage)
-    update_provider_request_id(pid, get_in(data, ["message", "id"]))
+  defp extract_from_parsed(state, %{"message" => %{"usage" => usage}} = data) do
+    state |> update_tokens(usage) |> update_provider_request_id(get_in(data, ["message", "id"]))
   end
 
-  defp extract_from_parsed(pid, %{"usage" => usage} = data) when is_map(usage) do
-    update_tokens(pid, usage)
-    update_provider_request_id(pid, Map.get(data, "id"))
+  defp extract_from_parsed(state, %{"usage" => usage} = data) when is_map(usage) do
+    state |> update_tokens(usage) |> update_provider_request_id(Map.get(data, "id"))
   end
 
-  defp extract_from_parsed(pid, %{"choices" => [%{"finish_reason" => reason} | _]} = data)
+  defp extract_from_parsed(state, %{"choices" => [%{"finish_reason" => reason} | _]} = data)
        when is_binary(reason) do
-    Agent.update(pid, fn state -> Map.put(state, :finish_reason, reason) end)
-    update_provider_request_id(pid, Map.get(data, "id"))
+    state |> Map.put(:finish_reason, reason) |> update_provider_request_id(Map.get(data, "id"))
   end
 
-  defp extract_from_parsed(pid, %{"delta" => %{"stop_reason" => reason}})
+  defp extract_from_parsed(state, %{"delta" => %{"stop_reason" => reason}})
        when is_binary(reason) do
-    Agent.update(pid, fn state -> Map.put(state, :finish_reason, reason) end)
+    Map.put(state, :finish_reason, reason)
   end
 
-  defp extract_from_parsed(_, _), do: :ok
+  defp extract_from_parsed(state, _), do: state
 
-  defp update_tokens(pid, usage) when is_map(usage) do
-    Agent.update(pid, fn state ->
-      input = usage["input_tokens"] || usage["prompt_tokens"] || state.input_tokens
-      output = usage["output_tokens"] || usage["completion_tokens"] || state.output_tokens
+  defp update_tokens(state, usage) when is_map(usage) do
+    input = usage["input_tokens"] || usage["prompt_tokens"] || state.input_tokens
+    output = usage["output_tokens"] || usage["completion_tokens"] || state.output_tokens
 
-      cached =
-        get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
-          usage["cache_read_input_tokens"] || state.cached_tokens
+    cached =
+      get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
+        usage["cache_read_input_tokens"] || state.cached_tokens
 
-      reasoning =
-        get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) ||
-          usage["reasoning_tokens"] || state.reasoning_tokens
+    reasoning =
+      get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) ||
+        usage["reasoning_tokens"] || state.reasoning_tokens
 
+    %{
+      state
+      | input_tokens: input,
+        output_tokens: output,
+        cached_tokens: cached,
+        reasoning_tokens: reasoning
+    }
+  end
+
+  defp update_provider_request_id(state, id) when is_binary(id) do
+    Map.put(state, :provider_request_id, id)
+  end
+
+  defp update_provider_request_id(state, _), do: state
+
+  defp accumulator_meta(pid) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} ->
+        case List.keyfind(dictionary, @meta_key, 0) do
+          {@meta_key, {atomics, max_queue, timeout}} ->
+            {:ok, atomics, max_queue, timeout}
+
+          _ ->
+            :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp snapshot_timeout(pid) do
+    case accumulator_meta(pid) do
+      {:ok, _, _, timeout} -> timeout
+      _ -> 0
+    end
+  end
+
+  defp unavailable_snapshot(pid) do
+    apply_observation_limits(
       %{
-        state
-        | input_tokens: input,
-          output_tokens: output,
-          cached_tokens: cached,
-          reasoning_tokens: reasoning
-      }
-    end)
+        input_tokens: nil,
+        output_tokens: nil,
+        cached_tokens: nil,
+        reasoning_tokens: nil,
+        finish_reason: nil,
+        provider_request_id: nil,
+        stream_chunks: nil,
+        ttft_ms: nil,
+        stream_duration_ms: nil,
+        observation_status: :unavailable,
+        protocol_terminal: :incomplete,
+        error_code: nil,
+        error_type: nil,
+        protocol: :legacy,
+        tool_calls: [],
+        partial: true,
+        usage_complete: false,
+        metadata: %{}
+      },
+      pid
+    )
   end
 
-  defp update_provider_request_id(pid, id) when is_binary(id) do
-    Agent.update(pid, fn state -> Map.put(state, :provider_request_id, id) end)
+  defp apply_observation_limits(snapshot, pid) do
+    case accumulator_meta(pid) do
+      {:ok, atomics, _, _} ->
+        dropped = :atomics.get(atomics, 1)
+
+        if dropped > 0 do
+          metadata =
+            snapshot.metadata
+            |> add_dropped_bytes(:atomics.get(atomics, 5))
+            |> Map.put(:observation, %{
+              dropped_chunks: dropped,
+              dropped_bytes: :atomics.get(atomics, 5),
+              queue_saturated: :atomics.get(atomics, 2) == 1,
+              oversized_chunks: :atomics.get(atomics, 4)
+            })
+
+          %{
+            snapshot
+            | input_tokens: nil,
+              output_tokens: nil,
+              cached_tokens: nil,
+              reasoning_tokens: nil,
+              provider_request_id: nil,
+              tool_calls: [],
+              observation_status:
+                if(snapshot.observation_status == :unavailable,
+                  do: :unavailable,
+                  else: :incomplete
+                ),
+              partial: true,
+              usage_complete: false,
+              metadata: metadata
+          }
+        else
+          snapshot
+        end
+
+      _ ->
+        snapshot
+    end
   end
 
-  defp update_provider_request_id(_pid, _), do: :ok
+  defp add_dropped_bytes(%{protocol_observation: facts} = metadata, dropped_bytes)
+       when is_map(facts) do
+    diagnostics =
+      ["observation_chunks_dropped" | List.wrap(facts[:diagnostics])]
+      |> Enum.uniq()
+      |> Enum.take(32)
+
+    facts =
+      facts
+      |> Map.put(:observation_status, :incomplete)
+      |> Map.put(:protocol_terminal, :incomplete)
+      |> Map.put(:usage_status, :unknown)
+      |> Map.put(:input_truncated, true)
+      |> Map.put(:diagnostics, diagnostics)
+
+    Map.put(
+      metadata,
+      :protocol_observation,
+      Map.update(facts, :bytes_seen, dropped_bytes, fn
+        bytes when is_integer(bytes) -> bytes + dropped_bytes
+        _ -> dropped_bytes
+      end)
+    )
+  end
+
+  defp add_dropped_bytes(metadata, _dropped_bytes), do: metadata
 
   defp terminal_reason(:completed), do: "stop"
   defp terminal_reason(:incomplete), do: "incomplete"

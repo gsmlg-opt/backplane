@@ -19,7 +19,8 @@ defmodule Backplane.Test.TestLLMUpstream do
 
   plug Plug.Parsers,
     parsers: [:json],
-    json_decoder: Jason
+    json_decoder: Jason,
+    body_reader: {Backplane.Transport.CacheBodyReader, :read_body, []}
 
   plug :match
   plug :dispatch
@@ -33,7 +34,12 @@ defmodule Backplane.Test.TestLLMUpstream do
   end
 
   defp store_auth(conn) do
-    capture = %{headers: conn.req_headers, path: conn.request_path, body: conn.body_params}
+    capture = %{
+      headers: conn.req_headers,
+      path: conn.request_path,
+      body: conn.body_params,
+      raw_body: conn.assigns[:raw_body]
+    }
 
     if Process.whereis(@agent) do
       Agent.update(@agent, fn previous ->

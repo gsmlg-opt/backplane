@@ -365,4 +365,18 @@ defmodule Backplane.LLM.ProviderPreset do
   def fetch!(key) do
     get(key) || raise ArgumentError, "unknown LLM provider preset: #{inspect(key)}"
   end
+
+  @doc "Concrete wire protocols a preset exposes natively on an API surface."
+  @spec native_protocols(t(), :openai | :anthropic) :: [atom()]
+  def native_protocols(%__MODULE__{key: "openai"}, :openai),
+    do: [:openai_chat_completions, :openai_responses]
+
+  def native_protocols(%__MODULE__{key: "openai-codex"}, :openai),
+    do: [:openai_responses]
+
+  def native_protocols(%__MODULE__{key: "custom"}, :openai),
+    do: [:openai_chat_completions, :openai_responses]
+
+  def native_protocols(%__MODULE__{}, :openai), do: [:openai_chat_completions]
+  def native_protocols(%__MODULE__{}, :anthropic), do: [:anthropic_messages]
 end

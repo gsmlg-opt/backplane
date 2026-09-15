@@ -197,8 +197,16 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       apis = ProviderApi.list_for_provider(provider.id)
 
       assert [
-               %{api_surface: :anthropic, base_url: "https://api.deepseek.com/anthropic"},
-               %{api_surface: :openai, base_url: "https://api.deepseek.com"}
+               %{
+                 api_surface: :anthropic,
+                 base_url: "https://api.deepseek.com/anthropic",
+                 native_protocols: [:anthropic_messages]
+               },
+               %{
+                 api_surface: :openai,
+                 base_url: "https://api.deepseek.com",
+                 native_protocols: [:openai_chat_completions]
+               }
              ] = apis
     end
 
@@ -339,7 +347,13 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert provider.preset_key == "openai-codex"
       assert provider.credential == "openai-codex"
 
-      assert [%{api_surface: :openai, base_url: base_url}] =
+      assert [
+               %{
+                 api_surface: :openai,
+                 base_url: base_url,
+                 native_protocols: [:openai_responses]
+               }
+             ] =
                ProviderApi.list_for_provider(provider.id)
 
       assert base_url == OpenAICodex.default_backend_base_url()
@@ -422,6 +436,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
           "default_headers" => "{}",
           "openai_enabled" => "true",
           "openai_base_url" => "https://api.example.com/v2",
+          "openai_chat_completions_enabled" => "false",
+          "openai_responses_enabled" => "true",
           "openai_model_discovery_enabled" => "true",
           "openai_model_discovery_path" => "/models",
           "openai_default_headers" => "{}",
@@ -439,6 +455,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       updated_openai_api = Repo.get!(ProviderApi, openai_api.id)
       assert updated_openai_api.base_url == "https://api.example.com/v2"
+      assert updated_openai_api.native_protocols == [:openai_responses]
 
       view
       |> form("form[phx-submit=add_model]", %{

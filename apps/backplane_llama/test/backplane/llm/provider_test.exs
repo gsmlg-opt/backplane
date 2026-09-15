@@ -168,6 +168,49 @@ defmodule Backplane.LLM.ProviderTest do
   end
 
   describe "ProviderApi" do
+    test "records the concrete native wire protocols independently of the broad API family" do
+      provider = create_provider()
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://api.openai.com/v1",
+                 native_protocols: [:openai_chat_completions, :openai_responses]
+               })
+
+      assert api.native_protocols == [:openai_chat_completions, :openai_responses]
+    end
+
+    test "unrelated API updates preserve explicitly configured native protocols" do
+      provider = create_provider()
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://api.openai.com/v1",
+                 native_protocols: [:openai_chat_completions, :openai_responses]
+               })
+
+      assert {:ok, updated} = ProviderApi.update(api, %{model_discovery_enabled: false})
+      assert updated.native_protocols == [:openai_chat_completions, :openai_responses]
+    end
+
+    test "rejects native protocols from a different API family" do
+      provider = create_provider()
+
+      assert {:error, changeset} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :anthropic,
+                 base_url: "https://api.anthropic.com",
+                 native_protocols: [:openai_responses]
+               })
+
+      assert %{native_protocols: [_ | _]} = errors_on(changeset)
+    end
+
     test "creates independent API surfaces for one provider" do
       provider = create_provider()
 

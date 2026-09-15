@@ -93,12 +93,11 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
     end
 
     test "bounds non-streaming JSON accumulation" do
-      pid = UsageAccumulator.new(:openai_responses_body)
+      pid = UsageAccumulator.new(:openai_responses_body, snapshot_timeout: 500)
       on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
 
-      UsageAccumulator.scan_chunk(pid, String.duplicate("x", 8_388_609))
-
-      assert Agent.get(pid, &(IO.iodata_length(&1.body_chunks) == 0))
+      chunk = String.duplicate("x", 1_048_576)
+      Enum.each(1..9, fn _ -> UsageAccumulator.scan_chunk(pid, chunk) end)
 
       snapshot = UsageAccumulator.snapshot(pid, 200)
       assert snapshot.input_tokens == nil
@@ -107,6 +106,36 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
       assert snapshot.metadata.protocol_observation.input_truncated == true
 
       assert "response_bytes_exceeded" in snapshot.metadata.protocol_observation.diagnostics
+    end
+
+    test "drops an oversized observation chunk without retaining it" do
+      pid = UsageAccumulator.new(:openai_responses_body)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(pid, String.duplicate("x", 1_048_577))
+
+      snapshot = UsageAccumulator.snapshot(pid, 200)
+      assert snapshot.partial == true
+      assert snapshot.metadata.observation.dropped_chunks == 1
+      assert snapshot.metadata.observation.queue_saturated == false
+      assert snapshot.metadata.observation.oversized_chunks == 1
+    end
+
+    test "observes native Chat Completions JSON on the bounded worker" do
+      pid = UsageAccumulator.new(:openai_json_body)
+      on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+
+      UsageAccumulator.scan_chunk(
+        pid,
+        ~S({"id":"chat_1","choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}})
+      )
+
+      snapshot = UsageAccumulator.snapshot(pid, 200)
+      assert snapshot.input_tokens == 7
+      assert snapshot.output_tokens == 3
+      assert snapshot.finish_reason == "stop"
+      assert snapshot.provider_request_id == "chat_1"
+      assert snapshot.observation_status == :complete
     end
 
     test "normalizes tool call keys while retaining nested JSON string keys" do
@@ -175,6 +204,75 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
       assert snapshot.input_tokens == 4
       assert snapshot.output_tokens == 2
       assert snapshot.metadata == %{}
+    end
+  end
+
+  describe "observation isolation" do
+    test "observer metadata does not depend on the process that created it" do
+      parent = self()
+
+      creator =
+        spawn(fn ->
+          pid = UsageAccumulator.new()
+          send(parent, {:accumulator, pid})
+        end)
+
+      ref = Process.monitor(creator)
+      assert_receive {:accumulator, pid}
+      assert_receive {:DOWN, ^ref, :process, ^creator, :normal}
+      on_exit(fn -> UsageAccumulator.stop(pid) end)
+
+      assert :ok =
+               UsageAccumulator.scan_chunk(
+                 pid,
+                 "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n"
+               )
+
+      snapshot = UsageAccumulator.snapshot(pid)
+      assert snapshot.input_tokens == 3
+      assert snapshot.output_tokens == 2
+    end
+
+    test "scan_chunk remains successful and snapshot is unavailable after its owner exits" do
+      pid = UsageAccumulator.new()
+      Process.exit(pid, :kill)
+      refute Process.alive?(pid)
+
+      assert :ok = UsageAccumulator.scan_chunk(pid, "data: {\"usage\":{\"prompt_tokens\":1}}\n\n")
+
+      snapshot = UsageAccumulator.snapshot(pid)
+      assert snapshot.observation_status == :unavailable
+      assert snapshot.partial == true
+      assert snapshot.usage_complete == false
+    end
+
+    test "queue saturation is nonblocking and marked incomplete" do
+      pid = UsageAccumulator.new(:legacy, max_queue: 0)
+      on_exit(fn -> UsageAccumulator.stop(pid) end)
+
+      assert :ok = UsageAccumulator.scan_chunk(pid, "data: {\"usage\":{\"prompt_tokens\":1}}\n\n")
+
+      snapshot = UsageAccumulator.snapshot(pid)
+      assert snapshot.observation_status == :incomplete
+      assert snapshot.partial == true
+      assert snapshot.usage_complete == false
+      assert snapshot.metadata.observation.dropped_chunks == 1
+      assert snapshot.metadata.observation.queue_saturated == true
+    end
+
+    test "snapshot returns unavailable instead of waiting on a stalled observer" do
+      pid = UsageAccumulator.new(:legacy, snapshot_timeout: 5)
+      on_exit(fn -> UsageAccumulator.stop(pid) end)
+      :erlang.suspend_process(pid)
+
+      started = System.monotonic_time(:millisecond)
+      snapshot = UsageAccumulator.snapshot(pid)
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      assert elapsed < 100
+      assert snapshot.observation_status == :unavailable
+      assert snapshot.partial == true
+      :erlang.resume_process(pid)
     end
   end
 end
