@@ -31,6 +31,7 @@ jobs:
         app:
           - backplane
           - backplane_admin
+          - backplane_agent_runtime
           - backplane_api
           - backplane_auth
           - backplane_data_case
@@ -66,6 +67,41 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
+      - name: Set up agent runtime command prerequisites
+        if: matrix.app == 'backplane_agent_runtime'
+        run: |
+          sudo apt-get install -y --no-install-recommends ca-certificates curl perl procps util-linux xz-utils
+          coreutils_version="9.4"
+          coreutils_sha256="ea613a4cf44612326e917201bbbcdfbd301de21ffc3b59b6e5c07e040b275e52"
+          coreutils_archive="$RUNNER_TEMP/coreutils-${coreutils_version}.tar.xz"
+          coreutils_source="$RUNNER_TEMP/coreutils-${coreutils_version}"
+          curl --fail --location --silent --show-error \
+            --output "$coreutils_archive" \
+            "https://ftp.gnu.org/gnu/coreutils/coreutils-${coreutils_version}.tar.xz"
+          echo "${coreutils_sha256}  ${coreutils_archive}" | sha256sum --check -
+          tar -xJf "$coreutils_archive" -C "$RUNNER_TEMP"
+          (
+            cd "$coreutils_source"
+            ./configure --disable-nls --without-selinux --enable-single-binary=symlinks
+            make -j"$(nproc)"
+          )
+          coreutils_path="$coreutils_source/src/coreutils"
+          test -x "$coreutils_path"
+          test "$(uname -s)" = "Linux"
+          test -r /proc/self/stat
+          for command_name in setsid sh kill; do
+            command_path="$(type -P "$command_name")"
+            test -x "$command_path"
+          done
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          ln -s "$coreutils_path" "$smoke_dir/env"
+          ln -s "$coreutils_path" "$smoke_dir/printf"
+          ln -s "$coreutils_path" "$smoke_dir/sleep"
+          test "$("$smoke_dir/env" "$smoke_dir/printf" '%s' runtime)" = "runtime"
+          "$smoke_dir/sleep" 0
+          echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
