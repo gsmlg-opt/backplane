@@ -504,10 +504,12 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp maybe_put_observability(attrs, observability) do
+    context = Map.get(observability, :context, %{})
+
     Map.merge(attrs, %{
-      request_id: get_in(observability, [:context, :request_id]),
-      trace_id: get_in(observability, [:context, :trace_id]),
-      mcp_request_id: get_in(observability, [:mcp_request_id])
+      request_id: Map.get(context, :request_id),
+      trace_id: Map.get(context, :trace_id),
+      mcp_request_id: Map.get(observability, :mcp_request_id)
     })
   end
 

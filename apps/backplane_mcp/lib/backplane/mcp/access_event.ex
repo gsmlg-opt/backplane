@@ -272,6 +272,7 @@ defmodule Backplane.MCP.AccessEvent do
   end
 
   defp format_ip(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
+  defp format_ip(_ip), do: nil
 
   defp idempotency_status(conn) do
     case conn.assigns[:mcp_idempotency_status] do

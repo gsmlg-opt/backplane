@@ -22,7 +22,14 @@ defmodule BackplaneSystem.Application do
       ]
       |> maybe_audit_writer()
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: BackplaneSystem.Supervisor)
+    with {:ok, supervisor} <-
+           Supervisor.start_link(children,
+             strategy: :one_for_one,
+             name: BackplaneSystem.Supervisor
+           ) do
+      Backplane.Clients.init_cache()
+      {:ok, supervisor}
+    end
   end
 
   @impl true

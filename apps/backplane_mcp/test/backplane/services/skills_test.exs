@@ -156,6 +156,7 @@ defmodule Backplane.Services.SkillsTest do
   end
 
   test "concurrent toggles each flip the state atomically" do
+    assert Code.ensure_loaded?(Skills)
     assert function_exported?(Skills, :toggle_enabled, 0)
     assert :ok = Skills.set_enabled(false)
 

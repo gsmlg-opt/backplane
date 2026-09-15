@@ -59,7 +59,8 @@ defmodule Backplane.LLM.ObservabilityCase do
         )
 
       _ ->
-        :ok
+        if Process.whereis(Backplane.LLM.LogWriter), do: Backplane.LLM.LogWriter.flush()
+        clear_buffer!(:llm_proxy, capacity)
     end
 
     writer_opts = [
@@ -103,5 +104,16 @@ defmodule Backplane.LLM.ObservabilityCase do
         limit: 1
       )
     )
+  end
+
+  defp clear_buffer!(name, limit) do
+    case Backplane.Observability.Buffer.drain(name, limit) do
+      [] ->
+        :ok
+
+      rows ->
+        Backplane.Observability.Buffer.release(name, length(rows))
+        clear_buffer!(name, limit)
+    end
   end
 end

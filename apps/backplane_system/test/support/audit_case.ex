@@ -29,7 +29,9 @@ defmodule BackplaneSystem.AuditCase do
     capacity = Map.get(tags, :buffer_capacity, 100)
 
     {:ok, _} =
-      GenServer.start_link(Backplane.Audit.Buffer, [name: :audit, capacity: capacity], name: :audit)
+      GenServer.start_link(Backplane.Audit.Buffer, [name: :audit, capacity: capacity],
+        name: :audit
+      )
 
     {:ok, _} =
       Backplane.Audit.Writer.start_link(
@@ -45,8 +47,16 @@ defmodule BackplaneSystem.AuditCase do
   def stop_audit_writer! do
     for name <- [Backplane.Audit.Writer, :audit] do
       case Process.whereis(name) do
-        nil -> :ok
-        pid -> GenServer.stop(pid, :normal, 5_000)
+        nil ->
+          :ok
+
+        pid ->
+          try do
+            GenServer.stop(pid, :normal, 5_000)
+          catch
+            :exit, reason when reason in [:noproc, :normal] -> :ok
+            :exit, {reason, _call} when reason in [:noproc, :normal] -> :ok
+          end
       end
     end
 
