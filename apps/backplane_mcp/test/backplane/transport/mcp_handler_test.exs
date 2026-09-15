@@ -2168,8 +2168,16 @@ defmodule Backplane.Transport.McpHandlerTest do
   defp stop_audit_writer_for_tests! do
     for name <- [Backplane.Audit.Writer, :audit] do
       case Process.whereis(name) do
-        nil -> :ok
-        pid -> GenServer.stop(pid, :normal, 5_000)
+        nil ->
+          :ok
+
+        pid ->
+          try do
+            GenServer.stop(pid, :normal, 5_000)
+          catch
+            :exit, :noproc -> :ok
+            :exit, {:noproc, _call} -> :ok
+          end
       end
     end
 

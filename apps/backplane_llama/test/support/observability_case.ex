@@ -81,6 +81,7 @@ defmodule Backplane.LLM.ObservabilityCase do
 
   @doc false
   def flush_logs! do
+    _ = Backplane.Observability.Buffer.health(:llm_proxy)
     Backplane.LLM.LogWriter.flush()
   end
 

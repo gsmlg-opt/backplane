@@ -13,7 +13,7 @@ defmodule Backplane.MetricsIntegrationTest do
       )
 
     on_exit(fn ->
-      if Process.alive?(bandit), do: GenServer.stop(bandit)
+      stop_test_process(bandit)
     end)
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
@@ -29,7 +29,7 @@ defmodule Backplane.MetricsIntegrationTest do
     {:ok, upstream_pid} = Pool.start_upstream(config)
 
     on_exit(fn ->
-      if Process.alive?(upstream_pid), do: GenServer.stop(upstream_pid)
+      stop_test_process(upstream_pid)
     end)
 
     Process.sleep(300)
@@ -43,5 +43,16 @@ defmodule Backplane.MetricsIntegrationTest do
 
     assert is_integer(tool_count)
     assert is_integer(failures)
+  end
+
+  defp stop_test_process(pid) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, reason when reason in [:shutdown, :noproc, :normal] -> :ok
+        :exit, {reason, _call} when reason in [:shutdown, :noproc, :normal] -> :ok
+      end
+    end
   end
 end

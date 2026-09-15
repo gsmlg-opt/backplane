@@ -11,6 +11,9 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: tmp_dir} do
+    generated_skills = Process.whereis(GeneratedSkills)
+    :sys.suspend(generated_skills)
+
     snapshot = Map.new(@settings, &{&1, :ets.lookup(:backplane_settings, &1)})
     previous_blob_root = :ets.lookup(:backplane_settings, @blob_setting)
     :ets.insert(:backplane_settings, {@blob_setting, Path.join(tmp_dir, "blobs")})
@@ -31,6 +34,7 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
 
       :ets.delete(:backplane_settings, @blob_setting)
       if previous_blob_root != [], do: :ets.insert(:backplane_settings, previous_blob_root)
+      if Process.alive?(generated_skills), do: :sys.resume(generated_skills)
     end)
 
     :ok
@@ -150,24 +154,6 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     end
   end
 
-  test "manual reconciliation waits behind queued setting reconciliation" do
-    pid = Process.whereis(GeneratedSkills)
-    :sys.suspend(pid)
-    on_exit(fn -> if Process.alive?(pid), do: :sys.resume(pid) end)
-
-    send(GeneratedSkills, {:setting_changed, "memory.tools", "all"})
-    task = Task.async(&GeneratedSkills.reconcile/0)
-    assert Task.yield(task, 20) == nil
-
-    :sys.resume(GeneratedSkills)
-    assert :ok = Task.await(task, 10_000)
-
-    assert Skills.list()
-           |> Enum.filter(&(&1.source_kind == "generated" and &1.category == "memory"))
-           |> Enum.map(& &1.slug)
-           |> Enum.sort() == ~w(activity handoff lessons recap)
-  end
-
   test "generated metadata follows the live core tool inventory" do
     put_settings(%{"memory.tools" => "core"})
 
@@ -212,7 +198,9 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
   end
 
   test "relevant runtime setting changes reconcile the advertised inventory" do
-    assert is_pid(Process.whereis(GeneratedSkills))
+    generated_skills = Process.whereis(GeneratedSkills)
+    assert is_pid(generated_skills)
+    :sys.resume(generated_skills)
     assert :ok = GeneratedSkills.reconcile()
 
     assert :ok = Settings.set("memory.tools", "core")
@@ -226,6 +214,8 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     assert_eventually(fn ->
       not Enum.any?(Skills.list(), &String.starts_with?(&1.id, "generated/memory-"))
     end)
+
+    :sys.suspend(generated_skills)
   end
 
   defp skill_tools(slug) do

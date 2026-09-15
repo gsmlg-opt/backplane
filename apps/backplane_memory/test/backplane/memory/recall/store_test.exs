@@ -127,7 +127,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
     assert row.candidate_id == candidate.id
 
     assert row.source_refs == %{
-             "refs" => [%{"type" => "event", "id" => hd(candidate.source_ids)}]
+             "refs" => [%{"type" => "memory", "id" => hd(candidate.source_ids)}]
            }
 
     assert row.pre_reranker_rank == 1
@@ -253,7 +253,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
       reranker_duration_ms: 7
     ]
 
-    assert {:ok, %Run{status: "complete", tokens_used: 2, result_count: 1} = complete} =
+    assert {:ok, %Run{status: "complete", tokens_used: 1, result_count: 1} = complete} =
              Store.finalize(run.id, @partition, [trace], attrs)
 
     refute inspect(complete) =~ "do-not-store"

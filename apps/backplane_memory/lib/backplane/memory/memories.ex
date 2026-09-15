@@ -89,8 +89,7 @@ defmodule Backplane.Memory.Memories do
       result =
         with :ok <- validate_idempotency_options(opts),
              {:ok, partition} <- write_partition(opts),
-             {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, [])),
-             {:ok, evidence} <- canonicalize_evidence_provenance(evidence, partition),
+             {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, []), partition),
              {:ok, filtered} <- Filter.apply(content),
              attrs = build_attrs(filtered, opts, partition),
              {:ok, request_hash} <- CanonicalRequest.hash(attrs, evidence) do
@@ -1000,10 +999,10 @@ defmodule Backplane.Memory.Memories do
   defp evidence_source_query(query, {:session, host_id, session_id}),
     do: where(query, [e], e.host_id == ^host_id and e.source_session_id == ^session_id)
 
-  defp normalize_evidence(evidence) when is_list(evidence) do
+  defp normalize_evidence(evidence, partition) when is_list(evidence) do
     evidence
     |> Enum.reduce_while({:ok, %{}}, fn item, {:ok, sources} ->
-      with {:ok, normalized} <- normalize_evidence_item(item) do
+      with {:ok, normalized} <- normalize_evidence_item(item, partition) do
         identity = evidence_source_identity(normalized)
 
         case Map.fetch(sources, identity) do
@@ -1024,10 +1023,11 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
-  defp normalize_evidence(_evidence), do: {:error, :invalid_evidence}
+  defp normalize_evidence(_evidence, _partition), do: {:error, :invalid_evidence}
 
-  defp normalize_evidence_item(item) when is_map(item) and not is_struct(item) do
+  defp normalize_evidence_item(item, partition) when is_map(item) and not is_struct(item) do
     with {:ok, attrs} <- normalize_evidence_keys(item),
+         {:ok, [attrs]} <- canonicalize_evidence_provenance([attrs], partition),
          :ok <- validate_evidence_source(attrs),
          changeset =
            Evidence.changeset(
@@ -1037,11 +1037,12 @@ defmodule Backplane.Memory.Memories do
          {:ok, evidence} <- Ecto.Changeset.apply_action(changeset, :validate) do
       {:ok, evidence |> Map.from_struct() |> Map.take(@evidence_input_fields)}
     else
+      {:error, :partition_mismatch} = error -> error
       _ -> {:error, :invalid_evidence}
     end
   end
 
-  defp normalize_evidence_item(_item), do: {:error, :invalid_evidence}
+  defp normalize_evidence_item(_item, _partition), do: {:error, :invalid_evidence}
 
   defp normalize_evidence_keys(item) do
     Enum.reduce_while(item, {:ok, %{}}, fn

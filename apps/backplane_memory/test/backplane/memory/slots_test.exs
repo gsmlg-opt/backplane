@@ -2,6 +2,7 @@ defmodule Backplane.Memory.SlotsTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Slots
+  alias Backplane.Memory.Slots.Reflect
   alias Backplane.Memory.Slots.Slot
 
   setup do
@@ -98,6 +99,26 @@ defmodule Backplane.Memory.SlotsTest do
       slots = Slots.list(partition)
       names = Enum.map(slots, & &1.name)
       assert names == Enum.sort(names)
+    end
+  end
+
+  describe "reflection" do
+    test "partitionless reflection fails closed without writing slots" do
+      key = "memory.reflect_enabled"
+      previous = :ets.lookup(:backplane_settings, key)
+
+      on_exit(fn ->
+        :ets.delete(:backplane_settings, key)
+        if previous != [], do: :ets.insert(:backplane_settings, previous)
+      end)
+
+      :ets.insert(:backplane_settings, {key, "true"})
+      assert {:skip, :incomplete_partition} = Reflect.run("session-without-partition")
+      assert repo().aggregate(Slot, :count) == 0
+
+      :ets.insert(:backplane_settings, {key, "false"})
+      assert {:skip, :disabled} = Reflect.run("session-without-partition")
+      assert repo().aggregate(Slot, :count) == 0
     end
   end
 end

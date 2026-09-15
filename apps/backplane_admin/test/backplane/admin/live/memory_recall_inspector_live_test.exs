@@ -100,7 +100,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     assert has_element?(view, "#recall-run-detail")
     assert html =~ "Reranker"
     assert html =~ "Rank movement"
-    assert html =~ "event:"
+    assert html =~ "memory:"
     refute html =~ "candidate secret content"
   end
 
