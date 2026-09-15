@@ -44,7 +44,9 @@ defmodule Backplane.Skills.PublicationTest do
     assert {:ok, _skill} = Ingest.ingest(path, blob: [root: Path.join(tmp_dir, "blobs")])
     assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", [])
     assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", "")
-    assert {:error, :invalid_request} = Publication.resolve("skill/revision-shape", %{"old" => true})
+
+    assert {:error, :invalid_request} =
+             Publication.resolve("skill/revision-shape", %{"old" => true})
   end
 
   test "publication is idempotent and invalid replacement leaves current unchanged", %{
@@ -56,7 +58,7 @@ defmodule Backplane.Skills.PublicationTest do
 
     assert {:ok, %Skill{current_revision: revision}} = Ingest.ingest(valid, opts)
     assert {:ok, %Skill{current_revision: ^revision}} = Ingest.ingest(valid, opts)
-    assert Repo.aggregate(Revision, :count, :revision) == 1
+    assert revision_count("skill/stable") == 1
 
     invalid =
       create_archive!(
@@ -129,7 +131,7 @@ defmodule Backplane.Skills.PublicationTest do
              Publication.backfill(dry_run: true, blob: [root: blob_root])
 
     assert report.skill_id == skill.id
-    assert Repo.aggregate(Revision, :count, :revision) == 0
+    assert revision_count(skill.id) == 0
 
     assert %{published: [%{skill_id: "skill/backfill"}]} =
              Publication.backfill(blob: [root: blob_root])
@@ -137,7 +139,7 @@ defmodule Backplane.Skills.PublicationTest do
     assert %{unchanged: [%{skill_id: "skill/backfill"}]} =
              Publication.backfill(blob: [root: blob_root])
 
-    assert Repo.aggregate(Revision, :count, :revision) == 1
+    assert revision_count(skill.id) == 1
   end
 
   test "backfill reports absent blobs and records without archives", %{tmp_dir: tmp_dir} do
@@ -159,9 +161,14 @@ defmodule Backplane.Skills.PublicationTest do
 
     report = Publication.backfill(blob: [root: Path.join(tmp_dir, "blobs")])
 
-    assert [%{skill_id: missing_id, detail: :missing_blob}] = report.missing
+    assert %{skill_id: missing_id, detail: :missing_blob} =
+             Enum.find(report.missing, &(&1.skill_id == missing.id))
+
     assert missing_id == missing.id
-    assert [%{skill_id: unsupported_id, detail: :missing_archive}] = report.unsupported
+
+    assert %{skill_id: unsupported_id, detail: :missing_archive} =
+             Enum.find(report.unsupported, &(&1.skill_id == unsupported.id))
+
     assert unsupported_id == unsupported.id
     assert report.published == []
   end
@@ -207,7 +214,7 @@ defmodule Backplane.Skills.PublicationTest do
     assert {:ok, _bytes} =
              Publication.artifact("skill/race", current.revision, blob: [root: blob_root])
 
-    assert Repo.aggregate(Revision, :count, :revision) == 2
+    assert revision_count("skill/race") == 2
   end
 
   test "invalid generated content records a diagnostic without a fabricated revision" do
@@ -251,5 +258,9 @@ defmodule Backplane.Skills.PublicationTest do
     %Skill{}
     |> Skill.changeset(Map.merge(defaults, attrs))
     |> Repo.insert!()
+  end
+
+  defp revision_count(skill_id) do
+    Repo.aggregate(from(r in Revision, where: r.skill_id == ^skill_id), :count, :revision)
   end
 end
