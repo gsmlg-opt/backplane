@@ -28,6 +28,7 @@ defmodule BackplaneSkills.MixProject do
 
   defp deps do
     [
+      {:backplane_skill_protocol, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
@@ -36,6 +37,7 @@ defmodule BackplaneSkills.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
       {:file_system, "~> 1.0"},
+      {:plug, "~> 1.16"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_machina, "~> 2.8", only: :test},

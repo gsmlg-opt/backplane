@@ -1,29 +1,58 @@
 defmodule Backplane.Services.SkillsTest do
   use BackplaneMcp.DataCase, async: false
 
-  alias Backplane.Registry.ToolRegistry
+  alias Backplane.Registry.{Tool, ToolRegistry}
   alias Backplane.Services.Skills
   alias Backplane.Settings
   alias Backplane.Tools.Skill, as: SkillTool
 
   @setting_key "services.skill.enabled"
+  @catalog_prefix "skills-setup-catalog"
+
+  setup_all do
+    catalog_tool = %Tool{
+      name: "catalog_probe",
+      description: "Catalog isolation probe",
+      input_schema: %{"type" => "object"},
+      origin: :native
+    }
+
+    :ok =
+      ToolRegistry.register_upstream(
+        @catalog_prefix,
+        Process.whereis(ToolRegistry),
+        [catalog_tool]
+      )
+
+    on_exit(fn -> ToolRegistry.deregister_upstream(@catalog_prefix) end)
+    :ok
+  end
 
   setup do
     previous_enabled = Settings.get(@setting_key)
 
-    previous_rows =
-      :backplane_tools
-      |> :ets.tab2list()
-      |> Enum.filter(fn {name, _tool} -> String.starts_with?(name, "skill::") end)
+    previous_tools =
+      ToolRegistry.list_all()
+      |> Enum.filter(fn
+        %Tool{name: name, origin: {:managed, "skill"}} -> String.starts_with?(name, "skill::")
+        _other -> false
+      end)
 
     on_exit(fn ->
       Settings.set(@setting_key, previous_enabled)
       ToolRegistry.deregister_managed(Skills.prefix())
 
-      if previous_rows != [], do: :ets.insert(:backplane_tools, previous_rows)
+      if previous_tools != [], do: ToolRegistry.register_managed(Skills.prefix(), previous_tools)
     end)
 
     :ok
+  end
+
+  test "setup preserves upstream catalog entries" do
+    assert {:upstream, registry_pid, "catalog_probe", 30_000} =
+             ToolRegistry.resolve("#{@catalog_prefix}::catalog_probe")
+
+    assert registry_pid == Process.whereis(ToolRegistry)
   end
 
   test "exposes the Skill tool definitions with managed handlers" do
@@ -156,6 +185,7 @@ defmodule Backplane.Services.SkillsTest do
   end
 
   test "concurrent toggles each flip the state atomically" do
+    assert Code.ensure_loaded?(Skills)
     assert function_exported?(Skills, :toggle_enabled, 0)
     assert :ok = Skills.set_enabled(false)
 

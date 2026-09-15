@@ -9,7 +9,7 @@ defmodule Backplane.Skills.ApiRouterTest do
   alias Backplane.Skills
   alias Backplane.Skills.Blob
   alias Backplane.Skills.Skill
-  alias Backplane.Api.Endpoint
+  alias Backplane.Skills.ApiRouter
 
   @moduletag :tmp_dir
   @blob_setting "skills.blob.local_root"
@@ -393,10 +393,19 @@ defmodule Backplane.Skills.ApiRouterTest do
   end
 
   defp api_request(method, path, body \\ "", headers \\ []) do
+    path = String.replace_prefix(path, "/skills", "")
+
     method
     |> conn(path, body)
     |> put_headers(headers)
-    |> Endpoint.call([])
+    |> Plug.Parsers.call(
+      Plug.Parsers.init(
+        parsers: [:urlencoded, :multipart, :json],
+        pass: ["*/*"],
+        json_decoder: Jason
+      )
+    )
+    |> ApiRouter.call(ApiRouter.init([]))
   end
 
   defp put_headers(conn, headers) do

@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
+  alias Backplane.Memory.Projections.ProjectedSession
   alias Backplane.Memory.Workers.ProceduralWorker
   alias Backplane.MemorySpaces.BackfillIssue
 
@@ -129,6 +130,8 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   end
 
   test "bounds inherited root evidence instead of silently truncating it" do
+    Enum.each(["source-one", "source-two"], &insert_projected_session!(&1, "host", "bounded"))
+
     evidence =
       for source <- ["source-one", "source-two"] do
         %{
@@ -200,6 +203,11 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     for ordinal <- 1..count do
       source_session_id = "#{prefix}-source-#{ordinal}"
 
+      insert_projected_session!(source_session_id, "#{prefix}-host", "shared-scope",
+        namespace: Keyword.fetch!(opts, :namespace),
+        client_id: Keyword.fetch!(opts, :client_id)
+      )
+
       assert {:ok, _memory} =
                Memories.remember(
                  "#{prefix} semantic #{ordinal}",
@@ -224,6 +232,30 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
                  )
                )
     end
+  end
+
+  defp insert_projected_session!(session_id, host_id, scope, opts \\ []) do
+    partition =
+      canonical_partition(host_id,
+        scope: scope,
+        namespace: Keyword.get(opts, :namespace, "private"),
+        client_id: Keyword.get(opts, :client_id, "client")
+      )
+
+    repo().insert!(%ProjectedSession{
+      memory_space_id: partition.memory_space_id,
+      subject_id: "procedural-source:#{session_id}",
+      session_id: session_id,
+      project: "backplane",
+      host_id: partition.host_id,
+      client_id: partition.client_id,
+      scope: partition.scope,
+      namespace: partition.namespace,
+      status: "closed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "procedural-worker-test",
+      input_revision: "r1"
+    })
   end
 
   defp insert_unqualified_decoys(prefix) do

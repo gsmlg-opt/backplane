@@ -5,6 +5,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
   require Ecto.Query
 
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Store, TraceCandidate}
+  alias Backplane.Memory.Memories.Memory
   alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
 
@@ -99,7 +100,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     assert has_element?(view, "#recall-run-detail")
     assert html =~ "Reranker"
     assert html =~ "Rank movement"
-    assert html =~ "event:"
+    assert html =~ "memory:"
     refute html =~ "candidate secret content"
   end
 
@@ -248,19 +249,33 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
 
       traces =
         for index <- 1..count do
-          source_id = Ecto.UUID.generate()
           selected = index < count or count == 1
           kind = if(selected, do: :memory, else: :lesson)
+
+          source =
+            Backplane.Repo.insert!(
+              Memory.changeset(%Memory{}, %{
+                content: "candidate secret content #{index}",
+                memory_space_id: partition.memory_space_id,
+                memory_type: "semantic",
+                agent_id: "recall-inspector-fixture",
+                host_id: partition.host_id,
+                client_id: partition.client_id,
+                scope: partition.scope,
+                namespace: partition.namespace,
+                metadata: %{}
+              })
+            )
 
           {:ok, candidate} =
             Candidate.new(
               Map.merge(Map.delete(partition, :source_client_id), %{
-                id: Ecto.UUID.generate(),
+                id: source.id,
                 kind: kind,
                 memory_type: :semantic,
                 content: "candidate secret content",
-                source_ids: [source_id],
-                source_refs: [%{type: :event, id: source_id}]
+                source_ids: [source.id],
+                source_refs: [%{type: :memory, id: source.id}]
               })
             )
 

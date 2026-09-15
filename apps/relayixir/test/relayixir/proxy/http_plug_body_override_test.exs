@@ -6,6 +6,27 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
 
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
+  defmodule ClosedChunkAdapter do
+    @behaviour Plug.Conn.Adapter
+
+    defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+
+    defdelegate send_file(state, status, headers, path, offset, length),
+      to: Plug.Adapters.Test.Conn
+
+    defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+    defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
+    defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
+    defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
+
+    def chunk(_state, _body), do: {:error, :closed}
+  end
+
   setup do
     {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
@@ -119,7 +140,7 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       upstream = build_upstream(port)
       conn = conn(:get, "/delayed-chunked")
       {_adapter, adapter_state} = conn.adapter
-      conn = %{conn | adapter: {Relayixir.ClosedChunkAdapter, adapter_state}}
+      conn = %{conn | adapter: {ClosedChunkAdapter, adapter_state}}
 
       result = HttpPlug.call(conn, upstream)
 
@@ -175,22 +196,4 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
       assert result.resp_body == "combined body"
     end
   end
-end
-
-defmodule Relayixir.ClosedChunkAdapter do
-  @behaviour Plug.Conn.Adapter
-
-  defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
-  defdelegate send_file(state, status, headers, path, offset, length), to: Plug.Adapters.Test.Conn
-  defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
-  defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
-  defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
-  defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
-  defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
-  defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
-  defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
-  defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
-  defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
-
-  def chunk(_state, _body), do: {:error, :closed}
 end

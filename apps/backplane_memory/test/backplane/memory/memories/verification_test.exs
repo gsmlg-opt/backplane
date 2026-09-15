@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Ingest
+  alias Backplane.Memory.Memories.{Evidence, RememberRequest}
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.Relation
   alias Backplane.Memory.Memories.Relations
@@ -208,11 +209,11 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert procedure_verification.bounds.source_events.truncated == false
   end
 
-  test "cross-partition evidence never traverses into a foreign canonical event" do
+  test "cross-partition evidence is rejected before it can reference a foreign event" do
     foreign = event("foreign-host", "foreign-session", 1, "agent.prompt.submitted", "secret")
     ingest!(foreign)
 
-    assert {:ok, memory} =
+    assert {:error, :partition_mismatch} =
              Memories.remember("partition-safe",
                type: "semantic",
                host_id: "owner-host",
@@ -230,23 +231,12 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                ]
              )
 
-    partition = %{
-      host_id: "owner-host",
-      client_id: "codex-cli",
-      scope: "verify-scope",
-      namespace: "private"
-    }
-
-    assert {:ok, verification} = Memories.verify(memory.id, partition)
-    assert verification.source_events == []
-
-    assert Enum.any?(
-             verification.provenance_roots,
-             &(&1.source_type == "event" and not &1.resolved)
-           )
+    assert repo().aggregate(Memory, :count) == 0
+    assert repo().aggregate(RememberRequest, :count) == 0
+    assert repo().aggregate(Evidence, :count) == 0
   end
 
-  test "forged session roots stay unresolved and evidence truncation is explicit" do
+  test "forged session roots are rejected" do
     opts = [
       type: "semantic",
       host_id: "bounded-host",
@@ -256,7 +246,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       agent_id: "agent"
     ]
 
-    assert {:ok, memory} =
+    assert {:error, :partition_mismatch} =
              Memories.remember(
                "bounded evidence",
                opts ++
@@ -274,15 +264,18 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                  ]
              )
 
+    assert {:ok, memory} =
+             Memories.remember(
+               "bounded evidence",
+               opts ++ [idempotency_scope: "verify", idempotency_key: "valid-0"]
+             )
+
     for index <- 1..105 do
       assert {:ok, ^memory} =
                Memories.remember(
                  "bounded evidence",
                  opts ++
-                   [
-                     idempotency_scope: "verify",
-                     idempotency_key: Integer.to_string(index)
-                   ]
+                   [idempotency_scope: "verify", idempotency_key: "valid-#{index}"]
                )
     end
 
@@ -294,19 +287,14 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     }
 
     assert {:ok, verification} = Memories.verify(memory.id, partition)
-    assert verification.evidence_count == 107
+    assert verification.evidence_count == 106
     assert length(verification.evidence) == 100
 
     assert verification.bounds.evidence == %{
-             total_count: 107,
+             total_count: 106,
              returned_count: 100,
              truncated: true
            }
-
-    assert Enum.any?(
-             verification.provenance_roots,
-             &(&1.source_type == "session" and not &1.resolved)
-           )
   end
 
   test "relation graph traverses an A-B-C-A cycle once with evidence, requests, and audit" do
@@ -527,7 +515,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
            end)
   end
 
-  test "same-host foreign-client remember request remains unresolved" do
+  test "same-host foreign-space remember request is rejected" do
     assert {:ok, foreign} =
              Memories.remember("foreign request owner",
                type: "semantic",
@@ -542,7 +530,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       Memories.list_evidence(foreign.id)
       |> Enum.find(&(&1.source_type == "request"))
 
-    assert {:ok, owner} =
+    assert {:error, :partition_mismatch} =
              Memories.remember("owner with forged request root",
                type: "semantic",
                memory_space_id: foreign_space_id("request-owner"),
@@ -560,25 +548,9 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                  }
                ]
              )
-
-    partition = %{
-      memory_space_id: foreign_space_id("request-owner"),
-      host_id: "shared-host",
-      client_id: "owner-client",
-      scope: "shared-scope",
-      namespace: "private"
-    }
-
-    assert {:ok, verification} = Memories.verify(owner.id, partition)
-
-    assert Enum.any?(
-             verification.provenance_roots,
-             &(&1.source_type == "request" and &1.source_id == foreign_request.source_id and
-                 not &1.resolved)
-           )
   end
 
-  test "same-host foreign-client summary with valid canonical links remains unresolved" do
+  test "same-host foreign-space summary with valid links is rejected" do
     host_id = "summary-shared-host"
     session_id = "foreign-summary-session"
     foreign_event = event(host_id, session_id, 1, "agent.prompt.submitted", "foreign summary")
@@ -614,7 +586,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       }
     ])
 
-    assert {:ok, owner} =
+    assert {:error, :partition_mismatch} =
              Memories.remember("owner with forged summary root",
                type: "semantic",
                memory_space_id: foreign_space_id("summary-owner"),
@@ -632,25 +604,6 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                  }
                ]
              )
-
-    partition = %{
-      memory_space_id: foreign_space_id("summary-owner"),
-      host_id: host_id,
-      client_id: "owner-client",
-      scope: "verify-scope",
-      namespace: "private"
-    }
-
-    assert {:ok, verification} = Memories.verify(owner.id, partition)
-    assert verification.summaries == []
-    assert verification.summary_event_links == []
-    assert verification.source_events == []
-
-    assert Enum.any?(
-             verification.provenance_roots,
-             &(&1.source_type == "summary" and &1.source_id == foreign_summary.id and
-                 not &1.resolved)
-           )
   end
 
   test "graph query cancellation returns an explicit incomplete graph without raising" do

@@ -162,7 +162,8 @@ defmodule Backplane.Skills.Blob.LocalFSTest do
       assert LocalFS.default_root() ==
                Path.join(:filename.basedir(:user_data, "backplane"), "skills_blobs")
 
-      refute LocalFS.default_root() == Path.join(:code.priv_dir(:backplane), "skills_blobs")
+      refute LocalFS.default_root() ==
+               Path.join(:code.priv_dir(:backplane_skills), "skills_blobs")
     end
 
     test "treats blank roots as unset", %{tmp_dir: tmp_dir} do

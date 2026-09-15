@@ -1,4 +1,4 @@
-defmodule Backplane.Metrics.PrometheusTest do
+defmodule Backplane.Metrics.PrometheusIntegrationTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Metrics.Prometheus

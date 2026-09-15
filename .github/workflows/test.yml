@@ -40,6 +40,7 @@ jobs:
           - backplane_mcp_protocol
           - backplane_memory
           - backplane_monitor
+          - backplane_skill_protocol
           - backplane_skills
           - backplane_system
           - backplane_telemetry
@@ -78,6 +79,10 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
+
+      - name: Install standalone package dependencies
+        if: matrix.app == 'backplane_skill_protocol'
+        run: mix do --app backplane_skill_protocol cmd mix deps.get
 
       - name: Start PostgreSQL 17 with pgvector
         run: |

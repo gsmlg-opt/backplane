@@ -33,6 +33,18 @@ defmodule Backplane.MCP.ObservabilityContext do
 
   def from_assigns(_), do: nil
 
+  @doc false
+  @spec audit_fields(t() | nil) :: map()
+  def audit_fields(%{context: %Context{} = context} = observability) do
+    %{
+      request_id: context.request_id,
+      trace_id: context.trace_id,
+      mcp_request_id: Map.get(observability, :mcp_request_id)
+    }
+  end
+
+  def audit_fields(_observability), do: %{}
+
   defp mcp_request_id(conn) do
     case conn.assigns[:mcp_access_event] do
       %AccessEvent{event_id: event_id} when is_binary(event_id) -> event_id

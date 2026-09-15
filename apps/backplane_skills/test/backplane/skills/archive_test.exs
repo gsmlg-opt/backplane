@@ -8,6 +8,10 @@ defmodule Backplane.Skills.ArchiveTest do
   @moduletag :tmp_dir
 
   describe "inspect/2" do
+    test "preserves the legacy missing archive error", %{tmp_dir: tmp_dir} do
+      assert {:error, :enoent} = Archive.inspect(Path.join(tmp_dir, "missing.tar.gz"))
+    end
+
     test "accepts a .tar.gz directory containing SKILL.md", %{tmp_dir: tmp_dir} do
       archive =
         create_archive!(tmp_dir, [

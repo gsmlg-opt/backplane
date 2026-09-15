@@ -1,0 +1,5 @@
+{
+  "protocol_version": "1",
+  "data": [{"skill_id": "skill/opaque/id", "name": "example-skill", "description": "Example", "revision": "r1", "artifact_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "publication_status": "ready"}],
+  "next_cursor": null
+}

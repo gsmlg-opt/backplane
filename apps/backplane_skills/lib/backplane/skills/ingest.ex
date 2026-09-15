@@ -6,6 +6,7 @@ defmodule Backplane.Skills.Ingest do
   alias Backplane.Repo
   alias Backplane.Skills.Archive
   alias Backplane.Skills.Blob
+  alias Backplane.Skills.Publication
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
 
@@ -20,13 +21,14 @@ defmodule Backplane.Skills.Ingest do
     archive_opts = Keyword.get(opts, :archive, [])
 
     with {:ok, path, filename} <- archive_path(path_or_upload),
-         {:ok, content_hash} <- sha256_file(path),
          {:ok, inspected} <- Archive.inspect(path_or_upload, archive_opts),
+         content_hash <- String.replace_prefix(inspected.artifact_digest, "sha256:", ""),
          slug = resolve_slug(inspected, filename),
          :changed <- ingest_state(slug, content_hash),
          {:ok, archive_ref} <- Blob.put_file(path, blob_opts),
          attrs = build_attrs(inspected, slug, content_hash, archive_ref),
-         {:ok, skill} <- transact_upsert(attrs, archive_ref, blob_opts) do
+         publication = Publication.inspect_archive(path, attrs.id),
+         {:ok, skill} <- transact_upsert(attrs, publication, archive_ref, blob_opts) do
       Registry.refresh()
       {:ok, skill}
     else
@@ -45,27 +47,6 @@ defmodule Backplane.Skills.Ingest do
   end
 
   defp archive_path(_), do: {:error, :invalid_archive_path}
-
-  defp sha256_file(path) do
-    case File.open(path, [:read, :binary]) do
-      {:ok, io} ->
-        try do
-          hash =
-            io
-            |> IO.binstream(2048)
-            |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
-            |> :crypto.hash_final()
-            |> Base.encode16(case: :lower)
-
-          {:ok, hash}
-        after
-          File.close(io)
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
 
   defp ingest_state(slug, content_hash) do
     case Repo.get_by(Skill, slug: slug) do
@@ -148,8 +129,19 @@ defmodule Backplane.Skills.Ingest do
 
   defp slugify(_), do: ""
 
-  defp transact_upsert(attrs, archive_ref, blob_opts) do
-    case Repo.transact(fn -> upsert(attrs) end) do
+  defp transact_upsert(attrs, publication, archive_ref, blob_opts) do
+    case Repo.transact(fn ->
+           lock_slug(attrs.slug)
+           {skill, previous_archive_ref} = unwrap(upsert(attrs))
+
+           published =
+             case publication do
+               {:ok, bundle} -> unwrap(Publication.commit(skill, bundle, archive_ref))
+               {:error, reason} -> unwrap(Publication.mark_invalid(skill, reason))
+             end
+
+           {:ok, {published, previous_archive_ref}}
+         end) do
       {:ok, {skill, previous_archive_ref}} ->
         cleanup_replaced_blob(previous_archive_ref, archive_ref, blob_opts)
         {:ok, skill}
@@ -172,7 +164,7 @@ defmodule Backplane.Skills.Ingest do
   defp cleanup_replaced_blob(_previous_archive_ref, _archive_ref, _blob_opts), do: :ok
 
   defp cleanup_unreferenced_blob(archive_ref, blob_opts) do
-    unless Repo.get_by(Skill, archive_ref: archive_ref) do
+    unless Publication.referenced_blob?(archive_ref) do
       case Blob.delete(archive_ref, blob_opts) do
         :ok ->
           :ok
@@ -208,4 +200,15 @@ defmodule Backplane.Skills.Ingest do
   end
 
   defp with_previous_archive_ref({:error, reason}, _previous_archive_ref), do: {:error, reason}
+
+  defp lock_slug(slug) do
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
+      "skill:" <> slug
+    ])
+
+    :ok
+  end
+
+  defp unwrap({:ok, value}), do: value
+  defp unwrap({:error, reason}), do: Repo.rollback(reason)
 end

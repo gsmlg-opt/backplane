@@ -14,6 +14,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
   setup %{tmp_dir: tmp_dir} do
     store = start_memory!(tmp_dir)
+    MemoryProxy.set_channel(nil)
 
     Application.put_env(:backplane_host_agent, :memory_store, store)
 

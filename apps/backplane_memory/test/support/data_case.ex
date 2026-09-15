@@ -46,6 +46,36 @@ defmodule Backplane.Memory.DataCase do
     |> Keyword.put(:host_id, host_id)
   end
 
+  def canonical_recall_candidate(partition, content, opts \\ []) do
+    memory =
+      %Backplane.Memory.Memories.Memory{}
+      |> Backplane.Memory.Memories.Memory.changeset(%{
+        content: content,
+        memory_space_id: partition.memory_space_id,
+        memory_type: Keyword.get(opts, :memory_type, "semantic"),
+        agent_id: "recall-fixture",
+        host_id: partition.host_id,
+        client_id: partition.client_id,
+        scope: partition.scope,
+        namespace: partition.namespace,
+        metadata: %{}
+      })
+      |> repo().insert!()
+
+    Backplane.Memory.Recall.Candidate.new(
+      Map.merge(Map.drop(partition, [:source_client_id]), %{
+        id: memory.id,
+        kind: Keyword.get(opts, :kind, :memory),
+        memory_type: Keyword.get(opts, :memory_type, :semantic),
+        content: content,
+        source_ids: [memory.id],
+        source_refs: [%{type: :memory, id: memory.id}],
+        token_estimate: Keyword.get(opts, :token_estimate, 1),
+        inserted_at: Keyword.get(opts, :inserted_at)
+      })
+    )
+  end
+
   def errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->

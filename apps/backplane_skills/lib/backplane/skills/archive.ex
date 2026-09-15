@@ -1,11 +1,8 @@
 defmodule Backplane.Skills.Archive do
-  @moduledoc """
-  Reads and validates uploaded skill archives.
-  """
+  @moduledoc "Legacy archive facade backed by the complete Skill Protocol bundle inspector."
 
-  import Kernel, except: [inspect: 1, inspect: 2]
-
-  alias Backplane.Skills.Loader
+  alias Backplane.SkillProtocol.Bundle
+  alias Backplane.SkillProtocol.Error
 
   @default_max_files 500
   @default_max_bytes 5_000_000
@@ -16,219 +13,120 @@ defmodule Backplane.Skills.Archive do
           meta: map(),
           files: [String.t()],
           file_count: non_neg_integer(),
-          size_bytes: non_neg_integer()
+          size_bytes: non_neg_integer(),
+          artifact_digest: String.t()
         }
 
   @spec inspect(String.t() | %{path: String.t()}, keyword()) :: {:ok, result()} | {:error, term()}
   def inspect(path_or_upload, opts \\ []) do
-    with {:ok, path} <- archive_path(path_or_upload),
-         {:ok, %{size: size_bytes}} <- File.stat(path),
-         {:ok, table_entries} <- table(path),
-         {:ok, file_entries} <- validate_table_entries(table_entries, opts),
-         {:ok, root, skill_path} <- skill_root(file_entries),
-         :ok <- validate_single_root(file_entries, root),
-         wanted_entries = wanted_entries(file_entries, root, skill_path),
-         :ok <- validate_content_bytes(wanted_entries, opts),
-         {:ok, contents} <- extract_contents(path, Enum.map(wanted_entries, & &1.name)),
-         {:ok, skill_md} <- fetch_content(contents, skill_path),
-         {:ok, skill_entry} <- parse_skill(skill_md),
-         {:ok, meta} <- read_meta(contents, Path.join(root, "meta.json")) do
-      files =
-        file_entries
-        |> Enum.map(fn %{name: name} -> Path.relative_to(name, root) end)
-        |> Enum.sort()
+    max_files = Keyword.get(opts, :max_files, @default_max_files)
+    max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
 
+    shared_opts = [
+      validation_profile: :legacy,
+      validate_directory_name: false,
+      max_entries: max_files,
+      max_file_bytes: max(8 * 1024 * 1024, max_bytes)
+    ]
+
+    with {:ok, bundle} <- Bundle.inspect(path_or_upload, shared_opts),
+         :ok <- validate_legacy_required_bytes(bundle, max_bytes),
+         {:ok, skill_entry} <- Backplane.Skills.Loader.parse(bundle.document.raw) do
       {:ok,
        %{
-         skill_md: skill_md,
+         skill_md: bundle.document.raw,
          skill_entry: skill_entry,
-         meta: meta,
-         files: files,
-         file_count: length(file_entries),
-         size_bytes: size_bytes
+         meta: bundle.meta,
+         files: Enum.map(bundle.manifest.files, & &1.path),
+         file_count: length(bundle.manifest.files),
+         size_bytes: bundle.manifest.compressed_bytes,
+         artifact_digest: bundle.manifest.artifact_digest
        }}
     else
-      {:error, _} = error -> error
-      {:error, module, reason} -> {:error, {module, reason}}
-    end
-  end
-
-  defp archive_path(path) when is_binary(path), do: {:ok, path}
-  defp archive_path(%{path: path}) when is_binary(path), do: {:ok, path}
-  defp archive_path(_), do: {:error, :invalid_archive_path}
-
-  defp table(path) do
-    path
-    |> String.to_charlist()
-    |> :erl_tar.table([:compressed, :verbose])
-  end
-
-  defp validate_table_entries(entries, opts) do
-    max_files = Keyword.get(opts, :max_files, @default_max_files)
-
-    with {:ok, normalized} <- normalize_entries(entries) do
-      file_entries = Enum.filter(normalized, &(&1.type == :regular))
-      file_count = length(file_entries)
-
-      if file_count > max_files do
-        {:error, {:too_many_files, file_count, max_files}}
-      else
-        {:ok, file_entries}
-      end
-    end
-  end
-
-  defp normalize_entries(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
-      with {:ok, name, type, size} <- normalize_entry(entry),
-           :ok <- validate_entry_name(name),
-           :ok <- validate_entry_type(name, type) do
-        {:cont, {:ok, [%{name: name, type: type, size: size} | acc]}}
-      else
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      {:error, %Error{} = error} -> {:error, legacy_error(error, max_files)}
       {:error, _} = error -> error
     end
   end
 
-  defp normalize_entry({name, type, size, _mtime, _mode, _uid, _gid}) do
-    {:ok, IO.chardata_to_string(name), type, size}
-  end
-
-  defp normalize_entry({name, size, type}) do
-    {:ok, IO.chardata_to_string(name), type, size}
-  end
-
-  defp normalize_entry(_), do: {:error, :malformed_tar_entry}
-
-  defp validate_entry_name(name) do
-    cond do
-      name == "" ->
-        {:error, {:unsafe_path, name}}
-
-      Path.type(name) == :absolute ->
-        {:error, {:unsafe_path, name}}
-
-      windows_drive_path?(name) ->
-        {:error, {:unsafe_path, name}}
-
-      String.contains?(name, "\\") ->
-        {:error, {:unsafe_path, name}}
-
-      ".." in String.split(name, "/", trim: false) ->
-        {:error, {:unsafe_path, name}}
-
-      percent_encoded_dot_path?(name) ->
-        {:error, {:unsafe_path, name}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_entry_type(_name, :regular), do: :ok
-  defp validate_entry_type(_name, :directory), do: :ok
-  defp validate_entry_type(name, type), do: {:error, {:unsupported_entry_type, name, type}}
-
-  defp windows_drive_path?(name),
-    do: Enum.any?(path_segments(name), &Regex.match?(~r/^[A-Za-z]:/, &1))
-
-  defp percent_encoded_dot_path?(name),
-    do: Enum.any?(path_segments(name), &Regex.match?(~r/%2e/i, &1))
-
-  defp path_segments(name), do: String.split(name, "/", trim: false)
-
-  defp skill_root(file_entries) do
-    case Enum.filter(file_entries, &(Path.basename(&1.name) == "SKILL.md")) do
-      [%{name: skill_path}] ->
-        root = Path.dirname(skill_path)
-
-        if root in [".", ""] do
-          {:error, :missing_skill_root}
-        else
-          {:ok, root, skill_path}
+  defp validate_legacy_required_bytes(bundle, max_bytes) do
+    byte_count =
+      byte_size(bundle.document.raw) +
+        case Map.fetch(bundle.files, "meta.json") do
+          {:ok, bytes} -> byte_size(bytes)
+          :error -> 0
         end
 
-      [] ->
-        {:error, :missing_skill_md}
-
-      _multiple ->
-        {:error, :ambiguous_skill_md}
-    end
+    if byte_count > max_bytes,
+      do: {:error, {:too_many_bytes, byte_count, max_bytes}},
+      else: :ok
   end
 
-  defp validate_single_root(file_entries, root) do
-    if Enum.all?(file_entries, &under_root?(&1.name, root)) do
-      :ok
-    else
-      {:error, :ambiguous_archive}
-    end
+  defp legacy_error(%Error{code: :invalid_request}, _max), do: :invalid_archive_path
+
+  defp legacy_error(
+         %Error{
+           code: :invalid_bundle,
+           message: "archive cannot be read",
+           context: %{reason: ":enoent"}
+         },
+         _max
+       ),
+       do: :enoent
+
+  defp legacy_error(
+         %Error{code: :invalid_document, context: %{diagnostics: diagnostics}},
+         _max
+       ) do
+    reason =
+      if Enum.any?(diagnostics, &(&1.code == :missing_name)),
+        do: :missing_frontmatter,
+        else: :malformed_frontmatter
+
+    {:invalid_skill_md, reason}
   end
 
-  defp under_root?(name, root), do: name == root or String.starts_with?(name, root <> "/")
+  defp legacy_error(
+         %Error{code: :invalid_bundle, message: "bundle root has no SKILL.md"},
+         _max
+       ),
+       do: :missing_skill_md
 
-  defp wanted_entries(file_entries, root, skill_path) do
-    meta_path = Path.join(root, "meta.json")
+  defp legacy_error(
+         %Error{code: :invalid_bundle, message: "bundle must contain exactly one logical root"},
+         _max
+       ),
+       do: :ambiguous_archive
 
-    Enum.filter(file_entries, &(&1.name in [skill_path, meta_path]))
-  end
+  defp legacy_error(
+         %Error{code: :invalid_bundle, message: "archive path is unsafe", context: %{path: path}},
+         _max
+       ),
+       do: {:unsafe_path, path}
 
-  defp validate_content_bytes(entries, opts) do
-    max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
-    byte_count = entries |> Enum.map(& &1.size) |> Enum.sum()
+  defp legacy_error(
+         %Error{
+           code: :invalid_bundle,
+           message: "archive entry type is unsupported",
+           context: %{path: path, type: type}
+         },
+         _max
+       ),
+       do: {:unsupported_entry_type, path, type}
 
-    if byte_count > max_bytes do
-      {:error, {:too_many_bytes, byte_count, max_bytes}}
-    else
-      :ok
-    end
-  end
+  defp legacy_error(
+         %Error{code: :invalid_bundle, message: "meta.json must contain a JSON object"},
+         _max
+       ),
+       do: :malformed_meta_json
 
-  defp extract_contents(path, wanted_paths) do
-    files = Enum.map(wanted_paths, &String.to_charlist/1)
+  defp legacy_error(
+         %Error{
+           code: :limit_exceeded,
+           context: %{budget: :archive_entries, actual: actual}
+         },
+         max
+       ),
+       do: {:too_many_files, actual, max}
 
-    case :erl_tar.extract(String.to_charlist(path), [:memory, :compressed, {:files, files}]) do
-      {:ok, entries} ->
-        contents =
-          Map.new(entries, fn {name, content} ->
-            {IO.chardata_to_string(name), IO.iodata_to_binary(content)}
-          end)
-
-        {:ok, contents}
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp fetch_content(contents, path) do
-    case Map.fetch(contents, path) do
-      {:ok, content} -> {:ok, content}
-      :error -> {:error, {:missing_archive_content, path}}
-    end
-  end
-
-  defp parse_skill(skill_md) do
-    case Loader.parse(skill_md) do
-      {:ok, skill_entry} -> {:ok, skill_entry}
-      {:error, reason} -> {:error, {:invalid_skill_md, reason}}
-    end
-  end
-
-  defp read_meta(contents, meta_path) do
-    case Map.fetch(contents, meta_path) do
-      {:ok, json} ->
-        case Jason.decode(json) do
-          {:ok, meta} when is_map(meta) -> {:ok, meta}
-          {:ok, _} -> {:error, :malformed_meta_json}
-          {:error, _} -> {:error, :malformed_meta_json}
-        end
-
-      :error ->
-        {:ok, %{}}
-    end
-  end
+  defp legacy_error(%Error{} = error, _max), do: {error.code, error.message}
 end

@@ -45,7 +45,7 @@ defmodule Backplane.Skills.Blob.LocalFS do
   def get(ref, opts \\ []) do
     with {:ok, path} <- path_for_ref(ref, opts),
          true <- File.regular?(path) do
-      {:ok, File.stream!(path, [], 2048)}
+      {:ok, File.stream!(path, 2048, [])}
     else
       {:error, {:invalid_root, _root}} = error -> error
       _ -> {:error, :not_found}

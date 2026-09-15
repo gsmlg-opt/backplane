@@ -10,6 +10,7 @@ defmodule Backplane.Skills do
   alias Backplane.Skills.Blob
   alias Backplane.Skills.Export
   alias Backplane.Skills.Ingest
+  alias Backplane.Skills.Publication
   alias Backplane.Skills.Registry
   alias Backplane.Skills.Skill
   alias Backplane.Skills.Search
@@ -67,14 +68,16 @@ defmodule Backplane.Skills do
   @doc "Delete a skill by ID or struct."
   @spec delete(String.t() | Skill.t()) ::
           {:ok, Skill.t()} | {:error, :not_found | Ecto.Changeset.t()}
-  def delete(%Skill{} = skill) do
+  def delete(skill, opts \\ [])
+
+  def delete(%Skill{} = skill, opts) do
     metadata = %{action: "delete", skill_id: skill.id, slug: skill.slug}
 
     :telemetry.span([:backplane, :skills, :access], metadata, fn ->
       result =
         case Repo.delete(skill) do
           {:ok, deleted} ->
-            cleanup_archive_blob(deleted)
+            cleanup_archive_blob(deleted, Keyword.get(opts, :blob, []))
             Registry.refresh()
             {:ok, deleted}
 
@@ -92,9 +95,9 @@ defmodule Backplane.Skills do
     end)
   end
 
-  def delete(id) when is_binary(id) do
+  def delete(id, opts) when is_binary(id) do
     with {:ok, skill} <- get(id) do
-      delete(skill)
+      delete(skill, opts)
     end
   end
 
@@ -325,7 +328,14 @@ defmodule Backplane.Skills do
   @spec bulk_update_tags([String.t()], [String.t()]) :: {non_neg_integer(), nil}
   def bulk_update_tags(skill_ids, tags) when is_list(skill_ids) and is_list(tags) do
     from(s in Skill, where: s.id in ^skill_ids)
-    |> Repo.update_all(set: [tags: tags, updated_at: DateTime.utc_now()])
+    |> Repo.update_all(
+      set: [
+        tags: tags,
+        publication_status: "pending",
+        publication_diagnostic: %{"code" => "publication_pending"},
+        updated_at: DateTime.utc_now()
+      ]
+    )
   end
 
   @doc "Bulk update category for a list of skill IDs."
@@ -441,10 +451,10 @@ defmodule Backplane.Skills do
     end
   end
 
-  defp cleanup_archive_blob(%Skill{source_kind: "archive", archive_ref: archive_ref})
+  defp cleanup_archive_blob(%Skill{archive_ref: archive_ref}, blob_opts)
        when is_binary(archive_ref) do
-    unless Repo.exists?(from(s in Skill, where: s.archive_ref == ^archive_ref)) do
-      case Blob.delete(archive_ref) do
+    unless Publication.referenced_blob?(archive_ref) do
+      case Blob.delete(archive_ref, blob_opts) do
         :ok ->
           :ok
 
@@ -456,5 +466,5 @@ defmodule Backplane.Skills do
     end
   end
 
-  defp cleanup_archive_blob(_skill), do: :ok
+  defp cleanup_archive_blob(_skill, _blob_opts), do: :ok
 end

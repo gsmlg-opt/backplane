@@ -1,0 +1,133 @@
+name: Skill Protocol
+
+on:
+  push:
+    paths:
+      - "apps/backplane_skill_protocol/**"
+      - "apps/backplane_skills/**"
+      - "apps/backplane_api/**"
+      - "apps/backplane_auth/**"
+      - "apps/backplane_memory/**"
+      - "apps/backplane_system/priv/repo/migrations/20260911000001_create_skill_revisions.exs"
+      - "scripts/verify_skill_protocol_package.sh"
+      - "scripts/skill_protocol_consumer_verify.exs"
+      - "docs/skill-protocol/**"
+      - ".github/workflows/skill-protocol.yml"
+  pull_request:
+    paths:
+      - "apps/backplane_skill_protocol/**"
+      - "apps/backplane_skills/**"
+      - "apps/backplane_api/**"
+      - "apps/backplane_auth/**"
+      - "apps/backplane_memory/**"
+      - "apps/backplane_system/priv/repo/migrations/20260911000001_create_skill_revisions.exs"
+      - "scripts/verify_skill_protocol_package.sh"
+      - "scripts/skill_protocol_consumer_verify.exs"
+      - "docs/skill-protocol/**"
+      - ".github/workflows/skill-protocol.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  RUST_VERSION: "1.95.0"
+
+jobs:
+  package:
+    name: Standalone Package
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Hex and Mix cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.hex
+            ~/.mix
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-skill-protocol-package-${{ hashFiles('apps/backplane_skill_protocol/mix.lock', 'apps/backplane_skill_protocol/mix.exs') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-skill-protocol-package-
+
+      - name: Install unbuffer
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends expect
+
+      - name: Verify standalone package and consumer
+        run: unbuffer bash scripts/verify_skill_protocol_package.sh
+
+  integration:
+    name: DB-backed HTTP Integration
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+      PGHOST: /var/run/postgresql
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential expect pkg-config libssl-dev
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-${{ hashFiles('**/mix.lock', 'apps/backplane_skill_protocol/mix.exs') }}
+
+      - name: Install dependencies
+        run: unbuffer mix deps.get
+
+      - name: Start PostgreSQL 17 with pgvector
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error \
+            --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
+          git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          make -C /tmp/pgvector with_llvm=no
+          sudo make -C /tmp/pgvector with_llvm=no install
+          sudo pg_ctlcluster 16 main stop || true
+          sudo pg_dropcluster --stop 17 main || true
+          sudo pg_createcluster 17 main --start --port 5432
+          sudo -u postgres createuser --superuser "$USER" || true
+          pg_isready -h "$PGHOST"
+
+      - name: Prepare test database
+        run: unbuffer mix ecto.setup
+
+      - name: Run Skill Protocol HTTP integration
+        run: unbuffer mix test apps/backplane_api/test/backplane/api/skill_protocol_http_integration_test.exs apps/backplane_api/test/backplane/api/skill_protocol_router_test.exs apps/backplane_api/test/backplane/api/skill_protocol_telemetry_test.exs
