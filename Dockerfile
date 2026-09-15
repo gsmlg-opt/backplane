@@ -24,6 +24,9 @@ RUN mix local.hex --force && mix local.rebar --force
 COPY mix.exs mix.lock package.json bun.lock ./
 COPY config ./config
 COPY apps/backplane/mix.exs ./apps/backplane/mix.exs
+COPY apps/backplane_agent_runtime/mix.exs ./apps/backplane_agent_runtime/mix.exs
+COPY apps/backplane_ai_protocol/mix.exs ./apps/backplane_ai_protocol/mix.exs
+COPY apps/backplane_ai_protocol_testkit/mix.exs ./apps/backplane_ai_protocol_testkit/mix.exs
 COPY apps/backplane_auth/mix.exs ./apps/backplane_auth/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
@@ -31,6 +34,7 @@ COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
 COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
+COPY apps/backplane_skill_protocol/mix.exs ./apps/backplane_skill_protocol/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
 COPY apps/backplane_system/mix.exs ./apps/backplane_system/mix.exs
 COPY apps/backplane_telemetry/mix.exs ./apps/backplane_telemetry/mix.exs
