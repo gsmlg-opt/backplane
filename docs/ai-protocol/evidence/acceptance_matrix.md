@@ -87,3 +87,20 @@ fixtures, tests, and decoder clauses without changing production code.
 | Production behavior | `unchanged` | Only the endpoint regression test and evidence changed; Relayixir and AI protocol production modules were not modified. |
 | Repository-wide checks | `partial` | Protocol 62/62, TestKit 2/2, Llama 251/251, Relayixir 247/247, format, Credo, and diff check pass. Strict compile remains blocked by existing `backplane_mcp_protocol` warnings. |
 | Cleanup-source CI | `target job passed` | At SHA `646531923b7d873026724eb7c72da7814fbf905f`, Test run `34921657683` job `104230898550` passed `Test (backplane_api)`. Protocol, TestKit, Llama, Relayixir, compile, format, Credo, and workflow contract also passed. Dialyzer and the seven established base-equivalent application jobs remain red. |
+
+## Current checker repair delivery (2026-09-15)
+
+This section supersedes the preceding current-source status. `origin/main` was merged into the PR
+branch and five conflicts were resolved while preserving the shared ordinary Responses path and
+existing Relayixir/host ownership boundaries. Repair commit `cb742426`, merge commit `07e20f50`,
+and test isolation commit `bb1f86ef` are included in exact remote PR head
+`bb1f86ef8f8418d8a9965b6dd14237a8b1bf5635`; base is
+`1d3901183848d94fd2c731e97fb66069bb93d1a0`.
+
+| Acceptance | Current status | Evidence |
+| --- | --- | --- |
+| PR checker repair | `passed` | Exact-head Test run `34934919942` passed all 18 jobs, including `backplane_api`. PR CI `34934919764` and push CI `34934916645` passed Compile, Format, Credo, Workflow Contract, and Dialyzer. PR Skill Protocol run `34934919887` passed. |
+| Application suites | `passed locally` | Backplane 22, admin 275, MCP 663, memory 1,143 plus 5 excluded, skills 191, system 408, telemetry 33, AI protocol 62, TestKit 2, API 255, Llama 251, and Relayixir 247 tests passed. |
+| Endpoint regressions | `passed locally` | The endpoint suite has 10 tests and passed at seeds 0, 424242, and 987654, including fragmented semantic JSON and the >8 MiB observation overflow case. |
+| Repository checks | `passed locally` | Format check, Credo strict, workflow contract, and `git diff --check` passed. Local Dialyzer under Elixir 1.20/OTP 29 exits 2 on three known guard warnings in `web_live_search.ex:511`, `web_search.ex:320`, and `web_x_search.ex:227`; target CI Elixir 1.18/OTP 28 Dialyzer passed. |
+| Production scope | `preserved` | No AI protocol or Relayixir production behavior changed by the checker repair; the main merge retained the existing ordinary Responses integration. |

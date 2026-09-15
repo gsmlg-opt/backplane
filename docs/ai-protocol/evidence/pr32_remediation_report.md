@@ -429,3 +429,37 @@ The authorized push produced exact cleanup-source SHA
 Llama, Relayixir, MCP protocol, and unaffected application jobs. CI runs `34921657583` and
 `34921654420` passed compile, format, Credo, and workflow contract. Both Dialyzer jobs and the seven
 established base-equivalent application jobs remain red; they are not claimed fixed or waived.
+
+## Current checker repair delivery (2026-09-15)
+
+This section supersedes the preceding current-source status while retaining its historical evidence.
+`origin/main` was merged into `feature/ai-protocol`; five conflicts were resolved with the shared
+ordinary OpenAI Responses path, Relayixir transport, and host routing/authorization/credential
+ownership preserved. Checker repairs are in `cb742426`, the merge is `07e20f50`, and test isolation
+is `bb1f86ef`. The exact remote PR head is `bb1f86ef8f8418d8a9965b6dd14237a8b1bf5635`; base is
+`1d3901183848d94fd2c731e97fb66069bb93d1a0`.
+
+The previously red seven application jobs and Dialyzer issues were repaired. Exact-head GitHub
+Test run `34934919942` passed all 18 jobs, including `Test (backplane_api)`. PR CI run
+`34934919764` and push CI run `34934916645` passed Compile, Format, Credo, Workflow Contract, and
+Dialyzer. PR Skill Protocol run `34934919887` passed. These results apply to the current remote
+source, rather than the historical `70b9609...` or `6465319...` sources.
+
+### Verification results
+
+Local exact application counts were: backplane 22; backplane_admin 275; backplane_mcp 663;
+backplane_memory 1,143 plus 5 excluded; backplane_skills 191; backplane_system 408;
+backplane_telemetry 33; backplane_ai_protocol 62; backplane_ai_protocol_testkit 2; backplane_api
+255; backplane_llama 251; and relayixir 247. The endpoint suite contains 10 tests and passed at
+seeds 0, 424242, and 987654. Format check, strict Credo, workflow contract, and `git diff --check`
+also passed.
+
+Local Dialyzer was run with Elixir 1.20/OTP 29 and exits 2 on three known guard warnings at
+`web_live_search.ex:511`, `web_search.ex:320`, and `web_x_search.ex:227`. The target CI toolchain
+(Elixir 1.18/OTP 28) passed Dialyzer in run `34934919764`; the local toolchain difference is an
+environment limitation, not a current PR failure.
+
+No AI protocol or Relayixir production behavior was changed by the checker repair. The merge from
+main retained the existing normal Responses integration, and the dedicated compact legacy path
+remains separate. The current remote CI is green for the required checks; no unrelated baseline
+failure is represented as fixed by this change.
