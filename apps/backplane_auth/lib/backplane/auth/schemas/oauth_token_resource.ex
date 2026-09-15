@@ -25,7 +25,7 @@ defmodule Backplane.Auth.Schemas.OAuthTokenResource do
     binding
     |> cast(attrs, [:oauth_token_id, :resource])
     |> validate_required([:oauth_token_id, :resource])
-    |> validate_inclusion(:resource, ["mcp", "v1"])
+    |> validate_inclusion(:resource, ["mcp", "skill_protocol", "v1"])
     |> foreign_key_constraint(:oauth_token_id)
     |> unique_constraint(:oauth_token_id,
       name: :oauth_token_resources_oauth_token_id_index

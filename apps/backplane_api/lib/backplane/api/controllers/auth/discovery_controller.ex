@@ -15,6 +15,10 @@ defmodule Backplane.Api.Auth.DiscoveryController do
     json(conn, Metadata.protected_resource(:mcp))
   end
 
+  def protected_resource(conn, %{"resource" => "skill_protocol"}) do
+    json(conn, Metadata.protected_resource(:skill_protocol))
+  end
+
   def protected_resource(conn, %{"resource" => "v1"}) do
     json(conn, Metadata.protected_resource(:v1))
   end

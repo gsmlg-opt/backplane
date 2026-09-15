@@ -337,7 +337,21 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   test "records rate limit rejection", %{openai_provider: provider} do
-    {:ok, _provider} = Provider.update(provider, %{rpm_limit: 1})
+    handler_id = "llm-rate-limit-test-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:backplane, :llm_proxy, :request, :stop],
+        fn _event, _measurements, metadata, pid -> send(pid, {:llm_stop, metadata}) end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {:ok, provider} = Provider.update(provider, %{rpm_limit: 1})
+    provider_id = provider.id
     ModelResolver.clear_cache()
 
     body = %{
@@ -346,13 +360,15 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     }
 
     assert llm_request(:post, "/v1/chat/completions", body).status == 200
+    assert_receive {:llm_stop, %{attributes: %{"status" => 200, "provider_id" => ^provider_id}}}
 
     conn = llm_request(:post, "/v1/chat/completions", body)
     assert conn.status == 429
+    assert_receive {:llm_stop, %{attributes: %{"status" => 429, "provider_id" => ^provider_id}}}
+    assert %Provider{id: ^provider_id} = Backplane.Repo.get(Provider, provider_id)
     flush_logs!()
 
     log = log_for_request(conn)
-
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
     assert log.status == 429

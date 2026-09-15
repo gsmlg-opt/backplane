@@ -28,6 +28,7 @@ defmodule BackplaneSkills.MixProject do
 
   defp deps do
     [
+      {:backplane_skill_protocol, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},

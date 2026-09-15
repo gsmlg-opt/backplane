@@ -16,6 +16,17 @@ defmodule Backplane.Api.Router do
     plug(:accepts, ["json", "gz"])
   end
 
+  pipeline :skill_protocol_api do
+    plug(:accepts, ["json", "gz"])
+
+    plug(Backplane.Auth.ResourceAuthPlug,
+      resource: :skill_protocol,
+      required_scope: {Backplane.Api.SkillProtocolAuthorization, :required_scope, []}
+    )
+
+    plug(Backplane.Api.SkillProtocolAuthorization)
+  end
+
   pipeline :oauth_api do
     plug(:accepts, ["json"])
   end
@@ -70,6 +81,11 @@ defmodule Backplane.Api.Router do
 
     forward("/host-agent", Backplane.Skills.HostAgentApiRouter)
     forward("/skills", Backplane.Skills.ApiRouter)
+  end
+
+  scope "/" do
+    pipe_through(:skill_protocol_api)
+    forward("/skill-protocol/v1", Backplane.Skills.ProtocolV1Router)
   end
 
   scope "/api" do

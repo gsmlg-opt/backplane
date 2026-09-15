@@ -59,7 +59,8 @@ defmodule Backplane.LLM.ObservabilityCase do
         )
 
       _ ->
-        :ok
+        if Process.whereis(Backplane.LLM.LogWriter), do: Backplane.LLM.LogWriter.flush()
+        clear_buffer!(:llm_proxy, capacity)
     end
 
     writer_opts = [
@@ -80,9 +81,8 @@ defmodule Backplane.LLM.ObservabilityCase do
 
   @doc false
   def flush_logs! do
-    # The producer enqueues with send/2, while LogWriter drains from another
-    # process. A call from the producer establishes the required mailbox barrier.
-    :sys.get_state(:llm_proxy)
+    # Establish a mailbox barrier before the writer drains the buffer.
+    _ = Backplane.Observability.Buffer.health(:llm_proxy)
     Backplane.LLM.LogWriter.flush()
   end
 
@@ -116,5 +116,16 @@ defmodule Backplane.LLM.ObservabilityCase do
         limit: 1
       )
     )
+  end
+
+  defp clear_buffer!(name, limit) do
+    case Backplane.Observability.Buffer.drain(name, limit) do
+      [] ->
+        :ok
+
+      rows ->
+        Backplane.Observability.Buffer.release(name, length(rows))
+        clear_buffer!(name, limit)
+    end
   end
 end
