@@ -33,10 +33,12 @@ defmodule Backplane.Memory.DataCase do
   end
 
   def canonical_memory_opts(host_id, opts \\ []) do
+    client_id = Keyword.get(opts, :client_id, "host:#{host_id}")
+
     partition =
       canonical_partition(host_id,
-        client_id: Keyword.get(opts, :client_id, "host:#{host_id}"),
-        source_client_id: Keyword.get(opts, :source_client_id),
+        client_id: client_id,
+        source_client_id: Keyword.get(opts, :source_client_id, client_id),
         scope: Keyword.get(opts, :scope, "global"),
         namespace: Keyword.get(opts, :namespace, "private")
       )

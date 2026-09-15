@@ -33,10 +33,12 @@ defmodule Backplane.Test.TestLLMUpstream do
   end
 
   defp store_auth(conn) do
-    capture = %{headers: conn.req_headers}
+    capture = %{headers: conn.req_headers, path: conn.request_path, body: conn.body_params}
 
     if Process.whereis(@agent) do
-      Agent.update(@agent, fn _ -> capture end)
+      Agent.update(@agent, fn previous ->
+        Map.put(capture, :submissions, Map.get(previous, :submissions, 0) + 1)
+      end)
     end
 
     conn
@@ -95,6 +97,29 @@ defmodule Backplane.Test.TestLLMUpstream do
       else
         openai_non_stream(conn, model)
       end
+    end
+  end
+
+  post "/v1/responses" do
+    conn = store_auth(conn)
+    model = conn.body_params["model"] || "unknown"
+
+    cond do
+      model == "responses-error" ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(
+          400,
+          Jason.encode!(%{
+            "error" => %{"type" => "invalid_request_error", "code" => "bad_fixture"}
+          })
+        )
+
+      conn.body_params["stream"] == true ->
+        responses_stream(conn, model)
+
+      true ->
+        responses_non_stream(conn, model)
     end
   end
 
@@ -223,6 +248,99 @@ defmodule Backplane.Test.TestLLMUpstream do
 
     events = Enum.map(chunks, &Jason.encode!/1) ++ ["[DONE]"]
     send_sse(conn, events, :raw)
+  end
+
+  defp responses_non_stream(conn, model) do
+    if conn.body_params["input"] == "malformed-nested" do
+      body =
+        ~S({"id":"resp_malformed","status":"completed","output":[{"type":"function_call","id":"fc_bad","name":"lookup","arguments":null}],"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":1}})
+
+      conn |> put_resp_content_type("application/json") |> send_resp(200, body)
+    else
+      body = %{
+        "id" => "resp_host_1",
+        "object" => "response",
+        "status" => "completed",
+        "model" => model,
+        "output" => [
+          %{
+            "type" => "function_call",
+            "id" => "fc_1",
+            "call_id" => "call_1",
+            "name" => "lookup",
+            "arguments" => ~S({"q":"fixture"}),
+            "status" => "completed"
+          }
+        ],
+        "usage" => %{
+          "input_tokens" => 13,
+          "input_tokens_details" => %{"cached_tokens" => 4},
+          "output_tokens" => 8,
+          "output_tokens_details" => %{"reasoning_tokens" => 2},
+          "total_tokens" => 21
+        }
+      }
+
+      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+    end
+  end
+
+  defp responses_stream(conn, model) do
+    if conn.body_params["input"] == "malformed-nested" do
+      malformed_responses_stream(conn)
+    else
+      regular_responses_stream(conn, model)
+    end
+  end
+
+  defp regular_responses_stream(conn, model) do
+    events = [
+      %{
+        "type" => "response.output_item.done",
+        "item" => %{
+          "type" => "function_call",
+          "id" => "fc_stream",
+          "call_id" => "call_stream",
+          "name" => "lookup",
+          "arguments" => ~S({"q":"stream"}),
+          "status" => "completed"
+        }
+      },
+      %{
+        "type" => "response.completed",
+        "response" => %{
+          "id" => "resp_host_stream",
+          "status" => "completed",
+          "model" => model,
+          "usage" => %{
+            "input_tokens" => 9,
+            "input_tokens_details" => %{"cached_tokens" => 1},
+            "output_tokens" => 6,
+            "output_tokens_details" => %{"reasoning_tokens" => 2},
+            "total_tokens" => 15
+          }
+        }
+      }
+    ]
+
+    send_sse(conn, events)
+  end
+
+  defp malformed_responses_stream(conn) do
+    chunks = [
+      ~S(data: {"type":"response.created","response":1}) <> "\n\n",
+      ~S(data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_bad","name":"lookup","arguments":{"q":"bad"},"status":"completed"}}) <>
+        "\n\n",
+      ~S(data: {"type":"response.completed","response":{"id":"resp_malformed_stream","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}) <>
+        "\n\n"
+    ]
+
+    conn = conn |> put_resp_content_type("text/event-stream") |> Plug.Conn.send_chunked(200)
+
+    Enum.reduce(chunks, conn, fn chunk, conn ->
+      {:ok, conn} = Plug.Conn.chunk(conn, chunk)
+      conn
+    end)
   end
 
   # ── SSE transport ──

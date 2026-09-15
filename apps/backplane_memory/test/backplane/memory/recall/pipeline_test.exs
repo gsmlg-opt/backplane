@@ -163,8 +163,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
               correlation_id: ^correlation_id,
               query_embedding_model: "embed-model",
               reranker_model: "rerank-model"
-            },
-            [stored]} =
+            }, [stored]} =
              Store.get(run_id, @partition)
 
     assert stored.selected

@@ -17,6 +17,11 @@ defmodule Backplane.McpProtocol.Server.Component.ToolAnnotationsTest do
 
   describe "tool output schemas" do
     test "output_schema callback is optional" do
+      Enum.each(
+        [ToolWithOutputSchema, ToolWithAnnotations, ToolWithoutAnnotations],
+        &Code.ensure_loaded!/1
+      )
+
       assert function_exported?(ToolWithOutputSchema, :output_schema, 0)
       refute function_exported?(ToolWithAnnotations, :output_schema, 0)
       refute function_exported?(ToolWithoutAnnotations, :output_schema, 0)

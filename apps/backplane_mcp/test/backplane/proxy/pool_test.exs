@@ -385,6 +385,9 @@ defmodule Backplane.Proxy.PoolTest do
                  not is_nil(ToolRegistry.lookup(tool_name))
              end)
 
+      :sys.suspend(upstream)
+      on_exit(fn -> if Process.alive?(upstream), do: :sys.resume(upstream) end)
+
       assert :ok = ClientLeaseManager.mark_stopping(upstream)
       assert :ok = ClientLeaseManager.cleanup(upstream)
       assert {^prefix, nil} = upstream_lease(upstream)
@@ -405,6 +408,8 @@ defmodule Backplane.Proxy.PoolTest do
       assert :ok = ClientLeaseManager.finalize_owner(upstream)
       assert ToolRegistry.lookup(tool_name) == nil
       assert upstream_lease(upstream) == nil
+
+      :sys.resume(upstream)
       assert :ok = Pool.stop_upstream(upstream)
     end
   end

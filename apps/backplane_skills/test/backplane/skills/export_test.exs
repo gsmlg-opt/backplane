@@ -68,7 +68,7 @@ defmodule Backplane.Skills.ExportTest do
 
       assert {:ok, _deleted} = Skills.delete(first)
       assert {:ok, _deleted} = Skills.delete(second)
-      assert Repo.aggregate(Skill, :count, :id) == 0
+      assert skill_count(["first-skill", "second-skill"]) == 0
 
       assert {:ok, %{count: 2, skills: imported}} = Skills.import(collection, [])
       assert [%Skill{slug: "first-skill"}, %Skill{slug: "second-skill"}] = imported
@@ -81,7 +81,7 @@ defmodule Backplane.Skills.ExportTest do
 
       assert {:ok, %{count: 2, skills: second_import}} = Skills.import(collection, [])
       assert [%Skill{slug: "first-skill"}, %Skill{slug: "second-skill"}] = second_import
-      assert Repo.aggregate(Skill, :count, :id) == 2
+      assert skill_count(["first-skill", "second-skill"]) == 2
 
       assert {:ok, first_again} = Skills.get_by_slug("first-skill")
       assert {:ok, second_again} = Skills.get_by_slug("second-skill")
@@ -174,5 +174,11 @@ defmodule Backplane.Skills.ExportTest do
     |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
     |> :crypto.hash_final()
     |> Base.encode16(case: :lower)
+  end
+
+  defp skill_count(slugs) do
+    Skill
+    |> where([skill], skill.slug in ^slugs)
+    |> Repo.aggregate(:count, :id)
   end
 end

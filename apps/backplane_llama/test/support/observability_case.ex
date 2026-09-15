@@ -45,11 +45,11 @@ defmodule Backplane.LLM.ObservabilityCase do
   def reset_observability_v2! do
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_llm_write, false)
-    Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
   end
 
   @doc false
-  def start_observability_v2!(tags \\ []) do
+  def start_observability_v2!(tags \\ %{}) do
     capacity = Map.get(tags, :buffer_capacity, 100)
 
     case Process.whereis(:llm_proxy) do
@@ -81,16 +81,27 @@ defmodule Backplane.LLM.ObservabilityCase do
 
   @doc false
   def flush_logs! do
+    # Establish a mailbox barrier before the writer drains the buffer.
     _ = Backplane.Observability.Buffer.health(:llm_proxy)
     Backplane.LLM.LogWriter.flush()
   end
 
   @doc false
-  def latest_log do
+  def log_for_request(%Plug.Conn{} = conn) do
+    conn
+    |> Backplane.Observability.Context.get()
+    |> Map.fetch!(:request_id)
+    |> log_for_request()
+  end
+
+  def log_for_request(request_id) when is_binary(request_id) do
     import Ecto.Query
 
     Backplane.Repo.one(
-      from(l in Backplane.LLM.ProxyRequest, order_by: [desc: l.inserted_at], limit: 1)
+      from(l in Backplane.LLM.ProxyRequest,
+        where: l.request_id == ^request_id,
+        limit: 1
+      )
     )
   end
 
