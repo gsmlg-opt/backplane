@@ -390,13 +390,19 @@ defmodule Backplane.Transport.McpHandlerTest do
       assert %{"slug" => "audit-load-skill"} =
                Jason.decode!(hd(resp["result"]["content"])["text"])
 
-      assert eventually(fn ->
-               Repo.get_by(SkillLoadLog,
-                 skill_name: "Audit Load Skill",
-                 client_id: client.id,
-                 client_name: "audit-client"
-               )
-             end)
+      assert %SkillLoadLog{} =
+               log =
+               eventually(fn ->
+                 Repo.get_by(SkillLoadLog,
+                   skill_name: "Audit Load Skill",
+                   client_id: client.id,
+                   client_name: "audit-client"
+                 )
+               end)
+
+      assert is_binary(log.request_id)
+      assert is_binary(log.trace_id)
+      assert is_binary(log.mcp_request_id)
     end
 
     test "logs successful skill::load without authenticated client metadata", %{tmp_dir: tmp_dir} do

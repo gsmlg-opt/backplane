@@ -3,18 +3,11 @@ defmodule Backplane.MetricsIntegrationTest do
 
   alias Backplane.Metrics
   alias Backplane.Proxy.Pool
+  alias Backplane.Registry.ToolRegistry
 
   test "snapshot maps live upstream status" do
-    {:ok, bandit} =
-      Bandit.start_link(
-        plug: Backplane.Test.MockMcpPlug,
-        port: 0,
-        ip: {127, 0, 0, 1}
-      )
-
-    on_exit(fn ->
-      stop_test_process(bandit)
-    end)
+    bandit =
+      start_supervised!({Bandit, plug: Backplane.Test.MockMcpPlug, port: 0, ip: {127, 0, 0, 1}})
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
@@ -29,7 +22,9 @@ defmodule Backplane.MetricsIntegrationTest do
     {:ok, upstream_pid} = Pool.start_upstream(config)
 
     on_exit(fn ->
-      stop_test_process(upstream_pid)
+      assert :ok = Pool.stop_upstream(upstream_pid)
+      refute Pool.child?(upstream_pid)
+      assert :not_found = ToolRegistry.resolve("metup::echo")
     end)
 
     Process.sleep(300)
@@ -43,16 +38,5 @@ defmodule Backplane.MetricsIntegrationTest do
 
     assert is_integer(tool_count)
     assert is_integer(failures)
-  end
-
-  defp stop_test_process(pid) do
-    if Process.alive?(pid) do
-      try do
-        GenServer.stop(pid)
-      catch
-        :exit, reason when reason in [:shutdown, :noproc, :normal] -> :ok
-        :exit, {reason, _call} when reason in [:shutdown, :noproc, :normal] -> :ok
-      end
-    end
   end
 end

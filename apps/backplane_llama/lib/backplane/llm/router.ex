@@ -137,7 +137,7 @@ defmodule Backplane.LLM.Router do
         with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- reject_codex_chat_completions(conn, provider),
-             :ok <- RateLimiter.check(provider.id, provider.rpm_limit),
+             :ok <- check_rate_limit(provider),
              {:ok, rewritten_body} <- ModelExtractor.replace_model(raw_body, raw_model),
              {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type),
              {:ok, rewritten_body} <-
@@ -177,13 +177,14 @@ defmodule Backplane.LLM.Router do
 
             conn
 
-          {:error, retry_after} when is_integer(retry_after) ->
+          {:error, :rate_limited, retry_after, provider} ->
             conn = send_rate_limit_error(conn, api_type, retry_after)
 
             finalize_access(access, conn, :error,
               error_kind: :rate_limit,
               error_code: "rate_limit_exceeded",
-              error_reason: "rate_limited"
+              error_reason: "rate_limited",
+              provider: provider
             )
 
             conn
@@ -444,6 +445,13 @@ defmodule Backplane.LLM.Router do
 
   defp outcome_for_status(status) when status in 200..299, do: :success
   defp outcome_for_status(_), do: :error
+
+  defp check_rate_limit(provider) do
+    case RateLimiter.check(provider.id, provider.rpm_limit) do
+      :ok -> :ok
+      {:error, retry_after} -> {:error, :rate_limited, retry_after, provider}
+    end
+  end
 
   defp error_code_for_model_error(:no_model), do: "missing_required_parameter"
   defp error_code_for_model_error(:invalid_json), do: "invalid_json"
