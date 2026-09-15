@@ -79,19 +79,11 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
 
       traces =
         for index <- if(result_count == 0, do: [], else: 1..result_count) do
-          source_id = Ecto.UUID.generate()
-
           assert {:ok, candidate} =
-                   Backplane.Memory.Recall.Candidate.new(
-                     Map.merge(Map.drop(partition, [:source_client_id]), %{
-                       id: Ecto.UUID.generate(),
-                       kind: :memory,
-                       memory_type: :semantic,
-                       content: "dashboard candidate #{index}",
-                       source_ids: [source_id],
-                       source_refs: [%{type: :event, id: source_id}],
-                       inserted_at: now
-                     })
+                   canonical_recall_candidate(
+                     partition,
+                     "dashboard candidate #{index}",
+                     inserted_at: now
                    )
 
           %{

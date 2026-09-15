@@ -8,6 +8,9 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
   @settings ~w(services.memory.enabled memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
 
   setup do
+    generated_skills = Process.whereis(GeneratedSkills)
+    :sys.suspend(generated_skills)
+
     snapshot = Map.new(@settings, &{&1, :ets.lookup(:backplane_settings, &1)})
 
     put_settings(%{
@@ -23,6 +26,8 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
         :ets.delete(:backplane_settings, key)
         if rows != [], do: :ets.insert(:backplane_settings, rows)
       end)
+
+      if Process.alive?(generated_skills), do: :sys.resume(generated_skills)
     end)
 
     :ok
@@ -154,7 +159,9 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
   end
 
   test "relevant runtime setting changes reconcile the advertised inventory" do
-    assert is_pid(Process.whereis(GeneratedSkills))
+    generated_skills = Process.whereis(GeneratedSkills)
+    assert is_pid(generated_skills)
+    :sys.resume(generated_skills)
     assert :ok = GeneratedSkills.reconcile()
 
     assert :ok = Settings.set("memory.tools", "core")
@@ -168,6 +175,8 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     assert_eventually(fn ->
       not Enum.any?(Skills.list(), &String.starts_with?(&1.id, "generated/memory-"))
     end)
+
+    :sys.suspend(generated_skills)
   end
 
   defp skill_tools(slug) do

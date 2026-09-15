@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
+  alias Backplane.Memory.Projections.ProjectedSession
 
   describe "direct remember request idempotency" do
     test "unkeyed calls retain one request evidence row per explicit remember" do
@@ -135,7 +136,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                %{source_type: "request", evidence_kind: "supports"},
                %{
                  source_type: "session",
-                 source_id: "source-host:source-session",
+                 source_id: "host:source-session",
                  evidence_kind: "derives",
                  support_score: 0.9,
                  excerpt: "source excerpt"
@@ -210,6 +211,33 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                Memories.remember(
                  "invalid typed",
                  direct_opts("invalid-typed") ++ [evidence: [invalid]]
+               )
+
+      assert Memories.trusted_count() == 0
+      assert repo().aggregate(RememberRequest, :count) == 0
+      assert repo().aggregate(Evidence, :count) == 0
+    end
+
+    test "fills missing evidence host from the canonical owner partition" do
+      source = session_evidence("canonical-host") |> Map.delete(:host_id)
+
+      assert {:ok, memory} =
+               Memories.remember(
+                 "canonical evidence host",
+                 direct_opts("canonical-host") ++ [evidence: [source]]
+               )
+
+      assert %{host_id: "host"} =
+               Enum.find(Memories.list_evidence(memory.id), &(&1.source_type == "session"))
+    end
+
+    test "rejects a conflicting evidence host without partial writes" do
+      source = session_evidence("conflicting-host", %{host_id: "other-host"})
+
+      assert {:error, :partition_mismatch} =
+               Memories.remember(
+                 "conflicting evidence host",
+                 direct_opts("conflicting-host") ++ [evidence: [source]]
                )
 
       assert Memories.trusted_count() == 0
@@ -347,13 +375,13 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                  direct_opts("diverse-agent") |> Keyword.put(:agent_id, "agent-two")
                )
 
-      assert {:ok, other_host_memory} =
+      assert {:ok, other_agent_memory} =
                Memories.remember(
                  "diverse",
-                 direct_opts("diverse-host") |> Keyword.put(:host_id, "host-two")
+                 direct_opts("diverse-agent-three") |> Keyword.put(:agent_id, "agent-three")
                )
 
-      assert other_host_memory.id == memory.id
+      assert other_agent_memory.id == memory.id
 
       assert {:ok, verification} = Memories.trusted_verify(memory.id)
       assert verification.evidence_count == 4
@@ -393,10 +421,31 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
   end
 
   defp session_evidence(source_session_id, overrides \\ %{}) do
+    partition = canonical_partition("host")
+    now = DateTime.utc_now()
+
+    repo().insert!(
+      %ProjectedSession{
+        memory_space_id: partition.memory_space_id,
+        subject_id: "evidence-session:#{source_session_id}",
+        session_id: source_session_id,
+        project: "backplane",
+        host_id: partition.host_id,
+        client_id: partition.client_id,
+        scope: partition.scope,
+        namespace: partition.namespace,
+        status: "closed",
+        last_event_at: now,
+        processing_version: "evidence-test",
+        input_revision: "r1"
+      },
+      on_conflict: :nothing
+    )
+
     Map.merge(
       %{
         source_session_id: source_session_id,
-        host_id: "source-host",
+        host_id: partition.host_id,
         agent_id: "source-agent",
         session_id: "derived-session",
         evidence_kind: "derives",

@@ -17,7 +17,7 @@ defmodule Backplane.Memory.Graph.BFS do
   relation type. Returns `{:ok, %{nodes: [...], edges: [...]}}`.
   """
   @spec query(String.t(), pos_integer(), String.t() | nil) ::
-          {:ok, %{nodes: [Node.t()], edges: [Edge.t()]}}
+          {:error, :unauthorized}
   def query(_entity_name, _depth \\ 2, _relation_filter \\ nil), do: {:error, :unauthorized}
 
   def query(entity_name, depth, relation_filter, partition) do

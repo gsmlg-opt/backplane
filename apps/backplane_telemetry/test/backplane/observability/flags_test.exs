@@ -11,14 +11,44 @@ defmodule Backplane.Observability.FlagsTest do
     :use_legacy_telemetry_logger
   ]
 
+  @test_disabled :observability_v2_test_disabled
+  @policy_keys [
+    "observability.llm_proxy.enabled",
+    "observability.llm_proxy.persist",
+    "observability.mcp_proxy.enabled",
+    "observability.mcp_proxy.persist"
+  ]
+
   setup do
     previous =
       Enum.map(@flags, fn flag -> {flag, Application.get_env(:backplane_telemetry, flag)} end)
+
+    previous_test_disabled = Application.get_env(:backplane_telemetry, @test_disabled)
+
+    previous_policy =
+      Enum.map(@policy_keys, fn key ->
+        {key, :ets.lookup(:backplane_observability_settings, key)}
+      end)
+
+    Enum.each(@policy_keys, fn key ->
+      :ets.insert(:backplane_observability_settings, {key, false})
+    end)
 
     on_exit(fn ->
       Enum.each(previous, fn
         {flag, nil} -> Application.delete_env(:backplane_telemetry, flag)
         {flag, value} -> Application.put_env(:backplane_telemetry, flag, value)
+      end)
+
+      if is_nil(previous_test_disabled) do
+        Application.delete_env(:backplane_telemetry, @test_disabled)
+      else
+        Application.put_env(:backplane_telemetry, @test_disabled, previous_test_disabled)
+      end
+
+      Enum.each(previous_policy, fn
+        {key, []} -> :ets.delete(:backplane_observability_settings, key)
+        {_key, rows} -> :ets.insert(:backplane_observability_settings, rows)
       end)
     end)
 
@@ -42,6 +72,19 @@ defmodule Backplane.Observability.FlagsTest do
              observability_v2_runtime_sink: false,
              use_legacy_telemetry_logger: false
            }
+  end
+
+  test "test override disables settings-backed observability" do
+    Application.put_env(:backplane_telemetry, :observability_v2_enabled, true)
+    Application.put_env(:backplane_telemetry, :observability_v2_llm_write, true)
+    Application.put_env(:backplane_telemetry, :observability_v2_mcp_write, true)
+    Application.put_env(:backplane_telemetry, :observability_v2_runtime_sink, true)
+    Application.put_env(:backplane_telemetry, @test_disabled, true)
+
+    refute Flags.enabled?()
+    refute Flags.llm_write?()
+    refute Flags.mcp_write?()
+    refute Flags.runtime_sink?()
   end
 
   test "domain writes require the master switch; runtime sink follows enabled policy" do
