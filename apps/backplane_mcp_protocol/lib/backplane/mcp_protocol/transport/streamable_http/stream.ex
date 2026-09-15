@@ -234,7 +234,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   defp extract_frames(buffer, frames) do
     case next_separator(buffer) do
       {position, length} ->
-        <<frame::binary-size(position), _separator::binary-size(length), rest::binary>> = buffer
+        <<frame::binary-size(^position), _separator::binary-size(^length), rest::binary>> = buffer
         extract_frames(rest, [normalize_frame(frame) | frames])
 
       nil ->

@@ -47,7 +47,9 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
     end
 
     test "derives profiles for legacy modules" do
-      assert {:ok, %{era: :legacy, lifecycle: :initialize}} = Registry.profile("2025-11-25")
+      for version <- ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] do
+        assert {:ok, %{era: :legacy, lifecycle: :initialize}} = Registry.profile(version)
+      end
     end
   end
 

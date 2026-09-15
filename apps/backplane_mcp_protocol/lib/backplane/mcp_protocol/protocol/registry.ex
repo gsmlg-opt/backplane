@@ -51,7 +51,7 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
   def profile(version) do
     with {:ok, module} <- get(version) do
       if Code.ensure_loaded?(module) and function_exported?(module, :profile, 0) do
-        {:ok, module.profile()}
+        {:ok, apply(module, :profile, [])}
       else
         {:ok, Profile.legacy(module)}
       end
