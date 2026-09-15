@@ -1,6 +1,104 @@
 # Shared Agent Runtime Baseline
 
-## Six-blocker follow-up (2026-09-14)
+## Current runtime acceptance (2026-09-15)
+
+This acceptance started from remote commit
+`6fe953bd7f9a79bec3f7fb16c95297462d1acf3c` on `feature/agent-runtime`; PR #33
+targets `main` at `bd5bc83005fded6f67beefe3fa8abac31eae506a`. The provider replay repair is
+committed as `fb8b21a31e22d5904279c2de02751c1c179d00a2`, and the command cleanup repair
+is committed as `d5354f7152ed2cc229ea8c5c4870a3d9d0b54c61`. Runtime verification below used
+the latter committed source. Subsequent CI and documentation edits were
+excluded from the verified package artifact. The observed toolchain was Elixir
+1.18.4, OTP 28, ERTS 16.4.0.1, and GNU Coreutils 9.10.
+
+Provider attempts are now recorded in authoritative run history and rejected
+before another intent, reservation, store commit, or adapter call when the same
+attempt is replayed. Active identities and legacy persisted execution intents
+also fence runs created before the history field existed. New attempt IDs still
+consume quota and preserve supersession and stale-result fencing.
+`Budget.reserve/3` remains unchanged.
+
+The earlier LocalCommand cleanup repairs remain intact. Cleanup fixtures now
+register fallback cleanup from authoritative owned-group state before readiness
+assertions, and pending launch fixtures register server and caller teardown
+before waiting. The watchdog regression captures its worker identity, token,
+monitor, and timer before installing a correlated finite timer through the
+narrow test-only system-state seam.
+
+| Command / working directory | Observed result |
+| --- | --- |
+| `mix format --check-formatted` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix compile --warnings-as-errors` / `apps/backplane_agent_runtime` | Exit 0. |
+| Focused cleanup, LocalCommand, provider-dedup, execution-correctness, controller, and gateway tests with seed 1 / `apps/backplane_agent_runtime` | Exit 0; 50 tests, 0 failures. |
+| `mix test --seed 1` / `apps/backplane_agent_runtime` | Exit 0; 198 tests, 0 failures. |
+| `mix test --seed 866553` / `apps/backplane_agent_runtime` | Exit 0; 198 tests, 0 failures. |
+| `mix test --seed 206900` / `apps/backplane_agent_runtime` | Exit 0; 198 tests, 0 failures. |
+| `mix run --no-start test/ci_workflow_test.exs` / repository root | Exit 0; 4 tests, 0 failures; seed 364974. Log: `/tmp/backplane-runtime-ci-contract-final.log`. |
+| `bash -n scripts/verify_agent_runtime_package.sh` / repository root | Exit 0. |
+| `bash scripts/verify_agent_runtime_package.sh` / repository root | Exit 0; package tests 198/0 (seed 734227), built version 0.1.0, and ran the unchanged `empty_tool`, `bundled_basic`, and `fake_backend` fresh consumers against the same artifact. SHA-256: `d6365cacc13dc2ad15ce89b8b5c8b5038878b040b9ae01b514d83671ca8261d4`. Log: `/tmp/backplane-pr33-final-artifact.log`. |
+
+The local CI contract confirms the workflow matrix and checksummed Coreutils
+multicall setup. The Ubuntu 24.04 validation built GNU Coreutils 9.4 after a full
+`make`, using the configure options `--disable-nls`, `--without-selinux`, and
+`--enable-single-binary=symlinks`. The `env`, `printf`, and `sleep` symlink smoke
+checks passed. The source archive SHA-256 was
+`ea613a4cf44612326e917201bbbcdfbd301de21ffc3b59b6e5c07e040b275e52`.
+The container-only root build required `FORCE_UNSAFE_CONFIGURE=1`; the non-root
+GitHub runner does not use that override. No current hosted run has been
+executed yet. Earlier remote CI failures involving Dialyzer constraints and
+missing cross-app modules were outside the PR diff and have not been fixed. The
+user-provided handoff Markdown files remain untracked.
+
+Workflow audit: the CI worker exceeded its two-round repair limit with the
+final full-`make` correction. Writes were stopped and the architect reopened
+final review only, accepting the verified candidate without resetting the
+counter or authorizing another repair. The earlier 9.10 version-incompatibility
+diagnosis was not conclusively isolated; the verified CI recipe uses 9.4.
+
+This bounded acceptance does not implement deferred collaboration features,
+certify production durability, migrate consumers, or complete V1 acceptance.
+
+## Historical command cleanup acceptance (2026-09-15)
+
+This command-only follow-up started and finished at Git HEAD
+`6fe953bd7f9a79bec3f7fb16c95297462d1acf3c` on `feature/agent-runtime`; PR #33
+targets `main` at `bd5bc83005fded6f67beefe3fa8abac31eae506a`. The observed toolchain was
+Elixir 1.18.4, OTP 28, and ERTS 16.4.0.1. At verification time, the LocalCommand
+and test changes were uncommitted and unpushed, and the two user-provided
+handoff Markdown files remained untracked.
+
+| Remaining command finding | Disposition and evidence |
+| --- | --- |
+| Cleanup-worker crash regression | **Fixed test synchronization.** The recorded 7-test seed-1 baseline still failed once because the immediate worker crash legitimately settled the job before the test read the transient active map; production had retained ownership. A registered worker barrier now captures its actual PID, port, token, monitor, and live verified group before injecting the crash. It proves finite uncertain settlement, workspace and ownership retention, backend responsiveness, and subsequent independent work. |
+| Watchdog and late notifications | **Already fenced; explicit regression added.** A stalled registered worker reaches its watchdog, then late success, typed failure, legacy result, `DOWN`, and duplicate-timeout messages cannot change its outcome or ownership, or disturb another active job and armed timer. An accepted result followed by normal and duplicate `DOWN` remains settled once. |
+| Shutdown ownership | **Already implemented; complete process evidence added.** Active and result-expired uncertain jobs now record and verify the actual parent and a distinct same-process-group child before shutdown, then prove both stop. The unrelated process survives. The pending launcher exits without acknowledging or executing its payload. Each admitted group has bounded fallback cleanup before readiness assertions. |
+| Already-exited shutdown diagnostic | **Fixed.** Shutdown probes a verified group before signaling and re-probes after a failed signal. Confirmed pre-signal or post-signal absence suppresses the misleading error; a failed signal with a still-live group remains logged and its typed uncertain result, ownership, and workspace remain visible. A narrow validated host-only shutdown-signaler test seam leaves the default Linux signal path unchanged. |
+
+The bounded command-cleanup scope has no remaining known correctness or
+verification blocker. The historical command work used two initial review
+rounds and two earlier reopened rounds; this explicit reopening used two repair
+rounds. The shared execution regressions remained unchanged and passing.
+
+### Fresh command acceptance verification
+
+| Command / working directory | Observed result |
+| --- | --- |
+| `mix test test/backplane/agent_runtime/tools/local_command_cleanup_test.exs --seed 1` / `apps/backplane_agent_runtime` | Exit 0; 9 tests, 0 failures. |
+| Related LocalCommand and execution-correctness tests with seed 1 / `apps/backplane_agent_runtime` | Exit 0; 37 tests, 0 failures. |
+| `mix format --check-formatted` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix compile --warnings-as-errors` / `apps/backplane_agent_runtime` | Exit 0. |
+| `mix test --seed 866553` / `apps/backplane_agent_runtime` | Exit 0; 194 tests, 0 failures; 10.6 seconds. |
+| `mix test --seed 206900` / `apps/backplane_agent_runtime` | Exit 0; 194 tests, 0 failures; 10.6 seconds. |
+| `mix test` / `apps/backplane_agent_runtime` | Exit 0; 194 tests, 0 failures; seed 103001; 10.8 seconds. |
+| `bash -n scripts/verify_agent_runtime_package.sh` / repository root | Exit 0. |
+| `bash scripts/verify_agent_runtime_package.sh` / repository root | Exit 0; package tests 194/0 (seed 220751; 10.7 seconds), built version 0.1.0 with 39 modules, and compiled and ran the unchanged empty-tool, bundled-basic, and fake-backend fresh consumers against the same artifact. SHA-256: `d737c9279209d4a38c563187f84964e571db9e83940e27297149305cacce0d6d`. Log: `/tmp/backplane-command-acceptance-artifact.log`. |
+| `git diff --check` / repository root | Exit 0 after this documentation update. |
+
+This acceptance closes the bounded LocalCommand follow-up. It does not establish
+full V1 acceptance, production durable-store certification, consumer migration,
+published provider protocols, or an OS sandbox.
+
+## Historical six-blocker follow-up (2026-09-14)
 
 This follow-up started from a clean `feature/agent-runtime` checkout at
 `e0ded87171439d3ea7ec10c855b6f1ed681e92b8`; PR #33 targets `main` at
