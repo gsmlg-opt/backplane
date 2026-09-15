@@ -84,7 +84,6 @@ defmodule Backplane.Observability.Redaction do
 
   defp do_redact(value) when is_atom(value), do: value
   defp do_redact(value) when is_number(value), do: value
-  defp do_redact(value) when is_boolean(value), do: value
   defp do_redact(value), do: value
 
   defp redact_binary(value) do
@@ -107,14 +106,6 @@ defmodule Backplane.Observability.Redaction do
   end
 
   defp sanitize_terms(value) when is_list(value), do: Enum.map(value, &sanitize_terms/1)
-
-  defp sanitize_terms(value) when is_struct(value) do
-    if is_exception(value) do
-      Exception.message(value)
-    else
-      value |> Map.from_struct() |> sanitize_terms()
-    end
-  end
 
   defp sanitize_terms(value) when is_tuple(value) do
     value |> Tuple.to_list() |> sanitize_terms()

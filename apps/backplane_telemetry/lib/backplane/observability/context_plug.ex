@@ -7,8 +7,6 @@ defmodule Backplane.Observability.ContextPlug do
 
   @behaviour Plug
 
-  require Logger
-
   alias Backplane.Observability.Context
 
   @impl true

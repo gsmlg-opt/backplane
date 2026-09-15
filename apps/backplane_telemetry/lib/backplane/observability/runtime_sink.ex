@@ -3,8 +3,6 @@ defmodule Backplane.Observability.RuntimeSink do
 
   use GenServer
 
-  require Logger
-
   alias Backplane.Observability.Sink.JSONL
   alias Backplane.Observability.Sink.Logger, as: SinkLogger
 

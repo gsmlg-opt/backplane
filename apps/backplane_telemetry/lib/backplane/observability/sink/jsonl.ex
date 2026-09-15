@@ -55,7 +55,6 @@ defmodule Backplane.Observability.Sink.JSONL do
   end
 
   defp sanitize(value) when is_list(value), do: Enum.map(value, &sanitize/1)
-  defp sanitize(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp sanitize(value) when is_atom(value), do: Atom.to_string(value)
   defp sanitize(value) when is_pid(value) or is_reference(value), do: inspect(value)
   defp sanitize(value) when is_tuple(value), do: value |> Tuple.to_list() |> sanitize()
