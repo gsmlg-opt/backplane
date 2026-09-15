@@ -88,10 +88,12 @@ defmodule Backplane.AgentRuntime.Kernel do
     with :ok <- require_state(run, :running, :provider_started),
          :ok <- validate_run_identity(run, input),
          :ok <- ensure_provider_start_allowed(run),
-         {:ok, identity} <- identity(input, @provider_identity, "provider") do
+         {:ok, identity} <- identity(input, @provider_identity, "provider"),
+         :ok <- ensure_new_provider_attempt(run, identity) do
       run
       |> Map.put(:active_provider, identity)
       |> Map.put(:current_step, Map.take(identity, [:step_id, :attempt_id]))
+      |> record_provider_attempt(identity)
       |> record_execution_intent(input)
       |> commit(:running, :provider_started, at, input)
     end
@@ -385,6 +387,25 @@ defmodule Backplane.AgentRuntime.Kernel do
     else
       conflict("provider cannot start while tool or continuation work is active")
     end
+  end
+
+  defp ensure_new_provider_attempt(run, identity) do
+    reservation_id = "provider:#{identity.attempt_id}"
+    active_attempt_id = get_in(run, [:active_provider, :attempt_id])
+
+    if active_attempt_id == identity.attempt_id or
+         Map.has_key?(Map.get(run, :provider_attempts, %{}), identity.attempt_id) or
+         Map.has_key?(Map.get(run, :execution_intents, %{}), reservation_id) do
+      conflict("provider attempt was already accepted")
+    else
+      :ok
+    end
+  end
+
+  defp record_provider_attempt(run, identity) do
+    Map.update(run, :provider_attempts, %{identity.attempt_id => identity}, fn attempts ->
+      Map.put(attempts, identity.attempt_id, identity)
+    end)
   end
 
   defp ensure_no_active_provider(run) do
