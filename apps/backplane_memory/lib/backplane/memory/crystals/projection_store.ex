@@ -168,9 +168,6 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
 
         {nil, _source_revision} ->
           repo().rollback(:projection_state_missing)
-
-        {%State{} = newer_state, _source_revision} ->
-          {:stale, newer_state}
       end
     end)
   end

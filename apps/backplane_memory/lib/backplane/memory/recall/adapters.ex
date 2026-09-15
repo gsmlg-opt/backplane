@@ -131,7 +131,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         common(artifact, partition, :observation, :working, id, source_refs, source_ids)
       )
     else
-      {:ok, _other} -> {:error, :invalid_provenance}
+      {:ok, _source_refs, _other_ids} -> {:error, :invalid_provenance}
       {:error, _reason} = error -> error
     end
   end

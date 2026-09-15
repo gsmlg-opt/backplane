@@ -72,7 +72,6 @@ defmodule Backplane.Memory.Projections.SessionDetail do
     else
       {:ok, []} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
-      false -> {:error, :invalid_session_id}
     end
   end
 

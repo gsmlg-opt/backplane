@@ -116,9 +116,6 @@ defmodule Backplane.Memory.Ingest do
 
         {:error, reason} when reason in [:invalid_payload, :invalid_utf8] ->
           {:reply, rejected(event_id, "invalid_event")}
-
-        {:error, reason} ->
-          {:reply, failed(event_id, reason)}
       end
     rescue
       _error in DBConnection.ConnectionError ->

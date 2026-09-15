@@ -623,10 +623,14 @@ defmodule Backplane.Memory.Memories.Verification do
 
   if Mix.env() == :test do
     defp graph_query_fun do
-      Application.get_env(:backplane_memory, :verification_graph_query, &repo().query/3)
+      query_repo = repo()
+      Application.get_env(:backplane_memory, :verification_graph_query, &query_repo.query/3)
     end
   else
-    defp graph_query_fun, do: &repo().query/3
+    defp graph_query_fun do
+      query_repo = repo()
+      &query_repo.query/3
+    end
   end
 
   defp graph_query(sql, params) do

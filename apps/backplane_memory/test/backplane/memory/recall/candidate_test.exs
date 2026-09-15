@@ -149,6 +149,21 @@ defmodule Backplane.Memory.Recall.CandidateTest do
              })
   end
 
+  test "observations reject provenance that does not identify exactly their own event" do
+    event_id = Ecto.UUID.generate()
+    other_id = Ecto.UUID.generate()
+    observation = Map.merge(@partition, %{event_id: event_id, content: "observation"})
+
+    for source_ids <- [[other_id], [event_id, other_id]] do
+      assert {:error, :invalid_provenance} =
+               Adapters.observation(%Adapters.ObservationRow{
+                 observation: observation,
+                 partition: @partition,
+                 source_refs: Enum.map(source_ids, &%Adapters.SourceRef{type: :event, id: &1})
+               })
+    end
+  end
+
   test "adapters reject bare artifacts, missing provenance, and mismatched typed sources" do
     id = Ecto.UUID.generate()
 
