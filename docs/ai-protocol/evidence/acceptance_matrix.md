@@ -71,3 +71,19 @@ This section supersedes the delivery status immediately above. It is bound to re
 
 Exact run/job IDs and failure boundaries are recorded in the `Endpoint regression coverage update
 (2026-09-15)` section of `docs/ai-protocol/evidence/pr32_remediation_report.md`.
+
+## Duplicate endpoint cleanup ledger (2026-09-15)
+
+This section supersedes the endpoint regression delivery status above. Source commit
+`b35037cfe5cfb7cdfa6121121649c1cd5fde7bdb` removes the accidentally merged duplicate routes,
+fixtures, tests, and decoder clauses without changing production code.
+
+| Acceptance | Current status | Evidence |
+| --- | --- | --- |
+| Fragmented chunked semantic JSON | `committed and passed locally` | One synchronized `chunked-json` route/test verifies no premature durable facts, byte-exact forwarding, one submission, one row, exact usage/identity/bytes, and complete terminal observation. |
+| Chunked observation above 8 MiB | `committed and passed locally` | One `chunked-overflow` route/test verifies byte-exact forwarding, one submission, one row, nil usage/identity, incomplete observation, exact bytes, and `response_bytes_exceeded`. |
+| Endpoint suite | `passed locally` | Exactly 10 tests; zero failures at seeds 0, 424242, and 987654. |
+| Normal `backplane_api` command | `passed locally` | 244 tests, zero failures. |
+| Production behavior | `unchanged` | Only the endpoint regression test and evidence changed; Relayixir and AI protocol production modules were not modified. |
+| Repository-wide checks | `partial` | Protocol 62/62, TestKit 2/2, Llama 251/251, Relayixir 247/247, format, Credo, and diff check pass. Strict compile remains blocked by existing `backplane_mcp_protocol` warnings. |
+| Exact-head CI | `pending` | The cleanup has not yet been pushed at the time of this entry. |

@@ -400,3 +400,28 @@ repository-wide CI gate red unless repository policy separately waives or fixes 
 migration boundary remains ordinary non-Codex OpenAI Responses native observation. Relayixir owns
 forwarding, and Backplane retains authorization, routing, credentials, observation and persistence;
 no full proxy migration or cross-protocol translation is claimed.
+
+## Duplicate endpoint regression cleanup (2026-09-15)
+
+This section supersedes the local-only endpoint status above. Reviewed remote head
+`e858394ee0404912c08065f9cbe2596f60b205e0` accidentally contained two `chunked-json` routes,
+overlapping fixtures, two regression pairs, and duplicate generic `decode_chunked_body/2` clauses.
+The first synchronized route shadowed the older route and caused the older test to wait for a
+release message it never sent. No production defect was reproduced.
+
+Commit `b35037cfe5cfb7cdfa6121121649c1cd5fde7bdb` removes only the redundant test code and retains:
+
+- one synchronized `chunked-json` regression, including the pre-completion no-log barrier;
+- one `chunked-overflow` regression above the 8 MiB observation bound;
+- one chunk decoder supporting chunk extensions and the zero-size terminator.
+
+The endpoint suite contains exactly 10 tests and passes at seeds `0`, `424242`, and `987654`.
+The full `backplane_api` application passes 244 tests. Protocol, TestKit, Llama, and Relayixir pass
+62, 2, 251, and 247 tests respectively. `mix format --check-formatted`, `mix credo --strict`
+(1,415 files / 19,527 mods and functions), and `git diff --check` pass. Local
+`mix compile --warnings-as-errors` exits 1 only for existing `backplane_mcp_protocol` dynamic
+`profile/0` and bitstring-size pin warnings; no changed file is reported. Production AI protocol
+and Relayixir files are unchanged.
+
+Exact-head GitHub CI is pending the authorized push. The established base-equivalent failures in
+the table above remain separate and are not claimed fixed or waived.
