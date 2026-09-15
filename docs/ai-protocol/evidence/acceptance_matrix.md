@@ -86,4 +86,4 @@ fixtures, tests, and decoder clauses without changing production code.
 | Normal `backplane_api` command | `passed locally` | 244 tests, zero failures. |
 | Production behavior | `unchanged` | Only the endpoint regression test and evidence changed; Relayixir and AI protocol production modules were not modified. |
 | Repository-wide checks | `partial` | Protocol 62/62, TestKit 2/2, Llama 251/251, Relayixir 247/247, format, Credo, and diff check pass. Strict compile remains blocked by existing `backplane_mcp_protocol` warnings. |
-| Exact-head CI | `pending` | The cleanup has not yet been pushed at the time of this entry. |
+| Cleanup-source CI | `target job passed` | At SHA `646531923b7d873026724eb7c72da7814fbf905f`, Test run `34921657683` job `104230898550` passed `Test (backplane_api)`. Protocol, TestKit, Llama, Relayixir, compile, format, Credo, and workflow contract also passed. Dialyzer and the seven established base-equivalent application jobs remain red. |

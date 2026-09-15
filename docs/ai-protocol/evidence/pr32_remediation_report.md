@@ -423,5 +423,9 @@ The full `backplane_api` application passes 244 tests. Protocol, TestKit, Llama,
 `profile/0` and bitstring-size pin warnings; no changed file is reported. Production AI protocol
 and Relayixir files are unchanged.
 
-Exact-head GitHub CI is pending the authorized push. The established base-equivalent failures in
-the table above remain separate and are not claimed fixed or waived.
+The authorized push produced exact cleanup-source SHA
+`646531923b7d873026724eb7c72da7814fbf905f`. Test run `34921657683` completed with
+`Test (backplane_api)` job `104230898550` passing. The same run also passed the protocol, TestKit,
+Llama, Relayixir, MCP protocol, and unaffected application jobs. CI runs `34921657583` and
+`34921654420` passed compile, format, Credo, and workflow contract. Both Dialyzer jobs and the seven
+established base-equivalent application jobs remain red; they are not claimed fixed or waived.
