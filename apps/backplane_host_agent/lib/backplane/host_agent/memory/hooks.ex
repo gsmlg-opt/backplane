@@ -33,7 +33,7 @@ defmodule Backplane.HostAgent.Memory.Hooks do
       {:supported, adapter} ->
         hooks =
           if Code.ensure_loaded?(adapter) and function_exported?(adapter, :supported_hooks, 0),
-            do: adapter.supported_hooks(),
+            do: apply(adapter, :supported_hooks, []),
             else: []
 
         %{status: :supported, adapter: adapter, hooks: hooks, hook_count: length(hooks)}
