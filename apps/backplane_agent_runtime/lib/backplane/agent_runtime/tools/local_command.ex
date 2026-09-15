@@ -75,6 +75,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          shutdown_timeout: config.shutdown_timeout,
          completion_retention: config.completion_retention,
          cleanup_reconciler: config.cleanup_reconciler,
+         shutdown_signaler: config.shutdown_signaler,
          launcher_script:
            Keyword.get(
              opts,
@@ -451,7 +452,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       |> Enum.map(& &1.process_group_id)
       |> Enum.uniq()
 
-    Enum.each(group_ids, &shutdown_signal/1)
+    Enum.each(group_ids, &shutdown_signal(&1, state.shutdown_signaler))
 
     pending_pids = Enum.map(state.pending, fn {_port, pending} -> pending.launcher_pid end)
     reconcile_shutdown(group_ids, pending_pids, state.shutdown_timeout)
@@ -844,13 +845,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
              @max_shutdown_timeout_ms
            ),
          {:ok, completion_retention} <- completion_retention(opts),
-         {:ok, cleanup_reconciler} <- cleanup_reconciler(opts) do
+         {:ok, cleanup_reconciler} <- cleanup_reconciler(opts),
+         {:ok, shutdown_signaler} <- shutdown_signaler(opts) do
       {:ok,
        %{
          cleanup_timeout: cleanup_timeout,
          shutdown_timeout: shutdown_timeout,
          completion_retention: completion_retention,
-         cleanup_reconciler: cleanup_reconciler
+         cleanup_reconciler: cleanup_reconciler,
+         shutdown_signaler: shutdown_signaler
        }}
     end
   end
@@ -869,6 +872,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
+  defp shutdown_signaler(opts) do
+    case Keyword.get(opts, :shutdown_signaler, &signal_process_group/2) do
+      signaler when is_function(signaler, 2) -> {:ok, signaler}
+      _other -> {:error, Error.new(:validation, "shutdown_signaler must be a function")}
+    end
+  end
+
   defp stop_cleanup_tasks(cleanup_supervisor) do
     if Process.alive?(cleanup_supervisor) do
       cleanup_supervisor
@@ -877,15 +887,44 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp shutdown_signal(process_group_id) do
-    case safe_signal_process_group(process_group_id, "-KILL") do
-      {_output, 0} -> :ok
-      result -> Logger.error("local command shutdown signal failed", result: inspect(result))
+  defp shutdown_signal(process_group_id, signaler) do
+    case process_group_exists?(process_group_id) do
+      {:ok, false} ->
+        :ok
+
+      {:ok, true} ->
+        signal_existing_group(process_group_id, signaler)
+
+      {:error, reason} ->
+        Logger.error("local command shutdown group probe failed",
+          process_group_id: process_group_id,
+          reason: inspect(reason)
+        )
     end
   end
 
-  defp safe_signal_process_group(process_group_id, signal) do
-    signal_process_group(process_group_id, signal)
+  defp signal_existing_group(process_group_id, signaler) do
+    case safe_shutdown_signal(signaler, process_group_id, "-KILL") do
+      {_output, 0} ->
+        :ok
+
+      result ->
+        case process_group_exists?(process_group_id) do
+          {:ok, false} ->
+            :ok
+
+          probe_result ->
+            Logger.error("local command shutdown signal failed",
+              process_group_id: process_group_id,
+              result: inspect(result),
+              probe: inspect(probe_result)
+            )
+        end
+    end
+  end
+
+  defp safe_shutdown_signal(signaler, process_group_id, signal) do
+    signaler.(process_group_id, signal)
   rescue
     error -> {:error, Exception.message(error)}
   catch
