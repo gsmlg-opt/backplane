@@ -150,6 +150,24 @@ defmodule Backplane.Memory.GeneratedSkillsTest do
     end
   end
 
+  test "manual reconciliation waits behind queued setting reconciliation" do
+    pid = Process.whereis(GeneratedSkills)
+    :sys.suspend(pid)
+    on_exit(fn -> if Process.alive?(pid), do: :sys.resume(pid) end)
+
+    send(GeneratedSkills, {:setting_changed, "memory.tools", "all"})
+    task = Task.async(&GeneratedSkills.reconcile/0)
+    assert Task.yield(task, 20) == nil
+
+    :sys.resume(GeneratedSkills)
+    assert :ok = Task.await(task, 10_000)
+
+    assert Skills.list()
+           |> Enum.filter(&(&1.source_kind == "generated" and &1.category == "memory"))
+           |> Enum.map(& &1.slug)
+           |> Enum.sort() == ~w(activity handoff lessons recap)
+  end
+
   test "generated metadata follows the live core tool inventory" do
     put_settings(%{"memory.tools" => "core"})
 

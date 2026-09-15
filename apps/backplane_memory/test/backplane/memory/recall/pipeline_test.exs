@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Recall.PipelineTest do
   use Backplane.Memory.DataCase, async: false
 
-  alias Backplane.Memory.Recall.{Candidate, Pipeline, QueryPlan, Run, Store}
+  alias Backplane.Memory.Recall.{Pipeline, QueryPlan, Run, Store}
   alias Backplane.Memory.Memories
 
   @partition %{
@@ -355,19 +355,9 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   end
 
   defp candidate(opts \\ []) do
-    id = Ecto.UUID.generate()
-
     {:ok, candidate} =
-      Candidate.new(
-        Map.merge(@partition, %{
-          id: id,
-          kind: :memory,
-          memory_type: :semantic,
-          content: Keyword.get(opts, :content, "result"),
-          source_ids: [id],
-          source_refs: [%{type: :memory, id: id}],
-          token_estimate: Keyword.get(opts, :tokens, 1)
-        })
+      canonical_recall_candidate(@partition, Keyword.get(opts, :content, "result"),
+        token_estimate: Keyword.get(opts, :tokens, 1)
       )
 
     candidate

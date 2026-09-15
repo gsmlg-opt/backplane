@@ -90,6 +90,7 @@ defmodule Backplane.Memory.Memories do
         with :ok <- validate_idempotency_options(opts),
              {:ok, partition} <- write_partition(opts),
              {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, [])),
+             {:ok, evidence} <- canonicalize_evidence_provenance(evidence, partition),
              {:ok, filtered} <- Filter.apply(content),
              attrs = build_attrs(filtered, opts, partition),
              {:ok, request_hash} <- CanonicalRequest.hash(attrs, evidence) do
@@ -780,6 +781,13 @@ defmodule Backplane.Memory.Memories do
       {:error, reason} ->
         {:error, reason}
     end
+  rescue
+    error in Ecto.ConstraintError ->
+      if error.constraint == "bpm_memory_evidence_canonical_partition" do
+        {:error, :partition_mismatch}
+      else
+        reraise(error, __STACKTRACE__)
+      end
   end
 
   defp relation_classifiable?(memory), do: memory.memory_type in ~w(semantic procedural)
@@ -945,6 +953,21 @@ defmodule Backplane.Memory.Memories do
         {:error, changeset} -> repo().rollback(changeset)
       end
     end)
+  end
+
+  defp canonicalize_evidence_provenance(evidence, partition) do
+    evidence
+    |> Enum.reduce_while({:ok, []}, fn attrs, {:ok, acc} ->
+      case Map.get(attrs, :host_id) do
+        nil -> {:cont, {:ok, [Map.put(attrs, :host_id, partition.host_id) | acc]}}
+        host_id when host_id == partition.host_id -> {:cont, {:ok, [attrs | acc]}}
+        _conflicting_host -> {:halt, {:error, :partition_mismatch}}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      error -> error
+    end
   end
 
   defp ensure_stored_evidence_matches!(memory_id, attrs) do

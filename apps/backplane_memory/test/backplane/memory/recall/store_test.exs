@@ -4,7 +4,6 @@ defmodule Backplane.Memory.Recall.StoreTest do
   import Ecto.Query
 
   alias Backplane.Memory.Recall.{
-    Candidate,
     Packer,
     PostFusion,
     QueryPlan,
@@ -511,18 +510,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
   defp plan(query), do: QueryPlan.new(Map.put(@partition, :query, query))
 
   defp candidate(content) do
-    source_id = Ecto.UUID.generate()
-
-    Candidate.new(
-      Map.merge(@partition, %{
-        id: Ecto.UUID.generate(),
-        kind: :memory,
-        memory_type: :semantic,
-        content: content,
-        source_ids: [source_id],
-        source_refs: [%{type: :event, id: source_id}]
-      })
-    )
+    canonical_recall_candidate(@partition, content)
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

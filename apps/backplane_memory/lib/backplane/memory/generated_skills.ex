@@ -83,7 +83,12 @@ defmodule Backplane.Memory.GeneratedSkills do
   def handle_info(_message, state), do: {:noreply, state}
 
   @spec reconcile() :: :ok | {:error, term()}
-  def reconcile do
+  def reconcile, do: GenServer.call(__MODULE__, :reconcile, 30_000)
+
+  @impl true
+  def handle_call(:reconcile, _from, state), do: {:reply, do_reconcile(), state}
+
+  defp do_reconcile do
     result =
       if Service.enabled?() do
         visible_tools = Map.new(Service.tools(), &{&1.name, &1})
@@ -98,7 +103,7 @@ defmodule Backplane.Memory.GeneratedSkills do
   end
 
   defp reconcile_safely do
-    case reconcile() do
+    case do_reconcile() do
       :ok ->
         :ok
 

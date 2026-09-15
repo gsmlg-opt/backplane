@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
+  alias Backplane.Memory.Projections.ProjectedSession
   alias Ecto.Adapters.SQL.Sandbox
 
   @timeout 30_000
@@ -63,6 +64,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
     prefix = unique("independent-typed")
     ensure_owner!()
     cleanup_on_exit(prefix)
+    insert_projected_session!(prefix)
     source = session_evidence(prefix)
 
     results =
@@ -83,7 +85,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
                from(e in Evidence,
                  where:
                    e.memory_id == ^memory_id and e.source_session_id == ^prefix and
-                     e.host_id == "source-host"
+                     e.host_id == "host"
                ),
                :count
              )
@@ -181,10 +183,30 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
   defp session_evidence(source_session_id) do
     %{
       source_session_id: source_session_id,
-      host_id: "source-host",
+      host_id: "host",
       evidence_kind: "derives",
       support_score: 0.9
     }
+  end
+
+  defp insert_projected_session!(session_id) do
+    unboxed(fn ->
+      now = DateTime.utc_now()
+
+      repo().insert!(%ProjectedSession{
+        memory_space_id: memory_space_id("host"),
+        subject_id: "evidence-concurrency:#{session_id}",
+        session_id: session_id,
+        project: "backplane",
+        host_id: "host",
+        scope: "global",
+        namespace: "private",
+        status: "closed",
+        last_event_at: now,
+        processing_version: "evidence-concurrency-test",
+        input_revision: "r1"
+      })
+    end)
   end
 
   defp insert_legacy_memory!(content) do
@@ -376,6 +398,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
           )
 
           repo().query!("DELETE FROM bpm_memories WHERE content LIKE $1", ["%#{prefix}%"])
+          repo().query!("DELETE FROM bpm_projected_sessions WHERE session_id = $1", [prefix])
         after
           repo().query!("ALTER TABLE bpm_memory_remember_requests ENABLE TRIGGER USER")
           repo().query!("ALTER TABLE bpm_memory_evidence ENABLE TRIGGER USER")

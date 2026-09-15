@@ -82,8 +82,6 @@ defmodule Backplane.Memory.Projections.ActivityStore do
     end)
   end
 
-  defp normalize_row!(_row), do: raise(ArgumentError, "invalid activity row")
-
   defp value(row, key), do: Map.get(row, key, Map.get(row, Atom.to_string(key)))
 
   defp date!(%Date{} = date), do: date

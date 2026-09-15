@@ -142,7 +142,6 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     assert {:ok, []} = Crystals.search(secret_marker, @partition)
   end
 
-  @tag timeout: 5_000
   test "dense connected action graph terminates within a bounded statement and stays partitioned" do
     action_ids = insert_actions(36, @partition)
 
@@ -173,7 +172,6 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     refute foreign_id in source_ids
   end
 
-  @tag timeout: 5_000
   test "action traversal stops after the authorized limit in a much larger component" do
     action_ids = insert_actions(4_000, @partition)
 

@@ -67,19 +67,24 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert repo().get!(Memory, wanted.id).access_count == 0
   end
 
-  test "FTS drops forged cross-partition event evidence from candidate provenance" do
+  test "FTS rejects forged cross-partition event evidence before candidate provenance" do
     wanted = memory("partition-safe evidence canary", @partition)
     foreign_event = Ecto.UUID.generate()
     insert_event(foreign_event, @foreign, "foreign-evidence-session")
 
-    repo().insert!(
-      Evidence.changeset(%Evidence{}, %{
-        memory_id: wanted.id,
-        source_event_id: foreign_event,
-        evidence_kind: "supports",
-        support_score: 1.0
-      })
-    )
+    assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
+      repo().transaction(fn ->
+        repo().insert!(
+          Evidence.changeset(%Evidence{}, %{
+            memory_id: wanted.id,
+            source_event_id: foreign_event,
+            host_id: @partition.host_id,
+            evidence_kind: "supports",
+            support_score: 1.0
+          })
+        )
+      end)
+    end
 
     assert {:ok, plan} =
              QueryPlan.new(Map.merge(@partition, %{query: "partition-safe evidence canary"}))
@@ -98,20 +103,24 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert {:ok, []} = Channels.fts(plan, 10)
   end
 
-  test "FTS fails closed for session-only evidence without canonical subject identity" do
+  test "FTS rejects session-only evidence without canonical subject identity" do
     memory = memory("session provenance canary", @partition, provenance: false)
     event_id = Ecto.UUID.generate()
     observation(event_id, @partition, "canonical session event", "evidence-session")
 
-    repo().insert!(
-      Evidence.changeset(%Evidence{}, %{
-        memory_id: memory.id,
-        source_session_id: "evidence-session",
-        host_id: @partition.host_id,
-        evidence_kind: "supports",
-        support_score: 1.0
-      })
-    )
+    assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
+      repo().transaction(fn ->
+        repo().insert!(
+          Evidence.changeset(%Evidence{}, %{
+            memory_id: memory.id,
+            source_session_id: "evidence-session",
+            host_id: @partition.host_id,
+            evidence_kind: "supports",
+            support_score: 1.0
+          })
+        )
+      end)
+    end
 
     assert {:ok, plan} =
              QueryPlan.new(Map.merge(@partition, %{query: "session provenance canary"}))
@@ -209,7 +218,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert {:ok, []} = Channels.fts(plan, 10)
   end
 
-  test "FTS drops summary event refs from every same-host foreign partition dimension" do
+  test "FTS rejects summary event refs from every same-host foreign partition dimension" do
     now = DateTime.utc_now()
 
     for {label, foreign} <- [
@@ -251,13 +260,19 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
           )
         )
 
-      repo().insert!(%SourceEvent{
-        summary_id: summary.id,
-        event_id: event_id,
-        host_id: @partition.host_id,
-        session_id: session_id,
-        inserted_at: now
-      })
+      assert_raise Ecto.ConstraintError,
+                   ~r/memory_summary_source_events_canonical_partition/,
+                   fn ->
+                     repo().transaction(fn ->
+                       repo().insert!(%SourceEvent{
+                         summary_id: summary.id,
+                         event_id: event_id,
+                         host_id: @partition.host_id,
+                         session_id: session_id,
+                         inserted_at: now
+                       })
+                     end)
+                   end
 
       assert {:ok, plan} =
                QueryPlan.new(
@@ -346,6 +361,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       Evidence.changeset(%Evidence{}, %{
         memory_id: linked.id,
         source_event_id: event_id,
+        host_id: @partition.host_id,
         evidence_kind: "supports",
         support_score: 1.0
       })
@@ -385,19 +401,24 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert candidate.source_refs == [%{type: :event, id: event_id}]
   end
 
-  test "graph cannot rank a local memory through a foreign event ID on a local node" do
+  test "graph rejects a foreign event ID as local memory evidence" do
     foreign_event = Ecto.UUID.generate()
     insert_event(foreign_event, @foreign, "foreign-graph-session")
     local = memory("local memory with forged graph evidence", @partition)
 
-    repo().insert!(
-      Evidence.changeset(%Evidence{}, %{
-        memory_id: local.id,
-        source_event_id: foreign_event,
-        evidence_kind: "supports",
-        support_score: 1.0
-      })
-    )
+    assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
+      repo().transaction(fn ->
+        repo().insert!(
+          Evidence.changeset(%Evidence{}, %{
+            memory_id: local.id,
+            source_event_id: foreign_event,
+            host_id: @partition.host_id,
+            evidence_kind: "supports",
+            support_score: 1.0
+          })
+        )
+      end)
+    end
 
     repo().insert!(
       Node.changeset(
@@ -485,6 +506,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       Evidence.changeset(%Evidence{}, %{
         memory_id: memory.id,
         source_request_id: request.id,
+        host_id: memory.host_id,
         evidence_kind: "supports",
         support_score: 1.0
       })
