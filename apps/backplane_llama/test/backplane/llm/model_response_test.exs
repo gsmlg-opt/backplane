@@ -52,6 +52,42 @@ defmodule Backplane.LLM.ModelResponseTest do
     assert normalized =~ "data: [DONE]\n\n"
   end
 
+  test "restores Responses aliases when SSE data is fragmented across transport chunks" do
+    stream =
+      ": keepalive\r\n\r\n" <>
+        "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5.6-terra\"}}\r\n\r\n" <>
+        "data: {malformed}\n\n" <>
+        "data: [DONE]\n\n"
+
+    mapper = ModelResponse.responses_stream_mapper("smart", "gpt-5.6-terra")
+
+    normalized =
+      stream
+      |> split_at_offsets([1, 9, 18, 47, 72, 91, 108])
+      |> Enum.flat_map(mapper)
+      |> IO.iodata_to_binary()
+
+    assert normalized =~ ~S("response":{"model":"smart"})
+    assert normalized =~ ": keepalive\r\n\r\n"
+    assert normalized =~ "data: {malformed}\n\n"
+    assert normalized =~ "data: [DONE]\n\n"
+    refute normalized =~ "gpt-5.6-terra"
+  end
+
+  test "fails open instead of buffering an unbounded unterminated SSE line" do
+    mapper = ModelResponse.responses_stream_mapper("smart", "gpt-5.6-terra")
+    oversized = "data: " <> String.duplicate("x", 1_048_576)
+
+    assert mapper.(oversized) == [oversized]
+
+    next =
+      "\n" <>
+        "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-terra\"}}\n\n"
+
+    mapped = mapper.(next) |> IO.iodata_to_binary()
+    assert mapped =~ ~S("response":{"model":"smart"})
+  end
+
   test "does not replace nested or unrelated model fields" do
     response =
       ~S({"model":"another-model","response":{"model":"gpt-5.6-terra"}})
@@ -84,5 +120,14 @@ defmodule Backplane.LLM.ModelResponseTest do
              "gpt-5.6-terra",
              "gpt-5.6-terra"
            ) == chunk
+  end
+
+  defp split_at_offsets(binary, offsets) do
+    {chunks, offset} =
+      Enum.reduce(offsets, {[], 0}, fn next_offset, {chunks, offset} ->
+        {[binary_part(binary, offset, next_offset - offset) | chunks], next_offset}
+      end)
+
+    Enum.reverse([binary_part(binary, offset, byte_size(binary) - offset) | chunks])
   end
 end

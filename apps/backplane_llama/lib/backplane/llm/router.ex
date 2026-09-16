@@ -463,9 +463,11 @@ defmodule Backplane.LLM.Router do
   defp response_model_mapping(opts, _client_protocol, model, model, _stream?), do: opts
 
   defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, true) do
-    Keyword.put(opts, :map_response_chunk, fn chunk ->
-      Backplane.LLM.ModelResponse.normalize_responses_chunk(chunk, requested_model, raw_model)
-    end)
+    Keyword.put(
+      opts,
+      :map_response_chunk,
+      Backplane.LLM.ModelResponse.responses_stream_mapper(requested_model, raw_model)
+    )
   end
 
   defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, false) do

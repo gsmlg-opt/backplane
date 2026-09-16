@@ -591,6 +591,26 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       assert Agent.get(auth_store, & &1.submissions) == 1
     end
 
+    test "normalizes a Responses alias split across upstream transport chunks", %{
+      auth_store: auth_store,
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "responses-fragmented")
+
+      conn =
+        llm_request(:post, "/v1/responses", %{
+          "model" => "test-integration/responses-fragmented",
+          "input" => "fragmented-model",
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      assert conn.resp_body =~ ~S("model":"test-integration/responses-fragmented")
+      refute conn.resp_body =~ ~S("model":"responses-fragmented")
+      assert Agent.get(auth_store, & &1.submissions) == 1
+    end
+
     test "malformed nested Responses SSE fails open with exact chunks and one submission", %{
       auth_store: auth_store,
       port: port,

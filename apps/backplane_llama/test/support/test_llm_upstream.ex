@@ -292,11 +292,37 @@ defmodule Backplane.Test.TestLLMUpstream do
   end
 
   defp responses_stream(conn, model) do
-    if conn.body_params["input"] == "malformed-nested" do
-      malformed_responses_stream(conn)
-    else
-      regular_responses_stream(conn, model)
+    case conn.body_params["input"] do
+      "malformed-nested" -> malformed_responses_stream(conn)
+      "fragmented-model" -> fragmented_responses_stream(conn, model)
+      _ -> regular_responses_stream(conn, model)
     end
+  end
+
+  defp fragmented_responses_stream(conn, model) do
+    event =
+      Jason.encode!(%{
+        "type" => "response.completed",
+        "response" => %{"id" => "resp_fragmented", "model" => model, "status" => "completed"}
+      })
+
+    chunks = [
+      "da",
+      "ta: ",
+      binary_part(event, 0, 31),
+      binary_part(event, 31, 19),
+      binary_part(event, 50, byte_size(event) - 50),
+      "\r",
+      "\n\r\n"
+    ]
+
+    conn = conn |> put_resp_content_type("text/event-stream") |> Plug.Conn.send_chunked(200)
+
+    Enum.reduce(chunks, conn, fn chunk, conn ->
+      {:ok, conn} = Plug.Conn.chunk(conn, chunk)
+      Process.sleep(5)
+      conn
+    end)
   end
 
   defp regular_responses_stream(conn, model) do

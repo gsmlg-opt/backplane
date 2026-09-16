@@ -6,6 +6,8 @@ defmodule Backplane.LLM.ModelResponse do
   identifier they sent in the response.
   """
 
+  @max_sse_line_bytes 1_048_576
+
   @doc "Replaces a top-level JSON response model when routing changed."
   @spec normalize_body(binary(), binary(), binary()) :: binary()
   def normalize_body(body, model, model) when is_binary(body) and is_binary(model), do: body
@@ -74,6 +76,35 @@ defmodule Backplane.LLM.ModelResponse do
     end)
   end
 
+  @doc "Builds a per-request mapper that handles SSE lines split across transport chunks."
+  @spec responses_stream_mapper(binary(), binary()) :: (binary() -> [binary()])
+  def responses_stream_mapper(model, model) when is_binary(model) do
+    fn chunk -> [chunk] end
+  end
+
+  def responses_stream_mapper(requested_model, resolved_model)
+      when is_binary(requested_model) and is_binary(resolved_model) do
+    state_key = {__MODULE__, :responses_stream, make_ref()}
+
+    fn chunk ->
+      {mapped, state} =
+        map_stream_chunk(
+          Process.get(state_key, {"", false}),
+          chunk,
+          requested_model,
+          resolved_model
+        )
+
+      if state == {"", false} do
+        Process.delete(state_key)
+      else
+        Process.put(state_key, state)
+      end
+
+      mapped
+    end
+  end
+
   defp normalize_sse_line(line, payload, suffix, requested_model, resolved_model) do
     case Jason.decode(payload) do
       {:ok, response} when is_map(response) ->
@@ -112,6 +143,39 @@ defmodule Backplane.LLM.ModelResponse do
 
       _ ->
         response
+    end
+  end
+
+  defp map_stream_chunk({buffer, passthrough?}, chunk, requested_model, resolved_model) do
+    map_complete_lines(
+      buffer <> chunk,
+      passthrough?,
+      requested_model,
+      resolved_model,
+      []
+    )
+  end
+
+  defp map_complete_lines(data, passthrough?, requested_model, resolved_model, mapped) do
+    case :binary.match(data, "\n") do
+      {newline, 1} ->
+        line = binary_part(data, 0, newline + 1)
+        rest = binary_part(data, newline + 1, byte_size(data) - newline - 1)
+
+        mapped_line =
+          if passthrough? do
+            line
+          else
+            normalize_responses_chunk(line, requested_model, resolved_model)
+          end
+
+        map_complete_lines(rest, false, requested_model, resolved_model, [mapped_line | mapped])
+
+      :nomatch when byte_size(data) > @max_sse_line_bytes ->
+        {Enum.reverse([data | mapped]), {"", true}}
+
+      :nomatch ->
+        {Enum.reverse(mapped), {data, passthrough?}}
     end
   end
 end
