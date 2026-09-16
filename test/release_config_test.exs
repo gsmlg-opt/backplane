@@ -74,9 +74,13 @@ defmodule Backplane.ReleaseConfigTest do
     refute version_script =~
              ~r/if \[\[ "\$file" == "apps\/backplane_mcp_protocol\/mix\.exs" \]\]; then\s+continue/
 
-    assert release_workflow =~ "Publish backplane_mcp_protocol to Hex"
+    assert release_workflow =~ "hex-packages:"
+    for package <- ["backplane_ai_protocol", "backplane_skill_protocol", "backplane_mcp_protocol"] do
+      assert release_workflow =~ "name: #{package}"
+      assert release_workflow =~ "Publish ${{ matrix.package.name }} to Hex"
+    end
     assert release_workflow =~ "mix hex.publish --yes"
-    assert release_workflow =~ ~r/docker-image:.*needs:.*hex-package/s
+    assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
   end
 
   test "release gates publication on Memory V2 qualification and installed migration smoke" do

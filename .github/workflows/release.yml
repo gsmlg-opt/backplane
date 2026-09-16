@@ -441,10 +441,21 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
 
-  hex-package:
-    name: Publish backplane_mcp_protocol to Hex
+  hex-packages:
+    name: Publish ${{ matrix.package.name }} to Hex
     needs: publish
     runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: true
+      matrix:
+        package:
+          - name: backplane_ai_protocol
+            path: apps/backplane_ai_protocol
+          - name: backplane_skill_protocol
+            path: apps/backplane_skill_protocol
+          - name: backplane_mcp_protocol
+            path: apps/backplane_mcp_protocol
 
     permissions:
       contents: read
@@ -476,15 +487,15 @@ jobs:
           path: |
             deps
             _build/dev
-          key: hex-backplane-mcp-protocol-${{ hashFiles('mix.lock', 'apps/backplane_mcp_protocol/mix.exs') }}
+          key: hex-${{ matrix.package.name }}-${{ hashFiles('mix.lock', format('{0}/mix.exs', matrix.package.path)) }}
           restore-keys: |
-            hex-backplane-mcp-protocol-
+            hex-${{ matrix.package.name }}-
 
       - name: Install dependencies
         run: mix deps.get
 
       - name: Validate package version
-        working-directory: apps/backplane_mcp_protocol
+        working-directory: ${{ matrix.package.path }}
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
@@ -492,12 +503,12 @@ jobs:
           package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
 
           if [[ -z "$package_version" ]]; then
-            echo "Could not read backplane_mcp_protocol version from mix.exs" >&2
+            echo "Could not read ${{ matrix.package.name }} version from mix.exs" >&2
             exit 1
           fi
 
           if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
-            echo "Release version $RELEASE_VERSION does not match backplane_mcp_protocol version $package_version" >&2
+            echo "Release version $RELEASE_VERSION does not match ${{ matrix.package.name }} version $package_version" >&2
             exit 1
           fi
 
@@ -505,19 +516,19 @@ jobs:
         shell: bash
         run: |
           if [[ -z "${HEX_API_KEY:-}" ]]; then
-            echo "HEX_API_KEY secret is required to publish backplane_mcp_protocol to Hex" >&2
+            echo "HEX_API_KEY secret is required to publish ${{ matrix.package.name }} to Hex" >&2
             exit 1
           fi
 
       - name: Publish package
-        working-directory: apps/backplane_mcp_protocol
+        working-directory: ${{ matrix.package.path }}
         run: mix hex.publish --yes
 
   docker-image:
     name: Publish Docker Image
     needs:
       - publish
-      - hex-package
+      - hex-packages
     uses: ./.github/workflows/docker-image.yml
     permissions:
       contents: read
