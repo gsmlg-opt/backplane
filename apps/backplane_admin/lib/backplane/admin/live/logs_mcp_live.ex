@@ -12,6 +12,7 @@ defmodule Backplane.Admin.LogsMcpLive do
        current_path: "/system/logs/mcp",
        loading: true,
        records: [],
+       tool_call_labels: %{},
        record: nil,
        tool_calls: [],
        filters: %{},
@@ -42,12 +43,16 @@ defmodule Backplane.Admin.LogsMcpLive do
     records =
       LogQuery.list(filters, %{limit: page_size(), cursor: cursor})
 
+    tool_call_labels =
+      LogQuery.tool_call_labels_by_request_ids(Enum.map(records, & &1.event_id))
+
     last = List.last(records)
     next_cursor = if last, do: {last.inserted_at, last.id}, else: nil
 
     {:noreply,
      assign(socket,
        records: socket.assigns.records ++ records,
+       tool_call_labels: Map.merge(socket.assigns.tool_call_labels, tool_call_labels),
        cursor: cursor,
        next_cursor: next_cursor
      )}
@@ -155,11 +160,14 @@ defmodule Backplane.Admin.LogsMcpLive do
       </div>
 
       <.dm_table :if={!@loading and @records != []} id="mcp-logs-table" data={@records} hover zebra>
+        <:col :let={row} label="Client">{client_label(row)}</:col>
+        <:col :let={row} label="Provider">{provider_label(row, @tool_call_labels)}</:col>
         <:col :let={row} label="Method">
           <.link navigate={~p"/system/logs/mcp/#{row.id}"} class="font-mono text-xs text-primary underline">
             {row.rpc_method || row.operation}
           </.link>
         </:col>
+        <:col :let={row} label="Tool">{tool_label(row, @tool_call_labels)}</:col>
         <:col :let={row} label="Operation">{row.operation}</:col>
         <:col :let={row} label="Outcome">
           <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
@@ -186,6 +194,9 @@ defmodule Backplane.Admin.LogsMcpLive do
     records =
       LogQuery.list(filters, %{limit: page_size(), cursor: cursor})
 
+    tool_call_labels =
+      LogQuery.tool_call_labels_by_request_ids(Enum.map(records, & &1.event_id))
+
     last = List.last(records)
     next_cursor = if length(records) == page_size() and last, do: {last.inserted_at, last.id}
 
@@ -193,6 +204,7 @@ defmodule Backplane.Admin.LogsMcpLive do
      assign(socket,
        loading: false,
        records: records,
+       tool_call_labels: tool_call_labels,
        filters: parse_mcp_filters(params),
        time_range: time_range,
        cursor: cursor,
@@ -219,7 +231,7 @@ defmodule Backplane.Admin.LogsMcpLive do
       record ->
         tool_calls =
           []
-          |> maybe_append_tool_calls(record.request_id, &LogQuery.list_tool_calls_for_request/2)
+          |> maybe_append_tool_calls(record.event_id, &LogQuery.list_tool_calls_for_request/2)
           |> maybe_append_tool_calls(record.trace_id, &LogQuery.list_tool_calls_for_trace/2)
           |> Enum.uniq_by(& &1.id)
 
@@ -244,5 +256,20 @@ defmodule Backplane.Admin.LogsMcpLive do
     if is_binary(version) and version != "", do: "#{name} #{version}", else: name
   end
 
+  defp client_label(%{client_id: client_id}) when is_binary(client_id), do: client_id
   defp client_label(_), do: "-"
+
+  defp provider_label(%{event_id: event_id}, tool_call_labels) do
+    case get_in(tool_call_labels, [event_id, :providers]) || [] do
+      [] -> "-"
+      names -> Enum.join(names, ", ")
+    end
+  end
+
+  defp tool_label(%{event_id: event_id}, tool_call_labels) do
+    case get_in(tool_call_labels, [event_id, :tools]) || [] do
+      [] -> "-"
+      names -> Enum.join(names, ", ")
+    end
+  end
 end

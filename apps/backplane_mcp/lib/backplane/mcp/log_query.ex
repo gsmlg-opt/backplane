@@ -64,6 +64,48 @@ defmodule Backplane.MCP.LogQuery do
     list(%{trace_id: trace_id}, opts)
   end
 
+  @doc "Returns distinct service and tool names grouped by MCP root event ID."
+  @spec tool_call_labels_by_request_ids([String.t()]) :: %{
+          optional(String.t()) => %{providers: [String.t()], tools: [String.t()]}
+        }
+  def tool_call_labels_by_request_ids(event_ids) do
+    event_ids = event_ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    case event_ids do
+      [] ->
+        %{}
+
+      _ ->
+        from(t in ToolCall,
+          where: t.mcp_request_id in ^event_ids,
+          select: {
+            t.mcp_request_id,
+            fragment("COALESCE(NULLIF(?, ''), ?)", t.upstream_name, t.tool_namespace),
+            t.tool_name
+          }
+        )
+        |> Repo.all()
+        |> Enum.group_by(fn {request_id, _provider, _tool} -> request_id end)
+        |> Map.new(fn {request_id, tool_calls} ->
+          providers =
+            tool_calls
+            |> Enum.map(fn {_request_id, provider, _tool} -> provider end)
+            |> Enum.filter(&(is_binary(&1) and &1 != ""))
+            |> Enum.uniq()
+            |> Enum.sort()
+
+          tools =
+            tool_calls
+            |> Enum.map(fn {_request_id, _provider, tool} -> tool end)
+            |> Enum.filter(&(is_binary(&1) and &1 != ""))
+            |> Enum.uniq()
+            |> Enum.sort()
+
+          {request_id, %{providers: providers, tools: tools}}
+        end)
+    end
+  end
+
   @doc "Lists child tool-call records with optional filters and keyset pagination."
   @spec list_tool_calls(map(), list_opts()) :: [ToolCall.t()]
   def list_tool_calls(filters \\ %{}, opts \\ %{}) do

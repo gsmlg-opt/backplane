@@ -172,13 +172,13 @@ defmodule Backplane.Admin.LogsLiveTest do
       })
 
     insert_mcp_tool_call(%{
-      mcp_request_id: "linked-req",
+      mcp_request_id: root.event_id,
       trace_id: "linked-trace",
       tool_name: "skill::list",
       upstream_name: "skills"
     })
 
-    assert length(Backplane.MCP.LogQuery.list_tool_calls_for_request("linked-req")) >= 1
+    assert length(Backplane.MCP.LogQuery.list_tool_calls_for_request(root.event_id)) >= 1
 
     {:ok, _view, detail} = live_with_sandbox(conn, "/system/logs/mcp/#{root.id}")
     assert detail =~ "MCP Request Detail"
@@ -187,6 +187,89 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert detail =~ "linked-req"
     refute detail =~ "super-secret"
     refute detail =~ "arguments"
+  end
+
+  test "mcp list displays client, services, method, and distinct tools", %{conn: conn} do
+    client_id = Ecto.UUID.generate()
+    missing_client_id = Ecto.UUID.generate()
+
+    root =
+      insert_mcp_log(%{
+        client_name: "MCP Inspector",
+        client_version: "2.4.0",
+        client_id: client_id,
+        request_id: "mcp-list-linked-request"
+      })
+
+    insert_mcp_tool_call(%{
+      mcp_request_id: root.event_id,
+      upstream_name: "alpha",
+      tool_name: "alpha::read"
+    })
+
+    insert_mcp_tool_call(%{
+      mcp_request_id: root.event_id,
+      upstream_name: "zeta",
+      tool_name: "zeta::list"
+    })
+
+    insert_mcp_tool_call(%{
+      mcp_request_id: root.event_id,
+      upstream_name: "alpha",
+      tool_name: "alpha::read"
+    })
+
+    insert_mcp_tool_call(%{
+      mcp_request_id: root.event_id,
+      upstream_name: nil,
+      tool_namespace: "managed",
+      tool_name: "managed::now"
+    })
+
+    insert_mcp_log(%{client_id: missing_client_id, request_id: "mcp-list-no-provider"})
+    insert_mcp_log(%{client_id: nil, request_id: "mcp-list-no-client"})
+
+    {:ok, _view, html} = live_with_sandbox(conn, "/system/logs/mcp")
+
+    assert html =~
+             ~r/<th[^>]*>\s*Client\s*<\/th>.*<th[^>]*>\s*Provider\s*<\/th>.*<th[^>]*>\s*Method\s*<\/th>.*<th[^>]*>\s*Tool\s*<\/th>/s
+
+    assert html =~ "MCP Inspector 2.4.0"
+    assert html =~ "alpha, managed, zeta"
+    assert html =~ "alpha::read, managed::now, zeta::list"
+    assert html =~ missing_client_id
+    assert html =~ ~r/>-<\/td>/
+    assert html =~ "/system/logs/mcp/#{root.id}"
+  end
+
+  test "mcp list loads service and tool labels for subsequent pages", %{conn: conn} do
+    base = DateTime.utc_now()
+
+    for index <- 1..50 do
+      insert_mcp_log(%{
+        request_id: "mcp-list-page-#{index}",
+        inserted_at: DateTime.add(base, -index, :second)
+      })
+    end
+
+    second_page_root =
+      insert_mcp_log(%{
+        request_id: "mcp-list-second-page",
+        inserted_at: DateTime.add(base, -51, :second)
+      })
+
+    insert_mcp_tool_call(%{
+      mcp_request_id: second_page_root.event_id,
+      upstream_name: "second-page-provider",
+      tool_name: "second-page::tool"
+    })
+
+    {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/mcp")
+    html = render_click(view, "load_more")
+
+    assert html =~ "second-page-provider"
+    assert html =~ "second-page::tool"
+    assert html =~ "/system/logs/mcp/#{second_page_root.id}"
   end
 
   test "audit page lists tool and skill audit records", %{conn: conn} do
