@@ -165,6 +165,7 @@ defmodule Backplane.LLM.Router do
             model_string,
             raw_model,
             rewritten_body,
+            client_protocol,
             api_type,
             access
           )
@@ -414,6 +415,7 @@ defmodule Backplane.LLM.Router do
          requested_model,
          raw_model,
          rewritten_body,
+         client_protocol,
          api_type,
          access,
          extra_opts \\ []
@@ -443,7 +445,7 @@ defmodule Backplane.LLM.Router do
           opts
         end
       end)
-      |> response_model_mapping(requested_model, raw_model, stream?)
+      |> response_model_mapping(client_protocol, requested_model, raw_model, stream?)
       |> Keyword.merge(extra_opts)
 
     conn = strip_client_authentication(conn)
@@ -458,15 +460,27 @@ defmodule Backplane.LLM.Router do
     result_conn
   end
 
-  defp response_model_mapping(opts, model, model, _stream?), do: opts
+  defp response_model_mapping(opts, _client_protocol, model, model, _stream?), do: opts
 
-  defp response_model_mapping(opts, requested_model, raw_model, true) do
+  defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, true) do
+    Keyword.put(opts, :map_response_chunk, fn chunk ->
+      Backplane.LLM.ModelResponse.normalize_responses_chunk(chunk, requested_model, raw_model)
+    end)
+  end
+
+  defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, false) do
+    Keyword.put(opts, :map_response_body, fn body ->
+      Backplane.LLM.ModelResponse.normalize_responses_body(body, requested_model, raw_model)
+    end)
+  end
+
+  defp response_model_mapping(opts, _client_protocol, requested_model, raw_model, true) do
     Keyword.put(opts, :map_response_chunk, fn chunk ->
       Backplane.LLM.ModelResponse.normalize_chunk(chunk, requested_model, raw_model)
     end)
   end
 
-  defp response_model_mapping(opts, requested_model, raw_model, false) do
+  defp response_model_mapping(opts, _client_protocol, requested_model, raw_model, false) do
     Keyword.put(opts, :map_response_body, fn body ->
       Backplane.LLM.ModelResponse.normalize_body(body, requested_model, raw_model)
     end)

@@ -188,7 +188,9 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         )
 
       assert conn.status == 200
-      assert Jason.decode!(conn.resp_body)["id"] == "resp_host_1"
+      response = Jason.decode!(conn.resp_body)
+      assert response["id"] == "resp_host_1"
+      assert response["model"] == "test-integration/responses-test"
 
       captured = Agent.get(auth_store, & &1)
       assert captured.submissions == 1
@@ -584,6 +586,8 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "response.completed"
+      assert conn.resp_body =~ ~S("model":"test-integration/responses-stream")
+      refute conn.resp_body =~ ~S("model":"responses-stream")
       assert Agent.get(auth_store, & &1.submissions) == 1
     end
 
