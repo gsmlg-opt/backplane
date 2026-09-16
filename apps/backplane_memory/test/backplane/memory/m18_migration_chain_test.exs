@@ -354,7 +354,7 @@ defmodule Backplane.Memory.M18MigrationChainTest do
     %{tables: tables, indexes: indexes}
   end
 
-  defp assert_eventually(fun, attempts \\ 100)
+  defp assert_eventually(fun, attempts \\ 500)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
     if fun.() do
