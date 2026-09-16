@@ -1,6 +1,8 @@
 defmodule Backplane.Admin.DashboardUsageLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
+  import Backplane.Admin.ObservabilityCase
+
   alias Backplane.LLM.{Provider, UsageLog}
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
@@ -22,7 +24,17 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
       model: "llama-test-model",
       status: 200,
       latency_ms: 150,
+      input_tokens: 23_124,
+      output_tokens: 1_250
+    })
+
+    insert_llm_log(%{
+      provider_id: provider.id,
+      provider_name: provider.name,
+      requested_model: "fast",
+      resolved_model: "llama-test-model",
       input_tokens: 100,
+      cached_tokens: 75,
       output_tokens: 50
     })
 
@@ -31,16 +43,19 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     assert html =~ "LLM Usage"
     assert html =~ "Total Requests"
     assert html =~ "Input Tokens"
+    assert html =~ "Cached Tokens"
     assert html =~ "Output Tokens"
+    assert html =~ "Alias Calls"
     assert html =~ "Average Latency"
-    assert html =~ "llama-test-model"
+    assert html =~ "Usage By Provider"
+    assert html =~ "usage-test-provider"
+    assert html =~ "23,224"
+    assert html =~ "1,300"
     assert html =~ "200"
     assert html =~ ~s(href="/dashboard/usage/mcp")
   end
 
   test "renders MCP usage page from persisted MCP logs", %{conn: conn} do
-    import Backplane.Admin.ObservabilityCase
-
     insert_mcp_log(%{rpc_method: "tools/list", outcome: "success"})
 
     {:ok, _view, html} = live_with_sandbox(conn, "/dashboard/usage/mcp")

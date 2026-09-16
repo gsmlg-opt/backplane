@@ -6,6 +6,7 @@ defmodule Backplane.Admin.LogsLiveTest do
   import Ecto.Query
 
   alias Backplane.Audit
+  alias Backplane.Clients
   alias Backplane.Memory.Workers.GraphExtractWorker
   alias Backplane.Repo
 
@@ -30,16 +31,30 @@ defmodule Backplane.Admin.LogsLiveTest do
   end
 
   test "llm detail page uses LogQuery record", %{conn: conn} do
+    {:ok, client} =
+      Clients.create_client(%{
+        name: "LLM log detail client #{System.unique_integer([:positive])}",
+        token: "llm-log-detail-token",
+        scopes: ["llm::invoke"]
+      })
+
     log =
       insert_llm_log(%{
-        requested_model: "admin-llm-model",
+        client_id: client.id,
+        requested_model: "fast",
+        resolved_model: "MiniMax-M3",
+        provider_name: "minimax",
         outcome: "success",
+        input_tokens: 28_885,
+        output_tokens: 95,
+        total_tokens: 28_980,
+        cached_tokens: 4_992,
         error_reason: "token=super-secret"
       })
 
     filters =
       Backplane.Admin.LogsComponents.parse_llm_filters(%{
-        "model" => "admin-llm-model",
+        "model" => "fast",
         "since" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), -86_400, :second)),
         "until" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 86_400, :second))
       })
@@ -48,9 +63,68 @@ defmodule Backplane.Admin.LogsLiveTest do
 
     {:ok, _view, detail} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
     assert detail =~ "LLM Request Detail"
+    assert detail =~ "Client"
+    assert detail =~ client.name
     assert detail =~ log.request_id
+    assert detail =~ "minimax/MiniMax-M3 (fast)"
+    assert detail =~ "28,980 (28,885 input / 4,992 cached / 95 output)"
     assert detail =~ "Copy"
     refute detail =~ "super-secret"
+  end
+
+  test "llm list displays client first, provider, and separate formatted token counts", %{
+    conn: conn
+  } do
+    {:ok, client} =
+      Clients.create_client(%{
+        name: "LLM log list client #{System.unique_integer([:positive])}",
+        token: "llm-log-list-token",
+        scopes: ["llm::invoke"]
+      })
+
+    insert_llm_log(%{
+      client_id: client.id,
+      requested_model: "fast",
+      resolved_model: "MiniMax-M3",
+      provider_name: "minimax",
+      outcome: "success",
+      input_tokens: 28_885,
+      output_tokens: 95,
+      total_tokens: 28_980,
+      cached_tokens: 4_992
+    })
+
+    insert_llm_log(%{
+      requested_model: "minimax/MiniMax-M3",
+      resolved_model: "MiniMax-M3",
+      provider_name: "minimax"
+    })
+
+    {:ok, _view, html} = live_with_sandbox(conn, "/system/logs/llm")
+
+    assert html =~ "Client"
+    assert html =~ client.name
+    assert html =~ ~r/<th[^>]*>\s*Client\s*<\/th>.*<th[^>]*>\s*Provider\s*<\/th>/s
+    assert html =~ "minimax"
+    assert html =~ "minimax/MiniMax-M3 (fast)"
+    refute html =~ "minimax/MiniMax-M3 (minimax/MiniMax-M3)"
+    assert html =~ "Input Tokens"
+    assert html =~ "Cached Tokens"
+    assert html =~ "Output Tokens"
+    assert html =~ ">28,885<"
+    assert html =~ ">4,992<"
+    assert html =~ ">95<"
+  end
+
+  test "llm logs fall back to client ID when the client no longer exists", %{conn: conn} do
+    missing_client_id = Ecto.UUID.generate()
+    insert_llm_log(%{client_id: missing_client_id})
+    insert_llm_log(%{client_id: nil})
+
+    {:ok, _view, html} = live_with_sandbox(conn, "/system/logs/llm")
+
+    assert html =~ missing_client_id
+    assert html =~ ">-<"
   end
 
   test "llm list shows empty state when no records match", %{conn: conn} do

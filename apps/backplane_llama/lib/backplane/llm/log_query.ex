@@ -5,7 +5,9 @@ defmodule Backplane.LLM.LogQuery do
 
   import Ecto.Query
 
+  alias Backplane.Clients.Client
   alias Backplane.LLM.ProxyRequest
+  alias Backplane.LLM.Provider
   alias Backplane.Repo
 
   @type filters :: %{
@@ -28,6 +30,16 @@ defmodule Backplane.LLM.LogQuery do
           total_input_tokens: non_neg_integer(),
           total_output_tokens: non_neg_integer(),
           avg_latency_ms: non_neg_integer(),
+          by_provider: [
+            %{
+              provider: binary(),
+              requests: non_neg_integer(),
+              input_tokens: non_neg_integer(),
+              cached_tokens: non_neg_integer(),
+              output_tokens: non_neg_integer(),
+              alias_calls: non_neg_integer()
+            }
+          ],
           by_model: [
             %{
               model: binary(),
@@ -48,6 +60,7 @@ defmodule Backplane.LLM.LogQuery do
     filters
     |> base_query()
     |> apply_cursor(cursor)
+    |> with_client_name()
     |> order_by([l], desc: l.inserted_at, desc: l.id)
     |> limit(^limit)
     |> Repo.all()
@@ -57,7 +70,10 @@ defmodule Backplane.LLM.LogQuery do
   @doc "Gets a single access record by primary key."
   @spec get(binary()) :: ProxyRequest.t() | nil
   def get(id) do
-    case Repo.get(ProxyRequest, id) do
+    case ProxyRequest
+         |> where([l], l.id == ^id)
+         |> with_client_name()
+         |> Repo.one() do
       nil -> nil
       row -> with_virtual_model(row)
     end
@@ -114,6 +130,47 @@ defmodule Backplane.LLM.LogQuery do
         }
       end)
 
+    by_provider =
+      base
+      |> join(:left, [l], p in Provider, on: p.id == l.provider_id)
+      |> group_by(
+        [l, p],
+        fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name)
+      )
+      |> select([l, p], %{
+        provider: fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name),
+        requests: count(l.id),
+        input_tokens: sum(l.input_tokens),
+        cached_tokens: sum(l.cached_tokens),
+        output_tokens: sum(l.output_tokens),
+        alias_calls:
+          fragment(
+            "count(*) filter (where ? is not null and ? is not null and ? <> ? and ? <> concat_ws('/', coalesce(nullif(?, ''), ?), ?))",
+            l.requested_model,
+            l.resolved_model,
+            l.requested_model,
+            l.resolved_model,
+            l.requested_model,
+            l.provider_name,
+            p.name,
+            l.resolved_model
+          )
+      })
+      |> order_by([l, p],
+        asc: fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name)
+      )
+      |> Repo.all()
+      |> Enum.map(fn row ->
+        %{
+          provider: row.provider,
+          requests: row.requests,
+          input_tokens: row.input_tokens || 0,
+          cached_tokens: row.cached_tokens || 0,
+          output_tokens: row.output_tokens || 0,
+          alias_calls: row.alias_calls || 0
+        }
+      end)
+
     by_status =
       base
       |> where([l], not is_nil(l.status))
@@ -127,6 +184,7 @@ defmodule Backplane.LLM.LogQuery do
       total_input_tokens: totals.total_input_tokens || 0,
       total_output_tokens: totals.total_output_tokens || 0,
       avg_latency_ms: round_or_zero(totals.avg_latency_ms),
+      by_provider: by_provider,
       by_model: by_model,
       by_status: by_status
     }
@@ -151,6 +209,12 @@ defmodule Backplane.LLM.LogQuery do
       [l],
       l.inserted_at < ^inserted_at or (l.inserted_at == ^inserted_at and l.id < ^id)
     )
+  end
+
+  defp with_client_name(query) do
+    query
+    |> join(:left, [l], client in Client, on: client.id == l.client_id)
+    |> select_merge([_l, client], %{client_name: client.name})
   end
 
   defp maybe_filter_provider(query, nil), do: query

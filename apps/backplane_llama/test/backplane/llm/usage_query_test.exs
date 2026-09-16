@@ -1,7 +1,7 @@
 defmodule Backplane.LLM.UsageQueryTest do
   use BackplaneLlama.DataCase, async: true
 
-  alias Backplane.LLM.{Provider, UsageLog, UsageQuery}
+  alias Backplane.LLM.{Provider, ProxyRequest, UsageLog, UsageQuery}
   alias Backplane.Settings.Credentials
 
   @provider_attrs %{
@@ -30,6 +30,26 @@ defmodule Backplane.LLM.UsageQueryTest do
     }
 
     Repo.insert!(struct(UsageLog, Map.merge(defaults, attrs)))
+  end
+
+  defp insert_proxy_log(provider, attrs) do
+    defaults = %{
+      event_id: "query-event-#{System.unique_integer([:positive])}",
+      operation: "responses",
+      outcome: "success",
+      provider_id: provider.id,
+      provider_name: provider.name,
+      requested_model: "#{provider.name}/claude-3-5-sonnet-20241022",
+      resolved_model: "claude-3-5-sonnet-20241022",
+      input_tokens: 50,
+      cached_tokens: 10,
+      output_tokens: 25
+    }
+
+    defaults
+    |> Map.merge(attrs)
+    |> ProxyRequest.insert_changeset()
+    |> Repo.insert!()
   end
 
   describe "aggregate/1" do
@@ -73,6 +93,32 @@ defmodule Backplane.LLM.UsageQueryTest do
       assert haiku.input_tokens == 50
     end
 
+    test "aggregates tokens and alias calls by provider", %{provider: provider} do
+      insert_proxy_log(provider, %{
+        provider_name: "",
+        input_tokens: 23_124,
+        cached_tokens: 4_992,
+        output_tokens: 1_250
+      })
+
+      insert_proxy_log(provider, %{
+        requested_model: "fast",
+        input_tokens: 100,
+        cached_tokens: 75,
+        output_tokens: 50
+      })
+
+      result = UsageQuery.aggregate(%{provider_id: provider.id})
+
+      assert [usage] = result.by_provider
+      assert usage.provider == provider.name
+      assert usage.requests == 2
+      assert usage.input_tokens == 23_224
+      assert usage.cached_tokens == 5_067
+      assert usage.output_tokens == 1_300
+      assert usage.alias_calls == 1
+    end
+
     test "returns by_status breakdown", %{provider: provider} do
       insert_log(provider.id, %{status: 200})
       insert_log(provider.id, %{status: 200})
@@ -103,6 +149,7 @@ defmodule Backplane.LLM.UsageQueryTest do
       assert result.total_input_tokens == 0
       assert result.total_output_tokens == 0
       assert result.avg_latency_ms == 0
+      assert result.by_provider == []
       assert result.by_model == []
       assert result.by_status == %{}
     end

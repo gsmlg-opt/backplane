@@ -74,7 +74,8 @@ defmodule Backplane.Admin.LogsLlmLive do
 
         <.dm_card variant="bordered" class="mb-6">
           <dl class="grid gap-3 text-sm sm:grid-cols-2">
-            <div><dt class="text-on-surface-variant">Model</dt><dd class="font-mono text-xs">{@record.requested_model || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">Model</dt><dd class="font-mono text-xs">{model_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">Client</dt><dd>{client_label(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Outcome</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
             <div><dt class="text-on-surface-variant">Status</dt><dd>{@record.status || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
@@ -127,9 +128,11 @@ defmodule Backplane.Admin.LogsLlmLive do
       </div>
 
       <.dm_table :if={!@loading and @records != []} id="llm-logs-table" data={@records} hover zebra>
+        <:col :let={row} label="Client">{client_label(row)}</:col>
+        <:col :let={row} label="Provider">{row.provider_name || "-"}</:col>
         <:col :let={row} label="Model">
           <.link navigate={~p"/system/logs/llm/#{row.id}"} class="font-mono text-xs text-primary underline">
-            {row.requested_model || "-"}
+            {model_label(row)}
           </.link>
         </:col>
         <:col :let={row} label="Outcome">
@@ -137,7 +140,9 @@ defmodule Backplane.Admin.LogsLlmLive do
         </:col>
         <:col :let={row} label="Status">{row.status || "-"}</:col>
         <:col :let={row} label="Latency">{row.duration_ms || "-"} ms</:col>
-        <:col :let={row} label="Tokens">{token_summary(row)}</:col>
+        <:col :let={row} label="Input Tokens">{format_token_count(row.input_tokens)}</:col>
+        <:col :let={row} label="Cached Tokens">{format_token_count(row.cached_tokens)}</:col>
+        <:col :let={row} label="Output Tokens">{format_token_count(row.output_tokens)}</:col>
         <:col :let={row} label="Recorded">
           <.local_time datetime={row.inserted_at} format="short" />
         </:col>
@@ -192,9 +197,44 @@ defmodule Backplane.Admin.LogsLlmLive do
     end
   end
 
-  defp token_summary(%{input_tokens: in_t, output_tokens: out_t}) do
+  defp token_summary(%{input_tokens: in_t, output_tokens: out_t} = record) do
     in_val = in_t || 0
     out_val = out_t || 0
-    "#{in_val} / #{out_val}"
+    total = record.total_tokens || in_val + out_val
+
+    cached =
+      case record.cached_tokens do
+        nil -> ""
+        value -> " / #{format_token_count(value)} cached"
+      end
+
+    "#{format_token_count(total)} (#{format_token_count(in_val)} input#{cached} / #{format_token_count(out_val)} output)"
+  end
+
+  defp model_label(%{requested_model: requested, resolved_model: resolved} = record)
+       when is_binary(resolved) do
+    canonical =
+      case record.provider_name do
+        provider when is_binary(provider) and provider != "" -> "#{provider}/#{resolved}"
+        _ -> resolved
+      end
+
+    if requested in [nil, "", resolved, canonical],
+      do: canonical,
+      else: "#{canonical} (#{requested})"
+  end
+
+  defp model_label(%{requested_model: requested}), do: requested || "-"
+
+  defp client_label(%{client_name: name}) when is_binary(name) and name != "", do: name
+  defp client_label(%{client_id: client_id}) when is_binary(client_id), do: client_id
+  defp client_label(_record), do: "-"
+
+  defp format_token_count(nil), do: "-"
+
+  defp format_token_count(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> then(&Regex.replace(~r/\B(?=(\d{3})+(?!\d))/, &1, ","))
   end
 end

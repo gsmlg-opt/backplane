@@ -45,11 +45,17 @@ defmodule Backplane.LLM.AccessEvent do
       http_method: conn.method,
       path: conn.request_path,
       client_ip: client_ip(conn),
-      client_id: conn.assigns[:client_id],
+      client_id: client_id(conn),
       request_bytes: byte_size(raw_body),
       attempt_count: 1
     }
   end
+
+  defp client_id(%Plug.Conn{assigns: %{resource_auth: %{client_id: client_id}}}) do
+    client_id
+  end
+
+  defp client_id(%Plug.Conn{assigns: assigns}), do: assigns[:client_id]
 
   @spec put_requested_model(t(), String.t() | nil) :: t()
   def put_requested_model(%__MODULE__{} = state, model) do

@@ -37,6 +37,28 @@ defmodule Backplane.LLM.AccessEventTest do
     assert log.raw_request == nil
   end
 
+  test "finalize persists the authenticated resource client ID" do
+    client_id = Ecto.UUID.generate()
+
+    conn =
+      conn(:post, "/v1/chat/completions", "{}")
+      |> assign(:resource_auth, %{client_id: client_id})
+      |> send_resp(200, ~s({"usage":{"prompt_tokens":1,"completion_tokens":2}}))
+
+    access =
+      conn
+      |> AccessEvent.start("chat_completions", :openai_chat_completions)
+      |> AccessEvent.put_requested_model("client-owned-model")
+      |> AccessEvent.prepare_response_observation()
+
+    AccessEvent.scan_stream_chunk(access, conn.resp_body)
+
+    :ok = AccessEvent.finalize(access, conn, :success, status: 200)
+    flush_logs!()
+
+    assert %{client_id: ^client_id} = log_for_model("client-owned-model")
+  end
+
   test "compact streaming requests retain the compact legacy protocol" do
     conn = conn(:post, "/v1/providers/codex/responses/compact", "{}")
 

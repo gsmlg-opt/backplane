@@ -18,6 +18,7 @@ defmodule Backplane.LLM.ProxyRequest do
     field(:request_id, :string)
     field(:trace_id, :string)
     field(:client_id, :binary_id)
+    field(:client_name, :string, virtual: true)
     field(:client_ip, :string)
 
     field(:operation, :string)

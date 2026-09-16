@@ -103,17 +103,19 @@ defmodule Backplane.Admin.DashboardUsageLive do
       </div>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Usage By Model</h2>
-        <div :if={@usage.by_model == []} class="text-sm text-on-surface-variant">
+        <h2 class="mb-3 text-lg font-semibold">Usage By Provider</h2>
+        <div :if={@usage.by_provider == []} class="text-sm text-on-surface-variant">
           No LLM usage logs recorded yet.
         </div>
-        <.dm_table :if={@usage.by_model != []} id="llm-model-usage-table" data={@usage.by_model} hover zebra>
-          <:col :let={row} label="Model">
-            <code>{row.model}</code>
+        <.dm_table :if={@usage.by_provider != []} id="llm-provider-usage-table" data={@usage.by_provider} hover zebra>
+          <:col :let={row} label="Provider">
+            <code>{row.provider}</code>
           </:col>
           <:col :let={row} label="Requests">{format_number(row.requests)}</:col>
           <:col :let={row} label="Input Tokens">{format_number(row.input_tokens)}</:col>
+          <:col :let={row} label="Cached Tokens">{format_number(row.cached_tokens)}</:col>
           <:col :let={row} label="Output Tokens">{format_number(row.output_tokens)}</:col>
+          <:col :let={row} label="Alias Calls">{format_number(row.alias_calls)}</:col>
         </.dm_table>
       </section>
 
@@ -141,6 +143,7 @@ defmodule Backplane.Admin.DashboardUsageLive do
       total_input_tokens: 0,
       total_output_tokens: 0,
       avg_latency_ms: 0,
+      by_provider: [],
       by_model: [],
       by_status: %{}
     }
@@ -165,7 +168,13 @@ defmodule Backplane.Admin.DashboardUsageLive do
   defp counter(metrics, name), do: get_in(metrics, [:counters, name]) || 0
 
   defp format_number(nil), do: "0"
-  defp format_number(value) when is_integer(value), do: Integer.to_string(value)
+
+  defp format_number(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> then(&Regex.replace(~r/\B(?=(\d{3})+(?!\d))/, &1, ","))
+  end
+
   defp format_number(value), do: to_string(value)
 
   defp safe_call(fun, default) do
