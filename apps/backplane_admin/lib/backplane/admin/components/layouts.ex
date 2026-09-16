@@ -146,6 +146,11 @@ defmodule Backplane.Admin.Layouts do
           %{label: "Clients", path: "/system/clients", icon: "account-group"},
           %{label: "Credentials", path: "/system/credentials", icon: "key-variant"},
           %{
+            label: "Host Agents",
+            path: "/system/host-agents",
+            icon: "server"
+          },
+          %{
             label: "Monitor",
             icon: "monitor-eye",
             items: [
@@ -166,11 +171,6 @@ defmodule Backplane.Admin.Layouts do
               %{label: "Jobs", path: "/system/logs/jobs", icon: "cog-clockwise"},
               %{label: "Sinks", path: "/system/logs/sinks", icon: "pipe"}
             ]
-          },
-          %{
-            label: "Host Agents",
-            path: "/system/host-agents",
-            icon: "server"
           }
         ]
     end
