@@ -67,7 +67,7 @@ defmodule Backplane.LLM.Router do
 
   get "/v1/models" do
     models = build_model_list()
-    send_json(conn, 200, %{"object" => "list", "data" => models})
+    send_json(conn, 200, %{"object" => "list", "data" => models, "models" => []})
   end
 
   post "/v1/messages" do

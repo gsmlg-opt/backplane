@@ -820,6 +820,7 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       assert body["object"] == "list"
       assert is_list(body["data"])
+      assert body["models"] == []
     end
 
     test "includes prefixed model ids" do
