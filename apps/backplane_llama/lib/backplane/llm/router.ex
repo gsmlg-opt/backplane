@@ -157,7 +157,17 @@ defmodule Backplane.LLM.Router do
              {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
           conn = upstream_request_conn(conn, api_type, provider_api)
           upstream = build_upstream(provider_api, auth_headers)
-          do_proxy(conn, upstream, provider, raw_model, rewritten_body, api_type, access)
+
+          do_proxy(
+            conn,
+            upstream,
+            provider,
+            model_string,
+            raw_model,
+            rewritten_body,
+            api_type,
+            access
+          )
         else
           {:error, :no_provider} ->
             conn = send_not_found(conn, api_type, model_string)
@@ -401,6 +411,7 @@ defmodule Backplane.LLM.Router do
          conn,
          upstream,
          provider,
+         requested_model,
          raw_model,
          rewritten_body,
          api_type,
@@ -432,6 +443,7 @@ defmodule Backplane.LLM.Router do
           opts
         end
       end)
+      |> response_model_mapping(requested_model, raw_model, stream?)
       |> Keyword.merge(extra_opts)
 
     conn = strip_client_authentication(conn)
@@ -444,6 +456,20 @@ defmodule Backplane.LLM.Router do
     )
 
     result_conn
+  end
+
+  defp response_model_mapping(opts, model, model, _stream?), do: opts
+
+  defp response_model_mapping(opts, requested_model, raw_model, true) do
+    Keyword.put(opts, :map_response_chunk, fn chunk ->
+      Backplane.LLM.ModelResponse.normalize_chunk(chunk, requested_model, raw_model)
+    end)
+  end
+
+  defp response_model_mapping(opts, requested_model, raw_model, false) do
+    Keyword.put(opts, :map_response_body, fn body ->
+      Backplane.LLM.ModelResponse.normalize_body(body, requested_model, raw_model)
+    end)
   end
 
   defp do_embedding_proxy(conn, upstream, rewritten_body, access) do

@@ -264,7 +264,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
-      assert body["model"] == "claude-test"
+      assert body["model"] == "test-integration/claude-test"
 
       assert Agent.get(auth_store, & &1.body) ==
                Map.put(client_body, "model", "claude-test")
@@ -309,7 +309,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       assert get_in(body, ["choices", Access.at(0), "message", "content"]) ==
                "Hello from test upstream"
 
-      assert body["model"] == "gpt-test"
+      assert body["model"] == "test-integration/gpt-test"
 
       repeated_v1_conn =
         llm_request(:post, "/v1/v1/chat/completions", %{
@@ -642,6 +642,25 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         end)
 
       assert content_type =~ "text/event-stream"
+    end
+
+    test "restores the requested model alias in OpenAI chat chunks", %{
+      port: port,
+      provider: provider
+    } do
+      setup_openai_model(provider, port, "chat-stream")
+
+      conn =
+        llm_request(:post, "/v1/chat/completions", %{
+          "model" => "test-integration/chat-stream",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      assert conn.resp_body =~ ~S("model":"test-integration/chat-stream")
+      refute conn.resp_body =~ ~S("model":"chat-stream")
+      assert conn.resp_body =~ "data: [DONE]\n\n"
     end
   end
 
