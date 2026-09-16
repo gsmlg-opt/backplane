@@ -138,6 +138,7 @@ async function main() {
 
   await waitFor("document.querySelectorAll('[id^=replay-event-]').length >= 121", "121 replay rows")
   await waitFor("document.querySelector('[data-phx-main]')?.classList.contains('phx-connected')", "LiveView join")
+  await waitFor("/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(document.querySelector('#replay-memory-space')?.value || '')", "canonical memory-space identity")
   await waitFor("document.querySelector('#replay-event-1')?.getAttribute('aria-current') === 'true'", "initial cursor")
 
   await click("#replay-next")
@@ -199,6 +200,7 @@ async function main() {
     seeded_events: 122,
     assertions: {
       paginated_render_over_100: true,
+      canonical_memory_space_identity: true,
       controls: true,
       cursor: true,
       disconnect_reconnect_state: true,
