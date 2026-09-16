@@ -119,8 +119,15 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "installed-release-migration-smoke:"
     assert workflow =~ "installed/backplane/bin/backplane eval"
     assert workflow =~ "second installed migration pass was not a no-op"
-    assert workflow =~ "last_version == 20260904000003"
-    assert workflow =~ "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL"
+    assert workflow =~ "Checkout authoritative migration inventory"
+    assert workflow =~ "EXPECTED_LATEST_MIGRATION"
+    assert workflow =~ "Installed release is missing authoritative migration"
+    assert workflow =~ "last_version == expected_latest_migration"
+    refute workflow =~ ~r/last_version == \d{14}/
+
+    for table <- ~w(bpm_events memory_import_batches bpm_memory_spaces bpm_memory_changes) do
+      assert workflow =~ table
+    end
 
     assert workflow =~
              ~r/publish:.*needs:\s+- qualify-memory-v2\s+- build\s+- installed-release-migration-smoke/s

@@ -298,7 +298,9 @@ jobs:
 
   installed-release-migration-smoke:
     name: Installed release database migration smoke
-    needs: build
+    needs:
+      - qualify-memory-v2
+      - build
     runs-on: ubuntu-24.04
 
     services:
@@ -317,6 +319,11 @@ jobs:
           --health-retries 10
 
     steps:
+      - name: Checkout authoritative migration inventory
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
+
       - name: Download Linux x64 Backplane release
         uses: actions/download-artifact@v7
         with:
@@ -345,6 +352,33 @@ jobs:
           SECRET_KEY_BASE: release_smoke_secret_key_base_for_ci_only_1234567890_release_smoke
         shell: bash
         run: |
+          latest_migration="$(
+            find apps/backplane_system/priv/repo/migrations \
+              -maxdepth 1 -type f -name '[0-9]*_*.exs' -print \
+              | sort \
+              | tail -n 1
+          )"
+          latest_migration="${latest_migration##*/}"
+          expected_latest_migration="${latest_migration%%_*}"
+
+          if [[ ! "$expected_latest_migration" =~ ^[0-9]{14}$ ]]; then
+            echo "Could not derive authoritative latest migration version" >&2
+            exit 1
+          fi
+
+          packaged_latest_migration="$(
+            find installed/backplane/lib \
+              -path '*/backplane_system-*/priv/repo/migrations/*' \
+              -name "$latest_migration" -print -quit
+          )"
+
+          if [[ -z "$packaged_latest_migration" ]]; then
+            echo "Installed release is missing authoritative migration $latest_migration" >&2
+            exit 1
+          fi
+
+          export EXPECTED_LATEST_MIGRATION="$expected_latest_migration"
+
           installed/backplane/bin/backplane eval '
           path = Application.app_dir(:backplane_system, "priv/repo/migrations")
           {:ok, versions, _apps} =
@@ -363,12 +397,35 @@ jobs:
           if versions != [], do: raise("second installed migration pass was not a no-op")
           {:ok, :verified, _apps} =
             Ecto.Migrator.with_repo(Backplane.Repo, fn repo ->
+              expected_latest_migration =
+                System.fetch_env!("EXPECTED_LATEST_MIGRATION") |> String.to_integer()
+
               %Postgrex.Result{rows: [[last_version]]} =
                 Ecto.Adapters.SQL.query!(repo, "SELECT max(version) FROM schema_migrations", [])
-              %Postgrex.Result{rows: [[event_table, import_table]]} =
-                Ecto.Adapters.SQL.query!(repo, "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL", ["public.bpm_events", "public.memory_import_batches"])
-              unless last_version == 20260904000003 and event_table and import_table,
-                do: raise("installed migration inventory is incomplete")
+
+              required_tables = [
+                "public.bpm_events",
+                "public.memory_import_batches",
+                "public.bpm_memory_spaces",
+                "public.bpm_memory_changes"
+              ]
+
+              missing_tables =
+                Enum.reject(required_tables, fn table ->
+                  %Postgrex.Result{rows: [[exists?]]} =
+                    Ecto.Adapters.SQL.query!(repo, "SELECT to_regclass($1) IS NOT NULL", [table])
+
+                  exists?
+                end)
+
+              unless last_version == expected_latest_migration and missing_tables == [] do
+                raise(
+                  "installed migration inventory is incomplete: " <>
+                    "expected latest #{expected_latest_migration}, got #{inspect(last_version)}, " <>
+                    "missing tables #{inspect(missing_tables)}"
+                )
+              end
+
               :verified
             end)
           '
