@@ -28,7 +28,12 @@ defmodule Backplane.AiProtocol.MixProject do
     [extra_applications: [:logger]]
   end
 
-  defp deps, do: [{:jason, "~> 1.4"}]
+  defp deps do
+    [
+      {:jason, "~> 1.4"},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+    ]
+  end
 
   defp description do
     "Provider-neutral AI protocol contracts and codec primitives without host runtime dependencies."

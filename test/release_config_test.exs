@@ -75,12 +75,29 @@ defmodule Backplane.ReleaseConfigTest do
              ~r/if \[\[ "\$file" == "apps\/backplane_mcp_protocol\/mix\.exs" \]\]; then\s+continue/
 
     assert release_workflow =~ "hex-packages:"
+
     for package <- ["backplane_ai_protocol", "backplane_skill_protocol", "backplane_mcp_protocol"] do
       assert release_workflow =~ "name: #{package}"
       assert release_workflow =~ "Publish ${{ matrix.package.name }} to Hex"
     end
+
     assert release_workflow =~ "mix hex.publish --yes"
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
+  end
+
+  test "Hex protocol packages can generate documentation from their app directories" do
+    for path <- [
+          "apps/backplane_ai_protocol/mix.exs",
+          "apps/backplane_skill_protocol/mix.exs"
+        ] do
+      package_mix = File.read!(path)
+
+      assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: :dev, runtime: false}"
+      assert package_mix =~ "build_path: \"../../_build\""
+      assert package_mix =~ "config_path: \"../../config/config.exs\""
+      assert package_mix =~ "deps_path: \"../../deps\""
+      assert package_mix =~ "lockfile: \"../../mix.lock\""
+    end
   end
 
   test "release gates publication on Memory V2 qualification and installed migration smoke" do
