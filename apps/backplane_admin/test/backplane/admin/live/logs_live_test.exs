@@ -21,6 +21,7 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ "Browse LLM logs"
     assert html =~ "Browse MCP logs"
     assert html =~ "Live tool activity"
+    refute has_element?(view, "nav.mb-6")
 
     Backplane.PubSubBroadcaster.broadcast_tools_call(:dispatched, %{tool: "baseline::tool"})
     html = render(view)

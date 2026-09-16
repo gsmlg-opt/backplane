@@ -59,8 +59,6 @@ defmodule Backplane.Admin.LogsLlmLive do
   def render(%{live_action: :show} = assigns) do
     ~H"""
     <div>
-      <.logs_nav current="/system/logs/llm" />
-
       <div class="mb-4">
         <.link navigate={~p"/system/logs/llm"} class="text-sm text-primary underline">
           ← Back to LLM logs
@@ -107,8 +105,6 @@ defmodule Backplane.Admin.LogsLlmLive do
     <div>
       <h1 class="mb-2 text-2xl font-bold">LLM Logs</h1>
       <p class="mb-4 text-sm text-on-surface-variant">Persisted LLM proxy access records.</p>
-
-      <.logs_nav current="/system/logs/llm" />
 
       <.time_range_form
         action={~p"/system/logs/llm"}

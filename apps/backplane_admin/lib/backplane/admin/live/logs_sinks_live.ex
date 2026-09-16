@@ -44,10 +44,8 @@ defmodule Backplane.Admin.LogsSinksLive do
     <div>
       <h1 class="mb-2 text-2xl font-bold">Observability Sinks</h1>
       <p class="mb-4 text-sm text-on-surface-variant">
-        Writer queue health and runtime sink status. Historical usage lives in the logs tabs above.
+        Writer queue health and runtime sink status. Historical usage is available on the logs pages.
       </p>
-
-      <.logs_nav current="/system/logs/sinks" />
 
       <div :if={@loading}>
         <.loading_state />
@@ -124,8 +122,8 @@ defmodule Backplane.Admin.LogsSinksLive do
     """
   end
 
-  attr :title, :string, required: true
-  attr :health, :map, required: true
+  attr(:title, :string, required: true)
+  attr(:health, :map, required: true)
 
   defp writer_card(assigns) do
     ~H"""

@@ -50,8 +50,6 @@ defmodule Backplane.Admin.LogsJobsLive do
       <h1 class="mb-2 text-2xl font-bold">Background Jobs</h1>
       <p class="mb-4 text-sm text-on-surface-variant">Recent Oban job activity.</p>
 
-      <.logs_nav current="/system/logs/jobs" />
-
       <.dm_card
         :if={@selected_job}
         id={"job-detail-#{@selected_job.id}"}

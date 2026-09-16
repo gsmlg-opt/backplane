@@ -12,45 +12,8 @@ defmodule Backplane.Admin.LogsComponents do
   @metadata_limit 512
   @error_limit 1024
 
-  attr :current, :string, required: true
-
-  def logs_nav(assigns) do
-    ~H"""
-    <nav class="mb-6 flex flex-wrap gap-2">
-      <.nav_link label="Overview" path={~p"/system/logs"} current={@current} />
-      <.nav_link label="LLM" path={~p"/system/logs/llm"} current={@current} />
-      <.nav_link label="MCP" path={~p"/system/logs/mcp"} current={@current} />
-      <.nav_link label="Audit" path={~p"/system/logs/audit"} current={@current} />
-      <.nav_link label="Jobs" path={~p"/system/logs/jobs"} current={@current} />
-      <.nav_link label="Sinks" path={~p"/system/logs/sinks"} current={@current} />
-    </nav>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :path, :string, required: true
-  attr :current, :string, required: true
-
-  defp nav_link(assigns) do
-    active = nav_active?(assigns.path, assigns.current)
-    assigns = assign(assigns, :active, active)
-
-    ~H"""
-    <.link
-      navigate={@path}
-      class={[
-        "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-        @active && "bg-primary text-on-primary",
-        !@active && "bg-surface-container-high text-on-surface hover:bg-surface-container-highest"
-      ]}
-    >
-      {@label}
-    </.link>
-    """
-  end
-
-  attr :title, :string, required: true
-  attr :message, :string, default: nil
+  attr(:title, :string, required: true)
+  attr(:message, :string, default: nil)
 
   def empty_state(assigns) do
     ~H"""
@@ -61,8 +24,8 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
-  attr :title, :string, required: true
-  attr :message, :string, required: true
+  attr(:title, :string, required: true)
+  attr(:message, :string, required: true)
 
   def error_state(assigns) do
     ~H"""
@@ -72,7 +35,7 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
-  attr :message, :string, default: "Loading records…"
+  attr(:message, :string, default: "Loading records…")
 
   def loading_state(assigns) do
     ~H"""
@@ -80,10 +43,10 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
-  attr :since, :any, required: true
-  attr :until, :any, required: true
-  attr :action, :string, required: true
-  attr :fields, :list, default: []
+  attr(:since, :any, required: true)
+  attr(:until, :any, required: true)
+  attr(:action, :string, required: true)
+  attr(:fields, :list, default: [])
 
   def time_range_form(assigns) do
     ~H"""
@@ -117,8 +80,8 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
-  attr :label, :string, required: true
-  attr :value, :string, default: nil
+  attr(:label, :string, required: true)
+  attr(:value, :string, default: nil)
 
   def copy_field(assigns) do
     ~H"""
@@ -269,10 +232,6 @@ defmodule Backplane.Admin.LogsComponents do
   def outcome_badge_variant("error"), do: "error"
   def outcome_badge_variant("failure"), do: "error"
   def outcome_badge_variant(_), do: "neutral"
-
-  defp nav_active?(path, current) do
-    path == current or String.starts_with?(current, path <> "/")
-  end
 
   defp record_has_bytes?(%{request_bytes: rb, response_bytes: rsp})
        when is_integer(rb) or is_integer(rsp) do

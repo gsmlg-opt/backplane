@@ -112,6 +112,40 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end
   end
 
+  test "System sidebar keeps Monitor and Logs as sibling groups", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/system/monitor/plans")
+
+    groups =
+      html
+      |> Floki.parse_fragment!()
+      |> Floki.find(~s(nav[aria-label="System navigation"] .admin-sidebar-group))
+      |> Enum.map(fn group ->
+        {
+          group |> Floki.find(".admin-sidebar-group-title") |> Floki.text() |> String.trim(),
+          group
+          |> Floki.find("a.admin-sidebar-link")
+          |> Enum.map(fn link ->
+            {link |> Floki.text() |> String.trim(),
+             link |> Floki.attribute("href") |> List.first()}
+          end)
+        }
+      end)
+
+    assert groups == [
+             {"Monitor", [{"Plan Usage", "/system/monitor/plans"}]},
+             {"Logs",
+              [
+                {"LLM Logs", "/system/logs/llm"},
+                {"MCP Logs", "/system/logs/mcp"},
+                {"Audit", "/system/logs/audit"},
+                {"Jobs", "/system/logs/jobs"},
+                {"Sinks", "/system/logs/sinks"}
+              ]}
+           ]
+
+    refute has_element?(view, ~s(a[href="/system/logs"]), "Logs")
+  end
+
   test "Memory V2 uses the DuskMoon primary appbar background", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/memory")
 

@@ -57,8 +57,6 @@ defmodule Backplane.Admin.LogsOverviewLive do
         Durable observability records for LLM proxy, MCP hub, audit trails, and background jobs.
       </p>
 
-      <.logs_nav current="/system/logs" />
-
       <div :if={@loading} class="mb-6">
         <.loading_state />
       </div>

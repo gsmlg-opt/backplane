@@ -50,8 +50,6 @@ defmodule Backplane.Admin.LogsAuditLive do
         Persisted tool-call and skill-load audit records. Arguments are never stored — only hashes.
       </p>
 
-      <.logs_nav current="/system/logs/audit" />
-
       <div class="mb-4 flex gap-2">
         <.dm_btn
           :for={tab <- ["tool_calls", "skill_loads"]}

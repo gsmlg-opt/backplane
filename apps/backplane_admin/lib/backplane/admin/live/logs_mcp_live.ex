@@ -57,8 +57,6 @@ defmodule Backplane.Admin.LogsMcpLive do
   def render(%{live_action: :show} = assigns) do
     ~H"""
     <div>
-      <.logs_nav current="/system/logs/mcp" />
-
       <div class="mb-4">
         <.link navigate={~p"/system/logs/mcp"} class="text-sm text-primary underline">
           ← Back to MCP logs
@@ -133,8 +131,6 @@ defmodule Backplane.Admin.LogsMcpLive do
     <div>
       <h1 class="mb-2 text-2xl font-bold">MCP Logs</h1>
       <p class="mb-4 text-sm text-on-surface-variant">Persisted MCP root proxy access records.</p>
-
-      <.logs_nav current="/system/logs/mcp" />
 
       <.time_range_form
         action={~p"/system/logs/mcp"}
