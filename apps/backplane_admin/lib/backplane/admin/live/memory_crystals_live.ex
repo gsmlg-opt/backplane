@@ -77,6 +77,12 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
 
     case result do
       {:ok, result} ->
+        action =
+          if detail.crystal.source_kind == "session",
+            do: "memory_crystal.enqueue",
+            else: "memory_crystal.rerun"
+
+        Backplane.Admin.Audit.record(action, "memory_crystal", detail.crystal.id)
         audit_rerun(detail, socket.assigns.partition, rerun_result(result))
 
         {:noreply,

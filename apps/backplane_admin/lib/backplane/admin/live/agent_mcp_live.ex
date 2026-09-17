@@ -96,7 +96,13 @@ defmodule Backplane.Admin.AgentMcpLive do
     case socket.assigns.editing do
       :new ->
         case AgentMcpServers.create(params) do
-          {:ok, _} ->
+          {:ok, created} ->
+            Backplane.Admin.Audit.record(
+              "agent_mcp_server.create",
+              "agent_mcp_server",
+              created.id
+            )
+
             {:noreply,
              socket
              |> put_flash(:info, "MCP server created")
@@ -109,6 +115,8 @@ defmodule Backplane.Admin.AgentMcpLive do
       %AgentMcpServer{} = server ->
         case AgentMcpServers.update(server, params) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("agent_mcp_server.update", "agent_mcp_server", server.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "MCP server updated")
@@ -125,6 +133,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
     case AgentMcpServers.delete(server) do
       {:ok, _} ->
+        Backplane.Admin.Audit.record("agent_mcp_server.delete", "agent_mcp_server", server.id)
         {:noreply, socket |> put_flash(:info, "MCP server deleted") |> load_all()}
 
       {:error, _} ->
@@ -137,6 +146,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
     case AgentMcpServers.update(server, %{enabled: !server.enabled}) do
       {:ok, updated} ->
+        Backplane.Admin.Audit.record("agent_mcp_server.toggle", "agent_mcp_server", updated.id)
         msg = if updated.enabled, do: "MCP server enabled", else: "MCP server disabled"
         {:noreply, socket |> put_flash(:info, msg) |> load_all()}
 

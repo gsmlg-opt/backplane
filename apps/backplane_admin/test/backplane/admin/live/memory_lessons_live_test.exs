@@ -122,6 +122,12 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
 
     assert metadata["reason"] == "Reviewed by operator"
 
+    assert [%{action: "memory_lesson.govern", target_id: target_id} = event] =
+             Backplane.Admin.Audit.list()
+
+    assert target_id == candidate.memory_id
+    refute inspect(event) =~ "Reviewed by operator"
+
     view
     |> form("#lesson-action-form",
       governance: %{"action" => "archive", "reason" => "No longer applicable"}
@@ -130,6 +136,9 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
 
     assert has_element?(view, "#lesson-state", "archived")
     assert has_element?(view, "#lesson-action-reactivate")
+
+    assert [%{action: "memory_lesson.govern"}, %{action: "memory_lesson.govern"}] =
+             Backplane.Admin.Audit.list()
   end
 
   defp active_lesson(partition, rule, project) do

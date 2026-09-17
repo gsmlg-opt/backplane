@@ -44,6 +44,7 @@ defmodule Backplane.Admin.SkillMetadataLive do
 
     if new_name != "" and new_name != old_tag do
       Skills.rename_tag(old_tag, new_name)
+      Backplane.Admin.Audit.record("skill_tag.rename_requested", "skill_tag")
       Skills.Registry.refresh()
 
       {:noreply,
@@ -58,6 +59,7 @@ defmodule Backplane.Admin.SkillMetadataLive do
 
   def handle_event("delete-tag", %{"tag" => tag}, socket) do
     Skills.delete_tag(tag)
+    Backplane.Admin.Audit.record("skill_tag.delete_requested", "skill_tag")
     Skills.Registry.refresh()
 
     {:noreply,
@@ -79,7 +81,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
     new_name = String.trim(new_name)
 
     if new_name != "" and new_name != old_cat do
-      Skills.rename_category(old_cat, new_name)
+      {count, _} = Skills.rename_category(old_cat, new_name)
+      if count > 0, do: Backplane.Admin.Audit.record("skill_category.rename", "skill_category")
 
       {:noreply,
        socket
@@ -92,7 +95,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
   end
 
   def handle_event("delete-category", %{"category" => category}, socket) do
-    Skills.delete_category(category)
+    {count, _} = Skills.delete_category(category)
+    if count > 0, do: Backplane.Admin.Audit.record("skill_category.delete", "skill_category")
 
     {:noreply,
      socket

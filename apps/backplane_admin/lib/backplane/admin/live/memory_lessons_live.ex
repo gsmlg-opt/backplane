@@ -96,6 +96,12 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
     case result do
       {:ok, _lesson} ->
+        Backplane.Admin.Audit.record(
+          "memory_lesson.govern",
+          "memory_lesson",
+          selected.lesson.memory_id
+        )
+
         {:ok, selected} = Lessons.get_admin(selected.lesson.memory_id, socket.assigns.partition)
 
         {:noreply,

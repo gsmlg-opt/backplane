@@ -55,6 +55,7 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
 
     assert_patch(view, "/mcp/upstreams")
     persisted = Upstreams.get_by_name("strict-modern")
+    assert [%{action: "upstream.create"}] = Backplane.Admin.Audit.list(%{target_id: persisted.id})
     assert Map.has_key?(persisted, :protocol_version)
     assert persisted.protocol_version == "2026-07-28"
 

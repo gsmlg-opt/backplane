@@ -83,6 +83,7 @@ defmodule Backplane.Admin.HostAgentsLive do
   def handle_event("create_agent", %{"agent" => params}, socket) do
     case Hosts.create_agent_with_token(normalize_agent_params(params)) do
       {:ok, host, auth_token, token} ->
+        Backplane.Admin.Audit.record("host_agent.create", "host_agent", host.id)
         generated_token = %{agent_name: host.name, token_name: auth_token.name, value: token}
 
         {:noreply,
@@ -121,6 +122,8 @@ defmodule Backplane.Admin.HostAgentsLive do
   def handle_event("install_plugin", %{"plugin" => params}, %{assigns: %{entry: entry}} = socket) do
     case AgentPlugins.install(entry, params) do
       {:ok, status} ->
+        Backplane.Admin.Audit.record("host_agent.install_plugin", "host_agent", entry.host.id)
+
         {:noreply,
          assign(socket,
            plugin_statuses: merge_plugin_status(socket.assigns.plugin_statuses, status),
@@ -136,6 +139,8 @@ defmodule Backplane.Admin.HostAgentsLive do
   def handle_event("remove_plugin", %{"plugin" => params}, %{assigns: %{entry: entry}} = socket) do
     case AgentPlugins.remove(entry, params) do
       {:ok, status} ->
+        Backplane.Admin.Audit.record("host_agent.remove_plugin", "host_agent", entry.host.id)
+
         {:noreply,
          assign(socket,
            plugin_statuses: merge_plugin_status(socket.assigns.plugin_statuses, status),
@@ -151,6 +156,8 @@ defmodule Backplane.Admin.HostAgentsLive do
   def handle_event("rename_agent", %{"agent" => params}, %{assigns: %{entry: entry}} = socket) do
     case Hosts.update_agent(entry.host, normalize_agent_params(params)) do
       {:ok, host} ->
+        Backplane.Admin.Audit.record("host_agent.update", "host_agent", host.id)
+
         {:noreply,
          socket
          |> assign(rename_error: nil)
@@ -172,6 +179,8 @@ defmodule Backplane.Admin.HostAgentsLive do
 
     case Hosts.create_auth_token_for_agent(entry.host, params) do
       {:ok, auth_token, token} ->
+        Backplane.Admin.Audit.record("host_agent_token.create", "host_agent_token", auth_token.id)
+
         {:noreply,
          socket
          |> assign(token_error: nil, revealed_token: %{token_id: auth_token.id, value: token})
@@ -196,6 +205,8 @@ defmodule Backplane.Admin.HostAgentsLive do
   def handle_event("revoke_token", %{"id" => id}, %{assigns: %{entry: entry}} = socket) do
     case Hosts.revoke_auth_token_for_agent(entry.host, id) do
       {:ok, _auth_token} ->
+        Backplane.Admin.Audit.record("host_agent_token.revoke", "host_agent_token", id)
+
         {:noreply,
          socket
          |> assign(token_error: nil, revealed_token: nil)
@@ -220,6 +231,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     if String.trim(confirmation || "") == entry.host.name do
       case Hosts.delete_agent(entry.host) do
         {:ok, _host} ->
+          Backplane.Admin.Audit.record("host_agent.delete", "host_agent", entry.host.id)
           {:noreply, push_navigate(socket, to: ~p"/system/host-agents")}
 
         {:error, _changeset} ->

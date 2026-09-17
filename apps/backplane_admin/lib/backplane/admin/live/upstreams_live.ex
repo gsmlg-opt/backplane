@@ -95,7 +95,9 @@ defmodule Backplane.Admin.UpstreamsLive do
     case socket.assigns.editing do
       :new ->
         case Upstreams.create(params) do
-          {:ok, _} ->
+          {:ok, upstream} ->
+            Backplane.Admin.Audit.record("upstream.create", "upstream", upstream.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Upstream created")
@@ -108,6 +110,8 @@ defmodule Backplane.Admin.UpstreamsLive do
       %McpUpstream{} = upstream ->
         case Upstreams.update(upstream, params) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("upstream.update", "upstream", upstream.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Upstream updated")
@@ -124,6 +128,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
     case Upstreams.delete(upstream) do
       {:ok, _} ->
+        Backplane.Admin.Audit.record("upstream.delete", "upstream", upstream.id)
         {:noreply, socket |> put_flash(:info, "Upstream deleted") |> load_upstreams()}
 
       {:error, _} ->
@@ -137,6 +142,8 @@ defmodule Backplane.Admin.UpstreamsLive do
 
     case Upstreams.update(upstream, %{enabled: enabled}) do
       {:ok, updated} ->
+        Backplane.Admin.Audit.record("upstream.toggle", "upstream", upstream.id)
+
         if enabled do
           stop_runtime(updated)
           start_runtime(updated)
@@ -160,6 +167,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
       case start_runtime(upstream) do
         {:ok, _pid} ->
+          Backplane.Admin.Audit.record("upstream.connect_start", "upstream", upstream.id)
           {:noreply, socket |> put_flash(:info, "Connection attempt started") |> load_upstreams()}
 
         {:error, reason} ->

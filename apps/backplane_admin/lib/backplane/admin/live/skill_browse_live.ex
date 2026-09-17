@@ -134,7 +134,8 @@ defmodule Backplane.Admin.SkillBrowseLive do
     ids = MapSet.to_list(socket.assigns.selected)
 
     if ids != [] do
-      Skills.bulk_update_tags(ids, tags)
+      {count, _} = Skills.bulk_update_tags(ids, tags)
+      if count > 0, do: Backplane.Admin.Audit.record("skill.bulk_update_tags", "skill")
       Skills.Registry.refresh()
 
       {:noreply,
@@ -153,7 +154,8 @@ defmodule Backplane.Admin.SkillBrowseLive do
     cat = if category == "", do: nil, else: category
 
     if ids != [] do
-      Skills.bulk_update_category(ids, cat)
+      {count, _} = Skills.bulk_update_category(ids, cat)
+      if count > 0, do: Backplane.Admin.Audit.record("skill.bulk_update_category", "skill")
 
       {:noreply,
        socket
@@ -177,6 +179,8 @@ defmodule Backplane.Admin.SkillBrowseLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Skills.delete(id) do
       {:ok, deleted} ->
+        Backplane.Admin.Audit.record("skill.delete", "skill", deleted.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Deleted #{deleted.name}")

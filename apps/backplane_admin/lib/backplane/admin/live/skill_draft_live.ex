@@ -107,6 +107,8 @@ defmodule Backplane.Admin.SkillDraftLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Skills.delete(id) do
       {:ok, deleted} ->
+        Backplane.Admin.Audit.record("skill.delete", "skill", deleted.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Deleted #{deleted.name}")
@@ -130,6 +132,7 @@ defmodule Backplane.Admin.SkillDraftLive do
 
     case DbSource.create(attrs) do
       {:ok, skill} ->
+        Backplane.Admin.Audit.record("skill.create", "skill", skill.id)
         Registry.refresh()
 
         {:noreply,
@@ -149,6 +152,7 @@ defmodule Backplane.Admin.SkillDraftLive do
 
     case DbSource.update(skill.id, attrs) do
       {:ok, updated} ->
+        Backplane.Admin.Audit.record("skill.update", "skill", updated.id)
         Registry.refresh()
 
         {:noreply,
@@ -196,8 +200,10 @@ defmodule Backplane.Admin.SkillDraftLive do
   defp tags_to_string(_), do: ""
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

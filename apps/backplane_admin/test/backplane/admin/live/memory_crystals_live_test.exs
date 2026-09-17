@@ -90,6 +90,11 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     assert metadata["source_kind"] == "action_chain"
     assert metadata["result"] == "complete"
     assert metadata["correlation_id"] == metadata["request_id"]
+
+    assert [%{action: "memory_crystal.rerun", target_id: target_id}] =
+             Backplane.Admin.Audit.list()
+
+    assert target_id == crystal.id
   end
 
   test "foreign partition detail is literal not found", %{conn: conn, partition: partition} do

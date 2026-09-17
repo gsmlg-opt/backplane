@@ -86,6 +86,8 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       ) do
     case save_web_search_settings(params) do
       :ok ->
+        Backplane.Admin.Audit.record("managed_service.update", "managed_service", "web")
+
         {:noreply,
          socket
          |> put_flash(:info, "Web search settings saved")

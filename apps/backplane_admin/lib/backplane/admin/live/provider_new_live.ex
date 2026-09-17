@@ -54,6 +54,8 @@ defmodule Backplane.Admin.ProviderNewLive do
     else
       case create_provider(socket.assigns.selected_preset, params) do
         {:ok, provider} ->
+          Backplane.Admin.Audit.record("provider.create", "provider", provider.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Provider #{provider.name} created")

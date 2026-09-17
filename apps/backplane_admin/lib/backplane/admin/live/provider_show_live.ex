@@ -69,6 +69,8 @@ defmodule Backplane.Admin.ProviderShowLive do
     else
       case update_provider(socket.assigns.provider, params) do
         {:ok, provider} ->
+          Backplane.Admin.Audit.record("provider.update", "provider", provider.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Provider updated")
@@ -94,6 +96,8 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     socket =
       if result.errors == [] do
+        Backplane.Admin.Audit.record("provider.reload_models", "provider", provider.id)
+
         put_flash(
           socket,
           :info,
@@ -130,7 +134,9 @@ defmodule Backplane.Admin.ProviderShowLive do
        )}
     else
       case create_model(provider, params) do
-        {:ok, _model} ->
+        {:ok, model} ->
+          Backplane.Admin.Audit.record("provider_model.create", "provider_model", model.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Model added")
@@ -202,7 +208,9 @@ defmodule Backplane.Admin.ProviderShowLive do
        )}
     else
       case update_model(socket.assigns.editing_model, provider, params) do
-        {:ok, _model} ->
+        {:ok, model} ->
+          Backplane.Admin.Audit.record("provider_model.update", "provider_model", model.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Model updated")
@@ -229,6 +237,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       model ->
         case ProviderModel.update(model, %{enabled: !model.enabled}) do
           {:ok, _updated} ->
+            Backplane.Admin.Audit.record("provider_model.toggle", "provider_model", model.id)
             {:noreply, assign_provider(socket, Provider.get(provider.id))}
 
           {:error, _changeset} ->
@@ -247,6 +256,8 @@ defmodule Backplane.Admin.ProviderShowLive do
       model ->
         case ProviderModel.delete(model) do
           {:ok, _deleted} ->
+            Backplane.Admin.Audit.record("provider_model.delete", "provider_model", model.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Model removed")

@@ -53,6 +53,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("create-client", %{"client" => params}, socket) do
     case Auth.OAuth.create_client(client_attrs(params)) do
       {:ok, %{client: client, secret: secret}} ->
+        Backplane.Admin.Audit.record("oauth_client.create", "oauth_client", client.id)
+
         Auth.Audit.record(
           "client.created",
           %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -69,7 +71,9 @@ defmodule Backplane.Admin.AuthOAuthLive do
          |> assign(:client_secret, %{client_id: client.id, name: client.name, secret: secret})
          |> assign_action_data(socket.assigns.live_action)}
 
-      {:ok, _client} ->
+      {:ok, client} ->
+        Backplane.Admin.Audit.record("oauth_client.create", "oauth_client", client.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "OAuth client created.")
@@ -94,6 +98,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
     case Auth.OAuth.update_client_resources(client, resources) do
       {:ok, updated} ->
+        Backplane.Admin.Audit.record("oauth_client.update_resources", "oauth_client", updated.id)
+
         Auth.Audit.record(
           "client.resources_updated",
           admin_actor(),
@@ -122,6 +128,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("disable-client", %{"id" => id}, socket) do
     with %{name: name} = client <- Auth.OAuth.get_client(id),
          {:ok, _client} <- Auth.OAuth.disable_client(client) do
+      Backplane.Admin.Audit.record("oauth_client.disable", "oauth_client", client.id)
+
       Auth.Audit.record(
         "client.disabled",
         %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -145,6 +153,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("rotate-client-secret", %{"id" => id}, socket) do
     with %{name: name} = client <- Auth.OAuth.get_client(id),
          {:ok, %{client: rotated, secret: secret}} <- Auth.OAuth.rotate_client_secret(client) do
+      Backplane.Admin.Audit.record("oauth_client.rotate_secret", "oauth_client", rotated.id)
+
       Auth.Audit.record(
         "client.secret_rotated",
         %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -169,6 +179,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("create-scope", %{"scope" => params}, socket) do
     case Auth.OAuth.create_scope(scope_attrs(params)) do
       {:ok, scope} ->
+        Backplane.Admin.Audit.record("oauth_scope.create", "oauth_scope", scope.id)
+
         Auth.Audit.record(
           "scope.created",
           %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -192,6 +204,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("revoke-token", %{"id" => id}, socket) do
     case Auth.Tokens.revoke_token_by_id(id) do
       {:ok, _token} ->
+        Backplane.Admin.Audit.record("oauth_token.revoke", "oauth_token", id)
+
         Auth.Audit.record(
           "token.revoked",
           %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -214,6 +228,8 @@ defmodule Backplane.Admin.AuthOAuthLive do
   def handle_event("revoke-session", %{"id" => id}, socket) do
     case Auth.Accounts.revoke_session_by_id(id, admin_actor()) do
       {:ok, _session} ->
+        Backplane.Admin.Audit.record("auth_session.revoke", "auth_session", id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Auth session revoked.")

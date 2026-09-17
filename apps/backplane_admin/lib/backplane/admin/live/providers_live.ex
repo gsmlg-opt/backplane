@@ -39,6 +39,8 @@ defmodule Backplane.Admin.ProvidersLive do
       provider ->
         case Provider.soft_delete(provider) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("provider.delete", "provider", provider.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Provider #{provider.name} deleted")
@@ -58,6 +60,7 @@ defmodule Backplane.Admin.ProvidersLive do
       provider ->
         case Provider.update(provider, %{enabled: !provider.enabled}) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("provider.toggle", "provider", provider.id)
             {:noreply, load_providers(socket)}
 
           {:error, _} ->

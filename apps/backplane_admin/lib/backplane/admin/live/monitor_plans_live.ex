@@ -72,6 +72,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
       plan ->
         case Monitor.update_plan(plan, %{active: !plan.active}) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("monitor_plan.toggle", "monitor_plan", plan.id)
             {:noreply, load_plans(socket)}
 
           {:error, _} ->
@@ -105,6 +106,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
       plan ->
         case Monitor.delete_plan(plan) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("monitor_plan.delete", "monitor_plan", plan.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Plan #{plan.name} deleted")
@@ -119,6 +122,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
   defp create_plan(socket, params) do
     case Monitor.create_plan(params) do
       {:ok, plan} ->
+        Backplane.Admin.Audit.record("monitor_plan.create", "monitor_plan", plan.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} created")
@@ -132,6 +137,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
   defp update_plan(socket, plan, params) do
     case Monitor.update_plan(plan, params) do
       {:ok, plan} ->
+        Backplane.Admin.Audit.record("monitor_plan.update", "monitor_plan", plan.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Plan #{plan.name} updated")

@@ -190,6 +190,11 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert_redirect(view, "/llama/providers")
 
       provider = Repo.get_by!(Provider, name: "deepseek-test")
+
+      assert [%{target_id: audit_id}] =
+               Backplane.Admin.Audit.list(%{action: "provider.create", target_id: provider.id})
+
+      assert audit_id == provider.id
       assert provider.preset_key == "deepseek"
       assert provider.credential == "test-cred"
       assert provider.rpm_limit == 60

@@ -73,6 +73,9 @@ defmodule Backplane.Admin.SkillLiveTest do
       |> render_click()
 
       assert {:error, :not_found} = Skills.get_by_slug("delete-skill")
+
+      assert [%{action: "skill.delete", target_id: "skill/delete-skill"}] =
+               Backplane.Admin.Audit.list(%{action: "skill.delete"})
     end
   end
 

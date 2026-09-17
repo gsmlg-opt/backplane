@@ -272,7 +272,7 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ "/system/logs/mcp/#{second_page_root.id}"
   end
 
-  test "audit page lists tool and skill audit records", %{conn: conn} do
+  test "audit page lists only admin operations, not tool and skill audit records", %{conn: conn} do
     Audit.log_tool_call_sync(%{
       tool_name: "day::now",
       status: "ok",
@@ -284,12 +284,16 @@ defmodule Backplane.Admin.LogsLiveTest do
       client_name: "test-client"
     })
 
-    {:ok, view, html} = live_with_sandbox(conn, "/system/logs/audit")
+    {:ok, event} = Backplane.Admin.Audit.record("client.create", "client", Ecto.UUID.generate())
+    {:ok, _view, html} = live_with_sandbox(conn, "/system/logs/audit")
     assert html =~ "Audit Logs"
-    assert html =~ "day::now"
-
-    html = view |> element("el-dm-button", "Skill Loads") |> render_click()
-    assert html =~ "test-skill"
+    assert html =~ "client.create"
+    assert html =~ event.target_id
+    assert html =~ "trusted_operator"
+    refute html =~ "day::now"
+    refute html =~ "test-skill"
+    refute html =~ "Tool Calls"
+    refute html =~ "Skill Loads"
   end
 
   test "jobs page preserves failed job detail with sanitized error", %{conn: conn} do

@@ -233,6 +233,8 @@ defmodule Backplane.Admin.SettingsLive do
       ) do
     case ModelAlias.put(alias_name, target) do
       {:ok, model_alias} ->
+        Backplane.Admin.Audit.record("model_alias.update", "model_alias")
+
         {:noreply,
          socket
          |> put_flash(
@@ -252,6 +254,8 @@ defmodule Backplane.Admin.SettingsLive do
   def handle_event("remove_custom_model_alias", %{"alias" => alias_name}, socket) do
     case ModelAlias.delete(alias_name) do
       {:ok, model_alias} ->
+        Backplane.Admin.Audit.record("model_alias.delete", "model_alias")
+
         {:noreply,
          socket
          |> put_flash(:info, "Custom alias '#{model_alias.alias}' removed")
@@ -308,6 +312,8 @@ defmodule Backplane.Admin.SettingsLive do
 
     case Credentials.refresh_oauth_token(name, force: true) do
       {:ok, _} ->
+        Backplane.Admin.Audit.record("credential.renew", "credential")
+
         {:noreply,
          socket
          |> put_flash(:info, "OAuth token renewed for '#{name}'")
@@ -343,7 +349,13 @@ defmodule Backplane.Admin.SettingsLive do
       case exchange_auth_code(vendor, code, verifier, redirect_uri, expected_state) do
         {:ok, tokens, hints} ->
           case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
-            {:ok, _} ->
+            {:ok, credential} ->
+              Backplane.Admin.Audit.record(
+                "credential.oauth_connect",
+                "credential",
+                credential.id
+              )
+
               {:noreply,
                socket
                |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
@@ -388,7 +400,9 @@ defmodule Backplane.Admin.SettingsLive do
 
       true ->
         case import_claude_code_auth(name, auth_json) do
-          {:ok, _} ->
+          {:ok, credential} ->
+            Backplane.Admin.Audit.record("credential.import", "credential", credential.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Imported Claude Code auth as '#{name}'")
@@ -419,7 +433,8 @@ defmodule Backplane.Admin.SettingsLive do
 
       true ->
         case import_claude_code_auth(name, auth_json) do
-          {:ok, _} ->
+          {:ok, credential} ->
+            Backplane.Admin.Audit.record("credential.import", "credential", credential.id)
             Credentials.invalidate_token(name)
 
             {:noreply,
@@ -461,6 +476,8 @@ defmodule Backplane.Admin.SettingsLive do
 
     case Credentials.delete(name) do
       :ok ->
+        Backplane.Admin.Audit.record("credential.delete", "credential")
+
         {:noreply,
          socket
          |> assign(delete_confirm_name: nil)
@@ -485,6 +502,8 @@ defmodule Backplane.Admin.SettingsLive do
 
           case OpenAICodexAuth.exchange_authorization_code(code_result) do
             {:ok, _state} ->
+              Backplane.Admin.Audit.record("credential.oauth_connect", "credential")
+
               {:noreply,
                socket
                |> put_flash(:info, "Connected OpenAI Codex as '#{cred_name}'")
@@ -704,6 +723,8 @@ defmodule Backplane.Admin.SettingsLive do
   defp configure_auto_model_targets(socket, name, model_ids) do
     case AutoModel.configure_targets(name, model_ids) do
       {:ok, %{target_count: target_count}} ->
+        Backplane.Admin.Audit.record("model_alias.configure_targets", "model_alias")
+
         {:noreply,
          socket
          |> put_flash(:info, "Model alias '#{name}' updated with #{target_count} target(s)")
@@ -743,7 +764,9 @@ defmodule Backplane.Admin.SettingsLive do
       {:noreply, put_flash(socket, :error, "Name and secret are required")}
     else
       case Credentials.store(name, secret, kind, metadata) do
-        {:ok, _} ->
+        {:ok, credential} ->
+          Backplane.Admin.Audit.record("credential.create", "credential", credential.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' created")
@@ -762,13 +785,18 @@ defmodule Backplane.Admin.SettingsLive do
     metadata = build_metadata(params)
 
     case Credentials.update(name, %{kind: kind, metadata: metadata}) do
-      {:ok, _} -> :ok
-      {:error, _} -> :ok
+      {:ok, credential} ->
+        Backplane.Admin.Audit.record("credential.update", "credential", credential.id)
+
+      {:error, _} ->
+        :ok
     end
 
     if secret != "" do
       case Credentials.rotate(name, secret) do
-        {:ok, _} ->
+        {:ok, credential} ->
+          Backplane.Admin.Audit.record("credential.rotate", "credential", credential.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' updated")
@@ -793,7 +821,9 @@ defmodule Backplane.Admin.SettingsLive do
       {:noreply, put_flash(socket, :error, "New secret is required")}
     else
       case Credentials.rotate(name, secret) do
-        {:ok, _} ->
+        {:ok, credential} ->
+          Backplane.Admin.Audit.record("credential.rotate", "credential", credential.id)
+
           {:noreply,
            socket
            |> put_flash(:info, "Credential '#{name}' rotated")

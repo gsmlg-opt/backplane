@@ -278,6 +278,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     assert_patch(view, "/memory/config?q=Replay+maximum")
     assert render(view) =~ "Replay maximum events"
     refute render(view) =~ "Host batch maximum events"
+    assert [] = Backplane.Admin.Audit.list()
 
     render_submit(view, "set-setting", %{
       "setting" => %{"key" => "memory.replay_max_events", "value" => "321"}
@@ -285,6 +286,9 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
     assert has_element?(view, "#config-mutation-success", "saved and audited")
     assert Backplane.Settings.get("memory.replay_max_events") == 321
+
+    assert [%{action: "memory_setting.update", target_type: "memory_setting", target_id: nil}] =
+             Backplane.Admin.Audit.list()
 
     assert [%{actor: "trusted-admin:memory-config", metadata: metadata} | _] =
              Audit.list(operation: "memory.config.set", limit: 1)
@@ -302,6 +306,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
     assert has_element?(view, "#config-mutation-error", "outside the typed setting bounds")
     assert Backplane.Settings.get("memory.replay_max_events") == 321
+    assert [%{action: "memory_setting.update"}] = Backplane.Admin.Audit.list()
   end
 
   test "partition submissions produce URL-owned trusted operator selection", %{conn: conn} do

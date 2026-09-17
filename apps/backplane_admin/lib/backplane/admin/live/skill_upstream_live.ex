@@ -119,7 +119,9 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     params = Map.put(params, "sync_tags", tags)
 
     case SkillSources.create(params) do
-      {:ok, _source} ->
+      {:ok, source} ->
+        Backplane.Admin.Audit.record("skill_source.create", "skill_source", source.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Source added")
@@ -144,6 +146,8 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
     case SkillSources.update(source, attrs) do
       {:ok, updated} ->
+        Backplane.Admin.Audit.record("skill_source.update", "skill_source", updated.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Source '#{updated.name}' updated")
@@ -170,6 +174,8 @@ defmodule Backplane.Admin.SkillUpstreamLive do
       {:ok, source} ->
         case SkillSources.delete(source) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("skill_source.delete", "skill_source", source.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Source deleted")
@@ -224,7 +230,11 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
     {:noreply,
      socket
-     |> push_event("download", %{content: json, filename: filename, content_type: "application/json"})}
+     |> push_event("download", %{
+       content: json,
+       filename: filename,
+       content_type: "application/json"
+     })}
   end
 
   def handle_event("toggle-import", _params, socket) do
@@ -257,6 +267,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
           end)
 
         created = Enum.count(results, &match?({:ok, _}, &1))
+        if created > 0, do: Backplane.Admin.Audit.record("skill_source.import", "skill_source")
         failed = Enum.count(results, &match?({:error, _}, &1))
 
         msg =
@@ -324,6 +335,8 @@ defmodule Backplane.Admin.SkillUpstreamLive do
   def handle_info({:do_sync, source}, socket) do
     case SkillSources.sync_from_source(source) do
       {:ok, result} ->
+        Backplane.Admin.Audit.record("skill_source.sync", "skill_source", source.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Synced #{result.synced} skill(s)")
@@ -342,7 +355,16 @@ defmodule Backplane.Admin.SkillUpstreamLive do
   def handle_info(:do_sync_all, socket) do
     sources = socket.assigns.sources
     results = Enum.map(sources, &SkillSources.sync_from_source/1)
-    total = results |> Enum.filter(&match?({:ok, _}, &1)) |> Enum.map(fn {:ok, r} -> r.synced end) |> Enum.sum()
+
+    if Enum.any?(results, &match?({:ok, _}, &1)),
+      do: Backplane.Admin.Audit.record("skill_source.sync_all", "skill_source")
+
+    total =
+      results
+      |> Enum.filter(&match?({:ok, _}, &1))
+      |> Enum.map(fn {:ok, r} -> r.synced end)
+      |> Enum.sum()
+
     errors = Enum.count(results, &match?({:error, _}, &1))
 
     msg =
@@ -393,8 +415,10 @@ defmodule Backplane.Admin.SkillUpstreamLive do
   end
 
   defp format_dt(nil), do: "Never"
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

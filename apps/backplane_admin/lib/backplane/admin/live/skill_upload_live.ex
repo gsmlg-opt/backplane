@@ -91,6 +91,7 @@ defmodule Backplane.Admin.SkillUploadLive do
 
             case result do
               {:ok, skills} when is_list(skills) ->
+                Backplane.Admin.Audit.record("skill.upload", "skill")
                 names = Enum.map_join(skills, ", ", & &1.name)
                 count = length(skills)
 
@@ -100,7 +101,9 @@ defmodule Backplane.Admin.SkillUploadLive do
                  |> put_flash(:info, "Uploaded #{count} skill(s): #{names}")
                  |> load_skills()}
 
-              {:ok, %{name: name}} ->
+              {:ok, %{name: name} = skill} ->
+                Backplane.Admin.Audit.record("skill.upload", "skill", skill.id)
+
                 {:noreply,
                  socket
                  |> assign(uploading: false)
@@ -134,6 +137,8 @@ defmodule Backplane.Admin.SkillUploadLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Skills.delete(id) do
       {:ok, deleted} ->
+        Backplane.Admin.Audit.record("skill.delete", "skill", deleted.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Deleted '#{deleted.name}'")
@@ -375,8 +380,10 @@ defmodule Backplane.Admin.SkillUploadLive do
   defp format_error(reason), do: inspect(reason)
 
   defp format_dt(nil), do: ""
+
   defp format_dt(dt) do
     assigns = %{dt: dt}
+
     ~H"""
     <.local_time datetime={@dt} />
     """

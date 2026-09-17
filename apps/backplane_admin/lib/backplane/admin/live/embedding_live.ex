@@ -72,6 +72,12 @@ defmodule Backplane.Admin.EmbeddingLive do
       model ->
         case Embedding.soft_delete_provider(model.provider) do
           {:ok, _provider} ->
+            Backplane.Admin.Audit.record(
+              "embedding_provider.delete",
+              "embedding_provider",
+              model.provider.id
+            )
+
             {:noreply,
              socket
              |> put_flash(:info, "Embedding provider #{model.provider.name} deleted")
@@ -92,6 +98,12 @@ defmodule Backplane.Admin.EmbeddingLive do
       ) do
     case Embedding.update_provider_with_model(model, params) do
       {:ok, _result} ->
+        Backplane.Admin.Audit.record(
+          "embedding_provider.update",
+          "embedding_provider",
+          model.provider.id
+        )
+
         {:noreply,
          socket
          |> put_flash(:info, "Embedding provider updated")
@@ -117,7 +129,13 @@ defmodule Backplane.Admin.EmbeddingLive do
 
   def handle_event("save_provider", %{"provider" => params}, socket) do
     case Embedding.create_provider_with_model(params) do
-      {:ok, _result} ->
+      {:ok, %{provider: provider}} ->
+        Backplane.Admin.Audit.record(
+          "embedding_provider.create",
+          "embedding_provider",
+          provider.id
+        )
+
         {:noreply,
          socket
          |> put_flash(:info, "Embedding provider added")

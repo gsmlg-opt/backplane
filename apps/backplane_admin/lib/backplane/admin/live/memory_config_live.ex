@@ -32,6 +32,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
   def handle_event("filter", %{"filters" => %{"q" => query}}, socket) do
     query = String.trim(query || "")
     path = if query == "", do: ~p"/memory/config", else: ~p"/memory/config?#{%{"q" => query}}"
+
     {:noreply,
      socket
      |> assign(query: query, entries: entries(query))
@@ -51,6 +52,8 @@ defmodule Backplane.Admin.MemoryConfigLive do
            correlation_id: request_id
          }) do
       {:ok, _value} ->
+        Backplane.Admin.Audit.record("memory_setting.update", "memory_setting")
+
         {:noreply,
          assign(socket,
            entries: entries(socket.assigns.query),

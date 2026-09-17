@@ -198,6 +198,15 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
     rotated = Auth.OAuth.get_client(created.id)
     assert rotated.secret != old_secret
     assert html =~ rotated.secret
+
+    assert [
+             %{action: "oauth_client.rotate_secret", target_id: target_id},
+             %{action: "oauth_client.create", target_id: target_id}
+           ] = Backplane.Admin.Audit.list()
+
+    assert target_id == created.id
+    refute inspect(Backplane.Admin.Audit.list()) =~ old_secret
+    refute inspect(Backplane.Admin.Audit.list()) =~ rotated.secret
   end
 
   test "OAuth clients page creates clients with selected resource assignments", %{conn: conn} do
@@ -538,6 +547,13 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
              )
 
     assert user.name == "Created User"
+
+    assert [%{action: "auth_user.create", target_id: target_id} = event] =
+             Backplane.Admin.Audit.list()
+
+    assert target_id == user.id
+    refute inspect(event) =~ "correct horse battery staple"
+    refute inspect(event) =~ "created-user@example.com"
   end
 
   test "RBAC roles page lists real roles and granted scopes", %{conn: conn} do

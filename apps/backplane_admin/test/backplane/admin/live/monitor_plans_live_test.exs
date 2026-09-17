@@ -42,6 +42,13 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
 
     assert_patch(view, "/system/monitor/plans")
 
+    assert [%{action: "monitor_plan.create", target_id: target_id} = event] =
+             Backplane.Admin.Audit.list()
+
+    assert target_id == Repo.get_by!(Plan, name: plan_name).id
+    refute inspect(event) =~ credential_name
+    refute inspect(event) =~ "projects/test-project"
+
     assert %Plan{
              provider: "google_ai",
              credential_name: ^credential_name,

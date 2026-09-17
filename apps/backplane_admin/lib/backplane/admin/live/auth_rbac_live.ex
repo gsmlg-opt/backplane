@@ -30,6 +30,8 @@ defmodule Backplane.Admin.AuthRbacLive do
   def handle_event("create-user", %{"user" => params}, socket) do
     with {:ok, user} <- Auth.Accounts.create_user(user_attrs(params)),
          {:ok, _credential} <- maybe_set_password(user, Map.get(params, "password")) do
+      Backplane.Admin.Audit.record("auth_user.create", "auth_user", user.id)
+
       Auth.Audit.record(
         "user.created",
         %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -49,6 +51,8 @@ defmodule Backplane.Admin.AuthRbacLive do
   def handle_event("disable-user", %{"id" => id}, socket) do
     with user when not is_nil(user) <- Auth.Accounts.get_user(id),
          {:ok, _user} <- Auth.Accounts.disable_user(user, admin_actor()) do
+      Backplane.Admin.Audit.record("auth_user.disable", "auth_user", user.id)
+
       {:noreply,
        socket
        |> put_flash(:info, "Auth user disabled.")
@@ -62,6 +66,8 @@ defmodule Backplane.Admin.AuthRbacLive do
   def handle_event("create-role", %{"role" => params}, socket) do
     with {:ok, role} <- Auth.RBAC.create_role(role_attrs(params)),
          {:ok, _role_scope} <- maybe_assign_role_scope(role, Map.get(params, "scope")) do
+      Backplane.Admin.Audit.record("auth_role.create", "auth_role", role.id)
+
       Auth.Audit.record(
         "role.created",
         %{actor_type: "admin_ui", actor_id: "backplane_admin"},
@@ -82,6 +88,8 @@ defmodule Backplane.Admin.AuthRbacLive do
     with user when not is_nil(user) <- Auth.Accounts.get_user(Map.get(params, "user_id", "")),
          role when not is_nil(role) <- get_role_by_id(Map.get(params, "role_id", "")),
          {:ok, _user_role} <- Auth.RBAC.assign_user_role(user, role) do
+      Backplane.Admin.Audit.record("auth_user.assign_role", "auth_user", user.id)
+
       Auth.Audit.record(
         "role.assigned",
         %{actor_type: "admin_ui", actor_id: "backplane_admin"},

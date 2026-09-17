@@ -44,6 +44,7 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
 
     assert html =~ "embedding-provider-modal"
     assert html =~ "Add Embedding Provider"
+    assert [] = Backplane.Admin.Audit.list()
 
     html =
       view
@@ -71,6 +72,13 @@ defmodule Backplane.Admin.EmbeddingLiveTest do
     refute html =~ ~s(phx-click="use_model")
     refute html =~ "Active"
     refute html =~ ~s(href="/llama/providers/)
+
+    assert [%{action: "embedding_provider.create", target_type: "embedding_provider"} = event] =
+             Backplane.Admin.Audit.list()
+
+    refute inspect(event) =~ credential
+    refute inspect(event) =~ "sk-test"
+    refute inspect(event) =~ "api.example.com"
   end
 
   test "does not expose an active embedding model control", %{

@@ -34,7 +34,13 @@ defmodule Backplane.Admin.OAuthCallbackController do
         case exchange_code(vendor, code, code_verifier, redirect_uri, attrs) do
           {:ok, tokens, hints} ->
             case store_callback_tokens(cred_name, vendor, tokens, hints) do
-              {:ok, _} ->
+              {:ok, credential} ->
+                Backplane.Admin.Audit.record(
+                  "credential.oauth_connect",
+                  "credential",
+                  credential.id
+                )
+
                 conn
                 |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
                 |> redirect(to: ~p"/system/credentials")

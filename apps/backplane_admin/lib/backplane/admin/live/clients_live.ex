@@ -68,6 +68,7 @@ defmodule Backplane.Admin.ClientsLive do
       client ->
         case Clients.update_client(client, %{active: !client.active}) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("client.toggle", "client", client.id)
             {:noreply, load_clients(socket)}
 
           {:error, _} ->
@@ -104,6 +105,8 @@ defmodule Backplane.Admin.ClientsLive do
       client ->
         case Clients.delete_client(client) do
           {:ok, _} ->
+            Backplane.Admin.Audit.record("client.delete", "client", client.id)
+
             {:noreply,
              socket
              |> put_flash(:info, "Client #{client.name} deleted")
@@ -126,6 +129,8 @@ defmodule Backplane.Admin.ClientsLive do
 
     case Clients.create_client(Map.put(attrs, "token", token)) do
       {:ok, client} ->
+        Backplane.Admin.Audit.record("client.create", "client", client.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Client #{client.name} created")
@@ -149,6 +154,8 @@ defmodule Backplane.Admin.ClientsLive do
 
     case Clients.update_client(client, attrs) do
       {:ok, client} ->
+        Backplane.Admin.Audit.record("client.update", "client", client.id)
+
         {:noreply,
          socket
          |> put_flash(:info, "Client #{client.name} updated")

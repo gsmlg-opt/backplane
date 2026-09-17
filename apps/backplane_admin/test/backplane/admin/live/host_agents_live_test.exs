@@ -49,6 +49,8 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     |> element("#open-agent-modal")
     |> render_click()
 
+    assert [] = Backplane.Admin.Audit.list()
+
     html =
       view
       |> form("#host-agent-form", %{"agent" => %{"name" => "new-host"}})
@@ -56,7 +58,12 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
 
     assert html =~ "new-host"
     assert html =~ "bha_"
-    assert [%{host: %{name: "new-host"}}] = AgentManage.list_agents()
+    assert [%{host: %{id: host_id, name: "new-host"}}] = AgentManage.list_agents()
+
+    assert [%{action: "host_agent.create", target_id: ^host_id} = event] =
+             Backplane.Admin.Audit.list()
+
+    refute inspect(event) =~ "bha_"
   end
 
   test "creating an agent persists its registered memory scope", %{conn: conn} do

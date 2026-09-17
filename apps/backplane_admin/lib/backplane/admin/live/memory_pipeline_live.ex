@@ -255,9 +255,13 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   defp mutate_gate(socket, gate, value) do
     mutation_error =
       case Operations.set_gate(gate, value) do
-        :ok -> nil
-        {:error, reason} -> gate_error(reason)
-    end
+        :ok ->
+          Backplane.Admin.Audit.record("memory_pipeline.update", "memory_pipeline")
+          nil
+
+        {:error, reason} ->
+          gate_error(reason)
+      end
 
     case Operations.get_rollout_state() do
       rollout when is_map(rollout) ->

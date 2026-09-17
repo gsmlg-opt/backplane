@@ -55,10 +55,19 @@ defmodule Backplane.Admin.ManagedLive do
 
     socket =
       case result do
-        :ok -> put_flash(socket, :info, "Service updated")
-        {:ok, _result} -> put_flash(socket, :info, "Service updated")
-        {:error, _reason} -> put_flash(socket, :error, "Failed to update service")
-        _unexpected -> put_flash(socket, :error, "Failed to update service")
+        :ok ->
+          Backplane.Admin.Audit.record("managed_service.toggle", "managed_service", prefix)
+          put_flash(socket, :info, "Service updated")
+
+        {:ok, _result} ->
+          Backplane.Admin.Audit.record("managed_service.toggle", "managed_service", prefix)
+          put_flash(socket, :info, "Service updated")
+
+        {:error, _reason} ->
+          put_flash(socket, :error, "Failed to update service")
+
+        _unexpected ->
+          put_flash(socket, :error, "Failed to update service")
       end
 
     {:noreply, load_services(socket)}

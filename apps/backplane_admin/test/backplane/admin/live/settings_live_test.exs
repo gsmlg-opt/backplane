@@ -504,6 +504,12 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert_patched(view, "/system/credentials")
       assert html =~ "test-key"
       refute html =~ "New Credential"
+
+      assert [%{action: "credential.create", target_id: target_id}] =
+               Backplane.Admin.Audit.list(%{action: "credential.create"})
+
+      assert is_binary(target_id)
+      refute inspect(Backplane.Admin.Audit.list()) =~ "sk-test-123"
     end
 
     test "clicking Connect Claude Plan patches the URL to the oauth form", %{conn: conn} do

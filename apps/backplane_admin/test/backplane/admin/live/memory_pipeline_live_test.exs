@@ -129,6 +129,7 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
 
     assert has_element?(view, "#pipeline-mutation-error", "Enable Pipeline first.")
     refute has_element?(view, "#events-gate[checked]")
+    assert [] = Backplane.Admin.Audit.list()
 
     render_change(view, "set-gate", %{
       "gate" => %{"name" => "pipeline", "value" => "true"}
@@ -136,6 +137,7 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
 
     assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
     assert has_element?(view, "#events-gate:not([disabled])")
+    assert [%{action: "memory_pipeline.update"}] = Backplane.Admin.Audit.list()
 
     render_change(view, "set-gate", %{
       "gate" => %{"name" => "events", "value" => "true"}
@@ -151,6 +153,9 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     assert has_element?(view, "#pipeline-mutation-error", "Disable Events first.")
     assert has_element?(view, "#pipeline-gate[checked]")
     assert has_element?(view, "#events-gate[checked]")
+
+    assert [%{action: "memory_pipeline.update"}, %{action: "memory_pipeline.update"}] =
+             Backplane.Admin.Audit.list()
 
     render_change(view, "set-gate", %{
       "gate" => %{"name" => "events", "value" => "false"}
@@ -191,6 +196,8 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
       assert Settings.get(@events) == false
       assert Settings.get(@dual_write) == false
     end
+
+    assert [] = Backplane.Admin.Audit.list()
   end
 
   test "requires confirmation only when enabling Dual Write and disables it immediately",
