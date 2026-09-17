@@ -6,29 +6,44 @@
 
 Backplane is a private, self-hosted gateway for agent infrastructure.
 
-It provides two main surfaces:
+It has exactly two gateway features:
 
 - **MCP Hub**: one MCP Streamable HTTP endpoint at `POST /mcp` that aggregates upstream MCP servers and built-in managed services.
 - **LLM Proxy**: a credential-injecting, model-routing reverse proxy for LLM APIs, with provider health checks and usage tracking.
 
 Operational configuration is managed through the Phoenix admin UI and persisted in PostgreSQL.
 
+Skills, memory capture/recall, host-agent integration, and authentication are supporting services and HTTP surfaces, not separate gateway products. Tool-specific concerns are delivered through upstream MCP servers or managed MCP services.
+
 ## Umbrella Apps
 
-This repository is an Elixir umbrella project:
+This repository is an Elixir umbrella project. The main application boundaries are:
 
-- `apps/backplane`: core application, Ecto schemas, MCP transport, tool registry, upstream MCP proxy, managed services, native math engine, LLM proxy, clients, settings, credentials, Oban jobs.
-- `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/mcp`, `/v1/*`, `/skills/*`, `/host-agent/*`, and host-agent sockets.
+- `apps/backplane`: boot orchestration, managed-service registration, upstream startup, and Oban job configuration.
+- `apps/backplane_system`: shared repository and migrations, settings, credentials, client tokens, configuration, and tool registry.
+- `apps/backplane_mcp`: MCP transport, upstream proxy, native hub/admin tools, managed-service adapters, and math runtime.
+- `apps/backplane_llama`: LLM routing, provider credentials, model aliases, embeddings, rate limiting, and access logs.
+- `apps/backplane_api`: Phoenix public/API endpoint for `/`, `/mcp`, `/v1/*`, `/skills/*`, `/skill-protocol/v1/*`, `/api/memory/*`, `/host-agent/*`, OAuth routes, and host-agent sockets.
 - `apps/backplane_admin`: Phoenix admin UI endpoint on its own port, with routes rooted at `/`.
+- `apps/backplane_auth`: OAuth/OIDC, resource bearer authentication, and identity/RBAC support.
+- `apps/backplane_skills`: archive-backed skill library, skill protocol API, and host-agent skill synchronization.
+- `apps/backplane_memory`: memory ingestion, projections, recall, replay, and governance.
+- `apps/backplane_host_agent`: host-side skill synchronization and durable memory capture; also built as the independent `host_agent` release.
+- `apps/backplane_monitor`: provider monitoring and plan usage.
+- `apps/backplane_telemetry`: Observability v2 settings, runtime sink, bounded buffers, and retention support.
 - `apps/relayixir`: HTTP/WebSocket reverse proxy library used internally by the LLM proxy.
 - `apps/day_ex`: date/time utility library exposed through the `day::` managed MCP tools.
+- `apps/math_ex`: math expression engine used by the managed math service.
+
+Protocol/runtime support lives in `apps/backplane_mcp_protocol`, `apps/backplane_skill_protocol`, `apps/backplane_ai_protocol`, and `apps/backplane_agent_runtime`. Shared test support lives in `apps/backplane_data_case` and `apps/backplane_ai_protocol_testkit`.
 
 ## Requirements
 
 - Elixir `~> 1.18` / OTP 28+
-- PostgreSQL
+- PostgreSQL with pgvector >= 0.7 (`halfvec` support); devenv provisions PostgreSQL 17 with pgvector
 - Bun
 - Tailwind CSS 4
+- Rust/Cargo, a C build toolchain, pkg-config, and OpenSSL development libraries for native dependency source builds (as provisioned in CI)
 
 The recommended local environment is [devenv](https://devenv.sh/), which provisions Elixir, PostgreSQL, Bun, Tailwind, and related development tools.
 
@@ -70,12 +85,19 @@ http://localhost:4221
 Useful routes:
 
 - `POST /mcp`: MCP JSON-RPC endpoint
-- `GET /mcp`: MCP SSE notification stream
-- `DELETE /mcp`: MCP session cleanup
+- `GET /mcp`: legacy MCP SSE notification stream
+- `DELETE /mcp`: legacy MCP session cleanup
+- `HEAD /mcp`: returns `204` without opening an SSE stream
 - `/v1/*`: LLM proxy routes
 - `/v1/messages`: Anthropic Messages-compatible route
+- `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`: OpenAI-compatible routes
+- `/v1/providers/:provider_name/*`: provider-scoped Codex Responses proxy supporting `GET models`, `POST responses`, and `POST responses/compact`
 - `/skills/*`: skill library API routes
+- `/skill-protocol/v1/*`: authenticated skill document/bundle protocol
+- `/api/memory/*`: memory API with resource bearer authentication
 - `/host-agent/*`: host-agent API routes
+- `/host-agent/socket`: host-agent WebSocket connection
+- `/oauth/*`, `/.well-known/*`: OAuth/OIDC and protected-resource discovery
 - Admin endpoint `/`: admin UI redirect
 - Admin endpoint `/dashboard/overview`: dashboard
 - Admin endpoint `/mcp/managed`: managed service toggles and tool lists
@@ -89,10 +111,11 @@ mix ecto.setup
 mix ecto.migrate
 mix ecto.reset
 mix test
-mix test path/to/test.exs
+mix test apps/backplane_mcp/test/backplane/transport/mcp_era_router_test.exs
 mix credo
 mix dialyzer
 mix phx.server
+mix agent.run
 ```
 
 Asset build aliases build the split API and admin Phoenix assets:
@@ -108,7 +131,7 @@ Development config lives in `config/dev.exs`.
 Production boot config is read from `backplane.toml` by default. Set `BACKPLANE_CONFIG` to use another file:
 
 ```bash
-BACKPLANE_CONFIG=/etc/backplane/backplane.toml mix phx.server
+MIX_ENV=prod BACKPLANE_CONFIG=/etc/backplane/backplane.toml mix phx.server
 ```
 
 Use `config/backplane.toml.example` as a starting point:
@@ -131,9 +154,11 @@ BACKPLANE_API_PORT=4100
 BACKPLANE_ADMIN_PORT=4101
 ```
 
+Export these environment variables before starting the process. For an installed OTP release, also set `PHX_SERVER=true` to enable the HTTP endpoints. `BACKPLANE_API_URL` and `BACKPLANE_ADMIN_URL` set the canonical resource/OAuth URLs; their defaults use `PHX_HOST` and the respective listen ports.
+
 Production public/API HTTP binding is controlled by `BACKPLANE_API_PORT`, `BACKPLANE_PORT`, or `PORT`; if none is set, it defaults to `4100`.
 Production admin HTTP binding is controlled by `BACKPLANE_ADMIN_PORT`; if it is not set, it defaults to `4101`.
-Remote development binds the admin endpoint to `0.0.0.0:4221`.
+Development binds the admin endpoint to `0.0.0.0:4221`. Production binds both endpoints to `0.0.0.0`; restrict admin access at the network or reverse-proxy boundary. The TOML `[backplane]` host/port fields do not override the Phoenix endpoint bindings above.
 
 Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through the admin endpoint, including:
 
@@ -148,12 +173,15 @@ Native math limits and timeouts live in the singleton `mcp_native_math_config` t
 
 ## MCP Auth
 
-Backplane supports two MCP authentication modes:
+`Backplane.Auth.ResourceAuthPlug` accepts these MCP bearer credentials concurrently:
 
-- **Client mode**: when client rows exist in PostgreSQL, bearer tokens are verified against the `clients` table and scoped to allowed tools.
-- **Legacy mode**: when no clients exist, the configured TOML bearer token can allow access to all tools.
+- **OAuth resource tokens**: verified for the MCP protected resource, with token scopes passed to tool authorization.
+- **Opaque client tokens**: verified against PostgreSQL-backed clients and scoped to allowed tools.
+- **Legacy tokens**: configured bearer tokens retain all-tool access, even when client rows exist.
 
-If no clients and no legacy tokens are configured, MCP access is open. This is convenient for local development but should not be used for exposed deployments.
+A request without a bearer credential is allowed only when there is no enabled OAuth client for the resource, no database client, and no configured legacy token. Invalid supplied credentials are rejected even in this open configuration. Open access is convenient for local development but should not be used for exposed deployments.
+
+The LLM `/v1` and `/skill-protocol/v1` surfaces use the same resource authentication layer with their own authorization checks. This does not add login protection to the admin endpoint.
 
 ## MCP Protocol Compatibility
 
@@ -174,7 +202,7 @@ Each configured upstream selects its protocol independently:
 | --- | --- |
 | `2025-11-25` | Default. Strict legacy initialization and session-era behavior. |
 | `2026-07-28` | Strict modern discovery and stateless requests; no legacy fallback. |
-| `auto` | Attempts modern discovery, then falls back once only for transport-classified legacy cases: an unrecognized HTTP 400/404 response, or a stdio discovery error classified as `parse_error`, `invalid_request`, `method_not_found`, `invalid_params`, or `request_timeout`. Other errors remain terminal. |
+| `auto` | Attempts modern discovery. Legacy fallback is allowed for an unrecognized HTTP 400/404 response, a recognized HTTP `method_not_found` discovery error (raw JSON-RPC errors must have a matching non-null request ID), or a stdio discovery error classified as `parse_error`, `invalid_request`, `method_not_found`, `invalid_params`, or `request_timeout`. A valid `unsupported_protocol_version` error can retry a mutually supported modern version with loop protection; it does not trigger legacy fallback. Other errors remain terminal. |
 
 The downstream client era and an upstream server's era are independent. A
 modern client can call a namespaced tool backed by a legacy upstream, and a
@@ -194,7 +222,7 @@ Examples:
 - `math::evaluate`
 - `web::fetch`
 - `web::search`
-- `skills::list`
+- `skill::list`
 - `hub::discover`
 - `prefix::upstream_tool`
 
@@ -207,7 +235,10 @@ Managed services are built into Backplane and can be viewed from the admin endpo
 - `day::*`: date/time tools backed by `apps/day_ex`
 - `web::fetch`: fetch an HTTP(S) URL and convert readable content to Markdown
 - `web::search`: search through configured Ollama or MiniMax backends
+- `web::live_search`: hosted web search through a configured LLM provider
+- `web::x_search`: X search through xAI credentials
 - `math::evaluate`: parse and evaluate math expressions through the native math engine
+- `skill::*`: archive-backed skill search, list, load, download, and publish tools; registered only when `services.skill.enabled` is explicitly `true`
 
 The math service accepts either an infix expression such as `2 * (3 + 4)` or a canonical JSON AST. Input is parsed into `Backplane.Math.Expression.Ast` before execution, then dispatched through `Backplane.Math.Router` into the native engine under `Backplane.Math.Sandbox` timeouts and complexity limits.
 
@@ -215,16 +246,15 @@ The math service accepts either an infix expression such as `2 * (3 + 4)` or a c
 
 The admin UI is available on the admin endpoint at `/` and includes:
 
-- Dashboard
-- MCP Hub
-- Upstreams
-- Managed services
-- LLM Providers
-- Clients
-- Logs
-- Settings
+- Dashboard: overview and LLM/MCP/plan usage
+- Llama: providers, embedding, and model aliases
+- MCP: upstreams, managed services, agents, and inspector
+- Memory: activity, sessions, recall, replay, and governance
+- Skills: browse, metadata, upstreams, drafts, and uploads
+- Auth: OAuth clients/providers/tokens, RBAC, and audit
+- System: clients, logs, sink health, monitoring, credentials, and host agents
 
-The admin UI, including Memory, does not require application-level authentication.
+The admin UI, including Memory and Auth management, is intentionally a trusted-operator surface and does not require application-level authentication. Keep it on a private network or behind a trusted reverse proxy; do not expose the admin port on public ingress.
 
 ## Testing
 
@@ -240,6 +270,18 @@ The umbrella includes database-backed tests, LiveView tests, MCP transport tests
 
 - PostgreSQL stores runtime configuration, credentials, upstream definitions, clients, skills, provider metadata, model aliases, and usage logs.
 - Oban handles background jobs such as usage writing and retention.
+- Observability v2 policy is stored under `observability.*` settings. The runtime sink and bounded LLM/MCP/audit writers provide persistence; the legacy usage-writing path is disabled when LLM persistence is enabled. Admin `/system/logs/sinks` reports writer/buffer health.
 - Native math config is stored in the singleton `mcp_native_math_config` table and cached by `Backplane.Math.Config`.
 - Relayixir is embedded as a library; its standalone server is disabled in Backplane.
 - Phoenix LiveView uses the DuskMoon UI component system.
+
+## Further Documentation
+
+- `docs/deploy/backplane.md`: gateway deployment and release configuration
+- `docs/deploy/host_agent.md`: host-agent deployment
+- `docs/proxy-llm/backplane-openai-codex-direct-proxy-task.md`: provider-scoped Codex Responses proxy design
+- `docs/usage/openai-codex.md`: direct-token Codex usage polling and stability caveats
+- `docs/skill-protocol/contract-v1.md`: skill protocol compatibility contract
+- `docs/operations/memory-v2.md`: memory operations and security boundary
+- `docs/deploy/memory-v2-release.md`: memory migration and release safety
+- `docs/observability/verification-and-production-rollout.md`: observability validation and rollout
