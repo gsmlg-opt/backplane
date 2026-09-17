@@ -26,7 +26,8 @@ defmodule Backplane.Admin.Layouts do
           %{label: "Overview", path: "/dashboard/overview", icon: "view-dashboard-outline"},
           %{label: "LLM Usage", path: "/dashboard/usage/llm", icon: "chart-line"},
           %{label: "MCP Usage", path: "/dashboard/usage/mcp", icon: "chart-bar"},
-          %{label: "Plan Usage", path: "/dashboard/usage/plans", icon: "chart-donut"}
+          %{label: "Plan Usage", path: "/dashboard/usage/plans", icon: "chart-donut"},
+          %{label: "API Usage", path: "/dashboard/usage/api", icon: "chart-line"}
         ]
 
       :llama ->
@@ -142,6 +143,7 @@ defmodule Backplane.Admin.Layouts do
 
       :system ->
         [
+          %{label: "Config", path: "/system/config", icon: "tune-variant"},
           %{label: "Appearance", path: "/system/appearance", icon: "palette-outline"},
           %{label: "Clients", path: "/system/clients", icon: "account-group"},
           %{label: "Credentials", path: "/system/credentials", icon: "key-variant"},
@@ -158,6 +160,11 @@ defmodule Backplane.Admin.Layouts do
                 label: "Plan Usage",
                 path: "/system/monitor/plans",
                 icon: "chart-donut"
+              },
+              %{
+                label: "API Usage",
+                path: "/system/monitor/api-usage",
+                icon: "chart-line"
               }
             ]
           },

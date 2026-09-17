@@ -256,6 +256,42 @@ The admin UI is available on the admin endpoint at `/` and includes:
 
 The admin UI, including Memory and Auth management, is intentionally a trusted-operator surface and does not require application-level authentication. Keep it on a private network or behind a trusted reverse proxy; do not expose the admin port on public ingress.
 
+### API Usage Monitoring
+
+**System → Monitor → API Usage** (`/system/monitor/api-usage`) lists and configures
+API accounts independently of subscription Plan Usage. Add a named OpenRouter
+or DeepSeek account using an existing LLM/service API-key credential from the
+vault. Account definitions store credential names, not keys. This configuration
+page does not display usage figures or request usage snapshots.
+
+**Dashboard → API Usage** (`/dashboard/usage/api`) displays balances, spending,
+limits, availability, last-success timestamps and errors, with manual refresh.
+
+- **OpenRouter:** key spending and limits; an optional management-key credential
+  also supplies account spending and credits. Account-credit failures do not hide
+  successful key usage.
+- **DeepSeek:** available, granted, and topped-up balances with their currencies.
+  Usage totals are explicitly unavailable rather than reported as zero.
+
+**System → Config** (`/system/config`) provides the global API information
+fetching switch (`monitor.api_usage.enabled`, default enabled). Disabling it
+stops automatic and manual fetching and cancels in-flight requests, without
+changing account activation or subscription Plan Usage. Cached successful values
+remain visible on the dashboard with a disabled indication. Re-enabling fetches
+the current active account definitions; no additional migration is required for
+this setting.
+
+Active accounts refresh every five minutes when fetching is enabled. Paused
+accounts do not poll. After a refresh fails, the last successful values remain
+visible with the error and success timestamp. Snapshots are held in memory, not
+stored as billing history. Run `mix ecto.migrate` before starting an upgraded
+deployment to create `monitor_api_accounts`.
+
+Restart the running application after upgrading, including in development.
+Phoenix code reloading recompiles modules but does not update existing GenServer
+state or add the new `Backplane.Monitor.ApiUsageServer` child to an already-running
+supervision tree.
+
 ## Testing
 
 Run the full suite:

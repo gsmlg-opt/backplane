@@ -65,6 +65,7 @@ defmodule Backplane.Admin.Router do
     live("/skills/upload", SkillUploadLive, :index)
     live("/skills/upload/:id", SkillUploadLive, :show)
     live("/system/appearance", AppearanceLive, :index)
+    live("/system/config", SystemConfigLive, :index)
     live("/system/clients", ClientsLive, :index)
     live("/system/logs", LogsOverviewLive, :index)
     live("/system/logs/llm", LogsLlmLive, :index)
@@ -77,6 +78,9 @@ defmodule Backplane.Admin.Router do
     live("/system/monitor/plans", MonitorPlansLive, :index)
     live("/system/monitor/plans/new", MonitorPlansLive, :new)
     live("/system/monitor/plans/:id/edit", MonitorPlansLive, :edit)
+    live("/system/monitor/api-usage", ApiUsageLive, :index)
+    live("/system/monitor/api-usage/new", ApiUsageLive, :new)
+    live("/system/monitor/api-usage/:id/edit", ApiUsageLive, :edit)
     live("/system/credentials", SettingsLive, :credentials)
     live("/system/credentials/new", SettingsLive, :credentials_new)
     live("/system/credentials/new/:vendor", SettingsLive, :credentials_new_oauth)
@@ -85,6 +89,7 @@ defmodule Backplane.Admin.Router do
     live("/system/host-agents/:id", HostAgentsLive, :show)
     live("/system/host-agents/:id/:tab", HostAgentsLive, :show)
     live("/dashboard/usage/plans", DashboardPlanUsageLive, :index)
+    live("/dashboard/usage/api", DashboardApiUsageLive, :index)
     get("/oauth/callback", OAuthCallbackController, :callback)
   end
 

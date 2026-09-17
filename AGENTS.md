@@ -56,7 +56,7 @@ This is an umbrella project. Key apps include:
 - **`apps/backplane_skills`** — Skills, revisions, sources, host assignments, and agent MCP management
 - **`apps/backplane_memory`** — Memory ingestion, projections, replay, summaries, and crystals
 - **`apps/backplane_host_agent`** — Standalone host agent and its release/runtime configuration
-- **`apps/backplane_monitor`** — Provider plan monitoring and usage checks
+- **`apps/backplane_monitor`** — Subscription-plan and API-account monitoring and usage checks
 - **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Observability v2: event envelopes, runtime sink, bounded writers, retention, admin health/metrics
 - **`apps/backplane_admin`** (`:backplane_admin`) — Phoenix admin UI endpoint on its own port with routes rooted at `/`; dev port 4221.
 - **`apps/relayixir`** (`:relayixir`) — HTTP reverse proxy library used internally by the LLM proxy to forward requests to upstream LLM providers.
@@ -117,6 +117,8 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Services.Skills` — Managed service adapter for archive-backed skill tools (`skill::*`)
 - `Backplane.Tools.*` — Native Hub/Admin modules plus the Skills implementation delegated by `Backplane.Services.Skills`
 - `Backplane.LLM.*` — LLM reverse proxy: Provider, ModelAlias, ModelResolver, CredentialPlug, RateLimiter, UsageLog, LogWriter, AccessEvent
+- `Backplane.Monitor.ApiAccount` / `ApiAccounts` — API-account schema and CRUD context (in `backplane_monitor`)
+- `Backplane.Monitor.ApiUsageServer` / `ApiUsageFetcher` — Ephemeral API-usage cache and provider polling (OpenRouter/DeepSeek)
 - `Backplane.Observability.*` — Observability v2 flags, settings, runtime sink, buffers, retention (in `backplane_telemetry`)
 - `Backplane.Settings` — Runtime key-value store (ETS-cached, backed by `system_settings` table)
 - `Backplane.Settings.Credentials` — Encrypted secret store (AES-256-GCM, backed by `credentials` table)
@@ -129,11 +131,19 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `BackplaneMcp.Application` owns sessions/tasks, math supervision, upstream/client pools and leases, response cache, and conditional MCP writers.
 - `BackplaneLlama.Application` owns Relayixir, model resolution, route loading, rate limiting, and conditional LLM writing.
 - `BackplaneSkills.Application` owns the skills registry and agent MCP management supervision.
+- `BackplaneMonitor.Application` owns plan supervision, the monitor TaskSupervisor, and `Backplane.Monitor.ApiUsageServer`.
 - `Backplane.Application` supervises Oban and performs gateway boot reconciliation.
 - `Backplane.Api.Application` and `Backplane.Admin.Application` own their separate Phoenix endpoints.
 - `BackplaneTelemetry.Supervisor` owns observability settings and the runtime sink when v2 policy is active.
 
 After its supervisor starts, the gateway registers native hub/admin tools, reconciles managed services fail-closed, starts configured/DB upstreams, and seeds the client cache/configured clients. Keep writer lifecycle changes in the owning domain app, not in the gateway orchestrator.
+
+### API Usage Monitoring
+
+- API Usage is independent of subscription plans and LLM routing. System → Monitor → API Usage is configuration-only: table and CRUD, no usage figures, refresh controls, or snapshot reads. Dashboard → API Usage displays usage and supports asynchronous manual refresh. Active accounts refresh every five minutes and requests do not overlap per account. Snapshots are in-memory, not durable. The dashboard reloads cached states every five seconds while refreshing, otherwise every thirty seconds.
+- System → Config controls `monitor.api_usage.enabled` (default true) in the existing Settings store. Runtime policy prevents all provider requests while disabled, cancels in-flight requests, and retains last-success data. Re-enable reconciles authoritative definitions and refreshes active accounts. Individual account activation still applies; subscription Plan Usage is unaffected. Restart after upgrading supervision or GenServer state; Phoenix dev code reload does not update either automatically.
+- Account definitions store vault credential names only. Eligible credentials have kind `llm` or `service` and metadata `auth_type` absent/nil or `api_key`; forms use safe metadata, and secrets are resolved only during provider polling. The optional management credential applies only to OpenRouter. Never render or audit plaintext keys or raw provider responses; CRUD/toggle audit records contain action, entity type, and ID only.
+- OpenRouter key usage/limits are key-scoped; optional management-key credits, remaining balance, and account spending are account-wide. Management-credit failures must not hide successful key usage. DeepSeek supplies per-currency total/granted/topped-up balances and API availability, not spending totals. Unsupported or missing fields are unavailable, never fabricated zero; preserve decimal strings and currencies. Refresh errors retain last-success data with a stale-data indication and separate last-attempt/last-success timestamps.
 
 ### Observability v2
 
@@ -158,6 +168,7 @@ PostgreSQL with pgvector. Core tables include:
 - `llm_model_aliases` — Global model alias → provider/model mapping
 - `llm_logs` — Insert-only LLM proxy access records (Observability v2 durable writes)
 - `mcp_native_math_config` — Singleton native math limits/timeouts
+- `monitor_api_accounts` — UUID, unique name, provider, API-key/optional management credential names, active flag, and timestamps; schema/context belong to `backplane_monitor`, migration to `backplane_system`
 - `bpm_memory_spaces`, `bpm_observations`, `bpm_memories` — Memory spaces and projected memory data; replay, summary, and crystal tables belong to the memory domain
 
 Use the shared Repo through app-owned contexts. Schema and migration changes belong in the relevant domain and `backplane_system` migration directory respectively.
@@ -193,6 +204,9 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 - **MCP Hub** (`/mcp/managed`, `/mcp/upstreams`, `/mcp/inspector`) — Managed day/web/math/skill services, upstream servers, and protocol inspection
 - **LLM Providers** (`/llama/providers`) — Provider CRUD, model aliases, usage panel, health status
 - **Clients** (`/system/clients`) — MCP client token and scope management
+- **Dashboard → Usage** — Plan Usage (`/dashboard/usage/plans`) and API Usage (`/dashboard/usage/api`) display provider figures and support refresh
+- **System → Config** (`/system/config`) — Persistent global API information fetching switch
+- **System → Monitor** — Plan Usage (`/system/monitor/plans`) and API Usage (`/system/monitor/api-usage`); API Usage supports add/edit/pause/delete with `/system/monitor/api-usage/new` and `/system/monitor/api-usage/:id/edit` patch routes
 - **Auth** (`/auth/overview`) — OAuth providers/clients, RBAC, and authentication audit
 - **Skills** (`/skills`) — Browse, sources, drafts, metadata, and uploads
 - **Memory** (`/memory`) — Spaces, observations, replay, summaries, and crystals

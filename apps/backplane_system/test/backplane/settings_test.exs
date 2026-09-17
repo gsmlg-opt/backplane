@@ -18,6 +18,21 @@ defmodule Backplane.SettingsTest do
   end
 
   describe "defaults" do
+    test "API usage fetching is enabled without a saved setting" do
+      key = "monitor.api_usage.enabled"
+      previous = :ets.lookup(:backplane_settings, key)
+
+      on_exit(fn ->
+        if previous == [],
+          do: :ets.delete(:backplane_settings, key),
+          else: :ets.insert(:backplane_settings, previous)
+      end)
+
+      Repo.delete_all(from(setting in Setting, where: setting.key == ^key))
+      :ets.delete(:backplane_settings, key)
+      assert Settings.get(key) == true
+    end
+
     test "host delivery defaults preserve v1 and require explicit v2 opt-in" do
       for {key, expected} <- [
             {"memory.host_sync_v1.enabled", true},

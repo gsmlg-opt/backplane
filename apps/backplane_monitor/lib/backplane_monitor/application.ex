@@ -8,7 +8,8 @@ defmodule BackplaneMonitor.Application do
     children = [
       {Registry, keys: :unique, name: Backplane.Monitor.PlanRegistry},
       {Task.Supervisor, name: Backplane.Monitor.TaskSupervisor},
-      Backplane.Monitor.PlanSupervisor
+      Backplane.Monitor.PlanSupervisor,
+      Backplane.Monitor.ApiUsageServer
     ]
 
     with {:ok, pid} <-

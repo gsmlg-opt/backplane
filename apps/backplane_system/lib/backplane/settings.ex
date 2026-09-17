@@ -23,6 +23,11 @@ defmodule Backplane.Settings do
   # --- Defaults ---
 
   @defaults %{
+    "monitor.api_usage.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable API account credit and usage fetching"
+    },
     "memory.host_sync_v1.enabled" => %{
       value: true,
       type: "boolean",

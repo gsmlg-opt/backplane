@@ -11,6 +11,8 @@ defmodule Backplane.Admin.DashboardLiveTest do
     assert html =~ ~s(href="/dashboard/overview")
     assert html =~ ~s(href="/dashboard/usage/llm")
     assert html =~ ~s(href="/dashboard/usage/mcp")
+    assert html =~ ~s(href="/dashboard/usage/plans")
+    assert html =~ ~s(href="/dashboard/usage/api")
     assert html =~ ~s(href="/llama/providers")
     assert html =~ ~s(href="/mcp/managed")
     assert html =~ ~s(href="/memory")
