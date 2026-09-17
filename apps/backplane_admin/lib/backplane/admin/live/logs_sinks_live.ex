@@ -68,10 +68,9 @@ defmodule Backplane.Admin.LogsSinksLive do
 
         <section>
           <h2 class="mb-3 text-lg font-semibold">Writers</h2>
-          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <.writer_card title="LLM LogWriter" health={@llm_writer} />
-            <.writer_card title="MCP LogWriter" health={@mcp_writer} />
-            <.writer_card title="MCP ToolLogWriter" health={@mcp_tool_writer} />
+            <.mcp_writer_card health={aggregate_mcp_health(@mcp_writer, @mcp_tool_writer)} />
             <.writer_card title="Audit Writer" health={@audit_writer} />
           </div>
         </section>
@@ -131,18 +130,117 @@ defmodule Backplane.Admin.LogsSinksLive do
       <:title>{@title}</:title>
       <.dm_badge variant={status_variant(@health[:status])}>{@health[:status] || "unknown"}</.dm_badge>
       <dl class="mt-3 space-y-1 text-sm">
-        <div><dt class="inline text-on-surface-variant">Inserted:</dt> <dd class="inline">{@health[:inserted_total] || 0}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Dropped:</dt> <dd class="inline">{@health[:dropped_total] || 0}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Failed:</dt> <dd class="inline">{@health[:failed_total] || 0}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Inserted:</dt> <dd class="inline">{format_number(@health[:inserted_total])}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Dropped:</dt> <dd class="inline">{format_number(@health[:dropped_total])}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Failed:</dt> <dd class="inline">{format_number(@health[:failed_total])}</dd></div>
       </dl>
     </.dm_card>
     """
   end
 
+  attr(:health, :map, required: true)
+
+  defp mcp_writer_card(assigns) do
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>MCP LogWriter</:title>
+      <.dm_badge variant={status_variant(@health.status)}>{status_label(@health.status)}</.dm_badge>
+      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+        <div><dt class="inline text-on-surface-variant">Inserted records:</dt> <dd class="inline">{format_number(@health.inserted_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Dropped:</dt> <dd class="inline">{format_number(@health.dropped_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Failed:</dt> <dd class="inline">{format_number(@health.failed_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">Duplicates:</dt> <dd class="inline">{format_number(@health.duplicate_total)}</dd></div>
+      </dl>
+      <div class="mt-3 space-y-2 border-t border-outline-variant pt-3 text-xs">
+        <.mcp_channel_row label="Request records" health={@health.root} />
+        <.mcp_channel_row label="Tool calls" health={@health.tools} />
+      </div>
+    </.dm_card>
+    """
+  end
+
+  attr(:label, :string, required: true)
+  attr(:health, :map, required: true)
+
+  defp mcp_channel_row(assigns) do
+    ~H"""
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span class="font-medium">{@label}</span>
+      <.dm_badge variant={status_variant(@health.status)}>{status_label(@health.status)}</.dm_badge>
+      <span class="text-on-surface-variant">queue {format_number(@health.queue.queued)}/{format_number(@health.queue.capacity)}</span>
+      <span class="text-on-surface-variant">inserted {format_number(@health.inserted_total)}</span>
+      <span :if={@health.dropped_total > 0} class="text-on-surface-variant">dropped {format_number(@health.dropped_total)}</span>
+      <span :if={@health.failed_total > 0} class="text-error">failed {format_number(@health.failed_total)}</span>
+      <span :if={@health.duplicate_total > 0} class="text-on-surface-variant">duplicates {format_number(@health.duplicate_total)}</span>
+    </div>
+    """
+  end
+
+  @doc false
+  def aggregate_mcp_health(root_health, tool_health) do
+    root = normalize_mcp_channel(root_health)
+    tools = normalize_mcp_channel(tool_health)
+
+    %{
+      status: aggregate_status(root.status, tools.status),
+      inserted_total: root.inserted_total + tools.inserted_total,
+      dropped_total: root.dropped_total + tools.dropped_total,
+      failed_total: root.failed_total + tools.failed_total,
+      duplicate_total: root.duplicate_total + tools.duplicate_total,
+      root: root,
+      tools: tools
+    }
+  end
+
+  defp normalize_mcp_channel(health) when is_map(health) do
+    buffer = Map.get(health, :buffer)
+    writer_status = Map.get(health, :status)
+
+    %{
+      status: channel_status(writer_status, buffer),
+      queue: %{
+        queued: number(Map.get(buffer || %{}, :queued)),
+        capacity: number(Map.get(buffer || %{}, :capacity))
+      },
+      inserted_total: number(Map.get(health, :inserted_total)),
+      dropped_total: number(Map.get(health, :dropped_total)),
+      failed_total: number(Map.get(health, :failed_total)),
+      duplicate_total: number(Map.get(health, :duplicate_total))
+    }
+  end
+
+  defp normalize_mcp_channel(_), do: normalize_mcp_channel(%{})
+
+  defp channel_status(:disabled, _buffer), do: :disabled
+
+  defp channel_status(:ok, %{status: :ok}), do: :ok
+  defp channel_status(:ok, _buffer), do: :unavailable
+  defp channel_status(_, _buffer), do: :unavailable
+
+  defp aggregate_status(:ok, :ok), do: :ok
+  defp aggregate_status(:disabled, :disabled), do: :disabled
+  defp aggregate_status(:unavailable, _), do: :unavailable
+  defp aggregate_status(_, :unavailable), do: :unavailable
+  defp aggregate_status(_, _), do: :degraded
+
+  defp number(value) when is_integer(value) and value >= 0, do: value
+  defp number(_value), do: 0
+
+  defp format_number(value) do
+    value
+    |> number()
+    |> Integer.to_string()
+    |> then(&Regex.replace(~r/\B(?=(\d{3})+(?!\d))/, &1, ","))
+  end
+
   defp status_variant(:ok), do: "success"
   defp status_variant(:unavailable), do: "error"
+  defp status_variant(:degraded), do: "neutral"
   defp status_variant(:disabled), do: "neutral"
   defp status_variant(_), do: "neutral"
+
+  defp status_label(:degraded), do: "degraded"
+  defp status_label(status), do: to_string(status || :unavailable)
 
   defp safe_call(fun, default \\ %{}) do
     fun.()

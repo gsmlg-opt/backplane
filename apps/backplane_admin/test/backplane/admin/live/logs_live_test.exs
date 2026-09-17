@@ -328,6 +328,10 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ "Observability Sinks"
     assert html =~ "LLM LogWriter"
     assert html =~ "MCP LogWriter"
+    assert html =~ "Inserted records"
+    assert html =~ "Request records"
+    assert html =~ "Tool calls"
+    refute html =~ "MCP ToolLogWriter"
     assert html =~ "Feature flags"
   end
 
