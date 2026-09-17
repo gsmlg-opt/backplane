@@ -27,6 +27,7 @@ web_reloadable_apps = [
   :backplane,
   :backplane_admin,
   :backplane_api,
+  :backplane_ai_protocol,
   :backplane_auth,
   :backplane_llama,
   :backplane_mcp,
