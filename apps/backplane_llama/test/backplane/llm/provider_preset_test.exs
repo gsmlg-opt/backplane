@@ -12,6 +12,8 @@ defmodule Backplane.LLM.ProviderPresetTest do
              "openrouter",
              "ollama",
              "ollama-cloud",
+             "vllm",
+             "sglang",
              "custom",
              "openai",
              "openai-codex",
@@ -103,6 +105,69 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert preset.anthropic.discovery_path == "/v1/models"
   end
 
+  test "vllm uses local OpenAI and Anthropic defaults on port 8000" do
+    preset = ProviderPreset.fetch!("vllm")
+
+    assert preset.name == "vLLM"
+    assert preset.default_name == "vllm"
+    assert preset.credential_kind == "llm"
+    assert preset.default_credential == nil
+    assert preset.credential_auth_type == "api_key"
+    assert preset.default_base_url == "http://localhost:8000"
+
+    assert preset.openai == %{
+             enabled: true,
+             base_url: "http://localhost:8000/v1",
+             discovery_path: "/models"
+           }
+
+    assert preset.anthropic == %{
+             enabled: true,
+             base_url: "http://localhost:8000",
+             discovery_path: nil
+           }
+
+    assert preset.docs_urls != []
+  end
+
+  test "sglang uses local OpenAI and Anthropic defaults on port 30000" do
+    preset = ProviderPreset.fetch!("sglang")
+
+    assert preset.name == "SGLang"
+    assert preset.default_name == "sglang"
+    assert preset.credential_kind == "llm"
+    assert preset.default_credential == nil
+    assert preset.credential_auth_type == "api_key"
+    assert preset.default_base_url == "http://localhost:30000"
+
+    assert preset.openai == %{
+             enabled: true,
+             base_url: "http://localhost:30000/v1",
+             discovery_path: "/models"
+           }
+
+    assert preset.anthropic == %{
+             enabled: true,
+             base_url: "http://localhost:30000",
+             discovery_path: nil
+           }
+
+    assert preset.docs_urls != []
+  end
+
+  test "self-hosted inference presets declare native wire protocols explicitly" do
+    for key <- ["vllm", "sglang"] do
+      preset = ProviderPreset.fetch!(key)
+
+      assert ProviderPreset.native_protocols(preset, :openai) == [
+               :openai_chat_completions,
+               :openai_responses
+             ]
+
+      assert ProviderPreset.native_protocols(preset, :anthropic) == [:anthropic_messages]
+    end
+  end
+
   test "openrouter and x-ai use openai-compatible defaults" do
     openrouter = ProviderPreset.fetch!("openrouter")
     x_ai = ProviderPreset.fetch!("x-ai")
@@ -147,7 +212,19 @@ defmodule Backplane.LLM.ProviderPresetTest do
     refute moonshot.anthropic.enabled
   end
 
-  test "declares concrete native wire protocols instead of inferring them from family" do
+  test "defaults every OpenAI-compatible preset to Responses with Codex remaining Responses-only" do
+    for preset <- ProviderPreset.all(), preset.openai.enabled do
+      expected =
+        if preset.key == "openai-codex",
+          do: [:openai_responses],
+          else: [:openai_chat_completions, :openai_responses]
+
+      assert ProviderPreset.native_protocols(preset, :openai) == expected,
+             "unexpected OpenAI default protocols for #{preset.key}"
+    end
+  end
+
+  test "preserves concrete Codex and Anthropic wire protocols" do
     assert ProviderPreset.native_protocols(ProviderPreset.fetch!("openai"), :openai) == [
              :openai_chat_completions,
              :openai_responses
@@ -158,7 +235,8 @@ defmodule Backplane.LLM.ProviderPresetTest do
            ]
 
     assert ProviderPreset.native_protocols(ProviderPreset.fetch!("deepseek"), :openai) == [
-             :openai_chat_completions
+             :openai_chat_completions,
+             :openai_responses
            ]
 
     assert ProviderPreset.native_protocols(ProviderPreset.fetch!("deepseek"), :anthropic) == [

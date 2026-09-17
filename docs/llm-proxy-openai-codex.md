@@ -82,7 +82,10 @@ For example, a current Codex catalog may contain `gpt-5.6-sol`,
 rather than synthesizing these names.
 
 The global `/v1/models` endpoint remains OpenAI-compatible and is independent
-from direct Codex routing.
+from direct Codex routing. It now also provides normalized `data[].metadata`
+and Codex model descriptors under `models` for globally routable native Responses
+models. The `openai-codex` preset remains provider-scoped; see
+[LLM model metadata](llm-model-metadata.md) for the global listing contract.
 
 ## Chat Completions
 

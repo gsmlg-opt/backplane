@@ -200,6 +200,57 @@ defmodule Backplane.LLM.ProviderPreset do
       ]
     },
     %{
+      key: "vllm",
+      name: "vLLM",
+      default_name: "vllm",
+      credential_kind: "llm",
+      credential_auth_type: "api_key",
+      default_base_url: "http://localhost:8000",
+      openai: %{
+        enabled: true,
+        base_url: "http://localhost:8000/v1",
+        discovery_path: "/models"
+      },
+      anthropic: %{
+        enabled: true,
+        base_url: "http://localhost:8000",
+        discovery_path: nil
+      },
+      notes:
+        "vLLM serves native OpenAI Chat Completions, Responses, and Anthropic Messages APIs. Model discovery uses the OpenAI /v1/models endpoint. API keys are optional unless server authentication is configured.",
+      docs_urls: [
+        "https://docs.vllm.ai/en/latest/serving/online_serving/",
+        "https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/",
+        "https://docs.vllm.ai/en/latest/cli/serve/"
+      ]
+    },
+    %{
+      key: "sglang",
+      name: "SGLang",
+      default_name: "sglang",
+      credential_kind: "llm",
+      credential_auth_type: "api_key",
+      default_base_url: "http://localhost:30000",
+      openai: %{
+        enabled: true,
+        base_url: "http://localhost:30000/v1",
+        discovery_path: "/models"
+      },
+      anthropic: %{
+        enabled: true,
+        base_url: "http://localhost:30000",
+        discovery_path: nil
+      },
+      notes:
+        "SGLang serves native OpenAI Chat Completions, Responses, and Anthropic Messages APIs. Responses availability depends on server initialization and model support. Model discovery uses the OpenAI /v1/models endpoint. API keys are optional unless server authentication is configured.",
+      docs_urls: [
+        "https://docs.sglang.io/docs/basic_usage/openai_api_completions",
+        "https://docs.sglang.io/docs/basic_usage/anthropic_api",
+        "https://docs.sglang.io/docs/advanced_features/server_arguments",
+        "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py"
+      ]
+    },
+    %{
       key: "custom",
       name: "Custom",
       default_name: "custom",
@@ -366,17 +417,13 @@ defmodule Backplane.LLM.ProviderPreset do
     get(key) || raise ArgumentError, "unknown LLM provider preset: #{inspect(key)}"
   end
 
-  @doc "Concrete wire protocols a preset exposes natively on an API surface."
+  @doc "Default wire protocols enabled for a preset's API surface."
   @spec native_protocols(t(), :openai | :anthropic) :: [atom()]
-  def native_protocols(%__MODULE__{key: "openai"}, :openai),
-    do: [:openai_chat_completions, :openai_responses]
-
   def native_protocols(%__MODULE__{key: "openai-codex"}, :openai),
     do: [:openai_responses]
 
-  def native_protocols(%__MODULE__{key: "custom"}, :openai),
+  def native_protocols(%__MODULE__{}, :openai),
     do: [:openai_chat_completions, :openai_responses]
 
-  def native_protocols(%__MODULE__{}, :openai), do: [:openai_chat_completions]
   def native_protocols(%__MODULE__{}, :anthropic), do: [:anthropic_messages]
 end

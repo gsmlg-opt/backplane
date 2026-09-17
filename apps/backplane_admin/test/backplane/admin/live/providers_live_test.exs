@@ -165,6 +165,9 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     test "creates a provider with openai and anthropic API surfaces", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
+      assert has_element?(view, "#provider-openai-chat-completions-enabled[checked]")
+      assert has_element?(view, "#provider-openai-responses-enabled[checked]")
+
       view
       |> form("form[phx-submit=save]", %{
         "provider" => %{
@@ -210,9 +213,42 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                %{
                  api_surface: :openai,
                  base_url: "https://api.deepseek.com",
-                 native_protocols: [:openai_chat_completions]
+                 native_protocols: [:openai_chat_completions, :openai_responses]
                }
              ] = apis
+    end
+
+    test "deepseek creation preserves manually disabled openai responses", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='deepseek']")
+      |> render_click()
+
+      assert has_element?(view, "#provider-openai-chat-completions-enabled[checked]")
+      assert has_element?(view, "#provider-openai-responses-enabled[checked]")
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "deepseek-chat-only",
+          "credential" => "test-cred",
+          "openai_chat_completions_enabled" => "true",
+          "openai_responses_enabled" => "false"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+
+      provider = Repo.get_by!(Provider, name: "deepseek-chat-only")
+      assert provider.preset_key == "deepseek"
+
+      assert [
+               %{api_surface: :anthropic, native_protocols: [:anthropic_messages]},
+               %{api_surface: :openai, native_protocols: [:openai_chat_completions]}
+             ] =
+               ProviderApi.list_for_provider(provider.id)
     end
 
     test "creates a provider from a selected preset", %{conn: conn} do

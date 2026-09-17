@@ -25,6 +25,7 @@ defmodule Backplane.LLM.Router do
     CredentialPlug,
     ModelAlias,
     ModelExtractor,
+    ModelMetadata,
     ModelResolver,
     Provider,
     ProviderApi,
@@ -66,8 +67,8 @@ defmodule Backplane.LLM.Router do
   end
 
   get "/v1/models" do
-    models = build_model_list()
-    send_json(conn, 200, %{"object" => "list", "data" => models, "models" => []})
+    {data, models} = build_model_list()
+    send_json(conn, 200, %{"object" => "list", "data" => data, "models" => models})
   end
 
   post "/v1/messages" do
@@ -592,14 +593,7 @@ defmodule Backplane.LLM.Router do
     provider_entries =
       for provider <- providers,
           model <- provider.models,
-          model.enabled,
-          surface <- model.surfaces,
-          surface.enabled,
-          api_surface = enabled_surface_api_type(provider, surface.provider_api_id),
-          match?(
-            {:ok, _provider, _raw_model},
-            ModelResolver.resolve(api_surface, "#{provider.name}/#{model.model}")
-          ) do
+          model.enabled do
         %{
           "id" => "#{provider.name}/#{model.model}",
           "object" => "model",
@@ -612,8 +606,7 @@ defmodule Backplane.LLM.Router do
 
     auto_model_entries =
       for auto_model <- AutoModel.list_configurations(),
-          auto_model.enabled,
-          auto_model_available?(auto_model) do
+          auto_model.enabled do
         %{
           "id" => auto_model.name,
           "object" => "model",
@@ -623,8 +616,7 @@ defmodule Backplane.LLM.Router do
       end
 
     custom_alias_entries =
-      for model_alias <- ModelAlias.list(),
-          custom_alias_available?(model_alias) do
+      for model_alias <- ModelAlias.list() do
         %{
           "id" => model_alias.alias,
           "object" => "model",
@@ -633,41 +625,50 @@ defmodule Backplane.LLM.Router do
         }
       end
 
-    (provider_entries ++ auto_model_entries ++ custom_alias_entries)
-    |> Enum.uniq_by(& &1["id"])
-    |> Enum.sort_by(& &1["id"])
+    entries =
+      (provider_entries ++ auto_model_entries ++ custom_alias_entries)
+      |> Enum.uniq_by(& &1["id"])
+      |> Enum.sort_by(& &1["id"])
+
+    resolved_entries =
+      for entry <- entries,
+          target = selected_model_target(providers, entry["id"]),
+          not is_nil(target) do
+        {provider, model, surface, _api} = target
+        raw_metadata = Map.merge(model.metadata || %{}, surface.metadata || %{})
+        metadata = ModelMetadata.normalize(provider.preset_key, raw_metadata)
+        {Map.put(entry, "metadata", metadata), target}
+      end
+
+    models =
+      for {{entry, {provider, model, _surface, api}}, priority} <-
+            Enum.with_index(resolved_entries),
+          api.api_surface == :openai,
+          :openai_responses in api.native_protocols,
+          provider.preset_key != "openai-codex" do
+        ModelMetadata.codex(entry["id"], model.display_name, entry["metadata"],
+          supported_in_api: true,
+          priority: priority
+        )
+      end
+
+    {Enum.map(resolved_entries, &elem(&1, 0)), models}
   end
 
-  defp enabled_surface_api_type(provider, surface_provider_api_id) do
-    provider.apis
-    |> Enum.find(fn api -> api.id == surface_provider_api_id and api.enabled end)
-    |> case do
-      nil -> nil
-      api -> api.api_surface
-    end
-  end
-
-  defp custom_alias_available?(%ModelAlias{} = model_alias) do
-    Enum.any?([:openai, :anthropic], fn api_type ->
-      match?({:ok, _provider, _raw_model}, ModelResolver.resolve(api_type, model_alias.alias))
-    end)
-  end
-
-  defp auto_model_available?(auto_model) do
-    configured_model_ids = AutoModel.configured_model_ids(auto_model.name)
-
-    Enum.any?(auto_model.routes, fn route ->
-      route.enabled and
-        (AutoModel.available_surfaces_for(route.api_surface, configured_model_ids) != [] or
-           Enum.any?(route.targets, fn target ->
-             surface = target.provider_model_surface
-             model = surface.provider_model
-             provider = model.provider
-             api = surface.provider_api
-
-             target.enabled and surface.enabled and model.enabled and provider.enabled and
-               is_nil(provider.deleted_at) and api.enabled
-           end))
+  defp selected_model_target(providers, id) do
+    Enum.find_value([:openai, :anthropic], fn api_surface ->
+      with {:ok, resolved_provider, raw_model} <- ModelResolver.resolve(api_surface, id),
+           %Provider{} = provider <- Enum.find(providers, &(&1.id == resolved_provider.id)),
+           %ProviderApi{} = api <-
+             Enum.find(provider.apis, &(&1.enabled and &1.api_surface == api_surface)),
+           model when not is_nil(model) <-
+             Enum.find(provider.models, &(&1.enabled and &1.model == raw_model)),
+           surface when not is_nil(surface) <-
+             Enum.find(model.surfaces, &(&1.enabled and &1.provider_api_id == api.id)) do
+        {provider, model, surface, api}
+      else
+        _ -> nil
+      end
     end)
   end
 

@@ -117,10 +117,101 @@ defmodule Backplane.LLM.ModelDiscovery do
 
       true ->
         with {:ok, headers} <- discovery_headers(provider, api),
-             {:ok, response} <- get_models(api, headers) do
-          parse_model_details(response.body)
+             {:ok, response} <- get_models(api, headers),
+             {:ok, details} <- parse_model_details(response.body) do
+          {:ok, enrich_model_details(provider, api, headers, details)}
         end
     end
+  end
+
+  defp enrich_model_details(_provider, _api, _headers, []), do: []
+
+  defp enrich_model_details(%Provider{preset_key: "ollama"}, api, headers, details) do
+    url = native_discovery_url(api, "/api/show")
+
+    Enum.map(details, fn detail ->
+      options = Keyword.put(supplemental_req_options(url, headers), :json, %{model: detail.id})
+
+      case Req.post(url, options) do
+        {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+          if is_map(body["model_info"]) or is_map(body["details"]) or
+               is_list(body["capabilities"]) do
+            put_supplemental_metadata(detail, "ollama", body)
+          else
+            detail
+          end
+
+        _ ->
+          detail
+      end
+    end)
+  end
+
+  defp enrich_model_details(%Provider{preset_key: "sglang"}, api, headers, details) do
+    case get_sglang_model_info(api, headers) do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        sole_model? = length(details) == 1
+
+        Enum.map(details, fn detail ->
+          if sglang_model_matches?(detail, body, sole_model?) do
+            put_supplemental_metadata(detail, "sglang", body)
+          else
+            detail
+          end
+        end)
+
+      _ ->
+        details
+    end
+  end
+
+  defp enrich_model_details(_provider, _api, _headers, details), do: details
+
+  defp get_sglang_model_info(api, headers) do
+    url = native_discovery_url(api, "/model_info")
+
+    case Req.get(url, supplemental_req_options(url, headers)) do
+      {:ok, %{status: status}} when status in [404, 405] ->
+        fallback_url = native_discovery_url(api, "/get_model_info")
+        Req.get(fallback_url, supplemental_req_options(fallback_url, headers))
+
+      result ->
+        result
+    end
+  end
+
+  defp sglang_model_matches?(detail, %{"served_model_name" => served_name}, _sole_model?) do
+    detail.id == served_name
+  end
+
+  defp sglang_model_matches?(detail, %{"model_path" => model_path}, sole_model?)
+       when is_binary(model_path) and model_path != "" do
+    sole_model? or detail.id == model_path
+  end
+
+  defp sglang_model_matches?(_detail, _body, _sole_model?), do: false
+
+  defp put_supplemental_metadata(detail, key, body) do
+    %{detail | metadata: Map.put(detail.metadata, key, body)}
+  end
+
+  defp native_discovery_url(api, endpoint) do
+    uri = URI.parse(api.base_url)
+
+    path =
+      (uri.path || "")
+      |> String.trim_trailing("/")
+      |> String.replace(~r{/v1$}, "")
+
+    %{uri | path: path <> endpoint, query: nil, fragment: nil}
+    |> URI.to_string()
+  end
+
+  defp supplemental_req_options(url, headers) do
+    url
+    |> req_options(headers)
+    |> Keyword.put(:redirect, false)
+    |> Keyword.put(:retry, false)
   end
 
   defp emit_discovery_started(provider, source) do
