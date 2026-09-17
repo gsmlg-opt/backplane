@@ -9,6 +9,83 @@ defmodule Backplane.LLM.AccessEventTest do
 
   @moduletag observability_v2: true
 
+  test "HTTP 200 explicit Responses failures persist as errors without overriding transport outcomes" do
+    for {outcome, opts, expected, kind, code} <- [
+          {:success, [], "error", "upstream_error", "rate_limit_exceeded"},
+          {:error, [error_kind: "timeout", error_code: "upstream_timeout"], "error", "timeout",
+           "upstream_timeout"},
+          {:cancelled, [], "cancelled", "client_disconnect", "client_disconnect"}
+        ] do
+      model = "failed-response-#{outcome}"
+      conn = conn(:post, "/v1/responses", "{}") |> send_resp(200, "")
+
+      access =
+        conn
+        |> AccessEvent.start("responses", :openai_responses)
+        |> AccessEvent.put_requested_model(model)
+        |> AccessEvent.put_resolution(%Provider{preset_key: "openai"}, "gpt", nil)
+        |> AccessEvent.mark_stream()
+
+      AccessEvent.scan_stream_chunk(
+        access,
+        ~S(data: {"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","type":"server_error","message":"private payload"}}}) <>
+          "\n\n"
+      )
+
+      :ok = AccessEvent.finalize(access, conn, outcome, opts)
+      flush_logs!()
+      log = log_for_model(model)
+      assert log.status == 200
+      assert log.outcome == expected
+      assert log.error_kind == kind
+      assert log.error_code == code
+      refute inspect(log) =~ "private payload"
+    end
+  end
+
+  test "HTTP 200 incomplete observation is not reclassified as an upstream failure" do
+    conn = conn(:post, "/v1/responses", "{}") |> send_resp(200, "")
+
+    access =
+      conn
+      |> AccessEvent.start("responses", :openai_responses)
+      |> AccessEvent.put_requested_model("unknown-response")
+      |> AccessEvent.put_resolution(%Provider{preset_key: "openai"}, "gpt", nil)
+      |> AccessEvent.mark_stream()
+
+    AccessEvent.scan_stream_chunk(access, "data: malformed\n\n")
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+    assert %{status: 200, outcome: "success", error_kind: nil} = log_for_model("unknown-response")
+  end
+
+  test "HTTP 200 native error events persist bounded upstream error metadata" do
+    conn = conn(:post, "/v1/responses", "{}") |> send_resp(200, "")
+
+    access =
+      conn
+      |> AccessEvent.start("responses", :openai_responses)
+      |> AccessEvent.put_requested_model("native-error-response")
+      |> AccessEvent.put_resolution(%Provider{preset_key: "openai"}, "gpt", nil)
+      |> AccessEvent.mark_stream()
+
+    AccessEvent.scan_stream_chunk(
+      access,
+      ~S(data: {"type":"error","code":"server_error","message":"private upstream message"}) <>
+        "\n\n"
+    )
+
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+
+    log = log_for_model("native-error-response")
+    assert log.status == 200
+    assert log.outcome == "error"
+    assert log.error_kind == "upstream_error"
+    assert log.error_code == "server_error"
+    refute inspect(log) =~ "private upstream message"
+  end
+
   test "finalize emits a durable access record" do
     context = Context.root(request_id: "req-access-event", trace_id: String.duplicate("b", 32))
 

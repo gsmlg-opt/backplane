@@ -124,6 +124,7 @@ defmodule Backplane.LLM.AccessEvent do
   @spec finalize(t(), Plug.Conn.t(), atom(), keyword()) :: :ok
   def finalize(%__MODULE__{} = state, %Plug.Conn{} = conn, outcome, opts \\ []) do
     usage = stream_usage(state, conn, opts)
+    {outcome, opts} = protocol_outcome(outcome, opts, usage)
     record = build_record(state, conn, outcome, opts, usage)
     measurements = build_measurements(state, usage)
 
@@ -224,7 +225,7 @@ defmodule Backplane.LLM.AccessEvent do
       status: status,
       outcome: outcome_string(outcome),
       error_kind: error_kind(outcome, opts),
-      error_code: observation_error_code(usage, error_code(outcome, opts, status)),
+      error_code: observation_error_code(usage, outcome, opts, status),
       error_reason: observation_error_reason(usage, error_reason(outcome, opts)),
       stream: stream?,
       duration_ms: duration_ms,
@@ -342,8 +343,26 @@ defmodule Backplane.LLM.AccessEvent do
     _, _ -> nil
   end
 
-  defp observation_error_code(%{error_code: code}, _fallback) when is_binary(code), do: code
-  defp observation_error_code(_, fallback), do: fallback
+  defp protocol_outcome(:success, opts, %{protocol_terminal: :failed} = usage) do
+    {:error,
+     opts
+     |> Keyword.put_new(:error_kind, "upstream_error")
+     |> Keyword.put_new(:error_code, usage.error_code || "responses_failed")
+     |> Keyword.put_new(:error_reason, usage.error_type || "responses_failed")}
+  end
+
+  defp protocol_outcome(outcome, opts, _usage), do: {outcome, opts}
+
+  defp observation_error_code(usage, outcome, opts, status) do
+    fallback = error_code(outcome, opts, status)
+
+    explicit_error? =
+      outcome == :cancelled or
+        Enum.any?([:error_kind, :error_code, :error_reason], &Keyword.has_key?(opts, &1))
+
+    if explicit_error?, do: fallback, else: usage.error_code || fallback
+  end
+
   defp observation_error_reason(%{error_type: type}, nil) when is_binary(type), do: type
   defp observation_error_reason(_, fallback), do: fallback
 

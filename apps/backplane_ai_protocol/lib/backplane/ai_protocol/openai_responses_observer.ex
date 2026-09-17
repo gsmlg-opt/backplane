@@ -8,6 +8,9 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   alias Backplane.AiProtocol.{Error, SSE, Serialization}
 
   @default_max_total_bytes 8_388_608
+  @default_max_frame_bytes 1_048_576
+  @default_max_buffer_bytes 2_097_152
+  @feed_slice_bytes 65_536
   @default_max_diagnostics 32
   @diagnostics_truncated "diagnostics_truncated"
 
@@ -41,7 +44,11 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
-      framer: SSE.new(opts),
+      framer:
+        opts
+        |> Keyword.put_new(:max_frame_bytes, @default_max_frame_bytes)
+        |> Keyword.put_new(:max_buffer_bytes, @default_max_buffer_bytes)
+        |> SSE.new(),
       max_total_bytes:
         positive_limit(Keyword.get(opts, :max_total_bytes), @default_max_total_bytes),
       max_diagnostics:
@@ -61,7 +68,7 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
       |> Map.put(:input_truncated, true)
     else
       state = %{state | bytes_seen: next_size}
-      observe_chunk(state, chunk)
+      observe_slices(state, chunk)
     end
   end
 
@@ -138,10 +145,26 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
     }
   end
 
+  # Transport chunks may contain many complete events; bound pending frames, not whole batches.
+  defp observe_slices(%{framer: %{closed?: true}} = state, _chunk), do: state
+
+  defp observe_slices(state, chunk) when byte_size(chunk) > @feed_slice_bytes do
+    <<slice::binary-size(@feed_slice_bytes), rest::binary>> = chunk
+    state |> observe_chunk(slice) |> observe_slices(rest)
+  end
+
+  defp observe_slices(state, chunk), do: observe_chunk(state, chunk)
+
   defp observe_chunk(state, chunk) do
     case SSE.feed(state.framer, chunk) do
-      {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
-      {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse")
+      {:ok, framer, events} ->
+        Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
+
+      {:error, %Error{} = error, framer} ->
+        state
+        |> Map.put(:framer, framer)
+        |> incomplete("invalid_sse")
+        |> incomplete(framer_diagnostic(error))
     end
   rescue
     _error -> incomplete(state, "observer_exception")
@@ -149,12 +172,26 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
 
   defp observe_finish(state) do
     case SSE.finish(state.framer) do
-      {:ok, framer, events} -> Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
-      {:error, %Error{}, framer} -> incomplete(%{state | framer: framer}, "invalid_sse_eof")
+      {:ok, framer, events} ->
+        Enum.reduce(events, %{state | framer: framer}, &observe_sse/2)
+
+      {:error, %Error{} = error, framer} ->
+        state
+        |> Map.put(:framer, framer)
+        |> incomplete("invalid_sse_eof")
+        |> incomplete(framer_diagnostic(error))
     end
   rescue
     _error -> incomplete(state, "observer_exception")
   end
+
+  defp framer_diagnostic(%Error{message: "SSE frame exceeds " <> _}),
+    do: "sse_frame_bytes_exceeded"
+
+  defp framer_diagnostic(%Error{message: "SSE buffer exceeds " <> _}),
+    do: "sse_buffer_bytes_exceeded"
+
+  defp framer_diagnostic(_), do: "sse_framer_error"
 
   defp safely_observe_document(state, document, status) do
     observe_document(state, document, status)

@@ -73,6 +73,34 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
   end
 
   describe "Responses observer projection" do
+    test "alias mapper large native frames retain cached and final token usage" do
+      for size <- [270_000, 600_000] do
+        pid = UsageAccumulator.new(:openai_responses)
+        on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
+        mapper = Backplane.LLM.ModelResponse.responses_stream_mapper("expert", "gpt-6-sol")
+
+        first =
+          "data: " <>
+            Jason.encode!(%{
+              "type" => "response.created",
+              "response" => %{"padding" => String.duplicate("x", size)}
+            }) <> "\n\n"
+
+        terminal =
+          ~S(data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}) <>
+            "\n\n"
+
+        Enum.each(mapper.(first), &UsageAccumulator.scan_chunk(pid, &1))
+
+        # Model output follows the initial event; parser behavior is separate from snapshot deadlines.
+        Agent.get(pid, & &1)
+        Enum.each(mapper.(terminal), &UsageAccumulator.scan_chunk(pid, &1))
+
+        assert %{input_tokens: 5, output_tokens: 3, cached_tokens: 2, usage_complete: true} =
+                 UsageAccumulator.snapshot(pid, 200)
+      end
+    end
+
     test "observes fragmented non-streaming JSON bodies" do
       pid = UsageAccumulator.new(:openai_responses_body)
       on_exit(fn -> if Process.alive?(pid), do: UsageAccumulator.stop(pid) end)
