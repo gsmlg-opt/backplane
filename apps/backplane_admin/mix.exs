@@ -48,8 +48,8 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_duskmoon, "~> 9.0"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
-      {:bun, "~> 2.0", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.4", runtime: Mix.env() == :dev},
+      {:duskmoon_bundler_runtime, "~> 9.7"},
+      {:duskmoon_bundler, "~> 9.7", runtime: false},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}
@@ -59,21 +59,11 @@ defmodule BackplaneAdmin.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": [
-        "bun.install --if-missing",
-        "cmd ../../_build/bun install --cwd ../.. --frozen-lockfile",
-        "tailwind.install --if-missing"
-      ],
-      "assets.build": [
-        "cmd mkdir -p priv/static/assets",
-        "bun backplane_admin",
-        "tailwind backplane_admin"
-      ],
+      "assets.setup": ["npm.install"],
+      "assets.build": ["duskmoon_bundler.build backplane_admin --tailwind"],
       "assets.deploy": [
         "phx.digest.clean",
-        "cmd mkdir -p priv/static/assets",
-        "bun backplane_admin --minify",
-        "tailwind backplane_admin --minify",
+        "duskmoon_bundler.build backplane_admin --tailwind",
         "phx.digest"
       ],
       test: ["test"]

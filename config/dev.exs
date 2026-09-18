@@ -50,8 +50,7 @@ config :backplane_api, Backplane.Api.Endpoint,
   reloadable_apps: web_reloadable_apps,
   secret_key_base: secret_key_base,
   watchers: [
-    tailwind_api: {Tailwind, :install_and_run, [:backplane_api, ~w(--watch)]},
-    bun_api: {Bun, :install_and_run, [:backplane_api, ~w(--sourcemap=inline --watch)]}
+    duskmoon_bundler_api: {Mix.Tasks.DuskmoonBundler.Dev, :run, [["backplane_api", "--tailwind"]]}
   ]
 
 config :backplane_admin, Backplane.Admin.Endpoint,
@@ -62,8 +61,8 @@ config :backplane_admin, Backplane.Admin.Endpoint,
   reloadable_apps: web_reloadable_apps,
   secret_key_base: secret_key_base,
   watchers: [
-    tailwind_admin: {Tailwind, :install_and_run, [:backplane_admin, ~w(--watch)]},
-    bun_admin: {Bun, :install_and_run, [:backplane_admin, ~w(--sourcemap=inline --watch)]}
+    duskmoon_bundler_admin:
+      {Mix.Tasks.DuskmoonBundler.Dev, :run, [["backplane_admin", "--tailwind"]]}
   ]
 
 config :backplane_api, Backplane.Api.Endpoint,

@@ -79,7 +79,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: deps
-          key: release-memory-v2-qualification-v2-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: release-memory-v2-qualification-v2-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
           restore-keys: |
             release-memory-v2-qualification-v2-
 
@@ -117,7 +117,8 @@ jobs:
 
       - name: Build admin assets for browser qualification
         run: |
-          mix "do" --app backplane_admin assets.setup
+          mix deps.compile
+          mix npm.install --frozen
           mix "do" --app backplane_admin assets.build
 
       - name: Verify M18 migration and rollback contracts
@@ -242,7 +243,7 @@ jobs:
           path: |
             deps
             _build/prod
-          key: release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          key: release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
           restore-keys: |
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-
@@ -251,11 +252,16 @@ jobs:
         run: bash scripts/set-version.sh "$RELEASE_VERSION"
 
       - name: Install dependencies
-        run: mix deps.get --only prod
+        run: |
+          if [[ "${{ matrix.release }}" == "backplane" ]]; then
+            mix deps.get
+          else
+            mix deps.get --only prod
+          fi
 
       - name: Install asset tools
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_api assets.setup && mix "do" --app backplane_admin assets.setup
+        run: mix deps.compile && mix npm.install --frozen
 
       - name: Build web assets
         if: matrix.release == 'backplane'

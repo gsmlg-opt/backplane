@@ -21,7 +21,7 @@ RUN apt-get update \
 
 RUN mix local.hex --force && mix local.rebar --force
 
-COPY mix.exs mix.lock package.json bun.lock ./
+COPY mix.exs mix.lock package.json package-lock.json ./
 COPY config ./config
 COPY apps/backplane/mix.exs ./apps/backplane/mix.exs
 COPY apps/backplane_agent_runtime/mix.exs ./apps/backplane_agent_runtime/mix.exs
@@ -44,14 +44,12 @@ COPY apps/day_ex/mix.exs ./apps/day_ex/mix.exs
 COPY apps/math_ex/mix.exs ./apps/math_ex/mix.exs
 COPY apps/relayixir/mix.exs ./apps/relayixir/mix.exs
 
-RUN mix deps.get --only prod
-RUN mix "do" --app backplane_api assets.setup \
-  && mix "do" --app backplane_admin assets.setup \
-  && ./_build/bun install --frozen-lockfile
+RUN mix deps.get
+RUN mix deps.compile
+RUN mix npm.install --frozen
 
 COPY . .
 
-RUN mix deps.compile
 RUN mix "do" --app backplane_api assets.deploy \
   && mix "do" --app backplane_admin assets.deploy
 RUN mix release backplane --overwrite --version "${VERSION}"

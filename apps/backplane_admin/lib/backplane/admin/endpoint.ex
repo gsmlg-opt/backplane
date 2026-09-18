@@ -24,6 +24,11 @@ defmodule Backplane.Admin.Endpoint do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
     plug(Phoenix.LiveReloader)
     plug(Phoenix.CodeReloader)
+
+    plug(DuskmoonBundler.DevServer,
+      profile: :backplane_admin,
+      root: "apps/backplane_admin/assets/js"
+    )
   end
 
   plug(Plug.RequestId)

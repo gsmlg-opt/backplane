@@ -31,6 +31,7 @@ defmodule Backplane.Api.Endpoint do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
     plug(Phoenix.LiveReloader)
     plug(Phoenix.CodeReloader)
+    plug(DuskmoonBundler.DevServer, profile: :backplane_api, root: "apps/backplane_api/assets/js")
   end
 
   plug(Plug.RequestId)

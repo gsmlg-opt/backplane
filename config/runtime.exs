@@ -1,30 +1,5 @@
 import Config
 
-# Bun/Tailwind binary paths for devenv environments (all envs).
-# Keep this in runtime config so local installations can be detected at boot
-# without baking machine-specific paths into compile-time config.
-if bun_path = System.get_env("MIX_BUN_PATH") || System.find_executable("bun") do
-  bun_version = System.cmd(bun_path, ["--version"]) |> elem(0) |> String.trim()
-  config :bun, path: bun_path, version: bun_version
-end
-
-if tailwind_path = System.get_env("MIX_TAILWIND_PATH") || System.find_executable("tailwindcss") do
-  try do
-    {tailwind_str, 0} = System.cmd(tailwind_path, ["--help"])
-
-    tailwind_version =
-      case Regex.run(~r/tailwindcss v([0-9.]+)/, tailwind_str) do
-        [_, version] -> version
-        _ -> "0.0.0"
-      end
-
-    config :tailwind, path: tailwind_path, version: tailwind_version
-  rescue
-    _ ->
-      config :tailwind, path: tailwind_path, version: "0.0.0"
-  end
-end
-
 parse_csv_env = fn name ->
   name
   |> System.get_env("")

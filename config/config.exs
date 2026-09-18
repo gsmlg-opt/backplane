@@ -89,32 +89,46 @@ config :backplane_admin, Backplane.Admin.Endpoint,
   pubsub_server: Backplane.PubSub,
   live_view: [signing_salt: "bkpln_admin_lv_salt"]
 
-# Bun bundler
-config :bun,
-  version: "1.3.3",
-  backplane_api: [
-    args:
-      ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
-    cd: Path.expand("../apps/backplane_api", __DIR__),
-    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
+config :duskmoon_bundler, :backplane_api,
+  entry: "apps/backplane_api/assets/js/app.js",
+  root: "apps/backplane_api/assets",
+  outdir: "apps/backplane_api/priv/static/assets",
+  resolve_dirs: ["apps", "deps"],
+  external: ~w(/fonts/* /images/*),
+  sourcemap: :hidden,
+  tailwind: [
+    css: "apps/backplane_api/assets/css/app.css",
+    sources: [
+      %{base: "apps/backplane_api/lib", pattern: "**/*.{ex,heex}"},
+      %{base: "apps/backplane_api/assets", pattern: "**/*.{css,js,ts,jsx,tsx}"},
+      %{base: "deps/phoenix_duskmoon/lib", pattern: "**/*.{ex,heex}"},
+      %{base: "deps/phoenix_duskmoon/assets/js", pattern: "**/*.{js,ts,jsx,tsx}"}
+    ]
   ],
-  backplane_admin: [
-    args:
-      ~w(build assets/js/app.js --outdir=priv/static/assets --external /fonts/* --external /images/*),
-    cd: Path.expand("../apps/backplane_admin", __DIR__),
-    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
+  server: [
+    prefix: "/assets",
+    watch_dirs: ["apps/backplane_api/lib", "apps/backplane_api/assets"]
   ]
 
-# Tailwind v4
-config :tailwind,
-  version: "4.1.18",
-  backplane_api: [
-    args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
-    cd: Path.expand("../apps/backplane_api", __DIR__)
+config :duskmoon_bundler, :backplane_admin,
+  entry: "apps/backplane_admin/assets/js/app.js",
+  root: "apps/backplane_admin/assets",
+  outdir: "apps/backplane_admin/priv/static/assets",
+  resolve_dirs: ["apps", "deps"],
+  external: ~w(/fonts/* /images/*),
+  sourcemap: :hidden,
+  tailwind: [
+    css: "apps/backplane_admin/assets/css/app.css",
+    sources: [
+      %{base: "apps/backplane_admin/lib", pattern: "**/*.{ex,heex}"},
+      %{base: "apps/backplane_admin/assets", pattern: "**/*.{css,js,ts,jsx,tsx}"},
+      %{base: "deps/phoenix_duskmoon/lib", pattern: "**/*.{ex,heex}"},
+      %{base: "deps/phoenix_duskmoon/assets/js", pattern: "**/*.{js,ts,jsx,tsx}"}
+    ]
   ],
-  backplane_admin: [
-    args: ~w(--input=assets/css/app.css --output=priv/static/assets/app.css),
-    cd: Path.expand("../apps/backplane_admin", __DIR__)
+  server: [
+    prefix: "/assets",
+    watch_dirs: ["apps/backplane_admin/lib", "apps/backplane_admin/assets"]
   ]
 
 config :logger, :console,
