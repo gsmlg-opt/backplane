@@ -9,8 +9,8 @@
     <link rel="icon" href={~p"/images/favicon-32.png"} sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href={~p"/images/favicon-32.png"} />
     <link rel="apple-touch-icon" sizes="180x180" href={~p"/images/apple-touch-icon.png"} />
-    <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
-    <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
+    <link phx-track-static rel="stylesheet" href={DuskmoonBundler.static_path(@endpoint, "/assets/app.css")} />
+    <script defer phx-track-static type="text/javascript" src={DuskmoonBundler.static_path(@endpoint, "/assets/app.js")}>
     </script>
   </head>
   <body class="h-full antialiased bg-surface text-on-surface">
