@@ -49,7 +49,7 @@ defmodule BackplaneAdmin.MixProject do
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 9.7"},
-      {:duskmoon_bundler, "~> 9.7", runtime: false},
+      {:duskmoon_bundler, "~> 9.7", runtime: Mix.env() != :prod},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}
