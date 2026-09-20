@@ -283,6 +283,10 @@ jobs:
         if: matrix.release == 'backplane'
         run: elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
 
+      - name: Verify packaged web assets
+        if: matrix.release == 'backplane'
+        run: mix run --no-start scripts/verify_web_assets.exs --release _build/prod/rel/backplane
+
       - name: Smoke test host-agent native database
         if: matrix.release == 'host_agent'
         run: |
