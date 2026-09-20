@@ -57,11 +57,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       ) do
     {:noreply,
      %{state | channel: channel, selected: selected, inventory: Map.get(memory, "partitions", [])}
+     |> cancel_retry()
      |> schedule_poll(0)}
   end
 
   def handle_cast({:connection, %{channel: channel, memory: %{selected: selected}}}, state) do
-    {:noreply, %{state | channel: channel, selected: selected} |> schedule_poll(0)}
+    {:noreply,
+     %{state | channel: channel, selected: selected} |> cancel_retry() |> schedule_poll(0)}
   end
 
   def handle_cast({:memory_available, _hint}, state),
@@ -92,7 +94,6 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
   end
 
   def handle_info({:poll, _token}, state), do: {:noreply, state}
-  def handle_info(:poll, state), do: handle_info({:poll, state.poll_token}, state)
 
   def handle_info({:edge_retry, token}, %{edge_retry_token: token} = state),
     do: {:noreply, %{state | edge_retry_ref: nil, edge_retry_token: nil} |> schedule_poll(0)}

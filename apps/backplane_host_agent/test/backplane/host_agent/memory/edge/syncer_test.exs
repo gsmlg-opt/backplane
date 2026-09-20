@@ -106,9 +106,67 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     end
   end
 
+  defmodule InteractiveChannel do
+    def push(channel, "memory_next", payload, _timeout) do
+      send(channel, {:memory_next, self(), payload})
+
+      receive do
+        {:memory_next_reply, reply} -> reply
+      end
+    end
+
+    def push(channel, "memory_ack", payload, _timeout) do
+      send(channel, {:memory_ack, payload})
+      {:ok, %{"status" => "advanced"}}
+    end
+  end
+
+  defmodule WrongPartitionChannel do
+    def push(channel, "memory_next", payload, _timeout) do
+      send(channel, {:memory_next, payload})
+
+      {:ok,
+       %{
+         "protocol" => "host_memory.v2",
+         "status" => "batch",
+         "kind" => "delta",
+         "batch_id" => "wrong-partition",
+         "partition" => %{
+           "memory_space_id" => "space-2",
+           "scope" => "private",
+           "namespace" => "default"
+         },
+         "from_revision" => 5,
+         "to_revision" => 5,
+         "changes" => []
+       }}
+    end
+
+    def push(channel, "memory_ack", payload, _timeout) do
+      send(channel, {:unexpected_ack, payload})
+      {:ok, %{}}
+    end
+  end
+
+  defmodule PartitionCheckingMirror do
+    def offer(opts), do: Mirror.offer(opts)
+
+    def apply_delivery(delivery, opts) do
+      expected = Keyword.get(opts, :partition)
+      send(Keyword.fetch!(opts, :owner), {:apply_delivery, expected, delivery["partition"]})
+
+      if delivery["partition"] == expected do
+        {:ok,
+         %{"batch_id" => delivery["batch_id"], "applied_revision" => delivery["to_revision"]}}
+      else
+        {:error, :partition_mismatch}
+      end
+    end
+  end
+
   test "pulls a delivery, durably applies it, then acknowledges it" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: Channel,
@@ -119,7 +177,7 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, next}
 
     assert next == %{
@@ -138,8 +196,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
   end
 
   test "memory_available wakes the polling loop without reconnecting" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: Channel,
@@ -155,8 +213,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
   end
 
   test "uses a bounded edge retry independently of connection retry state" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: Channel,
@@ -172,8 +230,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
   end
 
   test "does not apply or acknowledge an already current partition" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: CurrentChannel,
@@ -184,15 +242,15 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, _}
     refute_receive {:apply_delivery, _}
     refute_receive {:unexpected_ack, _}
   end
 
   test "continues an interrupted snapshot with its durable progress cursor" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: CurrentChannel,
@@ -206,7 +264,7 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
 
     assert_receive {:memory_next,
                     %{
@@ -226,8 +284,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       "applied_revision" => 0
     }
 
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: CurrentChannel,
@@ -239,15 +297,15 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
 
     assert_receive {:memory_next,
                     %{"partition" => %{"memory_space_id" => "space-3"}, "applied_revision" => 0}}
   end
 
   test "round robins a staging snapshot and another entitled partition" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: CurrentChannel,
@@ -261,15 +319,15 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-1"}}}
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-2"}}}
   end
 
   test "failed edge polls schedule a bounded retry without a connection retry" do
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: FailingChannel,
@@ -281,7 +339,7 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, _}
     assert %{edge_retry_ref: ref, current_retry_backoff_ms: 20} = Syncer.status(syncer)
     assert is_reference(ref)
@@ -295,8 +353,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       "applied_revision" => 0
     }
 
-    {:ok, syncer} =
-      Syncer.start_link(
+    syncer =
+      start_syncer(
         name: nil,
         channel: self(),
         channel_module: CurrentChannel,
@@ -308,8 +366,152 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
       )
 
     assert_receive :offer
-    send(syncer, :poll)
+    trigger_poll(syncer)
     assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-9"}}}
     refute_received {:memory_next, %{"partition" => %{"memory_space_id" => "space-1"}}}
+  end
+
+  test "binds a delivery to the requested partition and does not acknowledge a mismatch" do
+    _syncer =
+      start_syncer(
+        channel: self(),
+        channel_module: WrongPartitionChannel,
+        mirror_module: PartitionCheckingMirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    assert_receive {:memory_next, %{"partition" => requested}}
+
+    assert requested == %{
+             "memory_space_id" => "space-1",
+             "scope" => "private",
+             "namespace" => "default"
+           }
+
+    assert_receive {:apply_delivery, ^requested,
+                    %{"memory_space_id" => "space-2", "scope" => "private"}}
+
+    refute_receive {:unexpected_ack, _}
+  end
+
+  test "memory_available invalidates a failed poll retry and its stale message" do
+    syncer = start_interactive_syncer()
+    old_retry_token = fail_initial_poll_and_retry(syncer)
+
+    Syncer.memory_available(syncer, %{"current_revision" => 1})
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert_eventually(fn -> Syncer.status(syncer).edge_retry_token == nil end)
+
+    send(syncer, {:edge_retry, old_retry_token})
+    refute_receive {:memory_next, _, _}, 50
+  end
+
+  test "string-key reconnect invalidates a failed poll retry and its stale message" do
+    syncer = start_interactive_syncer()
+    old_retry_token = fail_initial_poll_and_retry(syncer)
+
+    Syncer.set_connection(syncer, %{
+      channel: self(),
+      memory: %{
+        "selected" => "host_memory.v2",
+        "partitions" => [
+          %{
+            "memory_space_id" => "space-1",
+            "scope" => "private",
+            "namespace" => "default",
+            "applied_revision" => 0
+          }
+        ]
+      }
+    })
+
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert_eventually(fn -> Syncer.status(syncer).edge_retry_token == nil end)
+
+    send(syncer, {:edge_retry, old_retry_token})
+    refute_receive {:memory_next, _, _}, 50
+  end
+
+  test "atom-key reconnect invalidates a failed poll retry and its stale message" do
+    syncer = start_interactive_syncer()
+    old_retry_token = fail_initial_poll_and_retry(syncer)
+
+    Syncer.set_connection(syncer, %{
+      channel: self(),
+      memory: %{selected: "host_memory.v2"}
+    })
+
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert_eventually(fn -> Syncer.status(syncer).edge_retry_token == nil end)
+
+    send(syncer, {:edge_retry, old_retry_token})
+    refute_receive {:memory_next, _, _}, 50
+  end
+
+  test "rescheduling a poll invalidates its stale token" do
+    syncer = start_interactive_syncer()
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert_eventually(fn -> is_reference(Syncer.status(syncer).poll_token) end)
+    old_poll_token = Syncer.status(syncer).poll_token
+
+    Syncer.memory_available(syncer, %{"current_revision" => 2})
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert_eventually(fn -> Syncer.status(syncer).poll_token != old_poll_token end)
+
+    send(syncer, {:poll, old_poll_token})
+    refute_receive {:memory_next, _, _}, 50
+  end
+
+  defp start_interactive_syncer do
+    start_syncer(
+      channel: self(),
+      channel_module: InteractiveChannel,
+      mirror_module: Mirror,
+      mirror_opts: [owner: self()],
+      selected: "host_memory.v2",
+      retry_backoff_ms: 60_000,
+      poll_interval_ms: 60_000
+    )
+  end
+
+  defp fail_initial_poll_and_retry(syncer) do
+    assert_receive {:memory_next, caller, _}
+    send(caller, {:memory_next_reply, {:error, :timeout}})
+    assert_eventually(fn -> is_reference(Syncer.status(syncer).edge_retry_token) end)
+    Syncer.status(syncer).edge_retry_token
+  end
+
+  defp start_syncer(opts) do
+    {:ok, syncer} = Syncer.start_link(Keyword.put(opts, :name, nil))
+
+    on_exit(fn ->
+      if Process.alive?(syncer), do: Syncer.stop(syncer)
+    end)
+
+    syncer
+  end
+
+  defp trigger_poll(syncer) do
+    send(syncer, {:poll, Syncer.status(syncer).poll_token})
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+  defp assert_eventually(fun, 0), do: assert(fun.())
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(5)
+      assert_eventually(fun, attempts - 1)
+    end
   end
 end

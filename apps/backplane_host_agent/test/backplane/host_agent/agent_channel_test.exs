@@ -20,6 +20,9 @@ defmodule Backplane.HostAgent.AgentChannelTest do
       end
 
       :persistent_term.erase({__MODULE__.FakeService, :owner})
+      :persistent_term.erase({FakeSyncer, :owner})
+      :persistent_term.erase({FakeFacts, :owner})
+      :persistent_term.erase({FakePush, :owner})
       restore_env(:edge_syncer_module, previous_syncer)
       restore_env(:memory_facts_module, previous_facts)
       restore_env(:agent_channel_push_module, previous_push)
