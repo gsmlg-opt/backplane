@@ -67,7 +67,12 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   tests: 33/33. Formatting and diff checks passed. Production rejection,
   command/capture path aliases, foreign database preservation, restart durability,
   and normal supervised shutdown are covered.
-- Task 8: in progress. Tasks 9–20 remain outstanding; PR2–PR5 is not complete.
+- Task 8: committed as `908ed69e` with schema/replay hardening `ecd54030`,
+  stale-snapshot idempotency `8691809c`, and atomic cleanup/bounded reads
+  `8dfbb904`; specification and quality reviews approved. Focused mirror/migrator
+  tests: 22/22; final affected edge-store/migrator/mirror tests: 24/24 with
+  warnings-as-errors. Scoped formatting and diff checks passed. Tasks 9–20 remain
+  outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
