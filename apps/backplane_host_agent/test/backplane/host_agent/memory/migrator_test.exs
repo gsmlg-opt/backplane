@@ -318,6 +318,49 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
   end
 
+  test "rolls back the rebuilt outbox and sequence after a late migration failure", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_store!(tmp_dir)
+    now = "2026-06-17T00:00:00Z"
+    assert :ok = apply_v1!(store)
+
+    for index <- 1..2 do
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 "INSERT INTO memory_outbox(op, memory_id, inserted_at, updated_at) VALUES (?, ?, ?, ?)",
+                 ["remember", "legacy-memory-#{index}", now, now]
+               )
+    end
+
+    assert {:ok, %Result{rows: [%{"seq" => high_water}]}} =
+             Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
+
+    assert {:ok, _} =
+             Store.execute(store, "CREATE TABLE migration_collision (id INTEGER PRIMARY KEY)")
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "CREATE INDEX memory_outbox_due_seq_idx ON migration_collision(id)"
+             )
+
+    assert {:error, _} = Migrator.migrate(store)
+    assert {:ok, 1} = Migrator.current_version(store)
+    assert MapSet.member?(table_names(store), "tombstones")
+    assert MapSet.member?(table_names(store), "memory_outbox")
+    refute MapSet.member?(table_names(store), "tombstones_v1")
+    refute MapSet.member?(table_names(store), "memory_outbox_v1")
+    refute MapSet.member?(table_names(store), "memory_outbox_sequence_v2")
+
+    assert {:ok, %Result{rows: [%{"count" => 2}]}} =
+             Store.query(store, "SELECT COUNT(*) AS count FROM memory_outbox")
+
+    assert {:ok, %Result{rows: [%{"seq" => ^high_water}]}} =
+             Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
+  end
+
   defp table_names(store) do
     {:ok, %Result{rows: rows}} =
       Store.query(store, "SELECT name FROM sqlite_master WHERE type = 'table'")
