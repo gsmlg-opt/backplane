@@ -25,16 +25,19 @@ defmodule Backplane.AiProtocol.ToolCall do
 
   @keys [:id, :native_id, :name, :raw_arguments, :validated_arguments]
 
-  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = call), do: call |> Map.from_struct() |> new()
+  @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
+  def new(attrs, opts \\ [])
+  def new(%__MODULE__{} = call, opts), do: call |> Map.from_struct() |> new(opts)
 
-  def new(attrs) when is_map(attrs) do
+  def new(attrs, opts) when is_map(attrs) do
+    limits = Keyword.get(opts, :limits, %{})
+
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, id} <- identity(attrs, :id),
          {:ok, name} <- tool_name(Map.get(attrs, :name)),
-         {:ok, raw_arguments} <- raw_arguments(Map.get(attrs, :raw_arguments)),
+         {:ok, raw_arguments} <- raw_arguments(Map.get(attrs, :raw_arguments), limits),
          :ok <- optional_identity(attrs),
-         :ok <- validated_arguments(attrs[:validated_arguments]) do
+         :ok <- validated_arguments(attrs[:validated_arguments], limits) do
       {:ok,
        %__MODULE__{
          id: id,
@@ -81,28 +84,28 @@ defmodule Backplane.AiProtocol.ToolCall do
 
   defp tool_name(_value), do: {:error, Error.invalid!("Tool call name must be a bounded string")}
 
-  defp raw_arguments({:json, bytes}) when is_binary(bytes) do
+  defp raw_arguments({:json, bytes}, limits) when is_binary(bytes) do
     with {:ok, _bytes} <- non_empty_arguments(bytes),
-         :ok <- Backplane.AiProtocol.Validation.term(bytes) do
+         :ok <- Backplane.AiProtocol.Validation.term(bytes, limits) do
       {:ok, {:json, bytes}}
     end
   end
 
-  defp raw_arguments({:structured, value}) do
-    with {:ok, _bytes} <- structured_arguments(value),
-         :ok <- Backplane.AiProtocol.Validation.term(value) do
+  defp raw_arguments({:structured, value}, limits) do
+    with {:ok, _bytes} <- structured_arguments(value, limits),
+         :ok <- Backplane.AiProtocol.Validation.term(value, limits) do
       {:ok, {:structured, value}}
     end
   end
 
-  defp structured_arguments(value) when is_map(value) do
-    case Backplane.AiProtocol.Validation.term(value) do
+  defp structured_arguments(value, limits) when is_map(value) do
+    case Backplane.AiProtocol.Validation.term(value, limits) do
       :ok -> {:ok, 0}
       error -> error
     end
   end
 
-  defp structured_arguments(_value),
+  defp structured_arguments(_value, _limits),
     do: {:error, Error.invalid!("Structured tool call arguments must be a map")}
 
   defp non_empty_arguments(""),
@@ -110,9 +113,9 @@ defmodule Backplane.AiProtocol.ToolCall do
 
   defp non_empty_arguments(_value), do: {:ok, 0}
 
-  defp validated_arguments(nil), do: :ok
+  defp validated_arguments(nil, _limits), do: :ok
 
-  defp validated_arguments(value) do
-    Backplane.AiProtocol.Validation.term(value)
+  defp validated_arguments(value, limits) do
+    Backplane.AiProtocol.Validation.term(value, limits)
   end
 end

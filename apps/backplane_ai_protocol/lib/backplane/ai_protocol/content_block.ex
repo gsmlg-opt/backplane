@@ -25,16 +25,19 @@ defmodule Backplane.AiProtocol.ContentBlock do
 
   @keys [:type, :text, :data, :tool_call, :reason, :state, :extensions]
 
-  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = block), do: block |> Map.from_struct() |> new()
+  @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
+  def new(attrs, opts \\ [])
+  def new(%__MODULE__{} = block, opts), do: block |> Map.from_struct() |> new(opts)
 
-  def new(attrs) when is_map(attrs) do
+  def new(attrs, opts) when is_map(attrs) do
+    limits = Keyword.get(opts, :limits, %{})
+
     with :ok <- reject_core_collisions(attrs),
          {core_attrs, extension_attrs} = split_extensions(attrs),
          :ok <- Backplane.AiProtocol.Validation.reject_unknown(core_attrs, @keys),
          {:ok, type} <- type(Map.get(core_attrs, :type)),
-         {:ok, block} <- build(type, core_attrs),
-         :ok <- extensions(extension_attrs) do
+         {:ok, block} <- build(type, core_attrs, opts),
+         :ok <- extensions(extension_attrs, limits) do
       %{block | extensions: extension_attrs}
       |> then(&{:ok, &1})
     end
@@ -90,32 +93,33 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end)
   end
 
-  defp build(:text, attrs), do: required_string(attrs, :text, :text)
+  defp build(:text, attrs, opts), do: required_string(attrs, :text, :text, opts)
 
-  defp build(:reasoning, attrs) do
-    with {:ok, data} <- required_bounded_value(attrs, :data),
-         :ok <- optional_string(attrs, :reason) do
+  defp build(:reasoning, attrs, opts) do
+    with {:ok, data} <- required_bounded_value(attrs, :data, opts),
+         :ok <- optional_string(attrs, :reason, opts) do
       {:ok, %__MODULE__{type: :reasoning, data: data, reason: attrs[:reason]}}
     end
   end
 
-  defp build(:image, attrs) do
-    with {:ok, data} <- required_bounded_value(attrs, :data),
-         :ok <- optional_string(attrs, :reason) do
+  defp build(:image, attrs, opts) do
+    with {:ok, data} <- required_bounded_value(attrs, :data, opts),
+         :ok <- optional_string(attrs, :reason, opts) do
       {:ok, %__MODULE__{type: :image, data: data, reason: attrs[:reason]}}
     end
   end
 
-  defp build(:tool_call, attrs) do
-    with {:ok, tool_call} <- Backplane.AiProtocol.ToolCall.new(Map.get(attrs, :tool_call, %{})) do
+  defp build(:tool_call, attrs, opts) do
+    with {:ok, tool_call} <-
+           Backplane.AiProtocol.ToolCall.new(Map.get(attrs, :tool_call, %{}), opts) do
       {:ok, %__MODULE__{type: :tool_call, tool_call: tool_call}}
     end
   end
 
-  defp build(:refusal, attrs), do: required_string(attrs, :text, :refusal)
+  defp build(:refusal, attrs, opts), do: required_string(attrs, :text, :refusal, opts)
 
-  defp build(:provider_state, attrs) do
-    case Backplane.AiProtocol.ProviderState.new(Map.get(attrs, :state, %{})) do
+  defp build(:provider_state, attrs, opts) do
+    case Backplane.AiProtocol.ProviderState.new(Map.get(attrs, :state, %{}), opts) do
       {:ok, state} ->
         {:ok, %__MODULE__{type: :provider_state, state: state}}
 
@@ -124,10 +128,10 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
-  defp required_string(attrs, key, type) do
+  defp required_string(attrs, key, type, opts) do
     case Map.get(attrs, key) do
       value when is_binary(value) and value != "" ->
-        with :ok <- Backplane.AiProtocol.Validation.term(value) do
+        with :ok <- Backplane.AiProtocol.Validation.term(value, Keyword.get(opts, :limits, %{})) do
           {:ok, %__MODULE__{type: type, text: value, reason: attrs[:reason]}}
         end
 
@@ -136,32 +140,37 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
-  defp required_bounded_value(attrs, key) do
+  defp required_bounded_value(attrs, key, opts) do
     case Map.get(attrs, key) do
       nil ->
         {:error, Error.invalid!("Content #{key} is required")}
 
       value ->
-        with :ok <- Backplane.AiProtocol.Validation.term(value) do
+        with :ok <- Backplane.AiProtocol.Validation.term(value, Keyword.get(opts, :limits, %{})) do
           {:ok, value}
         end
     end
   end
 
-  defp optional_string(attrs, key) do
+  defp optional_string(attrs, key, opts) do
     case Map.get(attrs, key) do
-      nil -> :ok
-      value when is_binary(value) -> Backplane.AiProtocol.Validation.term(value)
-      _ -> {:error, Error.invalid!("Content #{key} must be a string")}
+      nil ->
+        :ok
+
+      value when is_binary(value) ->
+        Backplane.AiProtocol.Validation.term(value, Keyword.get(opts, :limits, %{}))
+
+      _ ->
+        {:error, Error.invalid!("Content #{key} must be a string")}
     end
   end
 
-  defp extensions(nil), do: :ok
+  defp extensions(nil, _limits), do: :ok
 
-  defp extensions(extensions) do
+  defp extensions(extensions, limits) do
     Enum.reduce_while(extensions, :ok, fn
       {name, value}, :ok ->
-        case Backplane.AiProtocol.Validation.bounded_extension(name, value) do
+        case Backplane.AiProtocol.Validation.bounded_extension(name, value, limits) do
           :ok -> {:cont, :ok}
           error -> {:halt, error}
         end

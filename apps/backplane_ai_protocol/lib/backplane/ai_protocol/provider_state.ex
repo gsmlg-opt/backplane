@@ -42,18 +42,21 @@ defmodule Backplane.AiProtocol.ProviderState do
     :extensions
   ]
 
-  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = state), do: state |> Map.from_struct() |> new()
+  @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
+  def new(attrs, opts \\ [])
+  def new(%__MODULE__{} = state, opts), do: state |> Map.from_struct() |> new(opts)
 
-  def new(attrs) when is_map(attrs) do
+  def new(attrs, opts) when is_map(attrs) do
+    limits = Keyword.get(opts, :limits, %{})
+
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, source_profile} <- bounded_string(attrs, :source_profile),
          {:ok, source_protocol} <- bounded_string(attrs, :source_protocol),
          {:ok, kind} <- bounded_string(attrs, :kind),
          {:ok, affinity} <- affinity(Map.get(attrs, :affinity)),
-         :ok <- payload(attrs),
-         :ok <- constraints(attrs[:constraints]),
-         :ok <- extensions(attrs[:extensions]) do
+         :ok <- payload(attrs, limits),
+         :ok <- constraints(attrs[:constraints], limits),
+         :ok <- extensions(attrs[:extensions], limits) do
       {:ok,
        %__MODULE__{
          source_profile: source_profile,
@@ -92,7 +95,7 @@ defmodule Backplane.AiProtocol.ProviderState do
 
   defp affinity(_value), do: {:error, Error.invalid!("Provider state affinity is required")}
 
-  defp payload(attrs) do
+  defp payload(attrs, limits) do
     case {attrs[:payload], attrs[:payload_reference]} do
       {nil, nil} ->
         {:error, Error.invalid!("Provider state requires payload or payload_reference")}
@@ -102,31 +105,33 @@ defmodule Backplane.AiProtocol.ProviderState do
          Error.invalid!("Provider state cannot contain both payload and payload_reference")}
 
       {payload, reference} ->
-        with :ok <- validate_payload(payload),
-             :ok <- validate_payload(reference) do
+        with :ok <- validate_payload(payload, limits),
+             :ok <- validate_payload(reference, limits) do
           :ok
         end
     end
   end
 
-  defp validate_payload(nil), do: :ok
+  defp validate_payload(nil, _limits), do: :ok
 
-  defp validate_payload(value) when is_binary(value) do
-    if byte_size(value) <= Backplane.AiProtocol.Validation.default_limits().max_bytes,
+  defp validate_payload(value, limits) when is_binary(value) do
+    max = Map.get(limits, :max_bytes, Backplane.AiProtocol.Validation.default_limits().max_bytes)
+
+    if byte_size(value) <= max,
       do: :ok,
       else: {:error, Error.invalid!("Opaque provider state exceeds byte limit")}
   end
 
-  defp validate_payload(value), do: Backplane.AiProtocol.Validation.term(value)
+  defp validate_payload(value, limits), do: Backplane.AiProtocol.Validation.term(value, limits)
 
-  defp constraints(value), do: bounded_map(value, :constraints)
-  defp extensions(value), do: bounded_map(value, :extensions)
+  defp constraints(value, limits), do: bounded_map(value, :constraints, limits)
+  defp extensions(value, limits), do: bounded_map(value, :extensions, limits)
 
-  defp bounded_map(nil, _key), do: :ok
+  defp bounded_map(nil, _key, _limits), do: :ok
 
-  defp bounded_map(value, _key) when is_map(value),
-    do: Backplane.AiProtocol.Validation.bounded_map(value)
+  defp bounded_map(value, _key, limits) when is_map(value),
+    do: Backplane.AiProtocol.Validation.bounded_map(value, limits)
 
-  defp bounded_map(_value, key),
+  defp bounded_map(_value, key, _limits),
     do: {:error, Error.invalid!("Provider state #{key} must be a map")}
 end

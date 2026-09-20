@@ -45,19 +45,21 @@ defmodule Backplane.AiProtocol.Request do
     :extensions
   ]
 
-  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(attrs) when is_map(attrs) do
+  @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
+  def new(attrs, opts \\ []) when is_map(attrs) do
+    limits = Keyword.get(opts, :limits, %{})
+
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, model} <- model(Map.get(attrs, :model)),
-         {:ok, input} <- input(Map.get(attrs, :input)),
-         {:ok, tools} <- tools(attrs[:tools]),
-         :ok <- optional_map(attrs, :settings),
-         :ok <- optional_map(attrs, :output_constraints),
-         :ok <- optional_map(attrs, :correlation),
+         {:ok, input} <- input(Map.get(attrs, :input), opts),
+         {:ok, tools} <- tools(attrs[:tools], opts),
+         :ok <- optional_map(attrs, :settings, limits),
+         :ok <- optional_map(attrs, :output_constraints, limits),
+         :ok <- optional_map(attrs, :correlation, limits),
          {:ok, provider_state_references} <-
-           provider_state_references(attrs[:provider_state_references]),
+           provider_state_references(attrs[:provider_state_references], opts),
          :ok <- downgrades(attrs[:permitted_downgrades]),
-         :ok <- extensions(attrs[:extensions]) do
+         :ok <- extensions(attrs[:extensions], limits) do
       {:ok,
        %__MODULE__{
          model: model,
@@ -82,35 +84,35 @@ defmodule Backplane.AiProtocol.Request do
   defp model(_value),
     do: {:error, Error.invalid!("Request model must be a selector map or non-empty string")}
 
-  defp input(input) when is_list(input), do: input_items(input, [])
-  defp input(_value), do: {:error, Error.invalid!("Request input must be a list")}
+  defp input(input, opts) when is_list(input), do: input_items(input, [], opts)
+  defp input(_value, _opts), do: {:error, Error.invalid!("Request input must be a list")}
 
-  defp input_items([], acc), do: {:ok, Enum.reverse(acc)}
+  defp input_items([], acc, _opts), do: {:ok, Enum.reverse(acc)}
 
-  defp input_items([item | rest], acc) do
+  defp input_items([item | rest], acc, opts) do
     result =
       cond do
         is_map(item) and Map.get(item, :role) != nil and Map.get(item, :content) != nil ->
-          Message.new(item)
+          Message.new(item, opts)
 
         is_map(item) and Map.get(item, :affinity) != nil ->
-          ProviderState.new(item)
+          ProviderState.new(item, opts)
 
         true ->
           {:error, Error.invalid!("Request input item is invalid")}
       end
 
     case result do
-      {:ok, item} -> input_items(rest, [item | acc])
+      {:ok, item} -> input_items(rest, [item | acc], opts)
       error -> error
     end
   end
 
-  defp tools(nil), do: {:ok, []}
+  defp tools(nil, _opts), do: {:ok, []}
 
-  defp tools(tools) when is_list(tools) do
+  defp tools(tools, opts) when is_list(tools) do
     Enum.reduce_while(tools, {:ok, []}, fn tool, {:ok, acc} ->
-      case ToolDefinition.new(tool) do
+      case ToolDefinition.new(tool, opts) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         error -> {:halt, error}
       end
@@ -121,21 +123,21 @@ defmodule Backplane.AiProtocol.Request do
     end
   end
 
-  defp tools(_value), do: {:error, Error.invalid!("Request tools must be a list")}
+  defp tools(_value, _opts), do: {:error, Error.invalid!("Request tools must be a list")}
 
-  defp optional_map(attrs, key) do
+  defp optional_map(attrs, key, limits) do
     case Map.get(attrs, key) do
       nil -> :ok
-      value when is_map(value) -> Backplane.AiProtocol.Validation.term(value)
+      value when is_map(value) -> Backplane.AiProtocol.Validation.term(value, limits)
       _ -> {:error, Error.invalid!("Request #{key} must be a map")}
     end
   end
 
-  defp provider_state_references(nil), do: {:ok, []}
+  defp provider_state_references(nil, _opts), do: {:ok, []}
 
-  defp provider_state_references(states) when is_list(states) do
+  defp provider_state_references(states, opts) when is_list(states) do
     Enum.reduce_while(states, {:ok, []}, fn state, {:ok, acc} ->
-      case ProviderState.new(state) do
+      case ProviderState.new(state, opts) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         error -> {:halt, error}
       end
@@ -146,7 +148,7 @@ defmodule Backplane.AiProtocol.Request do
     end
   end
 
-  defp provider_state_references(_value),
+  defp provider_state_references(_value, _opts),
     do: {:error, Error.invalid!("Request provider_state_references must be a list")}
 
   defp downgrades(nil), do: :ok
@@ -162,10 +164,11 @@ defmodule Backplane.AiProtocol.Request do
   defp downgrades(_value),
     do: {:error, Error.invalid!("Request permitted_downgrades must be a list")}
 
-  defp extensions(nil), do: :ok
+  defp extensions(nil, _limits), do: :ok
 
-  defp extensions(value) when is_map(value),
-    do: Backplane.AiProtocol.Validation.bounded_map(value)
+  defp extensions(value, limits) when is_map(value),
+    do: Backplane.AiProtocol.Validation.bounded_map(value, limits)
 
-  defp extensions(_value), do: {:error, Error.invalid!("Request extensions must be a map")}
+  defp extensions(_value, _limits),
+    do: {:error, Error.invalid!("Request extensions must be a map")}
 end

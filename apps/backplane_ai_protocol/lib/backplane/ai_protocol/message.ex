@@ -22,16 +22,19 @@ defmodule Backplane.AiProtocol.Message do
 
   @keys [:role, :content, :tool_call_id, :status, :extensions]
 
-  @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
-  def new(%__MODULE__{} = message), do: message |> Map.from_struct() |> new()
+  @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
+  def new(attrs, opts \\ [])
+  def new(%__MODULE__{} = message, opts), do: message |> Map.from_struct() |> new(opts)
 
-  def new(attrs) when is_map(attrs) do
+  def new(attrs, opts) when is_map(attrs) do
+    limits = Keyword.get(opts, :limits, %{})
+
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, role} <- role(Map.get(attrs, :role)),
-         {:ok, content} <- content(Map.get(attrs, :content)),
+         {:ok, content} <- content(Map.get(attrs, :content), opts),
          :ok <- tool_result(attrs, role),
          :ok <- status(attrs[:status]),
-         :ok <- extensions(attrs[:extensions]) do
+         :ok <- extensions(attrs[:extensions], limits) do
       {:ok,
        %__MODULE__{
          role: role,
@@ -49,14 +52,14 @@ defmodule Backplane.AiProtocol.Message do
   defp role(value) when value in [:system, :developer, :user, :assistant, :tool], do: {:ok, value}
   defp role(_value), do: {:error, Error.invalid!("Message role must be a known atom")}
 
-  defp content(value) when is_list(value), do: blocks(value, [])
-  defp content(_value), do: {:error, Error.invalid!("Message content must be a list")}
+  defp content(value, opts) when is_list(value), do: blocks(value, [], opts)
+  defp content(_value, _opts), do: {:error, Error.invalid!("Message content must be a list")}
 
-  defp blocks([], acc), do: {:ok, Enum.reverse(acc)}
+  defp blocks([], acc, _opts), do: {:ok, Enum.reverse(acc)}
 
-  defp blocks([block | rest], acc) do
-    case ContentBlock.new(block) do
-      {:ok, block} -> blocks(rest, [block | acc])
+  defp blocks([block | rest], acc, opts) do
+    case ContentBlock.new(block, opts) do
+      {:ok, block} -> blocks(rest, [block | acc], opts)
       error -> error
     end
   end
@@ -73,12 +76,12 @@ defmodule Backplane.AiProtocol.Message do
   defp status(value) when value in [nil, :success, :error], do: :ok
   defp status(_value), do: {:error, Error.invalid!("Tool result status must be success or error")}
 
-  defp extensions(nil), do: :ok
+  defp extensions(nil, _limits), do: :ok
 
-  defp extensions(extensions) do
+  defp extensions(extensions, limits) do
     Enum.reduce_while(extensions, :ok, fn
       {name, value}, :ok ->
-        case Backplane.AiProtocol.Validation.bounded_extension(name, value) do
+        case Backplane.AiProtocol.Validation.bounded_extension(name, value, limits) do
           :ok -> {:cont, :ok}
           error -> {:halt, error}
         end
