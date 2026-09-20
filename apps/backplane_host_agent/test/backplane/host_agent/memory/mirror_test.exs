@@ -64,6 +64,31 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
              )
   end
 
+  test "a deletion stream remains bounded and stale delta or snapshot cannot resurrect data", c do
+    opts = Keyword.put(c.opts, :config, Map.merge(@config, %{max_items: 3, max_bytes: 10_000}))
+
+    for revision <- 1..10 do
+      assert {:ok, _} =
+               Mirror.apply_delivery(
+                 delta(revision, [delete(revision, "gone-#{revision}")]),
+                 opts
+               )
+    end
+
+    assert {:ok, %{rows: [%{"count" => 3}]}} =
+             Store.query(c.store, "SELECT count(*) AS count FROM edge_memories")
+
+    assert {:ok, %{"items" => [], "partition_revision" => 10}} =
+             Mirror.offline_read("list", @partition, opts)
+
+    assert {:ok, _} = Mirror.apply_delivery(delta(1, [upsert(1, "gone-1", "stale")]), opts)
+    assert {:ok, %{"items" => []}} = Mirror.offline_read("list", @partition, opts)
+
+    [stale_snapshot] = snapshot([[item("gone-1", "stale")]], 0, 2)
+    assert {:error, :snapshot_restart_required} = Mirror.apply_delivery(stale_snapshot, opts)
+    assert {:ok, %{"items" => []}} = Mirror.offline_read("list", @partition, opts)
+  end
+
   test "malformed changes and partition conflicts write nothing", c do
     valid = delta(1, [upsert(1, "a", "alpha")])
     invalid = put_in(valid, ["changes", Access.at(0), "payload", "canonical_id"], "other")
@@ -75,6 +100,27 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
                Keyword.put(c.opts, :partition, Map.put(@partition, "namespace", "shared"))
              )
 
+    assert {:ok, %{rows: []}} = Store.query(c.store, "SELECT * FROM edge_partitions")
+  end
+
+  test "upserts and snapshot items require finite priority and canonical update time", c do
+    valid = delta(1, [upsert(1, "a", "alpha")])
+
+    for invalid <- [
+          put_in(valid, ["changes", Access.at(0), "payload", "edge_priority"], "high"),
+          put_in(valid, ["changes", Access.at(0), "payload", "updated_at"], "yesterday")
+        ] do
+      assert {:error, :invalid_delivery} = Mirror.apply_delivery(invalid, c.opts)
+    end
+
+    [snapshot] = snapshot([[item("a", "alpha")]], 0, 1)
+
+    invalid_snapshot =
+      snapshot
+      |> put_in(["items", Access.at(0), "updated_at"], "invalid")
+      |> put_chunk_hash()
+
+    assert {:error, :invalid_delivery} = Mirror.apply_delivery(invalid_snapshot, c.opts)
     assert {:ok, %{rows: []}} = Store.query(c.store, "SELECT * FROM edge_partitions")
   end
 
@@ -180,6 +226,22 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert p["applied_revision"] == 0
     assert p["next_chunk_index"] == 1
     assert {:error, :mirror_unavailable} = Mirror.offline_read("list", @partition, c.opts)
+  end
+
+  test "bounded snapshot activation still validates the full received item count", c do
+    [first, final] = snapshot([[item("a", "alpha")], [item("b", "beta")]], 0, 8)
+    opts = Keyword.put(c.opts, :config, Map.merge(@config, %{max_items: 1, max_bytes: 10_000}))
+
+    assert {:ok, _} = Mirror.apply_delivery(first, opts)
+
+    assert {:error, :integrity_failure} =
+             Mirror.apply_delivery(Map.put(final, "item_count", 3), opts)
+
+    assert {:ok, %{rows: [%{"applied_revision" => 0, "snapshot_received_items" => 1}]}} =
+             Store.query(
+               c.store,
+               "SELECT applied_revision,snapshot_received_items FROM edge_partitions"
+             )
   end
 
   test "activation does not acknowledge when obsolete-generation cleanup fails", c do
@@ -366,6 +428,50 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert length(result["items"]) > 0
   end
 
+  test "snapshot verifies the complete wire manifest before exposing its bounded generation", c do
+    assert {:ok, _} = Mirror.apply_delivery(delta(1, [upsert(1, "old", "visible")]), c.opts)
+    low = item("low", "low") |> Map.put("edge_priority", 1)
+    high = item("high", "high") |> Map.put("edge_priority", 10)
+    [first, final] = snapshot([[low], [high]], 1, 2)
+    opts = Keyword.put(c.opts, :config, Map.merge(@config, %{max_items: 1, max_bytes: 10_000}))
+
+    assert {:ok, %{"status" => "progress"}} = Mirror.apply_delivery(first, opts)
+    assert {:ok, before} = Mirror.offline_read("list", @partition, opts)
+    assert [%{"canonical_id" => "old"}] = before["items"]
+    assert {:ok, %{"status" => "applied"}} = Mirror.apply_delivery(final, opts)
+
+    assert {:ok, result} = Mirror.offline_read("list", @partition, opts)
+    assert [%{"canonical_id" => "high"}] = result["items"]
+  end
+
+  test "offline reads touch only returned active rows", c do
+    assert {:ok, _} =
+             Mirror.apply_delivery(
+               delta(1, [upsert(1, "a", "match"), upsert(2, "b", "other")]),
+               c.opts
+             )
+
+    assert {:ok, %{"items" => [%{"canonical_id" => "a"}]}} =
+             Mirror.offline_read(
+               "recall",
+               Map.merge(@partition, %{"query" => "match", "limit" => 1}),
+               c.opts
+             )
+
+    assert {:ok, %{rows: rows}} =
+             Store.query(
+               c.store,
+               "SELECT canonical_id,last_accessed_at FROM edge_memories ORDER BY canonical_id"
+             )
+
+    assert [
+             %{"canonical_id" => "a", "last_accessed_at" => touched},
+             %{"canonical_id" => "b", "last_accessed_at" => nil}
+           ] = rows
+
+    assert is_binary(touched)
+  end
+
   defp item(id, content),
     do: %{
       "canonical_id" => id,
@@ -373,6 +479,8 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
       "content" => content,
       "content_hash" => "hash",
       "confidence" => 0.9,
+      "edge_priority" => 0.9,
+      "updated_at" => "2026-09-20T00:00:00.000000",
       "lifecycle_state" => "active",
       "tags" => [],
       "metadata" => %{},

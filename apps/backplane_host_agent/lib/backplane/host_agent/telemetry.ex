@@ -5,6 +5,7 @@ defmodule Backplane.HostAgent.Telemetry do
 
   @memory_call_prefix [:backplane, :host_agent, :memory, :call]
   @capture_prefix [:backplane, :host_agent, :memory, :capture]
+  alias Backplane.HostAgent.Memory.Edge.Telemetry, as: EdgeTelemetry
 
   @doc "Wrap a memory call with telemetry instrumentation."
   @spec span_memory_call(String.t(), String.t(), map(), (-> term())) :: term()
@@ -72,6 +73,9 @@ defmodule Backplane.HostAgent.Telemetry do
       result: if(match?({:ok, _}, result), do: :ok, else: :error)
     })
   end
+
+  def edge_state(measurements) when is_map(measurements), do: EdgeTelemetry.state(measurements)
+  def edge_failure(class), do: EdgeTelemetry.failure(class)
 
   def duration_ms(duration), do: System.convert_time_unit(duration, :native, :millisecond)
 

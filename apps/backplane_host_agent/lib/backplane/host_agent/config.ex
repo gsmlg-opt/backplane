@@ -76,6 +76,11 @@ defmodule Backplane.HostAgent.Config do
         development_plaintext: false
         max_frame_bytes: 524288
         max_changes: 100
+        max_items: 10000
+        max_bytes: 67108864
+        max_items_per_partition: 5000
+        max_age_days: 90
+        type_quotas: {}
         sync_interval_ms: 5000
       # Server-triggered imports name an opaque profile; only this host config
       # resolves that profile to a path and approved roots.
@@ -267,9 +272,22 @@ defmodule Backplane.HostAgent.Config do
         ),
       max_frame_bytes: parse_bounded_positive_int(raw["max_frame_bytes"], 524_288, 524_288),
       max_changes: parse_bounded_positive_int(raw["max_changes"], 100, 100),
+      max_items: parse_positive_int(raw["max_items"], 10_000),
+      max_bytes: parse_positive_int(raw["max_bytes"], 64 * 1024 * 1024),
+      max_items_per_partition: parse_positive_int(raw["max_items_per_partition"], 5_000),
+      max_age_days: parse_positive_int(raw["max_age_days"], 90),
+      type_quotas: parse_type_quotas(raw["type_quotas"]),
       sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000)
     }
   end
+
+  defp parse_type_quotas(quotas) when is_map(quotas) do
+    quotas
+    |> Enum.filter(fn {type, quota} -> is_binary(type) and is_integer(quota) and quota > 0 end)
+    |> Map.new()
+  end
+
+  defp parse_type_quotas(_quotas), do: %{}
 
   defp parse_import_profiles(profiles) when is_map(profiles) do
     profiles

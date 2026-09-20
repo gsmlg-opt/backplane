@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.Reporter do
 
   @agent_version "0.1.0"
 
-  alias Backplane.HostAgent.Memory.{CaptureUploader, Spool}
+  alias Backplane.HostAgent.Memory.{CaptureUploader, Diagnostics, Spool}
   alias Backplane.HostAgent.Telemetry
 
   @doc "Builds the host-agent heartbeat payload."
@@ -16,6 +16,7 @@ defmodule Backplane.HostAgent.Reporter do
       "machine_name" => Map.fetch!(config, :machine_name),
       "metadata" => %{"otp_release" => System.otp_release()},
       "capture" => capture_status(config),
+      "memory" => memory_status(config),
       "targets" => Enum.map(Map.get(config, :targets, []), &stringify_keys/1)
     }
   end
@@ -98,6 +99,32 @@ defmodule Backplane.HostAgent.Reporter do
     end
   end
 
+  defp memory_status(config) do
+    memory = field(config, :memory) || %{}
+    diagnostics = field(memory, :diagnostics_module) || Diagnostics
+    opts = field(memory, :diagnostics_opts) || []
+
+    case safe_capture_call(fn -> diagnostics.snapshot(opts) end, nil) do
+      {:ok, %{"edge" => edge}} -> edge
+      _ -> memory_defaults()
+    end
+  end
+
+  defp memory_defaults do
+    %{
+      "protection_mode" => "disabled",
+      "items" => 0,
+      "bytes" => 0,
+      "revision" => 0,
+      "lag" => nil,
+      "lag_status" => "unavailable",
+      "stale_age_seconds" => nil,
+      "retry_count" => 0,
+      "dead_letter_count" => 0,
+      "partitions" => []
+    }
+  end
+
   defp capture_connection_state(status) when is_map(status),
     do: to_string(status[:connection_state] || "disconnected")
 
@@ -154,6 +181,7 @@ defmodule Backplane.HostAgent.Reporter do
   defp safe_capture_call(callback, default) do
     case callback.() do
       result when is_map(result) -> result
+      {:ok, result} when is_map(result) -> {:ok, result}
       _ -> default
     end
   rescue

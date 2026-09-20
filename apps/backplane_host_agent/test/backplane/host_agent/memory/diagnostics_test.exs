@@ -73,6 +73,106 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
              )
   end
 
+  test "snapshot reports active edge bounds, staleness, and command retry health without content",
+       %{store: store, tmp_dir: dir} do
+    insert_memory!(store, "retry", "retry", sync_state: "pending")
+    insert_outbox!(store, "remember", "retry", "retry_wait", "temporary")
+    insert_memory!(store, "dead", "dead", sync_state: "pending")
+    insert_outbox!(store, "remember", "dead", "dead_letter", "permanent")
+
+    {:ok, edge} =
+      Backplane.HostAgent.Memory.Edge.Store.start_link(
+        database: Path.join(dir, "edge.db"),
+        config: %{enabled: true, development_plaintext: true}
+      )
+
+    Process.unlink(edge)
+    :ok = Backplane.HostAgent.Memory.Edge.Migrator.migrate(edge)
+    last_sync = DateTime.utc_now() |> DateTime.add(-5) |> DateTime.to_iso8601()
+    older_sync = DateTime.utc_now() |> DateTime.add(-12) |> DateTime.to_iso8601()
+
+    assert {:ok, _} =
+             Backplane.HostAgent.Memory.Edge.Store.execute(
+               edge,
+               "INSERT INTO edge_partitions (memory_space_id,scope,namespace,active_generation,applied_revision,last_sync_at) VALUES ('space','scope','private','g',7,?)",
+               [last_sync]
+             )
+
+    assert {:ok, _} =
+             Backplane.HostAgent.Memory.Edge.Store.execute(
+               edge,
+               "INSERT INTO edge_partitions (memory_space_id,scope,namespace,active_generation,applied_revision,last_sync_at) VALUES ('older','scope','private','g',6,?)",
+               [older_sync]
+             )
+
+    assert {:ok, _} =
+             Backplane.HostAgent.Memory.Edge.Store.execute(
+               edge,
+               "INSERT INTO edge_memories (memory_space_id,scope,namespace,generation,canonical_id,lifecycle_state,server_revision,byte_size,content) VALUES ('space','scope','private','g','id','active',7,42,'secret content')"
+             )
+
+    assert {:ok, _} =
+             Backplane.HostAgent.Memory.Edge.Store.execute(
+               edge,
+               "INSERT INTO edge_memories (memory_space_id,scope,namespace,generation,canonical_id,lifecycle_state,server_revision,byte_size,content) VALUES ('space','scope','private','staging','future','active',99,999,'staged secret')"
+             )
+
+    assert {:ok, %{"edge" => metrics}} =
+             Diagnostics.snapshot(
+               store: store,
+               edge_store: edge,
+               host_sync_v2: %{enabled: true, development_plaintext: true}
+             )
+
+    assert %{
+             "items" => 1,
+             "bytes" => 42,
+             "revision" => 7,
+             "lag" => nil,
+             "lag_status" => "unavailable",
+             "retry_count" => 1,
+             "dead_letter_count" => 1,
+             "stale_age_seconds" => age,
+             "partitions" => partitions
+           } = metrics
+
+    assert age in 11..14
+
+    assert [
+             %{"last_sync_at" => ^older_sync, "stale_age_seconds" => older_age},
+             %{"last_sync_at" => ^last_sync, "stale_age_seconds" => newer_age}
+           ] = partitions
+
+    assert older_age in 11..14
+    assert newer_age in 4..7
+    refute inspect(metrics) =~ "secret content"
+    GenServer.stop(edge)
+  end
+
+  test "unavailable edge storage is fault-contained and does not claim a known lag", %{
+    store: store,
+    tmp_dir: dir
+  } do
+    {:ok, edge} =
+      Backplane.HostAgent.Memory.Edge.Store.start_link(
+        database: Path.join(dir, "gone.db"),
+        config: %{enabled: true, development_plaintext: true}
+      )
+
+    Process.unlink(edge)
+    GenServer.stop(edge)
+
+    assert {:ok,
+            %{
+              "edge" => %{"items" => 0, "bytes" => 0, "lag" => nil, "lag_status" => "unavailable"}
+            }} =
+             Diagnostics.snapshot(
+               store: store,
+               edge_store: edge,
+               host_sync_v2: %{enabled: true, development_plaintext: true}
+             )
+  end
+
   test "recovery helpers requeue dead-letter rows and purge tombstones explicitly", %{
     store: store
   } do

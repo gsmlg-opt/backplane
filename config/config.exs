@@ -46,6 +46,7 @@ config :backplane, Oban,
        {"30 3 * * *", Backplane.Memory.Workers.RecallTracePurgeWorker},
        # Durable Activity retention: daily bounded purge with continuation jobs
        {"45 3 * * *", Backplane.Memory.Workers.ActivityRetentionWorker},
+       {"15 4 * * *", Backplane.Memory.Workers.EdgeSyncRetentionWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
        # Observability retention workers

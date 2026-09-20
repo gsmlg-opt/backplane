@@ -69,6 +69,8 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
               "content" => "edge fact",
               "content_hash" => "hash",
               "confidence" => 1.0,
+              "edge_priority" => 1.0,
+              "updated_at" => "2026-09-20T00:00:00Z",
               "lifecycle_state" => "active",
               "tags" => [],
               "metadata" => %{},
@@ -103,6 +105,13 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     def push(channel, "memory_next", payload, _timeout) do
       send(channel, {:memory_next, payload})
       {:error, :timeout}
+    end
+  end
+
+  defmodule StorageFailingMirror do
+    def offer(_opts) do
+      Backplane.HostAgent.Memory.Edge.Telemetry.failure(:storage)
+      {:error, :storage_unavailable}
     end
   end
 
@@ -343,6 +352,50 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     assert_receive {:memory_next, _}
     assert %{edge_retry_ref: ref, current_retry_backoff_ms: 20} = Syncer.status(syncer)
     assert is_reference(ref)
+  end
+
+  test "channel and mirror failures retain their transport and storage classifications" do
+    id = "sync-transport-#{System.unique_integer([:positive])}"
+    event = [:backplane, :host_agent, :memory, :edge, :failure]
+
+    :telemetry.attach(
+      id,
+      event,
+      fn name, measurements, metadata, pid ->
+        send(pid, {name, measurements, metadata})
+      end,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(id) end)
+
+    syncer =
+      start_syncer(
+        name: nil,
+        channel: self(),
+        channel_module: FailingChannel,
+        mirror_module: Mirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    assert_receive {^event, %{count: 1}, %{class: :transport}}
+    Syncer.stop(syncer)
+
+    _storage =
+      start_syncer(
+        name: nil,
+        channel: self(),
+        channel_module: CurrentChannel,
+        mirror_module: StorageFailingMirror,
+        selected: "host_memory.v2",
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive {^event, %{count: 1}, %{class: :storage}}
+    refute_receive {^event, _, %{class: :transport}}, 50
   end
 
   test "does not poll a durable partition revoked from the negotiated inventory" do

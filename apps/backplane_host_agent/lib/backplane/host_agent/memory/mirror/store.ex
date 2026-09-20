@@ -1,6 +1,7 @@
 defmodule Backplane.HostAgent.Memory.Mirror.Store do
   @moduledoc "Transactional Turso adapter for canonical mirror generations and cursors."
   alias Backplane.HostAgent.Memory.Edge.Store, as: Edge
+  alias Backplane.HostAgent.Memory.Edge.{Eviction, Telemetry}
   @where "memory_space_id = ? AND scope = ? AND namespace = ?"
   @partition_keys ["memory_space_id", "scope", "namespace"]
 
@@ -41,7 +42,9 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     end)
   end
 
-  def apply_delivery(store, d) do
+  def apply_delivery(store, d), do: apply_delivery(store, d, %{})
+
+  def apply_delivery(store, d, config) do
     result =
       transaction(store, fn conn ->
         p = d["partition"]
@@ -59,22 +62,48 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           do: DBConnection.rollback(conn, :delivery_conflict)
 
         case d["kind"] do
-          "delta" -> delta!(conn, d, state, digest)
-          "snapshot_chunk" -> snapshot!(conn, d, state, digest)
+          "delta" -> delta!(conn, d, state, digest, config)
+          "snapshot_chunk" -> snapshot!(conn, d, state, digest, config)
         end
       end)
 
     case result do
-      {:ok, {:recovery, reason}} -> {:error, reason}
-      {:ok, {:activated, ack}} -> {:ok, ack}
-      other -> other
+      {:ok, {{:recovery, reason}, eviction}} ->
+        emit(d, eviction, :gap)
+        {:error, reason}
+
+      {:ok, {{:activated, ack}, eviction}} ->
+        emit(d, eviction, :ok)
+        {:ok, ack}
+
+      {:ok, {ack, eviction}} ->
+        emit(d, eviction, :ok)
+        {:ok, ack}
+
+      {:error, reason} = error ->
+        Telemetry.failure(failure_class(reason))
+        error
     end
   end
 
-  defp delta!(conn, d, state, digest) do
+  defp emit(d, eviction, result) do
+    if eviction.expired + eviction.evicted > 0, do: Telemetry.eviction(eviction)
+    if result == :gap, do: Telemetry.failure(:gap)
+    Telemetry.delivery(if(d["kind"] == "delta", do: :delta, else: :snapshot), result)
+  end
+
+  defp failure_class(reason) when reason in [:integrity_failure, :delivery_conflict],
+    do: :integrity
+
+  defp failure_class(reason) when reason in [:snapshot_required, :snapshot_restart_required],
+    do: :gap
+
+  defp failure_class(_reason), do: :storage
+
+  defp delta!(conn, d, state, digest, config) do
     cond do
       d["to_revision"] <= state["applied_revision"] ->
-        ack(d)
+        {ack(d), Eviction.enforce!(conn, config)}
 
       state["snapshot_id"] != nil ->
         DBConnection.rollback(conn, :snapshot_restart_required)
@@ -87,7 +116,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           params(d["partition"])
         )
 
-        {:recovery, :snapshot_required}
+        {{:recovery, :snapshot_required}, empty_eviction()}
 
       true ->
         Enum.each(d["changes"], fn change ->
@@ -107,23 +136,23 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           [d["to_revision"], d["batch_id"], digest, now()] ++ params(d["partition"])
         )
 
-        ack(d)
+        {ack(d), Eviction.enforce!(conn, config)}
     end
   end
 
-  defp snapshot!(conn, d, state, digest) do
+  defp snapshot!(conn, d, state, digest, config) do
     cond do
       state["last_batch_id"] == d["batch_id"] ->
-        ack(d)
+        {ack(d), snapshot_eviction!(conn, d, config)}
 
       state["active_generation"] == d["snapshot_id"] ->
-        activated_snapshot_duplicate!(conn, d, state)
+        {activated_snapshot_duplicate!(conn, d, state), Eviction.enforce!(conn, config)}
 
       d["to_revision"] < state["applied_revision"] ->
         DBConnection.rollback(conn, :snapshot_restart_required)
 
       state["snapshot_id"] == d["snapshot_id"] ->
-        continue_snapshot!(conn, d, state, digest)
+        continue_snapshot!(conn, d, state, digest, config)
 
       d["chunk_index"] == 0 and d["base_revision"] == state["applied_revision"] ->
         # A fresh server snapshot can safely replace an interrupted staging generation.
@@ -139,19 +168,19 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
 
         execute!(
           conn,
-          "UPDATE edge_partitions SET snapshot_id = ?, snapshot_revision = ?, next_chunk_index = 0, chunk_count = ?, integrity_hash = ? WHERE #{@where}",
+          "UPDATE edge_partitions SET snapshot_id = ?, snapshot_revision = ?, next_chunk_index = 0, chunk_count = ?, integrity_hash = ?, snapshot_received_items = 0 WHERE #{@where}",
           [d["snapshot_id"], d["to_revision"], d["chunk_count"], d["integrity_hash"]] ++
             params(d["partition"])
         )
 
-        continue_snapshot!(conn, d, partition!(conn, d["partition"]), digest)
+        continue_snapshot!(conn, d, partition!(conn, d["partition"]), digest, config)
 
       true ->
         DBConnection.rollback(conn, :snapshot_restart_required)
     end
   end
 
-  defp continue_snapshot!(conn, d, state, digest) do
+  defp continue_snapshot!(conn, d, state, digest, config) do
     unless state["snapshot_revision"] == d["to_revision"] and
              state["chunk_count"] == d["chunk_count"] and
              state["integrity_hash"] == d["integrity_hash"] and
@@ -169,7 +198,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
 
     case prior do
       [%{"chunk_hash" => ^expected_hash}] ->
-        ack(d)
+        {ack(d), snapshot_eviction!(conn, d, config)}
 
       [_] ->
         DBConnection.rollback(conn, :delivery_conflict)
@@ -189,8 +218,14 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           now()
         ])
 
+        execute!(
+          conn,
+          "UPDATE edge_partitions SET snapshot_received_items = snapshot_received_items + ? WHERE #{@where}",
+          [length(d["items"])] ++ params(d["partition"])
+        )
+
         if d["chunk_index"] + 1 == d["chunk_count"] do
-          activate!(conn, d, digest)
+          activate!(conn, d, digest, config)
         else
           execute!(
             conn,
@@ -198,24 +233,19 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
             [d["chunk_index"] + 1, d["batch_id"], digest] ++ params(d["partition"])
           )
 
-          ack(d)
+          {ack(d), snapshot_eviction!(conn, d, config)}
         end
     end
   end
 
-  defp activate!(conn, d, digest) do
+  defp activate!(conn, d, digest, config) do
     # Read manifest hashes in bounded pages; chunk data was integrity checked before insertion.
     context = manifest!(conn, d["snapshot_id"], 0, d["chunk_count"], :crypto.hash_init(:sha256))
     manifest = "sha256:" <> Base.encode16(:crypto.hash_final(context), case: :lower)
 
-    [%{"count" => count}] =
-      rows!(
-        conn,
-        "SELECT COUNT(*) AS count FROM edge_memories WHERE #{@where} AND generation = ?",
-        params(d["partition"]) ++ [d["snapshot_id"]]
-      )
+    state = partition!(conn, d["partition"])
 
-    if manifest != d["integrity_hash"] or count != d["item_count"],
+    if manifest != d["integrity_hash"] or state["snapshot_received_items"] != d["item_count"],
       do: DBConnection.rollback(conn, :integrity_failure)
 
     execute!(
@@ -236,8 +266,13 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       []
     )
 
-    {:activated, ack(d)}
+    {{:activated, ack(d)}, Eviction.enforce!(conn, config)}
   end
+
+  defp snapshot_eviction!(conn, d, config),
+    do: Eviction.enforce!(conn, config, now(), {:generation, d["partition"], d["snapshot_id"]})
+
+  defp empty_eviction, do: %{expired: 0, evicted: 0, items: 0, bytes: 0}
 
   defp activated_snapshot_duplicate!(conn, d, state) do
     [chunk] =
@@ -250,18 +285,8 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     context = manifest!(conn, d["snapshot_id"], 0, d["chunk_count"], :crypto.hash_init(:sha256))
     manifest = "sha256:" <> Base.encode16(:crypto.hash_final(context), case: :lower)
 
-    [%{"count" => count}] =
-      rows!(
-        conn,
-        "SELECT COUNT(*) AS count FROM edge_memories WHERE #{@where} AND generation = ?",
-        params(d["partition"]) ++ [d["snapshot_id"]]
-      )
-
-    count_matches? =
-      state["applied_revision"] > d["to_revision"] or count == d["item_count"]
-
     if chunk["chunk_hash"] == d["chunk_hash"] and state["applied_revision"] >= d["to_revision"] and
-         manifest == d["integrity_hash"] and count_matches?,
+         manifest == d["integrity_hash"] and state["snapshot_received_items"] == d["item_count"],
        do: ack(d),
        else: DBConnection.rollback(conn, :delivery_conflict)
   end
@@ -361,8 +386,22 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       else
         query = if operation == "recall", do: Map.get(args, "query", ""), else: ""
         base = Map.put(metadata, "items", [])
-        Map.put(base, "items", read_items!(conn, filters, values, query, args["limit"], base))
+        items = read_items!(conn, filters, values, query, args["limit"], base)
+        touch_items!(conn, args, p["active_generation"], items, timestamp)
+        Map.put(base, "items", items)
       end
+    end)
+  end
+
+  defp touch_items!(_conn, _partition, _generation, [], _timestamp), do: :ok
+
+  defp touch_items!(conn, partition, generation, items, timestamp) do
+    Enum.each(items, fn item ->
+      execute!(
+        conn,
+        "UPDATE edge_memories SET last_accessed_at = ? WHERE #{@where} AND generation = ? AND canonical_id = ?",
+        [timestamp] ++ params(partition) ++ [generation, item["canonical_id"]]
+      )
     end)
   end
 

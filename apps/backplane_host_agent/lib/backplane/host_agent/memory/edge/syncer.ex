@@ -5,6 +5,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   alias Backplane.HostAgent.Channel
   alias Backplane.HostAgent.Memory.Mirror
+  alias Backplane.HostAgent.Memory.Edge.Telemetry
 
   @default_poll_interval_ms 60_000
   @default_retry_backoff_ms 1_000
@@ -190,9 +191,15 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   defp push(state, event, payload) do
     case state.channel_module.push(state.channel, event, payload, 5_000) do
-      {:ok, reply} when is_map(reply) -> {:ok, reply}
-      {:error, _reason} = error -> error
-      other -> {:error, {:unexpected_reply, other}}
+      {:ok, reply} when is_map(reply) ->
+        {:ok, reply}
+
+      {:error, _reason} = error ->
+        Telemetry.failure(:transport)
+        error
+
+      other ->
+        {:error, {:unexpected_reply, other}}
     end
   end
 

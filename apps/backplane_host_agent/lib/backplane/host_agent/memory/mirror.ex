@@ -1,6 +1,6 @@
 defmodule Backplane.HostAgent.Memory.Mirror do
   @moduledoc "Validated, protected entrypoint for the revisioned canonical edge mirror."
-  alias Backplane.HostAgent.Memory.Edge.Protection
+  alias Backplane.HostAgent.Memory.Edge.{Protection, Telemetry}
   alias Backplane.HostAgent.Memory.Mirror.Store
 
   @typedoc "The only accepted values are \"recall\", \"list\", and \"stats\"."
@@ -8,14 +8,37 @@ defmodule Backplane.HostAgent.Memory.Mirror do
 
   @spec offer(keyword()) :: {:ok, map()} | {:error, term()}
   def offer(opts \\ []) do
-    with :ok <- protection(opts), do: Store.offer(store(opts))
+    result = with :ok <- protection(opts), do: Store.offer(store(opts))
+
+    case result do
+      {:error, reason} when reason in [:disabled, :protection_unavailable] ->
+        Telemetry.failure(:protection)
+
+      {:error, _reason} ->
+        Telemetry.failure(:storage)
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   @spec apply_delivery(map(), keyword()) :: {:ok, map()} | {:error, term()}
   def apply_delivery(delivery, opts \\ []) do
-    with :ok <- protection(opts),
-         :ok <- validate(delivery, opts) do
-      Store.apply_delivery(store(opts), delivery)
+    result =
+      with :ok <- protection(opts),
+           :ok <- validate(delivery, opts) do
+        Store.apply_delivery(store(opts), delivery, Keyword.get(opts, :config, %{}))
+      end
+
+    case result do
+      {:error, reason} when reason in [:disabled, :protection_unavailable] ->
+        Telemetry.failure(:protection)
+        result
+
+      _ ->
+        result
     end
   end
 
@@ -121,7 +144,8 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   defp item?(item) when is_map(item) do
     text?(item["canonical_id"]) and text?(item["memory_type"]) and is_binary(item["content"]) and
       text?(item["content_hash"]) and item["lifecycle_state"] in ["active", "disputed"] and
-      is_number(item["confidence"]) and is_list(item["tags"]) and
+      finite_number?(item["confidence"]) and finite_number?(item["edge_priority"]) and
+      valid_datetime?(item["updated_at"]) and is_list(item["tags"]) and
       Enum.all?(item["tags"], &is_binary/1) and
       is_map(item["metadata"]) and (is_nil(item["expires_at"]) or is_binary(item["expires_at"]))
   end
@@ -135,6 +159,16 @@ defmodule Backplane.HostAgent.Memory.Mirror do
 
   defp partition?(_), do: false
   defp text?(s), do: is_binary(s) and byte_size(s) in 1..1024
+  defp finite_number?(n) when is_integer(n), do: true
+  defp finite_number?(n) when is_float(n), do: n == n
+  defp finite_number?(_), do: false
+
+  defp valid_datetime?(value) when is_binary(value) do
+    match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value)) or
+      match?({:ok, _datetime}, NaiveDateTime.from_iso8601(value))
+  end
+
+  defp valid_datetime?(_), do: false
   defp revision?(n), do: is_integer(n) and n >= 0 and n <= 9_223_372_036_854_775_807
   defp hash?(s), do: is_binary(s) and Regex.match?(~r/^sha256:[0-9a-f]{64}$/, s)
 end

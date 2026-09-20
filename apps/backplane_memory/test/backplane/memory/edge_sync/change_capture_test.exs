@@ -45,7 +45,9 @@ defmodule Backplane.Memory.EdgeSync.ChangeCaptureTest do
           {20_260_905_000_004, "create_host_memory_edge_sync",
            Backplane.Repo.Migrations.CreateHostMemoryEdgeSync},
           {20_260_905_000_005, "install_memory_edge_change_capture",
-           Backplane.Repo.Migrations.InstallMemoryEdgeChangeCapture}
+           Backplane.Repo.Migrations.InstallMemoryEdgeChangeCapture},
+          {20_260_905_000_006, "add_memory_edge_payload_priority",
+           Backplane.Repo.Migrations.AddMemoryEdgePayloadPriority}
         ] do
       path = Application.app_dir(:backplane_system, "priv/repo/migrations/#{version}_#{file}.exs")
       assert File.exists?(path)
@@ -83,6 +85,13 @@ defmodule Backplane.Memory.EdgeSync.ChangeCaptureTest do
     )
 
     assert length(changes(ctx)) == 1
+
+    assert [[1]] =
+             Repo.query!(
+               ~s|SELECT current_revision FROM "#{ctx.prefix}".bpm_memory_partition_revisions WHERE memory_space_id=$1 AND scope='a' AND namespace='private'|,
+               [Ecto.UUID.dump!(ctx.space)]
+             ).rows
+
     update(ctx, id, "content = 'second'")
 
     assert [[1, "upsert", %{"content" => "first"}], [2, "upsert", %{"content" => "second"}]] =
@@ -98,6 +107,80 @@ defmodule Backplane.Memory.EdgeSync.ChangeCaptureTest do
     assert_raise Postgrex.Error, fn ->
       Repo.query!(~s|UPDATE "#{ctx.prefix}".bpm_memory_changes SET payload = '{}'|)
     end
+  end
+
+  test "wire payload emits server-owned priority and canonical update time", ctx do
+    semantic = insert(ctx, "semantic")
+    update(ctx, semantic, "confidence = 0.75, content = 'semantic updated'")
+    [_, [_, "upsert", semantic_payload]] = changes(ctx)
+    assert semantic_payload["edge_priority"] == 0.75
+
+    procedural = insert(ctx, "procedure")
+    update(ctx, procedural, "memory_type = 'procedural', confidence = 0.25")
+    [_, [_, "upsert", procedural_payload]] = changes(ctx) |> Enum.drop(2)
+    assert procedural_payload["edge_priority"] == 2.25
+
+    assert [[1.0, 2.0]] =
+             Repo.query!(
+               ~s|SELECT
+                    ("#{ctx.prefix}".bpm_memory_edge_payload(jsonb_populate_record(m, '{"memory_type":"semantic","confidence":2.5}'))->>'edge_priority')::float8,
+                    ("#{ctx.prefix}".bpm_memory_edge_payload(jsonb_populate_record(m, '{"memory_type":"procedural","confidence":-1}'))->>'edge_priority')::float8
+                  FROM "#{ctx.prefix}".bpm_memories m WHERE id=$1|,
+               [Ecto.UUID.dump!(procedural)]
+             ).rows
+
+    assert [[true]] =
+             Repo.query!(
+               ~s|SELECT (c.payload->>'updated_at')::timestamptz = m.updated_at
+                  FROM "#{ctx.prefix}".bpm_memory_changes c
+                  JOIN "#{ctx.prefix}".bpm_memories m ON m.id=c.memory_id
+                  WHERE c.memory_id=$1 ORDER BY c.revision DESC LIMIT 1|,
+               [Ecto.UUID.dump!(procedural)]
+             ).rows
+
+    update(ctx, procedural, "confidence = 4.0, content = 'clamped high'")
+    assert [_, "upsert", high_payload] = List.last(changes(ctx))
+    assert high_payload["edge_priority"] == 3.0
+    update(ctx, procedural, "confidence = -2.0, content = 'clamped low'")
+    assert [_, "upsert", low_payload] = List.last(changes(ctx))
+    assert low_payload["edge_priority"] == 2.0
+
+    before_access = length(changes(ctx))
+
+    update(
+      ctx,
+      procedural,
+      "access_count = access_count + 1, accessed_at = now(), updated_at = now()"
+    )
+
+    assert length(changes(ctx)) == before_access
+  end
+
+  test "down restores the prior payload and access-only trigger behavior", ctx do
+    Ecto.Migrator.down(
+      Repo,
+      20_260_905_000_006,
+      Backplane.Repo.Migrations.AddMemoryEdgePayloadPriority,
+      prefix: ctx.prefix,
+      log: false
+    )
+
+    id = insert(ctx, "before access")
+
+    update(
+      ctx,
+      id,
+      "access_count = access_count + 1, accessed_at = now(), updated_at = now()"
+    )
+
+    assert [[1, "upsert", payload]] = changes(ctx)
+    refute Map.has_key?(payload, "edge_priority")
+    refute Map.has_key?(payload, "updated_at")
+
+    update(ctx, id, "content = 'after semantic change', updated_at = now()")
+
+    assert [[1, "upsert", _], [2, "upsert", %{"content" => "after semantic change"}]] =
+             changes(ctx)
   end
 
   test "exact namespaces, types and size bound exclude content and delete prior copies", ctx do

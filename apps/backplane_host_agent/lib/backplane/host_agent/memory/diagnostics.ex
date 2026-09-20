@@ -4,6 +4,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   """
 
   alias Backplane.HostAgent.Memory.{Edge.Protection, Store, Syncer}
+  alias Backplane.HostAgent.Memory.Edge.{Eviction, Telemetry}
   alias Turso.Result
 
   @doc "Returns a JSON-compatible diagnostic snapshot of the local memory store."
@@ -18,6 +19,9 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
          {:ok, tombstones} <- scalar_count(opts.store, "tombstones"),
          {:ok, last_successful_sync} <- max_value(opts.store, "memories", "synced_at"),
          {:ok, last_reconcile_at} <- max_value(opts.store, "facts", "updated_at") do
+      edge = edge_summary(opts, outbox)
+      Telemetry.state(atomize_edge(edge))
+
       {:ok,
        %{
          "store" => %{"status" => "ok", "db_path" => opts.db_path},
@@ -29,7 +33,8 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
          "tombstones" => tombstones,
          "last_successful_sync" => last_successful_sync,
          "last_reconcile_at" => last_reconcile_at,
-         "edge_protection" => Atom.to_string(Protection.status(opts.host_sync_v2))
+         "edge_protection" => Atom.to_string(Protection.status(opts.host_sync_v2)),
+         "edge" => edge
        }}
     end
   end
@@ -93,6 +98,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
         ),
       db_path: Keyword.get(opts, :db_path, config_value(config, :db_path)),
       host_sync_v2: Keyword.get(opts, :host_sync_v2, config_value(config, :host_sync_v2) || %{}),
+      edge_store: Keyword.get(opts, :edge_store, Backplane.HostAgent.Memory.Edge.Store),
       seqs: Keyword.get(opts, :seqs, :all)
     }
   end
@@ -102,6 +108,66 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
     |> Map.to_list()
     |> normalize_opts()
   end
+
+  defp edge_summary(opts, outbox) do
+    protection = Protection.status(opts.host_sync_v2)
+
+    base = %{
+      "protection_mode" => Atom.to_string(protection),
+      "items" => 0,
+      "bytes" => 0,
+      "revision" => 0,
+      "lag" => nil,
+      "lag_status" => "unavailable",
+      "stale_age_seconds" => nil,
+      "retry_count" => Map.get(outbox, "retry_wait", 0),
+      "dead_letter_count" => Map.get(outbox, "dead_letter", 0),
+      "partitions" => []
+    }
+
+    if protection == :plaintext_development and edge_available?(opts.edge_store) do
+      with {:ok, stats} <- Eviction.stats(opts.edge_store) do
+        partitions =
+          Enum.map(stats.partitions, fn partition ->
+            Map.put(partition, "stale_age_seconds", stale_age(partition["last_sync_at"]))
+          end)
+
+        stale_age =
+          if Enum.any?(partitions, &is_nil(&1["stale_age_seconds"])),
+            do: nil,
+            else: partitions |> Enum.map(& &1["stale_age_seconds"]) |> Enum.max(fn -> nil end)
+
+        base
+        |> Map.merge(%{
+          "items" => stats.items,
+          "bytes" => stats.bytes,
+          "revision" => stats.revision,
+          "partitions" => partitions
+        })
+        |> Map.put("stale_age_seconds", stale_age)
+      else
+        _ -> base
+      end
+    else
+      base
+    end
+  end
+
+  defp edge_available?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp edge_available?(name) when is_atom(name), do: Process.whereis(name) != nil
+  defp edge_available?(_), do: false
+
+  defp stale_age(nil), do: nil
+
+  defp stale_age(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _} -> max(DateTime.diff(DateTime.utc_now(), datetime), 0)
+      _ -> 0
+    end
+  end
+
+  defp atomize_edge(edge),
+    do: Map.new(edge, fn {key, value} -> {String.to_existing_atom(key), value} end)
 
   defp grouped_counts(store, table, column, where) do
     case Store.query(

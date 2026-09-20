@@ -6,7 +6,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
   alias Backplane.HostAgent.Memory.Edge.{Migrations, Store}
   alias Turso.Result
 
-  @migrations [Migrations.V1, Migrations.V2]
+  @migrations [Migrations.V1, Migrations.V2, Migrations.V3]
 
   @v1_columns %{
     "edge_partitions" => [
@@ -57,6 +57,9 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
                             {"sync_status", "TEXT", 0, nil, 0},
                             {"last_delivery_hash", "TEXT", 0, nil, 0}
                           ]
+
+  @v3_partition_columns @v2_partition_columns ++
+                          [{"snapshot_received_items", "INTEGER", 1, "0", 0}]
 
   @primary_keys %{
     "edge_partitions" => ~w(memory_space_id scope namespace),
@@ -140,11 +143,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
   defp validate_tables(_store, 0, [], _expected), do: :ok
 
   defp validate_tables(store, current, tables, expected)
-       when current in 1..2 and tables == expected do
+       when current in 1..3 and tables == expected do
     expected_columns =
-      if current == 1,
-        do: @v1_columns,
-        else: Map.put(@v1_columns, "edge_partitions", @v2_partition_columns)
+      case current do
+        1 -> @v1_columns
+        2 -> Map.put(@v1_columns, "edge_partitions", @v2_partition_columns)
+        3 -> Map.put(@v1_columns, "edge_partitions", @v3_partition_columns)
+      end
 
     Enum.reduce_while(expected_columns, :ok, fn {table, columns}, :ok ->
       case Store.query(store, "PRAGMA table_info(#{table})") do

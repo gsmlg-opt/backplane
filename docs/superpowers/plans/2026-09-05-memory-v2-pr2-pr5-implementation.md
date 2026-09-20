@@ -449,6 +449,16 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 
 ### Task 12: Enforce edge quotas, deterministic eviction, retention, and telemetry
 
+Scope amendment approved by the user on 2026-09-20: add the minimal durable
+schema and runtime support needed to prove bounded snapshot completeness,
+authoritative server eviction ordering, and recoverable scheduled retention.
+This includes a host edge V3 migration/registration/upgrade tests for a durable
+received-item counter, a new server migration and focused PostgreSQL tests that
+emit server-owned `edge_priority` plus canonical `updated_at`, and the minimal
+retention worker/cron tests. The new server migration takes version
+`20260905000006`; Tasks 13-15 and Task 20's expected server head move forward
+one version to avoid a collision.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/eviction.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/telemetry.ex`
@@ -482,7 +492,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 13: Enforce complete partitions in every generator
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000006_enforce_complete_memory_partition.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000007_enforce_complete_memory_partition.exs`
 - Modify: `apps/backplane_memory/lib/backplane/memory/partition_identity.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/memories.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/memories/memory.ex`
@@ -506,7 +516,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 14: Coalesce session repairs and reject stale work
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000007_coalesce_projection_repairs.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000008_coalesce_projection_repairs.exs`
 - Create: `apps/backplane_memory/lib/backplane/memory/projections/repair_frontier.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/events/store.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/projection_repair_worker.ex`
@@ -526,7 +536,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 15: Record precise processing states across every family
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000008_expand_memory_processing_states.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000009_expand_memory_processing_states.exs`
 - Create: `apps/backplane_memory/lib/backplane/memory/projections/processing_state.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/projections/state.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/summary_worker.ex`
@@ -648,10 +658,10 @@ profile:
 - Create: `apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs`
 
-- [ ] Write failing release-contract assertions for latest migration `20260905000008`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
+- [ ] Write failing release-contract assertions for latest migration `20260905000009`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
 - [ ] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
 - [ ] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
-- [ ] Add real upgrade tests from the previous server migration head through `20260905000008` and from an existing populated host Turso v1 command database through local v2/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
+- [ ] Add real upgrade tests from the previous server migration head through `20260905000009` and from an existing populated host Turso v1 command database through local v2/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
 - [ ] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
 - [ ] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover`.
 
