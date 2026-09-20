@@ -110,6 +110,27 @@ defmodule Backplane.HostAgent.MemoryTest do
     assert_count(store, "memory_outbox", 0)
   end
 
+  test "a tombstone is limited to its own scope when hashes match", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    content = "same hash, different scope"
+    hash = Reducer.content_hash(content)
+    now = "2026-06-17T00:00:00Z"
+    local_opts = memory_opts(store)
+    other_opts = Keyword.put(local_opts, :config, %{bound_scope: "other_scope"})
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id) VALUES (?, ?, ?, ?)",
+               [hash, "proj_local", now, "wipe-local"]
+             )
+
+    assert {:error, :wiped} = Memory.remember(%{"content" => content}, local_opts)
+
+    assert {:ok, %{"scope" => "other_scope"}} =
+             Memory.remember(%{"content" => content}, other_opts)
+  end
+
   test "forget soft-deletes local memories, enqueues forget, and rejects facts", %{
     tmp_dir: tmp_dir
   } do
@@ -168,6 +189,23 @@ defmodule Backplane.HostAgent.MemoryTest do
 
     assert {:ok, %{"upserts" => [%{"id" => ^id}], "pending_operations" => 1}} =
              Memory.pending_overlay(%{"query" => "inflight"}, opts)
+  end
+
+  test "pending overlay continues to expose a retry-wait remember", %{tmp_dir: tmp_dir} do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "retry waiting insight"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'retry_wait' WHERE memory_id = ?",
+               [id]
+             )
+
+    assert {:ok, %{"upserts" => [%{"id" => ^id}], "pending_operations" => 1}} =
+             Memory.pending_overlay(%{"query" => "retry waiting"}, opts)
   end
 
   test "pending overlay uses only the latest operation and prefers remote forget ids", %{
@@ -249,7 +287,7 @@ defmodule Backplane.HostAgent.MemoryTest do
              Memory.pending_overlay(%{}, opts)
   end
 
-  test "pending overlay does not present a failed operation as pending", %{tmp_dir: tmp_dir} do
+  test "pending overlay does not present a dead-letter operation as pending", %{tmp_dir: tmp_dir} do
     store = start_memory!(tmp_dir)
     opts = memory_opts(store)
 
@@ -258,7 +296,7 @@ defmodule Backplane.HostAgent.MemoryTest do
     assert {:ok, _} =
              Store.execute(
                store,
-               "UPDATE memory_outbox SET state = 'failed' WHERE memory_id = ?",
+               "UPDATE memory_outbox SET state = 'dead_letter' WHERE memory_id = ?",
                [failed_id]
              )
 

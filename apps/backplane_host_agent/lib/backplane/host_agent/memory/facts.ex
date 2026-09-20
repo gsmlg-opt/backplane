@@ -196,10 +196,10 @@ defmodule Backplane.HostAgent.Memory.Facts do
            conn,
            """
            UPDATE memory_outbox
-           SET state = 'done', last_error = 'wiped', updated_at = ?
-           WHERE state IN ('pending', 'inflight') AND memory_id IN (#{placeholders})
+           SET state = 'done', last_error = 'wiped', completed_at = ?, updated_at = ?
+           WHERE state IN ('pending', 'inflight', 'retry_wait') AND memory_id IN (#{placeholders})
            """,
-           [timestamp() | memory_ids]
+           [timestamp(), timestamp() | memory_ids]
          ) do
       {:ok, _result} -> :ok
       {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
@@ -253,8 +253,7 @@ defmodule Backplane.HostAgent.Memory.Facts do
            """
            INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id)
            VALUES (?, ?, ?, ?)
-           ON CONFLICT(content_hash) DO UPDATE SET
-             scope = excluded.scope,
+           ON CONFLICT(scope, content_hash) DO UPDATE SET
              wiped_at = excluded.wiped_at,
              directive_id = excluded.directive_id
            """,
