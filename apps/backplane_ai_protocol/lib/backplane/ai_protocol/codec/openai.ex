@@ -341,15 +341,11 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
           state}
 
   defp decode_choice_deltas(state, [choice | rest], events) do
-    if not is_map(choice) do
-      {:error, Error.invalid!("OpenAI choice must be an object"), state}
-    else
+    if is_map(choice) do
       index = choice["index"] || 0
       delta = choice["delta"] || %{}
 
-      if not is_map(delta) do
-        {:error, Error.invalid!("OpenAI delta must be an object"), state}
-      else
+      if is_map(delta) do
         events =
           if is_binary(delta["content"]),
             do: events ++ [%StreamEvent{type: :text_delta, index: index, text: delta["content"]}],
@@ -368,9 +364,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
                 ],
             else: events
 
-        if not is_nil(delta["refusal"]) do
-          {:error, Error.incompatible!("OpenAI stream refusal cannot be preserved"), state}
-        else
+        if is_nil(delta["refusal"]) do
           with {:ok, state, reasoning_events} <- reasoning_detail_events(state, index, delta),
                {:ok, state, tool_events} <-
                  decode_tool_deltas(state, delta["tool_calls"] || [], []),
@@ -381,8 +375,14 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
               events ++ reasoning_events ++ tool_events ++ terminal_events
             )
           end
+        else
+          {:error, Error.incompatible!("OpenAI stream refusal cannot be preserved"), state}
         end
+      else
+        {:error, Error.invalid!("OpenAI delta must be an object"), state}
       end
+    else
+      {:error, Error.invalid!("OpenAI choice must be an object"), state}
     end
   end
 
@@ -400,9 +400,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
   defp decode_tool_deltas(state, [], events), do: {:ok, state, events}
 
   defp decode_tool_deltas(state, [delta | rest], events) do
-    if not is_map(delta) do
-      {:error, Error.invalid!("OpenAI tool delta must be an object"), state}
-    else
+    if is_map(delta) do
       index = delta["index"]
       function = delta["function"] || %{}
       old = Map.get(state.tool_calls, index, %{id: nil, name: nil, arguments: ""})
@@ -430,6 +428,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
       else
         {:error, error} -> {:error, error, state}
       end
+    else
+      {:error, Error.invalid!("OpenAI tool delta must be an object"), state}
     end
   end
 
