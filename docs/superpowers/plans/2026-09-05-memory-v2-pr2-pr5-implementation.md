@@ -316,10 +316,17 @@ to include the newly introduced host-sync configuration defaults.
 
 ### Task 8: Implement atomic mirror application and offline reads
 
+Scope amendment approved by the user on 2026-09-20: add and register an edge V2
+migration for persistent `sync_status` and `last_delivery_hash`, and add focused
+schema-validation plus V1-to-V2 upgrade/data-preservation tests.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/mirror.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/mirror/store.ex`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/mirror_test.exs`
+- Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/migrations/v2.ex`
+- Modify: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/migrator.ex`
+- Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory/edge/migrator_test.exs`
 
 - [ ] Write failing real-store tests for contiguous delta, duplicate delta, forward gap, snapshot staging invisibility, chunk restart, final manifest activation, restart persistence, and old-upsert non-resurrection.
 - [ ] Implement:
