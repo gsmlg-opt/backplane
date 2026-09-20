@@ -448,7 +448,7 @@ When a target was admitted outside the local runtime through a future adapter, i
 
 The runtime supplies storage behaviours and an ephemeral reference implementation. Consumer adapters use existing persistence where appropriate. No shared database service, compulsory Ecto schema, or universal JSONL/Concord format is introduced.
 
-A durable adapter must implement compare-and-set/version checks, atomic transition-plus-associated-events/outbox for an aggregate, immutable IDs, bounded reads, and explicit commit failures. It must document the crash/power-loss boundary actually provided. A test fake proves contract handling, not production durability.
+A durable adapter must implement compare-and-set/version checks, atomic transition-plus-associated-events/outbox for an aggregate, immutable IDs, bounded reads, atomic revision/incarnation fencing, and explicit commit failures. It must document the crash/power-loss boundary actually provided. A test fake proves contract handling, not production durability. The executable host-adapter contract and integration example are in `persistence_adapter.md`.
 
 Do not allow an adapter configured as durable to acknowledge before its promised durable boundary. Storage unavailability blocks new durable effects and surfaces a typed degraded state rather than silently falling back to memory.
 
@@ -460,7 +460,7 @@ Product history can remain a projection of canonical runtime events. Historical 
 
 ### 13.3 Fencing
 
-Assign a fresh incarnation/epoch to recovered owners. Stamp every provider chunk, tool result, approval response, continuation, and store completion with the relevant owner/operation identity. Reject results from old incarnations, cancelled attempts, retired tools, or superseded context revisions.
+Assign a fresh incarnation/epoch to recovered owners through `Store.fence/6`, which atomically compares the previous revision and incarnation before advancing both. Stamp every provider chunk, tool result, approval response, continuation, and store completion with the relevant owner/operation identity. Reject results from old incarnations, cancelled attempts, retired tools, or superseded context revisions.
 
 Epochs prevent stale state writes; they do not undo an external command or prevent an already running external system from mutating. Resource/tool backends need their own cancellation, idempotency, reconciliation, or isolation contract.
 

@@ -7,6 +7,10 @@ defmodule Backplane.AgentRuntime.Store do
   A record is accepted only when its expected revision is the currently
   committed revision. A successful commit returns the next revision and outbox
   intents. Hosts must execute effects only after that acknowledgement.
+
+  Durable adapters also atomically fence an older executor before recovery.
+  `fence/6` compares both the committed revision and incarnation, advances both,
+  and returns the fenced run. It must not dispatch or replay any effect.
   """
 
   @callback mode() :: :ephemeral | :durable
@@ -24,6 +28,17 @@ defmodule Backplane.AgentRuntime.Store do
   @callback acknowledge_commit(term(), map(), map()) ::
               {:ok, %{revision: non_neg_integer()}} | {:error, Error.t()}
 
+  @callback fence(
+              term(),
+              term(),
+              non_neg_integer(),
+              non_neg_integer(),
+              pos_integer()
+            ) ::
+              {:ok, %{revision: non_neg_integer(), run: map()}} | {:error, Error.t()}
+
+  @optional_callbacks fence: 5
+
   @spec stage(module(), term(), map(), map()) ::
           {:ok, %{revision: non_neg_integer(), outbox: list(), stage: term()}}
           | {:error, Error.t()}
@@ -39,7 +54,7 @@ defmodule Backplane.AgentRuntime.Store do
         transition: transition,
         effects: effects,
         outbox: Map.get(meta, :outbox, []),
-        incarnation: Map.get(meta, :incarnation, 0),
+        incarnation: Map.get(meta, :incarnation, Map.get(run, :incarnation, 0)),
         revision: revision + 1
       }
 
@@ -155,6 +170,67 @@ defmodule Backplane.AgentRuntime.Store do
     end
   end
 
+  @doc """
+  Atomically fences the committed incarnation of a durable run.
+
+  The adapter must compare `expected_revision` and `current_incarnation` in the
+  same durable transaction that writes `next_incarnation` and the next
+  revision. A stale executor therefore cannot regain ownership after restart.
+  """
+  @spec fence(
+          module(),
+          term(),
+          term(),
+          non_neg_integer(),
+          non_neg_integer(),
+          pos_integer()
+        ) :: {:ok, %{revision: pos_integer(), run: map()}} | {:error, Error.t()}
+  def fence(
+        impl,
+        context,
+        run_id,
+        expected_revision,
+        current_incarnation,
+        next_incarnation
+      )
+      when is_atom(impl) and is_integer(expected_revision) and expected_revision >= 0 and
+             is_integer(current_incarnation) and current_incarnation >= 0 and
+             is_integer(next_incarnation) and next_incarnation > current_incarnation do
+    expected_next_revision = expected_revision + 1
+
+    with {:ok, :durable} <- require_durable_mode(impl),
+         {:ok, capabilities} <- validate_durable_capabilities(impl),
+         true <- Map.get(capabilities, :incarnation_fencing) == true,
+         true <- function_exported?(impl, :fence, 5) do
+      validate_fence(
+        impl.fence(
+          context,
+          run_id,
+          expected_revision,
+          current_incarnation,
+          next_incarnation
+        ),
+        run_id,
+        expected_next_revision,
+        next_incarnation
+      )
+    else
+      false ->
+        {:error,
+         Error.new(
+           :unsupported_capability,
+           "durable store must implement and declare incarnation_fencing"
+         )}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+    end
+  end
+
+  def fence(_impl, _context, _run_id, _expected, _current, _next) do
+    {:error, Error.new(:validation, "invalid incarnation fence")}
+  end
+
   @spec validate_mode(module()) :: {:ok, atom()} | {:error, Error.t()}
   def validate_mode(impl) when is_atom(impl) do
     case impl.mode() do
@@ -190,7 +266,8 @@ defmodule Backplane.AgentRuntime.Store do
       required = [
         :atomic_transition_outbox,
         :recovery_records,
-        :artifact_references
+        :artifact_references,
+        :incarnation_fencing
       ]
 
       if Enum.all?(required, &(Map.get(capabilities, &1) == true)) do
@@ -199,7 +276,7 @@ defmodule Backplane.AgentRuntime.Store do
         {:error,
          Error.new(
            :unsupported_capability,
-           "durable store must declare atomic_transition_outbox, recovery_records, and artifact_references"
+           "durable store must declare atomic_transition_outbox, recovery_records, artifact_references, and incarnation_fencing"
          )}
       end
     end
@@ -219,5 +296,50 @@ defmodule Backplane.AgentRuntime.Store do
 
   defp expected_revision(_record) do
     {:error, Error.new(:validation, "record expected_revision is required")}
+  end
+
+  defp require_durable_mode(impl) do
+    case validate_mode(impl) do
+      {:ok, :durable} -> {:ok, :durable}
+      {:ok, :ephemeral} -> {:error, Error.new(:unsupported_capability, "durable store required")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp validate_fence(
+         {:ok,
+          %{
+            revision: expected_revision,
+            run: %{
+              run_id: run_id,
+              expected_revision: expected_revision,
+              incarnation: incarnation
+            }
+          } = result},
+         run_id,
+         expected_revision,
+         incarnation
+       ),
+       do: {:ok, result}
+
+  defp validate_fence({:ok, result}, _run_id, expected_revision, incarnation) do
+    {:error,
+     Error.new(:resource_conflict, "invalid incarnation fence acknowledgement",
+       details: %{
+         expected_revision: expected_revision,
+         incarnation: incarnation,
+         received: result
+       }
+     )}
+  end
+
+  defp validate_fence({:error, %Error{} = error}, _run_id, _revision, _incarnation),
+    do: {:error, error}
+
+  defp validate_fence(other, _run_id, _revision, _incarnation) do
+    {:error,
+     Error.new(:execution_failure, "store returned an invalid fence acknowledgement",
+       details: %{received: other}
+     )}
   end
 end

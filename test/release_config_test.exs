@@ -104,13 +104,32 @@ defmodule Backplane.ReleaseConfigTest do
 
     assert release_workflow =~ "hex-packages:"
 
-    for package <- ["backplane_ai_protocol", "backplane_skill_protocol", "backplane_mcp_protocol"] do
+    for package <- [
+          "backplane_agent_runtime",
+          "backplane_ai_protocol",
+          "backplane_skill_protocol",
+          "backplane_mcp_protocol"
+        ] do
       assert release_workflow =~ "name: #{package}"
       assert release_workflow =~ "Publish ${{ matrix.package.name }} to Hex"
     end
 
+    assert release_workflow =~ "Install package publishing dependencies"
+    assert release_workflow =~ "Verify package documentation"
+    assert release_workflow =~ "mix docs"
     assert release_workflow =~ "mix hex.publish --yes"
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
+  end
+
+  test "published agent runtime provides a documentation task without production dependencies" do
+    package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
+
+    assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: :dev, runtime: false}"
+    assert package_mix =~ "main: \"readme\""
+
+    for guide <- ~w(README.md EMBEDDING.md PERSISTENCE.md SCHEMAS.md CHANGELOG.md) do
+      assert package_mix =~ guide
+    end
   end
 
   test "Hex protocol packages can generate documentation from their app directories" do

@@ -21,11 +21,26 @@ defmodule Backplane.AgentRuntime.RecoveryHarness do
       when is_atom(impl) and is_map(record) and is_map(meta) do
     with {:ok, staged} <- Store.stage(impl, context, record, meta),
          {:ok, committed} <- Store.acknowledge_commit(impl, context, staged.stage, meta),
+         recovery_record <-
+           staged.stage.run
+           |> Map.put(:effects, staged.stage.effects)
+           |> Map.put(:outbox, staged.stage.outbox),
+         next_incarnation <- Map.get(recovery_record, :incarnation, 0) + 1,
+         {:ok, fence} <-
+           Store.fence(
+             impl,
+             context,
+             recovery_record.run_id,
+             committed.revision,
+             Map.get(recovery_record, :incarnation, 0),
+             next_incarnation
+           ),
          {:ok, recovery} <-
-           Recovery.recover(staged.stage, %{incarnation: staged.stage.incarnation + 1}) do
+           Recovery.recover(recovery_record, %{incarnation: next_incarnation}) do
       {:ok,
        %{
          committed: committed,
+         fence: fence,
          recovery: recovery,
          mode: staged.mode,
          stage: staged.stage

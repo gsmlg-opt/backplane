@@ -84,13 +84,14 @@ defmodule Backplane.AgentRuntime.Execution do
   def commit(store, context, record, meta, opts)
       when is_atom(store) and is_map(record) and is_map(meta) and is_list(opts) do
     with {:ok, limits} <- validate_limits(opts),
-         :ok <- validate_deadline_for_command(record, meta.command, opts),
+         :ok <- validate_commit_deadline(record, meta.command, opts),
          {:ok, command} <- command_with_deadline(meta.command, record, limits.run, opts),
          {:ok, run, _transition, _effects} <- Kernel.execute(record, command),
          {:ok, prepared} <- prepare(command, run, meta, record, opts),
          {:ok, canonical_command} <-
            canonical_command(command, prepared, record, limits.run, opts),
          {:ok, canonical_run, _transition, _effects} <- Kernel.execute(record, canonical_command),
+         :ok <- serializable(canonical_run),
          commit_meta =
            meta |> Map.put(:command, canonical_command) |> Map.put(:outbox, prepared.outbox),
          {:ok, committed} <- Store.store(store, context, record, commit_meta),
@@ -225,7 +226,9 @@ defmodule Backplane.AgentRuntime.Execution do
           :attempt_id,
           :invocation_id,
           :tool_name,
-          :tool_revision
+          :tool_revision,
+          :tool_call_id,
+          :turn_id
         ])
         |> Map.put(:arguments, arguments)
         |> Map.put(:caller, authorization.caller)
@@ -391,6 +394,8 @@ defmodule Backplane.AgentRuntime.Execution do
             :invocation_id,
             :tool_name,
             :tool_revision,
+            :tool_call_id,
+            :turn_id,
             :arguments,
             :caller,
             :effective_authority
@@ -475,11 +480,25 @@ defmodule Backplane.AgentRuntime.Execution do
 
   defp validate_record_deadline(_record, _opts), do: :ok
 
+  defp validate_commit_deadline(record, command, opts) do
+    case validate_deadline_for_command(record, command, opts) do
+      {:error, %Error{} = error} ->
+        {:error, %{error | details: Map.put(error.details, :boundary, :before_store)}}
+
+      :ok ->
+        :ok
+    end
+  end
+
   defp validate_deadline_for_command(_record, {kind, _at}, _opts)
        when kind in [:cancel, :deadline_exceeded],
        do: :ok
 
   defp validate_deadline_for_command(_record, {:cleanup_settled, _at, _input}, _opts), do: :ok
+
+  # Checkpoints carry no external effect and may settle control state after expiry.
+  defp validate_deadline_for_command(_record, {:conversation_updated, _at, _input}, _opts),
+    do: :ok
 
   defp validate_deadline_for_command(record, _command, opts),
     do: validate_record_deadline(record, opts)
@@ -568,7 +587,7 @@ defmodule Backplane.AgentRuntime.Execution do
     do: {:error, Error.new(:validation, "committed intent contains a runtime function")}
 
   defp serializable(value) when is_map(value) do
-    Enum.reduce_while(value, :ok, fn {key, item}, :ok ->
+    Enum.reduce_while(Map.to_list(value), :ok, fn {key, item}, :ok ->
       with :ok <- serializable(key), :ok <- serializable(item) do
         {:cont, :ok}
       else

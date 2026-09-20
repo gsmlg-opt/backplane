@@ -18,7 +18,8 @@ defmodule Backplane.AgentRuntime.DurableConformanceTest do
         outbox_intents: true,
         recovery_records: true,
         artifact_references: true,
-        atomic_transition_outbox: true
+        atomic_transition_outbox: true,
+        incarnation_fencing: true
       }
     end
 
@@ -36,6 +37,15 @@ defmodule Backplane.AgentRuntime.DurableConformanceTest do
     @impl Backplane.AgentRuntime.Store
     def acknowledge_commit(_context, stage, _meta) do
       {:ok, %{revision: stage.revision}}
+    end
+
+    @impl Backplane.AgentRuntime.Store
+    def fence(_context, run_id, revision, _current, next) do
+      {:ok,
+       %{
+         revision: revision + 1,
+         run: %{run_id: run_id, expected_revision: revision + 1, incarnation: next}
+       }}
     end
   end
 

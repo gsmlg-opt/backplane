@@ -547,6 +547,8 @@ jobs:
       fail-fast: true
       matrix:
         package:
+          - name: backplane_agent_runtime
+            path: apps/backplane_agent_runtime
           - name: backplane_ai_protocol
             path: apps/backplane_ai_protocol
           - name: backplane_skill_protocol
@@ -616,6 +618,14 @@ jobs:
             echo "HEX_API_KEY secret is required to publish ${{ matrix.package.name }} to Hex" >&2
             exit 1
           fi
+
+      - name: Install package publishing dependencies
+        working-directory: ${{ matrix.package.path }}
+        run: mix deps.get
+
+      - name: Verify package documentation
+        working-directory: ${{ matrix.package.path }}
+        run: mix docs
 
       - name: Publish package
         working-directory: ${{ matrix.package.path }}

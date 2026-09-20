@@ -18,7 +18,8 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
         outbox_intents: true,
         recovery_records: true,
         artifact_references: true,
-        atomic_transition_outbox: true
+        atomic_transition_outbox: true,
+        incarnation_fencing: true
       }
 
     @impl Backplane.AgentRuntime.Store
@@ -32,6 +33,15 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
 
     @impl Backplane.AgentRuntime.Store
     def acknowledge_commit(_context, stage, _meta), do: {:ok, %{revision: stage.revision}}
+
+    @impl Backplane.AgentRuntime.Store
+    def fence(_context, run_id, revision, _current, next) do
+      {:ok,
+       %{
+         revision: revision + 1,
+         run: %{run_id: run_id, expected_revision: revision + 1, incarnation: next}
+       }}
+    end
   end
 
   defmodule FailedDurableStore do
@@ -48,7 +58,8 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
         outbox_intents: true,
         recovery_records: true,
         artifact_references: true,
-        atomic_transition_outbox: true
+        atomic_transition_outbox: true,
+        incarnation_fencing: true
       }
 
     @impl Backplane.AgentRuntime.Store
@@ -64,6 +75,10 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
     @impl Backplane.AgentRuntime.Store
     def acknowledge_commit(_context, _stage, _meta),
       do: {:error, Error.new(:resource_conflict, "simulated acknowledgement failure")}
+
+    @impl Backplane.AgentRuntime.Store
+    def fence(_context, _run_id, _revision, _current, _next),
+      do: {:error, Error.new(:resource_conflict, "simulated fence failure")}
   end
 
   describe "generic durable recovery and storage conformance" do
@@ -77,6 +92,8 @@ defmodule Backplane.AgentRuntime.RecoveryHarnessTest do
 
       assert result.mode == :durable
       assert result.committed.revision == 1
+      assert result.fence.revision == 2
+      assert result.fence.run.incarnation == 1
       assert result.recovery.fenced_incarnation == 0
     end
 

@@ -53,6 +53,16 @@ defmodule Backplane.AgentRuntime.StagedStoreTest do
       assert {:error, %Error{class: :not_found}} = EphemeralStore.load(store, run.run_id)
     end
 
+    test "stage inherits the authoritative run incarnation when metadata omits it" do
+      {:ok, store} = EphemeralStore.new(System.unique_integer([:positive]))
+      run = Map.put(base_run(), :incarnation, 7)
+
+      assert {:ok, %{stage: %{incarnation: 7, run: %{incarnation: 7}}}} =
+               Store.stage(EphemeralStore, store, run, %{
+                 command: {:admit, 10, %{state: :running}}
+               })
+    end
+
     test "acknowledged stage makes the transition durable in ephemeral mode" do
       {:ok, store} = EphemeralStore.new(System.unique_integer([:positive]))
       run = base_run()

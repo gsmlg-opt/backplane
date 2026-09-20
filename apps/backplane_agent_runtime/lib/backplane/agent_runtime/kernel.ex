@@ -24,7 +24,9 @@ defmodule Backplane.AgentRuntime.Kernel do
     :wait_started,
     :wait_resolved,
     :child_settled,
-    :cleanup_settled
+    :cleanup_settled,
+    :conversation_updated,
+    :finish
   ]
   @one_arg_commands [:start, :cancel, :deadline_exceeded]
 
@@ -62,6 +64,33 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   # -- dispatch ----------------------------------------------------------------
+
+  # Host-neutral conversational checkpoints share the same revision fence as effects.
+  defp transition(run, :conversation_updated, at, input) do
+    with :ok <- require_state(run, :running, :conversation_updated),
+         :ok <- validate_run_identity(run, input),
+         {:ok, conversation} <- required_map(input, :conversation, "conversation") do
+      run
+      |> Map.put(:context, Map.put(Map.get(run, :context, %{}), :conversation, conversation))
+      |> commit(:running, :conversation_updated, at, input)
+    end
+  end
+
+  defp transition(run, :finish, at, input) do
+    with :ok <- require_state(run, :running, :finish),
+         :ok <- validate_run_identity(run, input),
+         :ok <- ensure_no_active_provider(run),
+         :ok <- ensure_no_unsettled_work(run),
+         {:ok, outcome} <- required(input, :outcome, "outcome") do
+      status = field(input, :status)
+
+      if status in [:completed, :failed] do
+        run |> Map.put(:outcome, outcome) |> commit(status, status, at, outcome)
+      else
+        validation_error("finish status must be completed or failed")
+      end
+    end
+  end
 
   defp transition(run, :admit, at, input) do
     if run.state == :queued and not Map.get(run, :admitted, false) do
@@ -531,6 +560,10 @@ defmodule Backplane.AgentRuntime.Kernel do
     do: validation_error("#{kind} input must be a map")
 
   defp command_input(_kind, _), do: validation_error("command arity is invalid")
+
+  defp validate_command_input(kind, input) when kind in [:conversation_updated, :finish] do
+    with {:ok, _} <- identity(input, [:run_id, :incarnation], "conversation"), do: {:ok, input}
+  end
 
   defp validate_command_input(:provider_started, input) do
     with {:ok, _} <- identity(input, @provider_identity, "provider"), do: {:ok, input}
