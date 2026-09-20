@@ -38,7 +38,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       edge_retry_ref: nil,
       poll_ref: nil,
       partition_index: 0,
-      inventory: Keyword.get(opts, :partitions, []),
+      inventory: Keyword.get(opts, :partitions),
       current_retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
     }
 
@@ -140,13 +140,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   defp merged_partitions(inventory, durable) when is_list(inventory) and is_list(durable) do
     durable_by_partition = Map.new(durable, &{partition_key(&1), &1})
-    inventory_keys = MapSet.new(inventory, &partition_key/1)
 
     Enum.map(inventory, fn negotiated ->
       Map.merge(negotiated, Map.get(durable_by_partition, partition_key(negotiated), %{}))
-    end) ++ Enum.reject(durable, &(partition_key(&1) in inventory_keys))
+    end)
   end
 
+  defp merged_partitions(nil, durable), do: durable
   defp merged_partitions(_inventory, durable), do: durable
 
   defp partition_key(partition),

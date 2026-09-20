@@ -286,4 +286,30 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     assert %{edge_retry_ref: ref, current_retry_backoff_ms: 20} = Syncer.status(syncer)
     assert is_reference(ref)
   end
+
+  test "does not poll a durable partition revoked from the negotiated inventory" do
+    entitled = %{
+      "memory_space_id" => "space-9",
+      "scope" => "private",
+      "namespace" => "default",
+      "applied_revision" => 0
+    }
+
+    {:ok, syncer} =
+      Syncer.start_link(
+        name: nil,
+        channel: self(),
+        channel_module: CurrentChannel,
+        mirror_module: Mirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        partitions: [entitled],
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    send(syncer, :poll)
+    assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-9"}}}
+    refute_received {:memory_next, %{"partition" => %{"memory_space_id" => "space-1"}}}
+  end
 end
