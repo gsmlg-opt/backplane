@@ -88,8 +88,17 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   additional late-failure migration regression passed 6/6. Scoped formatting
   and diff checks passed. Composite tombstone identity, exact outbox states,
   empty-outbox AUTOINCREMENT high-water preservation, fail-closed rollback, and
-  atomic wipe timestamps are covered. Tasks 11–20 remain outstanding; PR2–PR5
-  is not complete.
+  atomic wipe timestamps are covered.
+- Task 11: committed as `2576bde1` with transition/specification hardening
+  `b27c5e07`, storage-failure and transactional-retention repair `f49c33fa`, and
+  batch-atomic settlement/live recovery `44f65bcc`; specification and quality
+  reviews approved. Final focused reviewer gate: 33/33; final full host-agent
+  gate: 475/475 with warnings-as-errors. Scoped formatting and diff checks passed.
+  Due FIFO, bounded jittered retries, max-attempt dead letters, restart recovery,
+  ordered duplicate-ID ACKs, wipe-safe state guards, selected/all requeue,
+  terminal outbox retention, opt-in tombstone retention, malformed ACK handling,
+  storage-error propagation, and rollback of partial settlement/pruning are
+  covered. Tasks 12–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
