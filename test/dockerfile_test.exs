@@ -22,6 +22,17 @@ defmodule Backplane.DockerfileTest do
     end
   end
 
+  test "builds both web profiles through the guarded umbrella asset task" do
+    dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
+
+    assert dockerfile =~ "RUN mix assets.deploy"
+    refute dockerfile =~ ~s(mix "do" --app backplane_api assets.deploy)
+    refute dockerfile =~ ~s(mix "do" --app backplane_admin assets.deploy)
+
+    assert dockerfile =~
+             "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs"
+  end
+
   defp ignored_app_manifest?(manifest) do
     ignored_paths =
       Path.expand("../.dockerignore", __DIR__)

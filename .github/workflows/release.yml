@@ -109,6 +109,11 @@ jobs:
       - name: Verify root release configuration
         run: mix run --no-start test/release_config_test.exs
 
+      - name: Verify web asset build orchestration
+        run: |
+          elixir test/build_web_assets_script_test.exs
+          mix run --no-start test/web_assets_test.exs
+
       - name: Prepare qualification database
         run: |
           mix ecto.create
@@ -265,12 +270,16 @@ jobs:
 
       - name: Build web assets
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_api assets.deploy && mix "do" --app backplane_admin assets.deploy
+        run: mix assets.deploy
 
       - name: Build OTP release
         env:
           RELEASE_NAME: ${{ matrix.release }}
         run: mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
+
+      - name: Verify packaged web assets
+        if: matrix.release == 'backplane'
+        run: elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
 
       - name: Smoke test host-agent native database
         if: matrix.release == 'host_agent'
@@ -435,6 +444,25 @@ jobs:
               :verified
             end)
           '
+
+      - name: Verify installed web assets over HTTP
+        env:
+          BACKPLANE_CONFIG: ${{ github.workspace }}/release-smoke.toml
+          SECRET_KEY_BASE: release_smoke_secret_key_base_for_ci_only_1234567890_release_smoke
+          PHX_SERVER: "true"
+          BACKPLANE_API_PORT: "14100"
+          BACKPLANE_ADMIN_PORT: "14101"
+        shell: bash
+        run: |
+          installed/backplane/bin/backplane daemon
+          trap 'installed/backplane/bin/backplane stop || true' EXIT
+          if ! python3 scripts/verify_web_assets_http.py \
+              http://127.0.0.1:14100/docs \
+              http://127.0.0.1:14101/dashboard/overview; then
+            find installed/backplane/log -maxdepth 1 -type f -print \
+              -exec tail -n 100 {} \; || true
+            exit 1
+          fi
 
   publish:
     name: Publish GitHub Release

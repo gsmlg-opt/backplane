@@ -36,13 +36,22 @@ defmodule Backplane.Umbrella.MixProject do
       "agent.run": [
         "do --app backplane_host_agent cmd mix agent.run"
       ],
-      "assets.deploy": [
-        "do --app backplane_api assets.deploy",
-        "do --app backplane_admin assets.deploy"
-      ],
+      "assets.deploy": &assets_deploy/1,
       test: ["test"]
     ]
   end
+
+  defp assets_deploy([]) do
+    case System.cmd("bash", ["scripts/build_web_assets.sh"],
+           into: IO.stream(:stdio, :line),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {_output, status} -> Mix.raise("web asset build failed with status #{status}")
+    end
+  end
+
+  defp assets_deploy(_args), do: Mix.raise("mix assets.deploy does not accept arguments")
 
   defp releases do
     [

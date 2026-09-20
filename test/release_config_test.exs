@@ -39,6 +39,34 @@ defmodule Backplane.ReleaseConfigTest do
     assert is_function(aliases[:release], 1)
   end
 
+  test "root asset deploy runs the isolated web asset orchestrator" do
+    aliases = Mix.Project.config() |> Keyword.fetch!(:aliases)
+
+    assert is_function(aliases[:"assets.deploy"], 1)
+  end
+
+  test "build and release workflows verify assets inside packaged releases" do
+    for path <- [".github/workflows/build.yml", ".github/workflows/release.yml"] do
+      workflow = File.read!(path)
+
+      assert workflow =~ "run: mix assets.deploy"
+
+      assert workflow =~
+               "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane"
+
+      assert workflow =~ "elixir test/build_web_assets_script_test.exs"
+
+      refute workflow =~ ~s(mix "do" --app backplane_api assets.deploy)
+      refute workflow =~ ~s(mix "do" --app backplane_admin assets.deploy)
+    end
+
+    release_workflow = File.read!(".github/workflows/release.yml")
+    assert release_workflow =~ "python3 scripts/verify_web_assets_http.py"
+    assert release_workflow =~ "installed/backplane/bin/backplane daemon"
+    assert release_workflow =~ "http://127.0.0.1:14100/docs"
+    assert release_workflow =~ "http://127.0.0.1:14101/dashboard/overview"
+  end
+
   test "host agent copies integrations with a post-assembly release step" do
     host_agent =
       Mix.Project.config()

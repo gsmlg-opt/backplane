@@ -121,12 +121,22 @@ jobs:
         if: matrix.release == 'backplane'
         run: mix deps.compile && mix npm.install --frozen
 
+      - name: Verify web asset build orchestration
+        if: matrix.release == 'backplane'
+        run: |
+          elixir test/build_web_assets_script_test.exs
+          elixir -pa _build/prod/lib/jason/ebin test/web_assets_test.exs
+
       - name: Build web assets
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_api assets.deploy && mix "do" --app backplane_admin assets.deploy
+        run: mix assets.deploy
 
       - name: Build OTP release
         run: mix release "${{ matrix.release }}" --overwrite
+
+      - name: Verify packaged web assets
+        if: matrix.release == 'backplane'
+        run: elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
 
       - name: Smoke test host-agent native database
         if: matrix.release == 'host_agent'

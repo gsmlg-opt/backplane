@@ -50,9 +50,10 @@ RUN mix npm.install --frozen
 
 COPY . .
 
-RUN mix "do" --app backplane_api assets.deploy \
-  && mix "do" --app backplane_admin assets.deploy
-RUN mix release backplane --overwrite --version "${VERSION}"
+RUN mix assets.deploy
+RUN mix release backplane --overwrite --version "${VERSION}" \
+  && elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
+    --release _build/prod/rel/backplane
 
 FROM ${DEBIAN_IMAGE} AS runtime
 
