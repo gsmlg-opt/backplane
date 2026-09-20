@@ -107,7 +107,16 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   capture 21/21 with warnings-as-errors. Full formatting and diff checks passed.
   Durable snapshot item counts, deterministic bounded eviction, recoverable
   scheduled retention, and content-free edge health reporting are covered.
-  Tasks 13–20 remain outstanding; PR2–PR5 is not complete.
+- Task 13: committed as `241f4f10`; specification and quality reviews approved
+  after adding persisted authoritative-tuple checks, all-field boundary matrices,
+  content-free stable quarantine issues, bounded source lookups, validation before
+  no-model exits, and a production-like migration regression for restrictive FKs,
+  immutable triggers, edge delete capture, and trigger restoration. Fresh final
+  focused gate: 55/55 with warnings-as-errors; scoped formatting and diff checks
+  passed. Migration `20260905000007` permanently removes incomplete canonical rows
+  and dependent provenance after recording redacted identity diagnostics, so its
+  down path explicitly raises as irreversible instead of claiming false recovery.
+  Tasks 14–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
