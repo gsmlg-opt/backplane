@@ -5,6 +5,7 @@ defmodule Backplane.Memory.Events.Store do
 
   alias Backplane.Memory.EventNotifier
   alias Backplane.Memory.Events.{Event, Preparation, Stream}
+  alias Backplane.Memory.Projections.{RepairFrontier, Source}
   alias Backplane.Memory.Workers.ProjectionRepairWorker
 
   @metadata_fields [
@@ -341,28 +342,15 @@ defmodule Backplane.Memory.Events.Store do
   end
 
   defp enqueue_projection_repairs(events) do
-    events = Enum.filter(events, &(projection_repair_enabled?() and canonical_subject?(&1)))
-
-    case Application.get_env(:backplane_memory, :projection_repair_enqueue) do
-      enqueue when is_function(enqueue, 1) ->
-        Enum.reduce_while(events, :ok, fn event, :ok ->
-          case enqueue_projection_repair(event) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-
-      nil ->
-        jobs =
-          Enum.map(events, fn event ->
-            ProjectionRepairWorker.new(%{event_id: event.id}, unique: nil)
-          end)
-
-        case Oban.insert_all(jobs) do
-          jobs when length(jobs) == length(events) -> :ok
-          _jobs -> {:error, :transaction_rolled_back}
-        end
-    end
+    events
+    |> Enum.filter(&(projection_repair_enabled?() and canonical_subject?(&1)))
+    |> Enum.group_by(&{&1.host_id, &1.session_id})
+    |> Enum.reduce_while(:ok, fn {{host_id, session_id}, _events}, :ok ->
+      case advance_and_enqueue_projection_repair(host_id, session_id) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   rescue
     _error -> {:error, :transaction_rolled_back}
   end
@@ -600,7 +588,17 @@ defmodule Backplane.Memory.Events.Store do
 
   defp enqueue_projection_repair(%Event{} = event) do
     if projection_repair_enabled?() and canonical_subject?(event) do
-      case projection_repair_enqueue(event.id) do
+      advance_and_enqueue_projection_repair(event.host_id, event.session_id)
+    else
+      :ok
+    end
+  end
+
+  defp advance_and_enqueue_projection_repair(host_id, session_id) do
+    with {:ok, %{input_revision: revision}} <- Source.input_revision(host_id, session_id) do
+      frontier = RepairFrontier.advance(repo(), host_id, session_id, revision)
+
+      case projection_repair_enqueue(frontier) do
         {:ok, %Oban.Job{state: state}}
         when state in ["available", "scheduled", "executing", "completed"] ->
           :ok
@@ -611,8 +609,6 @@ defmodule Backplane.Memory.Events.Store do
         {:error, reason} ->
           {:error, reason}
       end
-    else
-      :ok
     end
   end
 
@@ -628,10 +624,10 @@ defmodule Backplane.Memory.Events.Store do
     Application.get_env(:backplane_memory, :projection_repair_enabled, true)
   end
 
-  defp projection_repair_enqueue(event_id) do
+  defp projection_repair_enqueue(frontier) do
     case Application.get_env(:backplane_memory, :projection_repair_enqueue) do
-      enqueue when is_function(enqueue, 1) -> enqueue.(event_id)
-      nil -> ProjectionRepairWorker.enqueue(event_id)
+      enqueue when is_function(enqueue, 1) -> enqueue.(frontier)
+      nil -> ProjectionRepairWorker.enqueue(frontier.host_id, frontier.session_id)
     end
   end
 

@@ -25,8 +25,11 @@ defmodule Backplane.Memory.Qualification.PerformanceTest do
     assert measurement.batch_size == 100
     assert measurement.batch_count == 20
     assert measurement.concurrency == 5
-    assert measurement.projection_jobs_durable == 2_000
-    assert measurement.projection_job_event_ids_unique == 2_000
+    assert measurement.projection_sessions == 20
+    assert measurement.projection_frontiers_durable == 20
+    assert measurement.projection_requested_generations == 20
+    assert measurement.projection_jobs_durable == 20
+    assert measurement.projection_job_subjects_unique == 20
     assert measurement.measured_path =~ "Oban projection job commit"
   end
 

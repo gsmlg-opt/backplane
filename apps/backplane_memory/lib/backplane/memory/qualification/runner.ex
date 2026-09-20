@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Qualification.Runner do
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Ingest
   alias Backplane.Memory.Ingest.EventValidator
-  alias Backplane.Memory.Projections.{Rebuild, Source, State}
+  alias Backplane.Memory.Projections.{Rebuild, RepairFrontier, Source, State}
   alias Backplane.Memory.Qualification
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{ProjectionRepairWorker, SummaryWorker}
@@ -159,9 +159,10 @@ defmodule Backplane.Memory.Qualification.Runner do
           )
         )
 
-      event_ids = Enum.map(events, & &1["event_id"])
-      projection_jobs = projection_jobs(event_ids)
-      projection_job_event_ids = Enum.map(projection_jobs, & &1.args["event_id"])
+      projection_subjects = projection_subjects(events)
+      projection_jobs = projection_jobs(projection_subjects)
+      projection_frontiers = projection_frontiers(projection_subjects)
+      projection_job_subjects = Enum.map(projection_jobs, &job_subject/1)
 
       # Qualification runs inside a rollback sandbox. Remove only this workload's queued jobs
       # after proving that production ingestion committed them, so later workload measurements
@@ -178,9 +179,12 @@ defmodule Backplane.Memory.Qualification.Runner do
          batch_size: batch_size,
          batch_count: length(batches),
          concurrency: concurrency,
+         projection_sessions: MapSet.size(projection_subjects),
+         projection_frontiers_durable: length(projection_frontiers),
+         projection_requested_generations:
+           Enum.sum(Enum.map(projection_frontiers, & &1.requested_generation)),
          projection_jobs_durable: length(projection_jobs),
-         projection_job_event_ids_unique:
-           projection_job_event_ids |> MapSet.new() |> MapSet.size(),
+         projection_job_subjects_unique: projection_job_subjects |> MapSet.new() |> MapSet.size(),
          measured_path:
            "Ingest.ingest_batch -> Events.Store.append_batch_tagged -> Oban projection job commit"
        }}
@@ -234,13 +238,13 @@ defmodule Backplane.Memory.Qualification.Runner do
       {:ok, %{"results" => results}} = ingest_result
 
       if Enum.all?(results, &(&1["status"] == "accepted")) do
-        event_by_id = Map.new(events, &{&1["event_id"], &1})
-        jobs = projection_jobs(Map.keys(event_by_id))
+        event_by_subject = Map.new(events, &{{&1["host_id"], &1["session_id"]}, &1})
+        jobs = projection_jobs(Map.keys(event_by_subject))
 
         with true <- length(jobs) == sample_count,
              {:ok, lags, complete_subjects, projectors, jobs_completed} <-
                Oban.Testing.with_testing_mode(:manual, fn ->
-                 execute_projection_jobs(jobs, event_by_id, acknowledged_at)
+                 execute_projection_jobs(jobs, event_by_subject, acknowledged_at)
                end) do
           lag_values = Enum.map(lags, & &1.lag_ms)
 
@@ -543,11 +547,11 @@ defmodule Backplane.Memory.Qualification.Runner do
     |> Kernel./(1_000)
   end
 
-  defp execute_projection_jobs(jobs, event_by_id, acknowledged_at) do
+  defp execute_projection_jobs(jobs, event_by_subject, acknowledged_at) do
     Enum.reduce_while(jobs, {:ok, [], 0, MapSet.new(), 0}, fn job,
                                                               {:ok, lags, complete, projectors,
                                                                completed} ->
-      event = Map.fetch!(event_by_id, job.args["event_id"])
+      event = Map.fetch!(event_by_subject, job_subject(job))
       drain = Oban.drain_queue(queue: :memory, with_limit: 1)
       stored_job = repo().get!(Oban.Job, job.id)
       states = projection_states(event["host_id"], event["session_id"])
@@ -583,14 +587,32 @@ defmodule Backplane.Memory.Qualification.Runner do
     |> Map.new()
   end
 
-  defp projection_jobs(event_ids) do
-    event_ids = MapSet.new(event_ids)
+  defp projection_jobs(subjects) do
+    subjects = MapSet.new(subjects)
 
     repo()
     |> Oban.Testing.all_enqueued(worker: ProjectionRepairWorker)
-    |> Enum.filter(&MapSet.member?(event_ids, &1.args["event_id"]))
+    |> Enum.filter(&MapSet.member?(subjects, job_subject(&1)))
     |> Enum.sort_by(& &1.id)
   end
+
+  defp projection_frontiers(subjects) do
+    subjects = MapSet.new(subjects)
+    host_ids = subjects |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+
+    RepairFrontier
+    |> where([frontier], frontier.host_id in ^host_ids)
+    |> repo().all()
+    |> Enum.filter(&MapSet.member?(subjects, {&1.host_id, &1.session_id}))
+  end
+
+  defp projection_subjects(events) do
+    events
+    |> Enum.map(&{&1["host_id"], &1["session_id"]})
+    |> MapSet.new()
+  end
+
+  defp job_subject(%Oban.Job{args: args}), do: {args["host_id"], args["session_id"]}
 
   defp cleanup_projection_jobs([]), do: :ok
 

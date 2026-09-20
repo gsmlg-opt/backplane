@@ -19,13 +19,23 @@ defmodule Backplane.Memory.Qualification do
           ) and
           equal_positive_counts?(
             measurements,
-            [:ingest, :accepted],
+            [:ingest, :projection_sessions],
+            [:ingest, :projection_frontiers_durable]
+          ) and
+          equal_positive_counts?(
+            measurements,
+            [:ingest, :projection_sessions],
             [:ingest, :projection_jobs_durable]
           ) and
           equal_positive_counts?(
             measurements,
-            [:ingest, :accepted],
-            [:ingest, :projection_job_event_ids_unique]
+            [:ingest, :projection_sessions],
+            [:ingest, :projection_job_subjects_unique]
+          ) and
+          equal_positive_counts?(
+            measurements,
+            [:ingest, :batch_count],
+            [:ingest, :projection_requested_generations]
           ),
       accepted_event_integrity:
         equal_positive_counts?(measurements, [:ingest, :accepted], [:ingest, :persisted]) and

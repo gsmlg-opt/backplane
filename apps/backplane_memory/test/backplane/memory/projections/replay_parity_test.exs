@@ -29,15 +29,15 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       ingest_all!(ordered_events)
       ordered_raw_before = raw_events(ordered_host, ordered_session)
 
-      assert %{success: 6, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
       assert raw_events(ordered_host, ordered_session) == ordered_raw_before
 
       shuffled_prefix = events_at(shuffled_events, [1, 4, 6])
       ingest_all!(shuffled_prefix)
       shuffled_prefix_raw_before = raw_events(shuffled_host, shuffled_session)
 
-      # Three repairs plus the expired-gap summary.
-      assert %{success: 4, failure: 0} = Oban.drain_queue(queue: :memory)
+      # One coalesced repair plus the expired-gap summary.
+      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_prefix_raw_before
 
       shuffled_subject = Source.subject_id!(shuffled_host, shuffled_session)
@@ -53,8 +53,8 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       ingest_all!(events_at(shuffled_events, [2, 5, 3]))
       shuffled_raw_before = raw_events(shuffled_host, shuffled_session)
 
-      # Three repairs, the superseding complete summary, and the prior episodic successor.
-      assert %{success: 5, failure: 0} = Oban.drain_queue(queue: :memory)
+      # One coalesced repair, the superseding summary, and the prior episodic successor.
+      assert %{success: 3, failure: 0} = Oban.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_raw_before
 
       ordered_subject = Source.subject_id!(ordered_host, ordered_session)

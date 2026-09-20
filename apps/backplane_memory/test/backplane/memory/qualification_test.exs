@@ -6,12 +6,16 @@ defmodule Backplane.Memory.QualificationTest do
   test "evaluates every M18 NFR gate from measured evidence" do
     measurements = %{
       ingest: %{
-        accepted: 1_000,
-        persisted: 1_000,
+        accepted: 10_000,
+        persisted: 10_000,
         duplicate_effects: 0,
         events_per_second: 750.0,
-        projection_jobs_durable: 1_000,
-        projection_job_event_ids_unique: 1_000
+        batch_count: 100,
+        projection_sessions: 100,
+        projection_frontiers_durable: 100,
+        projection_requested_generations: 100,
+        projection_jobs_durable: 100,
+        projection_job_subjects_unique: 100
       },
       projection: %{
         samples: 100,
@@ -46,6 +50,8 @@ defmodule Backplane.Memory.QualificationTest do
            }
 
     assert report.metrics.consolidation.coverage == 0.97
+    assert report.metrics.ingest.projection_requested_generations == 100
+    assert report.metrics.ingest.projection_jobs_durable == 100
 
     assert report.gates == %{
              ingest_throughput: true,
@@ -74,8 +80,12 @@ defmodule Backplane.Memory.QualificationTest do
           persisted: 99,
           duplicate_effects: 1,
           events_per_second: 499.9,
-          projection_jobs_durable: 99,
-          projection_job_event_ids_unique: 99
+          batch_count: 1,
+          projection_sessions: 1,
+          projection_frontiers_durable: 1,
+          projection_requested_generations: 2,
+          projection_jobs_durable: 1,
+          projection_job_subjects_unique: 1
         },
         projection: %{
           samples: 0,
@@ -108,8 +118,12 @@ defmodule Backplane.Memory.QualificationTest do
         persisted: 500,
         duplicate_effects: 0,
         events_per_second: 900.0,
+        batch_count: 100,
+        projection_sessions: 100,
+        projection_frontiers_durable: 100,
+        projection_requested_generations: 100,
         projection_jobs_durable: 0,
-        projection_job_event_ids_unique: 0
+        projection_job_subjects_unique: 0
       },
       projection: %{
         samples: 100,
@@ -134,8 +148,12 @@ defmodule Backplane.Memory.QualificationTest do
         persisted: 500,
         duplicate_effects: 0,
         events_per_second: 75.0,
-        projection_jobs_durable: 500,
-        projection_job_event_ids_unique: 500
+        batch_count: 5,
+        projection_sessions: 5,
+        projection_frontiers_durable: 5,
+        projection_requested_generations: 5,
+        projection_jobs_durable: 5,
+        projection_job_subjects_unique: 5
       },
       projection: %{
         samples: 100,

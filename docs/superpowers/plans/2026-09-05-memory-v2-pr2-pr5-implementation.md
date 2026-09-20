@@ -116,7 +116,16 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   passed. Migration `20260905000007` permanently removes incomplete canonical rows
   and dependent provenance after recording redacted identity diagnostics, so its
   down path explicitly raises as irreversible instead of claiming false recovery.
-  Tasks 14–20 remain outstanding; PR2–PR5 is not complete.
+- Task 14: specification and quality reviews approved after the user-approved
+  qualification runner/evaluator scope expansion. Durable host/session frontiers
+  coalesce accepted batches, converted legacy jobs execute the frontier path,
+  downstream scheduling failures roll back completion, and a real executing-job
+  race proves exactly one successor converges. Fresh focused gate: 26/26 with
+  warnings-as-errors, including the passing CI qualification report; focused
+  worker/migration/replay verification: 24/24. The 10,000-event regression
+  advances 101 generations with one pending repair job and completes generation
+  101. Scoped formatting and diff checks passed.
+  Tasks 15–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -543,6 +552,15 @@ one version to avoid a collision.
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/replay_parity_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/qualification_test.exs`
+- Modify: `apps/backplane_memory/lib/backplane/memory/qualification/runner.ex`
+- Modify: `apps/backplane_memory/lib/backplane/memory/qualification.ex`
+- Modify: `apps/backplane_memory/test/backplane/memory/qualification_performance_test.exs`
+- Modify: `apps/backplane_memory/test/mix/tasks/memory_qualify_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: update the qualification
+runner/evaluator and their dependent performance and Mix-task tests because the
+Task 14 host/session frontier intentionally replaces the former one-job-per-event
+measurement contract.
 
 - [ ] Replace tests that expect one job per event with failing tests for one durable frontier and at most one pending repair job per `{host_id, session_id}`. Because `input_revision` is a SHA-256 digest, the frontier stores monotonic `requested_generation`, `inflight_generation`, and `completed_generation` watermarks plus the revision hash for each generation; hashes are never ordered lexically.
 - [ ] Group batch inserts by host/session, atomically increment `requested_generation` once per accepted batch/session while replacing `requested_revision` with the new canonical digest, and enqueue with Oban uniqueness keyed only by host/session across pending/retryable states. Preserve the legacy `event_id` perform clause for outstanding jobs.
