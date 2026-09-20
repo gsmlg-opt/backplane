@@ -182,6 +182,39 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert {:error, :mirror_unavailable} = Mirror.offline_read("list", @partition, c.opts)
   end
 
+  test "an active snapshot chunk remains idempotent after a newer contiguous delta", c do
+    [first, final] = snapshot([[item("snapshot-a", "alpha")], [item("snapshot-b", "beta")]], 0, 8)
+    assert {:ok, progress} = Mirror.apply_delivery(first, c.opts)
+    assert {:ok, _} = Mirror.apply_delivery(final, c.opts)
+    assert {:ok, _} = Mirror.apply_delivery(delta(9, [upsert(9, "delta", "newer")]), c.opts)
+
+    assert {:ok, ^progress} = Mirror.apply_delivery(first, c.opts)
+
+    assert {:ok,
+            %{
+              rows: [
+                %{
+                  "active_generation" => active,
+                  "applied_revision" => 9,
+                  "last_batch_id" => "delta-9"
+                }
+              ]
+            }} =
+             Store.query(
+               c.store,
+               "SELECT active_generation, applied_revision, last_batch_id FROM edge_partitions"
+             )
+
+    assert active == first["snapshot_id"]
+    assert {:ok, result} = Mirror.offline_read("list", @partition, c.opts)
+
+    assert Enum.map(result["items"], & &1["canonical_id"]) == [
+             "delta",
+             "snapshot-a",
+             "snapshot-b"
+           ]
+  end
+
   test "same staged chunk index with different hash fails closed", c do
     [first, _] = snapshot([[item("a", "alpha")], [item("b", "beta")]], 0, 8)
     assert {:ok, _} = Mirror.apply_delivery(first, c.opts)

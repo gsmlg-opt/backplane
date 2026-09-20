@@ -132,11 +132,11 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       state["last_batch_id"] == d["batch_id"] ->
         ack(d)
 
-      d["to_revision"] < state["applied_revision"] ->
-        DBConnection.rollback(conn, :snapshot_restart_required)
-
       state["active_generation"] == d["snapshot_id"] ->
         activated_snapshot_duplicate!(conn, d, state)
+
+      d["to_revision"] < state["applied_revision"] ->
+        DBConnection.rollback(conn, :snapshot_restart_required)
 
       state["snapshot_id"] == d["snapshot_id"] ->
         continue_snapshot!(conn, d, state, digest)
@@ -261,8 +261,11 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         params(d["partition"]) ++ [d["snapshot_id"]]
       )
 
-    if chunk["chunk_hash"] == d["chunk_hash"] and state["applied_revision"] == d["to_revision"] and
-         manifest == d["integrity_hash"] and count == d["item_count"],
+    count_matches? =
+      state["applied_revision"] > d["to_revision"] or count == d["item_count"]
+
+    if chunk["chunk_hash"] == d["chunk_hash"] and state["applied_revision"] >= d["to_revision"] and
+         manifest == d["integrity_hash"] and count_matches?,
        do: ack(d),
        else: DBConnection.rollback(conn, :delivery_conflict)
   end
