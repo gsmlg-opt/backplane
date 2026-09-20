@@ -9,14 +9,60 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
   @migrations [Migrations.V1, Migrations.V2]
 
   @v1_columns %{
-    "edge_partitions" =>
-      ~w(memory_space_id scope namespace applied_revision active_generation last_batch_id last_sync_at snapshot_id snapshot_revision next_chunk_index chunk_count integrity_hash),
-    "edge_memories" =>
-      ~w(memory_space_id scope namespace generation canonical_id memory_type content content_hash confidence lifecycle_state tags metadata source_refs server_revision edge_priority edge_expires_at updated_at last_accessed_at byte_size),
-    "edge_snapshot_chunks" => ~w(snapshot_id chunk_index chunk_hash applied_at)
+    "edge_partitions" => [
+      {"memory_space_id", "TEXT", 1, nil, 1},
+      {"scope", "TEXT", 1, nil, 1},
+      {"namespace", "TEXT", 1, nil, 1},
+      {"applied_revision", "INTEGER", 1, "0", 0},
+      {"active_generation", "TEXT", 1, "'0'", 0},
+      {"last_batch_id", "TEXT", 0, nil, 0},
+      {"last_sync_at", "TEXT", 0, nil, 0},
+      {"snapshot_id", "TEXT", 0, nil, 0},
+      {"snapshot_revision", "INTEGER", 0, nil, 0},
+      {"next_chunk_index", "INTEGER", 0, nil, 0},
+      {"chunk_count", "INTEGER", 0, nil, 0},
+      {"integrity_hash", "TEXT", 0, nil, 0}
+    ],
+    "edge_memories" => [
+      {"memory_space_id", "TEXT", 1, nil, 1},
+      {"scope", "TEXT", 1, nil, 1},
+      {"namespace", "TEXT", 1, nil, 1},
+      {"generation", "TEXT", 1, nil, 1},
+      {"canonical_id", "TEXT", 1, nil, 1},
+      {"memory_type", "TEXT", 0, nil, 0},
+      {"content", "TEXT", 0, nil, 0},
+      {"content_hash", "TEXT", 0, nil, 0},
+      {"confidence", "REAL", 0, nil, 0},
+      {"lifecycle_state", "TEXT", 1, nil, 0},
+      {"tags", "TEXT", 0, nil, 0},
+      {"metadata", "TEXT", 0, nil, 0},
+      {"source_refs", "TEXT", 0, nil, 0},
+      {"server_revision", "INTEGER", 1, nil, 0},
+      {"edge_priority", "REAL", 0, nil, 0},
+      {"edge_expires_at", "TEXT", 0, nil, 0},
+      {"updated_at", "TEXT", 0, nil, 0},
+      {"last_accessed_at", "TEXT", 0, nil, 0},
+      {"byte_size", "INTEGER", 1, "0", 0}
+    ],
+    "edge_snapshot_chunks" => [
+      {"snapshot_id", "TEXT", 1, nil, 1},
+      {"chunk_index", "INTEGER", 1, nil, 1},
+      {"chunk_hash", "TEXT", 1, nil, 0},
+      {"applied_at", "TEXT", 1, nil, 0}
+    ]
   }
 
-  @v2_partition_columns ~w(memory_space_id scope namespace applied_revision active_generation last_batch_id last_sync_at snapshot_id snapshot_revision next_chunk_index chunk_count integrity_hash sync_status last_delivery_hash)
+  @v2_partition_columns @v1_columns["edge_partitions"] ++
+                          [
+                            {"sync_status", "TEXT", 0, nil, 0},
+                            {"last_delivery_hash", "TEXT", 0, nil, 0}
+                          ]
+
+  @primary_keys %{
+    "edge_partitions" => ~w(memory_space_id scope namespace),
+    "edge_memories" => ~w(memory_space_id scope namespace generation canonical_id),
+    "edge_snapshot_chunks" => ~w(snapshot_id chunk_index)
+  }
 
   @doc false
   def child_spec(opts) do
@@ -103,9 +149,9 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
     Enum.reduce_while(expected_columns, :ok, fn {table, columns}, :ok ->
       case Store.query(store, "PRAGMA table_info(#{table})") do
         {:ok, %{rows: rows}} when is_list(rows) ->
-          found = rows |> Enum.map(& &1["name"]) |> Enum.sort()
+          found = Enum.map(rows, &column_contract/1)
 
-          if found == Enum.sort(columns),
+          if found == columns and primary_key?(store, table, @primary_keys[table]),
             do: {:cont, :ok},
             else: {:halt, {:error, :invalid_edge_schema}}
 
@@ -116,6 +162,48 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
   end
 
   defp validate_tables(_store, _current, _tables, _expected), do: {:error, :invalid_edge_schema}
+
+  defp column_contract(row) do
+    {
+      row["name"],
+      row["type"] |> to_string() |> String.trim() |> String.upcase(),
+      normalize_integer(row["notnull"]),
+      normalize_default(row["dflt_value"]),
+      normalize_integer(row["pk"])
+    }
+  end
+
+  defp normalize_integer(value) when is_integer(value), do: value
+  defp normalize_integer(value) when is_binary(value), do: String.to_integer(value)
+  defp normalize_integer(_value), do: -1
+
+  defp normalize_default(nil), do: nil
+
+  defp normalize_default(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.replace(~r/^\((.*)\)$/, "\\1")
+  end
+
+  # libSQL reports every composite primary-key member as `pk = 1` from
+  # table_info. Read its backing primary-key index to preserve key order.
+  defp primary_key?(store, table, expected) do
+    with {:ok, %{rows: indexes}} <- Store.query(store, "PRAGMA index_list(#{table})"),
+         %{"name" => index} <-
+           Enum.find(indexes, &(&1["origin"] == "pk" and &1["unique"] in [1, "1"])),
+         {:ok, %{rows: columns}} <-
+           Store.query(store, "PRAGMA index_info(#{quote_identifier(index)})") do
+      columns
+      |> Enum.sort_by(&normalize_integer(&1["seqno"]))
+      |> Enum.map(& &1["name"])
+      |> Kernel.==(expected)
+    else
+      _ -> false
+    end
+  end
+
+  defp quote_identifier(identifier), do: "\"" <> String.replace(identifier, "\"", "\"\"") <> "\""
 
   defp apply_migration(store, migration) do
     case Store.transaction(store, fn conn ->

@@ -49,6 +49,53 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
     GenServer.stop(store)
   end
 
+  test "rejects V1 and V2 lookalikes with invalid column contracts unchanged", %{tmp_dir: dir} do
+    mutations = [
+      {:wrong_type, "applied_revision INTEGER NOT NULL DEFAULT 0",
+       "applied_revision TEXT NOT NULL DEFAULT 0"},
+      {:missing_not_null, "memory_space_id TEXT NOT NULL", "memory_space_id TEXT"},
+      {:wrong_default, "applied_revision INTEGER NOT NULL DEFAULT 0",
+       "applied_revision INTEGER NOT NULL DEFAULT 1"},
+      {:wrong_primary_key, "PRIMARY KEY (memory_space_id, scope, namespace)",
+       "PRIMARY KEY (memory_space_id, scope)"}
+    ]
+
+    for version <- [1, 2], {name, source, replacement} <- mutations do
+      {:ok, store} =
+        Store.start_link(
+          database: Path.join(dir, "#{version}-#{name}.db"),
+          config: %{enabled: true, development_plaintext: true}
+        )
+
+      Enum.each(V1.up(), fn sql ->
+        assert {:ok, _} = Store.execute(store, String.replace(sql, source, replacement))
+      end)
+
+      if version == 2 do
+        Enum.each(Backplane.HostAgent.Memory.Edge.Migrations.V2.up(), fn sql ->
+          assert {:ok, _} = Store.execute(store, sql)
+        end)
+      end
+
+      assert {:ok, _} = Store.execute(store, "PRAGMA user_version = #{version}")
+
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 "INSERT INTO edge_partitions (memory_space_id, scope, namespace) VALUES ('keep', 'scope', 'ns')"
+               )
+
+      assert {:error, :invalid_edge_schema} = Migrator.validate_schema(store)
+      assert {:error, :invalid_edge_schema} = Migrator.migrate(store)
+      assert {:ok, ^version} = Migrator.current_version(store)
+
+      assert {:ok, %{rows: [%{"memory_space_id" => "keep"}]}} =
+               Store.query(store, "SELECT memory_space_id FROM edge_partitions")
+
+      GenServer.stop(store)
+    end
+  end
+
   test "fresh edge storage reaches V2 and repeat migration is idempotent", %{tmp_dir: dir} do
     {:ok, store} =
       Store.start_link(
@@ -98,8 +145,21 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
     assert :ok = Migrator.migrate(store)
     assert {:ok, 2} = Migrator.current_version(store)
 
-    assert {:ok, %{rows: [%{"sync_status" => nil, "last_delivery_hash" => nil}]}} =
-             Store.query(store, "SELECT sync_status, last_delivery_hash FROM edge_partitions")
+    assert {:ok,
+            %{
+              rows: [
+                %{
+                  "sync_status" => nil,
+                  "last_delivery_hash" => nil,
+                  "applied_revision" => 6,
+                  "active_generation" => "old-generation"
+                }
+              ]
+            }} =
+             Store.query(
+               store,
+               "SELECT sync_status, last_delivery_hash, applied_revision, active_generation FROM edge_partitions"
+             )
 
     assert {:ok, %{rows: [%{"content" => nil, "server_revision" => 7}]}} =
              Store.query(store, "SELECT content, server_revision FROM edge_memories")

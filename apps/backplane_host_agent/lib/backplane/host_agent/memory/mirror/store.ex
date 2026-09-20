@@ -136,7 +136,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         DBConnection.rollback(conn, :snapshot_restart_required)
 
       state["active_generation"] == d["snapshot_id"] ->
-        DBConnection.rollback(conn, :delivery_conflict)
+        activated_snapshot_duplicate!(conn, d, state)
 
       state["snapshot_id"] == d["snapshot_id"] ->
         continue_snapshot!(conn, d, state, digest)
@@ -241,6 +241,30 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     )
 
     {:activated, ack(d)}
+  end
+
+  defp activated_snapshot_duplicate!(conn, d, state) do
+    [chunk] =
+      rows!(
+        conn,
+        "SELECT chunk_hash FROM edge_snapshot_chunks WHERE snapshot_id = ? AND chunk_index = ?",
+        [d["snapshot_id"], d["chunk_index"]]
+      )
+
+    context = manifest!(conn, d["snapshot_id"], 0, d["chunk_count"], :crypto.hash_init(:sha256))
+    manifest = "sha256:" <> Base.encode16(:crypto.hash_final(context), case: :lower)
+
+    [%{"count" => count}] =
+      rows!(
+        conn,
+        "SELECT COUNT(*) AS count FROM edge_memories WHERE #{@where} AND generation = ?",
+        params(d["partition"]) ++ [d["snapshot_id"]]
+      )
+
+    if chunk["chunk_hash"] == d["chunk_hash"] and state["applied_revision"] == d["to_revision"] and
+         manifest == d["integrity_hash"] and count == d["item_count"],
+       do: ack(d),
+       else: DBConnection.rollback(conn, :delivery_conflict)
   end
 
   defp manifest!(_conn, _id, count, count, context), do: context

@@ -3,6 +3,9 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   alias Backplane.HostAgent.Memory.Edge.Protection
   alias Backplane.HostAgent.Memory.Mirror.Store
 
+  @typedoc "The only accepted values are \"recall\", \"list\", and \"stats\"."
+  @type operation :: String.t()
+
   @spec offer(keyword()) :: {:ok, map()} | {:error, term()}
   def offer(opts \\ []) do
     with :ok <- protection(opts), do: Store.offer(store(opts))
@@ -16,7 +19,7 @@ defmodule Backplane.HostAgent.Memory.Mirror do
     end
   end
 
-  @spec offline_read(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec offline_read(operation(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def offline_read(operation, args, opts \\ []) do
     with :ok <- protection(opts),
          true <- operation in ["recall", "list", "stats"] and is_map(args),

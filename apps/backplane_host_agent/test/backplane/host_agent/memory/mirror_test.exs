@@ -130,6 +130,28 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert {:ok, applied} = Mirror.apply_delivery(final, opts)
     assert applied == ack(final)
     assert {:ok, ^applied} = Mirror.apply_delivery(final, opts)
+
+    # A lost progress ACK can cause the server to retry an earlier chunk after
+    # activation. The persisted chunk manifest makes that retry unambiguous.
+    assert {:ok, ^progress} = Mirror.apply_delivery(first, opts)
+
+    assert {:ok, %{rows: [%{"active_generation" => active, "applied_revision" => 8}]}} =
+             Store.query(
+               opts[:store],
+               "SELECT active_generation, applied_revision FROM edge_partitions"
+             )
+
+    assert active == first["snapshot_id"]
+
+    changed = first |> put_in(["items", Access.at(0), "content"], "changed") |> put_chunk_hash()
+    assert {:error, :delivery_conflict} = Mirror.apply_delivery(changed, opts)
+
+    assert {:error, :delivery_conflict} =
+             Mirror.apply_delivery(
+               Map.put(first, "integrity_hash", "sha256:" <> String.duplicate("0", 64)),
+               opts
+             )
+
     assert {:ok, after_read} = Mirror.offline_read("list", @partition, opts)
     assert Enum.map(after_read["items"], & &1["canonical_id"]) == ["new-a", "new-b"]
     assert after_read["partition_revision"] == 8
@@ -192,6 +214,8 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
 
     assert {:error, :mirror_unavailable} =
              Mirror.offline_read("list", Map.put(@partition, "namespace", "shared"), c.opts)
+
+    assert {:error, :invalid_request} = Mirror.offline_read("search", @partition, c.opts)
   end
 
   test "disabled protection refuses all entrypoints even with an open store", c do
@@ -311,6 +335,9 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
       }
     end)
   end
+
+  defp put_chunk_hash(frame),
+    do: Map.put(frame, "chunk_hash", SnapshotBuilder.hash(%{"items" => frame["items"]}))
 
   defp ack(%{"kind" => "delta"} = d),
     do:
