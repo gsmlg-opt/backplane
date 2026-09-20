@@ -77,6 +77,7 @@ defmodule Backplane.Memory.Memories.Memory do
       :content,
       :agent_id,
       :host_id,
+      :client_id,
       :memory_space_id,
       :scope,
       :namespace
@@ -89,6 +90,7 @@ defmodule Backplane.Memory.Memories.Memory do
       name: :bpm_memories_exact_candidate_host_uniq,
       message: "duplicate memory"
     )
+    |> validate_partition_inputs(memory, attrs)
   end
 
   def embed_changeset(memory, vector) do
@@ -100,5 +102,27 @@ defmodule Backplane.Memory.Memories.Memory do
       nil -> changeset
       content -> put_change(changeset, :content_hash, :crypto.hash(:sha256, content))
     end
+  end
+
+  defp validate_partition_inputs(changeset, memory, attrs) do
+    Enum.reduce([:memory_space_id, :host_id, :client_id, :scope, :namespace], changeset, fn field,
+                                                                                            acc ->
+      supplied? = Map.has_key?(attrs, field) or Map.has_key?(attrs, Atom.to_string(field))
+
+      value =
+        if supplied? or memory.__meta__.state != :loaded do
+          Map.get(attrs, field, Map.get(attrs, Atom.to_string(field)))
+        else
+          get_field(acc, field)
+        end
+
+      if is_binary(value) and String.trim(value) != "" do
+        acc
+      else
+        if Keyword.has_key?(acc.errors, field),
+          do: acc,
+          else: add_error(acc, field, "can't be blank", validation: :required)
+      end
+    end)
   end
 end

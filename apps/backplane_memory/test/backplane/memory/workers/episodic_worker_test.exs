@@ -8,6 +8,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   alias Backplane.Memory.Projections.{ProjectedSession, Rebuild, Source}
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
+  alias Backplane.MemorySpaces.BackfillIssue
 
   defmodule MockLLM do
     def extract_facts(content) do
@@ -196,17 +197,128 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     end)
   end
 
-  test "legacy session-only compatibility accepts exactly one validated key" do
+  test "legacy session-only jobs fail closed without an owner partition" do
     for args <- [
           %{},
-          %{"session_id" => ""},
-          %{"session_id" => "   "},
           %{"session_id" => 123},
           %{"session_id" => "legacy", "host_id" => "canonical-ish"},
           %{"session_id" => "legacy", "processing_version" => "summary-v1"}
         ] do
       assert {:cancel, :invalid_arguments} = EpisodicWorker.perform(%Oban.Job{args: args})
     end
+
+    assert {:cancel, :incomplete_partition} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"session_id" => "legacy"}})
+  end
+
+  test "incomplete or mismatched summary ownership is durably quarantined" do
+    incomplete = insert_canonical_summary("episodic-incomplete", "session", "content")
+
+    repo().update_all(
+      from(s in ProjectedSession, where: s.subject_id == ^incomplete.subject_id),
+      set: [client_id: " "]
+    )
+
+    assert {:discard, :incomplete_partition} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => incomplete.id}})
+
+    assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
+             repo().get_by!(BackfillIssue,
+               source_table: "memory_summaries",
+               source_id: incomplete.id
+             )
+
+    mismatched = insert_canonical_summary("episodic-mismatch", "session", "content")
+
+    repo().update_all(from(s in Summary, where: s.id == ^mismatched.id),
+      set: [host_id: "other-host"]
+    )
+
+    assert {:discard, :partition_mismatch} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => mismatched.id}})
+
+    assert %BackfillIssue{reason: "partition_mismatch", disposition: "pending"} =
+             repo().get_by!(BackfillIssue,
+               source_table: "memory_summaries",
+               source_id: mismatched.id
+             )
+  end
+
+  test "partition resolution quarantines every incomplete source field and summary mismatch" do
+    partition = canonical_partition("episodic-boundary")
+
+    summary = %Summary{
+      id: Ecto.UUID.generate(),
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      source_client_id: nil,
+      scope: partition.scope,
+      namespace: partition.namespace
+    }
+
+    for field <- [:memory_space_id, :host_id, :client_id, :scope, :namespace],
+        invalid <- [nil, "", "   "] do
+      assert {:error, :incomplete_partition} =
+               EpisodicWorker.resolve_partition(summary, Map.put(partition, field, invalid))
+
+      assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
+               repo().get_by!(BackfillIssue,
+                 source_table: "memory_summaries",
+                 source_id: summary.id
+               )
+    end
+
+    for {field, wrong} <- [
+          memory_space_id: canonical_partition("episodic-other").memory_space_id,
+          host_id: "other-host",
+          scope: "other-scope",
+          namespace: "team:other"
+        ] do
+      assert {:error, :partition_mismatch} =
+               summary
+               |> Map.put(field, wrong)
+               |> EpisodicWorker.resolve_partition(partition)
+
+      assert %BackfillIssue{reason: "partition_mismatch", disposition: "pending"} =
+               repo().get_by!(BackfillIssue,
+                 source_table: "memory_summaries",
+                 source_id: summary.id
+               )
+    end
+  end
+
+  test "validates and quarantines ownership before the no-model early return" do
+    summary = insert_canonical_summary("episodic-no-model", "session", "content")
+
+    repo().update_all(
+      from(s in ProjectedSession, where: s.subject_id == ^summary.subject_id),
+      set: [client_id: " "]
+    )
+
+    :ets.delete(:backplane_settings, "memory.llm_model")
+
+    assert {:discard, :incomplete_partition} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+
+    assert %BackfillIssue{reason: "incomplete_partition"} =
+             repo().get_by!(BackfillIssue,
+               source_table: "memory_summaries",
+               source_id: summary.id
+             )
+  end
+
+  test "missing projected session is durably quarantined" do
+    summary = insert_canonical_summary("episodic-no-session", "session", "content")
+    repo().delete_all(from(s in ProjectedSession, where: s.subject_id == ^summary.subject_id))
+
+    assert {:discard, :incomplete_partition} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+
+    assert %BackfillIssue{reason: "incomplete_partition"} =
+             repo().get_by!(BackfillIssue,
+               source_table: "memory_summaries",
+               source_id: summary.id
+             )
   end
 
   defp insert_summary(session_id, project, content) do
@@ -277,7 +389,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 
   defp perform(session_id),
-    do: EpisodicWorker.perform(%Oban.Job{args: %{"session_id" => session_id}})
+    do:
+      EpisodicWorker.perform(%Oban.Job{
+        args: %{"summary_id" => repo().get_by!(Summary, session_id: session_id).id}
+      })
 
   defp capture_event(host_id, session_id, correlation_id, sequence, event_type) do
     payload = %{"message" => "correlation source #{sequence}"}

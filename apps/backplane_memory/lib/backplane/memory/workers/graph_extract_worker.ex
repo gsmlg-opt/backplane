@@ -8,7 +8,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   alias Backplane.Memory.Graph
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.PartitionIdentity
-  alias Backplane.Memory.Projections.ProjectedObservation
+  alias Backplane.Memory.Projections.{ProjectedObservation, ProjectedSession}
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -25,9 +25,13 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
           } = partition
       }) do
     Backplane.Memory.PipelineTelemetry.span("graph", partition, fn ->
-      case generator_partition(partition) do
-        {:ok, partition} -> perform_partition(session_id, partition)
-        {:error, _reason} -> {:discard, :incomplete_partition}
+      case generator_partition(session_id, partition) do
+        {:ok, partition} ->
+          perform_partition(session_id, partition)
+
+        {:error, reason} ->
+          record_partition_issue(session_id, partition, reason)
+          {:discard, reason}
       end
     end)
   end
@@ -131,11 +135,16 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   def enqueue(_session_id), do: {:error, :unauthorized}
 
   def enqueue(session_id, partition) do
-    with {:ok, partition} <- generator_partition(partition) do
-      %{session_id: session_id}
-      |> Map.merge(atom_partition(partition))
-      |> new()
-      |> Oban.insert()
+    case generator_partition(session_id, partition) do
+      {:ok, partition} ->
+        %{session_id: session_id}
+        |> Map.merge(atom_partition(partition))
+        |> new()
+        |> Oban.insert()
+
+      {:error, reason} = error ->
+        record_partition_issue(session_id, partition, reason)
+        error
     end
   end
 
@@ -149,15 +158,71 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
     )
   end
 
-  defp generator_partition(partition) do
-    with {:ok, partition} <- PartitionIdentity.validate(partition),
-         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
-      {:ok, partition}
-    else
-      false -> {:error, :incomplete_partition}
-      {:error, reason} -> {:error, reason}
+  defp generator_partition(session_id, partition) do
+    with {:ok, claim} <- PartitionIdentity.validate_generator(partition),
+         {:ok, expected} <- authoritative_partition(session_id, claim),
+         {:ok, validated} <- PartitionIdentity.validate_generator(claim, expected) do
+      {:ok, validated}
     end
   end
 
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+  defp authoritative_partition(session_id, claim) do
+    cond do
+      exact_source?(session_id, claim) -> {:ok, claim}
+      any_source?(session_id) -> {:error, :partition_mismatch}
+      true -> {:error, :incomplete_partition}
+    end
+  end
+
+  defp exact_source?(session_id, claim) do
+    repo().exists?(
+      from(s in ProjectedSession,
+        where:
+          s.session_id == ^session_id and s.memory_space_id == ^claim.memory_space_id and
+            s.host_id == ^claim.host_id and s.client_id == ^claim.client_id and
+            s.scope == ^claim.scope and s.namespace == ^claim.namespace
+      )
+    ) or
+      repo().exists?(
+        from(m in Memory,
+          where:
+            m.session_id == ^session_id and m.memory_space_id == ^claim.memory_space_id and
+              m.host_id == ^claim.host_id and m.client_id == ^claim.client_id and
+              m.scope == ^claim.scope and m.namespace == ^claim.namespace and
+              is_nil(m.deleted_at)
+        )
+      )
+  end
+
+  defp any_source?(session_id) do
+    repo().exists?(from(s in ProjectedSession, where: s.session_id == ^session_id)) or
+      repo().exists?(
+        from(m in Memory, where: m.session_id == ^session_id and is_nil(m.deleted_at))
+      )
+  end
+
+  defp record_partition_issue(session_id, partition, reason) do
+    claim = issue_partition(partition)
+    details = Map.put(claim, :session_id, session_id)
+
+    source_id =
+      [session_id, claim]
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    Backplane.Memory.Memories.record_partition_issue(
+      "memory_graph_generator",
+      source_id,
+      reason,
+      details
+    )
+  end
+
+  defp issue_partition(partition) do
+    Map.new([:memory_space_id, :host_id, :client_id, :scope, :namespace], fn key ->
+      value = Map.get(partition, key, Map.get(partition, Atom.to_string(key)))
+      {key, if(is_binary(value), do: String.trim(value), else: value)}
+    end)
+  end
 end

@@ -23,6 +23,7 @@ defmodule Backplane.Memory.Memories do
   alias Backplane.Memory.Summaries.SourceEvent
   alias Backplane.Memory.Embedding.Client, as: EmbeddingClient
   alias Backplane.Memory.Workers.{EmbedWorker, RelationClassifierWorker}
+  alias Backplane.MemorySpaces.BackfillIssue
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -75,6 +76,7 @@ defmodule Backplane.Memory.Memories do
                              :excerpt
                            ]
   @evidence_string_fields Map.new(@evidence_input_fields, &{Atom.to_string(&1), &1})
+  @partition_issue_fields ~w(memory_space_id host_id client_id scope namespace subject_id session_id project)
 
   @doc """
   Persist a memory. Reuses an exact candidate within the complete memory partition.
@@ -106,6 +108,49 @@ defmodule Backplane.Memory.Memories do
       {result, Map.merge(metadata, status)}
     end)
   end
+
+  @doc false
+  def record_partition_issue(source_table, source_id, reason, details)
+      when is_binary(source_table) and is_binary(source_id) and is_atom(reason) and
+             is_map(details) do
+    now = DateTime.utc_now()
+
+    attrs = %{
+      source_table: source_table,
+      source_id: source_id,
+      reason: Atom.to_string(reason),
+      disposition: "pending",
+      details: sanitize_partition_issue_details(details),
+      resolved_at: nil,
+      updated_at: now
+    }
+
+    %BackfillIssue{}
+    |> BackfillIssue.changeset(attrs)
+    |> repo().insert(
+      on_conflict: {:replace, [:reason, :disposition, :details, :resolved_at, :updated_at]},
+      conflict_target: [:source_table, :source_id]
+    )
+  end
+
+  defp sanitize_partition_issue_details(details) do
+    Map.new(@partition_issue_fields, fn field ->
+      atom = String.to_existing_atom(field)
+
+      value =
+        cond do
+          Map.has_key?(details, atom) -> Map.get(details, atom)
+          Map.has_key?(details, field) -> Map.get(details, field)
+          true -> nil
+        end
+
+      {field, normalize_issue_value(value)}
+    end)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp normalize_issue_value(value) when is_binary(value), do: String.trim(value)
+  defp normalize_issue_value(_value), do: nil
 
   @doc "Return a memory's ordered durable evidence chain and row-derived counts."
   @spec verify(String.t()) :: {:error, :unauthorized}
@@ -645,19 +690,8 @@ defmodule Backplane.Memory.Memories do
   defp write_partition(opts) do
     partition = Map.new(opts)
 
-    with {:ok, partition} <- PartitionIdentity.validate(partition),
-         true <- valid_write_provenance?(partition) do
-      {:ok, partition}
-    else
-      false -> {:error, :incomplete_partition}
-      {:error, reason} -> {:error, reason}
-    end
+    PartitionIdentity.validate_generator(partition)
   end
-
-  defp valid_write_provenance?(%{host_id: host_id}),
-    do: is_binary(host_id) and String.trim(host_id) != ""
-
-  defp valid_write_provenance?(_partition), do: false
 
   defp build_attrs(content, opts, partition) do
     %{

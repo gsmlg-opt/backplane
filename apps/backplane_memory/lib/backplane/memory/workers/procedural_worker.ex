@@ -11,6 +11,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   alias Backplane.MemorySpaces.BackfillIssue
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.PartitionIdentity
 
   @min_semantic_count 10
   @processing_version "procedural-v1"
@@ -27,6 +28,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   end
 
   defp do_perform do
+    quarantine_incomplete_inputs()
     llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
 
     case Backplane.Settings.get("memory.llm_model") do
@@ -112,7 +114,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
       scope: elem(partition, 1),
       namespace: elem(partition, 2),
       metadata: %{"project" => elem(partition, 3)},
-      client_id: empty_to_nil(elem(partition, 4)),
+      client_id: elem(partition, 4),
       source_client_id: empty_to_nil(elem(partition, 5)),
       agent_id: "consolidation",
       host_id: elem(partition, 6),
@@ -194,22 +196,80 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
            fragment("COALESCE(?, '')", m.source_client_id), m.host_id}
       )
     )
+    |> Enum.filter(fn {memory_space_id, scope, namespace, _project, client_id, _source, host_id} ->
+      match?(
+        {:ok, _},
+        PartitionIdentity.validate_generator(%{
+          memory_space_id: memory_space_id,
+          host_id: host_id,
+          client_id: client_id,
+          scope: scope,
+          namespace: namespace
+        })
+      )
+    end)
     |> Enum.reject(&unresolved_partition?/1)
   end
 
+  defp quarantine_incomplete_inputs do
+    repo().all(
+      from(m in MemorySchema,
+        where:
+          is_nil(m.memory_space_id) or fragment("nullif(btrim(?), '') IS NULL", m.host_id) or
+            fragment("nullif(btrim(?), '') IS NULL", m.client_id) or
+            fragment("nullif(btrim(?), '') IS NULL", m.scope) or
+            fragment("nullif(btrim(?), '') IS NULL", m.namespace),
+        select: %{
+          id: m.id,
+          memory_space_id: m.memory_space_id,
+          host_id: m.host_id,
+          client_id: m.client_id,
+          source_client_id: m.source_client_id,
+          scope: m.scope,
+          namespace: m.namespace
+        }
+      )
+    )
+    |> Enum.each(fn memory ->
+      validate_source_partition(memory)
+    end)
+  end
+
+  @doc false
+  def validate_source_partition(%{id: id} = memory) when is_binary(id) do
+    partition =
+      Map.take(memory, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
+
+    case PartitionIdentity.validate_generator(partition) do
+      {:ok, validated} ->
+        {:ok, validated}
+
+      {:error, reason} = error ->
+        details = Map.new(partition, fn {key, value} -> {to_string(key), value} end)
+        Memories.record_partition_issue("bpm_memories", id, reason, details)
+        error
+    end
+  end
+
   defp unresolved_partition?(
-         {memory_space_id, scope, namespace, _project, _client, _source, host_id}
+         {memory_space_id, scope, namespace, _project, client_id, _source, host_id}
        ) do
     repo().exists?(
       from(issue in BackfillIssue,
-        where: issue.disposition == "pending",
+        join: memory in MemorySchema,
+        on: fragment("? = ?::text", issue.source_id, memory.id),
+        where: issue.source_table == "bpm_memories" and issue.disposition == "pending",
         where:
-          (fragment("? ->> 'memory_space_id' = ?", issue.details, ^memory_space_id) or
-             fragment("? ->> 'host_id' = ?", issue.details, ^host_id)) and
-            (fragment("nullif(btrim(? ->> 'scope'), '') IS NULL", issue.details) or
-               fragment("? ->> 'scope' = ?", issue.details, ^scope)) and
-            (fragment("nullif(btrim(? ->> 'namespace'), '') IS NULL", issue.details) or
-               fragment("? ->> 'namespace' = ?", issue.details, ^namespace))
+          memory.memory_space_id == ^memory_space_id and memory.host_id == ^host_id and
+            memory.client_id == ^client_id and memory.scope == ^scope and
+            memory.namespace == ^namespace
       )
     )
   end

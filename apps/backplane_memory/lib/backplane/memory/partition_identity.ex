@@ -7,6 +7,7 @@ defmodule Backplane.Memory.PartitionIdentity do
   """
 
   @canonical_keys [:memory_space_id, :scope, :namespace]
+  @generator_keys [:memory_space_id, :host_id, :client_id, :scope, :namespace]
   @optional_keys [:host_id, :source_client_id, :client_id]
   @known_keys @canonical_keys ++ @optional_keys
 
@@ -32,6 +33,29 @@ defmodule Backplane.Memory.PartitionIdentity do
   end
 
   def validate(_partition), do: {:error, :incomplete_partition}
+
+  @doc "Validates the complete owner tuple required by canonical memory generators and writes."
+  @spec validate_generator(map()) :: {:ok, map()} | {:error, error_reason()}
+  def validate_generator(partition) do
+    with {:ok, validated} <- validate(partition),
+         {:ok, host_id} <- required_string(value(partition, :host_id)),
+         {:ok, client_id} <- required_string(value(partition, :client_id)) do
+      {:ok, Map.merge(validated, %{host_id: host_id, client_id: client_id})}
+    end
+  end
+
+  @doc false
+  @spec validate_generator(map(), map()) :: {:ok, map()} | {:error, error_reason()}
+  def validate_generator(partition, expected_partition) do
+    with {:ok, validated} <- validate_generator(partition),
+         {:ok, expected} <- validate_generator(expected_partition),
+         true <- Map.take(validated, @generator_keys) == Map.take(expected, @generator_keys) do
+      {:ok, Map.merge(validated, Map.take(expected, @generator_keys))}
+    else
+      false -> {:error, :partition_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc false
   @spec validate(map(), map()) :: {:ok, map()} | {:error, error_reason()}

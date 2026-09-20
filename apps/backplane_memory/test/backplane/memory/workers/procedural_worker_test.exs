@@ -176,22 +176,72 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
         project: "project"
       )
 
-    repo().insert!(%BackfillIssue{
-      source_table: "bpm_memories",
-      source_id: memory.id,
-      reason: "partition_mismatch",
-      disposition: "pending",
-      details: %{
-        "memory_space_id" => memory.memory_space_id,
-        "host_id" => memory.host_id,
-        "scope" => memory.scope,
-        "namespace" => memory.namespace
-      }
-    })
+    issue =
+      repo().insert!(%BackfillIssue{
+        source_table: "bpm_memories",
+        source_id: memory.id,
+        reason: "partition_mismatch",
+        disposition: "pending",
+        details: %{
+          "memory_space_id" => memory.memory_space_id,
+          "host_id" => memory.host_id,
+          "scope" => memory.scope,
+          "namespace" => memory.namespace
+        }
+      })
+
+    for {field, wrong} <- [
+          {"memory_space_id", canonical_partition("other-procedural").memory_space_id},
+          {"host_id", "other-host"},
+          {"client_id", "other-client"},
+          {"scope", "other-scope"},
+          {"namespace", "team:other"}
+        ] do
+      details = Map.put(issue.details, to_string(field), wrong)
+
+      repo().update_all(from(i in BackfillIssue, where: i.id == ^issue.id),
+        set: [details: details]
+      )
+
+      assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+      refute_received {:procedural_input, _}
+    end
+
+    assert repo().aggregate(from(m in Memory, where: m.memory_type == "procedural"), :count) == 0
+  end
+
+  test "source validation durably quarantines every incomplete partition field" do
+    partition = canonical_partition("procedural-boundary")
+
+    for field <- [:memory_space_id, :host_id, :client_id, :scope, :namespace],
+        invalid <- [nil, "", "   "] do
+      id = Ecto.UUID.generate()
+      source = partition |> Map.put(field, invalid) |> Map.put(:id, id)
+
+      assert {:error, :incomplete_partition} =
+               ProceduralWorker.validate_source_partition(source)
+
+      assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
+               repo().get_by!(BackfillIssue, source_table: "bpm_memories", source_id: id)
+    end
+  end
+
+  test "durably quarantines incomplete semantic generator inputs" do
+    [{:ok, memory} | _rest] =
+      insert_partition("incomplete",
+        namespace: "team:incomplete",
+        client_id: "client",
+        project: "project"
+      )
+
+    repo().update_all(from(m in Memory, where: m.id == ^memory.id), set: [client_id: " "])
 
     assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+
+    assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
+             repo().get_by!(BackfillIssue, source_table: "bpm_memories", source_id: memory.id)
+
     refute_received {:procedural_input, _}
-    assert repo().aggregate(from(m in Memory, where: m.memory_type == "procedural"), :count) == 0
   end
 
   defp insert_partition(prefix, opts) do

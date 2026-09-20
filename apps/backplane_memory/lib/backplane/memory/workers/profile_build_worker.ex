@@ -10,6 +10,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Projections.ProjectedSession
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -30,9 +31,13 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         } = job
       ) do
     Backplane.Memory.PipelineTelemetry.span("profile", job.args, fn ->
-      case generator_partition(partition) do
-        {:ok, partition} -> perform_partition(project, partition, job.args["force"] == true)
-        {:error, _reason} -> {:discard, :incomplete_partition}
+      case generator_partition(project, partition) do
+        {:ok, partition} ->
+          perform_partition(project, partition, job.args["force"] == true)
+
+        {:error, reason} ->
+          record_partition_issue(project, partition, reason)
+          {:discard, reason}
       end
     end)
   end
@@ -71,19 +76,24 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   end
 
   def enqueue(project, partition, opts) when is_list(opts) do
-    with {:ok, partition} <- generator_partition(partition) do
-      %{
-        project: project,
-        memory_space_id: Map.fetch!(partition, :memory_space_id),
-        host_id: Map.fetch!(partition, :host_id),
-        client_id: Map.fetch!(partition, :client_id),
-        source_client_id: Map.get(partition, :source_client_id),
-        scope: Map.fetch!(partition, :scope),
-        namespace: Map.fetch!(partition, :namespace),
-        force: Keyword.get(opts, :force, false)
-      }
-      |> new()
-      |> Oban.insert()
+    case generator_partition(project, partition) do
+      {:ok, partition} ->
+        %{
+          project: project,
+          memory_space_id: Map.fetch!(partition, :memory_space_id),
+          host_id: Map.fetch!(partition, :host_id),
+          client_id: Map.fetch!(partition, :client_id),
+          source_client_id: Map.get(partition, :source_client_id),
+          scope: Map.fetch!(partition, :scope),
+          namespace: Map.fetch!(partition, :namespace),
+          force: Keyword.get(opts, :force, false)
+        }
+        |> new()
+        |> Oban.insert()
+
+      {:error, reason} = error ->
+        record_partition_issue(project, partition, reason)
+        error
     end
   end
 
@@ -275,15 +285,90 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     |> Map.new()
   end
 
-  defp generator_partition(partition) do
-    with {:ok, partition} <- PartitionIdentity.validate(partition),
-         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
-      {:ok, partition}
-    else
-      false -> {:error, :incomplete_partition}
-      {:error, reason} -> {:error, reason}
+  defp generator_partition(project, partition) do
+    with {:ok, claim} <- PartitionIdentity.validate_generator(partition),
+         {:ok, expected} <- authoritative_partition(project, claim),
+         {:ok, validated} <- PartitionIdentity.validate_generator(claim, expected) do
+      {:ok, validated}
     end
   end
 
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+  defp authoritative_partition(project, claim) do
+    cond do
+      exact_source?(project, claim) -> {:ok, claim}
+      any_source?(project) -> {:error, :partition_mismatch}
+      true -> {:error, :incomplete_partition}
+    end
+  end
+
+  defp exact_source?(project, claim) do
+    repo().exists?(
+      from(m in Memory,
+        where:
+          fragment("?->>'project'", m.metadata) == ^project and
+            m.memory_space_id == ^claim.memory_space_id and m.host_id == ^claim.host_id and
+            m.client_id == ^claim.client_id and m.scope == ^claim.scope and
+            m.namespace == ^claim.namespace and is_nil(m.deleted_at)
+      )
+    ) or
+      repo().exists?(
+        from(s in Summary,
+          join: session in ProjectedSession,
+          on: session.subject_id == s.subject_id,
+          where:
+            s.project == ^project and is_nil(s.superseded_at) and
+              session.memory_space_id == ^claim.memory_space_id and
+              session.host_id == ^claim.host_id and session.client_id == ^claim.client_id and
+              session.scope == ^claim.scope and session.namespace == ^claim.namespace
+        )
+      ) or
+      repo().exists?(
+        from(p in Profile,
+          where:
+            p.project == ^project and p.memory_space_id == ^claim.memory_space_id and
+              p.host_id == ^claim.host_id and p.client_id == ^claim.client_id and
+              p.scope == ^claim.scope and p.namespace == ^claim.namespace
+        )
+      )
+  end
+
+  defp any_source?(project) do
+    repo().exists?(
+      from(m in Memory,
+        where: fragment("?->>'project'", m.metadata) == ^project and is_nil(m.deleted_at)
+      )
+    ) or
+      repo().exists?(
+        from(s in Summary,
+          join: session in ProjectedSession,
+          on: session.subject_id == s.subject_id,
+          where: s.project == ^project and is_nil(s.superseded_at)
+        )
+      ) or repo().exists?(from(p in Profile, where: p.project == ^project))
+  end
+
+  defp record_partition_issue(project, partition, reason) do
+    claim = issue_partition(partition)
+    details = Map.put(claim, :project, project)
+
+    source_id =
+      [project, claim]
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    Backplane.Memory.Memories.record_partition_issue(
+      "memory_profile_generator",
+      source_id,
+      reason,
+      details
+    )
+  end
+
+  defp issue_partition(partition) do
+    Map.new([:memory_space_id, :host_id, :client_id, :scope, :namespace], fn key ->
+      value = Map.get(partition, key, Map.get(partition, Atom.to_string(key)))
+      {key, if(is_binary(value), do: String.trim(value), else: value)}
+    end)
+  end
 end

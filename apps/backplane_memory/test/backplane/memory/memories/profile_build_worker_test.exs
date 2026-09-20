@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.ProfileBuildWorker
+  alias Backplane.MemorySpaces.BackfillIssue
 
   defp insert_memory(content, opts) do
     metadata =
@@ -71,19 +72,97 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
     end
 
     test "fails closed when generator provenance is incomplete" do
-      incomplete = canonical_partition("profile-incomplete") |> Map.drop([:host_id, :client_id])
+      partition = canonical_partition("profile-incomplete")
 
-      args =
-        incomplete
-        |> Map.merge(%{host_id: nil, client_id: nil})
+      for field <- [:memory_space_id, :host_id, :client_id, :scope, :namespace],
+          invalid <- [nil, "", "   "] do
+        incomplete = Map.put(partition, field, invalid)
+        args = incomplete |> stringify_keys() |> Map.put("project", "incomplete")
+
+        assert {:discard, :incomplete_partition} =
+                 ProfileBuildWorker.perform(%Oban.Job{args: args})
+
+        assert {:error, :incomplete_partition} =
+                 ProfileBuildWorker.enqueue("incomplete", incomplete)
+      end
+
+      mismatched = Map.put(partition, "host_id", "other-host")
+      mismatched_args = partition |> stringify_keys() |> Map.put(:host_id, "other-host")
+
+      assert {:discard, :partition_mismatch} =
+               ProfileBuildWorker.perform(%Oban.Job{
+                 args: Map.put(mismatched_args, "project", "incomplete")
+               })
+
+      assert {:error, :partition_mismatch} =
+               ProfileBuildWorker.enqueue("incomplete", mismatched)
+
+      assert repo().aggregate(
+               from(i in BackfillIssue,
+                 where:
+                   i.source_table == "memory_profile_generator" and
+                     i.reason == "incomplete_partition" and i.disposition == "pending"
+               ),
+               :count
+             ) >= 1
+    end
+
+    test "rejects complete claims that mismatch the authoritative project partition" do
+      project = "authoritative-profile-#{System.unique_integer([:positive])}"
+      authoritative = partition(project)
+      insert_memory("authoritative source", scope: project, metadata: %{"project" => project})
+
+      for {field, wrong} <- [
+            memory_space_id: canonical_partition("other-profile").memory_space_id,
+            host_id: "other-host",
+            client_id: "other-client",
+            scope: "other-scope",
+            namespace: "team:other"
+          ] do
+        claim = Map.put(authoritative, field, wrong)
+
+        assert {:discard, :partition_mismatch} =
+                 ProfileBuildWorker.perform(%Oban.Job{
+                   args: claim |> stringify_keys() |> Map.put("project", project)
+                 })
+      end
+
+      assert repo().aggregate(from(p in Profile, where: p.project == ^project), :count) == 0
+    end
+
+    test "failure issue identity and details ignore unrelated profile job arguments" do
+      project = "profile-redaction-#{System.unique_integer([:positive])}"
+      insert_memory("profile authority", scope: project, metadata: %{"project" => project})
+
+      wrong =
+        project
+        |> partition()
+        |> Map.put(:namespace, "team:wrong")
         |> stringify_keys()
-        |> Map.put("project", "incomplete")
+        |> Map.put("project", project)
 
-      assert {:discard, :incomplete_partition} =
-               ProfileBuildWorker.perform(%Oban.Job{args: args})
+      assert {:discard, :partition_mismatch} =
+               ProfileBuildWorker.perform(%Oban.Job{args: wrong})
 
-      assert {:error, :incomplete_partition} =
-               ProfileBuildWorker.enqueue("incomplete", incomplete)
+      [first] =
+        repo().all(from(i in BackfillIssue, where: i.source_table == "memory_profile_generator"))
+
+      assert {:discard, :partition_mismatch} =
+               ProfileBuildWorker.perform(%Oban.Job{
+                 args: Map.merge(wrong, %{"content" => "secret", "force" => true})
+               })
+
+      assert [%BackfillIssue{id: id, details: details}] =
+               repo().all(
+                 from(i in BackfillIssue, where: i.source_table == "memory_profile_generator")
+               )
+
+      assert id == first.id
+
+      assert Map.keys(details) |> Enum.sort() ==
+               ~w(client_id host_id memory_space_id namespace project scope)
+
+      refute inspect(details) =~ "secret"
     end
 
     test "builds profile from fixture memories and upserts correctly" do
