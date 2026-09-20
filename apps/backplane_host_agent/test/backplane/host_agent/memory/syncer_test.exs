@@ -88,7 +88,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert item["metadata"] == %{"topic" => "sync"}
   end
 
-  test "transient channel errors return inflight rows to pending without attempts", %{
+  test "transient channel errors move rows to retry wait with an attempt", %{
     store: store,
     opts: opts
   } do
@@ -98,7 +98,58 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert {:error, :disconnected} =
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
 
-    assert_outbox(store, id, "pending", 0)
+    assert_outbox(store, id, "retry_wait", 1)
+  end
+
+  test "retries only due rows with bounded deterministic backoff and dead-letters at max attempts",
+       %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "retry"}, opts)
+    now = "2026-06-17T00:00:00Z"
+    Process.put({FakeChannel, :reply}, {:error, :disconnected})
+
+    assert {:error, :disconnected} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               now_fun: fn -> now end,
+               jitter_fun: fn -> 0.5 end,
+               max_attempts: 2
+             )
+
+    assert {:ok,
+            %Result{
+              rows: [%{"state" => "retry_wait", "next_attempt_at" => "2026-06-17T00:00:01.000Z"}]
+            }} =
+             Store.query(
+               store,
+               "SELECT state, next_attempt_at FROM memory_outbox WHERE memory_id = ?",
+               [id]
+             )
+
+    assert {:ok, %{"drained" => 0}} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               now_fun: fn -> now end,
+               jitter_fun: fn -> 0.5 end,
+               max_attempts: 2
+             )
+
+    due = "2026-06-17T00:00:01Z"
+
+    assert {:error, :disconnected} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               now_fun: fn -> due end,
+               jitter_fun: fn -> 0.5 end,
+               max_attempts: 2
+             )
+
+    assert_outbox(store, id, "dead_letter", 2)
   end
 
   test "clamps configured sync batches to 50 items", %{store: store, opts: opts} do
@@ -149,7 +200,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "pending", 0)
   end
 
-  test "missing memory rows are marked failed while the rest of the batch drains", %{
+  test "missing memory rows are dead-lettered while the rest of the batch drains", %{
     store: store,
     opts: opts
   } do
@@ -172,7 +223,8 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
 
     assert_receive {:memory_push, "memory_sync", %{"items" => [%{"id" => ^id}]}}
 
-    assert {:ok, %Result{rows: [%{"state" => "failed", "attempts" => 1, "last_error" => error}]}} =
+    assert {:ok,
+            %Result{rows: [%{"state" => "dead_letter", "attempts" => 1, "last_error" => error}]}} =
              Store.query(
                store,
                "SELECT state, attempts, last_error FROM memory_outbox WHERE memory_id = 'missing_memory'"
@@ -182,7 +234,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "done", 0)
   end
 
-  test "validation errors mark rows failed and increment attempts", %{store: store, opts: opts} do
+  test "validation errors dead-letter rows", %{store: store, opts: opts} do
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad payload"}, opts)
 
     Process.put({FakeChannel, :reply}, {
@@ -193,7 +245,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert {:ok, %{"drained" => 1}} =
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
 
-    assert_outbox(store, id, "failed", 1)
+    assert_outbox(store, id, "dead_letter", 1)
 
     assert {:ok, %Result{rows: [%{"last_error" => "invalid scope"}]}} =
              Store.query(store, "SELECT last_error FROM memory_outbox WHERE memory_id = ?", [id])

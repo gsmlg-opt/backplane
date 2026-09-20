@@ -1,8 +1,8 @@
 defmodule Mix.Tasks.Agent.Memory.Resync do
-  @shortdoc "Requeues failed host-agent memory outbox rows"
+  @shortdoc "Requeues dead-lettered host-agent memory outbox rows"
 
   @moduledoc """
-  Requeues failed host-agent memory outbox rows to `pending`.
+  Requeues all dead-lettered rows, or selected rows passed as `--seq N`, to `pending`.
   """
 
   use Mix.Task
@@ -10,12 +10,26 @@ defmodule Mix.Tasks.Agent.Memory.Resync do
   alias Backplane.HostAgent.Memory.Diagnostics
 
   @impl true
-  def run(_args) do
+  def run(args) do
     Mix.Task.run("app.config")
+    {parsed, _rest, invalid} = OptionParser.parse(args, strict: [all: :boolean, seq: :integer])
 
-    case Diagnostics.requeue_failed_outbox(store: memory_store!()) do
+    if invalid != [] do
+      Mix.raise("expected --all or one or more --seq N options")
+    end
+
+    seqs = Keyword.get_values(parsed, :seq)
+
+    if Keyword.get(parsed, :all, false) and seqs != [] do
+      Mix.raise("--all cannot be combined with --seq")
+    end
+
+    case Diagnostics.requeue_failed_outbox(
+           store: memory_store!(),
+           seqs: if(seqs == [], do: :all, else: seqs)
+         ) do
       {:ok, %{"requeued" => requeued}} ->
-        Mix.shell().info("Requeued #{requeued} failed memory outbox row(s).")
+        Mix.shell().info("Requeued #{requeued} dead-lettered memory outbox row(s).")
 
       {:error, reason} ->
         Mix.raise("failed to requeue memory outbox rows: #{inspect(reason)}")

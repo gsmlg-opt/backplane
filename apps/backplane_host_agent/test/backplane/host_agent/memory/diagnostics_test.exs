@@ -22,9 +22,12 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
       synced_at: "2026-06-16T00:00:00Z"
     )
 
-    insert_memory!(store, "failed_memory", "failed", sync_state: "failed")
+    insert_memory!(store, "dead_memory", "dead", sync_state: "pending")
     pending_seq = insert_outbox!(store, "remember", "pending_memory", "pending")
-    failed_seq = insert_outbox!(store, "remember", "failed_memory", "failed", "validation failed")
+
+    failed_seq =
+      insert_outbox!(store, "remember", "dead_memory", "dead_letter", "validation failed")
+
     insert_fact!(store, "fact_1", "fact content", "proj_local", "2026-06-17T00:00:00Z")
     insert_fact!(store, "fact_2", "other fact", "other_scope", "2026-06-15T00:00:00Z")
     insert_tombstone!(store, "wiped")
@@ -32,13 +35,13 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
     assert {:ok,
             %{
               "store" => %{"status" => "ok", "db_path" => "/tmp/memory.db"},
-              "memories" => %{"pending" => 1, "synced" => 1, "failed" => 1},
-              "outbox" => %{"pending" => 1, "failed" => 1},
+              "memories" => %{"pending" => 2, "synced" => 1},
+              "outbox" => %{"pending" => 1, "dead_letter" => 1},
               "oldest_pending_seq" => ^pending_seq,
               "failed_outbox" => [
                 %{
                   "seq" => ^failed_seq,
-                  "memory_id" => "failed_memory",
+                  "memory_id" => "dead_memory",
                   "op" => "remember",
                   "last_error" => "validation failed"
                 }
@@ -70,9 +73,11 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
              )
   end
 
-  test "recovery helpers requeue failed rows and purge tombstones explicitly", %{store: store} do
-    insert_memory!(store, "failed_memory", "failed", sync_state: "failed")
-    insert_outbox!(store, "remember", "failed_memory", "failed", "validation failed")
+  test "recovery helpers requeue dead-letter rows and purge tombstones explicitly", %{
+    store: store
+  } do
+    insert_memory!(store, "dead_memory", "dead", sync_state: "pending")
+    insert_outbox!(store, "remember", "dead_memory", "dead_letter", "validation failed")
     insert_tombstone!(store, "wiped")
 
     assert {:ok, %{"requeued" => 1}} = Diagnostics.requeue_failed_outbox(store: store)
@@ -82,6 +87,32 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
 
     assert {:ok, %{"purged" => 1}} = Diagnostics.purge_tombstones(store: store)
     assert_count(store, "tombstones", 0)
+  end
+
+  test "requeues only selected dead-letter rows and resets retry state", %{store: store} do
+    insert_memory!(store, "first", "first", sync_state: "pending")
+    first = insert_outbox!(store, "remember", "first", "dead_letter", "bad")
+    insert_memory!(store, "second", "second", sync_state: "pending")
+    insert_outbox!(store, "remember", "second", "dead_letter", "bad")
+
+    assert {:ok, %{"requeued" => 1}} =
+             Diagnostics.requeue_failed_outbox(store: store, seqs: [first])
+
+    assert {:ok, %Result{rows: rows}} =
+             Store.query(
+               store,
+               "SELECT state, attempts, last_error, dead_lettered_at FROM memory_outbox ORDER BY seq"
+             )
+
+    assert [
+             %{
+               "state" => "pending",
+               "attempts" => 0,
+               "last_error" => nil,
+               "dead_lettered_at" => nil
+             },
+             %{"state" => "dead_letter"}
+           ] = rows
   end
 
   defp start_memory!(tmp_dir) do

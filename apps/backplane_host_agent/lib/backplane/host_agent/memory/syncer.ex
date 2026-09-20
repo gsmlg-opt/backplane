@@ -15,6 +15,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   @max_payload_bytes 512 * 1024
   @default_interval_ms 5_000
   @default_max_attempts 5
+  @max_retry_delay_ms :timer.minutes(5)
 
   def child_spec(opts) do
     %{
@@ -53,11 +54,11 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     opts = normalize_opts(opts)
 
     with {:ok, channel} <- connected_channel(opts),
-         {:ok, outbox_rows} <- claim_pending(opts.store, opts.batch_size) do
+         {:ok, outbox_rows} <- claim_pending(opts.store, opts.batch_size, now(opts)) do
       if outbox_rows == [] do
         {:ok, %{"drained" => 0}}
       else
-        {items, failed_rows} = build_payload_items(opts.store, outbox_rows, opts.max_attempts)
+        {items, failed_rows} = build_payload_items(opts, outbox_rows)
         pushed_rows = outbox_rows -- failed_rows
         {items, deferred_rows} = fit_payload(items, pushed_rows)
         pushed_rows = pushed_rows -- deferred_rows
@@ -69,15 +70,20 @@ defmodule Backplane.HostAgent.Memory.Syncer do
         else
           case push_sync(opts.channel_module, channel, payload) do
             {:ok, %{"items" => ack_items}} ->
-              apply_acks(opts.store, pushed_rows, ack_items, opts.max_attempts)
-              {:ok, %{"drained" => length(items)}}
+              if valid_acks?(pushed_rows, ack_items) do
+                apply_acks(opts, pushed_rows, ack_items)
+                {:ok, %{"drained" => length(items)}}
+              else
+                retry_rows(opts, pushed_rows, "invalid acknowledgement")
+                {:error, :invalid_ack}
+              end
 
             {:ok, _reply} ->
-              reset_pending(opts.store, Enum.map(pushed_rows, & &1["seq"]))
+              retry_rows(opts, pushed_rows, "invalid acknowledgement")
               {:error, :invalid_ack}
 
             {:error, reason} ->
-              reset_pending(opts.store, Enum.map(pushed_rows, & &1["seq"]))
+              retry_rows(opts, pushed_rows, reason)
               {:error, reason}
           end
         end
@@ -132,18 +138,18 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end
   end
 
-  defp claim_pending(store, batch_size) do
+  defp claim_pending(store, batch_size, now) do
     transaction(store, fn conn ->
       case Store.query(
              conn,
              """
-             SELECT seq, op, memory_id
+             SELECT seq, op, memory_id, attempts
              FROM memory_outbox
-             WHERE state = 'pending'
+             WHERE state = 'pending' OR (state = 'retry_wait' AND next_attempt_at <= ?)
              ORDER BY seq
              LIMIT ?
              """,
-             [batch_size]
+             [now, batch_size]
            ) do
         {:ok, %Result{rows: []}} ->
           []
@@ -154,8 +160,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
           case Store.execute(
                  conn,
-                 "UPDATE memory_outbox SET state = 'inflight', updated_at = ? WHERE seq IN (#{placeholders}) AND state = 'pending'",
-                 [timestamp() | seqs]
+                 "UPDATE memory_outbox SET state = 'inflight', next_attempt_at = NULL, updated_at = ? WHERE seq IN (#{placeholders}) AND state IN ('pending', 'retry_wait')",
+                 [now | seqs]
                ) do
             {:ok, _result} -> rows
             {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
@@ -179,14 +185,14 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     :exit, reason -> {:error, reason}
   end
 
-  defp build_payload_items(store, outbox_rows, max_attempts) do
+  defp build_payload_items(opts, outbox_rows) do
     Enum.reduce(outbox_rows, {[], []}, fn row, {items, failed_rows} ->
-      case payload_item(store, row) do
+      case payload_item(opts.store, row) do
         {:ok, item} ->
           {[item | items], failed_rows}
 
         {:error, reason} ->
-          mark_failed(store, row["seq"], reason, max_attempts)
+          dead_letter(opts.store, row["seq"], reason, now(opts))
           {items, [row | failed_rows]}
       end
     end)
@@ -255,37 +261,39 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     :exit, reason -> {:error, reason}
   end
 
-  defp apply_acks(store, outbox_rows, ack_items, max_attempts) do
+  defp apply_acks(opts, outbox_rows, ack_items) do
     acks_by_id = Map.new(ack_items, &{&1["id"], &1})
 
     Enum.each(outbox_rows, fn row ->
       ack = Map.get(acks_by_id, row["memory_id"])
-      apply_ack(store, row, ack, max_attempts)
+      apply_ack(opts, row, ack)
     end)
   end
 
-  defp apply_ack(store, row, %{"status" => status} = ack, _max_attempts)
+  defp apply_ack(opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
-    mark_done(store, row, ack["canonical_id"])
+    mark_done(opts.store, row, ack["canonical_id"], now(opts))
   end
 
-  defp apply_ack(store, row, %{"status" => "error"} = ack, max_attempts) do
-    mark_failed(store, row["seq"], ack["error"] || "validation error", max_attempts)
+  defp apply_ack(opts, row, %{"status" => "error"} = ack) do
+    error = ack["error"] || "server error"
+
+    if permanent_error?(error) do
+      dead_letter(opts.store, row["seq"], error, now(opts))
+    else
+      retry_row(opts, row, error)
+    end
   end
 
-  defp apply_ack(store, row, _ack, _max_attempts) do
-    reset_pending(store, [row["seq"]])
-  end
+  defp apply_ack(opts, row, _ack), do: retry_row(opts, row, "missing acknowledgement")
 
-  defp mark_done(store, row, canonical_id) do
-    now = timestamp()
-
+  defp mark_done(store, row, canonical_id, now) do
     transaction(store, fn conn ->
       with {:ok, _} <-
              Store.execute(
                conn,
-               "UPDATE memory_outbox SET state = 'done', updated_at = ? WHERE seq = ?",
-               [now, row["seq"]]
+               "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ?",
+               [now, now, row["seq"]]
              ),
            {:ok, _} <-
              Store.execute(
@@ -306,19 +314,42 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end)
   end
 
-  defp mark_failed(store, seq, error, max_attempts) do
+  defp dead_letter(store, seq, error, now) do
     Store.execute(
       store,
       """
       UPDATE memory_outbox
-      SET state = 'failed',
-          attempts = min(attempts + 1, ?),
+      SET state = 'dead_letter',
+          attempts = attempts + 1,
           last_error = ?,
+          dead_lettered_at = ?,
+          next_attempt_at = NULL,
           updated_at = ?
       WHERE seq = ?
       """,
-      [max_attempts, to_string(error), timestamp(), seq]
+      [to_string(error), now, now, seq]
     )
+  end
+
+  defp retry_rows(opts, rows, error), do: Enum.each(rows, &retry_row(opts, &1, error))
+
+  defp retry_row(opts, row, error) do
+    attempts = row["attempts"] + 1
+    now = now(opts)
+
+    if attempts >= opts.max_attempts do
+      Store.execute(
+        opts.store,
+        "UPDATE memory_outbox SET state = 'dead_letter', attempts = ?, last_error = ?, dead_lettered_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ?",
+        [attempts, to_string(error), now, now, row["seq"]]
+      )
+    else
+      Store.execute(
+        opts.store,
+        "UPDATE memory_outbox SET state = 'retry_wait', attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ?",
+        [attempts, to_string(error), retry_at(now, attempts, opts), now, row["seq"]]
+      )
+    end
   end
 
   defp reset_pending(_store, []), do: :ok
@@ -418,7 +449,9 @@ defmodule Backplane.HostAgent.Memory.Syncer do
           opts,
           :max_attempts,
           config_value(config, :max_attempts) || @default_max_attempts
-        )
+        ),
+      now_fun: Keyword.get(opts, :now_fun, &timestamp/0),
+      jitter_fun: Keyword.get(opts, :jitter_fun, &:rand.uniform/0)
     }
   end
 
@@ -470,6 +503,29 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     |> DateTime.truncate(:microsecond)
     |> DateTime.to_iso8601()
   end
+
+  defp now(%{now_fun: fun}), do: fun.()
+
+  defp retry_at(now, attempts, opts) do
+    delay = min(1_000 * Integer.pow(2, attempts - 1), @max_retry_delay_ms)
+    jitter = opts.jitter_fun.() |> min(1.0) |> max(0.0)
+    {:ok, value, _offset} = DateTime.from_iso8601(now)
+    value |> DateTime.add(round(delay * (0.5 + jitter)), :millisecond) |> DateTime.to_iso8601()
+  end
+
+  defp permanent_error?(error) do
+    message = error |> to_string() |> String.downcase()
+
+    String.contains?(message, ["validation", "invalid", "governance", "unauthorized", "forbidden"])
+  end
+
+  defp valid_acks?(rows, acks) when is_list(acks) do
+    expected = Enum.map(rows, & &1["memory_id"]) |> MapSet.new()
+    received = Enum.map(acks, & &1["id"])
+    MapSet.new(received) == expected and length(received) == MapSet.size(expected)
+  end
+
+  defp valid_acks?(_rows, _acks), do: false
 
   defp sha256(content) do
     :crypto.hash(:sha256, content)

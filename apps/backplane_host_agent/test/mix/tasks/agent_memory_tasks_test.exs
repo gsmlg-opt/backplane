@@ -19,14 +19,30 @@ defmodule Mix.Tasks.Agent.MemoryTasksTest do
     {:ok, store: store}
   end
 
-  test "agent.memory.resync requeues failed outbox rows", %{store: store} do
-    insert_memory!(store, "failed_memory", "failed")
-    insert_outbox!(store, "failed_memory", "failed", "validation failed")
+  test "agent.memory.resync requeues dead-lettered outbox rows", %{store: store} do
+    insert_memory!(store, "dead_memory", "dead")
+    insert_outbox!(store, "dead_memory", "dead_letter", "validation failed")
 
     Mix.Tasks.Agent.Memory.Resync.run([])
 
     assert {:ok, %Result{rows: [%{"state" => "pending", "last_error" => nil}]}} =
              Store.query(store, "SELECT state, last_error FROM memory_outbox")
+  end
+
+  test "agent.memory.resync requeues only selected sequence numbers", %{store: store} do
+    insert_memory!(store, "first", "first")
+    insert_outbox!(store, "first", "dead_letter", "bad")
+    insert_memory!(store, "second", "second")
+    insert_outbox!(store, "second", "dead_letter", "bad")
+
+    assert {:ok, %Result{rows: [%{"seq" => seq}]}} =
+             Store.query(store, "SELECT seq FROM memory_outbox WHERE memory_id = 'first'")
+
+    Mix.Task.reenable("agent.memory.resync")
+    Mix.Tasks.Agent.Memory.Resync.run(["--seq", Integer.to_string(seq)])
+
+    assert {:ok, %Result{rows: [%{"state" => "pending"}, %{"state" => "dead_letter"}]}} =
+             Store.query(store, "SELECT state FROM memory_outbox ORDER BY seq")
   end
 
   test "agent.memory.tombstones requires --purge and purges tombstones", %{store: store} do

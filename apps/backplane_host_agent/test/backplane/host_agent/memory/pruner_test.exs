@@ -18,7 +18,7 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
 
     insert_memory!(store, "old_synced", "old synced", sync_state: "synced", inserted_at: old)
     insert_memory!(store, "old_pending", "old pending", sync_state: "pending", inserted_at: old)
-    insert_memory!(store, "old_failed", "old failed", sync_state: "failed", inserted_at: old)
+    insert_memory!(store, "old_retry", "old retry", sync_state: "pending", inserted_at: old)
 
     insert_memory!(store, "recent_synced", "recent synced",
       sync_state: "synced",
@@ -45,18 +45,42 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
       deleted_at: recent
     )
 
-    insert_outbox!(store, "forget", "deleted_failed", "failed")
+    insert_outbox!(store, "forget", "deleted_failed", "retry_wait")
     insert_fact!(store, "fact_1", "fact stays")
     insert_tombstone!(store, "wiped stays")
     insert_slot!(store, "slot_stays")
 
-    assert {:ok, %{"deleted" => 2, "cutoff" => ^cutoff}} =
+    assert {:ok, %{"deleted" => 2, "outbox_deleted" => 1, "cutoff" => ^cutoff}} =
              Pruner.prune_once(store: store, cutoff: cutoff)
 
-    assert_memory_ids(store, ["deleted_failed", "old_failed", "old_pending", "recent_synced"])
+    assert_memory_ids(store, ["deleted_failed", "old_pending", "old_retry", "recent_synced"])
     assert_count(store, "facts", 1)
     assert_count(store, "tombstones", 1)
     assert_count(store, "slots", 1)
+  end
+
+  test "retains pending commands and prunes only aged terminal outbox rows", %{store: store} do
+    old = "2026-01-01T00:00:00Z"
+    cutoff = "2026-03-17T00:00:00Z"
+    insert_memory!(store, "done", "done", sync_state: "synced", inserted_at: old)
+    insert_outbox!(store, "remember", "done", "done")
+    insert_memory!(store, "dead", "dead", sync_state: "pending", inserted_at: old)
+    insert_outbox!(store, "remember", "dead", "dead_letter")
+    insert_memory!(store, "pending", "pending", sync_state: "pending", inserted_at: old)
+    insert_outbox!(store, "remember", "pending", "pending")
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET completed_at = ?, dead_lettered_at = ? WHERE state IN ('done', 'dead_letter')",
+               [old, old]
+             )
+
+    assert {:ok, %{"outbox_deleted" => 2}} =
+             Pruner.prune_once(store: store, cutoff: cutoff, outbox_cutoff: cutoff)
+
+    assert {:ok, %Result{rows: [%{"memory_id" => "pending", "state" => "pending"}]}} =
+             Store.query(store, "SELECT memory_id, state FROM memory_outbox")
   end
 
   defp start_memory!(tmp_dir) do
@@ -110,10 +134,18 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
              Store.execute(
                store,
                """
-               INSERT INTO memory_outbox(op, memory_id, state, inserted_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)
+               INSERT INTO memory_outbox(op, memory_id, state, completed_at, dead_lettered_at, inserted_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                """,
-               [op, memory_id, state, now, now]
+               [
+                 op,
+                 memory_id,
+                 state,
+                 if(state == "done", do: now),
+                 if(state == "dead_letter", do: now),
+                 now,
+                 now
+               ]
              )
   end
 

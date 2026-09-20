@@ -34,19 +34,33 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
     end
   end
 
-  @doc "Requeues failed outbox rows for another sync attempt."
+  @doc "Requeues selected or all dead-lettered outbox rows for another sync attempt."
   def requeue_failed_outbox(opts \\ []) do
     opts = normalize_opts(opts)
     now = timestamp()
+    seqs = Map.get(opts, :seqs, :all)
+
+    {where, params} =
+      case seqs do
+        :all ->
+          {"state = 'dead_letter'", []}
+
+        values when is_list(values) and values != [] ->
+          {"state = 'dead_letter' AND seq IN (#{placeholders(values)})", values}
+
+        _ ->
+          {"1 = 0", []}
+      end
 
     case Store.execute(
            opts.store,
            """
            UPDATE memory_outbox
-           SET state = 'pending', last_error = NULL, updated_at = ?
-           WHERE state = 'failed'
+           SET state = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL,
+               dead_lettered_at = NULL, updated_at = ?
+           WHERE #{where}
            """,
-           [now]
+           [now | params]
          ) do
       {:ok, %Result{num_rows: requeued}} ->
         {:ok, %{"requeued" => requeued}}
@@ -78,7 +92,8 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
           Application.get_env(:backplane_host_agent, :memory_store, Store)
         ),
       db_path: Keyword.get(opts, :db_path, config_value(config, :db_path)),
-      host_sync_v2: Keyword.get(opts, :host_sync_v2, config_value(config, :host_sync_v2) || %{})
+      host_sync_v2: Keyword.get(opts, :host_sync_v2, config_value(config, :host_sync_v2) || %{}),
+      seqs: Keyword.get(opts, :seqs, :all)
     }
   end
 
@@ -102,7 +117,10 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   end
 
   defp oldest_pending_seq(store) do
-    case Store.query(store, "SELECT MIN(seq) AS seq FROM memory_outbox WHERE state = 'pending'") do
+    case Store.query(
+           store,
+           "SELECT MIN(seq) AS seq FROM memory_outbox WHERE state IN ('pending', 'retry_wait')"
+         ) do
       {:ok, %Result{rows: [%{"seq" => seq}]}} -> {:ok, seq}
       {:error, reason} -> {:error, {:storage_error, reason}}
     end
@@ -112,7 +130,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
     sql = """
     SELECT seq, op, memory_id, attempts, last_error, updated_at
     FROM memory_outbox
-    WHERE state = 'failed'
+    WHERE state = 'dead_letter'
     ORDER BY seq
     """
 
@@ -180,4 +198,6 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
     |> DateTime.truncate(:microsecond)
     |> DateTime.to_iso8601()
   end
+
+  defp placeholders(values), do: values |> Enum.map(fn _ -> "?" end) |> Enum.join(",")
 end
