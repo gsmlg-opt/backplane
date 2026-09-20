@@ -166,6 +166,9 @@ defmodule Backplane.Admin.ApiUsageLiveTest do
     assert has_element?(view, "#api-account-management-credential")
     view |> form("#api-account-form", account: %{provider: "deepseek"}) |> render_change()
     refute has_element?(view, "#api-account-management-credential")
+    html = view |> form("#api-account-form", account: %{provider: "exa"}) |> render_change()
+    assert html =~ "Team Management API access"
+    assert html =~ "Contact Exa support"
   end
 
   test "creates, edits, pauses and deletes with ID-only audit events",

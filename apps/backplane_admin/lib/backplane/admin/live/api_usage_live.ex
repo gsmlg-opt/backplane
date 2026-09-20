@@ -121,7 +121,7 @@ defmodule Backplane.Admin.ApiUsageLive do
   defp account_params(params) do
     params = Map.take(params, @fields)
 
-    if params["provider"] == "deepseek",
+    if params["provider"] not in ["openrouter", "exa"],
       do: Map.put(params, "management_credential_name", nil),
       else: params
   end
@@ -178,6 +178,10 @@ defmodule Backplane.Admin.ApiUsageLive do
               helper="OpenRouter account credits require a management key. Missing or failed credits do not hide key usage." />
             <.form_error field={@form[:management_credential_name]} />
           </div>
+          <p :if={@form[:provider].value == "exa"} class="text-sm text-on-surface-variant">
+            Exa search works with a regular API key. Exa usage analytics require Team Management API access,
+            which is not enabled for ordinary accounts. Contact Exa support to request access.
+          </p>
           <.dm_checkbox id="api-account-active" name="account[active]" label="Active"
             checked={@form[:active].value in [true, "true"]} />
           <.form_error field={@form[:active]} />
@@ -249,6 +253,9 @@ defmodule Backplane.Admin.ApiUsageLive do
 
   defp provider_label("openrouter"), do: "OpenRouter"
   defp provider_label("deepseek"), do: "DeepSeek"
+  defp provider_label("exa"), do: "Exa"
+  defp provider_label("tavily"), do: "Tavily"
+  defp provider_label("firecrawl"), do: "Firecrawl"
 
   defp form_error(assigns) do
     ~H"""

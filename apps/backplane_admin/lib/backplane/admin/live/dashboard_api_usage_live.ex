@@ -175,8 +175,8 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
           </div>
         </dl>
       </section>
-      <section :if={@account.provider == "openrouter"}>
-        <h3 class="font-semibold">API key limit</h3>
+      <section :if={@data.limit != nil || @account.provider == "openrouter"}>
+        <h3 class="font-semibold">{if @account.provider == "firecrawl", do: "Credit limit", else: "API key limit"}</h3>
         <p :if={@data.limit == nil} class="text-sm text-on-surface-variant">Unavailable / no configured limit</p>
         <dl :if={@data.limit != nil} class="text-sm space-y-1 mt-2">
           <div class="flex justify-between gap-3"><dt>Limit</dt><dd>{amount(@data.limit.amount, @data.limit.currency)}</dd></div>
@@ -205,10 +205,17 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
   defp amount(value, currency), do: "#{value} #{currency}"
   defp provider_label("openrouter"), do: "OpenRouter"
   defp provider_label("deepseek"), do: "DeepSeek"
+  defp provider_label("exa"), do: "Exa"
+  defp provider_label("tavily"), do: "Tavily"
+  defp provider_label("firecrawl"), do: "Firecrawl"
 
   defp warning_message({:account_credits, _reason}),
     do:
       "OpenRouter account credits unavailable. Successfully fetched key spending is still shown."
+
+  defp warning_message({:usage_unavailable, :team_management_key_required}),
+    do:
+      "Exa usage analytics are unavailable for ordinary accounts. Exa requires Team Management API access; contact Exa support to enable it."
 
   defp warning_message(_warning),
     do:

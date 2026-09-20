@@ -4,9 +4,12 @@ defmodule Backplane.Monitor.ApiAccountTest do
   alias Backplane.Monitor.ApiAccount
 
   test "API providers are independent of subscription providers" do
-    assert ApiAccount.providers() == ~w(openrouter deepseek)
+    assert ApiAccount.providers() == ~w(openrouter deepseek exa tavily firecrawl)
     assert ApiAccount.provider_label("openrouter") == "OpenRouter"
     assert ApiAccount.provider_label("deepseek") == "DeepSeek"
+    assert ApiAccount.provider_label("exa") == "Exa"
+    assert ApiAccount.provider_label("tavily") == "Tavily"
+    assert ApiAccount.provider_label("firecrawl") == "Firecrawl"
   end
 
   test "requires a name, supported provider, and credential reference" do
@@ -18,7 +21,7 @@ defmodule Backplane.Monitor.ApiAccountTest do
     assert ApiAccount.changeset(%ApiAccount{}, attrs()).valid?
   end
 
-  test "management credentials are only meaningful for OpenRouter" do
+  test "management credentials are supported for OpenRouter and Exa" do
     assert ApiAccount.changeset(%ApiAccount{}, attrs(%{management_credential_name: "manager"})).valid?
 
     changeset =

@@ -4,7 +4,7 @@ defmodule Backplane.Monitor.ApiUsageServer do
   use GenServer
 
   alias Backplane.Monitor.{ApiAccounts, ApiUsageFetcher}
-  alias Backplane.Monitor.Providers.{DeepSeek, OpenRouter}
+  alias Backplane.Monitor.Providers.{DeepSeek, Exa, Firecrawl, OpenRouter, Tavily}
 
   @refresh_interval :timer.minutes(5)
   @request_timeout :timer.seconds(45)
@@ -439,7 +439,15 @@ defmodule Backplane.Monitor.ApiUsageServer do
 
   defp allow_req_test(provider, owner) do
     if Code.ensure_loaded?(Req.Test) do
-      stub = if provider == "openrouter", do: OpenRouter, else: DeepSeek
+      stub =
+        case provider do
+          "openrouter" -> OpenRouter
+          "deepseek" -> DeepSeek
+          "exa" -> Exa
+          "tavily" -> Tavily
+          "firecrawl" -> Firecrawl
+        end
+
       Req.Test.allow(stub, owner, self())
     end
   end

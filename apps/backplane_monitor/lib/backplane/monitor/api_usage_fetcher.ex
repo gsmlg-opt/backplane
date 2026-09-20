@@ -3,6 +3,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
 
   alias Backplane.Monitor.{ApiAccount, ApiAccounts}
   alias Backplane.Monitor.Providers.{DeepSeek, OpenRouter}
+  alias Backplane.Monitor.Providers.{Exa, Firecrawl, Tavily}
   alias Backplane.Settings.Encryption
   alias Backplane.Settings.Credentials.Vault
 
@@ -29,12 +30,13 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
           currency: String.t(),
           reset: String.t() | nil
         }
+  @type warning :: {:account_credits, reason()} | {:usage_unavailable, atom()}
   @type data :: %{
           balances: [balance()],
           usage: [usage()],
           limit: limit() | nil,
           is_available: boolean() | nil,
-          warnings: [{:account_credits, reason()}]
+          warnings: [warning()]
         }
 
   @spec fetch_usage(ApiAccount.t()) :: {:ok, data()} | {:error, reason()}
@@ -54,6 +56,18 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
     with {:ok, key} <- resolve_credential(account.credential_name) do
       DeepSeek.fetch(key)
     end
+  end
+
+  def fetch_usage(%ApiAccount{provider: "exa"} = account) do
+    with {:ok, _key} <- resolve_credential(account.credential_name), do: Exa.fetch()
+  end
+
+  def fetch_usage(%ApiAccount{provider: "tavily"} = account) do
+    with {:ok, key} <- resolve_credential(account.credential_name), do: Tavily.fetch(key)
+  end
+
+  def fetch_usage(%ApiAccount{provider: "firecrawl"} = account) do
+    with {:ok, key} <- resolve_credential(account.credential_name), do: Firecrawl.fetch(key)
   end
 
   def fetch_usage(%ApiAccount{}), do: {:error, :provider_not_supported}
@@ -85,14 +99,14 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
 
   @doc false
   @spec request(atom(), String.t(), String.t()) :: {:ok, map()} | {:error, reason()}
-  def request(option, url, key) do
+  def request(option, url, key, auth_header \\ "authorization") do
     options =
       :backplane_monitor
       |> Application.get_env(option, [])
       |> Keyword.take([:plug, :adapter])
       |> Keyword.merge(
         url: url,
-        auth: {:bearer, key},
+        headers: [{auth_header, if(auth_header == "x-api-key", do: key, else: "Bearer #{key}")}],
         redirect: false,
         retry: false,
         redirect_log_level: false,

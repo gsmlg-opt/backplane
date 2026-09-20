@@ -6,7 +6,7 @@ defmodule Backplane.Monitor.ApiAccount do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @timestamps_opts [type: :utc_datetime_usec]
-  @providers ~w(openrouter deepseek)
+  @providers ~w(openrouter deepseek exa tavily firecrawl)
 
   schema "monitor_api_accounts" do
     field :name, :string
@@ -23,12 +23,22 @@ defmodule Backplane.Monitor.ApiAccount do
   def providers, do: @providers
   def provider_label("openrouter"), do: "OpenRouter"
   def provider_label("deepseek"), do: "DeepSeek"
+  def provider_label("exa"), do: "Exa"
+  def provider_label("tavily"), do: "Tavily"
+  def provider_label("firecrawl"), do: "Firecrawl"
 
   def changeset(account, attrs) do
     account
-    |> cast(attrs, [:name, :provider, :credential_name, :management_credential_name, :active])
+    |> cast(attrs, [
+      :name,
+      :provider,
+      :credential_name,
+      :management_credential_name,
+      :active
+    ])
     |> validate_required([:name, :provider, :credential_name])
     |> validate_inclusion(:provider, @providers)
+    |> check_constraint(:provider, name: :monitor_api_accounts_provider)
     |> validate_length(:name, max: 255)
     |> validate_management_credential()
     |> unique_constraint(:name)
