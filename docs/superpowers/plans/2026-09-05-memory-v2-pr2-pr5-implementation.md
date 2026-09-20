@@ -98,7 +98,16 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   ordered duplicate-ID ACKs, wipe-safe state guards, selected/all requeue,
   terminal outbox retention, opt-in tombstone retention, malformed ACK handling,
   storage-error propagation, and rollback of partial settlement/pruning are
-  covered. Tasks 12–20 remain outstanding; PR2–PR5 is not complete.
+  covered.
+- Task 12: committed as `7c5d5236`; specification and quality reviews approved
+  after repairing interrupted-V2 upgrade recovery, tombstone quota accounting,
+  bounded retention deletion, failure telemetry, migration rollback, authoritative
+  wire validation, explicit unavailable lag, and PostgreSQL naive-timestamp age
+  eviction. Fresh final focused gates: host-agent 83/83 and server retention/change
+  capture 21/21 with warnings-as-errors. Full formatting and diff checks passed.
+  Durable snapshot item counts, deterministic bounded eviction, recoverable
+  scheduled retention, and content-free edge health reporting are covered.
+  Tasks 13–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
