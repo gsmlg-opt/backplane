@@ -21,6 +21,7 @@ defmodule Backplane.Admin.Router do
     live("/dashboard/overview", DashboardLive, :overview)
     live("/dashboard/usage/llm", DashboardUsageLive, :llm)
     live("/dashboard/usage/mcp", DashboardUsageLive, :mcp)
+    live("/dashboard/usage/clients", DashboardClientUsageLive, :index)
     live("/llama/providers", ProvidersLive, :index)
     live("/llama/providers/new", ProviderNewLive, :new)
     live("/llama/providers/:id", ProviderShowLive, :show)

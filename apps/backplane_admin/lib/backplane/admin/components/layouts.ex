@@ -23,9 +23,21 @@ defmodule Backplane.Admin.Layouts do
     case admin_section(current_path) do
       :dashboard ->
         [
-          %{label: "Overview", path: "/dashboard/overview", icon: "view-dashboard-outline"},
-          %{label: "LLM Usage", path: "/dashboard/usage/llm", icon: "chart-line"},
-          %{label: "MCP Usage", path: "/dashboard/usage/mcp", icon: "chart-bar"},
+          %{
+            label: "Overview",
+            icon: "view-dashboard-outline",
+            items: [
+              %{
+                label: "Overview",
+                path: "/dashboard/overview",
+                icon: "view-dashboard-outline",
+                match: :exact
+              },
+              %{label: "LLM Usage", path: "/dashboard/usage/llm", icon: "chart-line"},
+              %{label: "MCP Usage", path: "/dashboard/usage/mcp", icon: "chart-bar"},
+              %{label: "Client Usage", path: "/dashboard/usage/clients", icon: "account-chart"}
+            ]
+          },
           %{label: "Plan Usage", path: "/dashboard/usage/plans", icon: "chart-donut"},
           %{label: "API Usage", path: "/dashboard/usage/api", icon: "chart-line"}
         ]

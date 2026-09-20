@@ -190,6 +190,33 @@ defmodule Backplane.LLM.LogQuery do
     }
   end
 
+  @doc "Aggregates persisted LLM usage by client ID and requested model."
+  @spec aggregate_by_client() :: %{optional(binary()) => map()}
+  def aggregate_by_client do
+    from(l in ProxyRequest,
+      where: not is_nil(l.client_id),
+      group_by: [l.client_id, l.requested_model],
+      select:
+        {l.client_id, l.requested_model, count(l.id), sum(l.input_tokens), sum(l.output_tokens)}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0))
+    |> Map.new(fn {client_id, rows} ->
+      models =
+        Enum.map(rows, fn {_id, model, requests, input_tokens, output_tokens} ->
+          %{
+            model: model || "Unknown",
+            requests: requests,
+            input_tokens: input_tokens || 0,
+            output_tokens: output_tokens || 0
+          }
+        end)
+        |> Enum.sort_by(& &1.model)
+
+      {client_id, %{requests: Enum.sum(Enum.map(models, & &1.requests)), models: models}}
+    end)
+  end
+
   defp base_query(filters) do
     from(l in ProxyRequest)
     |> maybe_filter_provider(filters[:provider_id])

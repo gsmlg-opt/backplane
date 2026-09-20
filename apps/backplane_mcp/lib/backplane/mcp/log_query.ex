@@ -176,6 +176,62 @@ defmodule Backplane.MCP.LogQuery do
     }
   end
 
+  @doc "Aggregates persisted MCP usage by client ID, RPC method, and tool."
+  @spec aggregate_by_client() :: %{optional(binary()) => map()}
+  def aggregate_by_client do
+    rows =
+      from(r in ProxyRequest,
+        where: not is_nil(r.client_id),
+        group_by: [r.client_id, r.rpc_method],
+        select: {r.client_id, r.rpc_method, count(r.id), avg(r.duration_ms)}
+      )
+      |> Repo.all()
+
+    tool_rows =
+      from(t in ToolCall,
+        join: r in ProxyRequest,
+        on: t.mcp_request_id == r.event_id,
+        where: not is_nil(r.client_id),
+        group_by: [r.client_id, t.tool_name],
+        select: {r.client_id, t.tool_name, count(t.id)}
+      )
+      |> Repo.all()
+
+    client_ids =
+      rows
+      |> Enum.map(&elem(&1, 0))
+      |> Kernel.++(Enum.map(tool_rows, &elem(&1, 0)))
+      |> Enum.uniq()
+
+    Map.new(client_ids, fn client_id ->
+      client_rows = Enum.filter(rows, &(elem(&1, 0) == client_id))
+      client_tools = Enum.filter(tool_rows, &(elem(&1, 0) == client_id))
+
+      rpc_methods =
+        Enum.map(client_rows, fn {_id, method, requests, avg_duration_ms} ->
+          %{
+            method: method || "Unknown",
+            requests: requests,
+            avg_duration_ms: round_or_zero(avg_duration_ms)
+          }
+        end)
+        |> Enum.sort_by(& &1.method)
+
+      tools =
+        Enum.map(client_tools, fn {_id, tool, requests} ->
+          %{tool: tool || "Unknown", requests: requests}
+        end)
+        |> Enum.sort_by(& &1.tool)
+
+      {client_id,
+       %{
+         requests: Enum.sum(Enum.map(client_rows, &elem(&1, 2))),
+         rpc_methods: rpc_methods,
+         tools: tools
+       }}
+    end)
+  end
+
   defp base_query(filters) do
     from(r in ProxyRequest)
     |> maybe_filter_client(filters[:client_id])
