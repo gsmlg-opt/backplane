@@ -381,6 +381,7 @@ defmodule Backplane.HostAgent.Worker do
     opts = [
       channel: connection.channel,
       selected: "host_memory.v2",
+      partitions: Map.get(connection.memory, "partitions", []),
       mirror_opts: [config: edge_config]
     ]
 
@@ -396,6 +397,11 @@ defmodule Backplane.HostAgent.Worker do
       _ ->
         start_edge_syncer(opts, connection)
     end
+  end
+
+  defp set_edge_connection(_connection, _config, %{edge_syncer: pid} = _state) when is_pid(pid) do
+    if Process.alive?(pid), do: EdgeSyncer.stop(pid)
+    {:ok, nil}
   end
 
   defp set_edge_connection(_connection, _config, _state), do: {:ok, nil}

@@ -60,6 +60,16 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
     assert fact_hash == Syncer.fact_set_hash(store, "proj_local")
   end
 
+  test "snapshot reports the edge protection decision without opening edge storage", %{
+    store: store
+  } do
+    assert {:ok, %{"edge_protection" => "protection_unavailable"}} =
+             Diagnostics.snapshot(
+               store: store,
+               host_sync_v2: %{enabled: true, development_plaintext: false}
+             )
+  end
+
   test "recovery helpers requeue failed rows and purge tombstones explicitly", %{store: store} do
     insert_memory!(store, "failed_memory", "failed", sync_state: "failed")
     insert_outbox!(store, "remember", "failed_memory", "failed", "validation failed")

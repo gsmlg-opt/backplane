@@ -23,6 +23,8 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
   def memory_available(server \\ __MODULE__, hint),
     do: GenServer.cast(server, {:memory_available, hint})
 
+  def stop(server \\ __MODULE__), do: GenServer.stop(server, :normal)
+
   @impl true
   def init(opts) do
     state = %{
@@ -35,7 +37,9 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms),
       edge_retry_ref: nil,
       poll_ref: nil,
-      partition_index: 0
+      partition_index: 0,
+      inventory: Keyword.get(opts, :partitions, []),
+      current_retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
     }
 
     {:ok, schedule_poll(state, 0)}
@@ -45,8 +49,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
   def handle_call(:status, _from, state), do: {:reply, state, state}
 
   @impl true
-  def handle_cast({:connection, %{channel: channel, memory: %{"selected" => selected}}}, state) do
-    {:noreply, %{state | channel: channel, selected: selected} |> schedule_poll(0)}
+  def handle_cast(
+        {:connection, %{channel: channel, memory: %{"selected" => selected} = memory}},
+        state
+      ) do
+    {:noreply,
+     %{state | channel: channel, selected: selected, inventory: Map.get(memory, "partitions", [])}
+     |> schedule_poll(0)}
   end
 
   def handle_cast({:connection, %{channel: channel, memory: %{selected: selected}}}, state) do
@@ -60,7 +69,11 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       when is_pid(channel) do
     case poll(state) do
       {:ok, state} ->
-        {:noreply, schedule_poll(%{state | edge_retry_ref: nil}, state.poll_interval_ms)}
+        {:noreply,
+         schedule_poll(
+           %{state | edge_retry_ref: nil, current_retry_backoff_ms: state.retry_backoff_ms},
+           state.poll_interval_ms
+         )}
 
       {:error, _reason} ->
         {:noreply, schedule_retry(state)}
@@ -73,29 +86,41 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
     do: {:noreply, %{state | edge_retry_ref: nil} |> schedule_poll(0)}
 
   defp poll(state) do
-    with {:ok, offer} <- state.mirror_module.offer(state.mirror_opts),
-         {:ok, request, state} <- next_request(offer, state),
-         {:ok, delivery} <- push(state, "memory_next", request) do
-      case delivery do
-        %{"status" => "current"} ->
+    with {:ok, offer} <- state.mirror_module.offer(state.mirror_opts) do
+      case next_request(offer, state) do
+        {:idle, state} ->
           {:ok, state}
 
-        %{"status" => "batch"} ->
-          with {:ok, ack} <- state.mirror_module.apply_delivery(delivery, state.mirror_opts),
-               {:ok, _reply} <- push(state, "memory_ack", ack) do
-            {:ok, state}
+        {:ok, request, state} ->
+          with {:ok, delivery} <- push(state, "memory_next", request) do
+            case delivery do
+              %{"status" => "current"} ->
+                {:ok, state}
+
+              %{"status" => "batch"} ->
+                with {:ok, ack} <-
+                       state.mirror_module.apply_delivery(delivery, state.mirror_opts),
+                     {:ok, _reply} <- push(state, "memory_ack", ack) do
+                  {:ok, state}
+                end
+
+              _ ->
+                {:error, :invalid_delivery}
+            end
           end
 
-        _ ->
-          {:error, :invalid_delivery}
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
 
-  defp next_request(%{"partitions" => partitions} = offer, state) when is_list(partitions) do
+  defp next_request(%{"partitions" => durable} = offer, state) when is_list(durable) do
+    partitions = merged_partitions(state.inventory, durable)
+
     case next_partition(partitions, state.partition_index) do
       nil ->
-        {:error, :no_partitions}
+        {:idle, state}
 
       partition ->
         request =
@@ -113,11 +138,22 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   defp next_request(_, _state), do: {:error, :invalid_offer}
 
+  defp merged_partitions(inventory, durable) when is_list(inventory) and is_list(durable) do
+    durable_by_partition = Map.new(durable, &{partition_key(&1), &1})
+    inventory_keys = MapSet.new(inventory, &partition_key/1)
+
+    Enum.map(inventory, fn negotiated ->
+      Map.merge(negotiated, Map.get(durable_by_partition, partition_key(negotiated), %{}))
+    end) ++ Enum.reject(durable, &(partition_key(&1) in inventory_keys))
+  end
+
+  defp merged_partitions(_inventory, durable), do: durable
+
+  defp partition_key(partition),
+    do: Map.take(partition, ["memory_space_id", "scope", "namespace"])
+
   defp next_partition(partitions, index) do
-    Enum.find(partitions, fn partition ->
-      is_map(partition) and is_map(partition["snapshot"])
-    end) ||
-      Enum.at(partitions, rem(index, max(length(partitions), 1)))
+    Enum.at(partitions, rem(index, max(length(partitions), 1)))
   end
 
   defp maybe_put_limits(request, offer) do
@@ -145,8 +181,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
   defp schedule_retry(%{edge_retry_ref: ref} = state) when is_reference(ref), do: state
 
   defp schedule_retry(state) do
-    delay = min(state.retry_backoff_ms, @max_retry_backoff_ms)
-    %{state | edge_retry_ref: Process.send_after(self(), :edge_retry, delay)}
+    delay = min(state.current_retry_backoff_ms, @max_retry_backoff_ms)
+
+    %{
+      state
+      | edge_retry_ref: Process.send_after(self(), :edge_retry, delay),
+        current_retry_backoff_ms: min(delay * 2, @max_retry_backoff_ms)
+    }
   end
 
   defp schedule_poll(state, delay) do

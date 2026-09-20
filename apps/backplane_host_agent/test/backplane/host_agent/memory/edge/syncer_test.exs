@@ -92,6 +92,20 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     end
   end
 
+  defmodule EmptyMirror do
+    def offer(opts) do
+      send(Keyword.fetch!(opts, :owner), :offer)
+      {:ok, %{"offers" => ["host_memory.v2"], "partitions" => []}}
+    end
+  end
+
+  defmodule FailingChannel do
+    def push(channel, "memory_next", payload, _timeout) do
+      send(channel, {:memory_next, payload})
+      {:error, :timeout}
+    end
+  end
+
   test "pulls a delivery, durably applies it, then acknowledges it" do
     {:ok, syncer} =
       Syncer.start_link(
@@ -202,5 +216,74 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
                       "snapshot_id" => "snapshot-1",
                       "next_chunk_index" => 3
                     }}
+  end
+
+  test "bootstraps an empty mirror from negotiated partition inventory" do
+    partition = %{
+      "memory_space_id" => "space-3",
+      "scope" => "private",
+      "namespace" => "default",
+      "applied_revision" => 0
+    }
+
+    {:ok, syncer} =
+      Syncer.start_link(
+        name: nil,
+        channel: self(),
+        channel_module: CurrentChannel,
+        mirror_module: EmptyMirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        partitions: [partition],
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    send(syncer, :poll)
+
+    assert_receive {:memory_next,
+                    %{"partition" => %{"memory_space_id" => "space-3"}, "applied_revision" => 0}}
+  end
+
+  test "round robins a staging snapshot and another entitled partition" do
+    {:ok, syncer} =
+      Syncer.start_link(
+        name: nil,
+        channel: self(),
+        channel_module: CurrentChannel,
+        mirror_module: Mirror,
+        mirror_opts: [
+          owner: self(),
+          snapshot: %{"snapshot_id" => "snapshot-1", "next_chunk_index" => 3}
+        ],
+        selected: "host_memory.v2",
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    send(syncer, :poll)
+    assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-1"}}}
+    send(syncer, :poll)
+    assert_receive {:memory_next, %{"partition" => %{"memory_space_id" => "space-2"}}}
+  end
+
+  test "failed edge polls schedule a bounded retry without a connection retry" do
+    {:ok, syncer} =
+      Syncer.start_link(
+        name: nil,
+        channel: self(),
+        channel_module: FailingChannel,
+        mirror_module: Mirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        retry_backoff_ms: 10,
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive :offer
+    send(syncer, :poll)
+    assert_receive {:memory_next, _}
+    assert %{edge_retry_ref: ref, current_retry_backoff_ms: 20} = Syncer.status(syncer)
+    assert is_reference(ref)
   end
 end

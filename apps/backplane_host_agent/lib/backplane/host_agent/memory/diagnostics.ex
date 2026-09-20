@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   Read-only diagnostics and operator recovery helpers for host-agent memory.
   """
 
-  alias Backplane.HostAgent.Memory.{Store, Syncer}
+  alias Backplane.HostAgent.Memory.{Edge.Protection, Store, Syncer}
   alias Turso.Result
 
   @doc "Returns a JSON-compatible diagnostic snapshot of the local memory store."
@@ -28,7 +28,8 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
          "facts" => facts,
          "tombstones" => tombstones,
          "last_successful_sync" => last_successful_sync,
-         "last_reconcile_at" => last_reconcile_at
+         "last_reconcile_at" => last_reconcile_at,
+         "edge_protection" => Atom.to_string(Protection.status(opts.host_sync_v2))
        }}
     end
   end
@@ -76,7 +77,8 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
           :store,
           Application.get_env(:backplane_host_agent, :memory_store, Store)
         ),
-      db_path: Keyword.get(opts, :db_path, config_value(config, :db_path))
+      db_path: Keyword.get(opts, :db_path, config_value(config, :db_path)),
+      host_sync_v2: Keyword.get(opts, :host_sync_v2, config_value(config, :host_sync_v2) || %{})
     }
   end
 
