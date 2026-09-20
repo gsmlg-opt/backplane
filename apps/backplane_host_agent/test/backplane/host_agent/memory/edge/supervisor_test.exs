@@ -96,7 +96,7 @@ defmodule Backplane.HostAgent.Memory.Edge.SupervisorTest do
 
     assert capture_log(fn ->
              {:ok, pid} = Supervisor.start_link(config)
-             assert {:ok, 1} = Migrator.current_version(config.store_name)
+             assert {:ok, 2} = Migrator.current_version(config.store_name)
              Elixir.Supervisor.stop(pid)
            end) =~ "plaintext_development"
   end
