@@ -132,7 +132,11 @@ jobs:
         run: mix assets.deploy
 
       - name: Build OTP release
-        run: mix release "${{ matrix.release }}" --overwrite
+        env:
+          RELEASE_NAME: ${{ matrix.release }}
+        run: |
+          rm -rf -- "_build/prod/rel/$RELEASE_NAME"
+          mix release "$RELEASE_NAME" --overwrite
 
       - name: Verify packaged web assets
         if: matrix.release == 'backplane'

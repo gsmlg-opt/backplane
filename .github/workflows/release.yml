@@ -275,7 +275,9 @@ jobs:
       - name: Build OTP release
         env:
           RELEASE_NAME: ${{ matrix.release }}
-        run: mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
+        run: |
+          rm -rf -- "_build/prod/rel/$RELEASE_NAME"
+          mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
 
       - name: Verify packaged web assets
         if: matrix.release == 'backplane'
