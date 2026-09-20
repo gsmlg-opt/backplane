@@ -110,6 +110,14 @@ defmodule Backplane.HostAgent.Worker do
     connect_or_retry(%{state | connect_retry_ref: nil})
   end
 
+  @impl true
+  def terminate(_reason, %{edge_syncer: pid}) when is_pid(pid) do
+    if Process.alive?(pid), do: EdgeSyncer.stop(pid)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
   defp desired_state(%{desired: desired}) when not is_nil(desired), do: {:ok, desired}
 
   defp desired_state(%{channel: channel} = state) do

@@ -18,15 +18,15 @@ defmodule Backplane.HostAgent.AgentChannel do
   end
 
   def handle_message("memory_available", hint, state) when is_map(hint) do
-    Syncer.memory_available(hint)
+    syncer_module().memory_available(hint)
     {:noreply, state}
   end
 
   def handle_message("memory_facts", payload, state) when is_map(payload) do
-    case Facts.apply_facts(payload, store: memory_store(), edge_config: edge_config()) do
+    case facts_module().apply_facts(payload, store: memory_store(), edge_config: edge_config()) do
       {:ok, _result} ->
         with {:ok, ack} <- receipt_ack(payload) do
-          Helpers.handle_push_cast({"memory_facts_ack", ack}, state)
+          push_cast({"memory_facts_ack", ack}, state)
         else
           _ -> {:noreply, state}
         end
@@ -37,10 +37,10 @@ defmodule Backplane.HostAgent.AgentChannel do
   end
 
   def handle_message("memory_wipe", payload, state) when is_map(payload) do
-    case Facts.apply_wipe(payload, store: memory_store()) do
+    case facts_module().apply_wipe(payload, store: memory_store()) do
       {:ok, _result} ->
         with {:ok, ack} <- receipt_ack(payload) do
-          Helpers.handle_push_cast({"memory_wipe_ack", ack}, state)
+          push_cast({"memory_wipe_ack", ack}, state)
         else
           _ -> {:noreply, state}
         end
@@ -81,6 +81,17 @@ defmodule Backplane.HostAgent.AgentChannel do
 
   defp edge_config,
     do: Application.get_env(:backplane_host_agent, :memory_host_sync_v2, %{})
+
+  defp syncer_module,
+    do: Application.get_env(:backplane_host_agent, :edge_syncer_module, Syncer)
+
+  defp facts_module,
+    do: Application.get_env(:backplane_host_agent, :memory_facts_module, Facts)
+
+  defp push_cast(message, state) do
+    Application.get_env(:backplane_host_agent, :agent_channel_push_module, Helpers)
+    |> apply(:handle_push_cast, [message, state])
+  end
 
   defp receipt_ack(%{"receipt_key" => key, "payload_hash" => hash, "scope" => scope})
        when is_binary(key) and is_binary(hash) and is_binary(scope),

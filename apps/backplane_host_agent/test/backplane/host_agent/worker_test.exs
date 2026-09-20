@@ -100,7 +100,12 @@ defmodule Backplane.HostAgent.WorkerTest do
     def connect(config) do
       owner = :persistent_term.get({__MODULE__, :owner})
       send(owner, {:connect, config})
-      {:ok, %{channel: self(), host_id: "host-1", host_name: "t430", socket: self()}}
+
+      :persistent_term.get(
+        {__MODULE__, :connection},
+        {:ok,
+         %{channel: self(), host_id: "host-1", host_name: "t430", socket: self(), memory: %{}}}
+      )
     end
   end
 
@@ -222,6 +227,103 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert is_reference(retry_ref)
     assert_receive {:connect_failed, %{host_id: "host-1", interval_ms: 10}}, 100
+  end
+
+  test "v2 selection starts an edge syncer and v1 reconnect stops it" do
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok,
+       %{
+         channel: self(),
+         host_id: "host-1",
+         host_name: "t430",
+         socket: self(),
+         memory: %{"selected" => "host_memory.v2", "partitions" => []}
+       }}
+    )
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeConnector, :connection})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+    end)
+
+    {:ok, worker} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        config_module: FakeRuntimeConfig,
+        connector_module: FakeConnector,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
+      )
+
+    send(worker, :connect_retry)
+    assert_receive {:connect, _}
+    assert %{edge_syncer: edge_syncer} = GenServer.call(worker, :status)
+    assert is_pid(edge_syncer) and Process.alive?(edge_syncer)
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok,
+       %{
+         channel: self(),
+         host_id: "host-1",
+         host_name: "t430",
+         socket: self(),
+         memory: %{"selected" => "host_memory.v1"}
+       }}
+    )
+
+    send(worker, :connect_retry)
+    assert_receive {:connect, _}
+    assert %{edge_syncer: nil} = GenServer.call(worker, :status)
+    refute Process.alive?(edge_syncer)
+  end
+
+  test "normal worker shutdown promptly terminates its linked edge syncer" do
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok,
+       %{
+         channel: self(),
+         host_id: "host-1",
+         host_name: "t430",
+         socket: self(),
+         memory: %{"selected" => "host_memory.v2", "partitions" => []}
+       }}
+    )
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeConnector, :connection})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+    end)
+
+    {:ok, worker} =
+      Worker.start_link(
+        name: nil,
+        connect?: false,
+        config_module: FakeRuntimeConfig,
+        connector_module: FakeConnector,
+        http_server_module: FakeHttpServer,
+        memory_proxy_module: FakeMemoryProxy,
+        sync_on_start?: false
+      )
+
+    send(worker, :connect_retry)
+    assert_receive {:connect, _}
+    assert %{edge_syncer: edge_syncer} = GenServer.call(worker, :status)
+    ref = Process.monitor(edge_syncer)
+    assert :ok = GenServer.stop(worker, :normal, 1_000)
+    assert_receive {:DOWN, ^ref, :process, ^edge_syncer, :normal}, 1_000
   end
 
   test "starts and retains capture and HTTP while the hub remains offline" do
