@@ -69,10 +69,18 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   and normal supervised shutdown are covered.
 - Task 8: committed as `908ed69e` with schema/replay hardening `ecd54030`,
   stale-snapshot idempotency `8691809c`, and atomic cleanup/bounded reads
-  `8dfbb904`; specification and quality reviews approved. Focused mirror/migrator
+  `8dfbb904`; the registered-schema startup expectation was corrected in
+  `4aef7f0b`. Specification and quality reviews approved. Focused mirror/migrator
   tests: 22/22; final affected edge-store/migrator/mirror tests: 24/24 with
-  warnings-as-errors. Scoped formatting and diff checks passed. Tasks 9–20 remain
-  outstanding; PR2–PR5 is not complete.
+  warnings-as-errors. Scoped formatting and diff checks passed.
+- Task 9: committed as `0ced47f7` with negotiation/lifecycle fixes through
+  `42a00c1c`, `5fa8197e`, `3689c7b7`, and timer/partition guard regressions
+  `8694680b`; specification and quality reviews approved. Fresh final gates:
+  host-agent 452/452 and API channel/e2e 61/61 with warnings-as-errors. Scoped
+  formatting and diff checks passed. Fresh-host bootstrap, negotiated-entitlement
+  revocation, fair snapshot polling, durable apply-before-ACK, v1 protection/wipe
+  behavior, reconnect deselection, normal OTP shutdown, and stale timer suppression
+  are covered. Tasks 10–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
