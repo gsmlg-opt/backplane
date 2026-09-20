@@ -625,8 +625,23 @@ defmodule Backplane.LLM.Router do
         }
       end
 
+    provider_alias_entries =
+      for provider <- providers,
+          provider.name in ModelAlias.provider_names(),
+          model <- provider.models,
+          model.enabled do
+        %{
+          "id" => model.model,
+          "object" => "model",
+          "created" => 1_700_000_000,
+          "owned_by" => provider.name,
+          "provider" => provider.name,
+          "canonical_id" => model.model
+        }
+      end
+
     entries =
-      (provider_entries ++ auto_model_entries ++ custom_alias_entries)
+      (provider_entries ++ auto_model_entries ++ custom_alias_entries ++ provider_alias_entries)
       |> Enum.uniq_by(& &1["id"])
       |> Enum.sort_by(& &1["id"])
 

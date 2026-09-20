@@ -7,6 +7,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
+  alias Backplane.LLM.Provider
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.OpenAICodexAuth
   alias Backplane.Settings.OAuthRefresher
@@ -135,6 +136,8 @@ defmodule Backplane.Admin.SettingsLive do
     assign(socket,
       auto_models: AutoModel.list_configurations(),
       custom_aliases: ModelAlias.list(),
+      provider_aliases: ModelAlias.provider_names(),
+      provider_alias_options: provider_alias_options(),
       custom_alias_target_options: custom_alias_target_options(),
       target_model_options: target_model_options()
     )
@@ -224,6 +227,42 @@ defmodule Backplane.Admin.SettingsLive do
     model_ids = parse_model_list(models)
 
     configure_auto_model_targets(socket, name, model_ids)
+  end
+
+  def handle_event("add_provider_alias", %{"provider" => provider_name}, socket) do
+    case ModelAlias.add_provider(provider_name) do
+      :ok ->
+        Backplane.Admin.Audit.record("model_alias.provider.update", "provider")
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Enabled unqualified model aliases for #{provider_name}")
+         |> load_data("settings")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to enable provider aliases: #{inspect(reason)}")
+         |> load_data("settings")}
+    end
+  end
+
+  def handle_event("remove_provider_alias", %{"provider" => provider_name}, socket) do
+    case ModelAlias.remove_provider(provider_name) do
+      :ok ->
+        Backplane.Admin.Audit.record("model_alias.provider.delete", "provider")
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Disabled unqualified model aliases for #{provider_name}")
+         |> load_data("settings")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Failed to disable provider aliases: #{inspect(reason)}")
+         |> load_data("settings")}
+    end
   end
 
   def handle_event(
@@ -887,6 +926,12 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp auto_model_target_ids(auto_model), do: AutoModel.configured_model_ids(auto_model.name)
 
+  defp provider_alias_options do
+    Provider.list()
+    |> Enum.filter(& &1.enabled)
+    |> Enum.map(&{&1.name, &1.name})
+  end
+
   defp target_model_options do
     AutoModel.list_available_target_model_ids()
     |> Enum.map(&{&1, &1})
@@ -1130,6 +1175,49 @@ defmodule Backplane.Admin.SettingsLive do
             </div>
           </.dm_card>
         </div>
+      </section>
+
+      <section>
+        <h2 class="mb-3 text-lg font-semibold">Provider Aliases</h2>
+        <.dm_card variant="bordered">
+          <:title>Expose provider models without a namespace</:title>
+          <form
+            id="provider-alias-form"
+            phx-submit="add_provider_alias"
+            class="flex flex-col gap-3 md:flex-row md:items-end"
+          >
+            <.dm_select
+              id="provider-alias-provider"
+              name="provider"
+              label="Provider"
+              options={@provider_alias_options}
+              prompt="Select a provider"
+              disabled={@provider_alias_options == []}
+            />
+            <.dm_btn type="submit" variant="primary" disabled={@provider_alias_options == []}>Add</.dm_btn>
+          </form>
+
+          <div id="provider-alias-list" class="mt-3 flex flex-wrap items-center gap-2">
+            <span :if={@provider_aliases == []} class="text-sm text-on-surface-variant">
+              No providers configured
+            </span>
+            <span
+              :for={provider_name <- @provider_aliases}
+              class="inline-flex items-center gap-2 rounded-md border border-outline-variant bg-surface-container px-2 py-1 text-sm"
+            >
+              <code>{provider_name}</code>
+              <button
+                type="button"
+                phx-click="remove_provider_alias"
+                phx-value-provider={provider_name}
+                aria-label={"Remove provider aliases for #{provider_name}"}
+                class="text-xs font-medium text-on-surface-variant hover:text-error"
+              >
+                Remove
+              </button>
+            </span>
+          </div>
+        </.dm_card>
       </section>
 
       <section>

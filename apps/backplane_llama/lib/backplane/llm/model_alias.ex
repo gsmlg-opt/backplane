@@ -25,10 +25,52 @@ defmodule Backplane.LLM.ModelAlias do
   end
 
   @setting_key "llm.model_aliases.custom"
+  @provider_setting_key "llm.model_aliases.providers"
 
   @doc "Return the settings key used to persist custom model aliases."
   @spec setting_key() :: String.t()
   def setting_key, do: @setting_key
+
+  @doc "Return the settings key used to persist providers with unqualified models."
+  @spec provider_setting_key() :: String.t()
+  def provider_setting_key, do: @provider_setting_key
+
+  @doc "List provider names whose models are exposed without a provider namespace."
+  @spec provider_names() :: [String.t()]
+  def provider_names do
+    @provider_setting_key
+    |> Settings.get()
+    |> normalize_provider_names()
+  end
+
+  @doc "Enable unqualified model aliases for a provider."
+  @spec add_provider(String.t()) :: :ok | {:error, term()}
+  def add_provider(provider_name) when is_binary(provider_name) do
+    provider_name = String.trim(provider_name)
+
+    if provider_name == "" do
+      {:error, :invalid_provider}
+    else
+      provider_names = Enum.uniq(provider_names() ++ [provider_name])
+
+      with :ok <- Settings.set(@provider_setting_key, provider_names) do
+        broadcast()
+        :ok
+      end
+    end
+  end
+
+  @doc "Disable unqualified model aliases for a provider."
+  @spec remove_provider(String.t()) :: :ok | {:error, term()}
+  def remove_provider(provider_name) when is_binary(provider_name) do
+    provider_name = String.trim(provider_name)
+    provider_names = Enum.reject(provider_names(), &(&1 == provider_name))
+
+    with :ok <- Settings.set(@provider_setting_key, provider_names) do
+      broadcast()
+      :ok
+    end
+  end
 
   @doc "Changeset for custom model aliases."
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
@@ -155,6 +197,16 @@ defmodule Backplane.LLM.ModelAlias do
   end
 
   defp normalize_alias_map(_aliases), do: %{}
+
+  defp normalize_provider_names(provider_names) when is_list(provider_names) do
+    provider_names
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_provider_names(_provider_names), do: []
 
   defp validate_alias_target(%Ecto.Changeset{valid?: false} = changeset), do: changeset
 

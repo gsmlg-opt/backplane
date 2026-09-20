@@ -17,6 +17,7 @@ defmodule Backplane.LLM.AutoModelResolverTest do
     Credentials.store(credential, "sk-test", "llm")
     ModelResolver.clear_cache()
     :ok = Backplane.Settings.set("llm.model_aliases.custom", %{})
+    :ok = Backplane.Settings.set(ModelAlias.provider_setting_key(), [])
     :ok = Backplane.Settings.set("llm.auto_models.smart.targets", ["minimax-m2.7"])
 
     {:ok, provider} =

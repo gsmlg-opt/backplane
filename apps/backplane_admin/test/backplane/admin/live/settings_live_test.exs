@@ -19,6 +19,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     setup do
       reset_auto_model_targets()
       reset_custom_model_aliases()
+      reset_provider_model_aliases()
       :ok
     end
 
@@ -135,6 +136,28 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert Backplane.LLM.ModelAlias.target_for("gpt-5.6-terra") == target
     end
 
+    test "enables unqualified aliases for every model in a provider", %{conn: conn} do
+      {api, _model_ids} = create_provider_models(["gpt-5.6-alias", "gpt-5.6-alias-mini"])
+      provider = Repo.get!(Provider, api.provider_id)
+
+      {:ok, view, _} = live(conn, "/llama/model-aliases")
+
+      view
+      |> form("#provider-alias-form", %{"provider" => provider.name})
+      |> render_submit()
+
+      assert Backplane.LLM.ModelAlias.provider_names() == [provider.name]
+      assert has_element?(view, "#provider-alias-list", provider.name)
+
+      view
+      |> element(
+        ~s(button[phx-click="remove_provider_alias"][phx-value-provider="#{provider.name}"])
+      )
+      |> render_click()
+
+      assert Backplane.LLM.ModelAlias.provider_names() == []
+    end
+
     test "shows provider namespace for existing unqualified selections", %{conn: conn} do
       {api, _} = create_provider_models(["gpt-5.6-luna"])
       :ok = Backplane.Settings.set("llm.auto_models.fast.targets", ["gpt-5.6-luna"])
@@ -192,6 +215,10 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
   defp reset_custom_model_aliases do
     :ok = Backplane.Settings.set("llm.model_aliases.custom", %{})
+  end
+
+  defp reset_provider_model_aliases do
+    :ok = Backplane.Settings.set("llm.model_aliases.providers", [])
   end
 
   defp create_provider_models(model_ids) do

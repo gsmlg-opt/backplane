@@ -64,6 +64,11 @@ defmodule Backplane.Settings do
       type: "json",
       desc: "Custom one-to-one model aliases"
     },
+    "llm.model_aliases.providers" => %{
+      value: [],
+      type: "json",
+      desc: "Providers whose models are exposed without a provider namespace"
+    },
     # Skills Hub
     "skills.archive.max_bytes" => %{
       value: 20_000_000,

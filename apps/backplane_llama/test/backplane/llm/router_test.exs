@@ -147,6 +147,7 @@ defmodule Backplane.LLM.RouterTest do
     ModelResolver.clear_cache()
     RateLimiter.reset()
     :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
+    :ok = Backplane.Settings.set(ModelAlias.provider_setting_key(), [])
     :ok
   end
 
@@ -847,6 +848,25 @@ defmodule Backplane.LLM.RouterTest do
 
       ids = Enum.map(body["data"], & &1["id"])
       assert "coding" in ids
+    end
+
+    test "includes unqualified models for configured providers" do
+      provider =
+        create_provider_model(
+          "provider-aliases",
+          :anthropic,
+          "claude-haiku",
+          "router-anthropic-cred"
+        )
+
+      assert :ok = ModelAlias.add_provider(provider.name)
+
+      conn = llm_request(:get, "/v1/models")
+      body = json_body(conn)
+
+      ids = Enum.map(body["data"], & &1["id"])
+      assert "claude-haiku" in ids
+      assert "provider-aliases/claude-haiku" in ids
     end
 
     test "excludes models from disabled providers" do

@@ -145,8 +145,14 @@ defmodule Backplane.LLM.ModelResolver do
       end
 
     case result do
-      {:error, :no_provider} -> resolve_custom_alias(api_type, alias_name)
-      result -> result
+      {:error, :no_provider} ->
+        case resolve_custom_alias(api_type, alias_name) do
+          {:error, :no_provider} -> resolve_provider_alias(api_type, alias_name)
+          custom_result -> custom_result
+        end
+
+      result ->
+        result
     end
   end
 
@@ -164,6 +170,24 @@ defmodule Backplane.LLM.ModelResolver do
 
       route ->
         resolve_auto_model_route(route, api_type)
+    end
+  end
+
+  defp resolve_provider_alias(api_type, alias_name) do
+    ModelAlias.provider_names()
+    |> Enum.find_value(fn provider_name ->
+      provider =
+        Provider
+        |> where([p], p.name == ^provider_name and is_nil(p.deleted_at))
+        |> Repo.one()
+
+      if provider && provider.enabled && provider_model_available?(provider, api_type, alias_name) do
+        {:ok, provider, alias_name}
+      end
+    end)
+    |> case do
+      nil -> {:error, :no_provider}
+      result -> result
     end
   end
 

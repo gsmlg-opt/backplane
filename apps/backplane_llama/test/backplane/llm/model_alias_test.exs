@@ -5,6 +5,7 @@ defmodule Backplane.LLM.ModelAliasTest do
 
   setup do
     :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
+    :ok = Backplane.Settings.set(ModelAlias.provider_setting_key(), [])
     :ok
   end
 
@@ -84,6 +85,15 @@ defmodule Backplane.LLM.ModelAliasTest do
                %{alias: "a-first", target: "smart"},
                %{alias: "z-last", target: "expert"}
              ] = ModelAlias.list()
+    end
+
+    test "configures providers whose models use unqualified names" do
+      assert :ok = ModelAlias.add_provider("provider")
+      assert :ok = ModelAlias.add_provider("provider")
+      assert ModelAlias.provider_names() == ["provider"]
+
+      assert :ok = ModelAlias.remove_provider("provider")
+      assert ModelAlias.provider_names() == []
     end
   end
 

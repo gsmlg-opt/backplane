@@ -17,6 +17,7 @@ defmodule Backplane.LLM.ModelResolverTest do
     Credentials.store("resolver-openai-cred", "sk-openai-test-key", "llm")
     ModelResolver.clear_cache()
     :ok = Backplane.Settings.set(ModelAlias.setting_key(), %{})
+    :ok = Backplane.Settings.set(ModelAlias.provider_setting_key(), [])
     :ok
   end
 
@@ -99,6 +100,24 @@ defmodule Backplane.LLM.ModelResolverTest do
       assert {:ok, resolved_provider, raw_model} = ModelResolver.resolve(:openai, "coding")
       assert resolved_provider.id == provider.id
       assert raw_model == "gpt-4o-mini"
+    end
+
+    test "resolves every model in a configured provider without its namespace" do
+      provider = create_provider_model("provider-aliases", :openai, "gpt-4o-mini")
+      assert :ok = ModelAlias.add_provider("provider-aliases")
+
+      assert {:ok, resolved_provider, "gpt-4o-mini"} =
+               ModelResolver.resolve(:openai, "gpt-4o-mini")
+
+      assert resolved_provider.id == provider.id
+    end
+
+    test "skips provider aliases when the configured provider is disabled" do
+      provider = create_provider_model("disabled-provider-aliases", :openai, "gpt-disabled")
+      assert :ok = ModelAlias.add_provider(provider.name)
+      {:ok, _} = Provider.update(provider, %{enabled: false})
+
+      assert {:error, :no_provider} = ModelResolver.resolve(:openai, "gpt-disabled")
     end
 
     test "returns :no_provider for unknown alias" do
