@@ -191,6 +191,7 @@ defmodule Backplane.HostAgent.Memory.Facts do
 
   defp cancel_outbox(conn, memory_ids) do
     placeholders = placeholders(memory_ids)
+    now = timestamp()
 
     case Store.execute(
            conn,
@@ -199,7 +200,7 @@ defmodule Backplane.HostAgent.Memory.Facts do
            SET state = 'done', last_error = 'wiped', completed_at = ?, updated_at = ?
            WHERE state IN ('pending', 'inflight', 'retry_wait') AND memory_id IN (#{placeholders})
            """,
-           [timestamp(), timestamp() | memory_ids]
+           [now, now | memory_ids]
          ) do
       {:ok, _result} -> :ok
       {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})

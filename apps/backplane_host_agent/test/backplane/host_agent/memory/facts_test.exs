@@ -205,14 +205,24 @@ defmodule Backplane.HostAgent.Memory.FactsTest do
                store: store
              )
 
-    assert {:ok, %Result{rows: [%{"state" => "done", "completed_at" => completed_at}]}} =
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "state" => "done",
+                  "completed_at" => completed_at,
+                  "updated_at" => updated_at
+                }
+              ]
+            }} =
              Store.query(
                store,
-               "SELECT state, completed_at FROM memory_outbox WHERE memory_id = ?",
+               "SELECT state, completed_at, updated_at FROM memory_outbox WHERE memory_id = ?",
                [id]
              )
 
     assert is_binary(completed_at)
+    assert updated_at == completed_at
 
     assert {:ok,
             %Result{rows: [%{"directive_id" => "other-wipe"}, %{"directive_id" => "local-wipe"}]}} =

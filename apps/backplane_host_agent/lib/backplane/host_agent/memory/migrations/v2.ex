@@ -22,6 +22,11 @@ defmodule Backplane.HostAgent.Memory.Migrations.V2 do
       SELECT content_hash, scope, wiped_at, directive_id FROM tombstones_v1
       """,
       "DROP TABLE tombstones_v1",
+      "CREATE TABLE memory_outbox_sequence_v2 (seq INTEGER NOT NULL)",
+      """
+      INSERT INTO memory_outbox_sequence_v2(seq)
+      SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'
+      """,
       "ALTER TABLE memory_outbox RENAME TO memory_outbox_v1",
       """
       CREATE TABLE memory_outbox (
@@ -62,6 +67,17 @@ defmodule Backplane.HostAgent.Memory.Migrations.V2 do
       FROM memory_outbox_v1
       """,
       "DROP TABLE memory_outbox_v1",
+      "DELETE FROM sqlite_sequence WHERE name IN ('memory_outbox', 'memory_outbox_v1')",
+      """
+      INSERT INTO sqlite_sequence(name, seq)
+      SELECT
+        'memory_outbox',
+        MAX(
+          COALESCE((SELECT seq FROM memory_outbox_sequence_v2), 0),
+          COALESCE((SELECT MAX(seq) FROM memory_outbox), 0)
+        )
+      """,
+      "DROP TABLE memory_outbox_sequence_v2",
       "CREATE INDEX memory_outbox_due_seq_idx ON memory_outbox(state, next_attempt_at, seq)",
       "CREATE INDEX memory_outbox_retention_idx ON memory_outbox(state, completed_at, dead_lettered_at, seq)",
       "CREATE INDEX memory_outbox_memory_id_idx ON memory_outbox(memory_id)"
