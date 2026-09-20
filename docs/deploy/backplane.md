@@ -49,6 +49,23 @@ The container entrypoint is `/app/bin/backplane start`. Port `4100` is the
 public API/MCP/LLM surface; port `4101` is the separate admin UI and must remain
 reachable only from a trusted network.
 
+### Run database migrations
+
+Database migrations are run explicitly from the packaged release after the
+PostgreSQL service is ready. They are not run automatically when the container
+starts:
+
+```sh
+docker compose exec backplane /app/bin/backplane migrate
+```
+
+For a container started without Compose, use the same release command with its
+container name or ID:
+
+```sh
+docker exec <container> /app/bin/backplane migrate
+```
+
 ## Option 2 — OTP release tarball
 
 Download the tarball for your platform from this release page
@@ -60,6 +77,7 @@ tar -xzf backplane-<version>-linux-x64.tar.gz -C /opt
 export BACKPLANE_CONFIG=/etc/backplane/backplane.toml
 export SECRET_KEY_BASE=<64+ char random string>
 export PHX_HOST=backplane.example.com
+/opt/backplane/bin/backplane migrate
 /opt/backplane/bin/backplane start
 ```
 

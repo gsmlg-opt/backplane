@@ -36,14 +36,7 @@ production boot TOML and run migrations without starting its HTTP endpoints:
 ```sh
 export BACKPLANE_CONFIG=/etc/backplane/backplane.toml
 export SECRET_KEY_BASE='<production secret>'
-/opt/backplane/bin/backplane eval '
-path = Application.app_dir(:backplane_system, "priv/repo/migrations")
-{:ok, versions, _apps} =
-  Ecto.Migrator.with_repo(Backplane.Repo, fn repo ->
-    Ecto.Migrator.run(repo, path, :up, all: true)
-  end)
-IO.puts("applied_migrations=#{length(versions)}")
-'
+/opt/backplane/bin/backplane migrate
 ```
 
 Run it a second time and require `applied_migrations=0`. The old release may
