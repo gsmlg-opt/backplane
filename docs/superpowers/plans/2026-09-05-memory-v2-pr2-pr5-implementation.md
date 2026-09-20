@@ -80,7 +80,16 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   formatting and diff checks passed. Fresh-host bootstrap, negotiated-entitlement
   revocation, fair snapshot polling, durable apply-before-ACK, v1 protection/wipe
   behavior, reconnect deselection, normal OTP shutdown, and stale timer suppression
-  are covered. Tasks 10–20 remain outstanding; PR2–PR5 is not complete.
+  are covered.
+- Task 10: committed as `e02f545b` with sequence-preservation repair `7e4b7d89`
+  and late rollback regression `e220299e`; specification and quality reviews
+  approved. The user approved the narrow `mix.lock` scope expansion for
+  `ex_turso` 3.0.4. Final focused tests: 38/38 with warnings-as-errors; the
+  additional late-failure migration regression passed 6/6. Scoped formatting
+  and diff checks passed. Composite tombstone identity, exact outbox states,
+  empty-outbox AUTOINCREMENT high-water preservation, fail-closed rollback, and
+  atomic wipe timestamps are covered. Tasks 11–20 remain outstanding; PR2–PR5
+  is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
