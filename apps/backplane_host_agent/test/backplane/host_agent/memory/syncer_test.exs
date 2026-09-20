@@ -219,6 +219,27 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "dead_letter", 2)
   end
 
+  test "start fails closed when inflight recovery cannot persist", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "recovery failure"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
+               [id]
+             )
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "CREATE TRIGGER reject_recovery BEFORE UPDATE OF state ON memory_outbox WHEN NEW.state = 'retry_wait' BEGIN SELECT RAISE(ABORT, 'recovery blocked'); END"
+             )
+
+    previous = Process.flag(:trap_exit, true)
+    assert {:error, _reason} = Syncer.start_link(store: store, channel: self(), interval_ms: 0)
+    Process.flag(:trap_exit, previous)
+  end
+
   test "malformed acknowledgement retries claimed rows without crashing", %{
     store: store,
     opts: opts
@@ -250,6 +271,32 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
 
     assert_outbox(store, id, "inflight", 0)
+  end
+
+  test "rolls back all acknowledgement transitions when a later row fails", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => first}} = Memory.remember(%{"content" => "first atomic"}, opts)
+    {:ok, %{"id" => second}} = Memory.remember(%{"content" => "second atomic"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "CREATE TRIGGER reject_second_done BEFORE UPDATE OF state ON memory_outbox WHEN NEW.seq = 2 AND NEW.state = 'done' BEGIN SELECT RAISE(ABORT, 'second blocked'); END"
+             )
+
+    assert {:error, _reason} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, first, "inflight", 0)
+    assert_outbox(store, second, "inflight", 0)
+
+    assert {:ok, %{"drained" => 0}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, first, "retry_wait", 1)
+    assert_outbox(store, second, "retry_wait", 1)
   end
 
   test "missing memory rows are dead-lettered while the rest of the batch drains", %{

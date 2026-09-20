@@ -59,7 +59,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   def drain_once(opts \\ []) do
     opts = normalize_opts(opts)
 
-    with {:ok, channel} <- connected_channel(opts),
+    with :ok <- recover_inflight(opts),
+         {:ok, channel} <- connected_channel(opts),
          {:ok, outbox_rows} <- claim_pending(opts.store, opts.batch_size, now(opts)) do
       if outbox_rows == [] do
         {:ok, %{"drained" => 0}}
@@ -288,57 +289,58 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   end
 
   defp apply_acks(opts, outbox_rows, ack_items) do
-    Enum.reduce_while(Enum.zip(outbox_rows, ack_items), :ok, fn {row, ack}, :ok ->
-      case apply_ack(opts, row, ack) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
+    transaction(opts.store, fn conn ->
+      Enum.reduce_while(Enum.zip(outbox_rows, ack_items), :ok, fn {row, ack}, :ok ->
+        case apply_ack(conn, opts, row, ack) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> DBConnection.rollback(conn, reason)
+        end
+      end)
     end)
+    |> case do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp apply_ack(opts, row, %{"status" => status} = ack)
+  defp apply_ack(conn, opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
-    mark_done(opts.store, row, ack["canonical_id"], now(opts))
+    mark_done(conn, row, ack["canonical_id"], now(opts))
   end
 
-  defp apply_ack(opts, row, %{"status" => "error"} = ack) do
-    case dead_letter(opts.store, row["seq"], ack["error"] || "validation error", now(opts)) do
+  defp apply_ack(conn, opts, row, %{"status" => "error"} = ack) do
+    case dead_letter(conn, row["seq"], ack["error"] || "validation error", now(opts)) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, {:storage_error, reason}}
     end
   end
 
-  defp apply_ack(opts, row, _ack), do: retry_row(opts, row, "missing acknowledgement")
+  defp apply_ack(conn, opts, row, _ack), do: retry_row(conn, opts, row, "missing acknowledgement")
 
-  defp mark_done(store, row, canonical_id, now) do
-    case transaction(store, fn conn ->
-           with {:ok, %Result{num_rows: updated}} <-
-                  Store.execute(
-                    conn,
-                    "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
-                    [now, now, row["seq"]]
-                  ),
-                true <- updated > 0,
-                {:ok, _} <-
-                  Store.execute(
-                    conn,
-                    """
-                    UPDATE memories
-                    SET sync_state = 'synced',
-                        remote_id = COALESCE(?, remote_id),
-                        synced_at = ?
-                    WHERE id = ?
-                    """,
-                    [canonical_id, now, row["memory_id"]]
-                  ) do
-             :ok
-           else
-             false -> :ok
-             {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
-           end
-         end) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
+  defp mark_done(conn, row, canonical_id, now) do
+    with {:ok, %Result{num_rows: updated}} <-
+           Store.execute(
+             conn,
+             "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
+             [now, now, row["seq"]]
+           ),
+         true <- updated > 0,
+         {:ok, _} <-
+           Store.execute(
+             conn,
+             """
+             UPDATE memories
+             SET sync_state = 'synced',
+                 remote_id = COALESCE(?, remote_id),
+                 synced_at = ?
+             WHERE id = ?
+             """,
+             [canonical_id, now, row["memory_id"]]
+           ) do
+      :ok
+    else
+      false -> :ok
+      {:error, reason} -> {:error, {:storage_error, reason}}
     end
   end
 
@@ -360,12 +362,18 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   end
 
   defp retry_rows(opts, rows, error) do
-    Enum.reduce_while(rows, :ok, fn row, :ok ->
-      case retry_row(opts, row, error) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, {:storage_error, reason}}}
-      end
+    transaction(opts.store, fn conn ->
+      Enum.reduce_while(rows, :ok, fn row, :ok ->
+        case retry_row(conn, opts, row, error) do
+          {:ok, _} -> {:cont, :ok}
+          {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
+        end
+      end)
     end)
+    |> case do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp retry_result(opts, rows, error, result) do
@@ -375,19 +383,19 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end
   end
 
-  defp retry_row(opts, row, error) do
+  defp retry_row(store, opts, row, error) do
     attempts = row["attempts"] + 1
     now = now(opts)
 
     if attempts >= opts.max_attempts do
       Store.execute(
-        opts.store,
+        store,
         "UPDATE memory_outbox SET state = 'dead_letter', attempts = ?, last_error = ?, dead_lettered_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
         [attempts, to_string(error), now, now, row["seq"]]
       )
     else
       Store.execute(
-        opts.store,
+        store,
         "UPDATE memory_outbox SET state = 'retry_wait', attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ? AND state = 'inflight'",
         [attempts, to_string(error), retry_at(now, attempts, opts), now, row["seq"]]
       )
