@@ -19,7 +19,7 @@ defmodule Backplane.McpProtocol.ProtocolTest do
     end
 
     test "fallback_version/0 returns fallback" do
-      assert "2025-03-26" = Protocol.fallback_version()
+      assert "2025-11-25" = Protocol.fallback_version()
     end
 
     test "validate_version/1 accepts supported versions" do

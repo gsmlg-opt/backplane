@@ -28,7 +28,7 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
   }
 
   @latest_version "2026-07-28"
-  @fallback_version "2025-03-26"
+  @fallback_version "2025-11-25"
 
   @type version :: String.t()
 
@@ -65,7 +65,10 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
   """
   @spec supported_versions() :: [version()]
   def supported_versions do
-    [@latest_version | @versions |> Map.keys() |> Enum.reject(&(&1 == @latest_version)) |> Enum.sort(:desc)]
+    [
+      @latest_version
+      | @versions |> Map.keys() |> Enum.reject(&(&1 == @latest_version)) |> Enum.sort(:desc)
+    ]
   end
 
   @doc """
@@ -108,7 +111,8 @@ defmodule Backplane.McpProtocol.Protocol.Registry do
       {:error, :unsupported_version,
        ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]}
   """
-  @spec negotiate(version()) :: {:ok, version(), module()} | {:error, :unsupported_version, [version()]}
+  @spec negotiate(version()) ::
+          {:ok, version(), module()} | {:error, :unsupported_version, [version()]}
   def negotiate(client_version) do
     case get(client_version) do
       {:ok, mod} -> {:ok, client_version, mod}

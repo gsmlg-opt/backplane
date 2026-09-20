@@ -532,7 +532,9 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
     test "stdio treats a malformed modern response as terminal instead of legacy proof" do
       state = state(:auto, STDIO)
       request = request(discover_operation(@modern_version))
-      error = Error.transport(:malformed_response, %{message: "Malformed JSON-RPC error response"})
+
+      error =
+        Error.transport(:malformed_response, %{message: "Malformed JSON-RPC error response"})
 
       assert {:error, ^error, failed} = Negotiation.handle_error(state, request, error)
       assert failed.negotiation_status == :failed
@@ -629,10 +631,10 @@ defmodule Backplane.McpProtocol.Client.NegotiationTest do
                Negotiation.handle_error(state, request, error)
 
       assert operation.method == "initialize"
-      assert operation.params["protocolVersion"] == Protocol.fallback_version()
+      assert operation.params["protocolVersion"] == "2025-11-25"
       assert fallback.era == :legacy
       assert fallback.negotiation_status == :initializing
-      assert fallback.protocol_version == Protocol.fallback_version()
+      assert fallback.protocol_version == "2025-11-25"
       assert fallback.negotiated_version == nil
     end
 

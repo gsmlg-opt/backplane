@@ -40,7 +40,8 @@ Pinning the same peer to a legacy version succeeds through `initialize`,
   `invalid_params`, malformed responses, authentication failures, 5xx
   responses, network failures, or timeouts.
 - Do not change stdio negotiation; it already handles `method_not_found`.
-- Do not change `Error` decoding or `Protocol.fallback_version/0`.
+- Do not change `Error` decoding. `Protocol.fallback_version/0` remains the
+  single legacy fallback selection and uses the highest supported legacy version.
 - Do not modify Backplane proxy, admin, endpoint, or database code.
 - Do not bump versions, publish a package, close the issue, or create a release
   as part of this fix.
@@ -86,7 +87,7 @@ The subsequent legacy lifecycle remains the existing one:
 ```text
 server/discover
   -> JSON-RPC -32601 Method not found
-  -> initialize using Protocol.fallback_version() (currently 2025-03-26)
+  -> initialize using Protocol.fallback_version() (currently 2025-11-25)
   -> notifications/initialized
   -> tools/list / tools/call
 ```

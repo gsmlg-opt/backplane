@@ -61,7 +61,7 @@ defmodule Backplane.McpProtocol.Protocol.RegistryTest do
 
   describe "fallback_version/0" do
     test "returns the fallback version" do
-      assert "2025-03-26" = Registry.fallback_version()
+      assert "2025-11-25" = Registry.fallback_version()
     end
   end
 
