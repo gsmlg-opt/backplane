@@ -17,7 +17,7 @@ defmodule Backplane.Admin.ManagedLive do
     %{
       module: Backplane.Services.Web,
       name: "Web",
-      description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
+      description: "Fetch HTTP(S) pages, search the web, and search X"
     },
     %{
       module: Backplane.Services.Skills,

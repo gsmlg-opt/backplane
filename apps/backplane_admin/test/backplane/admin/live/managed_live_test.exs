@@ -53,8 +53,8 @@ defmodule Backplane.Admin.ManagedLiveTest do
     assert html =~ "web::"
     assert html =~ "web::fetch"
     assert html =~ "web::search"
-    assert html =~ "web::live_search"
     assert html =~ "web::x_search"
+    refute html =~ "web::live_search"
     assert html =~ ~s(href="/mcp/managed/web")
   end
 
@@ -77,18 +77,14 @@ defmodule Backplane.Admin.ManagedLiveTest do
   test "page load does not reconcile or broadcast tool changes", %{conn: conn} do
     Backplane.Settings.set("services.web.enabled", true)
 
-    stale_tools =
-      Backplane.Services.Web.tools()
-      |> Enum.reject(&(&1.name == "web::live_search"))
-
     Backplane.Registry.ToolRegistry.deregister_managed("web")
-    Backplane.Registry.ToolRegistry.register_managed("web", stale_tools)
+    Backplane.Registry.ToolRegistry.register_managed("web", Backplane.Services.Web.tools())
     PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
     flush_mcp_notifications()
 
     {:ok, _view, html} = live(conn, "/mcp/managed")
 
-    refute html =~ "web::live_search"
+    assert html =~ "web::fetch"
     assert ToolRegistry.resolve("web::live_search") == :not_found
 
     refute_receive {:mcp_notification, %{method: "notifications/tools/list_changed"}}

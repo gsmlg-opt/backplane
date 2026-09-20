@@ -1,8 +1,6 @@
 defmodule Backplane.Admin.ManagedServiceSettingsLive do
   use Backplane.Admin, :live_view
 
-  alias Backplane.LLM.{ProviderApi, ProviderModelSurface}
-  alias Backplane.Services.WebLiveSearch
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -17,7 +15,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       module: Backplane.Services.Web,
       name: "Web",
       prefix: "web",
-      description: "Fetch HTTP(S) pages, search the web, run live LLM web search, and search X"
+      description: "Fetch HTTP(S) pages, search the web, and search X"
     },
     %{
       module: Backplane.Services.Math,
@@ -34,11 +32,18 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   ]
 
   @search_backends [
-    %{id: "ollama", label: "Ollama"},
-    %{id: "minimax", label: "MiniMax"}
+    %{id: "exa", label: "Exa", default_enabled: true, base_url: "https://api.exa.ai"},
+    %{id: "tavily", label: "Tavily", default_enabled: true, base_url: "https://api.tavily.com"},
+    %{id: "ollama", label: "Ollama", default_enabled: false, base_url: "https://ollama.com"},
+    %{
+      id: "minimax",
+      label: "MiniMax",
+      default_enabled: false,
+      base_url: "https://api.minimaxi.com"
+    }
   ]
-  @live_search_models_setting "services.web_live_search.models"
-  @legacy_live_search_model_setting "services.web_live_search.model"
+  @fetch_backends [%{id: "direct", label: "Direct"}, %{id: "firecrawl", label: "Firecrawl"}]
+  @firecrawl_base_url "https://api.firecrawl.dev"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -90,7 +95,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Web search settings saved")
+         |> put_flash(:info, "Web settings saved")
          |> load_settings()}
 
       {:error, message} ->
@@ -168,19 +173,27 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       if configured_backend in search_backend_ids() do
         configured_backend
       else
-        "ollama"
+        "exa"
       end
 
     credentials = Credentials.list()
     credential_names = credentials |> Enum.map(& &1.name) |> MapSet.new()
     x_search_credential = configured_x_search_credential() || ""
-    live_search_model_options = live_search_model_options()
-    live_search_models = configured_live_search_models(live_search_model_options)
+    firecrawl_credential = configured_setting("services.web_fetch.firecrawl.credential") || ""
+    firecrawl_configured? = credential_exists?(firecrawl_credential, credential_names)
 
-    x_search_configured? =
-      x_search_credential != "" and MapSet.member?(credential_names, x_search_credential)
+    x_search_configured? = credential_exists?(x_search_credential, credential_names)
 
     assign(socket,
+      fetch_default_backend:
+        configured_choice("services.web_fetch.default_backend", fetch_backend_ids(), "direct"),
+      fetch_backend_options: Enum.map(@fetch_backends, &{&1.id, &1.label}),
+      firecrawl_base_url:
+        configured_setting("services.web_fetch.firecrawl.base_url") || @firecrawl_base_url,
+      firecrawl_credential: firecrawl_credential,
+      firecrawl_configured?: firecrawl_configured?,
+      firecrawl_credential_options:
+        credential_options(credentials, firecrawl_credential, firecrawl_configured?),
       default_backend: default_backend,
       backend_options: search_backend_options(),
       debug_backend: socket.assigns[:debug_backend] || default_backend,
@@ -190,10 +203,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       x_search_configured?: x_search_configured?,
       x_search_credential_options:
         credential_options(credentials, x_search_credential, x_search_configured?),
-      x_search_model: configured_x_search_model(),
-      live_search_model_options: live_search_model_options,
-      live_search_models: live_search_models,
-      live_search_configured?: live_search_models != []
+      x_search_model: configured_x_search_model()
     )
   end
 
@@ -201,23 +211,56 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
   defp load_search_backend(backend, credentials, credential_names) do
     credential = configured_credential(backend.id) || ""
-    exists? = credential != "" and MapSet.member?(credential_names, credential)
+    exists? = credential_exists?(credential, credential_names)
 
     backend
+    |> Map.put(:enabled, configured_backend_enabled?(backend))
+    |> Map.put(
+      :configured_base_url,
+      configured_setting("services.web_search.#{backend.id}.base_url") || backend.base_url
+    )
     |> Map.put(:configured_credential, credential)
     |> Map.put(:configured?, exists?)
     |> Map.put(:credential_options, credential_options(credentials, credential, exists?))
   end
 
   defp save_web_search_settings(params) do
-    with {:ok, default_backend} <- parse_search_backend(params["default_backend"]),
-         :ok <- Settings.set("services.web_search.default_backend", default_backend),
-         :ok <- save_web_search_credentials(params["credentials"] || %{}),
-         :ok <- save_live_search_settings(params["live_search"] || %{}),
-         :ok <- save_x_search_settings(params["x_search"] || %{}) do
-      :ok
+    with {:ok, settings} <- validate_web_settings(params) do
+      save_settings(settings)
     end
   end
+
+  defp validate_web_settings(params) do
+    with {:ok, fetch_settings} <- validate_fetch_settings(params["fetch"] || %{}),
+         {:ok, default_backend} <- parse_search_backend(params["default_backend"]),
+         {:ok, backend_settings} <- validate_search_backends(params["backends"] || %{}),
+         :ok <- validate_default_backend_enabled(default_backend, backend_settings),
+         {:ok, x_search_settings} <- validate_x_search_settings(params["x_search"] || %{}) do
+      {:ok,
+       fetch_settings ++
+         [{"services.web_search.default_backend", default_backend}] ++
+         backend_settings ++ x_search_settings}
+    end
+  end
+
+  defp validate_fetch_settings(params) when is_map(params) do
+    firecrawl = params["firecrawl"] || %{}
+
+    with {:ok, default_backend} <-
+           parse_choice(params["default_backend"], fetch_backend_ids(), "fetch"),
+         {:ok, base_url} <- parse_base_url(firecrawl["base_url"], "Firecrawl"),
+         {:ok, credential} <- parse_credential(firecrawl["credential"], "Firecrawl") do
+      {:ok,
+       [
+         {"services.web_fetch.default_backend", default_backend},
+         {"services.web_fetch.firecrawl.base_url", base_url},
+         {"services.web_fetch.firecrawl.credential", credential}
+       ]}
+    end
+  end
+
+  defp validate_fetch_settings(_params),
+    do: {:error, "Fetch settings were not submitted correctly"}
 
   defp parse_search_backend(value) do
     backend = normalize_search_backend(value)
@@ -229,96 +272,126 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     end
   end
 
-  defp save_web_search_credentials(credentials) when is_map(credentials) do
-    Enum.reduce_while(@search_backends, :ok, fn backend, :ok ->
-      credential = normalize_credential(credentials[backend.id])
+  defp validate_search_backends(params) when is_map(params) do
+    Enum.reduce_while(@search_backends, {:ok, []}, fn backend, {:ok, settings} ->
+      backend_params = params[backend.id] || %{}
 
-      cond do
-        credential == "" ->
-          case Settings.set("services.web_search.#{backend.id}.credential", nil) do
-            :ok ->
-              {:cont, :ok}
+      with {:ok, base_url} <- parse_base_url(backend_params["base_url"], backend.label),
+           {:ok, credential} <- parse_credential(backend_params["credential"], backend.label) do
+        backend_settings = [
+          {"services.web_search.#{backend.id}.enabled", truthy?(backend_params["enabled"])},
+          {"services.web_search.#{backend.id}.base_url", base_url},
+          {"services.web_search.#{backend.id}.credential", credential}
+        ]
 
-            {:error, _reason} ->
-              {:halt, {:error, "Could not clear #{backend.label} credential setting"}}
-          end
-
-        Credentials.exists?(credential) ->
-          case Settings.set("services.web_search.#{backend.id}.credential", credential) do
-            :ok ->
-              {:cont, :ok}
-
-            {:error, _reason} ->
-              {:halt, {:error, "Could not save #{backend.label} credential setting"}}
-          end
-
-        true ->
-          {:halt, {:error, "#{backend.label} credential is not in the credential store"}}
+        {:cont, {:ok, settings ++ backend_settings}}
+      else
+        {:error, message} -> {:halt, {:error, message}}
       end
     end)
   end
 
-  defp save_web_search_credentials(_credentials),
-    do: {:error, "Credential settings were not submitted correctly"}
+  defp validate_search_backends(_params),
+    do: {:error, "Search backend settings were not submitted correctly"}
 
-  defp save_live_search_settings(params) when is_map(params) do
-    selected_models = normalize_live_search_model_list(params["models"])
+  defp validate_default_backend_enabled(default_backend, settings) do
+    key = "services.web_search.#{default_backend}.enabled"
 
-    supported_models =
-      live_search_model_options()
-      |> Enum.map(& &1.value)
-      |> MapSet.new()
-
-    unsupported_models = Enum.reject(selected_models, &MapSet.member?(supported_models, &1))
-
-    if unsupported_models == [] do
-      case Settings.set(@live_search_models_setting, selected_models) do
-        :ok -> :ok
-        {:error, _reason} -> {:error, "Could not save live search model settings"}
+    enabled? =
+      case List.keyfind(settings, key, 0) do
+        {^key, value} -> value
+        nil -> false
       end
-    else
-      {:error, "Choose supported live search models"}
+
+    if enabled?,
+      do: :ok,
+      else: {:error, "The default web search backend must be enabled"}
+  end
+
+  defp validate_x_search_settings(params) when is_map(params) do
+    with {:ok, credential} <- parse_credential(params["credential"], "xAI X Search") do
+      model = empty_to_nil(params["model"])
+
+      {:ok,
+       [
+         {"services.web_x_search.credential", credential},
+         {"services.web_x_search.model", model}
+       ]}
     end
   end
 
-  defp save_live_search_settings(_params),
-    do: {:error, "Live Search settings were not submitted correctly"}
-
-  defp save_x_search_settings(params) when is_map(params) do
-    with :ok <- save_x_search_credential(normalize_credential(params["credential"])),
-         :ok <- save_x_search_model(params["model"]) do
-      :ok
-    end
-  end
-
-  defp save_x_search_settings(_params),
+  defp validate_x_search_settings(_params),
     do: {:error, "X Search settings were not submitted correctly"}
 
-  defp save_x_search_credential("") do
-    case Settings.set("services.web_x_search.credential", nil) do
-      :ok -> :ok
-      {:error, _reason} -> {:error, "Could not clear xAI X Search credential setting"}
-    end
-  end
-
-  defp save_x_search_credential(credential) do
-    if Credentials.exists?(credential) do
-      case Settings.set("services.web_x_search.credential", credential) do
-        :ok -> :ok
-        {:error, _reason} -> {:error, "Could not save xAI X Search credential setting"}
+  defp save_settings(settings) do
+    Enum.reduce_while(settings, :ok, fn {key, value}, :ok ->
+      case Settings.set(key, value) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, "Could not save web settings"}}
       end
-    else
-      {:error, "xAI X Search credential is not in the credential store"}
+    end)
+  end
+
+  defp parse_choice(value, choices, label) do
+    normalized = normalize_search_backend(value)
+
+    if normalized in choices,
+      do: {:ok, normalized},
+      else: {:error, "Choose a supported web #{label} backend"}
+  end
+
+  defp parse_base_url(value, label) do
+    base_url = normalize_credential(value)
+
+    case URI.parse(base_url) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        {:ok, String.trim_trailing(base_url, "/")}
+
+      _ ->
+        {:error, "#{label} base URL must be an absolute HTTP(S) URL"}
     end
   end
 
-  defp save_x_search_model(value) do
-    model = normalize_credential(value)
-    value = if model == "", do: nil, else: model
+  defp parse_credential(value, label) do
+    credential = normalize_credential(value)
 
-    case Settings.set("services.web_x_search.model", value) do
-      :ok -> :ok
-      {:error, _reason} -> {:error, "Could not save xAI X Search model setting"}
+    cond do
+      credential == "" -> {:ok, nil}
+      Credentials.exists?(credential) -> {:ok, credential}
+      true -> {:error, "#{label} credential is not in the credential store"}
+    end
+  end
+
+  defp configured_choice(key, choices, fallback) do
+    value = configured_setting(key)
+    if value in choices, do: value, else: fallback
+  end
+
+  defp configured_setting(key) do
+    case Settings.get(key) do
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> nil
+    end
+  end
+
+  defp configured_backend_enabled?(backend) do
+    case Settings.get("services.web_search.#{backend.id}.enabled") do
+      nil -> backend.default_enabled
+      true -> true
+      _ -> false
+    end
+  end
+
+  defp credential_exists?(credential, credential_names),
+    do: credential != "" and MapSet.member?(credential_names, credential)
+
+  defp truthy?(value), do: value in [true, "true", "on", "1"]
+
+  defp empty_to_nil(value) do
+    case normalize_credential(value) do
+      "" -> nil
+      normalized -> normalized
     end
   end
 
@@ -365,69 +438,6 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       value when is_binary(value) and value != "" -> String.trim(value)
       _ -> "grok-4.3"
     end
-  end
-
-  defp configured_live_search_models(options) do
-    supported_models = options |> Enum.map(& &1.value) |> MapSet.new()
-
-    @live_search_models_setting
-    |> Settings.get()
-    |> normalize_live_search_model_list()
-    |> append_legacy_live_search_model()
-    |> Enum.filter(&MapSet.member?(supported_models, &1))
-    |> Enum.uniq()
-  end
-
-  defp append_legacy_live_search_model(models) do
-    case Settings.get(@legacy_live_search_model_setting) |> normalize_live_search_model_value() do
-      nil -> models
-      model -> models ++ [model]
-    end
-  end
-
-  defp live_search_model_options do
-    (discovered_live_search_model_options() ++ default_live_search_model_options())
-    |> Enum.uniq_by(& &1.value)
-    |> Enum.sort_by(& &1.value)
-  end
-
-  defp discovered_live_search_model_options do
-    :openai
-    |> ProviderModelSurface.list_enabled()
-    |> Enum.filter(fn surface ->
-      provider = surface.provider_model.provider
-      api = surface.provider_api
-      model = surface.provider_model.model
-
-      WebLiveSearch.supports_hosted_web_search_model?(provider, api, model)
-    end)
-    |> Enum.map(&live_search_model_option/1)
-  end
-
-  defp default_live_search_model_options do
-    ProviderApi.list_enabled()
-    |> Enum.filter(&(&1.api_surface == :openai))
-    |> Enum.flat_map(fn api ->
-      provider = api.provider
-
-      provider
-      |> WebLiveSearch.default_supported_models(api)
-      |> Enum.map(&live_search_model_option(provider, api, &1))
-    end)
-  end
-
-  defp live_search_model_option(surface) do
-    provider = surface.provider_model.provider
-    model = surface.provider_model
-
-    live_search_model_option(provider, surface.provider_api, model.model)
-  end
-
-  defp live_search_model_option(provider, api, model) do
-    %{
-      value: "#{provider.name}/#{model}",
-      base_url: api.base_url
-    }
   end
 
   defp find_tool(tools, tool_name) do
@@ -508,9 +518,6 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   defp sample_arguments("web::search"),
     do: format_value(%{"query" => "elixir programming language", "max_results" => 5})
 
-  defp sample_arguments("web::live_search"),
-    do: format_value(%{"query" => "latest Elixir release"})
-
   defp sample_arguments("web::x_search"),
     do: format_value(%{"query" => "What are people saying about xAI on X?"})
 
@@ -534,48 +541,15 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   defp normalize_credential(value) when is_binary(value), do: String.trim(value)
   defp normalize_credential(_value), do: ""
 
-  defp normalize_live_search_model_list(values) when is_list(values) do
-    values
-    |> Enum.map(&normalize_live_search_model_value/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp normalize_live_search_model_list(value) when is_binary(value) do
-    value
-    |> String.split(",", trim: true)
-    |> normalize_live_search_model_list()
-  end
-
-  defp normalize_live_search_model_list(_value), do: []
-
-  defp normalize_live_search_model_value(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      model -> model
-    end
-  end
-
-  defp normalize_live_search_model_value(_value), do: nil
-
   defp active_tab("settings", %{prefix: "web"}), do: "settings"
   defp active_tab("debug", _service), do: "debug"
   defp active_tab(_tab, %{prefix: "web"}), do: "settings"
   defp active_tab(_tab, _service), do: "debug"
 
   defp find_service(prefix), do: Enum.find(@services, &(&1.prefix == prefix))
+  defp fetch_backend_ids, do: Enum.map(@fetch_backends, & &1.id)
   defp search_backend_ids, do: Enum.map(@search_backends, & &1.id)
   defp search_backend_options, do: Enum.map(@search_backends, &{&1.id, &1.label})
-
-  defp live_search_model_input_id(value) do
-    normalized =
-      value
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9_-]+/, "-")
-      |> String.trim("-")
-
-    "web-live-search-model-#{normalized}"
-  end
 
   @impl true
   def render(assigns) do
@@ -621,94 +595,88 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     ~H"""
     <form id="web-search-settings-form" phx-submit="save" class="space-y-4">
       <.dm_card variant="bordered">
-        <:title>Default Backend</:title>
-        <div class="max-w-md">
+        <:title>Fetch Backend</:title>
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <.dm_select
-            id="web-search-default-backend"
-            name="settings[default_backend]"
-            label="Backend"
-            options={@backend_options}
-            value={@default_backend}
+            id="web-fetch-default-backend"
+            name="settings[fetch][default_backend]"
+            label="Default Backend"
+            options={@fetch_backend_options}
+            value={@fetch_default_backend}
+          />
+          <.dm_input
+            id="web-fetch-firecrawl-base-url"
+            name="settings[fetch][firecrawl][base_url]"
+            label="Firecrawl Base URL"
+            value={@firecrawl_base_url}
+          />
+          <.dm_select
+            id="web-fetch-firecrawl-credential"
+            name="settings[fetch][firecrawl][credential]"
+            label="Firecrawl Credential"
+            options={@firecrawl_credential_options}
+            value={@firecrawl_credential}
           />
         </div>
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Backend Credentials</:title>
+        <:title>Search Backends</:title>
         <p class="mb-4 text-sm text-on-surface-variant">
+          Exa and Tavily provide advanced search. Ollama and MiniMax are disabled-by-default backup backends.
           Add or rotate API keys in <.link
             navigate={~p"/system/credentials"}
             class="text-primary underline"
           >System &gt; Credentials</.link>.
         </p>
 
-        <div class="space-y-4">
+        <div class="mb-4 max-w-md">
+          <.dm_select
+            id="web-search-default-backend"
+            name="settings[default_backend]"
+            label="Default Backend"
+            options={@backend_options}
+            value={@default_backend}
+          />
+        </div>
+
+        <div class="space-y-5">
           <div
             :for={backend <- @backends}
-            class="grid grid-cols-1 gap-3 border-b border-outline-variant pb-4 last:border-b-0 last:pb-0 md:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)]"
+            class="grid grid-cols-1 gap-3 border-b border-outline-variant pb-5 last:border-b-0 last:pb-0 lg:grid-cols-[12rem_minmax(16rem,1fr)_minmax(16rem,1fr)]"
           >
             <div>
               <div class="flex items-center gap-2">
-                <h3 class="font-medium">{backend.label}</h3>
+                <label class="flex items-center gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    name={"settings[backends][#{backend.id}][enabled]"}
+                    value="true"
+                    checked={backend.enabled}
+                    class="checkbox checkbox-sm checkbox-primary"
+                  />
+                  {backend.label}
+                </label>
                 <.dm_badge variant={if backend.configured?, do: "success", else: "ghost"}>
                   {if backend.configured?, do: "Configured", else: "No credential"}
                 </.dm_badge>
               </div>
-              <p class="mt-1 text-xs text-on-surface-variant">
-                Current credential:
-                <code>{if backend.configured_credential == "", do: "none", else: backend.configured_credential}</code>
-              </p>
             </div>
 
+            <.dm_input
+              id={"web-search-base-url-#{backend.id}"}
+              name={"settings[backends][#{backend.id}][base_url]"}
+              label="Base URL"
+              value={backend.configured_base_url}
+            />
             <.dm_select
               id={"web-search-credential-#{backend.id}"}
-              name={"settings[credentials][#{backend.id}]"}
+              name={"settings[backends][#{backend.id}][credential]"}
               label="Credential"
               options={backend.credential_options}
               value={backend.configured_credential}
             />
           </div>
-        </div>
-      </.dm_card>
-
-      <.dm_card variant="bordered">
-        <:title>Live Search</:title>
-        <div class="mb-4 flex items-center gap-2">
-          <h3 class="font-medium">Models</h3>
-          <.dm_badge variant={if @live_search_configured?, do: "success", else: "ghost"}>
-            {if @live_search_configured?, do: "Configured", else: "No models"}
-          </.dm_badge>
-        </div>
-
-        <p class="mb-4 text-sm text-on-surface-variant">
-          Uses enabled OpenAI-compatible models from Llama providers.
-        </p>
-
-        <div
-          :if={@live_search_model_options == []}
-          class="rounded-md border border-outline-variant bg-surface-container-high p-4 text-sm text-on-surface-variant"
-        >
-          No supported OpenAI-compatible models are enabled.
-        </div>
-
-        <div :if={@live_search_model_options != []} class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <label
-            :for={model <- @live_search_model_options}
-            class="flex min-w-0 items-start gap-3 rounded-md border border-outline-variant p-3"
-          >
-            <input
-              id={live_search_model_input_id(model.value)}
-              type="checkbox"
-              name="settings[live_search][models][]"
-              value={model.value}
-              checked={model.value in @live_search_models}
-              class="checkbox checkbox-sm checkbox-primary mt-1 shrink-0"
-            />
-            <span class="min-w-0">
-              <span class="block truncate text-sm font-medium">{model.value}</span>
-              <span class="block truncate text-xs text-on-surface-variant">{model.base_url}</span>
-            </span>
-          </label>
         </div>
       </.dm_card>
 

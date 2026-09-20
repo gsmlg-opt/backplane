@@ -112,7 +112,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `Backplane.Proxy.Upstream` — GenServer per upstream (stdio Port or HTTP; lifecycle, reconnect, tool discovery)
 - `Backplane.Proxy.Upstreams` — Ecto context for `mcp_upstreams` table (DB-managed upstream definitions)
 - `Backplane.Services.Day` — Managed service wrapping `day_ex` datetime tools (`day::*`)
-- `Backplane.Services.Web` — Managed web fetching, backend search, hosted live search, and X search (`web::*`)
+- `Backplane.Services.Web` — Managed web fetching, backend search, and X search (`web::*`)
 - `Backplane.Services.Math` — Managed service for math expression evaluation (`math::*`)
 - `Backplane.Services.Skills` — Managed service adapter for archive-backed skill tools (`skill::*`)
 - `Backplane.Tools.*` — Native Hub/Admin modules plus the Skills implementation delegated by `Backplane.Services.Skills`

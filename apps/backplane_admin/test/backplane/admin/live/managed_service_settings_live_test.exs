@@ -1,8 +1,6 @@
 defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
-  alias Backplane.LLM.{Provider, ProviderApi, ProviderModel, ProviderModelSurface}
-  alias Backplane.LLM.OpenAICodex
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
   alias Backplane.Services.WebFetch
@@ -20,14 +18,17 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       plug: {Req.Test, Backplane.Services.WebXSearch}
     )
 
-    Settings.set("services.web_search.default_backend", "ollama")
-    Settings.set("services.web_live_search.models", [])
-    Settings.set("services.web_live_search.model", nil)
+    Settings.set("services.web_fetch.default_backend", "direct")
+    Settings.set("services.web_fetch.firecrawl.base_url", nil)
+    Settings.set("services.web_fetch.firecrawl.credential", nil)
+    Settings.set("services.web_search.default_backend", "exa")
     Settings.set("services.web_x_search.credential", nil)
     Settings.set("services.web_x_search.model", nil)
 
-    for backend <- ~w(ollama minimax z_ai bigmodel) do
+    for backend <- ~w(exa tavily ollama minimax) do
+      Settings.set("services.web_search.#{backend}.enabled", backend in ~w(exa tavily))
       Settings.set("services.web_search.#{backend}.credential", nil)
+      Settings.set("services.web_search.#{backend}.base_url", nil)
     end
 
     on_exit(fn ->
@@ -53,94 +54,70 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     :ok
   end
 
-  test "renders web search settings", %{conn: conn} do
+  test "renders fetch and search backend settings without live search", %{conn: conn} do
     {:ok, _credential} = Credentials.store("shared-search-key", "secret", "service")
     {:ok, _xai_credential} = Credentials.store("xai-search-key", "xai-secret", "service")
 
     {:ok, _view, html} = live(conn, "/mcp/managed/web")
 
     assert html =~ "Web Settings"
-    assert html =~ "Default Backend"
-    assert html =~ "Backend Credentials"
-    assert html =~ "Live Search"
+    assert html =~ "Fetch Backend"
+    assert html =~ "Firecrawl"
+    assert html =~ "Search Backends"
+    assert html =~ "Ollama and MiniMax are disabled-by-default backup backends"
+    refute html =~ "Live Search"
     assert html =~ "X Search"
     assert html =~ "xAI Credential"
     assert html =~ "Ollama"
     assert html =~ "MiniMax"
-    refute html =~ "Z.ai"
-    refute html =~ "BigModel"
+    assert html =~ "Exa"
+    assert html =~ "Tavily"
     assert html =~ "shared-search-key"
     assert html =~ "xai-search-key"
+    refute html =~ "xai-secret"
+    refute html =~ ">secret<"
     assert html =~ ~s(href="/system/credentials")
     refute html =~ "Backend API Keys"
     refute html =~ "API Key"
   end
 
-  test "renders only supported live search model options", %{conn: conn} do
-    create_model_surface("openai-live", "gpt-5.5", :openai,
-      preset_key: "openai",
-      base_url: "https://api.openai.com/v1"
-    )
-
-    create_model_surface("xai-live", "grok-4.3", :openai,
-      preset_key: "x-ai",
-      base_url: "https://api.x.ai/v1"
-    )
-
-    create_model_surface("openrouter-live", "gpt-4o", :openai,
-      preset_key: "openrouter",
-      base_url: "https://openrouter.ai/api/v1"
-    )
-
-    create_model_surface("anthropic-live", "claude-sonnet-5", :anthropic)
-    create_model_surface("disabled-live", "disabled-model", :openai, surface_enabled: false)
-
-    Settings.set("services.web_live_search.models", ["openai-live/gpt-5.5"])
-
-    {:ok, view, html} = live(conn, "/mcp/managed/web")
-
-    assert html =~ "Live Search"
-    assert html =~ "openai-live/gpt-5.5"
-    assert html =~ "xai-live/grok-4.3"
-    refute html =~ "openrouter-live/gpt-4o"
-    refute html =~ "anthropic-live/claude-sonnet-5"
-    refute html =~ "disabled-live/disabled-model"
-
-    assert has_element?(
-             view,
-             ~s(input[name="settings[live_search][models][]"][value="openai-live/gpt-5.5"][checked])
-           )
-
-    assert has_element?(
-             view,
-             ~s(input[name="settings[live_search][models][]"][value="xai-live/grok-4.3"])
-           )
-  end
-
-  test "does not invent Codex live search models when discovery has no models",
-       %{conn: conn} do
-    create_provider_api("openai-codex", "openai-codex", OpenAICodex.default_backend_base_url())
-    create_provider_api("x-ai", "x-ai", "https://api.x.ai/v1")
-
-    {:ok, _view, html} = live(conn, "/mcp/managed/web")
-
-    refute html =~ "openai-codex/gpt-5.5"
-    assert html =~ "x-ai/grok-4.3"
-    refute html =~ "No supported OpenAI-compatible models are enabled."
-  end
-
-  test "saves default backend and selected backend credential", %{conn: conn} do
+  test "saves fetch and search defaults, toggles, URLs, and vault credentials", %{conn: conn} do
     {:ok, _credential} = Credentials.store("mini-search-key", "mini-secret", "service")
+    {:ok, _credential} = Credentials.store("firecrawl-key", "firecrawl-secret", "service")
     {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       view
       |> form("#web-search-settings-form", %{
         "settings" => %{
+          "fetch" => %{
+            "default_backend" => "firecrawl",
+            "firecrawl" => %{
+              "base_url" => "https://crawl.example.test/api/",
+              "credential" => "firecrawl-key"
+            }
+          },
           "default_backend" => "minimax",
-          "credentials" => %{
-            "ollama" => "",
-            "minimax" => "mini-search-key"
+          "backends" => %{
+            "exa" => %{
+              "enabled" => "true",
+              "credential" => "",
+              "base_url" => "https://api.exa.ai"
+            },
+            "tavily" => %{
+              "enabled" => "true",
+              "credential" => "",
+              "base_url" => "https://api.tavily.com"
+            },
+            "ollama" => %{
+              "credential" => "",
+              "base_url" => "https://ollama.com"
+            },
+            "minimax" => %{
+              "enabled" => "true",
+              "credential" => "mini-search-key",
+              "base_url" => "https://mini.example.test"
+            }
           },
           "x_search" => %{
             "credential" => "",
@@ -150,9 +127,27 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       })
       |> render_submit()
 
-    assert html =~ "Web search settings saved"
+    assert html =~ "Web settings saved"
     assert Settings.get("services.web_search.default_backend") == "minimax"
+    assert Settings.get("services.web_search.minimax.enabled") == true
     assert Settings.get("services.web_search.minimax.credential") == "mini-search-key"
+    assert Settings.get("services.web_search.minimax.base_url") == "https://mini.example.test"
+    assert Settings.get("services.web_fetch.default_backend") == "firecrawl"
+    assert Settings.get("services.web_fetch.firecrawl.credential") == "firecrawl-key"
+
+    assert Settings.get("services.web_fetch.firecrawl.base_url") ==
+             "https://crawl.example.test/api"
+
+    assert has_element?(
+             view,
+             ~s(input#web-search-base-url-minimax[value="https://mini.example.test"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(input[name="settings[backends][minimax][enabled]"][checked])
+           )
+
     assert {:ok, "mini-secret"} = Credentials.fetch("mini-search-key")
     refute Credentials.exists?("web-search-minimax")
   end
@@ -165,10 +160,27 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       view
       |> form("#web-search-settings-form", %{
         "settings" => %{
-          "default_backend" => "ollama",
-          "credentials" => %{
-            "ollama" => "",
-            "minimax" => ""
+          "fetch" => %{
+            "default_backend" => "direct",
+            "firecrawl" => %{
+              "base_url" => "https://api.firecrawl.dev",
+              "credential" => ""
+            }
+          },
+          "default_backend" => "exa",
+          "backends" => %{
+            "exa" => %{
+              "enabled" => "true",
+              "credential" => "",
+              "base_url" => "https://api.exa.ai"
+            },
+            "tavily" => %{
+              "enabled" => "true",
+              "credential" => "",
+              "base_url" => "https://api.tavily.com"
+            },
+            "ollama" => %{"credential" => "", "base_url" => "https://ollama.com"},
+            "minimax" => %{"credential" => "", "base_url" => "https://api.minimaxi.com"}
           },
           "x_search" => %{
             "credential" => "xai-search-key",
@@ -178,70 +190,28 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
       })
       |> render_submit()
 
-    assert html =~ "Web search settings saved"
+    assert html =~ "Web settings saved"
     assert Settings.get("services.web_x_search.credential") == "xai-search-key"
     assert Settings.get("services.web_x_search.model") == "grok-4.3"
   end
 
-  test "saves multiple live search models", %{conn: conn} do
-    create_model_surface("openai-live", "gpt-5.5", :openai,
-      preset_key: "openai",
-      base_url: "https://api.openai.com/v1"
-    )
-
-    create_model_surface("xai-live", "grok-4.3", :openai,
-      preset_key: "x-ai",
-      base_url: "https://api.x.ai/v1"
-    )
-
-    {:ok, view, _html} = live(conn, "/mcp/managed/web")
-
-    html =
-      view
-      |> form("#web-search-settings-form", %{
-        "settings" => %{
-          "default_backend" => "ollama",
-          "credentials" => %{
-            "ollama" => "",
-            "minimax" => ""
-          },
-          "live_search" => %{
-            "models" => ["openai-live/gpt-5.5", "xai-live/grok-4.3"]
-          },
-          "x_search" => %{
-            "credential" => "",
-            "model" => ""
-          }
-        }
-      })
-      |> render_submit()
-
-    assert html =~ "Web search settings saved"
-
-    assert Settings.get("services.web_live_search.models") == [
-             "openai-live/gpt-5.5",
-             "xai-live/grok-4.3"
-           ]
-  end
-
-  test "rejects unsupported live search model settings", %{conn: conn} do
-    create_model_surface("openai-live", "gpt-5.5", :openai,
-      preset_key: "openai",
-      base_url: "https://api.openai.com/v1"
-    )
-
+  test "validates the full form before writing any settings", %{conn: conn} do
+    Settings.set("services.web_search.default_backend", "exa")
     {:ok, view, _html} = live(conn, "/mcp/managed/web")
 
     html =
       render_submit(view, "save", %{
         "settings" => %{
-          "default_backend" => "ollama",
-          "credentials" => %{
-            "ollama" => "",
-            "minimax" => ""
+          "fetch" => %{
+            "default_backend" => "firecrawl",
+            "firecrawl" => %{"base_url" => "not-a-url", "credential" => "missing"}
           },
-          "live_search" => %{
-            "models" => ["unsupported/model"]
+          "default_backend" => "tavily",
+          "backends" => %{
+            "exa" => %{"enabled" => "true", "credential" => "", "base_url" => ""},
+            "tavily" => %{"enabled" => "true", "credential" => "", "base_url" => ""},
+            "ollama" => %{"credential" => "", "base_url" => ""},
+            "minimax" => %{"credential" => "", "base_url" => ""}
           },
           "x_search" => %{
             "credential" => "",
@@ -250,13 +220,34 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
         }
       })
 
-    assert html =~ "Choose supported live search models"
-    assert Settings.get("services.web_live_search.models") == []
+    assert html =~ "Firecrawl base URL must be an absolute HTTP(S) URL"
+    assert Settings.get("services.web_search.default_backend") == "exa"
+    assert Settings.get("services.web_fetch.default_backend") == "direct"
+  end
+
+  test "a late invalid credential leaves every submitted setting unchanged", %{conn: conn} do
+    Settings.set("services.web_search.default_backend", "exa")
+    Settings.set("services.web_fetch.default_backend", "direct")
+    {:ok, view, _html} = live(conn, "/mcp/managed/web")
+
+    params =
+      valid_web_settings()
+      |> put_in(["fetch", "default_backend"], "firecrawl")
+      |> put_in(["default_backend"], "tavily")
+      |> put_in(["x_search", "credential"], "missing-x-credential")
+
+    html = render_submit(view, "save", %{"settings" => params})
+
+    assert html =~ "xAI X Search credential is not in the credential store"
+    assert Settings.get("services.web_search.default_backend") == "exa"
+    assert Settings.get("services.web_fetch.default_backend") == "direct"
+    assert Settings.get("services.web_search.tavily.base_url") == nil
   end
 
   test "debug tab calls web::search through the generic tool debugger", %{conn: conn} do
     {:ok, _credential} = Credentials.store("ollama-debug-key", "ollama-secret", "service")
     Settings.set("services.web_search.ollama.credential", "ollama-debug-key")
+    Settings.set("services.web_search.ollama.enabled", true)
 
     Req.Test.stub(WebSearch, fn conn ->
       {:ok, _body, conn} = Plug.Conn.read_body(conn)
@@ -507,71 +498,31 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     assert html =~ "Skills service is disabled"
   end
 
-  defp create_provider_api(provider_name, preset_key, base_url) do
-    credential_name = "#{provider_name}-credential"
-
-    metadata =
-      if preset_key == "openai-codex" do
-        %{"auth_type" => "openai_oauth"}
-      else
-        %{}
-      end
-
-    {:ok, _credential} =
-      Credentials.store(credential_name, "#{provider_name}-secret", "llm", metadata)
-
-    {:ok, provider} =
-      Provider.create(%{
-        name: provider_name,
-        credential: credential_name,
-        preset_key: preset_key
-      })
-
-    {:ok, api} =
-      ProviderApi.create(%{
-        provider_id: provider.id,
-        api_surface: :openai,
-        base_url: base_url
-      })
-
-    api
-  end
-
-  defp create_model_surface(provider_name, model_id, api_surface, opts \\ []) do
-    credential_name = "#{provider_name}-credential"
-    {:ok, _credential} = Credentials.store(credential_name, "#{provider_name}-secret", "llm")
-
-    {:ok, provider} =
-      Provider.create(%{
-        name: provider_name,
-        credential: credential_name,
-        preset_key: Keyword.get(opts, :preset_key),
-        enabled: Keyword.get(opts, :provider_enabled, true)
-      })
-
-    {:ok, api} =
-      ProviderApi.create(%{
-        provider_id: provider.id,
-        api_surface: api_surface,
-        base_url: Keyword.get(opts, :base_url, "https://#{provider_name}.example.test/v1"),
-        enabled: Keyword.get(opts, :api_enabled, true)
-      })
-
-    {:ok, model} =
-      ProviderModel.create(%{
-        provider_id: provider.id,
-        model: model_id,
-        source: :manual,
-        enabled: Keyword.get(opts, :model_enabled, true)
-      })
-
-    {:ok, surface} =
-      ProviderModelSurface.create(%{
-        provider_model_id: model.id,
-        provider_api_id: api.id,
-        enabled: Keyword.get(opts, :surface_enabled, true)
-      })
-
-    surface
+  defp valid_web_settings do
+    %{
+      "fetch" => %{
+        "default_backend" => "direct",
+        "firecrawl" => %{
+          "base_url" => "https://api.firecrawl.dev",
+          "credential" => ""
+        }
+      },
+      "default_backend" => "exa",
+      "backends" => %{
+        "exa" => %{
+          "enabled" => "true",
+          "credential" => "",
+          "base_url" => "https://api.exa.ai"
+        },
+        "tavily" => %{
+          "enabled" => "true",
+          "credential" => "",
+          "base_url" => "https://api.tavily.com"
+        },
+        "ollama" => %{"credential" => "", "base_url" => "https://ollama.com"},
+        "minimax" => %{"credential" => "", "base_url" => "https://api.minimaxi.com"}
+      },
+      "x_search" => %{"credential" => "", "model" => ""}
+    }
   end
 end

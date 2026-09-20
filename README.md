@@ -233,14 +233,17 @@ Upstream tools use their configured prefix. Managed services and hub tools use f
 Managed services are built into Backplane and can be viewed from the admin endpoint at `/mcp/managed`.
 
 - `day::*`: date/time tools backed by `apps/day_ex`
-- `web::fetch`: fetch an HTTP(S) URL and convert readable content to Markdown
-- `web::search`: search through configured Ollama or MiniMax backends
-- `web::live_search`: hosted web search through a configured LLM provider
+- `web::fetch`: fetch an HTTP(S) URL as Markdown directly or through configured Firecrawl
+- `web::search`: advanced Exa and Tavily search; Exa is the default, while Ollama and MiniMax are basic-search backups that require explicit enablement
 - `web::x_search`: X search through xAI credentials
 - `math::evaluate`: parse and evaluate math expressions through the native math engine
 - `skill::*`: archive-backed skill search, list, load, download, and publish tools; registered only when `services.skill.enabled` is explicitly `true`
 
 The math service accepts either an infix expression such as `2 * (3 + 4)` or a canonical JSON AST. Input is parsed into `Backplane.Math.Expression.Ast` before execution, then dispatched through `Backplane.Math.Router` into the native engine under `Backplane.Math.Sandbox` timeouts and complexity limits.
+
+`web::search` supports common domain filters and optional bounded page content. Exa adds search type, category, publication dates, summaries, and cache age controls. Tavily adds search depth, topic, date windows, answers, chunks, and published-date filtering. The service rejects provider-specific options on another backend instead of silently dropping them. Snippets are limited to 1,500 characters; requested content defaults to 5,000 characters and is capped at 10,000. A truncated field is accompanied by `snippet_truncated` or `content_truncated`.
+
+Normalized results can include score, author, highlights, summary, and publication date. Provider metadata is whitelisted as snake-case fields, including Exa request/cost/search-time metadata and Tavily request/response-time/usage metadata; Tavily requests usage explicitly. Exa's deprecated `resolvedSearchType` response is preserved as `resolved_search_type` when supplied for compatibility, but Backplane does not use it for routing or behavior.
 
 ## Admin UI
 

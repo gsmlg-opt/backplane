@@ -9,30 +9,53 @@ defmodule Backplane.Services.WebFetch do
   @max_body_bytes 10_000_000
   @user_agent "Backplane-WebFetch/1.0 (+https://github.com/gsmlg-opt/backplane)"
   @ignored_tags ~w(script style nav header footer aside svg canvas)
+  @backends ~w(direct firecrawl)
+  @firecrawl_base_url "https://api.firecrawl.dev"
+
+  alias Backplane.Settings
+  alias Backplane.Settings.Credentials
 
   def handle_fetch(%{"url" => url} = params) when is_binary(url) do
-    with :ok <- ensure_enabled() do
-      instructions = Map.get(params, "instructions")
-
-      with :ok <- validate_url(url),
-           {:ok, response} <- fetch_url(url),
-           {:ok, markdown, metadata} <- convert_to_markdown(response, instructions) do
-        {:ok, Map.put(metadata, :content, markdown)}
-      else
-        {:error, reason} -> {:error, %{code: "web_fetch_error", message: to_string(reason)}}
-      end
+    with :ok <- ensure_enabled(),
+         :ok <- validate_url(url),
+         {:ok, backend} <- resolve_backend(params),
+         {:ok, result} <- fetch(backend, url) do
+      {:ok, result}
+    else
+      {:error, reason} -> error(reason)
     end
   rescue
-    e -> {:error, %{code: "web_fetch_error", message: Exception.message(e)}}
+    _exception -> error("web fetch failed")
   end
 
   def handle_fetch(_args), do: {:error, %{code: "web_fetch_error", message: "missing url"}}
 
   defp ensure_enabled do
-    if Backplane.Settings.get("services.web.enabled") == true,
+    if Settings.get("services.web.enabled") == true,
       do: :ok,
-      else: {:error, %{code: "web_fetch_error", message: "web service is disabled"}}
+      else: {:error, "web service is disabled"}
   end
+
+  defp resolve_backend(params) do
+    backend = params["backend"] || Settings.get("services.web_fetch.default_backend") || "direct"
+
+    case normalize_backend(backend) do
+      backend when backend in @backends -> {:ok, backend}
+      _ -> {:error, "unsupported web fetch backend: #{backend}"}
+    end
+  end
+
+  defp normalize_backend(backend) when is_binary(backend), do: String.downcase(backend)
+  defp normalize_backend(backend), do: backend
+
+  defp fetch("direct", url) do
+    with {:ok, response} <- fetch_url(url),
+         {:ok, markdown, metadata} <- convert_to_markdown(response) do
+      {:ok, Map.put(metadata, :content, markdown)}
+    end
+  end
+
+  defp fetch("firecrawl", url), do: firecrawl_fetch(url)
 
   defp validate_url(url) do
     case URI.parse(url) do
@@ -72,7 +95,7 @@ defmodule Backplane.Services.WebFetch do
     end
   end
 
-  defp convert_to_markdown(%{response: response, url: url}, _instructions) do
+  defp convert_to_markdown(%{response: response, url: url}) do
     body = response.body || ""
     headers = response.headers
     fetched_at = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -102,6 +125,105 @@ defmodule Backplane.Services.WebFetch do
        }}
     end
   end
+
+  defp firecrawl_fetch(url) do
+    with {:ok, credential_name} <- firecrawl_credential(),
+         {:ok, api_key} <- fetch_credential(credential_name),
+         {:ok, body} <- request_firecrawl(url, api_key),
+         {:ok, result} <- normalize_firecrawl(body, url) do
+      {:ok, result}
+    end
+  end
+
+  defp firecrawl_credential do
+    case Settings.get("services.web_fetch.firecrawl.credential") do
+      value when is_binary(value) and value != "" -> {:ok, String.trim(value)}
+      _ -> {:error, "firecrawl credential is not configured"}
+    end
+  end
+
+  defp fetch_credential(name) do
+    case Credentials.fetch(name) do
+      {:ok, api_key} when is_binary(api_key) and api_key != "" -> {:ok, api_key}
+      {:ok, _} -> {:error, "firecrawl credential is empty"}
+      {:error, _} -> {:error, "firecrawl credential is unavailable"}
+    end
+  end
+
+  defp request_firecrawl(url, api_key) do
+    base_url = setting("services.web_fetch.firecrawl.base_url", @firecrawl_base_url)
+
+    options =
+      [
+        url: base_url <> "/v2/scrape",
+        headers: [{"authorization", "Bearer " <> api_key}, {"accept", "application/json"}],
+        json: %{"url" => url, "formats" => ["markdown"]},
+        receive_timeout: 30_000
+      ]
+      |> Keyword.merge(Application.get_env(:backplane, :web_fetch_req_options, []))
+
+    case Req.post(options) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        {:ok, decode_response_body(body)}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, "Firecrawl HTTP #{status}"}
+
+      {:error, _reason} ->
+        {:error, "Firecrawl request failed"}
+    end
+  end
+
+  defp normalize_firecrawl(%{"success" => true, "data" => data}, requested_url)
+       when is_map(data) do
+    markdown = data["markdown"]
+    metadata = data["metadata"] || %{}
+
+    cond do
+      not is_binary(markdown) or not is_map(metadata) ->
+        {:error, "Firecrawl returned a malformed response"}
+
+      byte_size(markdown) > @max_body_bytes ->
+        {:error, "response body exceeds #{@max_body_bytes} bytes"}
+
+      true ->
+        {:ok,
+         %{
+           content: markdown,
+           title: present(metadata["title"], "Untitled Page"),
+           url: present(metadata["sourceURL"], requested_url),
+           fetched_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+           length: byte_size(markdown)
+         }}
+    end
+  end
+
+  defp normalize_firecrawl(%{"success" => false}, _requested_url),
+    do: {:error, "Firecrawl API request failed"}
+
+  defp normalize_firecrawl(_body, _requested_url),
+    do: {:error, "Firecrawl returned a malformed response"}
+
+  defp decode_response_body(body) when is_binary(body) do
+    case JSON.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> body
+    end
+  end
+
+  defp decode_response_body(body), do: body
+
+  defp present(value, _fallback) when is_binary(value) and value != "", do: value
+  defp present(_value, fallback), do: fallback
+
+  defp setting(key, fallback) do
+    case Settings.get(key) do
+      value when is_binary(value) and value != "" -> String.trim_trailing(value, "/")
+      _ -> fallback
+    end
+  end
+
+  defp error(reason), do: {:error, %{code: "web_fetch_error", message: to_string(reason)}}
 
   defp html_response?(headers) do
     headers

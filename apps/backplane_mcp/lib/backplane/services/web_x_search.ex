@@ -4,6 +4,8 @@ defmodule Backplane.Services.WebXSearch do
 
   Calls the xAI Responses API with the built-in `x_search` server-side tool and
   returns a normalized response for MCP callers.
+
+  TODO: Defer the x_search redesign and replace the current xAI/Grok Responses API with the X API.
   """
 
   alias Backplane.Settings
