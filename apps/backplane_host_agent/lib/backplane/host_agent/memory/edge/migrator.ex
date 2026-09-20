@@ -6,7 +6,17 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
   alias Backplane.HostAgent.Memory.Edge.{Migrations, Store}
   alias Turso.Result
 
-  @migrations [Migrations.V1]
+  @migrations [Migrations.V1, Migrations.V2]
+
+  @v1_columns %{
+    "edge_partitions" =>
+      ~w(memory_space_id scope namespace applied_revision active_generation last_batch_id last_sync_at snapshot_id snapshot_revision next_chunk_index chunk_count integrity_hash),
+    "edge_memories" =>
+      ~w(memory_space_id scope namespace generation canonical_id memory_type content content_hash confidence lifecycle_state tags metadata source_refs server_revision edge_priority edge_expires_at updated_at last_accessed_at byte_size),
+    "edge_snapshot_chunks" => ~w(snapshot_id chunk_index chunk_hash applied_at)
+  }
+
+  @v2_partition_columns ~w(memory_space_id scope namespace applied_revision active_generation last_batch_id last_sync_at snapshot_id snapshot_revision next_chunk_index chunk_count integrity_hash sync_status last_delivery_hash)
 
   @doc false
   def child_spec(opts) do
@@ -77,13 +87,35 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
       tables = rows |> Enum.map(& &1["name"]) |> Enum.sort()
       expected = ["edge_memories", "edge_partitions", "edge_snapshot_chunks"]
 
-      cond do
-        current == 0 and tables == [] -> :ok
-        current == latest_version() and tables == expected -> :ok
-        true -> {:error, :invalid_edge_schema}
-      end
+      validate_tables(store, current, tables, expected)
     end
   end
+
+  defp validate_tables(_store, 0, [], _expected), do: :ok
+
+  defp validate_tables(store, current, tables, expected)
+       when current in 1..2 and tables == expected do
+    expected_columns =
+      if current == 1,
+        do: @v1_columns,
+        else: Map.put(@v1_columns, "edge_partitions", @v2_partition_columns)
+
+    Enum.reduce_while(expected_columns, :ok, fn {table, columns}, :ok ->
+      case Store.query(store, "PRAGMA table_info(#{table})") do
+        {:ok, %{rows: rows}} when is_list(rows) ->
+          found = rows |> Enum.map(& &1["name"]) |> Enum.sort()
+
+          if found == Enum.sort(columns),
+            do: {:cont, :ok},
+            else: {:halt, {:error, :invalid_edge_schema}}
+
+        {:error, _reason} ->
+          {:halt, {:error, :invalid_edge_schema}}
+      end
+    end)
+  end
+
+  defp validate_tables(_store, _current, _tables, _expected), do: {:error, :invalid_edge_schema}
 
   defp apply_migration(store, migration) do
     case Store.transaction(store, fn conn ->
