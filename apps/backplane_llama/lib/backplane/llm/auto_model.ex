@@ -97,7 +97,9 @@ defmodule Backplane.LLM.AutoModel do
   def list_available_target_model_ids do
     [:openai, :anthropic]
     |> Enum.flat_map(&ProviderModelSurface.list_enabled/1)
-    |> Enum.map(& &1.provider_model.model)
+    |> Enum.map(fn surface ->
+      "#{surface.provider_model.provider.name}/#{surface.provider_model.model}"
+    end)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -174,7 +176,8 @@ defmodule Backplane.LLM.AutoModel do
       [surface, model, provider, api],
       surface.enabled == true and model.enabled == true and provider.enabled == true and
         is_nil(provider.deleted_at) and api.enabled == true and api.api_surface == ^api_surface and
-        model.model in ^model_ids
+        (model.model in ^model_ids or
+           fragment("? || '/' || ?", provider.name, model.model) in ^model_ids)
     )
     |> preload([surface, model, provider, api],
       provider_model: {model, provider: provider},
@@ -183,7 +186,10 @@ defmodule Backplane.LLM.AutoModel do
     |> Repo.all()
     |> Enum.sort_by(fn surface ->
       {
-        Enum.find_index(model_ids, &(&1 == surface.provider_model.model)) || 999_999,
+        Enum.find_index(model_ids, fn id ->
+          id == surface.provider_model.model or
+            id == "#{surface.provider_model.provider.name}/#{surface.provider_model.model}"
+        end) || 999_999,
         surface.provider_model.provider.name,
         surface.provider_model.model
       }

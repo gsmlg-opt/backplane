@@ -52,12 +52,13 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "renders target model picker options from enabled provider models", %{conn: conn} do
-      create_provider_models(["fast-model-a"])
+      {api, _} = create_provider_models(["fast-model-a"])
+      provider = Repo.get!(Provider, api.provider_id)
 
       {:ok, _view, html} = live(conn, "/llama/model-aliases")
 
       assert html =~ ~s(id="auto-model-fast-model")
-      assert html =~ ~s(<option value="fast-model-a">)
+      assert html =~ ~s(<option value="#{provider.name}/fast-model-a">)
       assert html =~ "settings-provider-"
       assert html =~ "/fast-model-a"
       refute html =~ ~s(id="auto-model-fast-models")
@@ -65,6 +66,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
     test "adds selected model target to alias list", %{conn: conn} do
       {openai_api, [model_id]} = create_provider_models(["fast-model-a"])
+      target = "#{Repo.get!(Provider, openai_api.provider_id).name}/#{model_id}"
 
       {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
@@ -72,12 +74,13 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         view
         |> form("#auto-model-fast-add-form", %{
           "name" => "fast",
-          "model" => model_id
+          "model" => target
         })
         |> render_submit()
 
       assert html =~ model_id
-      assert AutoModel.configured_model_ids("fast") == [model_id]
+      assert AutoModel.configured_model_ids("fast") == [target]
+      assert has_element?(view, "#auto-model-fast-target-list code", target)
 
       route = AutoModelRoute.get_by_model_and_surface("fast", :openai)
 
@@ -96,7 +99,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
     end
 
     test "removes a model target from the alias list", %{conn: conn} do
-      {_openai_api, [model_id]} = create_provider_models(["fast-model-a"])
+      {api, [raw_model]} = create_provider_models(["fast-model-a"])
+      model_id = "#{Repo.get!(Provider, api.provider_id).name}/#{raw_model}"
 
       {:ok, view, _html} = live(conn, "/llama/model-aliases")
 
@@ -116,6 +120,27 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert html =~ "No target models selected"
       assert AutoModel.configured_model_ids("fast") == []
+    end
+
+    test "saves a same-name custom alias with a provider-qualified target", %{conn: conn} do
+      {api, _} = create_provider_models(["gpt-5.6-terra"])
+      target = "#{Repo.get!(Provider, api.provider_id).name}/gpt-5.6-terra"
+      {:ok, view, _} = live(conn, "/llama/model-aliases")
+      assert has_element?(view, "#custom-model-alias-target option[value='#{target}']")
+
+      view
+      |> form("#custom-model-alias-form", %{"alias" => "gpt-5.6-terra", "target" => target})
+      |> render_submit()
+
+      assert Backplane.LLM.ModelAlias.target_for("gpt-5.6-terra") == target
+    end
+
+    test "shows provider namespace for existing unqualified selections", %{conn: conn} do
+      {api, _} = create_provider_models(["gpt-5.6-luna"])
+      :ok = Backplane.Settings.set("llm.auto_models.fast.targets", ["gpt-5.6-luna"])
+      {:ok, view, _} = live(conn, "/llama/model-aliases")
+      target = "#{Repo.get!(Provider, api.provider_id).name}/gpt-5.6-luna"
+      assert has_element?(view, "#auto-model-fast-target-list code", target)
     end
 
     test "renders custom alias form with built-in alias targets", %{conn: conn} do

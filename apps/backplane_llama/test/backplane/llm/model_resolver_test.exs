@@ -83,6 +83,15 @@ defmodule Backplane.LLM.ModelResolverTest do
   end
 
   describe "resolve/2 - alias" do
+    test "qualified targets select only the named provider for same-name aliases" do
+      create_provider_model("aaa-other", :openai, "gpt-5.6-terra")
+      provider = create_provider_model("sub2api", :openai, "gpt-5.6-terra")
+      {:ok, _} = ModelAlias.put("gpt-5.6-terra", "sub2api/gpt-5.6-terra")
+      assert {:ok, resolved, "gpt-5.6-terra"} = ModelResolver.resolve(:openai, "gpt-5.6-terra")
+      assert resolved.id == provider.id
+      assert {:error, :no_provider} = ModelResolver.resolve(:anthropic, "gpt-5.6-terra")
+    end
+
     test "resolves custom alias to provider model target" do
       provider = create_provider_model("openai-provider", :openai, "gpt-4o-mini")
       {:ok, _} = ModelAlias.put("coding", "gpt-4o-mini")

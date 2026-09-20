@@ -7,7 +7,6 @@ defmodule Backplane.Admin.SettingsLive do
 
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
-  alias Backplane.LLM.ProviderModelSurface
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.OpenAICodexAuth
   alias Backplane.Settings.OAuthRefresher
@@ -890,7 +889,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp target_model_options do
     AutoModel.list_available_target_model_ids()
-    |> Enum.map(&{&1, target_model_label(&1)})
+    |> Enum.map(&{&1, &1})
   end
 
   defp custom_alias_target_options do
@@ -901,7 +900,7 @@ defmodule Backplane.Admin.SettingsLive do
     provider_model_options =
       AutoModel.list_available_target_model_ids()
       |> Enum.reject(&(&1 in AutoModel.built_in_names()))
-      |> Enum.map(&{&1, target_model_label(&1)})
+      |> Enum.map(&{&1, &1})
 
     built_in_options ++ provider_model_options
   end
@@ -913,7 +912,10 @@ defmodule Backplane.Admin.SettingsLive do
       |> MapSet.new()
 
     Enum.reject(target_model_options, fn {model_id, _label} ->
-      MapSet.member?(selected_model_ids, model_id)
+      [_provider, raw_model] = String.split(model_id, "/", parts: 2)
+
+      MapSet.member?(selected_model_ids, model_id) or
+        MapSet.member?(selected_model_ids, raw_model)
     end)
   end
 
@@ -922,18 +924,16 @@ defmodule Backplane.Admin.SettingsLive do
     "#{provider}/#{target.provider_model_surface.provider_model.model}"
   end
 
-  defp target_model_label(model_id) do
-    providers =
-      [:openai, :anthropic]
-      |> Enum.flat_map(&ProviderModelSurface.list_enabled/1)
-      |> Enum.filter(&(&1.provider_model.model == model_id))
-      |> Enum.map(& &1.provider_model.provider.name)
-      |> Enum.uniq()
-      |> Enum.sort()
+  defp target_model_label(model_id, options) do
+    matches =
+      for {qualified, _label} <- options,
+          [_provider, raw_model] = String.split(qualified, "/", parts: 2),
+          qualified == model_id or raw_model == model_id,
+          do: qualified
 
-    case providers do
+    case matches do
       [] -> model_id
-      _ -> "#{Enum.join(providers, ", ")}/#{model_id}"
+      _ -> Enum.join(matches, ", ")
     end
   end
 
@@ -1096,7 +1096,7 @@ defmodule Backplane.Admin.SettingsLive do
                 :for={model_id <- target_model_ids}
                 class="inline-flex items-center gap-2 rounded-md border border-outline-variant bg-surface-container px-2 py-1 text-sm"
               >
-                <code>{model_id}</code>
+                <code>{target_model_label(model_id, @target_model_options)}</code>
                 <button
                   type="button"
                   phx-click="remove_auto_model_target"
