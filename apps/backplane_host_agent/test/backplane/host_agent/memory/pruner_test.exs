@@ -118,6 +118,31 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
     assert_count(store, "tombstones", 1)
   end
 
+  test "rolls back earlier retention deletes when a later delete fails", %{store: store} do
+    old = "2026-01-01T00:00:00Z"
+    cutoff = "2026-03-17T00:00:00Z"
+    insert_memory!(store, "old_synced", "old", sync_state: "synced", inserted_at: old)
+    insert_tombstone!(store, "blocked")
+    assert {:ok, _} = Store.execute(store, "UPDATE tombstones SET wiped_at = ?", [old])
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "CREATE TRIGGER reject_tombstone_delete BEFORE DELETE ON tombstones BEGIN SELECT RAISE(ABORT, 'tombstone blocked'); END"
+             )
+
+    assert {:error, {:storage_error, _reason}} =
+             Pruner.prune_once(
+               store: store,
+               cutoff: cutoff,
+               outbox_cutoff: cutoff,
+               tombstone_cutoff: cutoff
+             )
+
+    assert_memory_ids(store, ["old_synced"])
+    assert_count(store, "tombstones", 1)
+  end
+
   defp start_memory!(tmp_dir) do
     name = :"host_agent_memory_pruner_#{System.unique_integer([:positive])}"
     db_path = Path.join(tmp_dir, "#{name}.db")

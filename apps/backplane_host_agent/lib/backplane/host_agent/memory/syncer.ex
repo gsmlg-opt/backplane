@@ -37,9 +37,15 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   @impl true
   def init(opts) do
     state = normalize_opts(opts)
-    recover_inflight(state.store)
-    schedule_drain(state)
-    {:ok, state}
+
+    case recover_inflight(state) do
+      :ok ->
+        schedule_drain(state)
+        {:ok, state}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 
   @impl true
@@ -58,34 +64,39 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       if outbox_rows == [] do
         {:ok, %{"drained" => 0}}
       else
-        {items, failed_rows} = build_payload_items(opts, outbox_rows)
-        pushed_rows = outbox_rows -- failed_rows
-        {items, deferred_rows} = fit_payload(items, pushed_rows)
-        pushed_rows = pushed_rows -- deferred_rows
-        reset_pending(opts.store, Enum.map(deferred_rows, & &1["seq"]))
-        payload = %{"protocol" => @protocol, "items" => items}
+        with {:ok, {items, failed_rows}} <- build_payload_items(opts, outbox_rows),
+             pushed_rows = outbox_rows -- failed_rows,
+             {items, deferred_rows} = fit_payload(items, pushed_rows),
+             pushed_rows = pushed_rows -- deferred_rows,
+             :ok <- reset_pending(opts, Enum.map(deferred_rows, & &1["seq"])) do
+          payload = %{"protocol" => @protocol, "items" => items}
 
-        if items == [] do
-          {:ok, %{"drained" => 0}}
-        else
-          case push_sync(opts.channel_module, channel, payload) do
-            {:ok, %{"items" => ack_items}} ->
-              if valid_acks?(pushed_rows, ack_items) do
-                apply_acks(opts, pushed_rows, ack_items)
-                {:ok, %{"drained" => length(items)}}
-              else
-                retry_rows(opts, pushed_rows, "invalid acknowledgement")
-                {:error, :invalid_ack}
-              end
+          if items == [] do
+            {:ok, %{"drained" => 0}}
+          else
+            case push_sync(opts.channel_module, channel, payload) do
+              {:ok, %{"items" => ack_items}} ->
+                if valid_acks?(pushed_rows, ack_items) do
+                  case apply_acks(opts, pushed_rows, ack_items) do
+                    :ok -> {:ok, %{"drained" => length(items)}}
+                    {:error, reason} -> {:error, reason}
+                  end
+                else
+                  case retry_rows(opts, pushed_rows, "invalid acknowledgement") do
+                    :ok -> {:error, :invalid_ack}
+                    {:error, reason} -> {:error, reason}
+                  end
+                end
 
-            {:ok, _reply} ->
-              retry_rows(opts, pushed_rows, "invalid acknowledgement")
-              {:error, :invalid_ack}
+              {:ok, _reply} ->
+                retry_result(opts, pushed_rows, "invalid acknowledgement", :invalid_ack)
 
-            {:error, reason} ->
-              retry_rows(opts, pushed_rows, reason)
-              {:error, reason}
+              {:error, reason} ->
+                retry_result(opts, pushed_rows, reason, reason)
+            end
           end
+        else
+          {:error, reason} -> {:error, reason}
         end
       end
     else
@@ -173,12 +184,22 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end)
   end
 
-  defp recover_inflight(store) do
-    Store.execute(
-      store,
-      "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE state = 'inflight'",
-      [timestamp()]
-    )
+  defp recover_inflight(opts) do
+    with {:ok, %Result{rows: rows}} <-
+           Store.query(
+             opts.store,
+             "SELECT seq, attempts FROM memory_outbox WHERE state = 'inflight' ORDER BY seq"
+           ),
+         :ok <-
+           retry_rows(
+             opts,
+             Enum.map(rows, &Map.put(&1, "memory_id", nil)),
+             "recovered after restart"
+           ) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:storage_error, reason}}
+    end
   rescue
     error -> {:error, error}
   catch
@@ -186,17 +207,22 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   end
 
   defp build_payload_items(opts, outbox_rows) do
-    Enum.reduce(outbox_rows, {[], []}, fn row, {items, failed_rows} ->
+    Enum.reduce_while(outbox_rows, {:ok, {[], []}}, fn row, {:ok, {items, failed_rows}} ->
       case payload_item(opts.store, row) do
         {:ok, item} ->
-          {[item | items], failed_rows}
+          {:cont, {:ok, {[item | items], failed_rows}}}
 
         {:error, reason} ->
-          dead_letter(opts.store, row["seq"], reason, now(opts))
-          {items, [row | failed_rows]}
+          case dead_letter(opts.store, row["seq"], reason, now(opts)) do
+            {:ok, _} -> {:cont, {:ok, {items, [row | failed_rows]}}}
+            {:error, error} -> {:halt, {:error, {:storage_error, error}}}
+          end
       end
     end)
-    |> then(fn {items, failed_rows} -> {Enum.reverse(items), failed_rows} end)
+    |> then(fn
+      {:ok, {items, failed_rows}} -> {:ok, {Enum.reverse(items), failed_rows}}
+      error -> error
+    end)
   end
 
   defp payload_item(store, %{"op" => "remember", "seq" => seq, "memory_id" => memory_id}) do
@@ -261,47 +287,59 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     :exit, reason -> {:error, reason}
   end
 
-  defp apply_acks(opts, outbox_rows, ack_items),
-    do:
-      Enum.each(Enum.zip(outbox_rows, ack_items), fn {row, ack} -> apply_ack(opts, row, ack) end)
+  defp apply_acks(opts, outbox_rows, ack_items) do
+    Enum.reduce_while(Enum.zip(outbox_rows, ack_items), :ok, fn {row, ack}, :ok ->
+      case apply_ack(opts, row, ack) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
 
   defp apply_ack(opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
     mark_done(opts.store, row, ack["canonical_id"], now(opts))
   end
 
-  defp apply_ack(opts, row, %{"status" => "error"} = ack),
-    do: dead_letter(opts.store, row["seq"], ack["error"] || "validation error", now(opts))
+  defp apply_ack(opts, row, %{"status" => "error"} = ack) do
+    case dead_letter(opts.store, row["seq"], ack["error"] || "validation error", now(opts)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:storage_error, reason}}
+    end
+  end
 
   defp apply_ack(opts, row, _ack), do: retry_row(opts, row, "missing acknowledgement")
 
   defp mark_done(store, row, canonical_id, now) do
-    transaction(store, fn conn ->
-      with {:ok, %Result{num_rows: updated}} <-
-             Store.execute(
-               conn,
-               "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
-               [now, now, row["seq"]]
-             ),
-           true <- updated > 0,
-           {:ok, _} <-
-             Store.execute(
-               conn,
-               """
-               UPDATE memories
-               SET sync_state = 'synced',
-                   remote_id = COALESCE(?, remote_id),
-                   synced_at = ?
-               WHERE id = ?
-               """,
-               [canonical_id, now, row["memory_id"]]
-             ) do
-        :ok
-      else
-        false -> :ok
-        {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
-      end
-    end)
+    case transaction(store, fn conn ->
+           with {:ok, %Result{num_rows: updated}} <-
+                  Store.execute(
+                    conn,
+                    "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
+                    [now, now, row["seq"]]
+                  ),
+                true <- updated > 0,
+                {:ok, _} <-
+                  Store.execute(
+                    conn,
+                    """
+                    UPDATE memories
+                    SET sync_state = 'synced',
+                        remote_id = COALESCE(?, remote_id),
+                        synced_at = ?
+                    WHERE id = ?
+                    """,
+                    [canonical_id, now, row["memory_id"]]
+                  ) do
+             :ok
+           else
+             false -> :ok
+             {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
+           end
+         end) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp dead_letter(store, seq, error, now) do
@@ -321,7 +359,21 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     )
   end
 
-  defp retry_rows(opts, rows, error), do: Enum.each(rows, &retry_row(opts, &1, error))
+  defp retry_rows(opts, rows, error) do
+    Enum.reduce_while(rows, :ok, fn row, :ok ->
+      case retry_row(opts, row, error) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:storage_error, reason}}}
+      end
+    end)
+  end
+
+  defp retry_result(opts, rows, error, result) do
+    case retry_rows(opts, rows, error) do
+      :ok -> {:error, result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp retry_row(opts, row, error) do
     attempts = row["attempts"] + 1
@@ -342,14 +394,17 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     end
   end
 
-  defp reset_pending(_store, []), do: :ok
+  defp reset_pending(_opts, []), do: :ok
 
-  defp reset_pending(store, seqs) do
-    Store.execute(
-      store,
-      "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE seq IN (#{placeholders(seqs)}) AND state = 'inflight'",
-      [timestamp() | seqs]
-    )
+  defp reset_pending(opts, seqs) do
+    case Store.execute(
+           opts.store,
+           "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE seq IN (#{placeholders(seqs)}) AND state = 'inflight'",
+           [now(opts) | seqs]
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:storage_error, reason}}
+    end
   end
 
   defp active_scopes(store, config) do
@@ -509,7 +564,13 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   defp valid_acks?(rows, acks) when is_list(acks) do
     length(rows) == length(acks) and
       Enum.zip(rows, acks)
-      |> Enum.all?(fn {row, ack} -> ack["id"] == row["memory_id"] end)
+      |> Enum.all?(fn
+        {row, %{"id" => id, "status" => status}} when status in ["ok", "duplicate", "error"] ->
+          id == row["memory_id"]
+
+        _ ->
+          false
+      end)
   end
 
   defp valid_acks?(_rows, _acks), do: false

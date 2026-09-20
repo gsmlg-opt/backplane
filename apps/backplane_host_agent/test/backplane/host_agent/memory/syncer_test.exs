@@ -183,7 +183,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "pending", 0)
   end
 
-  test "start resets stranded inflight rows to pending", %{store: store, opts: opts} do
+  test "start schedules stranded inflight rows for retry", %{store: store, opts: opts} do
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => "claimed before crash"}, opts)
 
     assert {:ok, _} =
@@ -200,7 +200,56 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     GenServer.stop(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
 
-    assert_outbox(store, id, "pending", 0)
+    assert_outbox(store, id, "retry_wait", 1)
+  end
+
+  test "start dead-letters stranded rows at their final attempt", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "final retry"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'inflight', attempts = 1 WHERE memory_id = ?",
+               [id]
+             )
+
+    {:ok, pid} = Syncer.start_link(store: store, channel: self(), interval_ms: 0, max_attempts: 2)
+    GenServer.stop(pid)
+
+    assert_outbox(store, id, "dead_letter", 2)
+  end
+
+  test "malformed acknowledgement retries claimed rows without crashing", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "malformed"}, opts)
+    Process.put({FakeChannel, :reply}, {:ok, %{"items" => ["not an ack"]}})
+
+    assert {:error, :invalid_ack} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, id, "retry_wait", 1)
+  end
+
+  test "returns a storage error when a claimed retry transition is rejected", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "trigger"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "CREATE TRIGGER reject_retry BEFORE UPDATE OF state ON memory_outbox WHEN NEW.state = 'retry_wait' BEGIN SELECT RAISE(ABORT, 'retry blocked'); END"
+             )
+
+    Process.put({FakeChannel, :reply}, {:error, :disconnected})
+
+    assert {:error, {:storage_error, _reason}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, id, "inflight", 0)
   end
 
   test "missing memory rows are dead-lettered while the rest of the batch drains", %{
