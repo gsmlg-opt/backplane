@@ -182,6 +182,66 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert {:error, :mirror_unavailable} = Mirror.offline_read("list", @partition, c.opts)
   end
 
+  test "activation does not acknowledge when obsolete-generation cleanup fails", c do
+    assert {:ok, _} = Mirror.apply_delivery(delta(1, [upsert(1, "old", "old")]), c.opts)
+    [first, final] = snapshot([[item("new-a", "alpha")], [item("new-b", "beta")]], 1, 8)
+    assert {:ok, _} = Mirror.apply_delivery(first, c.opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               c.store,
+               "INSERT INTO edge_partitions (memory_space_id, scope, namespace, snapshot_id) VALUES ('other', 'scope', 'ns', 'other-staging')"
+             )
+
+    for snapshot_id <- ["obsolete", "other-staging"] do
+      assert {:ok, _} =
+               Store.execute(
+                 c.store,
+                 "INSERT INTO edge_snapshot_chunks VALUES (?, 0, 'hash', '2026-09-20T00:00:00Z')",
+                 [snapshot_id]
+               )
+    end
+
+    assert {:ok, _} =
+             Store.execute(
+               c.store,
+               "CREATE TRIGGER reject_obsolete_delete BEFORE DELETE ON edge_memories WHEN OLD.generation = '0' BEGIN SELECT RAISE(ABORT, 'injected'); END"
+             )
+
+    assert {:error, _} = Mirror.apply_delivery(final, c.opts)
+
+    assert {:ok,
+            %{
+              rows: [
+                %{
+                  "active_generation" => "0",
+                  "applied_revision" => 1,
+                  "snapshot_id" => snapshot_id
+                }
+              ]
+            }} =
+             Store.query(
+               c.store,
+               "SELECT active_generation, applied_revision, snapshot_id FROM edge_partitions WHERE memory_space_id = 'space'"
+             )
+
+    assert snapshot_id == first["snapshot_id"]
+    assert {:ok, before} = Mirror.offline_read("list", @partition, c.opts)
+    assert [%{"canonical_id" => "old"}] = before["items"]
+
+    assert {:ok, _} = Store.execute(c.store, "DROP TRIGGER reject_obsolete_delete")
+    assert {:ok, applied} = Mirror.apply_delivery(final, c.opts)
+    assert applied == ack(final)
+
+    assert {:ok, %{rows: rows}} =
+             Store.query(
+               c.store,
+               "SELECT DISTINCT snapshot_id FROM edge_snapshot_chunks ORDER BY snapshot_id"
+             )
+
+    assert Enum.map(rows, & &1["snapshot_id"]) == ["other-staging", first["snapshot_id"]]
+  end
+
   test "an active snapshot chunk remains idempotent after a newer contiguous delta", c do
     [first, final] = snapshot([[item("snapshot-a", "alpha")], [item("snapshot-b", "beta")]], 0, 8)
     assert {:ok, progress} = Mirror.apply_delivery(first, c.opts)
@@ -291,7 +351,9 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
   test "offline result bytes are bounded across multiple maximum sized memories", c do
     content = String.duplicate("x", 180_000)
 
-    for revision <- 1..4 do
+    # One hundred near-ceiling rows would make an eager LIMIT 100 query
+    # materialize roughly 18 MiB before it discovers the frame boundary.
+    for revision <- 1..100 do
       assert {:ok, _} =
                Mirror.apply_delivery(
                  delta(revision, [upsert(revision, "id-#{revision}", content)]),

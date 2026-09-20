@@ -65,25 +65,9 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       end)
 
     case result do
-      {:ok, {:recovery, reason}} ->
-        {:error, reason}
-
-      {:ok, {:activated, ack}} ->
-        # This separate transaction cannot remove the old generation before activation commits.
-        transaction(store, fn conn ->
-          active = partition!(conn, d["partition"])["active_generation"]
-
-          execute!(
-            conn,
-            "DELETE FROM edge_memories WHERE #{@where} AND generation != ? AND generation != COALESCE((SELECT snapshot_id FROM edge_partitions WHERE #{@where}), '')",
-            params(d["partition"]) ++ [active] ++ params(d["partition"])
-          )
-        end)
-
-        {:ok, ack}
-
-      other ->
-        other
+      {:ok, {:recovery, reason}} -> {:error, reason}
+      {:ok, {:activated, ack}} -> {:ok, ack}
+      other -> other
     end
   end
 
@@ -240,6 +224,18 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       [d["snapshot_id"], d["to_revision"], d["batch_id"], digest, now()] ++ params(d["partition"])
     )
 
+    execute!(
+      conn,
+      "DELETE FROM edge_memories WHERE #{@where} AND generation != ?",
+      params(d["partition"]) ++ [d["snapshot_id"]]
+    )
+
+    execute!(
+      conn,
+      "DELETE FROM edge_snapshot_chunks WHERE snapshot_id NOT IN (SELECT active_generation FROM edge_partitions UNION SELECT snapshot_id FROM edge_partitions WHERE snapshot_id IS NOT NULL)",
+      []
+    )
+
     {:activated, ack(d)}
   end
 
@@ -338,56 +334,35 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         do: DBConnection.rollback(conn, :mirror_unavailable)
 
       timestamp = now()
+      {:ok, as_of, _} = DateTime.from_iso8601(p["last_sync_at"])
 
       filters =
         "#{@where} AND generation = ? AND lifecycle_state IN ('active', 'disputed') AND (edge_expires_at IS NULL OR edge_expires_at > ?)"
 
       values = params(args) ++ [p["active_generation"], timestamp]
 
-      data =
-        if operation == "stats" do
-          [stats] =
-            rows!(conn, "SELECT COUNT(*) AS count FROM edge_memories WHERE " <> filters, values)
+      metadata = %{
+        "mode" => "offline",
+        "authority" => "canonical",
+        "source" => "edge_mirror",
+        "consistency" => "bounded_stale",
+        "stale" => true,
+        "history_available" => true,
+        "as_of" => p["last_sync_at"],
+        "partition_revision" => p["applied_revision"],
+        "last_sync_age_seconds" => max(DateTime.diff(DateTime.utc_now(), as_of), 0)
+      }
 
-          stats
-        else
-          query = if operation == "recall", do: Map.get(args, "query", ""), else: ""
+      if operation == "stats" do
+        [stats] =
+          rows!(conn, "SELECT COUNT(*) AS count FROM edge_memories WHERE " <> filters, values)
 
-          items =
-            rows!(
-              conn,
-              "SELECT canonical_id, memory_type, content, content_hash, confidence, lifecycle_state, tags, metadata, source_refs, server_revision, edge_expires_at FROM edge_memories WHERE " <>
-                filters <>
-                " AND instr(lower(content), lower(?)) > 0 ORDER BY canonical_id LIMIT ?",
-              values ++ [query, args["limit"]]
-            )
-
-          %{
-            "items" =>
-              Enum.map(items, fn item ->
-                Enum.reduce(["tags", "metadata", "source_refs"], item, fn key, acc ->
-                  Map.update!(acc, key, &Jason.decode!/1)
-                end)
-              end)
-          }
-        end
-
-      {:ok, as_of, _} = DateTime.from_iso8601(p["last_sync_at"])
-
-      result =
-        Map.merge(data, %{
-          "mode" => "offline",
-          "authority" => "canonical",
-          "source" => "edge_mirror",
-          "consistency" => "bounded_stale",
-          "stale" => true,
-          "history_available" => true,
-          "as_of" => p["last_sync_at"],
-          "partition_revision" => p["applied_revision"],
-          "last_sync_age_seconds" => max(DateTime.diff(DateTime.utc_now(), as_of), 0)
-        })
-
-      bound_result(result)
+        Map.merge(stats, metadata)
+      else
+        query = if operation == "recall", do: Map.get(args, "query", ""), else: ""
+        base = Map.put(metadata, "items", [])
+        Map.put(base, "items", read_items!(conn, filters, values, query, args["limit"], base))
+      end
     end)
   end
 
@@ -450,22 +425,85 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     :exit, _ -> {:error, :storage_unavailable}
   end
 
-  # The transport ceiling applies to a complete offline response, not merely its
-  # SQL row limit.  Rows are ordered deterministically above, so removing tail
-  # rows preserves a stable bounded prefix.
-  defp bound_result(%{"items" => items} = result) do
-    items
-    |> Enum.reduce_while([], fn item, accepted ->
-      candidate = result |> Map.put("items", accepted ++ [item]) |> Jason.encode!()
-
-      if byte_size(candidate) <= 524_288,
-        do: {:cont, accepted ++ [item]},
-        else: {:halt, accepted}
-    end)
-    |> then(&Map.put(result, "items", &1))
+  defp read_items!(conn, filters, values, query, limit, base) do
+    collect_items!(
+      conn,
+      filters,
+      values,
+      query,
+      limit,
+      "",
+      [],
+      2,
+      byte_size(Jason.encode!(base)) - 2
+    )
   end
 
-  defp bound_result(result), do: result
+  defp collect_items!(
+         _conn,
+         _filters,
+         _values,
+         _query,
+         0,
+         _last_id,
+         accepted,
+         _list_bytes,
+         _envelope
+       ),
+       do: Enum.reverse(accepted)
+
+  defp collect_items!(
+         conn,
+         filters,
+         values,
+         query,
+         limit,
+         last_id,
+         accepted,
+         list_bytes,
+         envelope
+       ) do
+    row =
+      rows!(
+        conn,
+        "SELECT canonical_id, memory_type, content, content_hash, confidence, lifecycle_state, tags, metadata, source_refs, server_revision, edge_expires_at FROM edge_memories WHERE " <>
+          filters <>
+          " AND instr(lower(content), lower(?)) > 0 AND canonical_id > ? ORDER BY canonical_id LIMIT 1",
+        values ++ [query, last_id]
+      )
+
+    case row do
+      [] ->
+        Enum.reverse(accepted)
+
+      [raw] ->
+        item = decode_item!(raw)
+        encoded = Jason.encode!(item)
+        next_bytes = list_bytes + byte_size(encoded) + if(accepted == [], do: 0, else: 1)
+
+        if envelope + next_bytes <= 524_288 do
+          collect_items!(
+            conn,
+            filters,
+            values,
+            query,
+            limit - 1,
+            raw["canonical_id"],
+            [item | accepted],
+            next_bytes,
+            envelope
+          )
+        else
+          Enum.reverse(accepted)
+        end
+    end
+  end
+
+  defp decode_item!(item) do
+    Enum.reduce(["tags", "metadata", "source_refs"], item, fn key, acc ->
+      Map.update!(acc, key, &Jason.decode!/1)
+    end)
+  end
 
   @doc false
   def hash(payload),
