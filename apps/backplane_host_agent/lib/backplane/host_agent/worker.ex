@@ -21,6 +21,7 @@ defmodule Backplane.HostAgent.Worker do
   }
 
   alias Backplane.HostAgent.Memory.CaptureSupervisor
+  alias Backplane.HostAgent.Memory.Edge.Syncer, as: EdgeSyncer
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
   alias Backplane.HostAgent.TraceSupervisor
 
@@ -187,7 +188,19 @@ defmodule Backplane.HostAgent.Worker do
               {:ok, %{channel: channel} = connection} ->
                 case set_memory_connection(memory_proxy_module, connection, config) do
                   :ok ->
-                    {:ok, %{local_state | channel: channel, owns_connection?: true}}
+                    case set_edge_connection(connection, config, local_state) do
+                      {:ok, edge_syncer} ->
+                        {:ok,
+                         %{
+                           local_state
+                           | channel: channel,
+                             edge_syncer: edge_syncer,
+                             owns_connection?: true
+                         }}
+
+                      {:error, reason} ->
+                        {:error, reason, local_state}
+                    end
 
                   {:error, reason} ->
                     {:error, reason, local_state}
@@ -253,6 +266,7 @@ defmodule Backplane.HostAgent.Worker do
       capture_supervisor: Keyword.get(opts, :capture_supervisor),
       http_supervisor: Keyword.get(opts, :http_supervisor),
       memory_supervisor: Keyword.get(opts, :memory_supervisor),
+      edge_syncer: Keyword.get(opts, :edge_syncer),
       trace_supervisor: Keyword.get(opts, :trace_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
       config_module: Keyword.get(opts, :config_module, Config),
@@ -357,6 +371,49 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
+  defp set_edge_connection(
+         %{memory: %{"selected" => "host_memory.v2"}} = connection,
+         config,
+         state
+       ) do
+    edge_config = get_in(config, [:memory, :host_sync_v2]) || %{}
+
+    opts = [
+      channel: connection.channel,
+      selected: "host_memory.v2",
+      mirror_opts: [config: edge_config]
+    ]
+
+    case state.edge_syncer do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          EdgeSyncer.set_connection(pid, connection)
+          {:ok, pid}
+        else
+          start_edge_syncer(opts, connection)
+        end
+
+      _ ->
+        start_edge_syncer(opts, connection)
+    end
+  end
+
+  defp set_edge_connection(_connection, _config, _state), do: {:ok, nil}
+
+  defp start_edge_syncer(opts, connection) do
+    case EdgeSyncer.start_link(opts) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        EdgeSyncer.set_connection(pid, connection)
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, {:edge_syncer_start_failed, reason}}
+    end
+  end
+
   defp cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_timer(_ref), do: false
 
@@ -448,6 +505,12 @@ defmodule Backplane.HostAgent.Worker do
       :backplane_host_agent,
       :memory_store,
       Map.get(memory_config, :store_name, Backplane.HostAgent.Memory.Store)
+    )
+
+    Application.put_env(
+      :backplane_host_agent,
+      :memory_host_sync_v2,
+      Map.get(memory_config, :host_sync_v2, %{})
     )
   end
 

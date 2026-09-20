@@ -13,7 +13,8 @@ defmodule Backplane.HostAgent.Connector do
           host_id: String.t(),
           host_name: String.t(),
           socket: pid(),
-          channel: pid()
+          channel: pid(),
+          memory: map()
         }
 
   @doc """
@@ -24,21 +25,22 @@ defmodule Backplane.HostAgent.Connector do
     with {:ok, host_id} <- host_id(config),
          {:ok, socket} <- Channel.start_socket(config),
          :ok <- wait_for_socket(socket),
-         {:ok, channel} <- join_channel(socket, host_id) do
+         {:ok, channel, memory} <- join_channel(socket, host_id) do
       {:ok,
        %{
          host_id: host_id,
          host_name: Map.get(config, :machine_name),
          socket: socket,
-         channel: channel
+         channel: channel,
+         memory: memory
        }}
     end
   end
 
   defp join_channel(socket, host_id) do
     case Channel.join(socket, host_id) do
-      {:ok, _reply, channel} -> {:ok, channel}
-      {:ok, channel} when is_pid(channel) -> {:ok, channel}
+      {:ok, reply, channel} when is_map(reply) -> {:ok, channel, reply}
+      {:ok, channel} when is_pid(channel) -> {:ok, channel, %{}}
       {:error, reason} -> {:error, reason}
     end
   end

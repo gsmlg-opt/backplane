@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Channel do
   Thin wrapper around phoenix_socket_client for host-agent channel operations.
   """
 
-  alias Backplane.HostAgent.Memory.Syncer
+  alias Backplane.HostAgent.Memory.{Edge.Protection, Mirror, Syncer}
 
   @doc "Starts the Phoenix socket connection for a host-agent config."
   def start_socket(config) do
@@ -63,7 +63,30 @@ defmodule Backplane.HostAgent.Channel do
         Phoenix.SocketClient.Channel
       )
 
-    channel_join_module.join(socket, "host_agent:#{host_id}", Syncer.join_payload())
+    channel_join_module.join(socket, "host_agent:#{host_id}", join_payload())
+  end
+
+  defp join_payload do
+    payload = Syncer.join_payload()
+
+    case edge_offer() do
+      {:ok, offer} -> Map.put(payload, "memory_v2", offer)
+      :disabled -> payload
+    end
+  end
+
+  defp edge_offer do
+    config = Application.get_env(:backplane_host_agent, :memory_host_sync_v2, %{})
+    mirror_module = Application.get_env(:backplane_host_agent, :edge_mirror_module, Mirror)
+
+    if Protection.status(config) == :plaintext_development do
+      case mirror_module.offer(config: config) do
+        {:ok, %{"offers" => ["host_memory.v2"], "partitions" => _} = offer} -> {:ok, offer}
+        _ -> :disabled
+      end
+    else
+      :disabled
+    end
   end
 
   @doc "Pushes an event through the joined host-agent channel."

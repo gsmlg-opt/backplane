@@ -82,7 +82,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
       {:error, reason} = error ->
         if transport_error?(reason) do
           with {:ok, %{} = overlay} <- pending_overlay(method, args, context, :offline) do
-            {:ok, offline_result(method, overlay, args)}
+            offline_result(method, overlay, args, context)
           end
         else
           error
@@ -112,13 +112,13 @@ defmodule Backplane.HostAgent.MemoryFacade do
     canonical
     |> merge_overlay(method, overlay, args)
     |> normalize_result(method)
+    |> Map.put_new("partition_revision", nil)
+    |> Map.put_new("last_sync_age_seconds", nil)
     |> Map.merge(%{
       "mode" => "online",
       "authority" => if(pending?, do: "canonical_with_provisional", else: "canonical"),
       "consistency" => if(pending?, do: "read_your_writes", else: "canonical"),
       "stale" => false,
-      "partition_revision" => nil,
-      "last_sync_age_seconds" => nil,
       "pending_operations" => pending_operations,
       "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => true
@@ -126,7 +126,39 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> Map.put_new("as_of", nil)
   end
 
-  defp offline_result(method, overlay, args) do
+  defp offline_result(method, overlay, args, context) do
+    case edge_read(method, args, context) do
+      {:ok, canonical} ->
+        {:ok, offline_mirror_result(method, canonical, overlay, args)}
+
+      {:error, reason} when reason in [:mirror_unavailable, :no_committed_mirror] ->
+        {:ok, provisional_offline_result(method, overlay, args)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp offline_mirror_result(method, canonical, overlay, args) do
+    pending_operations = pending_operations(overlay)
+
+    canonical
+    |> merge_overlay(method, overlay, args)
+    |> normalize_result(method)
+    |> Map.merge(%{
+      "mode" => "offline",
+      "authority" =>
+        if(pending_operations > 0, do: "canonical_with_provisional", else: "canonical"),
+      "source" => "edge_mirror",
+      "consistency" => "bounded_stale",
+      "stale" => true,
+      "pending_operations" => pending_operations,
+      "overlay_truncated" => overlay_truncated?(overlay),
+      "history_available" => true
+    })
+  end
+
+  defp provisional_offline_result(method, overlay, args) do
     upserts =
       offline_results(
         Map.get(overlay, "upserts", []),
@@ -151,6 +183,29 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "history_available" => false
     })
   end
+
+  defp edge_read(_method, _args, %{edge_adapter: nil}), do: {:error, :mirror_unavailable}
+
+  defp edge_read(method, args, %{edge_adapter: edge_adapter} = context) do
+    partition = Map.get(context, :edge_partition, %{})
+    edge_args = Map.merge(args, partition)
+
+    opts =
+      [agent_id: Map.fetch!(context, :agent_id)]
+      |> maybe_put(:store, Map.get(context, :edge_store))
+      |> maybe_put(:config, Map.get(context, :edge_config))
+
+    case edge_adapter.offline_read(method, edge_args, opts) do
+      {:ok, %{} = result} -> {:ok, result}
+      {:error, _reason} = error -> error
+      other -> {:error, {:edge_protocol_error, {:unexpected_reply, other}}}
+    end
+  end
+
+  defp edge_read(_method, _args, _context), do: {:error, :mirror_unavailable}
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp normalize_result(result, "recall") do
     Map.put(result, "hits", normalized_results(result))

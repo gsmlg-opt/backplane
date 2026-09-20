@@ -3,14 +3,15 @@ defmodule Backplane.HostAgent.Memory.Facts do
   Applies hub-originated memory facts and wipe directives to the local store.
   """
 
-  alias Backplane.HostAgent.Memory.{Reducer, Store}
+  alias Backplane.HostAgent.Memory.{Edge.Protection, Reducer, Store}
   alias Turso.Result
 
   @doc "Applies a full or incremental fact reconcile payload."
   def apply_facts(payload, opts \\ []) when is_map(payload) do
     store = Keyword.get(opts, :store, Store)
 
-    with {:ok, scope} <- Reducer.required_string(payload, "scope"),
+    with :ok <- content_persistence_allowed(opts),
+         {:ok, scope} <- Reducer.required_string(payload, "scope"),
          facts when is_list(facts) <- Reducer.value(payload, "facts", []),
          {:ok, normalized} <- normalize_facts(facts) do
       full? = truthy?(Reducer.value(payload, "full", false))
@@ -35,6 +36,19 @@ defmodule Backplane.HostAgent.Memory.Facts do
     else
       {:error, reason} -> {:error, reason}
       _other -> {:error, {:invalid_args, "facts must be a list"}}
+    end
+  end
+
+  defp content_persistence_allowed(opts) do
+    case Keyword.fetch(opts, :edge_config) do
+      {:ok, config} ->
+        case Protection.status(config) do
+          :plaintext_development -> :ok
+          reason -> {:error, reason}
+        end
+
+      :error ->
+        :ok
     end
   end
 

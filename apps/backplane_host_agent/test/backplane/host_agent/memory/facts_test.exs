@@ -76,6 +76,17 @@ defmodule Backplane.HostAgent.Memory.FactsTest do
     assert_count(store, "facts", 2)
   end
 
+  test "content-bearing facts fail closed when edge protection is unavailable", %{store: store} do
+    assert {:error, :protection_unavailable} =
+             Facts.apply_facts(
+               %{"scope" => "proj_local", "facts" => [fact("fact_1", "blocked")]},
+               store: store,
+               edge_config: %{enabled: true, development_plaintext: false}
+             )
+
+    assert_count(store, "facts", 0)
+  end
+
   test "wipe hard-deletes local memory and facts, cancels queued outbox, and tombstones", %{
     store: store,
     opts: opts
