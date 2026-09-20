@@ -36,7 +36,9 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       poll_interval_ms: Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms),
       retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms),
       edge_retry_ref: nil,
+      edge_retry_token: nil,
       poll_ref: nil,
+      poll_token: nil,
       partition_index: 0,
       inventory: Keyword.get(opts, :partitions),
       current_retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
@@ -62,16 +64,25 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
     {:noreply, %{state | channel: channel, selected: selected} |> schedule_poll(0)}
   end
 
-  def handle_cast({:memory_available, _hint}, state), do: {:noreply, schedule_poll(state, 0)}
+  def handle_cast({:memory_available, _hint}, state),
+    do: {:noreply, state |> cancel_retry() |> schedule_poll(0)}
 
   @impl true
-  def handle_info(:poll, %{selected: "host_memory.v2", channel: channel} = state)
+  def handle_info(
+        {:poll, token},
+        %{poll_token: token, selected: "host_memory.v2", channel: channel} = state
+      )
       when is_pid(channel) do
     case poll(state) do
       {:ok, state} ->
         {:noreply,
          schedule_poll(
-           %{state | edge_retry_ref: nil, current_retry_backoff_ms: state.retry_backoff_ms},
+           %{
+             state
+             | edge_retry_ref: nil,
+               edge_retry_token: nil,
+               current_retry_backoff_ms: state.retry_backoff_ms
+           },
            state.poll_interval_ms
          )}
 
@@ -80,10 +91,13 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
     end
   end
 
-  def handle_info(:poll, state), do: {:noreply, state}
+  def handle_info({:poll, _token}, state), do: {:noreply, state}
+  def handle_info(:poll, state), do: handle_info({:poll, state.poll_token}, state)
 
-  def handle_info(:edge_retry, state),
-    do: {:noreply, %{state | edge_retry_ref: nil} |> schedule_poll(0)}
+  def handle_info({:edge_retry, token}, %{edge_retry_token: token} = state),
+    do: {:noreply, %{state | edge_retry_ref: nil, edge_retry_token: nil} |> schedule_poll(0)}
+
+  def handle_info({:edge_retry, _token}, state), do: {:noreply, state}
 
   defp poll(state) do
     with {:ok, offer} <- state.mirror_module.offer(state.mirror_opts) do
@@ -99,7 +113,10 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
               %{"status" => "batch"} ->
                 with {:ok, ack} <-
-                       state.mirror_module.apply_delivery(delivery, state.mirror_opts),
+                       state.mirror_module.apply_delivery(
+                         delivery,
+                         Keyword.put(state.mirror_opts, :partition, request["partition"])
+                       ),
                      {:ok, _reply} <- push(state, "memory_ack", ack) do
                   {:ok, state}
                 end
@@ -182,17 +199,25 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   defp schedule_retry(state) do
     delay = min(state.current_retry_backoff_ms, @max_retry_backoff_ms)
+    token = make_ref()
 
     %{
       state
-      | edge_retry_ref: Process.send_after(self(), :edge_retry, delay),
+      | edge_retry_ref: Process.send_after(self(), {:edge_retry, token}, delay),
+        edge_retry_token: token,
         current_retry_backoff_ms: min(delay * 2, @max_retry_backoff_ms)
     }
   end
 
   defp schedule_poll(state, delay) do
     cancel_timer(state.poll_ref)
-    %{state | poll_ref: Process.send_after(self(), :poll, delay)}
+    token = make_ref()
+    %{state | poll_ref: Process.send_after(self(), {:poll, token}, delay), poll_token: token}
+  end
+
+  defp cancel_retry(state) do
+    cancel_timer(state.edge_retry_ref)
+    %{state | edge_retry_ref: nil, edge_retry_token: nil}
   end
 
   defp cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
