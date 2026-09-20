@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.0
 
 - Add a single-owner embedded conversation driver with lazy provider streams,
   authorized tools, steering/follow-up, hook and interaction adapters, finite

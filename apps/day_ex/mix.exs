@@ -1,7 +1,7 @@
 defmodule DayEx.MixProject do
   use Mix.Project
 
-  @version "0.10.0"
+  @version "1.6.0"
   @source_url "https://github.com/gsmlg-dev/day_ex"
 
   def project do
