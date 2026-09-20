@@ -7,6 +7,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
+  alias Backplane.LLM.ProviderModelSurface
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.OpenAICodexAuth
   alias Backplane.Settings.OAuthRefresher
@@ -889,7 +890,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp target_model_options do
     AutoModel.list_available_target_model_ids()
-    |> Enum.map(&{&1, &1})
+    |> Enum.map(&{&1, target_model_label(&1)})
   end
 
   defp custom_alias_target_options do
@@ -900,7 +901,7 @@ defmodule Backplane.Admin.SettingsLive do
     provider_model_options =
       AutoModel.list_available_target_model_ids()
       |> Enum.reject(&(&1 in AutoModel.built_in_names()))
-      |> Enum.map(&{&1, &1})
+      |> Enum.map(&{&1, target_model_label(&1)})
 
     built_in_options ++ provider_model_options
   end
@@ -916,7 +917,25 @@ defmodule Backplane.Admin.SettingsLive do
     end)
   end
 
-  defp target_model_name(target), do: target.provider_model_surface.provider_model.model
+  defp target_model_name(target) do
+    provider = target.provider_model_surface.provider_model.provider.name
+    "#{provider}/#{target.provider_model_surface.provider_model.model}"
+  end
+
+  defp target_model_label(model_id) do
+    providers =
+      [:openai, :anthropic]
+      |> Enum.flat_map(&ProviderModelSurface.list_enabled/1)
+      |> Enum.filter(&(&1.provider_model.model == model_id))
+      |> Enum.map(& &1.provider_model.provider.name)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    case providers do
+      [] -> model_id
+      _ -> "#{Enum.join(providers, ", ")}/#{model_id}"
+    end
+  end
 
   defp route_label(:openai), do: "OpenAI"
   defp route_label(:anthropic), do: "Anthropic"

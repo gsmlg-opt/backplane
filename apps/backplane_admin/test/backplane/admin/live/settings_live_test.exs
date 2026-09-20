@@ -58,6 +58,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert html =~ ~s(id="auto-model-fast-model")
       assert html =~ ~s(<option value="fast-model-a">)
+      assert html =~ "settings-provider-"
+      assert html =~ "/fast-model-a"
       refute html =~ ~s(id="auto-model-fast-models")
     end
 
