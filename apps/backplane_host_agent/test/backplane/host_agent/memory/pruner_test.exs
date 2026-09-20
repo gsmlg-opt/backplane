@@ -83,6 +83,41 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
              Store.query(store, "SELECT memory_id, state FROM memory_outbox")
   end
 
+  test "prunes tombstones only when explicitly approved", %{store: store} do
+    old = "2026-01-01T00:00:00Z"
+    recent = "2026-06-17T00:00:00Z"
+    cutoff = "2026-03-17T00:00:00Z"
+    insert_tombstone!(store, "old")
+    insert_tombstone!(store, "recent")
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE tombstones SET wiped_at = ? WHERE content_hash = ?", [
+               old,
+               Reducer.content_hash("old")
+             ])
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE tombstones SET wiped_at = ? WHERE content_hash = ?", [
+               recent,
+               Reducer.content_hash("recent")
+             ])
+
+    assert {:ok, %{"tombstones_deleted" => 0}} =
+             Pruner.prune_once(store: store, cutoff: cutoff, outbox_cutoff: cutoff)
+
+    assert_count(store, "tombstones", 2)
+
+    assert {:ok, %{"tombstones_deleted" => 1}} =
+             Pruner.prune_once(
+               store: store,
+               cutoff: cutoff,
+               outbox_cutoff: cutoff,
+               tombstone_cutoff: cutoff
+             )
+
+    assert_count(store, "tombstones", 1)
+  end
+
   defp start_memory!(tmp_dir) do
     name = :"host_agent_memory_pruner_#{System.unique_integer([:positive])}"
     db_path = Path.join(tmp_dir, "#{name}.db")

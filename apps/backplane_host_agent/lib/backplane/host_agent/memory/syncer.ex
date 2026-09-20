@@ -261,40 +261,29 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     :exit, reason -> {:error, reason}
   end
 
-  defp apply_acks(opts, outbox_rows, ack_items) do
-    acks_by_id = Map.new(ack_items, &{&1["id"], &1})
-
-    Enum.each(outbox_rows, fn row ->
-      ack = Map.get(acks_by_id, row["memory_id"])
-      apply_ack(opts, row, ack)
-    end)
-  end
+  defp apply_acks(opts, outbox_rows, ack_items),
+    do:
+      Enum.each(Enum.zip(outbox_rows, ack_items), fn {row, ack} -> apply_ack(opts, row, ack) end)
 
   defp apply_ack(opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
     mark_done(opts.store, row, ack["canonical_id"], now(opts))
   end
 
-  defp apply_ack(opts, row, %{"status" => "error"} = ack) do
-    error = ack["error"] || "server error"
-
-    if permanent_error?(error) do
-      dead_letter(opts.store, row["seq"], error, now(opts))
-    else
-      retry_row(opts, row, error)
-    end
-  end
+  defp apply_ack(opts, row, %{"status" => "error"} = ack),
+    do: dead_letter(opts.store, row["seq"], ack["error"] || "validation error", now(opts))
 
   defp apply_ack(opts, row, _ack), do: retry_row(opts, row, "missing acknowledgement")
 
   defp mark_done(store, row, canonical_id, now) do
     transaction(store, fn conn ->
-      with {:ok, _} <-
+      with {:ok, %Result{num_rows: updated}} <-
              Store.execute(
                conn,
-               "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ?",
+               "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
                [now, now, row["seq"]]
              ),
+           true <- updated > 0,
            {:ok, _} <-
              Store.execute(
                conn,
@@ -309,6 +298,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
              ) do
         :ok
       else
+        false -> :ok
         {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
       end
     end)
@@ -325,7 +315,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
           dead_lettered_at = ?,
           next_attempt_at = NULL,
           updated_at = ?
-      WHERE seq = ?
+      WHERE seq = ? AND state = 'inflight'
       """,
       [to_string(error), now, now, seq]
     )
@@ -340,13 +330,13 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     if attempts >= opts.max_attempts do
       Store.execute(
         opts.store,
-        "UPDATE memory_outbox SET state = 'dead_letter', attempts = ?, last_error = ?, dead_lettered_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ?",
+        "UPDATE memory_outbox SET state = 'dead_letter', attempts = ?, last_error = ?, dead_lettered_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
         [attempts, to_string(error), now, now, row["seq"]]
       )
     else
       Store.execute(
         opts.store,
-        "UPDATE memory_outbox SET state = 'retry_wait', attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ?",
+        "UPDATE memory_outbox SET state = 'retry_wait', attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ? AND state = 'inflight'",
         [attempts, to_string(error), retry_at(now, attempts, opts), now, row["seq"]]
       )
     end
@@ -357,7 +347,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   defp reset_pending(store, seqs) do
     Store.execute(
       store,
-      "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE seq IN (#{placeholders(seqs)})",
+      "UPDATE memory_outbox SET state = 'pending', updated_at = ? WHERE seq IN (#{placeholders(seqs)}) AND state = 'inflight'",
       [timestamp() | seqs]
     )
   end
@@ -510,19 +500,16 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     delay = min(1_000 * Integer.pow(2, attempts - 1), @max_retry_delay_ms)
     jitter = opts.jitter_fun.() |> min(1.0) |> max(0.0)
     {:ok, value, _offset} = DateTime.from_iso8601(now)
-    value |> DateTime.add(round(delay * (0.5 + jitter)), :millisecond) |> DateTime.to_iso8601()
-  end
 
-  defp permanent_error?(error) do
-    message = error |> to_string() |> String.downcase()
-
-    String.contains?(message, ["validation", "invalid", "governance", "unauthorized", "forbidden"])
+    value
+    |> DateTime.add(min(round(delay * (0.5 + jitter)), @max_retry_delay_ms), :millisecond)
+    |> DateTime.to_iso8601()
   end
 
   defp valid_acks?(rows, acks) when is_list(acks) do
-    expected = Enum.map(rows, & &1["memory_id"]) |> MapSet.new()
-    received = Enum.map(acks, & &1["id"])
-    MapSet.new(received) == expected and length(received) == MapSet.size(expected)
+    length(rows) == length(acks) and
+      Enum.zip(rows, acks)
+      |> Enum.all?(fn {row, ack} -> ack["id"] == row["memory_id"] end)
   end
 
   defp valid_acks?(_rows, _acks), do: false

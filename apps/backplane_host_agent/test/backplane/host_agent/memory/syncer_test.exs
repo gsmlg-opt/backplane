@@ -28,6 +28,9 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
                end)
            }}
 
+        reply when is_function(reply, 1) ->
+          reply.(payload)
+
         reply ->
           reply
       end
@@ -249,6 +252,107 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
 
     assert {:ok, %Result{rows: [%{"last_error" => "invalid scope"}]}} =
              Store.query(store, "SELECT last_error FROM memory_outbox WHERE memory_id = ?", [id])
+  end
+
+  test "every item error is permanent under the v1 wire", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad content"}, opts)
+
+    Process.put(
+      {FakeChannel, :reply},
+      {:ok,
+       %{
+         "items" => [
+           %{
+             "id" => id,
+             "status" => "error",
+             "error" => "content is required and must be a string"
+           }
+         ]
+       }}
+    )
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, id, "dead_letter", 1)
+  end
+
+  test "matches acknowledgements in order when remember and forget share an id", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "ordered"}, opts)
+    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
+
+    assert {:ok, %{"drained" => 2}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_receive {:memory_push, "memory_sync",
+                    %{
+                      "items" => [
+                        %{"op" => "remember", "id" => ^id},
+                        %{"op" => "forget", "id" => ^id}
+                      ]
+                    }}
+
+    assert {:ok, %Result{rows: [%{"count" => 2}]}} =
+             Store.query(
+               store,
+               "SELECT COUNT(*) AS count FROM memory_outbox WHERE state = 'done'"
+             )
+  end
+
+  test "does not resurrect a wiped row after delayed acknowledgement", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "wiped before ack"}, opts)
+
+    Process.put({FakeChannel, :reply}, fn payload ->
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 "UPDATE memory_outbox SET state = 'done', last_error = 'wiped' WHERE memory_id = ?",
+                 [id]
+               )
+
+      {:ok,
+       %{
+         "items" => [
+           %{"id" => hd(payload["items"])["id"], "status" => "ok", "canonical_id" => "hub"}
+         ]
+       }}
+    end)
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert {:ok, %Result{rows: [%{"sync_state" => "pending"}]}} =
+             Store.query(store, "SELECT sync_state FROM memories WHERE id = ?", [id])
+  end
+
+  test "caps high-attempt jittered retry delay", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "cap"}, opts)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memory_outbox SET attempts = 20 WHERE memory_id = ?", [
+               id
+             ])
+
+    now = "2026-06-17T00:00:00Z"
+    Process.put({FakeChannel, :reply}, {:error, :disconnected})
+
+    assert {:error, :disconnected} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               now_fun: fn -> now end,
+               jitter_fun: fn -> 1.0 end,
+               max_attempts: 50
+             )
+
+    assert {:ok, %Result{rows: [%{"next_attempt_at" => "2026-06-17T00:05:00.000Z"}]}} =
+             Store.query(store, "SELECT next_attempt_at FROM memory_outbox WHERE memory_id = ?", [
+               id
+             ])
   end
 
   test "forget payload includes remote_id and leaves deleted rows synced after ack", %{

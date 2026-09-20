@@ -12,9 +12,9 @@ defmodule Mix.Tasks.Agent.Memory.Resync do
   @impl true
   def run(args) do
     Mix.Task.run("app.config")
-    {parsed, _rest, invalid} = OptionParser.parse(args, strict: [all: :boolean, seq: :integer])
+    {parsed, rest, invalid} = OptionParser.parse(args, strict: [all: :boolean, seq: :integer])
 
-    if invalid != [] do
+    if invalid != [] or rest != [] do
       Mix.raise("expected --all or one or more --seq N options")
     end
 

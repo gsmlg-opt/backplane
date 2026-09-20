@@ -67,7 +67,8 @@ defmodule Backplane.HostAgent.Memory.Pruner do
     """
 
     with {:ok, %Result{num_rows: deleted}} <- Store.execute(opts.store, sql, [cutoff]),
-         {:ok, %Result{num_rows: outbox_deleted}} <- prune_outbox(opts, cutoff) do
+         {:ok, %Result{num_rows: outbox_deleted}} <- prune_outbox(opts, cutoff),
+         {:ok, %Result{num_rows: tombstones_deleted}} <- prune_tombstones(opts) do
       duration = System.monotonic_time() - started_at
 
       :telemetry.execute(
@@ -76,7 +77,13 @@ defmodule Backplane.HostAgent.Memory.Pruner do
         %{cutoff: cutoff}
       )
 
-      {:ok, %{"deleted" => deleted, "outbox_deleted" => outbox_deleted, "cutoff" => cutoff}}
+      {:ok,
+       %{
+         "deleted" => deleted,
+         "outbox_deleted" => outbox_deleted,
+         "tombstones_deleted" => tombstones_deleted,
+         "cutoff" => cutoff
+       }}
     else
       {:error, reason} -> {:error, {:storage_error, reason}}
     end
@@ -95,6 +102,8 @@ defmodule Backplane.HostAgent.Memory.Pruner do
         ),
       cutoff: Keyword.get(opts, :cutoff),
       outbox_cutoff: Keyword.get(opts, :outbox_cutoff),
+      tombstone_cutoff: Keyword.get(opts, :tombstone_cutoff),
+      tombstone_retention_days: config_value(config, :tombstone_retention_days),
       local_ttl_days:
         Keyword.get(
           opts,
@@ -147,6 +156,17 @@ defmodule Backplane.HostAgent.Memory.Pruner do
       [cutoff, cutoff]
     )
   end
+
+  defp prune_tombstones(%{store: store, tombstone_cutoff: cutoff}) when is_binary(cutoff) do
+    Store.execute(store, "DELETE FROM tombstones WHERE wiped_at < ?", [cutoff])
+  end
+
+  defp prune_tombstones(%{tombstone_retention_days: days} = opts)
+       when is_integer(days) and days >= 0 do
+    Store.execute(opts.store, "DELETE FROM tombstones WHERE wiped_at < ?", [cutoff_from_ttl(days)])
+  end
+
+  defp prune_tombstones(_opts), do: {:ok, %Result{num_rows: 0}}
 
   defp config_value(config, key) when is_map(config) do
     Map.get(config, key, Map.get(config, Atom.to_string(key)))

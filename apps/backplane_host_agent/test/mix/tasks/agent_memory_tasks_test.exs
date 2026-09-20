@@ -45,6 +45,17 @@ defmodule Mix.Tasks.Agent.MemoryTasksTest do
              Store.query(store, "SELECT state FROM memory_outbox ORDER BY seq")
   end
 
+  test "agent.memory.resync rejects positional arguments", %{store: store} do
+    insert_memory!(store, "dead", "dead")
+    insert_outbox!(store, "dead", "dead_letter", "bad")
+    Mix.Task.reenable("agent.memory.resync")
+
+    assert_raise Mix.Error, fn -> Mix.Tasks.Agent.Memory.Resync.run(["unexpected"]) end
+
+    assert {:ok, %Result{rows: [%{"state" => "dead_letter"}]}} =
+             Store.query(store, "SELECT state FROM memory_outbox")
+  end
+
   test "agent.memory.tombstones requires --purge and purges tombstones", %{store: store} do
     insert_tombstone!(store, "wiped")
 
