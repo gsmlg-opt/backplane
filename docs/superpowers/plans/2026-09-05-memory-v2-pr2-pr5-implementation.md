@@ -143,6 +143,22 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   The registry preserves metadata and CI includes the contract app. Fresh
   affected-app scoped gate: 100/100 with warnings-as-errors; CI workflow
   contract 4/4, scoped formatting and diff checks passed.
+- Task 17: test-only draft remains uncommitted. Real-channel/Turso/PostgreSQL
+  qualification A–I passed under API seeds 101, 202, and 303 (9/9 each),
+  including actual edge-supervisor restart, connected syncer wake/ACK,
+  old-delta replay after delete, and independent type/item/byte eviction
+  limits (3/1039, 2/695, and 1/348 items/bytes); scoped formatting and diff
+  checks passed. The stronger real 10,000-event Scenario J test is red:
+  `Rebuild.replace_observation_rows/3` inserts 250,000 Postgrex parameters
+  against its 65,535 limit. Replay insertion also batches potentially 10,000
+  rows and requires qualification after repairing observations. Proposed
+  production repair in `projections/rebuild.ex` and `replay/store.ex` is outside
+  Task 17's approved test-only scope; no approval has been inferred.
+  Scenario E proves provisional identity, command ACK, and one canonical online
+  recall result, but the literal canonical revision cannot be asserted: the
+  V1 compatibility import creates an episodic memory and returns ID only,
+  whereas V2 edge revisions cover semantic/procedural records. A separate
+  product-contract decision is required before calling E complete.
   Tasks 17–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
