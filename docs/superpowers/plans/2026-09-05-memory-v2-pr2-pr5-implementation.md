@@ -125,7 +125,25 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   worker/migration/replay verification: 24/24. The 10,000-event regression
   advances 101 generations with one pending repair job and completes generation
   101. Scoped formatting and diff checks passed.
-  Tasks 15–20 remain outstanding; PR2–PR5 is not complete.
+- Task 15: committed locally as `654eabff`; specification and quality reviews
+  approved. Migration `20260905000009` replaces generic `skipped` with precise
+  terminal states, and all seven processing families record stable identities.
+  Source-first locked revision checks prevent old jobs from replacing newer
+  state; episodic, graph, embedding, procedural, and profile outputs commit
+  atomically with completion after revalidation. Procedural/profile hold short
+  source-table fences during that final transaction. Deterministic R1/R2 races
+  and profile cross-scope isolation are covered. Fresh scoped Task 15 gate:
+  107/107 with warnings-as-errors; focused profile race passed eight repeated
+  runs. Scoped formatting and diff checks passed.
+- Task 16: committed locally as `80a6664b`; specification and quality reviews
+  approved. The process-free shared contract owns tool schemas, permission,
+  authority, consistency, and availability metadata. Direct discovery excludes
+  device-local slots, while the host retains local slot execution; connected
+  canonical tools route remotely and disconnected overlap schemas remain exact.
+  The registry preserves metadata and CI includes the contract app. Fresh
+  affected-app scoped gate: 100/100 with warnings-as-errors; CI workflow
+  contract 4/4, scoped formatting and diff checks passed.
+  Tasks 17–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -582,6 +600,7 @@ measurement contract.
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/graph_extract_worker.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/profile_build_worker.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/crystal_worker.ex`
+- Modify: `apps/backplane_memory/lib/backplane/memory/crystals/projection_store.ex`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/summary_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/summary_worker_concurrency_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs`
@@ -591,6 +610,15 @@ measurement contract.
 - Modify: `apps/backplane_memory/test/backplane/memory/memories/profile_build_worker_test.exs`
 - Create: `apps/backplane_memory/test/backplane/memory/workers/crystal_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/state_test.exs`
+- Create: `apps/backplane_memory/test/backplane/memory/projections/expand_memory_processing_states_migration_test.exs`
+- Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
+- Modify: `apps/backplane_memory/test/backplane/memory/projections/replay_parity_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: crystallization state
+writes are owned by `Crystals.ProjectionStore`, and the projection repair/parity
+tests must recognize the durable episodic `running` state introduced by Task 15.
+The user separately approved a real migration regression for migration `00009`
+to prove generic `skipped` mapping and the replacement database constraint.
 
 - [ ] Write failing state-transition tests for pending, enqueued compatibility, running, complete, skipped_no_model, skipped_disabled, failed, and dead_letter.
 - [ ] Use stable processing identity for all seven families:
@@ -638,6 +666,12 @@ profile:
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_router_test.exs`
 - Modify: `.github/workflows/test.yml`
 - Modify: `test/ci_workflow_test.exs`
+- Modify: `apps/backplane_system/lib/backplane/registry/tool_registry.ex`
+- Modify: `apps/backplane_system/test/backplane/registry/tool_registry_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: direct MCP discovery
+serializes registry metadata, so `ToolRegistry.register_managed/2` and its focused
+test must preserve the shared contract's `_meta["backplane"]` value.
 
 - [ ] Classify tools into three explicit sets: canonical-overlap tools have exact shared names/schemas on direct, connected, and disconnected discovery; server-only tools appear direct/connected and are absent offline; device-local tools remain locally executable and are absent from the direct server contract unless intentionally shared.
 - [ ] Write failing transport parity tests for exact names, schemas, required fields, and `_meta["backplane"] = %{permission, authority, consistency, availability}` within each applicable set. Disconnected discovery may expose fewer server-only tools, but must not drift on canonical-overlap definitions.
