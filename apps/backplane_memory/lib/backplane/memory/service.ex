@@ -19,6 +19,7 @@ defmodule Backplane.Memory.Service do
   alias Backplane.Memory.Projections.ReadModels
   alias Backplane.Memory.Recall.Pipeline
   alias Backplane.Memory.Recall.Store, as: RecallStore
+  alias Backplane.MemoryToolContract
   alias Backplane.Memory.Replay
   alias Backplane.Registry.InputValidator
   alias Backplane.Skills.AgentManage
@@ -51,6 +52,7 @@ defmodule Backplane.Memory.Service do
   def tools do
     (core_tools() ++ extended_tools())
     |> Enum.reject(&disabled_replay_tool?/1)
+    |> Enum.reject(&device_local_tool?/1)
     |> Enum.map(&secure_tool/1)
   end
 
@@ -171,11 +173,27 @@ defmodule Backplane.Memory.Service do
 
   defp secure_tool(%{name: name, handler: handler} = tool) do
     permission = Backplane.MemoryPermissions.for_tool!(name)
+    contract = MemoryToolContract.tool(name)
+
+    {input_schema, meta} =
+      case contract do
+        {:ok, %{input_schema: input_schema, meta: meta}} -> {input_schema, meta}
+        :error -> {tool.input_schema, contract_metadata(name)}
+      end
 
     Map.merge(tool, %{
       permission: permission,
+      input_schema: input_schema,
+      meta: meta,
       handler: fn args, auth -> authorized_tool_call(name, handler, args, auth) end
     })
+  end
+
+  defp contract_metadata(name) do
+    case MemoryToolContract.metadata(name) do
+      {:ok, meta} -> meta
+      :error -> %{}
+    end
   end
 
   defp authorized_tool_call(name, handler, args, auth) do
@@ -1181,6 +1199,9 @@ defmodule Backplane.Memory.Service do
     do: not Config.replay_enabled?()
 
   defp disabled_replay_tool?(_tool), do: false
+
+  defp device_local_tool?(%{name: name}),
+    do: name in MemoryToolContract.device_local_names()
 
   # ──────────────────────────────────────────────
   # Resources

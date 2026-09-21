@@ -19,6 +19,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     maybe_detect_contradiction: 2,
     provenance_trace: 1,
     record_application: 4,
+    record_partition_issue: 4,
     remember: 1,
     remember: 2,
     scope_stats: 0,
@@ -113,9 +114,6 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::graph_stats", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
     {"memory::consolidate", "52c5e8ee28186a06e64534fc134167cae42e42b500af64cd44899c7bee7ff09d"},
     {"memory::verify", "c37839c4060e4d6590ba406b2f498ae4c267fee2f17d0453d6945a2398210887"},
-    {"memory::slot_read", "7acca181803e00a1c2169361303c9ba069bc6e2927cf63158a13d0f8b34ca4cc"},
-    {"memory::slot_write", "83f4215892b7f1e03898d1008bfeebf81323b494282e7db2ae08b9793bfff417"},
-    {"memory::slot_list", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
     {"memory::enrich", "14df6a9949b3742e6a29f1e0ca747927a9ccf3612888d42052aa99bf2fe79f8f"},
     {"memory::access_log", "c37839c4060e4d6590ba406b2f498ae4c267fee2f17d0453d6945a2398210887"}
   ]

@@ -8,6 +8,7 @@ defmodule Backplane.HostAgent.Services.Memory do
   alias Backplane.HostAgent.{Memory, MemoryFacade}
   alias Backplane.HostAgent.Memory.{ImportRunner, ImportSupervisor}
   alias Backplane.HostAgent.Memory.Store
+  alias Backplane.MemoryToolContract
 
   @facade_methods ~w(remember recall list forget stats)
 
@@ -16,9 +17,21 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   @impl true
   def tools do
-    Enum.map(Memory.methods() ++ ["replay_import"], fn method ->
-      %{"name" => "memory::#{method}", "description" => "Memory operation: #{method}"}
-    end)
+    MemoryToolContract.canonical_overlap_names()
+    |> Kernel.++(MemoryToolContract.device_local_names())
+    |> Enum.map(&tool_descriptor/1)
+  end
+
+  defp tool_descriptor(name) do
+    %{description: description, input_schema: input_schema, meta: meta} =
+      MemoryToolContract.tool!(name)
+
+    %{
+      "name" => name,
+      "description" => description,
+      "inputSchema" => input_schema,
+      "_meta" => meta
+    }
   end
 
   @impl true
@@ -58,8 +71,44 @@ defmodule Backplane.HostAgent.Services.Memory do
   defp do_call("slot_read", args, opts), do: Memory.slot_read(args, opts)
   defp do_call("slot_write", args, opts), do: Memory.slot_write(args, opts)
   defp do_call("slot_list", args, opts), do: Memory.slot_list(args, opts)
-  defp do_call("facet_tag", args, opts), do: Memory.facet_tag(args, opts)
-  defp do_call("facet_query", args, opts), do: Memory.facet_query(args, opts)
+  defp do_call("facet_tag", args, opts), do: Memory.facet_tag(normalize_facet_tag(args), opts)
+
+  defp do_call("facet_query", args, opts),
+    do: Memory.facet_query(normalize_facet_query(args), opts)
+
+  defp normalize_facet_tag(%{"memory_id" => memory_id, "facets" => facets} = args)
+       when is_binary(memory_id) and is_list(facets) do
+    case facets_to_metadata(facets) do
+      {:ok, metadata} -> args |> Map.put("id", memory_id) |> Map.put("metadata", metadata)
+      :error -> args
+    end
+  end
+
+  defp normalize_facet_tag(args), do: args
+
+  defp normalize_facet_query(%{"facets" => facets} = args) when is_list(facets) do
+    case facets_to_metadata(facets) do
+      {:ok, metadata} -> Map.put(args, "metadata", metadata)
+      :error -> args
+    end
+  end
+
+  defp normalize_facet_query(args), do: args
+
+  defp facets_to_metadata(facets) do
+    Enum.reduce_while(facets, {:ok, %{}}, fn
+      %{"dimension" => dimension, "value" => value}, {:ok, metadata}
+      when is_binary(dimension) and is_binary(value) ->
+        {:cont, {:ok, Map.put(metadata, dimension, value)}}
+
+      %{dimension: dimension, value: value}, {:ok, metadata}
+      when is_binary(dimension) and is_binary(value) ->
+        {:cont, {:ok, Map.put(metadata, dimension, value)}}
+
+      _facet, _metadata ->
+        {:halt, :error}
+    end)
+  end
 
   defp replay_import(%{"profile" => profile} = args, ctx) when is_binary(profile) do
     memory_config = Application.get_env(:backplane_host_agent, :memory_config, %{})
