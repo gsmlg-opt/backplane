@@ -170,7 +170,8 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
 
     assert projectors in [
              ~w(activity observations replay session summary),
-             ~w(activity crystal observations replay session summary)
+             ~w(activity crystal observations replay session summary),
+             ~w(activity crystal episodic observations replay session summary)
            ]
 
     assert Enum.all?(states, fn
@@ -179,6 +180,9 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
 
              %{projector: "summary", status: status, last_error: nil}
              when status in ["pending", "complete"] ->
+               true
+
+             %{projector: "episodic", status: "skipped_no_model", last_error: "no_model"} ->
                true
 
              %{status: "complete", last_error: nil} ->

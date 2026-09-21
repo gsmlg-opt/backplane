@@ -5,7 +5,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   alias Backplane.Memory.{Audit, Ingest, Memories}
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
-  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild, Source}
+  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild, Source, State}
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
   alias Backplane.MemorySpaces.BackfillIssue
@@ -13,7 +13,34 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   defmodule MockLLM do
     def extract_facts(content) do
       send(self(), {:episodic_input, content})
-      {:ok, Process.get(:episodic_facts, [])}
+
+      case Process.get(:episodic_result, {:ok, Process.get(:episodic_facts, [])}) do
+        {:raise, message} -> raise message
+        result -> result
+      end
+    end
+  end
+
+  defmodule BlockingLLM do
+    @key {__MODULE__, :config}
+
+    def configure(owner, blocked_content),
+      do: :persistent_term.put(@key, %{owner: owner, blocked_content: blocked_content})
+
+    def clear, do: :persistent_term.erase(@key)
+
+    def extract_facts(content) do
+      %{owner: owner, blocked_content: blocked_content} = :persistent_term.get(@key)
+
+      if content == blocked_content do
+        send(owner, {:episodic_llm_blocked, self(), content})
+
+        receive do
+          {:release_episodic_facts, facts} -> {:ok, facts}
+        end
+      else
+        {:ok, []}
+      end
     end
   end
 
@@ -25,6 +52,8 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
 
     on_exit(fn ->
+      Process.delete(:episodic_result)
+      BlockingLLM.clear()
       restore_env(:llm_module, previous_llm)
       restore_setting("memory.llm_model", setting)
     end)
@@ -69,6 +98,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     assert repo().aggregate(Memory, :count) == 1
     assert repo().aggregate(RememberRequest, :count) == 1
     assert repo().aggregate(Evidence, :count) == 2
+
+    assert %State{status: "failed", last_error: "idempotency_conflict"} =
+             repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
   end
 
   test "the same fact from independent summaries reuses the candidate and adds provenance" do
@@ -307,6 +339,187 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
              )
   end
 
+  test "records a no-model terminal processing state" do
+    summary = insert_canonical_summary("episodic-state", "session", "content")
+    :ets.delete(:backplane_settings, "memory.llm_model")
+
+    assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+
+    assert %State{status: "skipped_no_model", last_error: "no_model"} =
+             repo().get_by!(State,
+               projector: "episodic",
+               subject_type: "captured_session",
+               subject_id: summary.subject_id
+             )
+  end
+
+  test "records retryable failure before dead-lettering the final attempt" do
+    summary = insert_canonical_summary("episodic-dead-letter", "session", "content")
+    Process.put(:episodic_result, {:error, :llm_unavailable})
+
+    assert {:error, :llm_unavailable} =
+             EpisodicWorker.perform(%Oban.Job{
+               args: %{"summary_id" => summary.id},
+               attempt: 1,
+               max_attempts: 3
+             })
+
+    assert %State{status: "failed", last_error: "llm_unavailable"} =
+             repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
+
+    assert {:error, :llm_unavailable} =
+             EpisodicWorker.perform(%Oban.Job{
+               args: %{"summary_id" => summary.id},
+               attempt: 3,
+               max_attempts: 3
+             })
+
+    assert %State{status: "dead_letter", last_error: "llm_unavailable"} =
+             repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
+  end
+
+  test "a stale summary revision cannot replace the current processing state" do
+    summary = insert_canonical_summary("episodic-stale", "session", "content")
+
+    repo().update_all(
+      from(session in ProjectedSession, where: session.subject_id == ^summary.subject_id),
+      set: [input_revision: digest("newer revision")]
+    )
+
+    assert {:discard, :stale_input_revision} =
+             EpisodicWorker.perform(%Oban.Job{
+               args: %{"summary_id" => summary.id},
+               attempt: 3,
+               max_attempts: 3
+             })
+
+    refute repo().get_by(State, projector: "episodic", subject_id: summary.subject_id)
+  end
+
+  test "a concurrent projected revision advance wins before an old job claims running" do
+    summary = insert_canonical_summary("episodic-claim-race", "session", "old content")
+    newer_revision = digest("newer concurrent revision")
+    parent = self()
+
+    advance_task =
+      Task.async(fn ->
+        repo().transaction(fn ->
+          session =
+            repo().one!(
+              from(projected in ProjectedSession,
+                where: projected.subject_id == ^summary.subject_id,
+                lock: "FOR UPDATE"
+              )
+            )
+
+          repo().update_all(
+            from(projected in ProjectedSession,
+              where: projected.subject_id == ^session.subject_id
+            ),
+            set: [input_revision: newer_revision]
+          )
+
+          send(parent, :revision_advanced)
+
+          receive do
+            :commit_revision -> :ok
+          end
+        end)
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), advance_task.pid)
+    assert_receive :revision_advanced, 5_000
+
+    worker_task =
+      Task.async(fn ->
+        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), worker_task.pid)
+    assert Task.yield(worker_task, 100) == nil
+
+    send(advance_task.pid, :commit_revision)
+    assert {:ok, :ok} = Task.await(advance_task, 5_000)
+    assert {:discard, :stale_input_revision} = Task.await(worker_task, 5_000)
+    refute_received {:episodic_input, _content}
+    refute repo().get_by(State, projector: "episodic", subject_id: summary.subject_id)
+  end
+
+  test "a revision advancing during extraction cannot persist stale semantic facts" do
+    old = insert_canonical_summary("episodic-persist-race", "session", "old content")
+    BlockingLLM.configure(self(), old.content)
+    Application.put_env(:backplane_memory, :llm_module, BlockingLLM)
+
+    old_task =
+      Task.async(fn ->
+        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => old.id}})
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), old_task.pid)
+    assert_receive {:episodic_llm_blocked, old_task_pid, "old content"}, 5_000
+    assert old_task_pid == old_task.pid
+
+    newer = replace_canonical_summary(old, "new content")
+
+    new_task =
+      Task.async(fn ->
+        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => newer.id}})
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), new_task.pid)
+    assert :ok = Task.await(new_task, 5_000)
+
+    assert %State{status: "complete", input_revision: newer_revision} =
+             repo().get_by!(State, projector: "episodic", subject_id: newer.subject_id)
+
+    assert newer_revision == newer.input_revision
+
+    send(old_task.pid, {:release_episodic_facts, ["stale semantic fact"]})
+    assert {:discard, :stale_input_revision} = Task.await(old_task, 5_000)
+
+    assert %State{status: "complete", input_revision: ^newer_revision} =
+             repo().get_by!(State, projector: "episodic", subject_id: newer.subject_id)
+
+    assert repo().aggregate(from(m in Memory, where: m.memory_type == "semantic"), :count) == 0
+    assert repo().aggregate(RememberRequest, :count) == 0
+    assert repo().aggregate(Evidence, :count) == 0
+  end
+
+  test "old and new summary jobs executed out of order retain the newer durable revision" do
+    old = insert_canonical_summary("episodic-out-of-order", "session", "old content")
+    new = replace_canonical_summary(old, "new content")
+    Process.put(:episodic_facts, [])
+
+    assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => new.id}})
+
+    assert %State{status: "complete", input_revision: revision} =
+             repo().get_by!(State, projector: "episodic", subject_id: new.subject_id)
+
+    assert revision == new.input_revision
+
+    assert {:discard, :stale_input_revision} =
+             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => old.id}})
+
+    assert %State{status: "complete", input_revision: ^revision} =
+             repo().get_by!(State, projector: "episodic", subject_id: new.subject_id)
+  end
+
+  test "an exception on the final attempt records dead-letter before reraising" do
+    summary = insert_canonical_summary("episodic-exception", "session", "content")
+    Process.put(:episodic_result, {:raise, "episodic exploded"})
+
+    assert_raise RuntimeError, "episodic exploded", fn ->
+      EpisodicWorker.perform(%Oban.Job{
+        args: %{"summary_id" => summary.id},
+        attempt: 3,
+        max_attempts: 3
+      })
+    end
+
+    assert %State{status: "dead_letter", last_error: "episodic exploded"} =
+             repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
+  end
+
   test "missing projected session is durably quarantined" do
     summary = insert_canonical_summary("episodic-no-session", "session", "content")
     repo().delete_all(from(s in ProjectedSession, where: s.subject_id == ^summary.subject_id))
@@ -384,6 +597,42 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       processing_version: "session-v1",
       input_revision: summary.input_revision
     })
+  end
+
+  defp replace_canonical_summary(old, content) do
+    revision = digest("#{old.host_id}:#{old.session_id}:#{content}")
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    old
+    |> Summary.changeset(%{
+      processing_version: "summary-v1@#{old.input_revision}",
+      superseded_at: now,
+      superseded_by_input_revision: revision
+    })
+    |> repo().update!()
+
+    repo().update_all(
+      from(session in ProjectedSession, where: session.subject_id == ^old.subject_id),
+      set: [input_revision: revision]
+    )
+
+    %Summary{}
+    |> Summary.changeset(%{
+      memory_space_id: old.memory_space_id,
+      host_id: old.host_id,
+      source_client_id: old.source_client_id,
+      scope: old.scope,
+      namespace: old.namespace,
+      session_id: old.session_id,
+      project: old.project,
+      content: content,
+      subject_id: old.subject_id,
+      agent_id: old.agent_id,
+      processing_version: "summary-v1",
+      input_revision: revision,
+      output_revision: digest(content)
+    })
+    |> repo().insert!()
   end
 
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)

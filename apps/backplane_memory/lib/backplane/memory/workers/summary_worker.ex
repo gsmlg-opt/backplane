@@ -15,7 +15,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Config
   alias Backplane.Memory.PartitionIdentity
-  alias Backplane.Memory.Projections.{ReadModels, Revision, Source, State}
+  alias Backplane.Memory.Projections.{ProcessingState, ReadModels, Revision, Source, State}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{CrystalWorker, EpisodicWorker}
 
@@ -25,24 +25,26 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @impl Oban.Worker
-  def perform(%Oban.Job{
-        args:
-          %{
-            "host_id" => host_id,
-            "memory_space_id" => _memory_space_id,
-            "scope" => _scope,
-            "namespace" => _namespace,
-            "session_id" => session_id,
-            "processing_version" => @processing_version,
-            "input_revision" => expected_revision
-          } = args
-      }) do
+  def perform(
+        %Oban.Job{
+          args:
+            %{
+              "host_id" => host_id,
+              "memory_space_id" => _memory_space_id,
+              "scope" => _scope,
+              "namespace" => _namespace,
+              "session_id" => session_id,
+              "processing_version" => @processing_version,
+              "input_revision" => expected_revision
+            } = args
+        } = job
+      ) do
     Backplane.Memory.PipelineTelemetry.span("summary", args, fn ->
       with true <-
              valid_identifier?(host_id) and valid_identifier?(session_id) and
                valid_identifier?(expected_revision),
            {:ok, partition} <- generator_partition(args) do
-        perform_canonical(host_id, session_id, expected_revision, partition)
+        perform_canonical(host_id, session_id, expected_revision, partition, job)
       else
         {:error, :incomplete_partition} -> {:cancel, :incomplete_partition}
         _ -> {:cancel, :invalid_arguments}
@@ -113,12 +115,12 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end
   end
 
-  defp perform_canonical(host_id, session_id, expected_revision, partition) do
+  defp perform_canonical(host_id, session_id, expected_revision, partition, job) do
     case ReadModels.summary_input(host_id, session_id, limit: 100, allow_incomplete: true) do
       {:ok, %{input_revision: ^expected_revision} = input} ->
         with {:ok, _input_partition} <- PartitionIdentity.validate(input, partition) do
           if summary_ready?(input) do
-            persist_canonical(host_id, session_id, expected_revision, partition)
+            persist_canonical(host_id, session_id, expected_revision, partition, job)
           else
             :ok
           end
@@ -136,7 +138,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end
   end
 
-  defp persist_canonical(host_id, session_id, expected_revision, partition) do
+  defp persist_canonical(host_id, session_id, expected_revision, partition, job) do
     subject_id = Source.subject_id!(host_id, session_id)
 
     result =
@@ -187,13 +189,13 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
         :ok
 
       {:error, reason} ->
-        record_failed(host_id, session_id, subject_id, expected_revision, reason, partition)
+        record_failed(host_id, session_id, subject_id, expected_revision, reason, partition, job)
         {:error, reason}
     end
   rescue
     exception ->
       subject_id = Source.subject_id!(host_id, session_id)
-      record_failed(host_id, session_id, subject_id, expected_revision, exception, partition)
+      record_failed(host_id, session_id, subject_id, expected_revision, exception, partition, job)
       reraise exception, __STACKTRACE__
   end
 
@@ -432,14 +434,22 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   def record_failed(host_id, session_id, subject_id, input_revision, reason) do
     case source_partition(host_id, session_id) do
       {:ok, partition} ->
-        record_failed(host_id, session_id, subject_id, input_revision, reason, partition)
+        record_failed(
+          host_id,
+          session_id,
+          subject_id,
+          input_revision,
+          reason,
+          partition,
+          %Oban.Job{}
+        )
 
       {:error, _reason} ->
         :ok
     end
   end
 
-  defp record_failed(host_id, session_id, subject_id, input_revision, reason, partition) do
+  defp record_failed(host_id, session_id, subject_id, input_revision, reason, partition, job) do
     error = if is_exception(reason), do: Exception.message(reason), else: inspect(reason)
 
     try do
@@ -449,7 +459,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
 
         case Source.input_revision(host_id, session_id) do
           {:ok, %{input_revision: ^input_revision}} ->
-            write_failed_state(subject_id, input_revision, error, partition)
+            write_failed_state(subject_id, input_revision, error, partition, job)
 
           _stale_or_unavailable ->
             :ok
@@ -462,7 +472,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     :ok
   end
 
-  defp write_failed_state(subject_id, input_revision, error, partition) do
+  defp write_failed_state(subject_id, input_revision, error, partition, job) do
     attrs = %{
       memory_space_id: partition.memory_space_id,
       host_id: partition[:host_id],
@@ -475,7 +485,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       processing_version: @processing_version,
       input_revision: input_revision,
       output_revision: nil,
-      status: "failed",
+      status: ProcessingState.failure_status(job),
       last_error: error,
       started_at: now(),
       completed_at: now()

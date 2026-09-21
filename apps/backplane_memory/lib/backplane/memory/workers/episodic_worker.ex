@@ -3,10 +3,12 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
   use Oban.Worker, queue: :memory, max_attempts: 3
 
+  import Ecto.Query
+
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Memories
   alias Backplane.Memory.PartitionIdentity
-  alias Backplane.Memory.Projections.ProjectedSession
+  alias Backplane.Memory.Projections.{ProcessingState, ProjectedSession, Source}
 
   @processing_version "episodic-v1"
 
@@ -19,10 +21,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end)
   end
 
-  defp do_perform(%Oban.Job{args: %{"summary_id" => summary_id} = args})
+  defp do_perform(%Oban.Job{args: %{"summary_id" => summary_id} = args} = job)
        when is_binary(summary_id) and map_size(args) == 1 do
     with {:ok, summary_id} <- Ecto.UUID.cast(summary_id) do
-      run_summary(repo().get(Summary, summary_id))
+      run_summary(repo().get(Summary, summary_id), job)
     else
       :error -> {:cancel, :invalid_arguments}
     end
@@ -34,20 +36,32 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
   defp do_perform(%Oban.Job{}), do: {:cancel, :invalid_arguments}
 
-  defp run_summary(nil), do: :ok
+  defp run_summary(nil, _job), do: :ok
 
-  defp run_summary(%Summary{} = summary) do
-    case projected_partition(summary) do
-      {:ok, partition} ->
-        case Backplane.Settings.get("memory.llm_model") do
-          nil ->
-            require Logger
-            Logger.debug("[memory] episodic worker: skipping, no llm_model configured")
-            :ok
+  defp run_summary(%Summary{} = summary, job) do
+    case claim_current_revision(summary) do
+      {:ok, {partition, state_attrs}} ->
+        try do
+          case Backplane.Settings.get("memory.llm_model") do
+            nil ->
+              require Logger
+              Logger.debug("[memory] episodic worker: skipping, no llm_model configured")
 
-          _model ->
-            llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
-            extract(summary, partition, llm_module)
+              persist_current_result(summary, partition, state_attrs, {:skip, :no_model}, job)
+
+            _model ->
+              llm_module =
+                Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
+
+              result = extract(summary, partition, llm_module)
+              persist_current_result(summary, partition, state_attrs, result, job)
+          end
+        rescue
+          exception ->
+            _ =
+              persist_current_result(summary, partition, state_attrs, {:error, exception}, job)
+
+            reraise exception, __STACKTRACE__
         end
 
       {:error, reason} ->
@@ -55,52 +69,172 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end
   end
 
-  defp extract(%Summary{} = summary, partition, llm_module) do
+  defp claim_current_revision(%Summary{} = summary) do
+    case repo().transaction(fn ->
+           Source.lock_streams(summary.host_id, summary.session_id)
+
+           with {:ok, partition} <- projected_partition(summary),
+                state_attrs = processing_attrs(summary, partition),
+                {:ok, _state} <-
+                  ProcessingState.transition(repo(), state_attrs, "running",
+                    authoritative_revision: true
+                  ) do
+             {:claimed, {partition, state_attrs}}
+           else
+             {:stale, _state} -> {:error, :stale_input_revision}
+             {:error, reason} -> {:error, reason}
+           end
+         end) do
+      {:ok, {:claimed, result}} -> {:ok, result}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp extract(%Summary{} = summary, _partition, llm_module) do
     case llm_module.extract_facts(summary.content) do
       {:ok, facts} when is_list(facts) ->
-        require Logger
+        {:ok, normalize_outputs(facts)}
 
-        errors =
-          facts
-          |> normalize_outputs()
-          |> Enum.with_index()
-          |> Enum.flat_map(fn {fact, ordinal} ->
-            case Memories.remember(fact,
-                   type: "semantic",
-                   memory_space_id: partition.memory_space_id,
-                   scope: partition.scope,
-                   namespace: partition.namespace,
-                   client_id: partition.client_id,
-                   source_client_id: partition[:source_client_id],
-                   agent_id: summary.agent_id || "consolidation",
-                   host_id: summary.host_id,
-                   session_id: summary.session_id,
-                   idempotency_scope: "memory-worker:episodic",
-                   idempotency_key: idempotency_key(summary, ordinal),
-                   evidence: [summary_evidence(summary)]
-                 ) do
-              {:ok, _} -> []
-              {:error, reason} -> [reason]
-            end
-          end)
-
-        case errors do
-          [] ->
-            :ok
-
-          [first | rest] ->
-            Logger.warning(
-              "[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert"
-            )
-
-            {:error, first}
-        end
-
-      {:skip, _} ->
-        :ok
+      {:skip, reason} ->
+        {:skip, reason}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp persist_current_result(summary, _partition, state_attrs, result, job) do
+    case repo().transaction(fn ->
+           Source.lock_streams(summary.host_id, summary.session_id)
+
+           with {:ok, partition} <- projected_partition(summary),
+                outcome <- persist_result(summary, partition, state_attrs, result, job) do
+             case outcome do
+               {:rollback_failure, reason} -> repo().rollback({:failure, reason})
+               {:rollback, reason} -> repo().rollback({:error, reason})
+               {:commit, result} -> result
+             end
+           else
+             {:error, reason} -> repo().rollback({:stale, reason})
+           end
+         end) do
+      {:ok, outcome} ->
+        outcome
+
+      {:error, {:stale, reason}} ->
+        {:discard, reason}
+
+      {:error, {:failure, reason}} ->
+        record_persistence_failure(summary, state_attrs, reason, job)
+
+      {:error, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp persist_result(summary, partition, state_attrs, {:ok, facts}, _job) do
+    case persist_facts(summary, partition, facts) do
+      :ok ->
+        case ProcessingState.transition(repo(), state_attrs, "complete") do
+          {:ok, _state} -> {:commit, :ok}
+          {:stale, _state} -> {:rollback, :stale_input_revision}
+          {:error, reason} -> {:rollback, reason}
+        end
+
+      {:error, reason} ->
+        {:rollback_failure, reason}
+    end
+  end
+
+  defp persist_result(_summary, _partition, state_attrs, {:skip, reason}, _job) do
+    case ProcessingState.transition(
+           repo(),
+           state_attrs,
+           ProcessingState.skipped_status(reason),
+           reason: reason
+         ) do
+      {:ok, _state} -> {:commit, :ok}
+      {:stale, _state} -> {:rollback, :stale_input_revision}
+      {:error, reason} -> {:rollback, reason}
+    end
+  end
+
+  defp persist_result(_summary, _partition, state_attrs, {:error, reason}, job) do
+    case ProcessingState.transition(
+           repo(),
+           state_attrs,
+           ProcessingState.failure_status(job),
+           reason: reason
+         ) do
+      {:ok, _state} -> {:commit, {:error, reason}}
+      {:stale, _state} -> {:rollback, :stale_input_revision}
+      {:error, transition_reason} -> {:rollback, transition_reason}
+    end
+  end
+
+  defp record_persistence_failure(summary, state_attrs, reason, job) do
+    case repo().transaction(fn ->
+           Source.lock_streams(summary.host_id, summary.session_id)
+
+           with {:ok, _partition} <- projected_partition(summary) do
+             case ProcessingState.transition(
+                    repo(),
+                    state_attrs,
+                    ProcessingState.failure_status(job),
+                    reason: reason
+                  ) do
+               {:ok, _state} -> {:error, reason}
+               {:stale, _state} -> repo().rollback({:stale, :stale_input_revision})
+               {:error, transition_reason} -> repo().rollback({:error, transition_reason})
+             end
+           else
+             {:error, stale_reason} -> repo().rollback({:stale, stale_reason})
+           end
+         end) do
+      {:ok, result} -> result
+      {:error, {:stale, stale_reason}} -> {:discard, stale_reason}
+      {:error, {:error, transition_reason}} -> {:error, transition_reason}
+      {:error, transaction_reason} -> {:error, transaction_reason}
+    end
+  end
+
+  defp persist_facts(summary, partition, facts) do
+    require Logger
+
+    errors =
+      facts
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {fact, ordinal} ->
+        case Memories.remember(fact,
+               type: "semantic",
+               memory_space_id: partition.memory_space_id,
+               scope: partition.scope,
+               namespace: partition.namespace,
+               client_id: partition.client_id,
+               source_client_id: partition[:source_client_id],
+               agent_id: summary.agent_id || "consolidation",
+               host_id: summary.host_id,
+               session_id: summary.session_id,
+               idempotency_scope: "memory-worker:episodic",
+               idempotency_key: idempotency_key(summary, ordinal),
+               evidence: [summary_evidence(summary)]
+             ) do
+          {:ok, _} -> []
+          {:error, reason} -> [reason]
+        end
+      end)
+
+    case errors do
+      [] ->
+        :ok
+
+      [first | rest] ->
+        Logger.warning("[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert")
+        {:error, first}
     end
   end
 
@@ -111,6 +245,22 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
     |> Enum.sort()
+  end
+
+  defp processing_attrs(summary, partition) do
+    %{
+      memory_space_id: partition.memory_space_id,
+      host_id: partition.host_id,
+      source_client_id: partition[:source_client_id],
+      scope: partition.scope,
+      namespace: partition.namespace,
+      projector: "episodic",
+      subject_type: "captured_session",
+      subject_id: summary.subject_id,
+      processing_version: @processing_version,
+      input_revision: summary.input_revision,
+      output_revision: summary.output_revision
+    }
   end
 
   defp idempotency_key(summary, ordinal) do
@@ -131,8 +281,15 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   end
 
   defp projected_partition(%Summary{subject_id: subject_id} = summary) do
-    case repo().get(ProjectedSession, subject_id) do
-      %ProjectedSession{} = session ->
+    query =
+      from(session in ProjectedSession,
+        where: session.subject_id == ^subject_id,
+        lock: "FOR UPDATE"
+      )
+
+    case repo().one(query) do
+      %ProjectedSession{input_revision: revision} = session
+      when revision == summary.input_revision ->
         partition =
           Map.take(Map.from_struct(session), [
             :memory_space_id,
@@ -144,6 +301,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
           ])
 
         resolve_partition(summary, partition)
+
+      %ProjectedSession{} ->
+        {:error, :stale_input_revision}
 
       nil ->
         record_partition_issue(summary, :incomplete_partition)

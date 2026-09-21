@@ -4,13 +4,29 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
+  alias Backplane.Memory.Projections.State
   alias Backplane.Memory.Workers.ProceduralWorker
   alias Backplane.MemorySpaces.BackfillIssue
 
   defmodule MockLLM do
     def extract_procedures(content) do
       send(self(), {:procedural_input, content})
-      {:ok, Process.get(:procedures, ["procedure"])}
+
+      case Process.get(:procedural_result, {:ok, Process.get(:procedures, ["procedure"])}) do
+        {:raise, message} -> raise message
+        result -> result
+      end
+    end
+  end
+
+  defmodule BlockingLLM do
+    def extract_procedures(_content) do
+      owner = :persistent_term.get({__MODULE__, :owner})
+      send(owner, {:procedural_generation_blocked, self()})
+
+      receive do
+        :release_procedural_generation -> {:ok, ["stale procedure"]}
+      end
     end
   end
 
@@ -26,6 +42,8 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
 
     on_exit(fn ->
+      Process.delete(:procedural_result)
+      :persistent_term.erase({BlockingLLM, :owner})
       restore_env(:llm_module, previous_llm)
       restore_env(:llm_client, previous_client)
       restore_setting("memory.llm_model", setting)
@@ -226,7 +244,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     end
   end
 
-  test "durably quarantines incomplete semantic generator inputs" do
+  test "database constraints reject incomplete semantic generator inputs" do
     [{:ok, memory} | _rest] =
       insert_partition("incomplete",
         namespace: "team:incomplete",
@@ -234,14 +252,119 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
         project: "project"
       )
 
-    repo().update_all(from(m in Memory, where: m.id == ^memory.id), set: [client_id: " "])
+    assert_raise Postgrex.Error, fn ->
+      repo().update_all(from(m in Memory, where: m.id == ^memory.id), set: [client_id: " "])
+    end
+  end
 
+  test "records retryable failure before dead-lettering the final attempt" do
+    [{:ok, memory} | _rest] =
+      insert_partition("dead-letter",
+        namespace: "team:dead-letter",
+        client_id: "client-dead-letter",
+        project: "project-dead-letter"
+      )
+
+    Process.put(:procedural_result, {:error, :llm_unavailable})
+
+    assert {:error, :llm_unavailable} =
+             ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 1, max_attempts: 2})
+
+    assert %State{status: "failed", last_error: "llm_unavailable"} =
+             repo().get_by!(State,
+               projector: "procedural",
+               memory_space_id: memory.memory_space_id,
+               host_id: memory.host_id
+             )
+
+    assert {:error, :llm_unavailable} =
+             ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 2, max_attempts: 2})
+
+    assert %State{status: "dead_letter", last_error: "llm_unavailable"} =
+             repo().get_by!(State,
+               projector: "procedural",
+               memory_space_id: memory.memory_space_id,
+               host_id: memory.host_id
+             )
+  end
+
+  test "records dead-letter before reraising an exception on the final attempt" do
+    [{:ok, memory} | _rest] =
+      insert_partition("exception",
+        namespace: "team:exception",
+        client_id: "client-exception",
+        project: "project-exception"
+      )
+
+    Process.put(:procedural_result, {:raise, "procedural exploded"})
+
+    assert_raise RuntimeError, "procedural exploded", fn ->
+      ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 2, max_attempts: 2})
+    end
+
+    assert %State{status: "dead_letter", last_error: "procedural exploded"} =
+             repo().get_by!(State,
+               projector: "procedural",
+               memory_space_id: memory.memory_space_id,
+               host_id: memory.host_id
+             )
+  end
+
+  test "a qualifying input committed during generation rejects all stale procedural writes" do
+    [{:ok, first_memory} | _rest] =
+      insert_partition("revision-race",
+        namespace: "team:revision-race",
+        client_id: "client-revision-race",
+        project: "project-revision-race"
+      )
+
+    :persistent_term.put({BlockingLLM, :owner}, self())
+    Application.put_env(:backplane_memory, :llm_module, BlockingLLM)
+
+    old_task = Task.async(fn -> ProceduralWorker.perform(%Oban.Job{args: %{}}) end)
+    Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), old_task.pid)
+    old_task_pid = old_task.pid
+    assert_receive {:procedural_generation_blocked, ^old_task_pid}, 5_000
+
+    assert {:ok, _new_input} =
+             Memories.remember(
+               "revision-race semantic R2",
+               canonical_memory_opts("revision-race-host",
+                 type: "semantic",
+                 scope: "shared-scope",
+                 namespace: "team:revision-race",
+                 client_id: "client-revision-race",
+                 metadata: %{"project" => "project-revision-race"},
+                 agent_id: "revision-race-agent",
+                 evidence: [
+                   %{
+                     source_session_id: "revision-race-source-r2",
+                     session_id: "revision-race-source-r2",
+                     agent_id: "source-agent",
+                     host_id: "revision-race-host",
+                     evidence_kind: "supports",
+                     support_score: 0.75
+                   }
+                 ]
+               )
+             )
+
+    Application.put_env(:backplane_memory, :llm_module, MockLLM)
     assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
 
-    assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
-             repo().get_by!(BackfillIssue, source_table: "bpm_memories", source_id: memory.id)
+    send(old_task.pid, :release_procedural_generation)
+    assert :ok = Task.await(old_task, 5_000)
 
-    refute_received {:procedural_input, _}
+    refute repo().exists?(from(memory in Memory, where: memory.content == "stale procedure"))
+
+    assert %State{status: "complete", input_revision: r2_revision} =
+             repo().get_by!(State,
+               projector: "procedural",
+               memory_space_id: first_memory.memory_space_id,
+               host_id: first_memory.host_id
+             )
+
+    refute is_nil(r2_revision)
   end
 
   defp insert_partition(prefix, opts) do

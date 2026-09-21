@@ -2,8 +2,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Profiles
   alias Backplane.Memory.Profiles.Profile
+  alias Backplane.Memory.Projections.State
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.ProfileBuildWorker
   alias Backplane.MemorySpaces.BackfillIssue
@@ -217,6 +219,116 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       assert is_map(profile.active_lessons)
       assert is_map(profile.recent_crystals)
       assert is_map(profile.recent_summaries)
+    end
+
+    test "input revision changes only when canonical profile sources change" do
+      project = "profile-source-revision-#{System.unique_integer([:positive])}"
+      insert_memory("first source", scope: project, metadata: %{"project" => project})
+
+      assert {:ok, :built} = ProfileBuildWorker.perform(job(project))
+      first = repo().get_by!(State, projector: "profile").input_revision
+
+      assert {:ok, :cached} = ProfileBuildWorker.perform(job(project))
+      assert repo().get_by!(State, projector: "profile").input_revision == first
+
+      insert_memory("second source", scope: project, metadata: %{"project" => project})
+      forced = update_in(job(project).args, &Map.put(&1, "force", true))
+
+      assert {:ok, :built} = ProfileBuildWorker.perform(forced)
+      refute repo().get_by!(State, projector: "profile").input_revision == first
+    end
+
+    test "a source committed during profile generation rejects the stale profile build" do
+      project = "profile-revision-race-#{System.unique_integer([:positive])}"
+      insert_memory("profile R1", scope: project, metadata: %{"project" => project})
+      parent = self()
+
+      old_task =
+        Task.async(fn ->
+          receive do
+            :start_profile_build -> :ok
+          end
+
+          Process.put({ProfileBuildWorker, :persistence_gate}, parent)
+          ProfileBuildWorker.perform(job(project))
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), old_task.pid)
+      send(old_task.pid, :start_profile_build)
+      old_task_pid = old_task.pid
+
+      assert_receive {:profile_ready_to_persist, ^old_task_pid}, 5_000
+
+      try do
+        assert %State{status: "running", input_revision: r1_revision} =
+                 repo().get_by!(State, projector: "profile")
+
+        insert_memory("profile R2", scope: project, metadata: %{"project" => project})
+        send(old_task.pid, :continue_profile_persistence)
+        assert {:discard, :stale} = Task.await(old_task, 5_000)
+        refute Profiles.get(project, partition(project))
+
+        assert {:ok, :built} = ProfileBuildWorker.perform(job(project))
+        profile = Profiles.get(project, partition(project))
+        assert profile.total_observations == 2
+
+        assert %State{status: "complete", input_revision: r2_revision} =
+                 repo().get_by!(State, projector: "profile")
+
+        refute r2_revision == r1_revision
+      after
+        if Process.alive?(old_task.pid), do: send(old_task.pid, :continue_profile_persistence)
+      end
+    end
+
+    test "input revision ignores lessons outside the exact profile scope" do
+      scope = "profile-scope-#{System.unique_integer([:positive])}"
+      project = "profile-project-#{System.unique_integer([:positive])}"
+      insert_memory("owned source", scope: scope, metadata: %{"project" => project})
+
+      assert {:ok, :built} = ProfileBuildWorker.perform(job(project, scope))
+      revision = repo().get_by!(State, projector: "profile").input_revision
+
+      foreign = insert_memory("foreign lesson", scope: project, metadata: %{"project" => project})
+
+      repo().insert!(%Lesson{
+        memory_id: foreign.id,
+        status: "active",
+        source_kind: "manual",
+        reinforcement_count: 0,
+        contradiction_count: 0,
+        decay_rate: 0.0
+      })
+
+      forced = update_in(job(project, scope).args, &Map.put(&1, "force", true))
+      assert {:ok, :built} = ProfileBuildWorker.perform(forced)
+      assert repo().get_by!(State, projector: "profile").input_revision == revision
+    end
+
+    test "records retryable failure before dead-lettering the final attempt" do
+      project = "profile-dead-letter-#{System.unique_integer([:positive])}"
+      insert_memory("source", scope: project, metadata: %{"project" => project})
+      constraint = "memory_profiles_test_reject_task15"
+
+      repo().query!(
+        "ALTER TABLE memory_profiles ADD CONSTRAINT #{constraint} CHECK (project <> '#{project}')"
+      )
+
+      try do
+        assert_raise Ecto.ConstraintError, fn ->
+          ProfileBuildWorker.perform(%{job(project) | attempt: 1, max_attempts: 3})
+        end
+
+        assert %State{status: "failed"} = repo().get_by!(State, projector: "profile")
+
+        assert_raise Ecto.ConstraintError, fn ->
+          ProfileBuildWorker.perform(%{job(project) | attempt: 3, max_attempts: 3})
+        end
+
+        assert %State{status: "dead_letter"} = repo().get_by!(State, projector: "profile")
+      after
+        repo().query!("ALTER TABLE memory_profiles DROP CONSTRAINT #{constraint}")
+      end
     end
 
     test "upserts on second build, replacing previous values" do

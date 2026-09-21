@@ -12,6 +12,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories
   alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Projections.ProcessingState
 
   @min_semantic_count 10
   @processing_version "procedural-v1"
@@ -23,32 +24,39 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   @impl Oban.Worker
   def perform(%Oban.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("procedural", job.args, fn ->
-      do_perform()
+      do_perform(job)
     end)
   end
 
-  defp do_perform do
+  defp do_perform(job) do
     quarantine_incomplete_inputs()
     llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
+    partitions = qualifying_partitions() |> Enum.sort()
 
     case Backplane.Settings.get("memory.llm_model") do
       nil ->
         require Logger
         Logger.debug("[memory] procedural worker: skipping, no llm_model configured")
+
+        Enum.each(partitions, fn partition ->
+          attrs = processing_attrs(partition, qualifying_inputs(partition))
+
+          _ = transition_current(partition, attrs, "skipped_no_model", reason: :no_model)
+        end)
+
         :ok
 
       _model ->
-        do_extract_procedural(llm_module)
+        do_extract_procedural(partitions, llm_module, job)
     end
   end
 
-  defp do_extract_procedural(llm_module) do
+  defp do_extract_procedural(partitions, llm_module, job) do
     require Logger
 
     errors =
-      qualifying_partitions()
-      |> Enum.sort()
-      |> Enum.flat_map(&process_partition(&1, llm_module))
+      partitions
+      |> Enum.flat_map(&process_partition(&1, llm_module, job))
 
     case errors do
       [] -> :ok
@@ -56,39 +64,62 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
     end
   end
 
-  defp process_partition(partition, llm_module) do
+  defp process_partition(partition, llm_module, job) do
     inputs = qualifying_inputs(partition)
+    state_attrs = processing_attrs(partition, inputs)
 
-    case inherited_evidence(inputs) do
-      {:ok, evidence} ->
-        extract_partition(partition, inputs, evidence, llm_module)
+    case transition_current(partition, state_attrs, "running") do
+      {:ok, _state} ->
+        process_current_partition(partition, inputs, state_attrs, llm_module, job)
+
+      {:stale, _state} ->
+        []
 
       {:error, reason} ->
         [reason]
     end
   end
 
-  defp extract_partition(partition, inputs, evidence, llm_module) do
+  defp process_current_partition(partition, inputs, state_attrs, llm_module, job) do
+    try do
+      with {:ok, evidence} <- inherited_evidence(inputs),
+           {:ok, outputs} <- generate_outputs(partition, inputs, llm_module),
+           {:ok, _result, _state} <-
+             persist_outputs(partition, state_attrs, outputs, evidence) do
+        []
+      else
+        {:stale, _state} ->
+          []
+
+        {:error, reason} ->
+          _ =
+            transition_current(
+              partition,
+              state_attrs,
+              ProcessingState.failure_status(job),
+              reason: reason
+            )
+
+          [reason]
+      end
+    rescue
+      exception ->
+        _ =
+          transition_current(
+            partition,
+            state_attrs,
+            ProcessingState.failure_status(job),
+            reason: exception
+          )
+
+        reraise exception, __STACKTRACE__
+    end
+  end
+
+  defp generate_outputs(partition, inputs, llm_module) do
     case llm_module.extract_procedures(Enum.map_join(inputs, "\n", & &1.content)) do
       {:ok, procedures} when is_list(procedures) ->
-        revision = input_revision(inputs)
-
-        procedures
-        |> normalize_outputs()
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {output, ordinal} ->
-          case persist_output(output, partition, revision, ordinal, evidence) do
-            {:ok, _} ->
-              []
-
-            {:error, reason} ->
-              Logger.warning("[memory] procedural worker: failed to insert",
-                failure: failure_category(reason)
-              )
-
-              [reason]
-          end
-        end)
+        {:ok, normalize_outputs(procedures)}
 
       {:error, reason} ->
         Logger.warning("[memory] procedural worker: LLM extract failed",
@@ -100,11 +131,38 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
           failure: failure_category(reason)
         )
 
-        [reason]
+        {:error, reason}
 
       _ ->
-        []
+        {:ok, []}
     end
+  end
+
+  defp persist_outputs(partition, state_attrs, outputs, evidence) do
+    revision = state_attrs.input_revision
+
+    ProcessingState.persist_current(
+      repo(),
+      state_attrs,
+      fn -> current_attrs(partition) end,
+      fn ->
+        outputs
+        |> Enum.with_index()
+        |> Enum.reduce_while({:ok, :persisted}, fn {output, ordinal}, _acc ->
+          case persist_output(output, partition, revision, ordinal, evidence) do
+            {:ok, _result} ->
+              {:cont, {:ok, :persisted}}
+
+            {:error, reason} ->
+              Logger.warning("[memory] procedural worker: failed to insert",
+                failure: failure_category(reason)
+              )
+
+              {:halt, {:error, reason}}
+          end
+        end)
+      end
+    )
   end
 
   defp persist_output({:procedure, procedure}, partition, revision, ordinal, evidence) do
@@ -338,6 +396,42 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
       memory.id <> ":" <> Base.encode16(memory.content_hash, case: :lower)
     end)
     |> sha256()
+  end
+
+  defp transition_current(partition, attrs, status, opts \\ []) do
+    ProcessingState.transition_current(
+      repo(),
+      attrs,
+      status,
+      fn -> current_attrs(partition) end,
+      opts
+    )
+  end
+
+  defp current_attrs(partition) do
+    # LLM generation stays outside this transaction. The short source fence prevents qualifying
+    # memories or evidence from changing between this authoritative re-read and output/state writes.
+    repo().query!("LOCK TABLE bpm_memories, bpm_memory_evidence IN SHARE MODE")
+    {:ok, processing_attrs(partition, qualifying_inputs(partition))}
+  end
+
+  defp processing_attrs(partition, inputs) do
+    {memory_space_id, scope, namespace, project, client_id, source_client_id, host_id} = partition
+
+    %{
+      memory_space_id: memory_space_id,
+      host_id: host_id,
+      source_client_id: empty_to_nil(source_client_id),
+      scope: scope,
+      namespace: namespace,
+      projector: "procedural",
+      subject_type: "memory_partition",
+      subject_id:
+        Enum.join([memory_space_id, host_id, client_id, scope, namespace, project], ":"),
+      processing_version: @processing_version,
+      input_revision: input_revision(inputs),
+      output_revision: nil
+    }
   end
 
   defp idempotency_key(partition, revision, ordinal) do

@@ -170,13 +170,16 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert [_first, _second, _third] = repaired_observations
 
-      assert [_, _, _, _, _, _] = repaired_states = states(repaired_subject)
+      assert [_, _, _, _, _, _, _] = repaired_states = states(repaired_subject)
 
       assert Enum.all?(repaired_states, fn
                %{projector: "crystal", status: "enqueued", attempt_count: 0} ->
                  true
 
                %{projector: "summary", status: "pending", attempt_count: 1} ->
+                 true
+
+               %{projector: "episodic", status: "skipped_no_model", last_error: "no_model"} ->
                  true
 
                %{projector: projector, status: "complete"}

@@ -5,7 +5,7 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
 
   alias Backplane.Memory.Crystals.Crystal
   alias Backplane.Memory.PartitionIdentity
-  alias Backplane.Memory.Projections.{Source, State}
+  alias Backplane.Memory.Projections.{ProcessingState, Source, State}
 
   @projector "crystal"
   @subject_type "captured_session"
@@ -131,7 +131,11 @@ defmodule Backplane.Memory.Crystals.ProjectionStore do
 
   def skipped(host_id, session_id, input_revision, classification) do
     update(host_id, session_id, input_revision, fn state ->
-      put_state(state, input_revision, "skipped", state.attempt_count,
+      put_state(
+        state,
+        input_revision,
+        ProcessingState.skipped_status(classification),
+        state.attempt_count,
         last_error: safe_error_class(classification),
         completed_at: now()
       )
