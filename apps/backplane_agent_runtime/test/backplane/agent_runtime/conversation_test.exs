@@ -1,6 +1,9 @@
+Code.require_file("../../fixtures/sigma_builtin_tool_schemas.exs", __DIR__)
+
 defmodule Backplane.AgentRuntime.ConversationTest do
   use ExUnit.Case, async: true
-  alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Error, ToolRegistry}
+  alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Error, InputSchema, ToolRegistry}
+  alias Backplane.AgentRuntime.SigmaBuiltinToolSchemas, as: SigmaSchemas
 
   defmodule Provider do
     def stream(request, context) do
@@ -143,6 +146,17 @@ defmodule Backplane.AgentRuntime.ConversationTest do
       done("reading")
     ]
 
+  defp todo_registry(schema) do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "todo",
+      tool_revision: 1,
+      schema: schema,
+      safety: %{read_only: false, retry_safe: false, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
   test "incremental multi-step turn is persisted and settled once" do
     {pid, store} = start()
     assert {:ok, _} = Conversation.prompt(pid, "hello")
@@ -180,6 +194,91 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     {:ok, %{run: run}} = EphemeralStore.load(store, "test")
     assert run.state == :completed
     assert run.context.conversation.messages == Conversation.status(pid).messages
+  end
+
+  test "Sigma Todo enum schema preflights, executes, and continues the provider" do
+    schema = SigmaSchemas.todo()
+
+    assert {:error, %Error{class: :validation, details: %{property: "action"}}} =
+             InputSchema.validate(schema, %{})
+
+    assert {:ok, registry} = todo_registry(schema)
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["todo"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "add the release regression")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{
+            id: "todo-add",
+            name: "todo",
+            arguments: %{
+              "action" => "add",
+              "content" => "release regression",
+              "status" => "pending"
+            }
+          }
+        },
+        done("adding")
+      ]
+    })
+
+    assert_receive {:tool, operation, tool}
+    assert operation.tool_call_id == "todo-add"
+
+    assert operation.arguments == %{
+             "action" => "add",
+             "content" => "release regression",
+             "status" => "pending"
+           }
+
+    send(tool, {:result, {:ok, %{text: "added"}}})
+    assert_receive {:provider, %{messages: messages}, next}
+    assert List.last(messages).role == :tool
+    assert List.last(messages).result.is_error == false
+    send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "invalid Sigma Todo enum calls never invoke the backend and continue with an error" do
+    assert {:ok, registry} = todo_registry(SigmaSchemas.todo())
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["todo"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "do an unsupported todo action")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{id: "todo-invalid", name: "todo", arguments: %{"action" => "archive"}}
+        },
+        done("trying")
+      ]
+    })
+
+    refute_receive {:tool, _, _}, 50
+    assert_receive {:provider, %{messages: messages}, next}
+    assert List.last(messages).role == :tool
+    assert List.last(messages).result.is_error == true
+    assert List.last(messages).result.error.class == :validation
+    send(next, {:events, [done("recovered")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 
   test "steering follows tool batch, follow-up follows turn completion" do

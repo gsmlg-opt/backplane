@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Support typed JSON Schema `enum` constraints, including Sigma's todo action
+  and status properties. Preserve type/constraint validation and fail-closed
+  unsupported keywords; cover registration, provider dispatch, and rejected
+  enum calls with regressions for issue #36.
+
 ## 1.6.0
 
 - Add a single-owner embedded conversation driver with lazy provider streams,

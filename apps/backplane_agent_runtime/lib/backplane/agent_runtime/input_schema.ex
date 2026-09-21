@@ -17,6 +17,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     :additionalProperties,
     :additional_properties,
     :description,
+    :enum,
     :minimum,
     :items,
     :oneOf
@@ -43,7 +44,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_schema(schema, position) when is_map(schema) do
-    with :ok <- supported_keys(schema, @schema_keys) do
+    with :ok <- supported_keys(schema, @schema_keys),
+         :ok <- validate_enum_schema(schema) do
       case fetch_value(schema, :oneOf) do
         {:ok, branches} -> validate_one_of_schema(schema, branches)
         :error -> validate_typed_schema(schema, position)
@@ -52,6 +54,29 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_schema(_schema, _position), do: validation("property schema must be a map")
+
+  defp validate_enum_schema(schema) do
+    case fetch_value(schema, :enum) do
+      :error ->
+        :ok
+
+      {:ok, choices} ->
+        if is_list(choices) and Enum.all?(choices, &json_value?/1),
+          do: :ok,
+          else: validation("schema enum must be a list of JSON values")
+    end
+  end
+
+  defp json_value?(value)
+       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
+       do: true
+
+  defp json_value?(value) when is_list(value), do: Enum.all?(value, &json_value?/1)
+
+  defp json_value?(value) when is_map(value) and not is_struct(value),
+    do: Enum.all?(value, fn {key, item} -> is_binary(key) and json_value?(item) end)
+
+  defp json_value?(_value), do: false
 
   defp validate_one_of_schema(schema, branches) do
     sibling_keys =
@@ -179,6 +204,20 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_value(value, schema, path) do
+    with :ok <- validate_shape(value, schema, path) do
+      case fetch_value(schema, :enum) do
+        :error ->
+          :ok
+
+        {:ok, choices} ->
+          if Enum.any?(choices, &(&1 == value)),
+            do: :ok,
+            else: validation("tool argument is not an allowed enum value", %{path: path})
+      end
+    end
+  end
+
+  defp validate_shape(value, schema, path) do
     case fetch_value(schema, :oneOf) do
       {:ok, branches} -> validate_one_of_value(value, branches, path)
       :error -> validate_typed_value(value, schema, path)

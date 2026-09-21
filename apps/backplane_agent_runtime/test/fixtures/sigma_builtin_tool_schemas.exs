@@ -177,6 +177,36 @@ defmodule Backplane.AgentRuntime.SigmaBuiltinToolSchemas do
     }
   end
 
+  # Copied from Sigma 5114a42 (apps/sigma_tools/lib/sigma_tools/todo.ex).
+  # Todo is a session-scoped built-in tool with two independent enum
+  # constraints, so it proves enum preflight rather than only registration.
+  def todo do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "action" => %{
+          "type" => "string",
+          "enum" => ["add", "update", "complete", "remove", "list", "clear"],
+          "description" => "Todo action to perform"
+        },
+        "id" => %{
+          "type" => "string",
+          "description" => "Todo id (required for update, complete, remove)"
+        },
+        "content" => %{
+          "type" => "string",
+          "description" => "Todo text (required for add; optional for update)"
+        },
+        "status" => %{
+          "type" => "string",
+          "enum" => ["pending", "in_progress", "completed"],
+          "description" => "Todo status (optional for add/update; complete forces completed)"
+        }
+      },
+      "required" => ["action"]
+    }
+  end
+
   defp object(properties, required),
     do: %{"type" => "object", "properties" => properties, "required" => required}
 

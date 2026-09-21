@@ -14,6 +14,7 @@ host-authored schemas. The supported keywords are:
 | `required` | A list of string property names |
 | `additionalProperties` | Boolean object policy; `additional_properties` is also accepted for Elixir callers |
 | `description` | Annotation only |
+| `enum` | A list of JSON values allowed by a typed schema; the value must equal one choice |
 | `minimum` | Inclusive numeric lower bound on `integer` and `number` values |
 | `items` | One recursively validated schema for every array item |
 | `oneOf` | A non-empty list of schemas; the value must match exactly one branch |
@@ -22,6 +23,17 @@ A `oneOf` schema may contain only `oneOf` and `description`. Other sibling
 semantics are outside this subset. Object constraints apply at every nesting
 level, so nested `required` and `additionalProperties` rules are enforced.
 
+`enum` narrows the existing type and other constraints; it does not replace
+them. It works on object roots, typed properties, array items, and inside
+`oneOf` branches. Strings are case-sensitive, numbers compare by numeric value
+(for example, `1` equals `1.0`), and arrays/objects compare by their contents.
+Boolean values are distinct from numbers. Enum choices must be JSON values,
+including string-keyed objects; arbitrary Elixir atoms, structs, and tuples are
+not accepted as choices. An empty enum rejects every supplied value; repeated
+choices do not change membership. These membership rules follow the
+[JSON Schema enum contract](https://json-schema.org/draft/2020-12/json-schema-validation#name-enum).
+Enum-only property schemas and `enum` beside `oneOf` remain outside this subset.
+
 The validator first checks the complete schema, including absent properties
 and every composition branch. An unknown keyword or unsupported type returns
 an `:unsupported_capability` error. A malformed supported schema or arguments
@@ -29,7 +41,7 @@ that do not satisfy a supported constraint return a `:validation` error. The
 execution gateway performs this check before authorization, approval,
 budget reservation, durable intent commit, or backend invocation.
 
-Keywords outside the table are unsupported. This includes `$ref`, `enum`,
+Keywords outside the table are unsupported. This includes `$ref`,
 `const`, `anyOf`, `allOf`, `not`, `pattern`, string lengths, array lengths,
 tuple-style `items`, `maximum`, and exclusive numeric bounds. Hosts must not
 strip these constraints. They should surface the runtime error or use a
@@ -38,10 +50,12 @@ schema.
 
 ## Sigma and MCP boundary
 
-The current Sigma built-in schemas at
-`143c8db27f5f3d32efc5dafffb2755dba1daa23b` fit this subset. The regression
-fixtures cover all nine built-in tools and retain the `minimum`, nested
-`items`, nested object, and `oneOf` forms used by those tools.
+The original nine Sigma coding-tool fixtures come from
+`143c8db27f5f3d32efc5dafffb2755dba1daa23b` and retain `minimum`, nested
+`items`, nested object, and `oneOf` constraints. The todo-tool fixture comes from
+`5114a42efe449ca2a5b91aa8e40df8aba27c04e4` and retains both the `action` and
+`status` enums. The optional read-only source probe checks these ten actual
+schema functions and drives a todo call through the adapted provider stream.
 
 Sigma can receive arbitrary `inputSchema` maps from MCP `tools/list`; MCP does
 not restrict those maps to this package's subset. A Sigma adapter may register

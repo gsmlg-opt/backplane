@@ -3,7 +3,24 @@ defmodule Sigma.Coding.Tool do
   @callback name() :: String.t()
   @callback description() :: String.t()
   @callback schema() :: map()
+  @callback metadata() :: map()
   @callback execute(String.t(), map(), keyword()) :: term()
+  @optional_callbacks metadata: 0
+end
+
+defmodule Sigma.Tools.Store do
+  @moduledoc false
+
+  # Todo is loaded for its schema. Executing its session backend is outside this probe.
+  def from_opts(opts), do: compile_only(opts)
+  def get_todo_state(store), do: compile_only(store)
+  def put_todo_state(_store, _state), do: compile_only(:ok)
+
+  defp compile_only(value) do
+    if System.get_env("SIGMA_SOURCE_PROBE_EXECUTE") == "true",
+      do: value,
+      else: raise("Sigma Todo backend must not execute in the schema probe")
+  end
 end
 
 defmodule Sigma.Coding.Utils.PathUtils do
@@ -35,7 +52,7 @@ defmodule SigmaSource do
   Read-only consumer probe for Sigma provider normalization and built-in schemas.
 
   It loads Sigma's real provider facade, provider event structs, and built-in
-  tool modules from `SIGMA_SOURCE`. The local `Sigma.Coding.Tool`, path, and Req
+  tool modules from `SIGMA_SOURCE`. The local `Sigma.Coding.Tool`, Store, path, and Req
   stubs satisfy compile-time references only; no Sigma tool implementation is
   executed. The probe therefore demonstrates provider adaptation, complete
   runtime turn execution, and exact schema-function compatibility, not Sigma
@@ -61,9 +78,13 @@ defmodule SigmaSource do
           {:thinking_delta, 0, "inspect", %{}},
           {:text_delta, 0, "reading", %{}},
           {:toolcall_start, 1, %{}},
-          {:toolcall_delta, 1, ~s({"path":"README.md"}), %{}},
-          {:toolcall_end, 1, %{id: "call_1", name: "read", arguments: %{"path" => "README.md"}},
-           %{}},
+          {:toolcall_delta, 1, ~s({"action":"add","content":"runtime probe"}), %{}},
+          {:toolcall_end, 1,
+           %{
+             id: "call_1",
+             name: "todo",
+             arguments: %{"action" => "add", "content" => "runtime probe", "status" => "pending"}
+           }, %{}},
           {:done, :tool_use,
            %{role: :assistant, content: "reading", usage: %{input: 1, output: 1}}}
         ]
@@ -86,7 +107,7 @@ defmodule SigmaSource do
   end
 
   defmodule ToolBackend do
-    def execute(operation), do: {:ok, %{path: operation.arguments["path"], text: "contents"}}
+    def execute(_operation), do: {:ok, %{text: "contents"}}
   end
 
   def verify! do
@@ -117,6 +138,10 @@ defmodule SigmaSource do
         Path.join([sigma, "apps/sigma_coding/lib/sigma_coding/tools", "#{tool}.ex"])
       )
     end
+
+    for file <- ~w(result todo) do
+      Code.require_file(Path.join([sigma, "apps/sigma_tools/lib/sigma_tools", "#{file}.ex"]))
+    end
   end
 
   defp verify_conversation! do
@@ -137,6 +162,16 @@ defmodule SigmaSource do
         backend_context: %{}
       })
 
+    {:ok, registry} =
+      ToolRegistry.register(registry, %{
+        tool_name: "todo",
+        tool_revision: 1,
+        schema: apply(Sigma.Tools.Todo, :schema, []),
+        safety: %{read_only: false, retry_safe: false, parallel_safe: false},
+        backend: ToolBackend,
+        backend_context: %{}
+      })
+
     {:ok, conversation} =
       Conversation.start_link(
         run_id: "sigma-source",
@@ -149,7 +184,7 @@ defmodule SigmaSource do
         authority: %{
           caller: "sigma-source",
           run_id: "sigma-source",
-          grants: ["read"],
+          grants: ["read", "todo"],
           tool_revision: 1
         },
         work: 10,
@@ -167,7 +202,10 @@ defmodule SigmaSource do
       :terminal = status.phase
       3 = status.run.execution_budget.used
       2 = Enum.count(status.messages, &(&1[:role] == :assistant))
-      true = Enum.any?(status.messages, &(&1[:role] == :tool))
+
+      %{role: :tool, tool_call_id: "call_1", name: "todo", result: %{is_error: false}} =
+        Enum.find(status.messages, &(&1[:role] == :tool))
+
       "finished" = List.last(status.messages).content
     after
       if Process.alive?(conversation), do: GenServer.stop(conversation)
@@ -187,6 +225,11 @@ defmodule SigmaSource do
   end
 
   defp verify_schemas! do
+    todo_schema = apply(Sigma.Tools.Todo, :schema, [])
+
+    {:error, %Backplane.AgentRuntime.Error{class: :validation, details: %{property: "action"}}} =
+      InputSchema.validate(todo_schema, %{})
+
     fixtures = [
       {Sigma.Coding.Tools.Read, %{"path" => "README.md", "offset" => 1}},
       {Sigma.Coding.Tools.Bash, %{"command" => "mix test"}},
@@ -201,11 +244,24 @@ defmodule SigmaSource do
          "question" => "Continue?",
          "options" => ["Yes", %{"label" => "No", "value" => "no"}],
          "timeout_ms" => 1_000
-       }}
+       }},
+      {Sigma.Tools.Todo,
+       %{"action" => "add", "content" => "runtime probe", "status" => "in_progress"}}
     ]
 
     Enum.each(fixtures, fn {tool, arguments} ->
       {:ok, ^arguments} = InputSchema.validate(tool.schema(), arguments)
     end)
+
+    assert_enum_rejection(todo_schema, %{"action" => "archive"})
+    assert_enum_rejection(todo_schema, %{"action" => "add", "status" => "paused"})
+  end
+
+  defp assert_enum_rejection(schema, arguments) do
+    case InputSchema.validate(schema, arguments) do
+      {:error, %Backplane.AgentRuntime.Error{class: :validation}} -> :ok
+      {:ok, _} -> raise "Sigma Todo enum accepted an invalid argument"
+      {:error, error} -> raise "Sigma Todo enum returned #{inspect(error)} instead of validation"
+    end
   end
 end
