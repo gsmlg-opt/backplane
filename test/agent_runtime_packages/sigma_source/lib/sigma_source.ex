@@ -11,7 +11,7 @@ end
 defmodule Sigma.Tools.Store do
   @moduledoc false
 
-  # Todo is loaded for its schema. Executing its session backend is outside this probe.
+  # The list-tool module is loaded for its schema; its session backend is outside this probe.
   def from_opts(opts), do: compile_only(opts)
   def get_todo_state(store), do: compile_only(store)
   def put_todo_state(_store, _state), do: compile_only(:ok)

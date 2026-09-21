@@ -178,7 +178,7 @@ defmodule Backplane.AgentRuntime.SigmaBuiltinToolSchemas do
   end
 
   # Copied from Sigma 5114a42 (apps/sigma_tools/lib/sigma_tools/todo.ex).
-  # Todo is a session-scoped built-in tool with two independent enum
+  # This session-scoped list tool has two independent enum
   # constraints, so it proves enum preflight rather than only registration.
   def todo do
     %{
