@@ -4,7 +4,7 @@ defmodule BackplaneAdmin.MixProject do
   def project do
     [
       app: :backplane_admin,
-      version: "1.6.0",
+      version: "1.7.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",

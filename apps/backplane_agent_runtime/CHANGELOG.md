@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0
 
 - Support typed JSON Schema `enum` constraints, including Sigma's todo action
   and status properties. Preserve type/constraint validation and fail-closed
