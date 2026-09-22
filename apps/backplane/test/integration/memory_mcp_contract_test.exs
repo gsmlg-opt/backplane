@@ -5,6 +5,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
   alias Backplane.Memory.Facets.Facet
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
+  alias Backplane.MemorySpaces
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Repo
   alias Backplane.Skills.Hosts
@@ -45,7 +46,9 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
       end)
     end)
 
-    %{auth_token: auth_token, host: host}
+    {:ok, partition} = MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private")
+
+    %{auth_token: auth_token, host: host, partition: partition}
   end
 
   test "tools/list exposes the authenticated core catalog without caller ownership arguments", %{
@@ -91,7 +94,8 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
   end
 
   test "memory::apply is hidden from read-only clients and callable by writers", %{
-    host: host
+    host: host,
+    partition: partition
   } do
     assert {:ok, memory} =
              Memories.remember("apply transport procedure",
@@ -99,6 +103,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
                scope: host.memory_scope,
                agent_id: "contract-agent",
                host_id: host.id,
+               memory_space_id: partition.memory_space_id,
                client_id: "host:#{host.id}",
                namespace: "private"
              )
@@ -412,18 +417,25 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
     assert partition_id == "host:#{host.id}"
   end
 
-  test "memory.read list is confined to the authenticated host partition", %{host: host} do
+  test "memory.read list is confined to the authenticated host partition", %{
+    host: host,
+    partition: partition
+  } do
     {:ok, other_host, _token, _plaintext} =
       Hosts.create_agent_with_token(%{
         "name" => "memory-list-decoy-#{System.unique_integer([:positive])}",
         "memory_scope" => "global"
       })
 
+    {:ok, other_partition} =
+      MemorySpaces.resolve_host_partition(other_host.id, other_host.memory_scope, "private")
+
     assert {:ok, own} =
              Memories.remember("own partition fact",
                scope: "global",
                agent_id: "agent",
                host_id: host.id,
+               memory_space_id: partition.memory_space_id,
                client_id: "host:#{host.id}",
                namespace: "private"
              )
@@ -433,6 +445,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
                scope: "global",
                agent_id: "agent",
                host_id: other_host.id,
+               memory_space_id: other_partition.memory_space_id,
                client_id: "host:#{other_host.id}",
                namespace: "private"
              )
