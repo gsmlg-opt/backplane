@@ -221,6 +221,104 @@ defmodule Backplane.Memory.ReadinessTest do
     end
   end
 
+  test "coalesced repair jobs require a frontier and a captured source in its entitled session" do
+    repo().query!("DELETE FROM oban_jobs WHERE worker LIKE '%Backplane.Memory.%'")
+    partition = empty_partition!()
+    host_id = partition_host!(partition)
+    session_id = "readiness-#{Ecto.UUID.generate()}"
+    captured_source!(partition, session_id)
+    worker = "Backplane.Memory.Workers.ProjectionRepairWorker"
+
+    for spelling <- [worker, "Elixir." <> worker] do
+      job =
+        %{"host_id" => host_id, "session_id" => session_id}
+        |> Oban.Job.new(worker: spelling)
+        |> repo().insert!()
+
+      repo().query!("UPDATE oban_jobs SET worker=$2 WHERE id=$1", [job.id, spelling])
+      refute clear?(Readiness.job_inventory_sql()), "orphan frontier: #{spelling}"
+
+      repair_frontier!(host_id, session_id)
+      assert clear?(Readiness.job_inventory_sql()), "valid frontier: #{spelling}"
+
+      repo().query!(
+        "UPDATE oban_jobs SET args=args || jsonb_build_object('event_id',$2::text) WHERE id=$1",
+        [job.id, Ecto.UUID.generate()]
+      )
+
+      assert clear?(Readiness.job_inventory_sql()), "converted legacy job: #{spelling}"
+
+      repo().query!(
+        "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text) WHERE id=$1",
+        [job.id, host_id]
+      )
+
+      refute clear?(Readiness.job_inventory_sql()), "incomplete session identity: #{spelling}"
+
+      for {wrong_host, wrong_session} <- [
+            {host_id, "wrong-session-#{Ecto.UUID.generate()}"},
+            {Ecto.UUID.generate(), session_id}
+          ] do
+        repair_frontier!(wrong_host, wrong_session)
+
+        repo().query!(
+          "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
+          [job.id, wrong_host, wrong_session]
+        )
+
+        refute clear?(Readiness.job_inventory_sql()),
+               "frontier without exact captured source: #{wrong_host}/#{wrong_session}"
+      end
+
+      repo().query!(
+        "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
+        [job.id, host_id, session_id]
+      )
+
+      repo().query!(
+        "UPDATE bpm_memory_space_entitlements SET status='revoked' WHERE memory_space_id=$1",
+        [Ecto.UUID.dump!(partition.memory_space_id)]
+      )
+
+      refute clear?(Readiness.job_inventory_sql()), "revoked entitlement: #{spelling}"
+
+      repo().query!(
+        "UPDATE bpm_memory_space_entitlements SET status='active' WHERE memory_space_id=$1",
+        [Ecto.UUID.dump!(partition.memory_space_id)]
+      )
+
+      repo().query!("UPDATE oban_jobs SET state='completed' WHERE id=$1", [job.id])
+
+      repo().query!(
+        "DELETE FROM bpm_projection_repair_frontiers WHERE host_id=$1 AND session_id=$2",
+        [host_id, session_id]
+      )
+    end
+  end
+
+  test "legacy repair event jobs remain valid for an entitled captured event" do
+    repo().query!("DELETE FROM oban_jobs WHERE worker LIKE '%Backplane.Memory.%'")
+    partition = empty_partition!()
+    event_id = captured_source!(partition, "legacy-#{Ecto.UUID.generate()}")
+
+    job =
+      %{"event_id" => event_id}
+      |> Oban.Job.new(worker: "Backplane.Memory.Workers.ProjectionRepairWorker")
+      |> repo().insert!()
+
+    assert clear?(Readiness.job_inventory_sql())
+
+    repo().query!(
+      "UPDATE oban_jobs SET args=jsonb_build_object('event_id',$2::text) WHERE id=$1",
+      [
+        job.id,
+        Ecto.UUID.generate()
+      ]
+    )
+
+    refute clear?(Readiness.job_inventory_sql())
+  end
+
   test "a host without its private mapping fails closed" do
     id = Ecto.UUID.generate()
 
@@ -429,6 +527,68 @@ defmodule Backplane.Memory.ReadinessTest do
       end)
 
     snapshot
+  end
+
+  defp captured_source!(partition, session_id) do
+    stream_id = "readiness-stream-#{Ecto.UUID.generate()}"
+    event_id = Ecto.UUID.generate()
+    host_id = partition_host!(partition)
+
+    repo().query!(
+      """
+      INSERT INTO bpm_streams
+        (stream_id,host_id,session_id,memory_space_id,scope,namespace,inserted_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,now(),now())
+      """,
+      [
+        stream_id,
+        host_id,
+        session_id,
+        Ecto.UUID.dump!(partition.memory_space_id),
+        partition.scope,
+        partition.namespace
+      ]
+    )
+
+    repo().query!(
+      """
+      INSERT INTO bpm_events
+        (id,stream_id,sequence,host_id,session_id,memory_space_id,scope,namespace,
+         schema_version,event_type,occurred_at,source_sequence,payload_hash)
+      VALUES ($1,$2,1,$3,$4,$5,$6,$7,1,'agent.session.started',now(),1,'readiness')
+      """,
+      [
+        Ecto.UUID.dump!(event_id),
+        stream_id,
+        host_id,
+        session_id,
+        Ecto.UUID.dump!(partition.memory_space_id),
+        partition.scope,
+        partition.namespace
+      ]
+    )
+
+    event_id
+  end
+
+  defp partition_host!(partition) do
+    [[host_id]] =
+      repo().query!(
+        "SELECT host_id::text FROM bpm_memory_space_entitlements WHERE memory_space_id=$1 AND status='active' LIMIT 1",
+        [Ecto.UUID.dump!(partition.memory_space_id)]
+      ).rows
+
+    host_id
+  end
+
+  defp repair_frontier!(host_id, session_id) do
+    repo().query!(
+      """
+      INSERT INTO bpm_projection_repair_frontiers (host_id,session_id,inserted_at,updated_at)
+      VALUES ($1,$2,now(),now()) ON CONFLICT DO NOTHING
+      """,
+      [host_id, session_id]
+    )
   end
 
   defp memory!(label) do

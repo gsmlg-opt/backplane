@@ -353,10 +353,35 @@ defmodule Backplane.Memory.Readiness do
               LEFT JOIN bpm_memories owner ON owner.id::text=target.id
               WHERE owner.id IS NULL OR NOT #{partition_match("owner", "owner")}
             )
-          WHEN 'Elixir.Backplane.Memory.Workers.ProjectionRepairWorker' THEN EXISTS (
-            SELECT 1 FROM bpm_events owner WHERE owner.id::text=job.args->>'event_id'
-              AND #{partition_match("owner", "owner")}
-          )
+          WHEN 'Elixir.Backplane.Memory.Workers.ProjectionRepairWorker' THEN
+            CASE WHEN job.args ? 'host_id' OR job.args ? 'session_id' THEN EXISTS (
+              SELECT 1 FROM bpm_projection_repair_frontiers frontier
+              JOIN bpm_events source
+                ON source.host_id=frontier.host_id
+               AND source.session_id=frontier.session_id
+               AND source.schema_version IS NOT NULL
+              JOIN bpm_memory_space_entitlements entitlement
+                ON entitlement.memory_space_id=source.memory_space_id
+               AND entitlement.host_id::text=source.host_id
+               AND entitlement.scope=source.scope
+               AND entitlement.namespace=source.namespace
+               AND entitlement.status='active'
+              JOIN bpm_memory_spaces space
+                ON space.id=entitlement.memory_space_id AND space.status='active'
+              JOIN bpm_memory_space_legacy_aliases alias_row
+                ON alias_row.memory_space_id=space.id
+               AND alias_row.alias_type='host'
+               AND alias_row.alias_value='host:' || source.host_id
+              WHERE jsonb_typeof(job.args->'host_id')='string'
+                AND jsonb_typeof(job.args->'session_id')='string'
+                AND nullif(btrim(job.args->>'host_id'),'') IS NOT NULL
+                AND nullif(btrim(job.args->>'session_id'),'') IS NOT NULL
+                AND frontier.host_id=job.args->>'host_id'
+                AND frontier.session_id=job.args->>'session_id'
+            ) ELSE EXISTS (
+              SELECT 1 FROM bpm_events owner WHERE owner.id::text=job.args->>'event_id'
+                AND #{partition_match("owner", "owner")}
+            ) END
           WHEN 'Elixir.Backplane.Memory.Workers.LessonCandidateWorker' THEN EXISTS (
             SELECT 1 FROM bpm_events owner WHERE owner.id::text=job.args->>'event_id'
               AND #{partition_match("owner", "owner")}
