@@ -199,17 +199,18 @@ defmodule Backplane.LLM.LogQuery do
       select:
         {l.client_id, l.requested_model, count(l.id),
          sum(fragment("COALESCE(?, 0) + COALESCE(?, 0)", l.input_tokens, l.cached_tokens)),
-         sum(l.output_tokens)}
+         sum(l.cached_tokens), sum(l.output_tokens)}
     )
     |> Repo.all()
     |> Enum.group_by(&elem(&1, 0))
     |> Map.new(fn {client_id, rows} ->
       models =
-        Enum.map(rows, fn {_id, model, requests, input_tokens, output_tokens} ->
+        Enum.map(rows, fn {_id, model, requests, input_tokens, cached_tokens, output_tokens} ->
           %{
             model: model || "Unknown",
             requests: requests,
             input_tokens: input_tokens || 0,
+            cached_tokens: cached_tokens || 0,
             output_tokens: output_tokens || 0
           }
         end)
