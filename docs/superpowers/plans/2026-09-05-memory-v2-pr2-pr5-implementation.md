@@ -196,6 +196,27 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   `apps/backplane_memory/test/backplane/memory/`). This approval covers test
   fixtures and expectations only; it does not expand production or migration
   file scope. The isolated full memory suite had 67 failures in these files.
+- Task 20 partial verification on 2026-09-22: the 15 completed fixture files
+  were committed as `c605304b` after specification and quality approval;
+  175 focused tests passed with warnings-as-errors. The isolated full Memory
+  suite then reached 1,227 tests with exactly three failures: the 4,000-edge
+  action-graph fixture times out under the O(n²) canonical child trigger, and
+  two Service tests expose accepted-looking profile/consolidate responses
+  without an enqueued job. The remaining `crystal_action_chain_test.exs` and
+  `service_test.exs` edits are preserved uncommitted. Full host and API suites
+  passed 508/508 and 253/253. Formatting, warnings-as-errors compilation,
+  strict Credo (1,428 files, zero issues), root CI-workflow 4/4, and root
+  release-config 10/10 passed. An extracted local production release applied
+  105 migrations on an isolated database; its second pass was a no-op and the
+  head was `20260905000010` with required tables present. Dialyzer remains red
+  on `graph/bfs.ex` and `slots.ex`; the reviewed in-scope cleanup was committed
+  as `3e9b4a80`, then its Slots portion was restored by `49440836` because a
+  new warnings-as-errors compiler diagnostic in legacy `slots/reflect.ex`
+  requires a separate scope decision. Exact scope requests for the Service
+  product fix, forward-only action-edge trigger migration and release head,
+  BFS/ignore-file cleanup, and legacy Reflect cleanup remain pending. Do not
+  run the full umbrella suite or merge while the scoped memory and Dialyzer
+  gates are red.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
