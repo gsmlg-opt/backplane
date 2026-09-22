@@ -7,7 +7,8 @@
 > [host-memory-v2-protocol.md](host-memory-v2-protocol.md) and the
 > [edge runbook](../operations/host-memory-edge-runbook.md). Server migration
 > `20260905000010` includes edge-eligible host episodic memories and immutable
-> command receipts; host command-store V3 stores positive canonical revisions.
+> command receipts; `20260905000011` optimizes the action-edge partition guard;
+> host command-store V3 stores positive canonical revisions.
 > The original local-first host authority is superseded. Production plaintext
 > edge persistence remains disabled pending
 > [concord#91](https://github.com/gsmlg-dev/concord/issues/91).

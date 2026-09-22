@@ -229,7 +229,9 @@ The older [`host-agent-memory-design-final.md`](../host-agent-memory-design-fina
 remains useful for V1 command and local device features but its local-first
 memory authority has been superseded. Server migrations through
 `20260905000010` add the revisioned feed and eligible host-origin episodic
-records; host command-store V3 preserves positive canonical revisions.
+records; `20260905000011` optimizes the action-edge partition guard without
+changing its canonical checks. Host command-store V3 preserves positive
+canonical revisions.
 
 [`docs/memory-design.md`](../memory-design.md) remains useful context for the V1
 schema, retrieval, embedding, consolidation, and host-agent goals that the

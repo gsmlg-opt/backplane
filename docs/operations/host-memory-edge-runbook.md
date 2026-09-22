@@ -120,11 +120,13 @@ online recall still work. `plaintext_development` is allowed only in dev/test;
 never copy such a database into production. Preserve files and access logs for
 incident review, then remove exposed copies only under the incident plan.
 
-Server migrations through `20260905000010` and host command V3 are additive;
-do not infer that an older binary understands every new ACK or edge record.
+Server migrations through `20260905000010` and host command V3 are additive.
+Migration `20260905000011` replaces the action-edge partition guard with the
+same rejection contract and has no down path; do not infer that an older binary
+understands every new ACK or edge record.
 For rollback, disable `memory.host_sync_v2.enabled`, keep V1 command upload,
 and disable host edge config; stop/restart hosts under the compatible binary
 after backing up all three stores. Preserve canonical accepted events and
 issued delivery evidence. Follow the [release rollback procedure](../deploy/memory-v2-release.md)
-for a schema boundary; migration 00007 explicitly has no down path. Do not run a
-blind `ecto.rollback` or discard an unacknowledged spool.
+for a schema boundary; migrations 00007 and 00011 have no down path. Do not run
+a blind `ecto.rollback` or discard an unacknowledged spool.

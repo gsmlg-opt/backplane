@@ -2,8 +2,9 @@
 
 This plan is required for a release that contains Memory V2 migrations. The
 canonical `bpm_events` stream is the rollback boundary. Schema rollback alone
-is unsafe because migration 00007 is explicitly irreversible. Migration 00006
-has `down/0`, but that does not make an unreviewed chain rollback safe.
+is unsafe because migrations 00007 and 00011 are explicitly irreversible.
+Migration 00006 has `down/0`, but that does not make an unreviewed chain rollback
+safe.
 
 ## Release gates
 
@@ -48,14 +49,15 @@ IO.puts("applied_migrations=#{length(versions)}")
 ```
 
 Run it a second time and require `applied_migrations=0`. The old release may
-continue serving capture during these additive migrations. If the central
-service is stopped for the process switch, host agents continue accepting into
-their durable local spools.
+continue serving capture during these compatible migrations. Migration 00011
+replaces the action-edge partition trigger without changing its rejection
+contract. If the central service is stopped for the process switch, host agents
+continue accepting into their durable local spools.
 
 ## Forward cutover
 
 For a release including host memory V2, require the server migration ceiling
-`20260905000010` and a populated host command-store V1→V2→V3 upgrade check.
+`20260905000011` and a populated host command-store V1→V2→V3 upgrade check.
 Keep `memory.host_sync_v2.enabled` false and host edge disabled until exact
 partition entitlement, issue dispositions, recoverable snapshot frontier,
 host protection, and A–J qualification pass. Enable V2 only for approved
