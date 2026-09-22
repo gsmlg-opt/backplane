@@ -145,7 +145,7 @@ defmodule Backplane.Memory.ServiceTest do
       end
     end
 
-    test "live registry exactly covers the canonical permission matrix" do
+    test "live registry covers the canonical permission matrix except device-local tools" do
       keys =
         ~w(memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
 
@@ -172,8 +172,14 @@ defmodule Backplane.Memory.ServiceTest do
         Backplane.MemoryPermissions.tool_permissions()
         |> Map.keys()
         |> MapSet.new()
+        |> MapSet.difference(MapSet.new(Backplane.MemoryToolContract.device_local_names()))
 
       assert live_names == configured_names
+
+      assert MapSet.disjoint?(
+               live_names,
+               MapSet.new(Backplane.MemoryToolContract.device_local_names())
+             )
     end
 
     test "descriptor handlers enforce permission and authenticated host ownership" do
@@ -922,22 +928,86 @@ defmodule Backplane.Memory.ServiceTest do
   end
 
   describe "handle_profile/1" do
-    test "returns building for a missing profile and the cached profile afterward" do
+    test "returns an error without an authoritative source and queues after one exists" do
       project = "profile-contract-#{System.unique_integer([:positive])}"
       host = create_memory_host!("profile", project)
       args = Map.put(trusted_args(host), "project", project)
 
-      assert {:ok, %{status: "building"}} = trusted_call("memory::profile", args)
+      job_args =
+        Map.take(
+          TestPartition.trusted_args(args),
+          ~w(project memory_space_id host_id client_id source_client_id scope namespace)
+        )
 
-      assert {:ok,
-              %{
-                project: ^project,
-                top_concepts: %{},
-                top_files: %{},
-                patterns: %{},
-                session_count: 0,
-                total_observations: 0
-              }} = trusted_call("memory::profile", args)
+      Oban.Testing.with_testing_mode(:manual, fn ->
+        assert {:error, :incomplete_partition} = trusted_call("memory::profile", args)
+
+        Oban.Testing.refute_enqueued(repo(),
+          worker: ProfileBuildWorker,
+          args: %{"project" => project}
+        )
+
+        assert {:ok, memory} =
+                 Memories.remember("profile source",
+                   agent_id: "profile-test",
+                   host_id: host.id,
+                   client_id: "host:#{host.id}",
+                   scope: host.memory_scope,
+                   namespace: "private",
+                   metadata: %{"project" => project}
+                 )
+
+        job_args = Map.put(job_args, "memory_space_id", memory.memory_space_id)
+        assert {:ok, %{status: "building"}} = trusted_call("memory::profile", args)
+
+        assert Oban.Testing.assert_enqueued(
+                 repo(),
+                 worker: ProfileBuildWorker,
+                 args: job_args
+               )
+      end)
+    end
+
+    test "returns an error from profile refresh without an authoritative source" do
+      project = "profile-refresh-contract-#{System.unique_integer([:positive])}"
+      host = create_memory_host!("profile-refresh", project)
+      args = Map.put(trusted_args(host), "project", project)
+
+      job_args =
+        Map.take(
+          TestPartition.trusted_args(args),
+          ~w(project memory_space_id host_id client_id source_client_id scope namespace)
+        )
+
+      Oban.Testing.with_testing_mode(:manual, fn ->
+        assert {:error, :incomplete_partition} = trusted_call("memory::profile_refresh", args)
+
+        Oban.Testing.refute_enqueued(repo(),
+          worker: ProfileBuildWorker,
+          args: %{"project" => project}
+        )
+
+        assert {:ok, memory} =
+                 Memories.remember("profile refresh source",
+                   agent_id: "profile-refresh-test",
+                   host_id: host.id,
+                   client_id: "host:#{host.id}",
+                   scope: host.memory_scope,
+                   namespace: "private",
+                   metadata: %{"project" => project}
+                 )
+
+        job_args = Map.put(job_args, "memory_space_id", memory.memory_space_id)
+
+        assert {:ok, %{status: "queued", project: ^project}} =
+                 trusted_call("memory::profile_refresh", args)
+
+        assert Oban.Testing.assert_enqueued(
+                 repo(),
+                 worker: ProfileBuildWorker,
+                 args: job_args
+               )
+      end)
     end
 
     test "returns an error when project is missing" do
@@ -1106,19 +1176,43 @@ defmodule Backplane.Memory.ServiceTest do
   end
 
   describe "handle_consolidate/1" do
-    test "queues using session_id as the worker argument without validating the session" do
+    test "propagates missing-source errors and queues session_id as the project after a source exists" do
       missing_session = "missing-session-#{System.unique_integer([:positive])}"
       host = create_memory_host!("consolidate")
       args = Map.put(trusted_args(host), "session_id", missing_session)
 
+      job_args =
+        TestPartition.trusted_args(args)
+        |> Map.take(~w(memory_space_id host_id client_id source_client_id scope namespace))
+        |> Map.put("project", missing_session)
+
       Oban.Testing.with_testing_mode(:manual, fn ->
+        assert {:error, :incomplete_partition} = trusted_call("memory::consolidate", args)
+
+        Oban.Testing.refute_enqueued(repo(),
+          worker: ProfileBuildWorker,
+          args: %{"project" => missing_session}
+        )
+
+        assert {:ok, memory} =
+                 Memories.remember("consolidate source",
+                   agent_id: "consolidate-test",
+                   host_id: host.id,
+                   client_id: "host:#{host.id}",
+                   scope: host.memory_scope,
+                   namespace: "private",
+                   metadata: %{"project" => missing_session}
+                 )
+
+        job_args = Map.put(job_args, "memory_space_id", memory.memory_space_id)
+
         assert {:ok, %{status: "queued", session_id: ^missing_session}} =
                  trusted_call("memory::consolidate", args)
 
         assert Oban.Testing.assert_enqueued(
                  repo(),
                  worker: ProfileBuildWorker,
-                 args: Map.put(trusted_args(host), "project", missing_session)
+                 args: job_args
                )
       end)
     end

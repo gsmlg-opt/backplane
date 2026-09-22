@@ -2108,14 +2108,19 @@ defmodule Backplane.Memory.Service do
 
       {:building, nil} ->
         {:ok, %{status: "building"}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   defp do_handle_profile(_), do: {:error, "project is required"}
 
   defp do_handle_profile_refresh(%{"project" => project} = args) when is_binary(project) do
-    Backplane.Memory.Workers.ProfileBuildWorker.enqueue(project, partition_from_args(args))
-    {:ok, %{status: "queued", project: project}}
+    case Backplane.Memory.Workers.ProfileBuildWorker.enqueue(project, partition_from_args(args)) do
+      {:ok, _job} -> {:ok, %{status: "queued", project: project}}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp do_handle_profile_refresh(_), do: {:error, "project is required"}
@@ -3030,8 +3035,13 @@ defmodule Backplane.Memory.Service do
 
   defp do_handle_consolidate(%{"session_id" => session_id} = args) when is_binary(session_id) do
     # Enqueue a profile build as the consolidation mechanism
-    Backplane.Memory.Workers.ProfileBuildWorker.enqueue(session_id, partition_from_args(args))
-    {:ok, %{status: "queued", session_id: session_id}}
+    case Backplane.Memory.Workers.ProfileBuildWorker.enqueue(
+           session_id,
+           partition_from_args(args)
+         ) do
+      {:ok, _job} -> {:ok, %{status: "queued", session_id: session_id}}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp do_handle_consolidate(_), do: {:error, "session_id is required"}

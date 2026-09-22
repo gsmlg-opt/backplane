@@ -433,9 +433,32 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   end
 
   describe "get_or_build/2" do
-    test "returns {:building, nil} and enqueues job when no profile exists" do
+    test "returns the enqueue error without an authoritative project source" do
       project = "test-build-trigger-#{System.unique_integer([:positive])}"
-      assert {:building, nil} = Profiles.get_or_build(project, partition(project))
+
+      Oban.Testing.with_testing_mode(:manual, fn ->
+        assert {:error, :incomplete_partition} =
+                 Profiles.get_or_build(project, partition(project))
+
+        Oban.Testing.refute_enqueued(repo(),
+          worker: ProfileBuildWorker,
+          args: %{"project" => project}
+        )
+      end)
+    end
+
+    test "returns {:building, nil} and enqueues when the project source exists" do
+      project = "test-build-source-#{System.unique_integer([:positive])}"
+      source = insert_memory("profile source", scope: project)
+
+      Oban.Testing.with_testing_mode(:manual, fn ->
+        assert {:building, nil} = Profiles.get_or_build(project, partition(project))
+
+        assert Oban.Testing.assert_enqueued(repo(),
+                 worker: ProfileBuildWorker,
+                 args: %{"project" => project, "memory_space_id" => source.memory_space_id}
+               )
+      end)
     end
 
     test "returns {:ok, profile} when profile already exists" do
