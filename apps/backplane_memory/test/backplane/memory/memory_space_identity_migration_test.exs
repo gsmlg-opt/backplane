@@ -11,6 +11,8 @@ defmodule Backplane.Memory.MemorySpaceIdentityMigrationTest do
   @columns_migration Backplane.Repo.Migrations.AddMemorySpaceIdentity
   @backfill_version 20_260_905_000_003
   @backfill_migration Backplane.Repo.Migrations.BackfillMemorySpaceIdentity
+  @action_edge_version 20_260_905_000_011
+  @action_edge_migration Backplane.Repo.Migrations.OptimizeMemoryActionEdgePartitionGuard
 
   @roots [
     {"bpm_events", ~w(host_id client_id scope namespace)},
@@ -38,6 +40,133 @@ defmodule Backplane.Memory.MemorySpaceIdentityMigrationTest do
     {"bpm_projection_snapshots", []},
     {"bpm_host_memory_revocations", ~w(host_id scope)}
   ]
+
+  test "action-edge guard upgrade checks exact parent partitions without scanning child rows" do
+    prefix = "memory_action_edge_guard_#{System.unique_integer([:positive])}"
+    migration_repo = start_migration_repo()
+
+    with_isolated_schema(migration_repo, prefix, fn ->
+      migration_repo.query!("""
+      CREATE TABLE "#{prefix}".memory_actions (
+        id uuid PRIMARY KEY, memory_space_id uuid, scope text, namespace text
+      )
+      """)
+
+      migration_repo.query!("""
+      CREATE TABLE "#{prefix}".memory_action_edges (
+        id uuid PRIMARY KEY, source_id uuid NOT NULL, target_id uuid NOT NULL
+      )
+      """)
+
+      migration_repo.query!("""
+      CREATE FUNCTION "#{prefix}".bpm_assert_memory_action_edges_canonical_partition()
+      RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$
+      """)
+
+      migration_repo.query!("""
+      CREATE CONSTRAINT TRIGGER bpm_memory_space_child_partition_guard
+      AFTER INSERT OR UPDATE ON "#{prefix}".memory_action_edges
+      DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW
+      EXECUTE FUNCTION "#{prefix}".bpm_assert_memory_action_edges_canonical_partition()
+      """)
+
+      space_id = Ecto.UUID.generate()
+      foreign_space_id = Ecto.UUID.generate()
+
+      [source_id, target_id, foreign_id, missing_id] =
+        Enum.map(1..4, fn _ -> Ecto.UUID.generate() end)
+
+      for {id, space} <- [
+            {source_id, space_id},
+            {target_id, space_id},
+            {foreign_id, foreign_space_id}
+          ] do
+        migration_repo.query!(
+          ~s|INSERT INTO "#{prefix}".memory_actions VALUES ($1, $2, 'team', 'project')|,
+          [Ecto.UUID.dump!(id), Ecto.UUID.dump!(space)]
+        )
+      end
+
+      existing_edge_id = Ecto.UUID.generate()
+
+      migration_repo.query!(
+        ~s|INSERT INTO "#{prefix}".memory_action_edges VALUES ($1, $2, $3)|,
+        [
+          Ecto.UUID.dump!(existing_edge_id),
+          Ecto.UUID.dump!(source_id),
+          Ecto.UUID.dump!(target_id)
+        ]
+      )
+
+      load_migration("20260905000011_optimize_memory_action_edge_partition_guard.exs")
+
+      assert :ok =
+               Ecto.Migrator.up(migration_repo, @action_edge_version, @action_edge_migration,
+                 prefix: prefix,
+                 log: false
+               )
+
+      assert [[trigger_definition, true, false]] =
+               migration_repo.query!("""
+               SELECT pg_get_triggerdef(oid), tgdeferrable, tginitdeferred
+               FROM pg_trigger
+               WHERE tgrelid = '"#{prefix}".memory_action_edges'::regclass
+                 AND tgname = 'bpm_memory_space_child_partition_guard'
+               """).rows
+
+      assert trigger_definition =~ "AFTER INSERT OR UPDATE"
+      assert trigger_definition =~ "DEFERRABLE INITIALLY IMMEDIATE"
+
+      assert [[1]] =
+               migration_repo.query!(
+                 ~s|SELECT count(*) FROM "#{prefix}".memory_action_edges WHERE id = $1 AND source_id = $2 AND target_id = $3|,
+                 [
+                   Ecto.UUID.dump!(existing_edge_id),
+                   Ecto.UUID.dump!(source_id),
+                   Ecto.UUID.dump!(target_id)
+                 ]
+               ).rows
+
+      edge_id = Ecto.UUID.generate()
+
+      migration_repo.query!(
+        ~s|INSERT INTO "#{prefix}".memory_action_edges VALUES ($1, $2, $3)|,
+        [Ecto.UUID.dump!(edge_id), Ecto.UUID.dump!(source_id), Ecto.UUID.dump!(target_id)]
+      )
+
+      for {bad_source, bad_target} <- [
+            {source_id, foreign_id},
+            {foreign_id, target_id},
+            {missing_id, target_id},
+            {source_id, missing_id}
+          ] do
+        error =
+          assert_raise Postgrex.Error, fn ->
+            migration_repo.query!(
+              ~s|INSERT INTO "#{prefix}".memory_action_edges VALUES ($1, $2, $3)|,
+              [
+                Ecto.UUID.dump!(Ecto.UUID.generate()),
+                Ecto.UUID.dump!(bad_source),
+                Ecto.UUID.dump!(bad_target)
+              ]
+            )
+          end
+
+        assert error.postgres.code == :check_violation
+        assert error.postgres.constraint == "memory_action_edges_canonical_partition"
+      end
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          migration_repo.query!(
+            ~s|UPDATE "#{prefix}".memory_action_edges SET target_id = $1 WHERE id = $2|,
+            [Ecto.UUID.dump!(foreign_id), Ecto.UUID.dump!(edge_id)]
+          )
+        end
+
+      assert error.postgres.constraint == "memory_action_edges_canonical_partition"
+    end)
+  end
 
   test "adds complete nullable physical identity with NOT VALID new-write enforcement in an isolated prefix" do
     prefix = "memory_space_identity_columns_#{System.unique_integer([:positive])}"

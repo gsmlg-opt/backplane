@@ -163,7 +163,15 @@ defmodule Backplane.Memory.CrystalActionChainTest do
       )
 
     [foreign_id] = insert_actions(1, foreign_partition)
-    insert_edge(List.first(action_ids), foreign_id)
+
+    error =
+      assert_raise Postgrex.Error, fn ->
+        repo().transaction(fn -> insert_edge(List.first(action_ids), foreign_id) end,
+          mode: :savepoint
+        )
+      end
+
+    assert error.postgres.constraint == "memory_action_edges_canonical_partition"
 
     repo().query!("SET LOCAL statement_timeout = '1500ms'")
 
