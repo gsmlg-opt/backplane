@@ -3,6 +3,7 @@ defmodule Backplane.McpProtocol.Client.Handlers do
 
   use Backplane.McpProtocol.Logging
 
+  alias Backplane.McpProtocol.Client.Request
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.Telemetry
@@ -20,7 +21,10 @@ defmodule Backplane.McpProtocol.Client.Handlers do
     handle_cancelled_notification(notification, state)
   end
 
-  def handle_notification(%{"method" => "notifications/resources/list_changed"} = notification, state) do
+  def handle_notification(
+        %{"method" => "notifications/resources/list_changed"} = notification,
+        state
+      ) do
     handle_resources_list_changed_notification(notification, state)
   end
 
@@ -28,7 +32,10 @@ defmodule Backplane.McpProtocol.Client.Handlers do
     handle_resource_updated_notification(notification, state)
   end
 
-  def handle_notification(%{"method" => "notifications/prompts/list_changed"} = notification, state) do
+  def handle_notification(
+        %{"method" => "notifications/prompts/list_changed"} = notification,
+        state
+      ) do
     handle_prompts_list_changed_notification(notification, state)
   end
 
@@ -56,7 +63,7 @@ defmodule Backplane.McpProtocol.Client.Handlers do
           reason: reason
         })
 
-      GenServer.reply(request.from, {:error, error})
+      Request.reply(request, {:error, error})
     end
 
     updated_state
@@ -98,7 +105,9 @@ defmodule Backplane.McpProtocol.Client.Handlers do
         _ -> :info
       end
 
-    Logging.client_event("server_log", %{level: level, data: data, logger: logger}, level: elixir_level)
+    Logging.client_event("server_log", %{level: level, data: data, logger: logger},
+      level: elixir_level
+    )
   end
 
   defp handle_resources_list_changed_notification(_notification, state) do

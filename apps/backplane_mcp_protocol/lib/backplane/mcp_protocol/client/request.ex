@@ -1,11 +1,13 @@
 defmodule Backplane.McpProtocol.Client.Request do
   @moduledoc false
 
+  alias Backplane.McpProtocol.Client.ToolCall
+
   @type t :: %__MODULE__{
           id: String.t(),
           logical_id: String.t(),
           method: String.t(),
-          from: GenServer.from(),
+          from: GenServer.from() | nil,
           timer_ref: reference(),
           start_time: integer(),
           params: map(),
@@ -16,7 +18,12 @@ defmodule Backplane.McpProtocol.Client.Request do
           deadline: integer() | nil,
           continuation: term(),
           resolver_supervisor: pid() | nil,
-          resolver_task: Task.t() | nil
+          resolver_task: Task.t() | nil,
+          tool_call: ToolCall.t() | nil,
+          owner_monitor: reference() | nil,
+          dispatch_task: Task.t() | nil,
+          dispatch_status: :registered | :dispatching | :accepted | nil,
+          progress_owner: term()
         }
 
   defstruct [
@@ -32,6 +39,11 @@ defmodule Backplane.McpProtocol.Client.Request do
     :continuation,
     :resolver_supervisor,
     :resolver_task,
+    :tool_call,
+    :owner_monitor,
+    :dispatch_task,
+    :dispatch_status,
+    :progress_owner,
     base_params: %{},
     extra_meta: %{},
     progress_opts: nil
@@ -60,12 +72,27 @@ defmodule Backplane.McpProtocol.Client.Request do
       id: attrs.id,
       logical_id: attrs.id,
       method: attrs.method,
-      from: attrs.from,
+      from: Map.get(attrs, :from),
       timer_ref: attrs.timer_ref,
       params: attrs.params,
       base_params: attrs.params,
       start_time: System.monotonic_time(:millisecond)
     }
+  end
+
+  @doc false
+  @spec async?(t()) :: boolean()
+  def async?(%__MODULE__{tool_call: %ToolCall{}}), do: true
+  def async?(%__MODULE__{}), do: false
+
+  @doc false
+  @spec reply(t(), term()) :: :ok
+  def reply(%__MODULE__{tool_call: %ToolCall{} = handle}, result) do
+    ToolCall.deliver(handle, result)
+  end
+
+  def reply(%__MODULE__{from: from}, result) do
+    GenServer.reply(from, result)
   end
 
   @doc "Retains the immutable operation data and absolute deadline for retries."

@@ -367,8 +367,13 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     transport_name = {:global, global_key}
     {:ok, original} = GenServer.start(CapturePort, {self(), :original}, name: transport_name)
     client = start_modern_stdio_client(transport_name)
+    subscriber = self()
 
-    task = Task.async(fn -> Client.listen_subscriptions(client, [], timeout: 500) end)
+    task =
+      Task.async(fn ->
+        Client.listen_subscriptions(client, [], timeout: 500, subscriber: subscriber)
+      end)
+
     assert_receive {:stdio_send, :original, encoded}
     request = JSON.decode!(encoded)
     send_ack(client, request["id"], %{})

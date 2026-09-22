@@ -29,6 +29,8 @@ defmodule Backplane.McpProtocol.Client.State do
           transport: map(),
           pending_requests: %{String.t() => Request.t()},
           progress_callbacks: %{String.t() => Client.progress_callback()},
+          managed_progress_tokens: %{term() => String.t()},
+          cancellation_workers: %{reference() => map()},
           log_callback: Client.log_callback() | nil,
           sampling_callback: (map() -> {:ok, map()} | {:error, String.t()}) | nil,
           elicitation_callback:
@@ -57,6 +59,8 @@ defmodule Backplane.McpProtocol.Client.State do
     :transport,
     pending_requests: %{},
     progress_callbacks: %{},
+    managed_progress_tokens: %{},
+    cancellation_workers: %{},
     log_callback: nil,
     sampling_callback: nil,
     elicitation_callback: nil,
@@ -215,8 +219,10 @@ defmodule Backplane.McpProtocol.Client.State do
       {request, updated_requests} ->
         # Cancel the timeout timer
         Process.cancel_timer(request.timer_ref)
+        if request.owner_monitor, do: Process.demonitor(request.owner_monitor, [:flush])
 
-        {request, %{state | pending_requests: updated_requests}}
+        state = %{state | pending_requests: updated_requests}
+        {request, release_managed_progress(state, request)}
     end
   end
 
@@ -240,7 +246,10 @@ defmodule Backplane.McpProtocol.Client.State do
         {nil, state}
 
       {request, updated_requests} ->
-        {request, %{state | pending_requests: updated_requests}}
+        if request.owner_monitor, do: Process.demonitor(request.owner_monitor, [:flush])
+
+        state = %{state | pending_requests: updated_requests}
+        {request, release_managed_progress(state, request)}
     end
   end
 
@@ -262,8 +271,34 @@ defmodule Backplane.McpProtocol.Client.State do
   @spec register_progress_callback(t(), String.t(), Client.progress_callback()) :: t()
   def register_progress_callback(state, token, callback) when is_function(callback, 3) do
     progress_callbacks = Map.put(state.progress_callbacks, token, callback)
-    %{state | progress_callbacks: progress_callbacks}
+    managed_progress_tokens = Map.delete(state.managed_progress_tokens, token)
+
+    %{
+      state
+      | progress_callbacks: progress_callbacks,
+        managed_progress_tokens: managed_progress_tokens
+    }
   end
+
+  @doc false
+  @spec register_managed_progress_callback(t(), term(), function(), String.t()) ::
+          {:ok, t()} | {:error, Error.t()}
+  def register_managed_progress_callback(state, token, callback, logical_id)
+      when (is_binary(token) or is_integer(token)) and is_function(callback, 3) do
+    if Map.has_key?(state.progress_callbacks, token) do
+      {:error,
+       Error.protocol(:invalid_params, %{field: "progress.token", reason: :already_registered})}
+    else
+      {:ok,
+       %{
+         state
+         | progress_callbacks: Map.put(state.progress_callbacks, token, callback),
+           managed_progress_tokens: Map.put(state.managed_progress_tokens, token, logical_id)
+       }}
+    end
+  end
+
+  def register_managed_progress_callback(state, _token, _callback, _logical_id), do: {:ok, state}
 
   @doc """
   Gets a progress callback for a token.
@@ -301,8 +336,28 @@ defmodule Backplane.McpProtocol.Client.State do
   @spec unregister_progress_callback(t(), String.t()) :: t()
   def unregister_progress_callback(state, token) do
     progress_callbacks = Map.delete(state.progress_callbacks, token)
-    %{state | progress_callbacks: progress_callbacks}
+    managed_progress_tokens = Map.delete(state.managed_progress_tokens, token)
+
+    %{
+      state
+      | progress_callbacks: progress_callbacks,
+        managed_progress_tokens: managed_progress_tokens
+    }
   end
+
+  defp release_managed_progress(state, %{progress_owner: {token, logical_id}}) do
+    if state.managed_progress_tokens[token] == logical_id do
+      %{
+        state
+        | progress_callbacks: Map.delete(state.progress_callbacks, token),
+          managed_progress_tokens: Map.delete(state.managed_progress_tokens, token)
+      }
+    else
+      state
+    end
+  end
+
+  defp release_managed_progress(state, _request), do: state
 
   @doc """
   Sets the log callback.
@@ -722,7 +777,8 @@ defmodule Backplane.McpProtocol.Client.State do
   defp valid_capability?(_capabilities, ["initialize"]), do: true
   defp valid_capability?(_capabilities, ["roots", "list"]), do: true
 
-  defp valid_capability?(capabilities, ["resources", sub]) when sub in ~w(subscribe unsubscribe) do
+  defp valid_capability?(capabilities, ["resources", sub])
+       when sub in ~w(subscribe unsubscribe) do
     case Map.get(capabilities, "resources") do
       %{} = resources -> Map.get(resources, "subscribe") == true
       _ -> false

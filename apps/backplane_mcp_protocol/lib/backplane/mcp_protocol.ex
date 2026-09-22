@@ -17,7 +17,8 @@ defmodule Backplane.McpProtocol do
                          ClientStreamableHTTP,
                          StubTransport,
                          Backplane.McpProtocol.MockTransport,
-                         BufferedMockTransport
+                         BufferedMockTransport,
+                         Backplane.McpProtocol.ToolCallTransport
                        ],
                        else: [ClientSTDIO, ClientSSE, ClientStreamableHTTP]
 

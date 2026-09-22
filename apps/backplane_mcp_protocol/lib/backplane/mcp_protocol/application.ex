@@ -12,7 +12,8 @@ defmodule Backplane.McpProtocol.Application do
     children =
       [
         {Finch, name: Backplane.McpProtocol.Finch, pools: %{default: [size: 15]}},
-        {Task.Supervisor, name: Backplane.McpProtocol.Client.ValidatorSupervisor}
+        {Task.Supervisor, name: Backplane.McpProtocol.Client.ValidatorSupervisor},
+        {Task.Supervisor, name: Backplane.McpProtocol.Client.OperationSupervisor}
       ] ++ maybe_start_session_store()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
@@ -43,7 +44,12 @@ defmodule Backplane.McpProtocol.Application do
         []
 
       is_nil(adapter) ->
-        Backplane.McpProtocol.Logging.log(:warning, "Session store enabled but adapter not configured", [])
+        Backplane.McpProtocol.Logging.log(
+          :warning,
+          "Session store enabled but adapter not configured",
+          []
+        )
+
         []
 
       Code.ensure_loaded?(adapter) ->
@@ -57,7 +63,12 @@ defmodule Backplane.McpProtocol.Application do
         [{adapter, config}]
 
       true ->
-        Backplane.McpProtocol.Logging.log(:warning, "Session store enabled but adapter not available", adapter: adapter)
+        Backplane.McpProtocol.Logging.log(
+          :warning,
+          "Session store enabled but adapter not available",
+          adapter: adapter
+        )
+
         []
     end
   end

@@ -62,6 +62,9 @@ Backplane.McpProtocol.Client.list_tools(MyApp.MCPClient)
 
 - `list_tools/1,2` - List available tools
 - `call_tool/2,3,4` - Call a tool with arguments
+- `start_tool_call/2,3,4` - Register and dispatch a caller-owned asynchronous tool call
+- `await_tool_call/1,2` - Await that handle's result in its owner process
+- `cancel_tool_call/1,2,3` - Settle one handle locally and return request/notification delivery status
 
 **Resources:**
 
