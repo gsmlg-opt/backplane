@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Memory.Replay.BrowserQualify do
 
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Projections.Rebuild
+  alias Backplane.MemorySpaces.MemorySpace
 
   @requirements ["app.config"]
   @event_count 121
@@ -56,6 +57,7 @@ defmodule Mix.Tasks.Memory.Replay.BrowserQualify do
     url =
       "http://127.0.0.1:#{admin_port}/memory/replay?" <>
         URI.encode_query(%{
+          "memory_space_id" => partition.memory_space_id,
           "host" => partition.host_id,
           "client" => partition.client_id,
           "scope" => partition.scope,
@@ -180,7 +182,14 @@ defmodule Mix.Tasks.Memory.Replay.BrowserQualify do
   end
 
   defp partition(run_id) do
+    memory_space_id = Ecto.UUID.generate()
+
+    %MemorySpace{}
+    |> MemorySpace.changeset(%{id: memory_space_id, kind: "private", status: "active"})
+    |> Backplane.Repo.insert!()
+
     %{
+      memory_space_id: memory_space_id,
       host_id: "browser-host-#{run_id}",
       client_id: "browser-client",
       scope: "browser-qualification",
