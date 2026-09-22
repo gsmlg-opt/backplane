@@ -229,6 +229,29 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   approved `service_test.exs` and `crystal_action_chain_test.exs` remain test
   scope. Preserve fail-closed canonical constraints, same trigger SQLSTATE and
   name, and production plaintext rejection.
+- Task 20 repair checkpoint on 2026-09-22: action-edge trigger migration
+  `20260905000011` and release head were committed as `cd592454` after
+  specification and quality approval. The populated-upgrade and 4,000-action
+  regressions passed together (15/15); the full-batch action test no longer
+  times out. Static cleanup of legacy unpartitioned BFS/Slots APIs and
+  server-side slot reflection was committed as `5e42c348` after both reviews;
+  warnings-as-errors compilation, 18 focused tests, and default-environment
+  Dialyzer passed. Release/rollback documentation was reviewed and committed
+  as `38c80cc3`. A newly packaged production release applied 106 migrations
+  to a fresh isolated database, then applied zero on the second pass and
+  verified head `20260905000011` and required tables. Fresh host and API
+  suites passed 508/508 and 253/253; format, strict Credo, CI-workflow, and
+  release-config gates passed.
+- The three-file Service enqueue-response repair passed 53/53 scoped tests
+  and both review stages but remains uncommitted. A separate existing
+  `profile_build_worker_test.exs` test (1/15 failing) expects `{:building, nil}`
+  without an authoritative source; the corrected response is
+  `{:error, :incomplete_partition}`. The user has been asked to approve that
+  single test file before it is edited. The release browser qualification also
+  stops on event 1 because its test-only Mix task constructs a partition
+  without `memory_space_id`; the user has been asked to approve the task file
+  before repair. Do not claim the full Memory or release gate until these
+  exact scope decisions and their reruns are complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
