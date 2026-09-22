@@ -1,6 +1,16 @@
 defmodule Backplane.AgentRuntime.Conversation do
   use GenServer
-  alias Backplane.AgentRuntime.{Budget, Error, Execution, InputSchema, Policy, ToolRegistry}
+
+  alias Backplane.AgentRuntime.{
+    Budget,
+    Error,
+    Execution,
+    InputSchema,
+    Policy,
+    ToolCatalog,
+    ToolRegistry
+  }
+
   alias Backplane.AgentRuntime.Kernel, as: RunKernel
 
   @moduledoc """
@@ -39,6 +49,10 @@ defmodule Backplane.AgentRuntime.Conversation do
   def steer(pid, content), do: GenServer.call(pid, {:input, :steering, content}, :infinity)
   def follow_up(pid, content), do: GenServer.call(pid, {:input, :follow_up, content}, :infinity)
   def resolve(pid, id, value), do: GenServer.call(pid, {:resolve, id, value}, :infinity)
+
+  def stage_catalog(pid, update),
+    do: GenServer.call(pid, {:stage_catalog, nil, update}, :infinity)
+
   def cancel(pid), do: GenServer.call(pid, :cancel)
   def status(pid), do: GenServer.call(pid, :status)
 
@@ -86,6 +100,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     timer = if restored?, do: nil, else: Process.send_after(self(), :deadline, limits.run)
 
+    catalog = ToolCatalog.initial(opts)
+
     state = %{
       opts: opts,
       run: run,
@@ -103,7 +119,10 @@ defmodule Backplane.AgentRuntime.Conversation do
       callers: [],
       admission: nil,
       last_error: nil,
-      bytes: 0
+      bytes: 0,
+      catalog: catalog,
+      pending_catalog: nil,
+      catalog_receipts: []
     }
 
     {:ok, state}
@@ -118,8 +137,19 @@ defmodule Backplane.AgentRuntime.Conversation do
          run: s.run,
          messages: s.conversation.messages,
          conversation: s.conversation,
-         error: s.last_error
+         error: s.last_error,
+         catalog_revision: s.catalog.revision,
+         catalog_publication: catalog_publication(s.catalog, :published),
+         pending_catalog_publication:
+           catalog_publication(s.pending_catalog && s.pending_catalog.catalog, :staged)
        }, s}
+
+  def handle_call({:stage_catalog, token, update}, _from, s) do
+    case stage_catalog(s, token, update) do
+      {:ok, receipt, next} -> {:reply, {:ok, receipt}, next}
+      {:error, %Error{} = error} -> {:reply, {:error, error}, s}
+    end
+  end
 
   def handle_call(:cancel, _from, %{phase: phase} = s)
       when phase in [:terminal, :recovery_required, :storage_failed],
@@ -357,7 +387,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp process(s, {:effect_result, {:provider, identity}, result}) do
+  defp process(s, {:effect_result, {:provider, identity, catalog}, result}) do
     case result do
       {:ok, response} ->
         conversation = %{
@@ -376,7 +406,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         commit(s, {:provider_completed, now(), input}, %{}, [], fn s, _ ->
           s = %{s | conversation: conversation}
           emit(s, response.terminal)
-          begin_tools(s, response.tools)
+          begin_tools(s, response.tools, catalog)
         end)
 
       {:error, error} ->
@@ -389,16 +419,20 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp process(s, {:effect_result, {:tool, invocation, rest}, result}) do
+  defp process(s, {:effect_result, {:tool, invocation, rest, catalog}, result}) do
+    s = discard_failed_catalog(s, invocation, result)
     result = tool_result(result)
     input = Map.put(invocation, :result, result)
 
     commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
-      append_tool_result(s, invocation, result, rest)
+      append_tool_result(s, invocation, result, rest, catalog)
     end)
   end
 
-  defp process(s, {:effect_result, {:approval, invocation, descriptor, rest}, {:ok, decision}}) do
+  defp process(
+         s,
+         {:effect_result, {:approval, invocation, descriptor, rest, catalog}, {:ok, decision}}
+       ) do
     if decision == :approved do
       approval = %{
         approval_id: id("approval"),
@@ -416,12 +450,18 @@ defmodule Backplane.AgentRuntime.Conversation do
           %{decision: :approved, resolver_id: "host"}
         )
 
-      invoke_tool(s, invocation, descriptor, rest,
+      invoke_tool(s, invocation, descriptor, rest, catalog,
         approval: approval,
         approval_decision: decision
       )
     else
-      append_tool_result(s, invocation, %{is_error: true, error: "approval denied"}, rest)
+      append_tool_result(
+        s,
+        invocation,
+        %{is_error: true, error: "approval denied"},
+        rest,
+        catalog
+      )
     end
   end
 
@@ -456,15 +496,21 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp start_provider(s) do
+    catalog = s.catalog
     identity = Map.merge(identity(s), %{step_id: id("step"), attempt_id: id("attempt")})
 
     request =
-      Map.merge(identity, %{messages: s.conversation.messages, turn_id: s.conversation.turn_id})
+      Map.merge(identity, %{
+        messages: s.conversation.messages,
+        turn_id: s.conversation.turn_id,
+        catalog_revision: catalog.revision,
+        tools: catalog.tools
+      })
 
     opts = [adapter: Keyword.fetch!(s.opts, :provider)]
 
     commit(s, {:provider_started, now(), identity}, %{operation: request}, opts, fn s, _ ->
-      start_effect(%{s | bytes: 0}, {:provider, identity}, fn context ->
+      start_effect(%{s | bytes: 0}, {:provider, identity, catalog}, fn context ->
         stream(s, request, context)
       end)
     end)
@@ -572,10 +618,10 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp collect(acc, _), do: {:ok, acc}
 
-  defp begin_tools(s, []), do: after_boundary(s, false)
+  defp begin_tools(s, [], _catalog), do: after_boundary(s, false)
 
-  defp begin_tools(s, [call | rest]) do
-    registry = Keyword.get(s.opts, :registry, %ToolRegistry{})
+  defp begin_tools(s, [call | rest], catalog) do
+    registry = catalog.registry
 
     with {:ok, descriptor} <- ToolRegistry.lookup(registry, call.name),
          {:ok, arguments} <- InputSchema.validate(descriptor.schema, call.arguments),
@@ -588,17 +634,18 @@ defmodule Backplane.AgentRuntime.Conversation do
                turn_id: s.conversation.turn_id,
                tool_name: call.name,
                tool_revision: descriptor.tool_revision,
+               catalog_revision: catalog.revision,
                arguments: arguments
              })
            ),
          {:ok, _} <-
-           Policy.authorize_tool(Keyword.get(s.opts, :authority, %{}), descriptor, invocation) do
+           Policy.authorize_tool(catalog.authority, descriptor, invocation) do
       if descriptor.safety[:requires_approval] do
-        start_effect(s, {:approval, invocation, descriptor, rest}, fn context ->
+        start_effect(s, {:approval, invocation, descriptor, rest, catalog}, fn context ->
           context.interact.(%{kind: :permission, operation: invocation})
         end)
       else
-        invoke_tool(s, invocation, descriptor, rest, [])
+        invoke_tool(s, invocation, descriptor, rest, catalog, [])
       end
     else
       {:error, error} ->
@@ -606,22 +653,35 @@ defmodule Backplane.AgentRuntime.Conversation do
           s,
           %{tool_call_id: call.id, tool_name: call.name},
           tool_result({:error, error}),
-          rest
+          rest,
+          catalog
         )
     end
   end
 
-  defp invoke_tool(s, invocation, _descriptor, rest, approval) do
-    commit(s, {:tool_invoked, now(), invocation}, %{}, approval, fn s, prepared ->
+  defp invoke_tool(s, invocation, _descriptor, rest, catalog, approval) do
+    opts =
+      [registry: catalog.registry, authority: catalog.authority, ephemeral_tool_authority: true] ++
+        approval
+
+    commit(s, {:tool_invoked, now(), invocation}, %{}, opts, fn s, prepared ->
       emit(s, %{type: :tool_started, invocation: invocation})
 
-      start_effect(s, {:tool, invocation, rest}, fn context ->
+      start_effect(s, {:tool, invocation, rest, catalog}, fn context ->
         prepared = %{
           prepared
-          | host_context: Map.merge(prepared.host_context, Map.take(context, [:interact, :emit]))
+          | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
+            host_context:
+              Map.merge(
+                prepared.host_context,
+                Map.take(context, [:interact, :emit, :stage_catalog])
+              )
         }
 
-        case Execution.dispatch(prepared, s.opts) do
+        case Execution.dispatch(
+               prepared,
+               Keyword.merge(s.opts, registry: catalog.registry, authority: catalog.authority)
+             ) do
           {:ok, [result]} -> {:ok, result}
           error -> error
         end
@@ -629,7 +689,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     end)
   end
 
-  defp append_tool_result(s, invocation, result, rest) do
+  defp append_tool_result(s, invocation, result, rest, catalog) do
     message = %{
       role: :tool,
       tool_call_id: invocation.tool_call_id,
@@ -639,11 +699,13 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     checkpoint(s, %{s.conversation | messages: s.conversation.messages ++ [message]}, fn s ->
       emit(s, %{type: :tool_completed, message: message})
-      if rest == [], do: after_boundary(s, true), else: begin_tools(s, rest)
+      if rest == [], do: after_boundary(s, true), else: begin_tools(s, rest, catalog)
     end)
   end
 
   defp after_boundary(s, tools?) do
+    s = publish_catalog(s)
+
     case s.conversation.steering do
       [message | rest] ->
         checkpoint(s, %{s.conversation | steering: rest}, &begin_prompt(&1, message, :steering))
@@ -745,6 +807,17 @@ defmodule Backplane.AgentRuntime.Conversation do
       end)
       |> Map.put(:emit, fn event -> GenServer.call(owner, {:chunk, token, event}, :infinity) end)
 
+    context =
+      case role do
+        {:tool, _, _, _} ->
+          Map.put(context, :stage_catalog, fn update ->
+            GenServer.call(owner, {:stage_catalog, token, update}, :infinity)
+          end)
+
+        _ ->
+          context
+      end
+
     task = Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
     timeout = max(1, min(s.limits.effect, s.run.deadline - now()))
     timer = Process.send_after(self(), {:timeout, task.ref}, timeout)
@@ -768,6 +841,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     Enum.each(s.callers, &GenServer.reply(&1, {:error, Error.new(:cancelled, "run stopped")}))
     reject_jobs(s.jobs)
+
+    s = discard_pending_catalog(s)
 
     s = %{
       s
@@ -837,6 +912,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
 
+    s = discard_pending_catalog(s)
+
     %{
       s
       | phase: :storage_failed,
@@ -877,6 +954,144 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
   defp current_effect?(%{effect: %{token: token}, stopping: nil}, token), do: true
   defp current_effect?(_, _), do: false
+
+  defp stage_catalog(s, token, update) do
+    with :ok <- ToolCatalog.fence(update, s.run),
+         :ok <- catalog_reconciliation_allowed(s, token) do
+      case catalog_receipt(s, update) do
+        {:ok, receipt} ->
+          {:ok, receipt, s}
+
+        {:error, %Error{} = error} ->
+          {:error, error}
+
+        :error ->
+          with :ok <- catalog_stage_allowed(s, token),
+               :ok <- no_pending_catalog(s),
+               {:ok, catalog} <- ToolCatalog.validate(update, s.catalog.revision, s.run) do
+            receipt = ToolCatalog.receipt(catalog, :staged)
+            invocation_id = s.effect.role |> elem(1) |> Map.fetch!(:invocation_id)
+
+            next = %{
+              s
+              | pending_catalog: %{
+                  catalog: catalog,
+                  update: update,
+                  owner_invocation_id: invocation_id
+                },
+                catalog_receipts: remember_receipt(s.catalog_receipts, update, receipt)
+            }
+
+            {:ok, receipt, next}
+          end
+      end
+    end
+  end
+
+  defp catalog_reconciliation_allowed(_s, nil), do: :ok
+
+  defp catalog_reconciliation_allowed(%{effect: %{token: token}, stopping: nil}, token), do: :ok
+
+  defp catalog_reconciliation_allowed(_s, _token),
+    do: {:error, Error.new(:resource_conflict, "stale catalog publication owner")}
+
+  defp catalog_stage_allowed(
+         %{phase: :running, stopping: nil, interaction: nil, effect: %{role: {:tool, _, _, _}}},
+         nil
+       ),
+       do: :ok
+
+  defp catalog_stage_allowed(
+         %{
+           phase: :running,
+           stopping: nil,
+           interaction: nil,
+           effect: %{role: {:tool, _, _, _}, token: token}
+         },
+         token
+       ),
+       do: :ok
+
+  defp catalog_stage_allowed(_s, _token),
+    do: {:error, Error.new(:resource_conflict, "catalog can only be staged by an active tool")}
+
+  defp no_pending_catalog(%{pending_catalog: nil}), do: :ok
+
+  defp no_pending_catalog(_s),
+    do: {:error, Error.new(:resource_conflict, "another catalog publication is pending")}
+
+  defp catalog_receipt(s, update) do
+    publication_id = Map.get(update, :publication_id, Map.get(update, "publication_id"))
+
+    case Enum.find(s.catalog_receipts, &(&1.publication_id == publication_id)) do
+      %{update: ^update, receipt: receipt} ->
+        {:ok, receipt}
+
+      nil ->
+        :error
+
+      _ ->
+        {:error,
+         Error.new(:resource_conflict, "publication id was already used for another catalog")}
+    end
+  end
+
+  defp remember_receipt(receipts, update, receipt) do
+    entry = %{publication_id: receipt.publication_id, update: update, receipt: receipt}
+
+    [entry | Enum.reject(receipts, &(&1.publication_id == receipt.publication_id))]
+    |> Enum.take(16)
+  end
+
+  defp discard_failed_catalog(s, invocation, {:ok, result}) when is_map(result) do
+    if Map.get(result, :is_error, Map.get(result, "is_error", false)) == true,
+      do: discard_owned_catalog(s, invocation),
+      else: s
+  end
+
+  defp discard_failed_catalog(
+         %{pending_catalog: %{owner_invocation_id: invocation_id}} = s,
+         %{invocation_id: invocation_id},
+         _result
+       ),
+       do: discard_pending_catalog(s)
+
+  defp discard_failed_catalog(s, _invocation, _result), do: s
+
+  defp discard_owned_catalog(
+         %{pending_catalog: %{owner_invocation_id: invocation_id}} = s,
+         %{invocation_id: invocation_id}
+       ),
+       do: discard_pending_catalog(s)
+
+  defp discard_owned_catalog(s, _invocation), do: s
+
+  defp discard_pending_catalog(%{pending_catalog: nil} = s), do: s
+
+  defp discard_pending_catalog(%{pending_catalog: pending} = s) do
+    receipts =
+      Enum.reject(s.catalog_receipts, &(&1.publication_id == pending.catalog.publication_id))
+
+    %{s | pending_catalog: nil, catalog_receipts: receipts}
+  end
+
+  defp publish_catalog(%{pending_catalog: nil} = s), do: s
+
+  defp publish_catalog(%{pending_catalog: pending} = s) do
+    receipt = ToolCatalog.receipt(pending.catalog, :published)
+    emit(s, %{type: :catalog_published, catalog_revision: pending.catalog.revision})
+
+    %{
+      s
+      | catalog: pending.catalog,
+        pending_catalog: nil,
+        catalog_receipts: remember_receipt(s.catalog_receipts, pending.update, receipt)
+    }
+  end
+
+  defp catalog_publication(nil, _status), do: nil
+  defp catalog_publication(%{publication_id: nil}, _status), do: nil
+  defp catalog_publication(catalog, status), do: ToolCatalog.receipt(catalog, status)
 
   defp clear_task(entry) do
     Process.demonitor(entry.task.ref, [:flush])

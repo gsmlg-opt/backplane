@@ -2,6 +2,9 @@
 
 ## 1.7.0
 
+- Add atomic, run/incarnation-fenced Conversation tool catalog staging and
+  post-batch publication with pinned provider definitions, exact duplicate
+  reconciliation, and ephemeral registry/authority handling for issue #42.
 - Support typed JSON Schema `enum` constraints, including Sigma's todo action
   and status properties. Preserve type/constraint validation and fail-closed
   unsupported keywords; cover registration, provider dispatch, and rejected

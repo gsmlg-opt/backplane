@@ -11,7 +11,9 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
 
   A host may call its existing provider facade here: no HTTP/SSE parser belongs
   in this runtime. Requests contain messages, turn_id, run_id, incarnation,
-  step_id and attempt_id. Context is trusted, ephemeral and never persisted.
+  step_id, attempt_id, catalog_revision, and canonical tools shaped as
+  `%{name: binary, description: binary, parameters: map}`. Context is trusted,
+  ephemeral and never persisted.
 
   Optional hooks run in bounded workers: prompt/2 before appending each user
   message, stop/2 after a response with no tools and no consumed steering.

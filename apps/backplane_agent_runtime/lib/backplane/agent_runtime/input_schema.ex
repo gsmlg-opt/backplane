@@ -23,6 +23,13 @@ defmodule Backplane.AgentRuntime.InputSchema do
     :oneOf,
     :anyOf
   ]
+
+  @spec validate_schema(term()) :: :ok | {:error, Error.t()}
+  def validate_schema(schema) when is_map(schema), do: validate_root_schema(schema)
+
+  def validate_schema(_schema),
+    do: {:error, Error.new(:validation, "tool schema must be a map")}
+
   @spec validate(term(), term()) :: {:ok, map()} | {:error, Error.t()}
   def validate(schema, input) when is_map(schema) and is_map(input) do
     with :ok <- validate_root_schema(schema),
@@ -46,6 +53,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp validate_schema(schema, position) when is_map(schema) do
     with :ok <- supported_keys(schema, @schema_keys),
+         :ok <- validate_description(schema),
          :ok <- validate_enum_schema(schema) do
       case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
         {{:ok, _one_of_branches}, {:ok, _any_of_branches}} ->
@@ -65,6 +73,14 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_schema(_schema, _position), do: validation("property schema must be a map")
+
+  defp validate_description(schema) do
+    case fetch_value(schema, :description) do
+      :error -> :ok
+      {:ok, description} when is_binary(description) -> :ok
+      {:ok, _description} -> validation("schema description must be a string")
+    end
+  end
 
   defp validate_enum_schema(schema) do
     case fetch_value(schema, :enum) do
@@ -93,7 +109,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     sibling_keys =
       schema
       |> Map.keys()
-      |> Enum.reject(&(to_string(&1) in ["oneOf", "description"]))
+      |> Enum.reject(&(schema_key(&1) in ["oneOf", "description"]))
 
     cond do
       sibling_keys != [] ->
@@ -196,8 +212,13 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp properties(schema) do
     case value(schema, :properties, %{}) do
-      properties when is_map(properties) -> {:ok, properties}
-      _ -> validation("schema properties must be a map")
+      properties when is_map(properties) ->
+        if Enum.all?(Map.keys(properties), &(not is_nil(schema_key(&1)))),
+          do: {:ok, properties},
+          else: validation("schema property names must be strings or atoms")
+
+      _ ->
+        validation("schema properties must be a map")
     end
   end
 
@@ -373,7 +394,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_additional(input, properties, schema, path) do
-    allowed = properties |> Map.keys() |> Enum.map(&to_string/1) |> MapSet.new()
+    allowed = properties |> Map.keys() |> Enum.map(&schema_key/1) |> MapSet.new()
 
     additional? =
       value(schema, :additionalProperties, value(schema, :additional_properties, true))
@@ -381,7 +402,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     if additional? do
       :ok
     else
-      case Enum.find(Map.keys(input), &(not MapSet.member?(allowed, to_string(&1)))) do
+      case Enum.find(Map.keys(input), &(not MapSet.member?(allowed, schema_key(&1)))) do
         nil ->
           :ok
 
@@ -392,9 +413,9 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp supported_keys(map, allowed) when is_map(map) do
-    allowed = allowed |> Enum.map(&to_string/1) |> MapSet.new()
+    allowed = allowed |> Enum.map(&schema_key/1) |> MapSet.new()
 
-    case Enum.find(Map.keys(map), &(not MapSet.member?(allowed, to_string(&1)))) do
+    case Enum.find(Map.keys(map), &(not MapSet.member?(allowed, schema_key(&1)))) do
       nil ->
         :ok
 
@@ -438,6 +459,10 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp delete_value(map, key), do: map |> Map.delete(key) |> Map.delete(Atom.to_string(key))
+
+  defp schema_key(key) when is_binary(key), do: key
+  defp schema_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp schema_key(_key), do: nil
 
   defp validation(message, details \\ %{}),
     do: {:error, Error.new(:validation, message, details: details)}

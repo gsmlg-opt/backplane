@@ -41,6 +41,10 @@ that do not satisfy a supported constraint return a `:validation` error. The
 execution gateway performs this check before authorization, approval,
 budget reservation, durable intent commit, or backend invocation.
 
+Hosts can call `InputSchema.validate_schema/1` to preflight the complete schema
+without supplying placeholder arguments. Catalog publication uses this boundary
+before making a revised registry visible.
+
 Keywords outside the table are unsupported. This includes `$ref`,
 `const`, `anyOf`, `allOf`, `not`, `pattern`, string lengths, array lengths,
 tuple-style `items`, `maximum`, and exclusive numeric bounds. Hosts must not
