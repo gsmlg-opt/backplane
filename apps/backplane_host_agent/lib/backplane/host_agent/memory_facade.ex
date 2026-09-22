@@ -142,9 +142,17 @@ defmodule Backplane.HostAgent.MemoryFacade do
   defp offline_mirror_result(method, canonical, overlay, args) do
     pending_operations = pending_operations(overlay)
 
+    canonical =
+      if method in ["recall", "list"] do
+        Map.put_new(canonical, "results", Map.get(canonical, "items", []))
+      else
+        canonical
+      end
+
     canonical
     |> merge_overlay(method, overlay, args)
     |> normalize_result(method)
+    |> sync_offline_items(method, canonical)
     |> Map.merge(%{
       "mode" => "offline",
       "authority" =>
@@ -216,6 +224,11 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp normalize_result(result, "stats"), do: result
+
+  defp sync_offline_items(result, "recall", %{"items" => _items}),
+    do: Map.put(result, "items", result["hits"])
+
+  defp sync_offline_items(result, _method, _canonical), do: result
 
   defp normalize_offline_result(result, "recall", upserts) do
     result
