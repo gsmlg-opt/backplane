@@ -201,6 +201,22 @@ defmodule Backplane.SkillProtocol.BundleTest do
     assert pack_stages(tmp_dir, archive) == []
   end
 
+  test "pack produces identical archives for identical content", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "deterministic-skill")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "SKILL.md"), skill_md("deterministic-skill"))
+    first_archive = Path.join(tmp_dir, "first.tar.gz")
+    second_archive = Path.join(tmp_dir, "second.tar.gz")
+
+    assert {:ok, first} = Bundle.pack(root, first_archive)
+    Process.sleep(1_100)
+    assert {:ok, second} = Bundle.pack(root, second_archive)
+
+    assert File.read!(first_archive) == File.read!(second_archive)
+    assert first.manifest.artifact_digest == second.manifest.artifact_digest
+    assert first.manifest == second.manifest
+  end
+
   test "pack rejects source replacement, addition, removal, and rename without publishing", %{
     tmp_dir: tmp_dir
   } do

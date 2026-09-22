@@ -673,14 +673,36 @@ defmodule Backplane.SkillProtocol.Bundle do
   end
 
   defp create_archive(path, root, entries) do
-    tar_entries =
-      Enum.map(entries, fn {name, bytes} -> {String.to_charlist(Path.join(root, name)), bytes} end)
+    case :erl_tar.open(String.to_charlist(path), [:write, :compressed]) do
+      {:ok, tar} ->
+        result =
+          Enum.reduce_while(entries, :ok, fn {name, bytes}, :ok ->
+            archive_name = String.to_charlist(Path.join(root, name))
 
-    case :erl_tar.create(String.to_charlist(path), tar_entries, [:compressed]),
-      do: (
-        :ok -> :ok
-        {:error, reason} -> {:error, reason}
-      )
+            case :erl_tar.add(tar, {archive_name, bytes},
+                   mtime: 0,
+                   atime: 0,
+                   ctime: 0,
+                   uid: 0,
+                   gid: 0,
+                   mode: 0o644
+                 ) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+
+        close_result = :erl_tar.close(tar)
+
+        case {result, close_result} do
+          {:ok, :ok} -> :ok
+          {{:error, reason}, _close_result} -> {:error, reason}
+          {:ok, {:error, reason}} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp normalize_ref(nil, _digest), do: nil
