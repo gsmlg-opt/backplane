@@ -143,24 +143,24 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   The registry preserves metadata and CI includes the contract app. Fresh
   affected-app scoped gate: 100/100 with warnings-as-errors; CI workflow
   contract 4/4, scoped formatting and diff checks passed.
-- Task 17: test-only draft remains uncommitted. Real-channel/Turso/PostgreSQL
-  qualification A–I passed under API seeds 101, 202, and 303 (9/9 each),
-  including actual edge-supervisor restart, connected syncer wake/ACK,
-  old-delta replay after delete, and independent type/item/byte eviction
-  limits (3/1039, 2/695, and 1/348 items/bytes); scoped formatting and diff
-  checks passed. The stronger real 10,000-event Scenario J test is red:
-  `Rebuild.replace_observation_rows/3` inserts 250,000 Postgrex parameters
-  against its 65,535 limit. Replay insertion also batches potentially 10,000
-  rows and requires qualification after repairing observations. On 2026-09-22
-  the user approved the bounded production repair scope recorded under Task 17.
-  Scenario E proves provisional identity, command ACK, and one canonical online
-  recall result, but the literal canonical revision cannot be asserted: the
-  V1 compatibility import creates an episodic memory and returns ID only,
-  whereas V2 edge revisions cover semantic/procedural records. On 2026-09-22
-  the user approved a revisioned edge representation for host-origin episodic
-  remembers, including server/host migrations, ACK/storage changes, tests, and
-  Task 19's migration ceiling. This approval does not itself complete E.
-  Tasks 17–20 remain outstanding; PR2–PR5 is not complete.
+- Task 17: Scenario J's real 10,000-event projection/replay batching repair is
+  committed as `b4429b69`: 101 durable frontier generations, one pending repair
+  job, all 10,000 projected/replayed rows, and stable ordered fingerprints on
+  repeated rebuild. The revisioned host-origin episodic server migration/API
+  ACK is committed as `c996798b`; host command-store V3 revision persistence as
+  `c5782c30`. Both halves passed specification and quality reviews. The final
+  A–I/facade qualification has passed read-only specification and quality
+  reviews and remains to be committed. Real PostgreSQL/Turso/channel A–I tests:
+  8/8 at each seed 101, 202, and 303; M18 outage A/I tests 2/2; focused host
+  facade 46/46, all warnings-as-errors. Scenario E proves the canonical ID and
+  positive revision in the same durable command ACK settlement, a committed
+  edge item, and one canonical result for online and offline recall. Scenario F
+  uses committed PostgreSQL NOTIFY through the actual listener/channel/syncer;
+  a separate trigger test proves emission after commit because ChannelCase
+  keeps its canonical insert sandboxed. Scenario H measured type quota at
+  3 items/1033–1039 bytes, item cap at 2/691–695, byte cap at 1/346–348, and
+  covered partition and age limits. Production plaintext edge persistence
+  remains disabled. Tasks 18–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -715,6 +715,20 @@ release and upgrade checks must use the resulting migration head. Preserve the
 V1 compatibility envelope for older clients and rollback flags; do not widen
 unrelated runtime paths or migrations without a new scope decision.
 
+On 2026-09-22 the user separately approved updating only
+`apps/backplane_host_agent/test/backplane/host_agent/memory/supervisor_test.exs`
+outside the Task 17 host file list. Its exact `host_sync_v2` config-map
+expectation may add the five existing quota defaults (`max_items`, `max_bytes`,
+`max_items_per_partition`, `max_age_days`, `type_quotas`) exposed by
+`Backplane.HostAgent.Config.load/1`. The approval does not widen production
+configuration or other test scope.
+
+On 2026-09-22 the user additionally approved the narrow Scenario E production
+scope in `apps/backplane_host_agent/lib/backplane/host_agent/memory_facade.ex`,
+with its already listed `memory_facade_test.exs`, to normalize the committed
+edge mirror's `items` response for offline recall. Online canonical routing
+and other host runtime paths are outside this addition.
+
 **Files:**
 - Create: `apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs`
 - Modify: `apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs`
@@ -726,9 +740,9 @@ unrelated runtime paths or migrations without a new scope decision.
 - Modify: `apps/backplane_memory/test/backplane/memory/direct_boundary_security_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
 
-- [ ] Implement one named test/fixture per handoff Scenario A-J. Use real PostgreSQL/Turso stores and transport integration for C, E, F, G, and H; mock only external LLM/network edges.
-- [ ] Assert automated evidence for canonical Recall V2 metadata, unsafe-fallback rejection, restart persistence, live convergence, delete non-resurrection, quotas, complete partition, and bounded projection jobs.
-- [ ] Run the entire qualification file with three seeds and record edge bytes/items and 10,000-event job counts.
+- [x] Implement one named test/fixture per handoff Scenario A-J. Use real PostgreSQL/Turso stores and transport integration for C, E, F, G, and H; mock only external LLM/network edges.
+- [x] Assert automated evidence for canonical Recall V2 metadata, unsafe-fallback rejection, restart persistence, live convergence, delete non-resurrection, quotas, complete partition, and bounded projection jobs.
+- [x] Run the entire qualification file with three seeds and record edge bytes/items and 10,000-event job counts.
 - [ ] Commit `test(memory): qualify memory v2 authority and convergence`.
 
 ### Task 18: Publish protocol, authority model, runbook, and cutover notes
