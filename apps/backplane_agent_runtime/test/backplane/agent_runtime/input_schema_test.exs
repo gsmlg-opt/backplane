@@ -123,6 +123,83 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
              InputSchema.validate(schema, %{"value" => "list"})
   end
 
+  test "accepts default annotations without applying them" do
+    schema = %{
+      "type" => "object",
+      "default" => "not an object",
+      "properties" => %{
+        "nested" => %{
+          "type" => "object",
+          "default" => "not an object",
+          "properties" => %{"name" => %{"type" => "string", "default" => 1}},
+          "required" => ["name"]
+        },
+        "values" => %{
+          "type" => "array",
+          "default" => %{},
+          "items" => %{"type" => "string", "default" => 1}
+        },
+        "choice" => %{
+          "oneOf" => [
+            %{"type" => "string", "enum" => ["left"], "default" => 1},
+            %{"type" => "integer", "default" => "not an integer"}
+          ],
+          "default" => false
+        },
+        "target" => %{
+          "type" => "object",
+          "default" => [],
+          "properties" => %{
+            "left" => %{"type" => "string", "default" => 1},
+            "right" => %{"type" => "integer", "default" => "not an integer"}
+          },
+          "anyOf" => [
+            %{"required" => ["left"], "default" => false},
+            %{"required" => ["right"], "default" => %{}}
+          ],
+          "additionalProperties" => false
+        }
+      },
+      "required" => ["nested", "values", "choice", "target"],
+      "additionalProperties" => false
+    }
+
+    arguments = %{
+      "nested" => %{"name" => "nested"},
+      "values" => ["item"],
+      "choice" => "left",
+      "target" => %{"left" => "selected"}
+    }
+
+    assert :ok = InputSchema.validate_schema(schema)
+    assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+
+    assert {:error, %Error{class: :validation}} =
+             InputSchema.validate(schema, Map.delete(arguments, "nested"))
+
+    assert {:error, %Error{class: :validation}} =
+             InputSchema.validate(schema, put_in(arguments, ["values"], [1]))
+  end
+
+  test "default annotations do not permit unsupported keywords in unused composition branches" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "value" => %{
+          "oneOf" => [
+            %{"type" => "string", "default" => 1},
+            %{"type" => "integer", "default" => "not an integer", "pattern" => "unused"}
+          ],
+          "default" => false
+        }
+      },
+      "required" => ["value"]
+    }
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+             InputSchema.validate(schema, %{"value" => "selected"})
+  end
+
   defp enum_schema(property) do
     %{"type" => "object", "properties" => %{"value" => property}, "required" => ["value"]}
   end

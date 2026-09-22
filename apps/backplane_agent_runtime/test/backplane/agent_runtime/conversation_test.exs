@@ -157,6 +157,20 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     })
   end
 
+  defp default_annotated_registry do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "unused-default",
+      tool_revision: 1,
+      schema: %{
+        "type" => "object",
+        "properties" => %{"path" => %{"type" => "string", "default" => 1}}
+      },
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
   defp skill_registry do
     ToolRegistry.register(%ToolRegistry{}, %{
       tool_name: "skill",
@@ -265,6 +279,21 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert List.last(messages).role == :tool
     assert List.last(messages).result.is_error == false
     send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "an unused default-annotated tool schema does not block the provider" do
+    assert {:ok, registry} = default_annotated_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["unused-default"], tool_revision: 1}
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "answer without tools")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, [done("complete")]})
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 

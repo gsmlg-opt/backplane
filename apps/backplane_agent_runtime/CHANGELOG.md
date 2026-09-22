@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.9
+
+- Accept JSON Schema `default` annotations at every supported schema position
+  without inserting values or relaxing constraint validation.
+
 ## 1.7.0
 
 - Add atomic, run/incarnation-fenced Conversation tool catalog staging and

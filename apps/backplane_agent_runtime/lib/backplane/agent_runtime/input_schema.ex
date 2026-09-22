@@ -17,6 +17,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     :additionalProperties,
     :additional_properties,
     :description,
+    :default,
     :enum,
     :minimum,
     :items,
@@ -109,7 +110,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     sibling_keys =
       schema
       |> Map.keys()
-      |> Enum.reject(&(schema_key(&1) in ["oneOf", "description"]))
+      |> Enum.reject(&(schema_key(&1) in ["oneOf", "description", "default"]))
 
     cond do
       sibling_keys != [] ->
