@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Slots do
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
   @doc "Read a slot by name. Returns {:ok, slot} or {:error, :not_found}."
-  def read(name) when is_binary(name), do: {:error, :incomplete_partition}
+  def read(name) when is_binary(name), do: read(name, nil)
 
   def read(name, partition) when is_binary(name) do
     with {:ok, partition} <- PartitionIdentity.validate(partition) do
@@ -20,8 +20,8 @@ defmodule Backplane.Memory.Slots do
   end
 
   @doc "Write content to a named slot, creating it if it does not exist."
-  def write(name, content, _updated_by \\ nil) when is_binary(name) and is_binary(content),
-    do: {:error, :incomplete_partition}
+  def write(name, content, updated_by \\ nil) when is_binary(name) and is_binary(content),
+    do: write(name, content, updated_by, nil)
 
   def write(name, content, updated_by, partition) when is_binary(name) and is_binary(content) do
     with {:ok, partition} <- PartitionIdentity.validate(partition) do
@@ -40,7 +40,7 @@ defmodule Backplane.Memory.Slots do
   end
 
   @doc "List all slots ordered by name."
-  def list, do: []
+  def list, do: list(nil)
 
   def list(partition) do
     with {:ok, partition} <- PartitionIdentity.validate(partition) do
@@ -61,6 +61,14 @@ defmodule Backplane.Memory.Slots do
           row.namespace == ^Map.fetch!(partition, :namespace)
       )
 
+  defp partition_dynamic(nil),
+    do:
+      dynamic(
+        [row],
+        is_nil(row.host_id) and is_nil(row.client_id) and is_nil(row.scope) and
+          is_nil(row.namespace)
+      )
+
   defp partition_attrs(partition) when is_map(partition),
     do:
       Map.take(partition, [
@@ -71,4 +79,6 @@ defmodule Backplane.Memory.Slots do
         :scope,
         :namespace
       ])
+
+  defp partition_attrs(nil), do: %{}
 end
