@@ -214,9 +214,21 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   new warnings-as-errors compiler diagnostic in legacy `slots/reflect.ex`
   requires a separate scope decision. Exact scope requests for the Service
   product fix, forward-only action-edge trigger migration and release head,
-  BFS/ignore-file cleanup, and legacy Reflect cleanup remain pending. Do not
-  run the full umbrella suite or merge while the scoped memory and Dialyzer
-  gates are red.
+  BFS/ignore-file cleanup, and legacy Reflect cleanup were pending at this
+  checkpoint. Do not run the full umbrella suite or merge while the scoped
+  memory and Dialyzer gates are red.
+- Task 20 scope expansion approved by the user on 2026-09-22: edit only
+  `apps/backplane_memory/lib/backplane/memory/service.ex` and `profiles.ex`
+  to propagate profile/consolidate enqueue rejection; add one forward-only
+  `20260905000011` action-edge trigger migration and one focused migration
+  regression test, updating only `.github/workflows/release.yml` and
+  `test/release_config_test.exs` for the new migration head; correct
+  `apps/backplane_memory/lib/backplane/memory/graph/bfs.ex` and, only if
+  necessary, `.dialyzer_ignore.exs`; and repair the obsolete path in
+  `apps/backplane_memory/lib/backplane/memory/slots/reflect.ex`. The already
+  approved `service_test.exs` and `crystal_action_chain_test.exs` remain test
+  scope. Preserve fail-closed canonical constraints, same trigger SQLSTATE and
+  name, and production plaintext rejection.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
