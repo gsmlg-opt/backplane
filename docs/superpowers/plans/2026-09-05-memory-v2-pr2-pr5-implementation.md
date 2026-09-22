@@ -301,6 +301,28 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   production defect was found in that failure. The repository scope rule
   requires stopping before editing this test; its one-file approval is pending.
   Full umbrella log: `/tmp/backplane-task20-umbrella-full-final-00011.log`.
+- Task 20 Skills test-only scope approved by the user on 2026-09-22: edit only
+  `apps/backplane_mcp/test/backplane/services/skills_test.exs` to guard its
+  `:backplane_tools` name filter against tuple-keyed upstream catalog entries.
+  Re-run the focused test and a fresh full umbrella suite before merging.
+- Task 20 final pre-merge gate on 2026-09-22: the Skills fixture guard was
+  committed as `b75ba5f6` after focused 6/6 and both reviews. A fresh full
+  umbrella run found one timing-dependent `McpHandlerTest` teardown failure:
+  its test-linked audit processes exited before `on_exit` could stop them.
+  The previously approved MCP handler test scope was repaired in `eecd8a6b`;
+  focused handler tests passed 126/126 and both reviews approved. A complete
+  rerun against a newly created/migrated isolated database then exited zero:
+  all app suites passed, including Memory 1230/1230, MCP 656/656,
+  host-agent 508/508, and API 253/253. Root format, warnings-as-errors
+  compilation, strict Credo (1428 files, zero issues), default-environment
+  Dialyzer (145 pre-existing warnings ignored), release-config 10/10, and
+  CI-workflow 4/4 passed. The exact release qualification batches had passed
+  50/50 and 35/35; the extracted production release applied 106 migrations
+  on the first pass and zero on the second, with head `20260905000011`.
+  Browser, Recall CI, and M18 CI qualification reports passed. Final branch
+  integration and merged-state verification remain outstanding. Production
+  plaintext edge persistence remains disabled; `gsmlg-dev/concord#91` was
+  rechecked open.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
