@@ -62,17 +62,19 @@ defmodule Backplane.SkillProtocol.Bundle do
   @spec pack(String.t(), String.t(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def pack(skill_root, archive_path, opts \\ []) do
     with {:ok, canonical_root} <- realpath(skill_root),
-         {:ok, entries} <- collect_directory(canonical_root, opts),
-         :ok <- require_entrypoint(entries),
-         :ok <- create_archive(archive_path, Path.basename(canonical_root), entries),
-         {:ok, bundle} <- inspect(archive_path, opts) do
+         false <- path_exists?(archive_path),
+         {:ok, stage} <- pack_staging_path(archive_path),
+         {:ok, bundle} <- pack_and_publish(canonical_root, archive_path, stage, opts) do
       {:ok, bundle}
     else
+      true ->
+        error(:invalid_request, "bundle archive already exists")
+
       {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
-        error(:invalid_bundle, "bundle cannot be packed", %{reason: Kernel.inspect(reason)})
+        error(:invalid_bundle, "bundle cannot be packed", %{reason: sanitized_reason(reason)})
     end
   end
 
@@ -484,41 +486,107 @@ defmodule Backplane.SkillProtocol.Bundle do
 
   defp path_exists?(path), do: match?({:ok, _stat}, File.lstat(path))
 
+  defp pack_staging_path(archive_path) do
+    expanded = Path.expand(archive_path)
+    temporary_directory(Path.dirname(expanded), ".#{Path.basename(expanded)}.stage")
+  end
+
+  defp pack_and_publish(root, archive_path, stage, opts) do
+    staged_archive = Path.join(stage, "archive.tar.gz")
+
+    try do
+      with {:ok, snapshot} <- collect_directory(root, opts),
+           :ok <- require_entrypoint(snapshot.entries),
+           :ok <- create_archive(staged_archive, Path.basename(root), snapshot.entries),
+           {:ok, bundle} <- inspect(staged_archive, opts),
+           {:ok, verification} <- collect_directory(root, opts),
+           :ok <- verify_snapshot(snapshot, verification),
+           :ok <- cancelled(opts),
+           :ok <- publish_archive(staged_archive, archive_path) do
+        {:ok, %{bundle | archive_path: archive_path}}
+      end
+    after
+      File.rm_rf(stage)
+    end
+  end
+
+  defp publish_archive(staged_archive, archive_path) do
+    case File.ln(staged_archive, archive_path) do
+      :ok ->
+        :ok
+
+      {:error, :eexist} ->
+        error(:invalid_request, "bundle archive already exists")
+
+      {:error, reason} ->
+        error(:invalid_bundle, "bundle archive cannot be published", %{
+          reason: sanitized_reason(reason)
+        })
+    end
+  end
+
   defp collect_directory(root, opts) do
-    root
-    |> File.ls!()
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, [], 0, 0}, fn name, {:ok, acc, count, total} ->
-      case collect_path(Path.join(root, name), root, opts, acc, count, total) do
-        {:ok, _, _, _} = result -> {:cont, result}
+    with :ok <- cancelled(opts),
+         {:ok, before} <- File.lstat(root),
+         true <- before.type == :directory,
+         {:ok, names} <- File.ls(root),
+         {:ok, entries, evidence, _count, _total} <-
+           collect_children(Enum.sort(names), root, root, opts, [], [], 0, 0),
+         {:ok, after_stat} <- File.lstat(root),
+         true <- stat_signature(before) == stat_signature(after_stat) do
+      {:ok,
+       %{
+         entries: Enum.reverse(entries),
+         evidence:
+           Enum.sort([{String.to_charlist("."), stat_signature(after_stat), nil} | evidence])
+       }}
+    else
+      false -> source_changed(:directory_changed)
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> source_changed(:inventory_changed)
+    end
+  end
+
+  defp collect_children(names, parent, root, opts, entries, evidence, count, total) do
+    Enum.reduce_while(names, {:ok, entries, evidence, count, total}, fn name,
+                                                                        {:ok, items, proof, c, t} ->
+      case collect_path(Path.join(parent, name), root, opts, items, proof, c, t) do
+        {:ok, _, _, _, _} = result -> {:cont, result}
         {:error, _} = error -> {:halt, error}
       end
     end)
-    |> case do
-      {:ok, entries, _count, _total} -> {:ok, Enum.reverse(entries)}
-      error -> error
-    end
-  rescue
-    error ->
-      error(:invalid_bundle, "bundle root cannot be read", %{reason: Exception.message(error)})
   end
 
-  defp collect_path(path, root, opts, acc, count, total) do
+  defp collect_path(path, root, opts, entries, evidence, count, total) do
     with :ok <- cancelled(opts),
          {:ok, link_stat} <- File.lstat(path),
          false <- link_stat.type == :symlink,
          :ok <-
            maximum(count + 1, limit(opts, :max_entries, @default_max_entries), :archive_entries) do
       if link_stat.type == :directory do
-        path
-        |> File.ls!()
-        |> Enum.sort()
-        |> Enum.reduce_while({:ok, acc, count + 1, total}, fn child, {:ok, items, c, t} ->
-          case collect_path(Path.join(path, child), root, opts, items, c, t) do
-            {:ok, _, _, _} = result -> {:cont, result}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
+        with {:ok, names} <- File.ls(path),
+             {:ok, items, proof, next_count, next_total} <-
+               collect_children(
+                 Enum.sort(names),
+                 path,
+                 root,
+                 opts,
+                 entries,
+                 evidence,
+                 count + 1,
+                 total
+               ),
+             {:ok, after_stat} <- File.lstat(path),
+             true <- stat_signature(link_stat) == stat_signature(after_stat) do
+          relative = Path.relative_to(path, root)
+
+          {:ok, items, [{String.to_charlist(relative), stat_signature(after_stat), nil} | proof],
+           next_count, next_total}
+        else
+          false -> source_changed(:directory_changed)
+          {:error, %Error{} = error} -> {:error, error}
+          {:error, _reason} -> source_changed(:inventory_changed)
+        end
       else
         with true <- link_stat.type == :regular,
              :ok <-
@@ -533,18 +601,70 @@ defmodule Backplane.SkillProtocol.Bundle do
                  limit(opts, :max_expanded_bytes, @default_max_expanded_bytes),
                  :unpacked_bytes
                ),
-             {:ok, bytes} <- File.read(path) do
-          {:ok, [{Path.relative_to(path, root), bytes} | acc], count + 1, total + link_stat.size}
+             {:ok, bytes} <- read_exact_file(path, link_stat.size, opts),
+             {:ok, after_stat} <- File.lstat(path),
+             true <- stat_signature(link_stat) == stat_signature(after_stat) do
+          relative = Path.relative_to(path, root)
+          proof = {String.to_charlist(relative), stat_signature(after_stat), sha256(bytes)}
+
+          {:ok, [{relative, bytes} | entries], [proof | evidence], count + 1,
+           total + byte_size(bytes)}
         else
           false -> error(:invalid_bundle, "bundle source contains unsupported filesystem entry")
-          {:error, _} = error -> error
+          {:error, %Error{} = error} -> {:error, error}
+          {:error, _reason} -> source_changed(:file_changed)
         end
       end
     else
       true -> error(:invalid_bundle, "bundle source contains a symlink")
-      {:error, _} = error -> error
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} -> source_changed(:inventory_changed)
     end
   end
+
+  defp read_exact_file(path, expected_size, opts) do
+    case File.open(path, [:read, :binary]) do
+      {:ok, file} ->
+        try do
+          with {:ok, chunks} <- read_exact_chunks(file, expected_size, opts, []),
+               :eof <- IO.binread(file, 1) do
+            {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+          else
+            extra when is_binary(extra) -> source_changed(:file_changed)
+            {:error, %Error{} = error} -> {:error, error}
+            {:error, _reason} -> source_changed(:file_changed)
+          end
+        after
+          File.close(file)
+        end
+
+      {:error, _reason} ->
+        source_changed(:file_changed)
+    end
+  end
+
+  defp read_exact_chunks(_file, 0, _opts, chunks), do: {:ok, chunks}
+
+  defp read_exact_chunks(file, remaining, opts, chunks) do
+    with :ok <- cancelled(opts) do
+      case IO.binread(file, min(remaining, 64 * 1024)) do
+        data when is_binary(data) ->
+          read_exact_chunks(file, remaining - byte_size(data), opts, [data | chunks])
+
+        :eof ->
+          source_changed(:file_changed)
+
+        {:error, _reason} ->
+          source_changed(:file_changed)
+      end
+    end
+  end
+
+  defp verify_snapshot(%{evidence: evidence}, %{evidence: evidence}), do: :ok
+  defp verify_snapshot(_snapshot, _verification), do: source_changed(:source_changed)
+
+  defp stat_signature(stat),
+    do: {stat.type, stat.inode, stat.size, stat.mtime, stat.ctime}
 
   defp require_entrypoint(entries) do
     if Enum.any?(entries, &(elem(&1, 0) == "SKILL.md")),
@@ -598,6 +718,21 @@ defmodule Backplane.SkillProtocol.Bundle do
 
   defp unsafe(path), do: error(:invalid_bundle, "archive path is unsafe", %{path: path})
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp source_changed(change),
+    do:
+      {:error,
+       Error.new(:source_changed, :bundle, "bundle source changed while packing",
+         context: %{change: change},
+         retryable: true
+       )}
+
+  defp sanitized_reason(reason) when is_atom(reason), do: reason
+
+  defp sanitized_reason({operation, reason}) when is_atom(operation) and is_atom(reason),
+    do: {operation, reason}
+
+  defp sanitized_reason(_reason), do: :filesystem_error
 
   defp realpath(path), do: PathSafety.realpath(path)
 
