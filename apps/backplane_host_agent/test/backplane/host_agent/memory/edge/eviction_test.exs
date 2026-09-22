@@ -21,19 +21,18 @@ defmodule Backplane.HostAgent.Memory.Edge.EvictionTest do
       "semantic",
       "expired",
       100,
-      "2020-01-01",
-      "2020-01-01",
+      {"2020-01-01", "2020-01-01"},
       10,
-      "2025-01-01T00:00:00Z"
+      expires: "2025-01-01T00:00:00Z"
     )
 
-    put(store, "a", "semantic", "type-low", 1, "2020-01-01", "2020-01-01", 10)
-    put(store, "a", "semantic", "type-high", 9, "2020-01-01", "2020-01-01", 10)
-    put(store, "a", "procedural", "priority-low", 1, "2024-01-01", "2024-01-01", 10)
-    put(store, "a", "procedural", "lru-old", 5, "2020-01-01", "2024-01-01", 10)
-    put(store, "a", "procedural", "updated-a", 5, "2024-01-01", "2020-01-01", 10)
-    put(store, "a", "procedural", "updated-b", 5, "2024-01-01", "2020-01-01", 10)
-    put(store, "b", "procedural", "keeper", 10, "2025-01-01", "2025-01-01", 10)
+    put(store, "a", "semantic", "type-low", 1, {"2020-01-01", "2020-01-01"}, 10)
+    put(store, "a", "semantic", "type-high", 9, {"2020-01-01", "2020-01-01"}, 10)
+    put(store, "a", "procedural", "priority-low", 1, {"2024-01-01", "2024-01-01"}, 10)
+    put(store, "a", "procedural", "lru-old", 5, {"2020-01-01", "2024-01-01"}, 10)
+    put(store, "a", "procedural", "updated-a", 5, {"2024-01-01", "2020-01-01"}, 10)
+    put(store, "a", "procedural", "updated-b", 5, {"2024-01-01", "2020-01-01"}, 10)
+    put(store, "b", "procedural", "keeper", 10, {"2025-01-01", "2025-01-01"}, 10)
 
     config = %{
       max_items: 3,
@@ -54,9 +53,9 @@ defmodule Backplane.HostAgent.Memory.Edge.EvictionTest do
   test "tombstones count toward storage bounds, evict first, and stay outside type quotas", %{
     store: store
   } do
-    put(store, "a", "semantic", "a", 1, nil, nil, 10)
-    put(store, "a", "semantic", "b", 1, nil, nil, 10)
-    put(store, "a", "semantic", "deleted", 0, nil, nil, 10, nil, "deleted")
+    put(store, "a", "semantic", "a", 1, {nil, nil}, 10)
+    put(store, "a", "semantic", "b", 1, {nil, nil}, 10)
+    put(store, "a", "semantic", "deleted", 0, {nil, nil}, 10, state: "deleted")
 
     assert {:ok, %{evicted: 2}} =
              Eviction.enforce(store, %{
@@ -74,7 +73,7 @@ defmodule Backplane.HostAgent.Memory.Edge.EvictionTest do
   test "maximum age uses the supplied clock and eviction has no upstream command surface", %{
     store: store
   } do
-    put(store, "a", "semantic", "age", 1, nil, "2020-12-31T00:00:00", 10)
+    put(store, "a", "semantic", "age", 1, {nil, "2020-12-31T00:00:00"}, 10)
 
     assert {:ok, %{expired: 0}} =
              Eviction.enforce(store, %{max_items: 10, max_bytes: 100, max_age_seconds: 172_800},
@@ -96,12 +95,13 @@ defmodule Backplane.HostAgent.Memory.Edge.EvictionTest do
          type,
          id,
          priority,
-         accessed,
-         updated,
+         {accessed, updated},
          bytes,
-         expires \\ nil,
-         state \\ "active"
+         opts \\ []
        ) do
+    expires = Keyword.get(opts, :expires)
+    state = Keyword.get(opts, :state, "active")
+
     assert {:ok, _} =
              Store.execute(
                store,

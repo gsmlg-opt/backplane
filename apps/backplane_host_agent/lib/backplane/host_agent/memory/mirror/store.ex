@@ -472,9 +472,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       query,
       limit,
       "",
-      [],
-      2,
-      byte_size(Jason.encode!(base)) - 2
+      {[], 2, byte_size(Jason.encode!(base)) - 2}
     )
   end
 
@@ -485,9 +483,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
          _query,
          0,
          _last_id,
-         accepted,
-         _list_bytes,
-         _envelope
+         {accepted, _list_bytes, _envelope}
        ),
        do: Enum.reverse(accepted)
 
@@ -498,9 +494,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
          query,
          limit,
          last_id,
-         accepted,
-         list_bytes,
-         envelope
+         {accepted, list_bytes, envelope}
        ) do
     row =
       rows!(
@@ -528,9 +522,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
             query,
             limit - 1,
             raw["canonical_id"],
-            [item | accepted],
-            next_bytes,
-            envelope
+            {[item | accepted], next_bytes, envelope}
           )
         else
           Enum.reverse(accepted)

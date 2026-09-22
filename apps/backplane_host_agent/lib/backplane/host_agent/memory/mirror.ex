@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   alias Backplane.HostAgent.Memory.Edge.{Protection, Telemetry}
   alias Backplane.HostAgent.Memory.Mirror.Store
 
-  @typedoc "The only accepted values are \"recall\", \"list\", and \"stats\"."
+  @typedoc ~s(The only accepted values are "recall", "list", and "stats".)
   @type operation :: String.t()
 
   @spec offer(keyword()) :: {:ok, map()} | {:error, term()}
@@ -160,7 +160,11 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   defp partition?(_), do: false
   defp text?(s), do: is_binary(s) and byte_size(s) in 1..1024
   defp finite_number?(n) when is_integer(n), do: true
-  defp finite_number?(n) when is_float(n), do: n == n
+
+  defp finite_number?(n) when is_float(n) do
+    match?({_, ""}, Float.parse(Float.to_string(n)))
+  end
+
   defp finite_number?(_), do: false
 
   defp valid_datetime?(value) when is_binary(value) do

@@ -26,6 +26,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Store do
     database = Keyword.fetch!(opts, :database)
 
     with :ok <- if(database == ":memory:", do: :ok, else: File.mkdir_p(Path.dirname(database))) do
+      # credo:disable-for-next-line Credo.Check.Design.TagTODO
       # TODO(upstream): gsmlg-dev/concord#91
       # Supported database encryption is unavailable; Protection must precede this open.
       case Turso.start_link(Keyword.take(opts, [:database, :name]) ++ [pool_size: 1]) do
