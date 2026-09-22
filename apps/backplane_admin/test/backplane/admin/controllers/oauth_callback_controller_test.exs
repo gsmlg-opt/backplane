@@ -52,6 +52,26 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest do
     assert {:ok, "figma-access-token"} = Credentials.fetch("shared-figma")
   end
 
+  test "uses the dynamically registered identity and stores it only in the encrypted blob", %{
+    conn: conn
+  } do
+    oauth_client = %{
+      "client_id" => "dynamic-client",
+      "client_secret" => "dynamic-secret",
+      "token_endpoint_auth_method" => "client_secret_basic"
+    }
+
+    state = put_figma_state("dynamic-figma", oauth_client, true)
+    conn = get(conn, "/oauth/callback", %{"code" => "dynamic-code", "state" => state})
+
+    assert redirected_to(conn) == "/system/credentials"
+    credential = Repo.get_by!(Credential, name: "dynamic-figma")
+    assert credential.metadata == %{"auth_type" => "figma_oauth"}
+
+    {:ok, plaintext} = Backplane.Settings.Encryption.decrypt(credential.encrypted_value)
+    assert Jason.decode!(plaintext)["oauth_client"] == oauth_client
+  end
+
   test "rejects incomplete successful responses without replacing the usable token", %{
     conn: _conn
   } do
@@ -121,13 +141,24 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest do
     refute log =~ "secret:with/slash"
   end
 
-  defp put_figma_state(name) do
-    OAuthStateStore.put(%{
+  defp put_figma_state(name, oauth_client \\ nil, persist_oauth_client? \\ false) do
+    attrs = %{
       "vendor" => "figma_oauth",
       "cred_name" => name,
       "code_verifier" => "test-code-verifier",
       "redirect_uri" => @redirect_uri
-    })
+    }
+
+    attrs =
+      if oauth_client do
+        attrs
+        |> Map.put("oauth_client", oauth_client)
+        |> Map.put("persist_oauth_client", persist_oauth_client?)
+      else
+        attrs
+      end
+
+    OAuthStateStore.put(attrs)
   end
 
   defp store_existing(name) do
@@ -155,11 +186,11 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest.FigmaTokenEndpoint do
   plug(:dispatch)
 
   post "/figma/token" do
-    expected_auth =
-      "Basic " <> Base.encode64("figma+client:secret%3Awith%2Fslash")
+    configured_auth = "Basic " <> Base.encode64("figma+client:secret%3Awith%2Fslash")
+    dynamic_auth = "Basic " <> Base.encode64("dynamic-client:dynamic-secret")
 
     valid_request? =
-      get_req_header(conn, "authorization") == [expected_auth] and
+      get_req_header(conn, "authorization") in [[configured_auth], [dynamic_auth]] and
         conn.body_params["grant_type"] == "authorization_code" and
         conn.body_params["redirect_uri"] == @redirect_uri and
         conn.body_params["code_verifier"] == "test-code-verifier" and
@@ -175,6 +206,13 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest.FigmaTokenEndpoint do
           "refresh_token" => "figma-refresh-token",
           "expires_in" => 3600,
           "token_type" => "Bearer"
+        })
+
+      conn.body_params["code"] == "dynamic-code" ->
+        json(conn, 200, %{
+          "access_token" => "dynamic-access-token",
+          "refresh_token" => "dynamic-refresh-token",
+          "expires_in" => 3600
         })
 
       conn.body_params["code"] == "missing-refresh" ->

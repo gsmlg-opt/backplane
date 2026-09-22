@@ -307,6 +307,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           google_client_secret: "test-google-secret",
           xai_token_url: "http://localhost:#{port}/xai/token",
           xai_client_id: "test-xai-client",
+          figma_registration_url: "http://localhost:#{port}/figma/register",
           figma_token_url: "http://localhost:#{port}/figma/token",
           figma_mcp_client_id: "test-figma-client",
           figma_mcp_client_secret: "test-figma-secret"
@@ -643,7 +644,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert query["code_challenge"] == expected_challenge
     end
 
-    test "keeps the Figma connect form open when the client ID is missing", %{conn: conn} do
+    test "registers a Figma client when explicit credentials are absent", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
       prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET])
 
@@ -663,16 +664,27 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       {:ok, view, _html} = live(conn, "/system/credentials/new/figma_oauth")
 
-      html =
-        view
-        |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
-        |> render_submit()
+      view
+      |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
+      |> render_submit()
 
-      assert html =~ "Set FIGMA_MCP_CLIENT_ID before connecting Figma MCP"
-      assert has_element?(view, "form[phx-submit=start_device_auth]")
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      assert_patched(view, "/system/credentials")
+
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+      assert query["client_id"] == "dynamic-figma-client"
+      assert {:ok, attrs} = OAuthStateStore.pop(query["state"])
+
+      assert attrs["oauth_client"] == %{
+               "client_id" => "dynamic-figma-client",
+               "client_secret" => "dynamic-figma-secret",
+               "token_endpoint_auth_method" => "client_secret_basic"
+             }
+
+      assert attrs["persist_oauth_client"]
     end
 
-    test "keeps the Figma connect form open when the client secret is missing", %{conn: conn} do
+    test "rejects partially configured Figma credentials", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
       prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_SECRET])
 
@@ -698,7 +710,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
         |> render_submit()
 
-      assert html =~ "Set FIGMA_MCP_CLIENT_SECRET before connecting Figma MCP"
+      assert html =~ "Set both FIGMA_MCP_CLIENT_ID and FIGMA_MCP_CLIENT_SECRET"
       assert has_element?(view, "form[phx-submit=start_device_auth]")
     end
 
@@ -1355,6 +1367,34 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{"error" => "unexpected_body", "body" => body}))
+    end
+  end
+
+  post "/figma/register" do
+    body = conn.body_params
+
+    if body == %{
+         "client_name" => "Backplane",
+         "redirect_uris" => [Backplane.WebOrigins.admin_url("/oauth/callback")],
+         "grant_types" => ["authorization_code", "refresh_token"],
+         "response_types" => ["code"],
+         "scope" => "mcp:connect",
+         "token_endpoint_auth_method" => "client_secret_basic"
+       } do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(
+        201,
+        Jason.encode!(%{
+          "client_id" => "dynamic-figma-client",
+          "client_secret" => "dynamic-figma-secret",
+          "token_endpoint_auth_method" => "client_secret_basic"
+        })
+      )
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
     end
   end
 

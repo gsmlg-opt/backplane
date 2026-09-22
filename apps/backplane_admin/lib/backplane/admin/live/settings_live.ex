@@ -703,9 +703,10 @@ defmodule Backplane.Admin.SettingsLive do
         end
 
       vendor == "figma_oauth" ->
-        case OAuthRefresher.figma_mcp_client_credentials() do
-          {:ok, _client_id, _client_secret} ->
-            redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
+        redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
+
+        case OAuthRefresher.resolve_figma_mcp_client(redirect_uri) do
+          {:ok, oauth_client, persist_oauth_client?} ->
             {verifier, challenge} = pkce_pair()
 
             state =
@@ -713,10 +714,18 @@ defmodule Backplane.Admin.SettingsLive do
                 "vendor" => vendor,
                 "cred_name" => name,
                 "code_verifier" => verifier,
-                "redirect_uri" => redirect_uri
+                "redirect_uri" => redirect_uri,
+                "oauth_client" => oauth_client,
+                "persist_oauth_client" => persist_oauth_client?
               })
 
-            auth_url = build_auth_url(vendor, state, challenge, redirect_uri)
+            auth_url =
+              build_figma_auth_url(
+                state,
+                challenge,
+                redirect_uri,
+                oauth_client["client_id"]
+              )
 
             {:noreply,
              socket
@@ -1976,9 +1985,7 @@ defmodule Backplane.Admin.SettingsLive do
     xai_authorize_url() <> "?" <> URI.encode_query(params)
   end
 
-  defp build_auth_url("figma_oauth", state, challenge, redirect_uri) do
-    {:ok, client_id, _client_secret} = OAuthRefresher.figma_mcp_client_credentials()
-
+  defp build_figma_auth_url(state, challenge, redirect_uri, client_id) do
     params = %{
       "response_type" => "code",
       "client_id" => client_id,
@@ -1993,11 +2000,20 @@ defmodule Backplane.Admin.SettingsLive do
     OAuthRefresher.figma_authorize_url() <> "?" <> URI.encode_query(params)
   end
 
-  defp format_figma_oauth_config_error(:missing_figma_mcp_client_id),
-    do: "Set FIGMA_MCP_CLIENT_ID before connecting Figma MCP"
+  defp format_figma_oauth_config_error(:partial_figma_mcp_client_credentials),
+    do:
+      "Set both FIGMA_MCP_CLIENT_ID and FIGMA_MCP_CLIENT_SECRET, or remove both to register automatically"
 
-  defp format_figma_oauth_config_error(:missing_figma_mcp_client_secret),
-    do: "Set FIGMA_MCP_CLIENT_SECRET before connecting Figma MCP"
+  defp format_figma_oauth_config_error(:invalid_figma_client_registration),
+    do: "Figma returned an invalid client registration response"
+
+  defp format_figma_oauth_config_error({:figma_client_registration_failed, status}),
+    do:
+      "Figma client registration failed (HTTP #{status}); this deployment may require an approved Figma client"
+
+  defp format_figma_oauth_config_error({:figma_client_registration_error, _reason}),
+    do:
+      "Could not reach Figma client registration; try again or configure an approved Figma client"
 
   defp google_client_id do
     value =

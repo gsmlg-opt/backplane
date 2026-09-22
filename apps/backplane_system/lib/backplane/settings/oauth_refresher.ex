@@ -37,6 +37,7 @@ defmodule Backplane.Settings.OAuthRefresher do
   @figma_authorize_url "https://www.figma.com/oauth/mcp"
   @figma_resource "https://mcp.figma.com/mcp"
   @figma_scope "mcp:connect"
+  @figma_registration_url "https://api.figma.com/v1/oauth/mcp/register"
   @request_timeout_ms 30_000
 
   @type vendor ::
@@ -79,6 +80,84 @@ defmodule Backplane.Settings.OAuthRefresher do
       is_nil(client_secret) -> {:error, :missing_figma_mcp_client_secret}
       true -> {:ok, client_id, client_secret}
     end
+  end
+
+  @spec resolve_figma_mcp_client(String.t(), keyword()) ::
+          {:ok, map(), boolean()} | {:error, term()}
+  def resolve_figma_mcp_client(redirect_uri, opts \\ []) when is_binary(redirect_uri) do
+    client_id = option_or_config(opts, :figma_mcp_client_id, "FIGMA_MCP_CLIENT_ID")
+    client_secret = option_or_config(opts, :figma_mcp_client_secret, "FIGMA_MCP_CLIENT_SECRET")
+
+    cond do
+      client_id && client_secret ->
+        {:ok, figma_client_context(client_id, client_secret), false}
+
+      client_id || client_secret ->
+        {:error, :partial_figma_mcp_client_credentials}
+
+      true ->
+        with {:ok, client} <- register_figma_mcp_client(redirect_uri, opts) do
+          {:ok, client, true}
+        end
+    end
+  end
+
+  @spec register_figma_mcp_client(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def register_figma_mcp_client(redirect_uri, opts \\ []) do
+    body = %{
+      "client_name" => "Backplane",
+      "redirect_uris" => [redirect_uri],
+      "grant_types" => ["authorization_code", "refresh_token"],
+      "response_types" => ["code"],
+      "scope" => @figma_scope,
+      "token_endpoint_auth_method" => "client_secret_basic"
+    }
+
+    registration_url =
+      option_or_config(opts, :figma_registration_url, nil) ||
+        cfg(:figma_registration_url) || @figma_registration_url
+
+    request_options(registration_url)
+    |> Keyword.merge(
+      json: body,
+      headers: [{"accept", "application/json"}],
+      receive_timeout: request_timeout_ms(),
+      retry: false,
+      redirect: false
+    )
+    |> then(&Req.post(registration_url, &1))
+    |> normalize_figma_client_registration()
+  end
+
+  defp normalize_figma_client_registration({:ok, %{status: status, body: response}})
+       when status in 200..299 and is_map(response) do
+    with client_id when is_binary(client_id) <- normalize_optional_string(response["client_id"]),
+         client_secret when is_binary(client_secret) <-
+           normalize_optional_string(response["client_secret"]),
+         auth_method when auth_method in [nil, "client_secret_basic"] <-
+           response["token_endpoint_auth_method"] do
+      {:ok, figma_client_context(client_id, client_secret)}
+    else
+      _ -> {:error, :invalid_figma_client_registration}
+    end
+  end
+
+  defp normalize_figma_client_registration({:ok, %{status: status}})
+       when status in 200..299,
+       do: {:error, :invalid_figma_client_registration}
+
+  defp normalize_figma_client_registration({:ok, %{status: status}}),
+    do: {:error, {:figma_client_registration_failed, status}}
+
+  defp normalize_figma_client_registration({:error, reason}),
+    do: {:error, {:figma_client_registration_error, reason}}
+
+  defp figma_client_context(client_id, client_secret) do
+    %{
+      "client_id" => client_id,
+      "client_secret" => client_secret,
+      "token_endpoint_auth_method" => "client_secret_basic"
+    }
   end
 
   @spec figma_mcp_client_auth_headers(keyword()) ::
@@ -164,7 +243,12 @@ defmodule Backplane.Settings.OAuthRefresher do
   end
 
   def refresh(:figma_oauth, refresh_token, opts) when is_binary(refresh_token) do
-    with {:ok, headers} <- figma_mcp_client_auth_headers(opts) do
+    with {:ok, client} <- figma_client_for_refresh(opts),
+         {:ok, headers} <-
+           figma_mcp_client_auth_headers(
+             figma_mcp_client_id: client["client_id"],
+             figma_mcp_client_secret: client["client_secret"]
+           ) do
       do_refresh(
         figma_token_url(),
         :form,
@@ -176,6 +260,33 @@ defmodule Backplane.Settings.OAuthRefresher do
         headers
       )
     end
+  end
+
+  defp figma_client_for_refresh(opts) do
+    case Keyword.get(opts, :figma_client) do
+      nil ->
+        case figma_mcp_client_credentials(opts) do
+          {:ok, client_id, client_secret} ->
+            {:ok, figma_client_context(client_id, client_secret)}
+
+          error ->
+            error
+        end
+
+      client when is_map(client) ->
+        if valid_figma_client_context?(client),
+          do: {:ok, client},
+          else: {:error, :invalid_figma_oauth_client}
+
+      _ ->
+        {:error, :invalid_figma_oauth_client}
+    end
+  end
+
+  defp valid_figma_client_context?(client) do
+    is_binary(client["client_id"]) and client["client_id"] != "" and
+      is_binary(client["client_secret"]) and client["client_secret"] != "" and
+      client["token_endpoint_auth_method"] in [nil, "client_secret_basic"]
   end
 
   defp do_refresh(url, encoding, body, headers \\ []) do
@@ -275,7 +386,7 @@ defmodule Backplane.Settings.OAuthRefresher do
     [
       Keyword.get(opts, key),
       cfg(key),
-      System.get_env(env_key)
+      if(env_key, do: System.get_env(env_key))
     ]
     |> Enum.find_value(&normalize_optional_string/1)
   end
