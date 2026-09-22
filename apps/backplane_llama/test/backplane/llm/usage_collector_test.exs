@@ -13,6 +13,18 @@ defmodule Backplane.LLM.UsageCollectorTest do
   }
 
   setup do
+    previous_disabled =
+      Application.get_env(:backplane_telemetry, :observability_v2_test_disabled)
+
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
+
+    on_exit(fn ->
+      case previous_disabled do
+        nil -> Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
+        value -> Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, value)
+      end
+    end)
+
     Credentials.store("collector-test-cred", "sk-ant-test-key", "llm")
     {:ok, provider} = Provider.create(@provider_attrs)
 

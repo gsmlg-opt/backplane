@@ -5,6 +5,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   import Plug.Test
 
   alias Backplane.Embedding
+
   alias Backplane.LLM.{
     ModelResolver,
     Provider,
@@ -39,7 +40,9 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
     {:ok, openai_provider} = Provider.create(%{name: "obs-openai", credential: "obs-openai-cred"})
 
-    anthropic = setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+    anthropic =
+      setup_provider_api(anthropic_provider, :anthropic, anthropic_upstream.port, "claude-obs")
+
     openai = setup_provider_api(openai_provider, :openai, openai_upstream.port, "gpt-obs")
 
     {:ok, embedding} =
@@ -171,10 +174,13 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   test "records rate limit rejection", %{openai_provider: provider} do
-    {:ok, provider} = Provider.update(provider, %{rpm_limit: 1})
+    {:ok, _updated_provider} = Provider.update(provider, %{rpm_limit: 1})
     ModelResolver.clear_cache()
 
-    body = %{"model" => "obs-openai/gpt-obs", "messages" => [%{"role" => "user", "content" => "hi"}]}
+    body = %{
+      "model" => "obs-openai/gpt-obs",
+      "messages" => [%{"role" => "user", "content" => "hi"}]
+    }
 
     assert llm_request(:post, "/v1/chat/completions", body).status == 200
 
@@ -192,6 +198,7 @@ defmodule Backplane.LLM.AccessObservabilityTest do
           limit: 1
         )
       )
+
     assert log.outcome == "error"
     assert log.error_kind == "rate_limit"
     assert log.status == 429

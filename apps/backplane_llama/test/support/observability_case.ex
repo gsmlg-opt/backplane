@@ -45,7 +45,7 @@ defmodule Backplane.LLM.ObservabilityCase do
   def reset_observability_v2! do
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_llm_write, false)
-    Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, true)
   end
 
   @doc false
