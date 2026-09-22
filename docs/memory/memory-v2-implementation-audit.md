@@ -1,5 +1,17 @@
 # Memory V2 Implementation Audit
 
+> Historical PR0 baseline audit. Its “current defect,” provisional target SQL,
+> and future-tense remediation sections describe the pre-PR2 state and are not
+> current runtime findings. The implemented PR2–PR4 authority, wire, and
+> operations contract is documented in
+> [host-memory-v2-protocol.md](host-memory-v2-protocol.md) and the
+> [edge runbook](../operations/host-memory-edge-runbook.md). Server migration
+> `20260905000010` includes edge-eligible host episodic memories and immutable
+> command receipts; host command-store V3 stores positive canonical revisions.
+> The original local-first host authority is superseded. Production plaintext
+> edge persistence remains disabled pending
+> [concord#91](https://github.com/gsmlg-dev/concord/issues/91).
+
 Status: PR0 implementation audit; no behavior change
 
 Baseline: `55835fbd799c81238e455446f8fa43701a5adda6`
@@ -467,9 +479,12 @@ ORDER BY projector, status;
 
 Characterization fixtures must disable the LLM and individual features, run summary/semantic/procedural/graph/profile/lesson/crystal scheduling, and assert one durable state per expected projector using the target states `pending`, `enqueued`, `running`, `complete`, `skipped_no_model`, `skipped_disabled`, `failed`, or `dead_letter`. Returning `:ok` without such a row is a failure.
 
-### 9.5 Stale or missing host cursors — provisional post-`host_memory.v2` target
+### 9.5 Stale or missing host cursors — implemented `host_memory.v2` schema
 
-The following block is provisional target-schema pseudocode, not executable SQL. Every table, column, and function name in it—including `bpm_memory_partition_revisions`, `bpm_host_memory_cursors`, `memory_space_id`, `current_revision`, `applied_revision`, `acknowledged_at`, and `entitled_hosts/1`—is pending the protocol and memory-space/schema ADRs.
+The original `entitled_hosts/1` query below was a proposal, not an installed
+database function. Use the executable exact-host/partition query in the
+[edge runbook](../operations/host-memory-edge-runbook.md), after checking the
+current entitlement inventory. Do not run the historical pseudocode below.
 
 ```sql
 SELECT p.memory_space_id, p.scope, p.namespace, p.current_revision,
@@ -487,7 +502,10 @@ WHERE c.host_id IS NULL
 ORDER BY revision_lag DESC NULLS FIRST;
 ```
 
-The exact entitlement join is decided by the memory-space ADR; `entitled_hosts(...)` is a contract placeholder, not a current function. The block must be rewritten against the accepted schema before operational use. Acceptance requires durable ACK only after the host commits the matching revision.
+The retained block records the PR0 proposed shape only. The installed
+`bpm_memory_partition_revisions`, `bpm_host_memory_cursors`, and
+`bpm_host_memory_deliveries` tables now support durable ACK after the host
+commits the matching revision.
 
 ## 10. Characterization-test specifications
 

@@ -2,7 +2,8 @@
 
 This plan is required for a release that contains Memory V2 migrations. The
 canonical `bpm_events` stream is the rollback boundary. Schema rollback alone
-is unsafe because migrations 00006 and 00007 are irreversible.
+is unsafe because migration 00007 is explicitly irreversible. Migration 00006
+has `down/0`, but that does not make an unreviewed chain rollback safe.
 
 ## Release gates
 
@@ -53,6 +54,17 @@ their durable local spools.
 
 ## Forward cutover
 
+For a release including host memory V2, require the server migration ceiling
+`20260905000010` and a populated host command-store V1→V2→V3 upgrade check.
+Keep `memory.host_sync_v2.enabled` false and host edge disabled until exact
+partition entitlement, issue dispositions, recoverable snapshot frontier,
+host protection, and A–J qualification pass. Enable V2 only for approved
+dev/test plaintext hosts while [concord#91](https://github.com/gsmlg-dev/concord/issues/91)
+remains open; production edge persistence must remain disabled. V1 command
+uploads continue, and V1 fact/wipe compatibility remains controlled by
+`memory.host_sync_v1.enabled`. Use the
+[edge runbook](../operations/host-memory-edge-runbook.md) for cursor recovery.
+
 1. Record the pre-upgrade event watermark and restore-tested backup.
 2. Run the new installed release's migrations twice as above.
 3. Run the consistency and dry-run rebuild checks.
@@ -64,6 +76,12 @@ their durable local spools.
 7. Record the post-cutover event watermark and qualification artifact digest.
 
 ## Rollback that preserves accepted events
+
+Before a host-edge binary rollback, disable `memory.host_sync_v2.enabled` and
+host edge config. Preserve the capture spool, command outbox (including V3
+`remote_revision`), edge DB, server cursors, and issued deliveries as evidence;
+do not translate a V1 fact hash into a V2 revision. If schema rollback crosses
+the irreversible migration chain, use the restore/replay sequence below.
 
 A binary rollback is safe only while its schema compatibility has been
 explicitly proven. For any rollback crossing an irreversible migration:

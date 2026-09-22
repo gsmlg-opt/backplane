@@ -149,8 +149,8 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   repeated rebuild. The revisioned host-origin episodic server migration/API
   ACK is committed as `c996798b`; host command-store V3 revision persistence as
   `c5782c30`. Both halves passed specification and quality reviews. The final
-  A–I/facade qualification has passed read-only specification and quality
-  reviews and remains to be committed. Real PostgreSQL/Turso/channel A–I tests:
+  A–I/facade qualification is committed as `253c779e` and `0dda8ffb` after
+  read-only specification and quality reviews. Real PostgreSQL/Turso/channel A–I tests:
   8/8 at each seed 101, 202, and 303; M18 outage A/I tests 2/2; focused host
   facade 46/46, all warnings-as-errors. Scenario E proves the canonical ID and
   positive revision in the same durable command ACK settlement, a committed
@@ -160,7 +160,15 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   keeps its canonical insert sandboxed. Scenario H measured type quota at
   3 items/1033–1039 bytes, item cap at 2/691–695, byte cap at 1/346–348, and
   covered partition and age limits. Production plaintext edge persistence
-  remains disabled. Tasks 18–20 remain outstanding; PR2–PR5 is not complete.
+  remains disabled.
+- Task 18: all nine scoped protocol, runbook, architecture, deployment,
+  qualification, and audit docs passed independent specification and quality
+  reviews. Static link checks found no missing relative targets and diff checks
+  passed. The protocol records exact wire/hash/ACK behavior; the runbook gives
+  exact-partition recovery queries, while rollback text distinguishes reversible
+  00006 from irreversible 00007. Production edge protection remains restricted
+  pending open `gsmlg-dev/concord#91`. Tasks 19–20 remain outstanding;
+  PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -743,7 +751,7 @@ and other host runtime paths are outside this addition.
 - [x] Implement one named test/fixture per handoff Scenario A-J. Use real PostgreSQL/Turso stores and transport integration for C, E, F, G, and H; mock only external LLM/network edges.
 - [x] Assert automated evidence for canonical Recall V2 metadata, unsafe-fallback rejection, restart persistence, live convergence, delete non-resurrection, quotas, complete partition, and bounded projection jobs.
 - [x] Run the entire qualification file with three seeds and record edge bytes/items and 10,000-event job counts.
-- [ ] Commit `test(memory): qualify memory v2 authority and convergence`.
+- [x] Commit `test(memory): qualify memory v2 authority and convergence` (`0dda8ffb`).
 
 ### Task 18: Publish protocol, authority model, runbook, and cutover notes
 
@@ -758,11 +766,11 @@ and other host runtime paths are outside this addition.
 - Modify: `docs/qualification/memory-v2-capability-matrix.md`
 - Modify: `docs/memory/memory-v2-implementation-audit.md`
 
-- [ ] Document the exact negotiated wire contract, cursor/snapshot algorithms, error taxonomy, v1 compatibility flags, migration/rollback sequence, and production protection restriction from implemented code.
-- [ ] Mark the old local-first authority text superseded and publish final ownership/routing matrices.
-- [ ] Add exact operator commands/queries for stuck cursors, forced snapshot, dead-letter requeue, stale mirrors, retention/protection incidents, and rollback.
-- [ ] Include measured edge usage and projection scheduling counts from Task 17.
-- [ ] Commit `docs(memory): publish host memory v2 operations model`.
+- [x] Document the exact negotiated wire contract, cursor/snapshot algorithms, error taxonomy, v1 compatibility flags, migration/rollback sequence, and production protection restriction from implemented code.
+- [x] Mark the old local-first authority text superseded and publish final ownership/routing matrices.
+- [x] Add exact operator commands/queries for stuck cursors, forced snapshot, dead-letter requeue, stale mirrors, retention/protection incidents, and rollback.
+- [x] Include measured edge usage and projection scheduling counts from Task 17.
+- [x] Commit `docs(memory): publish host memory v2 operations model`.
 
 ### Task 19: Update release qualification and migration ceiling
 
