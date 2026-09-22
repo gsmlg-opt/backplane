@@ -85,8 +85,14 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "mix run --no-start test/release_config_test.exs"
     assert workflow =~ "qualify-memory-v2:"
     assert workflow =~ "m18_migration_chain_test.exs"
+    assert workflow =~ "memory_v2_upgrade_test.exs"
+    assert workflow =~ "v1_to_v2_upgrade_test.exs"
+    assert workflow =~ "coalesce_projection_repairs_migration_test.exs"
+    assert workflow =~ "projection_repair_worker_test.exs"
     assert workflow =~ "--exclude memory_qualification_runtime"
     assert workflow =~ "memory_m18_outage_qualification_test.exs"
+    assert workflow =~ "memory_v2_edge_qualification_test.exs"
+    assert workflow =~ "mix backplane.memory.edge_cutover_check"
     refute workflow =~ "capture_performance_test.exs"
     assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
     assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
@@ -115,7 +121,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "installed-release-migration-smoke:"
     assert workflow =~ "installed/backplane/bin/backplane eval"
     assert workflow =~ "second installed migration pass was not a no-op"
-    assert workflow =~ "last_version == 20260904000003"
+    assert workflow =~ "last_version == 20260905000010"
     assert workflow =~ "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL"
 
     assert workflow =~
@@ -124,7 +130,9 @@ defmodule Backplane.ReleaseConfigTest do
     for path <- [
           "docs/operations/memory-v2.md",
           "docs/deploy/memory-v2-release.md",
-          "docs/qualification/memory-v2.md"
+          "docs/qualification/memory-v2.md",
+          "docs/memory/host-memory-v2-protocol.md",
+          "docs/operations/host-memory-edge-runbook.md"
         ] do
       assert File.regular?(path), "missing release runbook #{path}"
       assert workflow =~ path

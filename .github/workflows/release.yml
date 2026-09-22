@@ -115,17 +115,24 @@ jobs:
           psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
           mix ecto.migrate
 
+      - name: Verify revisioned edge cutover readiness
+        run: mix backplane.memory.edge_cutover_check
+
       - name: Build admin assets for browser qualification
         run: |
           mix "do" --app backplane_admin assets.setup
           mix "do" --app backplane_admin assets.build
 
-      - name: Verify M18 migration and rollback contracts
+      - name: Verify Memory V2 migration, upgrade, and projection repair contracts
         run: |
           mix test \
             apps/backplane_memory/test/backplane/memory/m18_migration_chain_test.exs \
             apps/backplane_memory/test/backplane/memory/m18_migration_matrix_test.exs \
             apps/backplane_memory/test/backplane/memory/qualification_test.exs \
+            apps/backplane_memory/test/backplane/memory/readiness_test.exs \
+            apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs \
+            apps/backplane_memory/test/backplane/memory/projections/coalesce_projection_repairs_migration_test.exs \
+            apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs \
             --exclude memory_qualification_runtime
 
       - name: Verify outage, privacy, performance, and integration adapters
@@ -136,7 +143,9 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
-            apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs
+            apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs \
+            apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs \
+            apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs
 
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
@@ -367,7 +376,7 @@ jobs:
                 Ecto.Adapters.SQL.query!(repo, "SELECT max(version) FROM schema_migrations", [])
               %Postgrex.Result{rows: [[event_table, import_table]]} =
                 Ecto.Adapters.SQL.query!(repo, "SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL", ["public.bpm_events", "public.memory_import_batches"])
-              unless last_version == 20260904000003 and event_table and import_table,
+              unless last_version == 20260905000010 and event_table and import_table,
                 do: raise("installed migration inventory is incomplete")
               :verified
             end)
@@ -412,6 +421,8 @@ jobs:
           cp docs/operations/memory-v2.md "dist/memory-v2-operations.md"
           cp docs/deploy/memory-v2-release.md "dist/memory-v2-release.md"
           cp docs/qualification/memory-v2.md "dist/memory-v2-qualification.md"
+          cp docs/memory/host-memory-v2-protocol.md "dist/host-memory-v2-protocol.md"
+          cp docs/operations/host-memory-edge-runbook.md "dist/host-memory-edge-runbook.md"
 
           cat > release-notes-header.md <<EOF
           ## Deployment
