@@ -305,7 +305,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   defp apply_ack(conn, opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
-    mark_done(conn, row, ack["canonical_id"], now(opts))
+    mark_done(conn, row, ack["canonical_id"], ack["revision"], now(opts))
   end
 
   defp apply_ack(conn, opts, row, %{"status" => "error"} = ack) do
@@ -317,7 +317,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   defp apply_ack(conn, opts, row, _ack), do: retry_row(conn, opts, row, "missing acknowledgement")
 
-  defp mark_done(conn, row, canonical_id, now) do
+  defp mark_done(conn, row, canonical_id, revision, now) do
     with {:ok, %Result{num_rows: updated}} <-
            Store.execute(
              conn,
@@ -331,11 +331,15 @@ defmodule Backplane.HostAgent.Memory.Syncer do
              """
              UPDATE memories
              SET sync_state = 'synced',
-                 remote_id = COALESCE(?, remote_id),
+                 remote_id = CASE WHEN ? = 'remember' THEN COALESCE(?, remote_id) ELSE remote_id END,
+                 remote_revision = CASE
+                   WHEN ? = 'remember' AND ? IS NOT NULL THEN ?
+                   ELSE remote_revision
+                 END,
                  synced_at = ?
              WHERE id = ?
              """,
-             [canonical_id, now, row["memory_id"]]
+             [row["op"], canonical_id, row["op"], revision, revision, now, row["memory_id"]]
            ) do
       :ok
     else
@@ -573,8 +577,14 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     length(rows) == length(acks) and
       Enum.zip(rows, acks)
       |> Enum.all?(fn
-        {row, %{"id" => id, "status" => status}} when status in ["ok", "duplicate", "error"] ->
-          id == row["memory_id"]
+        {row, %{"id" => id, "status" => status} = ack}
+        when status in ["ok", "duplicate", "error"] ->
+          id == row["memory_id"] and
+            (status == "error" or
+               ((row["op"] != "remember" or
+                   (is_binary(ack["canonical_id"]) and ack["canonical_id"] != "")) and
+                  (not Map.has_key?(ack, "revision") or
+                     (is_integer(ack["revision"]) and ack["revision"] > 0))))
 
         _ ->
           false

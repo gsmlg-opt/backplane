@@ -70,6 +70,228 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert remote_id == "remote_#{first_id}"
   end
 
+  test "persists canonical ID and positive revision with remember settlement", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "revisioned"}, opts)
+
+    Process.put({FakeChannel, :reply}, fn payload ->
+      {:ok,
+       %{
+         "items" => [
+           %{
+             "id" => hd(payload["items"])["id"],
+             "status" => "ok",
+             "canonical_id" => "hub_revisioned",
+             "revision" => 42
+           }
+         ]
+       }}
+    end)
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, id, "done", 0)
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "remote_id" => "hub_revisioned",
+                  "remote_revision" => 42,
+                  "sync_state" => "synced"
+                }
+              ]
+            }} =
+             Store.query(
+               store,
+               "SELECT remote_id, remote_revision, sync_state FROM memories WHERE id = ?",
+               [id]
+             )
+  end
+
+  test "rejects malformed ACK revision without settling the outbox", %{store: store, opts: opts} do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad revision"}, opts)
+
+    for revision <- [0, -1, "42", 1.5, nil] do
+      Process.put({FakeChannel, :reply}, fn payload ->
+        {:ok,
+         %{
+           "items" => [
+             %{
+               "id" => hd(payload["items"])["id"],
+               "status" => "ok",
+               "canonical_id" => "hub_invalid",
+               "revision" => revision
+             }
+           ]
+         }}
+      end)
+
+      assert {:error, :invalid_ack} =
+               Syncer.drain_once(
+                 store: store,
+                 channel: self(),
+                 channel_module: FakeChannel,
+                 max_attempts: 10
+               )
+
+      assert {:ok, %Result{rows: [%{"state" => "retry_wait"}]}} =
+               Store.query(store, "SELECT state FROM memory_outbox WHERE memory_id = ?", [id])
+
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 "UPDATE memory_outbox SET state = 'pending' WHERE memory_id = ?",
+                 [id]
+               )
+    end
+
+    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
+             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
+               id
+             ])
+  end
+
+  test "rejects remember ACK without a canonical ID even when revision is valid", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "missing canonical ID"}, opts)
+
+    for canonical_id <- [nil, "", 42] do
+      Process.put({FakeChannel, :reply}, fn payload ->
+        {:ok,
+         %{
+           "items" => [
+             %{
+               "id" => hd(payload["items"])["id"],
+               "status" => "ok",
+               "canonical_id" => canonical_id,
+               "revision" => 42
+             }
+           ]
+         }}
+      end)
+
+      assert {:error, :invalid_ack} =
+               Syncer.drain_once(
+                 store: store,
+                 channel: self(),
+                 channel_module: FakeChannel,
+                 max_attempts: 10
+               )
+
+      assert {:ok, %Result{rows: [%{"state" => "retry_wait"}]}} =
+               Store.query(store, "SELECT state FROM memory_outbox WHERE memory_id = ?", [id])
+
+      assert {:ok, _} =
+               Store.execute(
+                 store,
+                 "UPDATE memory_outbox SET state = 'pending' WHERE memory_id = ?",
+                 [id]
+               )
+    end
+
+    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
+             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
+               id
+             ])
+  end
+
+  test "duplicate ACK preserves exact revision and forget ACK does not clobber it", %{
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "duplicate revision"}, opts)
+
+    Process.put({FakeChannel, :reply}, fn payload ->
+      {:ok,
+       %{
+         "items" => [
+           %{
+             "id" => hd(payload["items"])["id"],
+             "status" => "duplicate",
+             "canonical_id" => "hub_duplicate",
+             "revision" => 81
+           }
+         ]
+       }}
+    end)
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
+    Process.delete({FakeChannel, :reply})
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "remote_id" => "hub_duplicate",
+                  "remote_revision" => 81,
+                  "deleted_at" => deleted_at
+                }
+              ]
+            }} =
+             Store.query(
+               store,
+               "SELECT remote_id, remote_revision, deleted_at FROM memories WHERE id = ?",
+               [id]
+             )
+
+    assert is_binary(deleted_at)
+  end
+
+  test "reopening the command store retains the settled canonical revision", %{
+    tmp_dir: tmp_dir,
+    store: store,
+    opts: opts
+  } do
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "durable revision"}, opts)
+
+    Process.put({FakeChannel, :reply}, fn payload ->
+      {:ok,
+       %{
+         "items" => [
+           %{
+             "id" => hd(payload["items"])["id"],
+             "status" => "duplicate",
+             "canonical_id" => "hub_durable",
+             "revision" => 118
+           }
+         ]
+       }}
+    end)
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert :ok = stop_supervised(Store)
+
+    start_supervised!(
+      {Store,
+       database: Path.join(tmp_dir, "#{store}.db"),
+       name: store,
+       pool_size: 1,
+       busy_timeout_ms: 5_000}
+    )
+
+    assert :ok = Migrator.migrate(store)
+    assert_outbox(store, id, "done", 0)
+
+    assert {:ok, %Result{rows: [%{"remote_id" => "hub_durable", "remote_revision" => 118}]}} =
+             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
+               id
+             ])
+  end
+
   test "builds remember payload from the current memory row at drain time", %{
     store: store,
     opts: opts
@@ -286,11 +508,31 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
                "CREATE TRIGGER reject_second_done BEFORE UPDATE OF state ON memory_outbox WHEN NEW.seq = 2 AND NEW.state = 'done' BEGIN SELECT RAISE(ABORT, 'second blocked'); END"
              )
 
+    Process.put({FakeChannel, :reply}, fn payload ->
+      {:ok,
+       %{
+         "items" =>
+           Enum.map(payload["items"], fn item ->
+             %{
+               "id" => item["id"],
+               "status" => "ok",
+               "canonical_id" => "remote_#{item["id"]}",
+               "revision" => 19
+             }
+           end)
+       }}
+    end)
+
     assert {:error, _reason} =
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
 
     assert_outbox(store, first, "inflight", 0)
     assert_outbox(store, second, "inflight", 0)
+
+    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
+             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
+               first
+             ])
 
     assert {:ok, %{"drained" => 0}} =
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)

@@ -152,6 +152,11 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
              ],
              max_frame_bytes: 524_288,
              max_changes: 100,
+             max_items: 10_000,
+             max_bytes: 64 * 1024 * 1024,
+             max_items_per_partition: 5_000,
+             max_age_days: 90,
+             type_quotas: %{},
              sync_interval_ms: 1234
            }
 

@@ -2,7 +2,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
-  alias Backplane.HostAgent.Memory.Migrations.V1
+  alias Backplane.HostAgent.Memory.Migrations.{V1, V2}
   alias Turso.Result
 
   @moduletag :tmp_dir
@@ -38,6 +38,8 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
 
     assert table_columns(store, "tombstones") ==
              ~w(content_hash scope wiped_at directive_id)
+
+    assert List.last(table_columns(store, "memories")) == "remote_revision"
 
     assert table_sql(store, "tombstones") =~ "PRIMARY KEY (scope, content_hash)"
 
@@ -190,7 +192,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     end
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 2} = Migrator.current_version(store)
+    assert {:ok, 3} = Migrator.current_version(store)
 
     assert MapSet.subset?(
              MapSet.new(
@@ -233,7 +235,57 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 2} = Migrator.current_version(store)
+    assert {:ok, 3} = Migrator.current_version(store)
+  end
+
+  test "upgrades populated V2 command memories to V3 without changing data", %{tmp_dir: tmp_dir} do
+    store = start_store!(tmp_dir)
+    now = "2026-06-17T00:00:00Z"
+    assert :ok = apply_v1!(store)
+
+    assert {:ok, _} =
+             Store.transaction(store, fn conn ->
+               Enum.each(V2.up(), fn sql ->
+                 assert {:ok, _} = Store.execute(conn, sql)
+               end)
+
+               assert {:ok, _} = Store.execute(conn, "PRAGMA user_version = 2")
+             end)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO memories(id, content, content_hash, scope, agent_id, remote_id, sync_state, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               [
+                 "mem_old",
+                 "old",
+                 String.duplicate("a", 64),
+                 "proj_local",
+                 "agent_1",
+                 "hub_old",
+                 "synced",
+                 now,
+                 now
+               ]
+             )
+
+    assert :ok = Migrator.migrate(store)
+    assert {:ok, 3} = Migrator.current_version(store)
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "id" => "mem_old",
+                  "remote_id" => "hub_old",
+                  "sync_state" => "synced",
+                  "remote_revision" => nil
+                }
+              ]
+            }} =
+             Store.query(store, "SELECT id, remote_id, sync_state, remote_revision FROM memories")
+
+    assert :ok = Migrator.migrate(store)
   end
 
   test "preserves the V1 outbox sequence high-water when all rows were deleted", %{
