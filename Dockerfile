@@ -33,6 +33,7 @@ COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
 COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
+COPY apps/backplane_memory_contract/mix.exs ./apps/backplane_memory_contract/mix.exs
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
 COPY apps/backplane_skill_protocol/mix.exs ./apps/backplane_skill_protocol/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
