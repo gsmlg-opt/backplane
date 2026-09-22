@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
 
   alias Backplane.Memory.Recall.{Candidate, Pipeline, QueryPlan, Run, Store}
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.Memories.Memory
 
   @partition %{
     memory_space_id: "07099fca-7a4c-815b-6e6c-1eebe35dac04",
@@ -356,6 +357,18 @@ defmodule Backplane.Memory.Recall.PipelineTest do
 
   defp candidate(opts \\ []) do
     id = Ecto.UUID.generate()
+    content = Keyword.get(opts, :content, "result")
+
+    repo().insert!(
+      Memory.changeset(
+        %Memory{id: id},
+        Map.merge(@partition, %{
+          content: content,
+          memory_type: "semantic",
+          agent_id: "pipeline-agent"
+        })
+      )
+    )
 
     {:ok, candidate} =
       Candidate.new(
@@ -363,7 +376,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
           id: id,
           kind: :memory,
           memory_type: :semantic,
-          content: Keyword.get(opts, :content, "result"),
+          content: content,
           source_ids: [id],
           source_refs: [%{type: :memory, id: id}],
           token_estimate: Keyword.get(opts, :tokens, 1)

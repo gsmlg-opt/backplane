@@ -7,7 +7,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.Relation
   alias Backplane.Memory.Memories.Relations
-  alias Backplane.Memory.Projections.Rebuild
+  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{EpisodicWorker, ProceduralWorker, SummaryWorker}
 
@@ -212,6 +212,25 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     foreign = event("foreign-host", "foreign-session", 1, "agent.prompt.submitted", "secret")
     ingest!(foreign)
 
+    assert_raise Ecto.ConstraintError, fn ->
+      Memories.remember("partition-safe",
+        type: "semantic",
+        host_id: "owner-host",
+        client_id: "codex-cli",
+        scope: "verify-scope",
+        namespace: "private",
+        agent_id: "agent",
+        evidence: [
+          %{
+            source_event_id: foreign["event_id"],
+            host_id: "owner-host",
+            evidence_kind: "derives",
+            support_score: 1.0
+          }
+        ]
+      )
+    end
+
     assert {:ok, memory} =
              Memories.remember("partition-safe",
                type: "semantic",
@@ -219,15 +238,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                client_id: "codex-cli",
                scope: "verify-scope",
                namespace: "private",
-               agent_id: "agent",
-               evidence: [
-                 %{
-                   source_event_id: foreign["event_id"],
-                   host_id: "owner-host",
-                   evidence_kind: "derives",
-                   support_score: 1.0
-                 }
-               ]
+               agent_id: "agent"
              )
 
     partition = %{
@@ -240,13 +251,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert {:ok, verification} = Memories.verify(memory.id, partition)
     assert verification.source_events == []
 
-    assert Enum.any?(
-             verification.provenance_roots,
-             &(&1.source_type == "event" and not &1.resolved)
-           )
+    refute Enum.any?(verification.provenance_roots, &(&1.source_type == "event"))
   end
 
-  test "forged session roots stay unresolved and evidence truncation is explicit" do
+  test "canonical session roots resolve and evidence truncation is explicit" do
     opts = [
       type: "semantic",
       host_id: "bounded-host",
@@ -255,6 +263,20 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       namespace: "private",
       agent_id: "agent"
     ]
+
+    repo().insert!(%ProjectedSession{
+      subject_id: "verification:forged",
+      memory_space_id: ensure_memory_space!("bounded-host"),
+      host_id: "bounded-host",
+      client_id: "bounded-client",
+      scope: "bounded-scope",
+      namespace: "private",
+      session_id: "forged",
+      status: "completed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "session-v1",
+      input_revision: "fixture-v1"
+    })
 
     assert {:ok, memory} =
              Memories.remember(
@@ -305,7 +327,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
 
     assert Enum.any?(
              verification.provenance_roots,
-             &(&1.source_type == "session" and not &1.resolved)
+             &(&1.source_type == "session" and &1.resolved)
            )
   end
 
@@ -527,7 +549,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
            end)
   end
 
-  test "same-host foreign-client remember request remains unresolved" do
+  test "same-host foreign-client remember request is rejected" do
     assert {:ok, foreign} =
              Memories.remember("foreign request owner",
                type: "semantic",
@@ -542,6 +564,26 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       Memories.list_evidence(foreign.id)
       |> Enum.find(&(&1.source_type == "request"))
 
+    assert_raise Ecto.ConstraintError, fn ->
+      Memories.remember("owner with forged request root",
+        type: "semantic",
+        memory_space_id: foreign_space_id("request-owner"),
+        host_id: "shared-host",
+        client_id: "owner-client",
+        scope: "shared-scope",
+        namespace: "private",
+        agent_id: "agent",
+        evidence: [
+          %{
+            source_request_id: foreign_request.source_id,
+            host_id: "shared-host",
+            evidence_kind: "derives",
+            support_score: 1.0
+          }
+        ]
+      )
+    end
+
     assert {:ok, owner} =
              Memories.remember("owner with forged request root",
                type: "semantic",
@@ -550,15 +592,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                client_id: "owner-client",
                scope: "shared-scope",
                namespace: "private",
-               agent_id: "agent",
-               evidence: [
-                 %{
-                   source_request_id: foreign_request.source_id,
-                   host_id: "shared-host",
-                   evidence_kind: "derives",
-                   support_score: 1.0
-                 }
-               ]
+               agent_id: "agent"
              )
 
     partition = %{
@@ -571,14 +605,13 @@ defmodule Backplane.Memory.Memories.VerificationTest do
 
     assert {:ok, verification} = Memories.verify(owner.id, partition)
 
-    assert Enum.any?(
+    refute Enum.any?(
              verification.provenance_roots,
-             &(&1.source_type == "request" and &1.source_id == foreign_request.source_id and
-                 not &1.resolved)
+             &(&1.source_type == "request" and &1.source_id == foreign_request.source_id)
            )
   end
 
-  test "same-host foreign-client summary with valid canonical links remains unresolved" do
+  test "same-host foreign-client summary with valid canonical links is rejected" do
     host_id = "summary-shared-host"
     session_id = "foreign-summary-session"
     foreign_event = event(host_id, session_id, 1, "agent.prompt.submitted", "foreign summary")
@@ -614,6 +647,26 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       }
     ])
 
+    assert_raise Ecto.ConstraintError, fn ->
+      Memories.remember("owner with forged summary root",
+        type: "semantic",
+        memory_space_id: foreign_space_id("summary-owner"),
+        host_id: host_id,
+        client_id: "owner-client",
+        scope: "verify-scope",
+        namespace: "private",
+        agent_id: "agent",
+        evidence: [
+          %{
+            source_summary_id: foreign_summary.id,
+            host_id: host_id,
+            evidence_kind: "derives",
+            support_score: 1.0
+          }
+        ]
+      )
+    end
+
     assert {:ok, owner} =
              Memories.remember("owner with forged summary root",
                type: "semantic",
@@ -622,15 +675,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
                client_id: "owner-client",
                scope: "verify-scope",
                namespace: "private",
-               agent_id: "agent",
-               evidence: [
-                 %{
-                   source_summary_id: foreign_summary.id,
-                   host_id: host_id,
-                   evidence_kind: "derives",
-                   support_score: 1.0
-                 }
-               ]
+               agent_id: "agent"
              )
 
     partition = %{
@@ -646,10 +691,9 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert verification.summary_event_links == []
     assert verification.source_events == []
 
-    assert Enum.any?(
+    refute Enum.any?(
              verification.provenance_roots,
-             &(&1.source_type == "summary" and &1.source_id == foreign_summary.id and
-                 not &1.resolved)
+             &(&1.source_type == "summary" and &1.source_id == foreign_summary.id)
            )
   end
 

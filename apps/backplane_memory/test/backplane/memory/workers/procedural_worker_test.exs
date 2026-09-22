@@ -4,7 +4,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
-  alias Backplane.Memory.Projections.State
+  alias Backplane.Memory.Projections.{ProjectedSession, State}
   alias Backplane.Memory.Workers.ProceduralWorker
   alias Backplane.MemorySpaces.BackfillIssue
 
@@ -147,6 +147,10 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   end
 
   test "bounds inherited root evidence instead of silently truncating it" do
+    for source <- ["source-one", "source-two"] do
+      insert_source_session!("host", "host:host", "bounded", "private", source)
+    end
+
     evidence =
       for source <- ["source-one", "source-two"] do
         %{
@@ -326,6 +330,14 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     old_task_pid = old_task.pid
     assert_receive {:procedural_generation_blocked, ^old_task_pid}, 5_000
 
+    insert_source_session!(
+      "revision-race-host",
+      "client-revision-race",
+      "shared-scope",
+      "team:revision-race",
+      "revision-race-source-r2"
+    )
+
     assert {:ok, _new_input} =
              Memories.remember(
                "revision-race semantic R2",
@@ -373,6 +385,14 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     for ordinal <- 1..count do
       source_session_id = "#{prefix}-source-#{ordinal}"
 
+      insert_source_session!(
+        "#{prefix}-host",
+        Keyword.fetch!(opts, :client_id),
+        "shared-scope",
+        Keyword.fetch!(opts, :namespace),
+        source_session_id
+      )
+
       assert {:ok, _memory} =
                Memories.remember(
                  "#{prefix} semantic #{ordinal}",
@@ -397,6 +417,23 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
                  )
                )
     end
+  end
+
+  defp insert_source_session!(host_id, client_id, scope, namespace, session_id) do
+    repo().insert!(%ProjectedSession{
+      subject_id: "procedural:#{session_id}",
+      memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!(host_id),
+      host_id: host_id,
+      client_id: client_id,
+      source_client_id: client_id,
+      scope: scope,
+      namespace: namespace,
+      session_id: session_id,
+      status: "completed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "session-v1",
+      input_revision: "fixture-v1"
+    })
   end
 
   defp insert_unqualified_decoys(prefix) do

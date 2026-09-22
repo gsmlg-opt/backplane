@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
+  alias Backplane.Memory.Projections.ProjectedSession
   alias Ecto.Adapters.SQL.Sandbox
 
   @timeout 30_000
@@ -64,6 +65,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
     ensure_owner!()
     cleanup_on_exit(prefix)
     source = session_evidence(prefix)
+    ensure_source_session!(prefix)
 
     results =
       concurrent_remember(12, fn n ->
@@ -83,7 +85,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
                from(e in Evidence,
                  where:
                    e.memory_id == ^memory_id and e.source_session_id == ^prefix and
-                     e.host_id == "source-host"
+                     e.host_id == "host"
                ),
                :count
              )
@@ -171,6 +173,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
       memory_space_id: memory_space_id("host"),
       agent_id: "agent",
       host_id: "host",
+      client_id: "host:host",
       scope: "global",
       namespace: "private",
       idempotency_scope: "direct",
@@ -181,10 +184,29 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
   defp session_evidence(source_session_id) do
     %{
       source_session_id: source_session_id,
-      host_id: "source-host",
+      host_id: "host",
       evidence_kind: "derives",
       support_score: 0.9
     }
+  end
+
+  defp ensure_source_session!(session_id) do
+    unboxed(fn ->
+      repo().insert!(%ProjectedSession{
+        subject_id: "evidence-concurrency:#{session_id}",
+        memory_space_id: memory_space_id("host"),
+        host_id: "host",
+        client_id: "host:host",
+        source_client_id: "host:host",
+        scope: "global",
+        namespace: "private",
+        session_id: session_id,
+        status: "completed",
+        last_event_at: DateTime.utc_now(),
+        processing_version: "session-v1",
+        input_revision: "fixture-v1"
+      })
+    end)
   end
 
   defp insert_legacy_memory!(content) do
@@ -195,6 +217,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
         memory_space_id: memory_space_id("host"),
         agent_id: "agent",
         host_id: "host",
+        client_id: "host:host",
         scope: "global",
         namespace: "private"
       })
@@ -376,6 +399,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
           )
 
           repo().query!("DELETE FROM bpm_memories WHERE content LIKE $1", ["%#{prefix}%"])
+          repo().query!("DELETE FROM bpm_projected_sessions WHERE session_id = $1", [prefix])
         after
           repo().query!("ALTER TABLE bpm_memory_remember_requests ENABLE TRIGGER USER")
           repo().query!("ALTER TABLE bpm_memory_evidence ENABLE TRIGGER USER")

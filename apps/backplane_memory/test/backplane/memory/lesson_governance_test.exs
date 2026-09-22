@@ -291,6 +291,7 @@ defmodule Backplane.Memory.LessonGovernanceTest do
                  evidence: [
                    %{
                      source_event_id: first_event_id,
+                     host_id: @partition.host_id,
                      evidence_kind: "supports",
                      support_score: 1.0
                    }

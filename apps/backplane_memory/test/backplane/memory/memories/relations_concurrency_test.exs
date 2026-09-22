@@ -262,6 +262,7 @@ defmodule Backplane.Memory.Memories.RelationsConcurrencyTest do
       memory_space_id: memory_space_id,
       agent_id: "agent",
       host_id: "host",
+      client_id: "host:host",
       scope: "scope",
       namespace: "private",
       idempotency_scope: "test",

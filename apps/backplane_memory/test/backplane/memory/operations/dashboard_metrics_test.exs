@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Operations.DashboardMetrics
+  alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Projections.State
   alias Backplane.Memory.Recall.{QueryPlan, Store}
 
@@ -80,11 +81,23 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
       traces =
         for index <- if(result_count == 0, do: [], else: 1..result_count) do
           source_id = Ecto.UUID.generate()
+          candidate_id = Ecto.UUID.generate()
+
+          repo().insert!(
+            Memory.changeset(
+              %Memory{id: candidate_id},
+              Map.merge(partition, %{
+                content: "dashboard candidate #{index}",
+                memory_type: "semantic",
+                agent_id: "dashboard-agent"
+              })
+            )
+          )
 
           assert {:ok, candidate} =
                    Backplane.Memory.Recall.Candidate.new(
                      Map.merge(Map.drop(partition, [:source_client_id]), %{
-                       id: Ecto.UUID.generate(),
+                       id: candidate_id,
                        kind: :memory,
                        memory_type: :semantic,
                        content: "dashboard candidate #{index}",

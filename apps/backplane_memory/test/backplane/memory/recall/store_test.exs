@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Recall.StoreTest do
   use Backplane.Memory.DataCase, async: false
 
   import Ecto.Query
+  alias Backplane.Memory.Memories.Memory
 
   alias Backplane.Memory.Recall.{
     Candidate,
@@ -512,10 +513,22 @@ defmodule Backplane.Memory.Recall.StoreTest do
 
   defp candidate(content) do
     source_id = Ecto.UUID.generate()
+    candidate_id = Ecto.UUID.generate()
+
+    repo().insert!(
+      Memory.changeset(
+        %Memory{id: candidate_id},
+        Map.merge(@partition, %{
+          content: content,
+          memory_type: "semantic",
+          agent_id: "store-agent"
+        })
+      )
+    )
 
     Candidate.new(
       Map.merge(@partition, %{
-        id: Ecto.UUID.generate(),
+        id: candidate_id,
         kind: :memory,
         memory_type: :semantic,
         content: content,

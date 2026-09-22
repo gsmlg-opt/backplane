@@ -617,7 +617,7 @@ defmodule Backplane.Memory.CrystalsTest do
     end
   end
 
-  test "a source revision that becomes stale during build is skipped, not left running" do
+  test "a source revision that becomes stale during build is failed, not left running" do
     input = closed_session("host-build-stale", unique("session"), "p", "first")
     summarize(input)
     handler_id = "crystal-stale-#{System.unique_integer([:positive])}"
@@ -649,7 +649,7 @@ defmodule Backplane.Memory.CrystalsTest do
 
     assert %State{
              input_revision: input_revision,
-             status: "skipped",
+             status: "failed",
              attempt_count: 1,
              last_error: "stale_input_revision"
            } = projection_state(input.subject_id)
@@ -723,7 +723,7 @@ defmodule Backplane.Memory.CrystalsTest do
                     %{classification: :skipped}}
   end
 
-  test "a source-only revision after crystal persistence makes completion telemetry skipped" do
+  test "a source-only revision after crystal persistence records a failed stale revision" do
     input = closed_session("host-complete-race", unique("session"), "p", "first")
     summarize(input)
     parent = self()
@@ -762,7 +762,7 @@ defmodule Backplane.Memory.CrystalsTest do
 
     assert %State{
              input_revision: old_revision,
-             status: "skipped",
+             status: "failed",
              last_error: "stale_input_revision"
            } =
              projection_state(input.subject_id)
@@ -791,7 +791,7 @@ defmodule Backplane.Memory.CrystalsTest do
 
     assert %State{
              input_revision: ^newer_revision,
-             status: "skipped",
+             status: "failed",
              last_error: "stale_input_revision"
            } = projection_state(input.subject_id)
 

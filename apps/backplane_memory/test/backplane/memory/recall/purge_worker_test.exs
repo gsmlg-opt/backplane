@@ -4,6 +4,7 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
   import Ecto.Query
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Run, Store, TraceCandidate}
   alias Backplane.Memory.Workers.RecallTracePurgeWorker
 
@@ -92,6 +93,18 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
   defp create_run(label, expired?) do
     {:ok, plan} = QueryPlan.new(Map.put(@partition, :query, label))
     source_id = Ecto.UUID.generate()
+    candidate_id = Ecto.UUID.generate()
+
+    repo().insert!(
+      Memory.changeset(
+        %Memory{id: candidate_id},
+        Map.merge(@partition, %{
+          content: label,
+          memory_type: "semantic",
+          agent_id: "purge-agent"
+        })
+      )
+    )
 
     {:ok, run} =
       Store.create(plan,
@@ -102,7 +115,7 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
     {:ok, candidate} =
       Candidate.new(
         Map.merge(@partition, %{
-          id: Ecto.UUID.generate(),
+          id: candidate_id,
           kind: :memory,
           memory_type: :semantic,
           content: label,

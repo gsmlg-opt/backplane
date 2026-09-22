@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
+  alias Backplane.Memory.Projections.ProjectedSession
 
   describe "direct remember request idempotency" do
     test "unkeyed calls retain one request evidence row per explicit remember" do
@@ -135,7 +136,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                %{source_type: "request", evidence_kind: "supports"},
                %{
                  source_type: "session",
-                 source_id: "source-host:source-session",
+                 source_id: "host:source-session",
                  evidence_kind: "derives",
                  support_score: 0.9,
                  excerpt: "source excerpt"
@@ -347,13 +348,13 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                  direct_opts("diverse-agent") |> Keyword.put(:agent_id, "agent-two")
                )
 
-      assert {:ok, other_host_memory} =
+      assert {:ok, other_session_memory} =
                Memories.remember(
                  "diverse",
-                 direct_opts("diverse-host") |> Keyword.put(:host_id, "host-two")
+                 direct_opts("diverse-session") |> Keyword.put(:session_id, "session-two")
                )
 
-      assert other_host_memory.id == memory.id
+      assert other_session_memory.id == memory.id
 
       assert {:ok, verification} = Memories.trusted_verify(memory.id)
       assert verification.evidence_count == 4
@@ -393,10 +394,28 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
   end
 
   defp session_evidence(source_session_id, overrides \\ %{}) do
+    repo().insert!(
+      %ProjectedSession{
+        subject_id: "evidence-test:#{source_session_id}",
+        memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!("host"),
+        host_id: "host",
+        client_id: "host:host",
+        source_client_id: "host:host",
+        scope: "global",
+        namespace: "private",
+        session_id: source_session_id,
+        status: "completed",
+        last_event_at: DateTime.utc_now(),
+        processing_version: "session-v1",
+        input_revision: "fixture-v1"
+      },
+      on_conflict: :nothing
+    )
+
     Map.merge(
       %{
         source_session_id: source_session_id,
-        host_id: "source-host",
+        host_id: "host",
         agent_id: "source-agent",
         session_id: "derived-session",
         evidence_kind: "derives",

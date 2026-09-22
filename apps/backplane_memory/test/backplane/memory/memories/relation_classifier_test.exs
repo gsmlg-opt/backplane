@@ -7,6 +7,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.RelationClassifier
   alias Backplane.Memory.Memories.Relations
+  alias Backplane.Memory.Projections.ProjectedSession
 
   defmodule MockLLM do
     def classify_relation(source, target) do
@@ -347,6 +348,23 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   end
 
   test "insufficient support remains reviewable and later strong evidence confirms replacement" do
+    for session_id <- ["weak-old", "weak-new", "strong-old", "strong-new"] do
+      repo().insert!(%ProjectedSession{
+        subject_id: "classifier:#{session_id}",
+        memory_space_id: ensure_memory_space!("host"),
+        host_id: "host",
+        client_id: "host:host",
+        source_client_id: "host:host",
+        scope: "scope",
+        namespace: "private",
+        session_id: session_id,
+        status: "completed",
+        last_event_at: DateTime.utc_now(),
+        processing_version: "session-v1",
+        input_revision: "fixture-v1"
+      })
+    end
+
     weak = %{evidence_kind: "supports", support_score: 0.4}
 
     older =
