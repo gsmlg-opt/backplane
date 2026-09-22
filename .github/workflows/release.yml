@@ -115,6 +115,63 @@ jobs:
           psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
           mix ecto.migrate
 
+      # Migration 20260525000050 creates eight empty legacy slots without a
+      # host. Resolve only those exact fresh-install fixtures in this CI database;
+      # real installations must investigate their own backfill issues.
+      - name: Resolve migration-seeded empty memory slots in the qualification database
+        run: |
+          psql -X -v ON_ERROR_STOP=1 --dbname backplane_test <<'SQL'
+          DO $qualification$
+          DECLARE
+            names text[];
+            issues integer;
+            removed integer;
+            settled integer;
+          BEGIN
+            SELECT array_agg(name ORDER BY name) INTO names FROM memory_slots;
+            IF names IS DISTINCT FROM ARRAY[
+              'guidance', 'pending_items', 'persona', 'project_context',
+              'self_notes', 'session_patterns', 'tool_guidelines', 'user_preferences'
+            ]::text[] OR EXISTS (
+              SELECT 1 FROM memory_slots
+              WHERE content <> '' OR updated_by IS NOT NULL OR size_limit_chars <> 2000
+                 OR host_id IS NOT NULL OR client_id IS NOT NULL
+                 OR source_client_id IS NOT NULL OR memory_space_id IS NOT NULL
+                 OR scope IS NOT NULL OR namespace IS NOT NULL
+            ) THEN
+              RAISE EXCEPTION 'unexpected legacy slot data in fresh qualification database';
+            END IF;
+
+            SELECT count(*) INTO issues
+            FROM bpm_memory_space_backfill_issues issue
+            JOIN memory_slots slot
+              ON issue.source_id = bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))
+            WHERE issue.source_table = 'memory_slots' AND issue.reason = 'missing_mapping'
+              AND issue.disposition = 'pending';
+            IF issues <> 8 OR (SELECT count(*) FROM bpm_memory_space_backfill_issues) <> 8 THEN
+              RAISE EXCEPTION 'unexpected backfill issues in fresh qualification database';
+            END IF;
+
+            WITH deleted AS (
+              DELETE FROM memory_slots AS slot
+              RETURNING bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot)) AS source_id
+            ), resolved AS (
+              UPDATE bpm_memory_space_backfill_issues AS issue
+              SET disposition = 'resolved', resolved_at = now(), updated_at = now()
+              FROM deleted
+              WHERE issue.source_table = 'memory_slots' AND issue.source_id = deleted.source_id
+                AND issue.disposition = 'pending'
+              RETURNING issue.source_id
+            )
+            SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM resolved)
+            INTO removed, settled;
+            IF removed <> 8 OR settled <> 8 THEN
+              RAISE EXCEPTION 'fresh qualification slot resolution was incomplete';
+            END IF;
+          END
+          $qualification$;
+          SQL
+
       - name: Verify revisioned edge cutover readiness
         run: mix backplane.memory.edge_cutover_check
 

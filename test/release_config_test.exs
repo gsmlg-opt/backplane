@@ -93,6 +93,21 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "memory_m18_outage_qualification_test.exs"
     assert workflow =~ "memory_v2_edge_qualification_test.exs"
     assert workflow =~ "mix backplane.memory.edge_cutover_check"
+    assert workflow =~ "Resolve migration-seeded empty memory slots in the qualification database"
+    assert workflow =~ "bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))"
+    assert workflow =~ "size_limit_chars <> 2000"
+    assert workflow =~ "host_id IS NOT NULL OR client_id IS NOT NULL"
+    assert workflow =~ "source_client_id IS NOT NULL OR memory_space_id IS NOT NULL"
+
+    {migration_offset, _} = :binary.match(workflow, "mix ecto.migrate")
+
+    {seed_resolution_offset, _} =
+      :binary.match(workflow, "- name: Resolve migration-seeded empty memory slots")
+
+    {cutover_offset, _} =
+      :binary.match(workflow, "- name: Verify revisioned edge cutover readiness")
+
+    assert migration_offset < seed_resolution_offset and seed_resolution_offset < cutover_offset
     refute workflow =~ "capture_performance_test.exs"
     assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
     assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
