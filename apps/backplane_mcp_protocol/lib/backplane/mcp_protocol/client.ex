@@ -723,8 +723,12 @@ defmodule Backplane.McpProtocol.Client do
                  {:register_tool_call, handle, operation, deadline},
                  registration_timeout
                ) do
-            {:ok, %ToolCall{} = registered_handle} = result ->
-              GenServer.cast(registered_handle.client, {:activate_tool_call, registered_handle})
+            {:ok, registered_handle} = result ->
+              GenServer.cast(
+                ToolCall.client(registered_handle),
+                {:activate_tool_call, registered_handle}
+              )
+
               result
 
             other ->
@@ -748,7 +752,7 @@ defmodule Backplane.McpProtocol.Client do
   An await timeout does not cancel the underlying operation.
   """
   @spec await_tool_call(ToolCall.t(), timeout()) :: {:ok, Response.t()} | {:error, Error.t()}
-  def await_tool_call(%ToolCall{} = handle, timeout \\ :infinity) do
+  def await_tool_call(handle, timeout \\ :infinity) do
     ToolCall.await(handle, timeout)
   end
 
@@ -763,17 +767,21 @@ defmodule Backplane.McpProtocol.Client do
           {:ok, map()} | {:error, Error.t()}
   def cancel_tool_call(handle, reason \\ "client_cancelled", opts \\ [])
 
-  def cancel_tool_call(%ToolCall{owner: owner}, _reason, _opts) when owner != self() do
-    {:error, Error.transport(:request_owner_mismatch)}
-  end
+  def cancel_tool_call(handle, reason, opts) when is_binary(reason) do
+    if ToolCall.owned_by?(handle, self()) do
+      timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
 
-  def cancel_tool_call(%ToolCall{} = handle, reason, opts) when is_binary(reason) do
-    timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
-
-    if is_integer(timeout) and timeout > 0 do
-      GenServer.call(handle.client, {:cancel_tool_call, handle, reason, timeout}, timeout + 250)
+      if is_integer(timeout) and timeout > 0 do
+        GenServer.call(
+          ToolCall.client(handle),
+          {:cancel_tool_call, handle, reason, timeout},
+          timeout + 250
+        )
+      else
+        {:error, Error.protocol(:invalid_params, %{field: "notification_timeout"})}
+      end
     else
-      {:error, Error.protocol(:invalid_params, %{field: "notification_timeout"})}
+      {:error, Error.transport(:request_owner_mismatch)}
     end
   catch
     :exit, {:timeout, _call} -> {:error, Error.transport(:cancellation_timeout)}
@@ -1264,12 +1272,12 @@ defmodule Backplane.McpProtocol.Client do
 
   @impl true
   def handle_call(
-        {:register_tool_call, %ToolCall{} = handle, %Operation{} = operation, deadline},
+        {:register_tool_call, handle, %Operation{} = operation, deadline},
         {owner, _tag},
         state
       ) do
     cond do
-      owner != handle.owner ->
+      not ToolCall.owned_by?(handle, owner) ->
         {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
 
       System.monotonic_time(:millisecond) >= deadline ->
@@ -1487,12 +1495,13 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   def handle_call(
-        {:cancel_tool_call, %ToolCall{} = handle, reason, notification_timeout},
+        {:cancel_tool_call, handle, reason, notification_timeout},
         {caller, _tag} = from,
         state
       ) do
-    with true <- caller == handle.owner,
-         {active_request_id, %Request{} = request} <- find_request(state, handle.logical_id),
+    with true <- ToolCall.owned_by?(handle, caller),
+         {active_request_id, %Request{} = request} <-
+           find_request(state, ToolCall.logical_id(handle)),
          true <- matching_tool_call?(request, handle) do
       cancel_owned_tool_call(
         state,
@@ -1565,8 +1574,8 @@ defmodule Backplane.McpProtocol.Client do
     {:stop, :normal, state}
   end
 
-  def handle_cast({:activate_tool_call, %ToolCall{} = handle}, state) do
-    case find_request(state, handle.logical_id) do
+  def handle_cast({:activate_tool_call, handle}, state) do
+    case find_request(state, ToolCall.logical_id(handle)) do
       {request_id, %Request{dispatch_status: :registered} = request} ->
         if matching_tool_call?(request, handle) do
           {:noreply, activate_tool_call(state, request_id, request)}
@@ -1579,8 +1588,8 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
-  def handle_cast({:abandon_tool_call, %ToolCall{} = handle}, state) do
-    case find_request(state, handle.logical_id) do
+  def handle_cast({:abandon_tool_call, handle}, state) do
+    case find_request(state, ToolCall.logical_id(handle)) do
       {request_id, %Request{} = request} ->
         if matching_tool_call?(request, handle) do
           {:noreply, settle_abandoned_tool_call(state, request_id, request)}
@@ -2916,17 +2925,20 @@ defmodule Backplane.McpProtocol.Client do
     end)
   end
 
-  defp register_tool_call(state, %ToolCall{} = handle, %Operation{} = operation) do
-    with :ok <- State.validate_capability(state, operation.method),
-         false <- Map.has_key?(state.pending_requests, handle.logical_id),
+  defp register_tool_call(state, handle, %Operation{} = operation) do
+    logical_id = ToolCall.logical_id(handle)
+
+    with true <- ToolCall.handle?(handle),
+         :ok <- State.validate_capability(state, operation.method),
+         false <- Map.has_key?(state.pending_requests, logical_id),
          {:ok, state, progress_owner} <-
-           register_tool_call_progress(state, operation.progress_opts, handle.logical_id) do
+           register_tool_call_progress(state, operation.progress_opts, logical_id) do
       timer_ref =
-        Process.send_after(self(), {:request_timeout, handle.logical_id}, operation.timeout)
+        Process.send_after(self(), {:request_timeout, logical_id}, operation.timeout)
 
       request =
         %{
-          id: handle.logical_id,
+          id: logical_id,
           method: operation.method,
           timer_ref: timer_ref,
           params: operation.params
@@ -2935,15 +2947,16 @@ defmodule Backplane.McpProtocol.Client do
         |> Request.retain_operation(operation)
         |> Map.merge(%{
           tool_call: handle,
-          owner_monitor: Process.monitor(handle.owner),
+          owner_monitor: ToolCall.monitor_owner(handle),
           dispatch_status: :registered,
           progress_owner: progress_owner
         })
 
-      updated_state = put_pending_request(state, handle.logical_id, request)
+      updated_state = put_pending_request(state, logical_id, request)
       {:ok, handle, updated_state}
     else
       {:error, %Error{} = error} -> {:error, error, state}
+      false -> {:error, Error.transport(:request_owner_mismatch), state}
       true -> {:error, Error.transport(:request_conflict), state}
     end
   end
@@ -2994,7 +3007,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp activate_tool_call(state, request_id, request) do
     cond do
-      not Process.alive?(request.tool_call.owner) ->
+      not ToolCall.owner_alive?(request.tool_call) ->
         settle_owned_tool_call(state, request_id, request, "owner_down", false)
 
       not positive_remaining_time?(request) ->
@@ -3028,7 +3041,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp finish_tool_call_dispatch(state, request_id, request, :ok) do
     case State.get_request(state, request_id) do
-      %Request{dispatch_task: %Task{ref: ref}} when ref == request.dispatch_task.ref ->
+      %Request{} ->
         request = %{request | dispatch_task: nil, dispatch_status: :accepted}
 
         Telemetry.execute(
@@ -3067,8 +3080,8 @@ defmodule Backplane.McpProtocol.Client do
   defp find_request_by_owner_monitor(state, monitor, owner) do
     Enum.find_value(state.pending_requests, fn {request_id, request} ->
       case request do
-        %Request{owner_monitor: ^monitor, tool_call: %ToolCall{owner: ^owner}} ->
-          {request_id, request}
+        %Request{owner_monitor: ^monitor, tool_call: handle} when not is_nil(handle) ->
+          if ToolCall.owned_by?(handle, owner), do: {request_id, request}
 
         _other ->
           nil
@@ -3085,12 +3098,9 @@ defmodule Backplane.McpProtocol.Client do
     end)
   end
 
-  defp matching_tool_call?(%Request{tool_call: %ToolCall{} = stored}, %ToolCall{} = handle) do
-    stored.client == handle.client and stored.logical_id == handle.logical_id and
-      stored.owner == handle.owner and stored.reply_ref == handle.reply_ref
+  defp matching_tool_call?(%Request{tool_call: stored}, handle) do
+    ToolCall.equal?(stored, handle)
   end
-
-  defp matching_tool_call?(_request, _handle), do: false
 
   defp settle_abandoned_tool_call(state, request_id, request) do
     {_request, updated_state} = State.remove_request(state, request_id)

@@ -61,11 +61,11 @@ defmodule Backplane.McpProtocol.Client.Request do
       * `:timer_ref` - Reference to the request-specific timeout timer
   """
   @spec new(%{
-          id: String.t(),
-          method: String.t(),
-          from: GenServer.from(),
-          timer_ref: reference(),
-          params: map()
+          required(:id) => String.t(),
+          required(:method) => String.t(),
+          optional(:from) => GenServer.from() | nil,
+          required(:timer_ref) => reference(),
+          required(:params) => map()
         }) :: t()
   def new(attrs) do
     %__MODULE__{
@@ -82,17 +82,16 @@ defmodule Backplane.McpProtocol.Client.Request do
 
   @doc false
   @spec async?(t()) :: boolean()
-  def async?(%__MODULE__{tool_call: %ToolCall{}}), do: true
-  def async?(%__MODULE__{}), do: false
+  def async?(%__MODULE__{tool_call: handle}), do: ToolCall.handle?(handle)
 
   @doc false
   @spec reply(t(), term()) :: :ok
-  def reply(%__MODULE__{tool_call: %ToolCall{} = handle}, result) do
-    ToolCall.deliver(handle, result)
-  end
-
-  def reply(%__MODULE__{from: from}, result) do
-    GenServer.reply(from, result)
+  def reply(%__MODULE__{tool_call: handle, from: from}, result) do
+    if ToolCall.handle?(handle) do
+      ToolCall.deliver(handle, result)
+    else
+      GenServer.reply(from, result)
+    end
   end
 
   @doc "Retains the immutable operation data and absolute deadline for retries."
