@@ -142,6 +142,16 @@ defmodule Backplane.Settings.OAuthRefresher do
     normalize_figma_client_registration_payload(response)
   end
 
+  defp normalize_figma_client_registration({:ok, %{status: status}})
+       when status in 200..299,
+       do: {:error, :invalid_figma_client_registration}
+
+  defp normalize_figma_client_registration({:ok, %{status: status}}),
+    do: {:error, {:figma_client_registration_failed, status}}
+
+  defp normalize_figma_client_registration({:error, reason}),
+    do: {:error, {:figma_client_registration_error, reason}}
+
   defp normalize_figma_client_registration_payload({:ok, response}) when is_map(response) do
     with client_id when is_binary(client_id) <- normalize_optional_string(response["client_id"]),
          client_secret when is_binary(client_secret) <-
@@ -156,16 +166,6 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   defp normalize_figma_client_registration_payload(_),
     do: {:error, :invalid_figma_client_registration}
-
-  defp normalize_figma_client_registration({:ok, %{status: status}})
-       when status in 200..299,
-       do: {:error, :invalid_figma_client_registration}
-
-  defp normalize_figma_client_registration({:ok, %{status: status}}),
-    do: {:error, {:figma_client_registration_failed, status}}
-
-  defp normalize_figma_client_registration({:error, reason}),
-    do: {:error, {:figma_client_registration_error, reason}}
 
   defp figma_client_context(client_id, client_secret) do
     %{
