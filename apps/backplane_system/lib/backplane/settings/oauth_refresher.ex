@@ -119,18 +119,30 @@ defmodule Backplane.Settings.OAuthRefresher do
 
     request_options(registration_url)
     |> Keyword.merge(
-      json: body,
-      headers: [{"accept", "application/json"}],
+      body: Jason.encode!(body),
+      headers: [{"accept", "application/json"}, {"content-type", "application/json"}],
       receive_timeout: request_timeout_ms(),
       retry: false,
-      redirect: false
+      redirect: false,
+      decode_body: false
     )
     |> then(&Req.post(registration_url, &1))
     |> normalize_figma_client_registration()
   end
 
   defp normalize_figma_client_registration({:ok, %{status: status, body: response}})
-       when status in 200..299 and is_map(response) do
+       when status in 200..299 do
+    response =
+      case response do
+        response when is_map(response) -> {:ok, response}
+        response when is_binary(response) -> Jason.decode(response)
+        _ -> :error
+      end
+
+    normalize_figma_client_registration_payload(response)
+  end
+
+  defp normalize_figma_client_registration_payload({:ok, response}) when is_map(response) do
     with client_id when is_binary(client_id) <- normalize_optional_string(response["client_id"]),
          client_secret when is_binary(client_secret) <-
            normalize_optional_string(response["client_secret"]),
@@ -141,6 +153,9 @@ defmodule Backplane.Settings.OAuthRefresher do
       _ -> {:error, :invalid_figma_client_registration}
     end
   end
+
+  defp normalize_figma_client_registration_payload(_),
+    do: {:error, :invalid_figma_client_registration}
 
   defp normalize_figma_client_registration({:ok, %{status: status}})
        when status in 200..299,
