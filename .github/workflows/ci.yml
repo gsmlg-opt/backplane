@@ -57,6 +57,27 @@ jobs:
       - name: Compile with warnings as errors
         run: mix compile --warnings-as-errors
 
+  agent-runtime-latest:
+    name: Agent Runtime (Elixir 1.20 / OTP 29)
+    runs-on: ubuntu-24.04
+
+    env:
+      MIX_ENV: prod
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up latest Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.1"
+          otp-version: "29.0.2"
+
+      - name: Compile package strictly
+        working-directory: apps/backplane_agent_runtime
+        run: mix compile --force --warnings-as-errors
+
   format:
     name: Format Check
     runs-on: ubuntu-24.04

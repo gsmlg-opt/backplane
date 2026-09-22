@@ -11,9 +11,9 @@ defmodule Backplane.AgentRuntime.Context do
 
   @type t :: map()
 
-  @spec create(String.t(), list(), list()) :: {:ok, t()} | {:error, Error.t()}
+  @spec create(String.t(), term(), term()) :: {:ok, t()} | {:error, Error.t()}
   def create(agent_id, instructions, selected \\ [])
-      when is_binary(agent_id) and is_list(instructions) and is_list(selected) do
+      when is_binary(agent_id) do
     with {:ok, _} <- validate_instructions(instructions),
          {:ok, _} <- validate_selected(selected) do
       {:ok,

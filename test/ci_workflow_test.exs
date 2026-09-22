@@ -131,7 +131,7 @@ defmodule Backplane.CIWorkflowTest do
     refute Map.has_key?(workflow, true)
 
     assert workflow["jobs"] |> Map.keys() |> Enum.sort() ==
-             ~w(compile credo dialyzer format workflow-contract)
+             ~w(agent-runtime-latest compile credo dialyzer format workflow-contract)
 
     assert_standard_ci_job(
       workflow,
@@ -158,6 +158,7 @@ defmodule Backplane.CIWorkflowTest do
     )
 
     assert_dialyzer_job(workflow)
+    assert_agent_runtime_latest_job(workflow)
     assert_workflow_contract_job(workflow)
     assert_no_bypasses(workflow)
   end
@@ -313,6 +314,32 @@ defmodule Backplane.CIWorkflowTest do
     })
 
     assert_step(job, %{"name" => "Run Dialyzer", "run" => "mix dialyzer --format raw"})
+  end
+
+  defp assert_agent_runtime_latest_job(workflow) do
+    job = job!(workflow, "agent-runtime-latest")
+
+    assert Map.delete(job, "steps") == %{
+             "name" => "Agent Runtime (Elixir 1.20 / OTP 29)",
+             "runs-on" => "ubuntu-24.04",
+             "env" => %{"MIX_ENV" => "prod"}
+           }
+
+    assert_step_names(job, ["Checkout code", "Set up latest Elixir", "Compile package strictly"])
+
+    assert_step(job, %{"name" => "Checkout code", "uses" => "actions/checkout@v4"})
+
+    assert_step(job, %{
+      "name" => "Set up latest Elixir",
+      "uses" => @setup_beam_action,
+      "with" => %{"elixir-version" => "1.20.1", "otp-version" => "29.0.2"}
+    })
+
+    assert_step(job, %{
+      "name" => "Compile package strictly",
+      "working-directory" => "apps/backplane_agent_runtime",
+      "run" => "mix compile --force --warnings-as-errors"
+    })
   end
 
   defp assert_workflow_contract_job(workflow) do

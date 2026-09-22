@@ -14,6 +14,14 @@ defmodule Backplane.AgentRuntime.ContextTest do
       assert context.selected_material == ["public_summary"]
     end
 
+    test "rejects invalid instruction and selected material collections" do
+      assert {:error, %Error{class: :validation, message: "instructions must be a list"}} =
+               Context.create("agent_1", :invalid)
+
+      assert {:error, %Error{class: :validation, message: "selected material must be a list"}} =
+               Context.create("agent_1", ["system"], :invalid)
+    end
+
     test "forks only selected fields and never child instructions" do
       {:ok, parent} = Context.create("parent", ["parent instructions"], [:history, :resources])
 

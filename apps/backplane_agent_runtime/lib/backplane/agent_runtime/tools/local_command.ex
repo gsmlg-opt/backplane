@@ -492,41 +492,30 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       token = make_ref()
       owner = self()
 
-      case Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
-             state.cleanup_reconciler.(owner, port, token, job.process_group_id)
-           end) do
-        %Task{pid: task_pid, ref: task_ref} ->
-          cleanup_timer =
-            Process.send_after(
-              self(),
-              {:cleanup_timeout, port, token, task_ref},
-              state.cleanup_timeout
-            )
+      %Task{pid: task_pid, ref: task_ref} =
+        Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
+          state.cleanup_reconciler.(owner, port, token, job.process_group_id)
+        end)
 
-          updated = %{
-            job
-            | cleanup_token: token,
-              cleanup_task_pid: task_pid,
-              cleanup_task_ref: task_ref,
-              cleanup_timer: cleanup_timer,
-              cleanup_status: :pending,
-              terminal_status: terminal_status,
-              status: status
-          }
+      cleanup_timer =
+        Process.send_after(
+          self(),
+          {:cleanup_timeout, port, token, task_ref},
+          state.cleanup_timeout
+        )
 
-          %{state | active: Map.put(state.active, port, updated)}
+      updated = %{
+        job
+        | cleanup_token: token,
+          cleanup_task_pid: task_pid,
+          cleanup_task_ref: task_ref,
+          cleanup_timer: cleanup_timer,
+          cleanup_status: :pending,
+          terminal_status: terminal_status,
+          status: status
+      }
 
-        other ->
-          settle_job(
-            port,
-            {:error,
-             Error.new(:resource_conflict, "local command cleanup could not start", cause: other)},
-            %{
-              state
-              | active: Map.put(state.active, port, %{job | terminal_status: terminal_status})
-            }
-          )
-      end
+      %{state | active: Map.put(state.active, port, updated)}
     end
   end
 
