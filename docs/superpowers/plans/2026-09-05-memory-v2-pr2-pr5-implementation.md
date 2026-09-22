@@ -167,8 +167,22 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   passed. The protocol records exact wire/hash/ACK behavior; the runbook gives
   exact-partition recovery queries, while rollback text distinguishes reversible
   00006 from irreversible 00007. Production edge protection remains restricted
-  pending open `gsmlg-dev/concord#91`. Tasks 19–20 remain outstanding;
+  pending open `gsmlg-dev/concord#91`. Task 20 remains outstanding;
   PR2–PR5 is not complete.
+- Task 19: committed locally as `059d26cc`; specification and quality reviews
+  approved readiness, upgrade qualification, and release wiring. The cutover
+  entrypoint fails closed across host mappings, all 24 roots and 13 child
+  relationships, audit/jobs, verified current snapshot contents, and exact
+  completed issue dispositions. A completed waiver applies only to its stable
+  inventoried row; host mappings and snapshots remain hard blockers. Real
+  populated server 00009→00010 and host V1→V3/edge upgrades preserve canonical
+  data, commands, tombstones, high-water sequence, and rollback flags. The
+  release gate runs the exact cutover command after migration, checks head
+  00010, includes PR4 and A–J tests, and packages protocol/runbook. Fresh
+  warnings-as-errors gates: migration/projection/readiness 48/48, host/API
+  35/35, release config 10/10; scoped format/diff checks passed. Historical
+  migration 00003 recognizes only `Elixir.`-prefixed memory workers; readiness
+  recognizes both actual Oban spellings. Agent Note `fec843df-1a84-4ef6-b69f-f85112457db6`.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -783,12 +797,12 @@ and other host runtime paths are outside this addition.
 - Create: `apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs`
 
-- [ ] Write failing release-contract assertions for the post-approval latest migration `20260905000010`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
-- [ ] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
-- [ ] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
-- [ ] Add real upgrade tests from the previous server migration head through `20260905000010` and from an existing populated host Turso v1 command database through local v2/v3/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
-- [ ] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
-- [ ] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover`.
+- [x] Write failing release-contract assertions for the post-approval latest migration `20260905000010`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
+- [x] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
+- [x] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
+- [x] Add real upgrade tests from the previous server migration head through `20260905000010` and from an existing populated host Turso v1 command database through local v2/v3/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
+- [x] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
+- [x] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover` (`059d26cc`).
 
 ### Task 20: Final completion audit and branch integration gate
 
