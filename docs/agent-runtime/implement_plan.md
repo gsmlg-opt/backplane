@@ -1,24 +1,27 @@
 # Shared Agent Runtime — Implementation Plan
 
-**Packages:** `backplane_agent_runtime`, `backplane_agent_tools`  
+**Package:** `backplane_agent_runtime`  
 **Primary repository:** `gsmlg-opt/backplane`  
 **Consumer repositories:** `gsmlg-opt/sigma`, `gsmlg-opt/Synapsis`, `gsmlg-opt/backplane`  
 **Date:** 2026-09-10  
+**Updated:** 2026-09-11  
+**Document revision:** 1.1 — single-package distribution  
 **Status:** Ready for implementation planning; all implementation tasks remain pending  
 **Companion documents:** [Design](design.md), [PRD and acceptance scenarios](prd.md)
 
 ## 1. Execution contract
 
-Implement the agreed multi-agent runtime and optional tools packages without merging the products or changing their business roles. Use the PRD's FR/AC identifiers as the completion contract and the design's I01–I24 as invariants.
+Implement the agreed multi-agent runtime and all in-scope bundled tools in one `backplane_agent_runtime` Mix application/package under `Backplane.AgentRuntime`, with concrete tools in `Backplane.AgentRuntime.Tools.*`. Keep one version, changelog, and release pipeline without merging the products or changing their business roles. Use the PRD's FR/AC identifiers as the completion contract and the design's I01–I24 as invariants.
 
-Do not treat this plan as evidence that the repository already contains these packages, that sibling protocol versions are available, or that current tests pass. Start from a fresh baseline. The earlier attachment's singleton daemon, Oban, and table proposals are historical, not instructions to migrate a database or scheduler.
+Do not treat this plan as evidence that the repository already contains this package or its bundled tools, that sibling protocol versions are available, or that current tests pass. Start from a fresh baseline. The earlier attachment's singleton daemon, Oban, and table proposals are historical, not instructions to migrate a database or scheduler.
 
 Work in small PRs. A task is complete only with code, focused tests, exact evidence, and a bounded handoff. Opening a facade around a legacy engine does not complete migration of its enforcement responsibilities.
 
 ### 1.1 Global guardrails
 
 - Preserve each product's public session/API/event and historical storage contracts unless a separately reviewed migration explicitly changes them.
-- Never enable real autonomous mutations, execute billable model calls in CI, publish packages, or deploy services as a side effect of implementation.
+- Never enable real autonomous mutations, execute billable model calls in CI, publish the package, or deploy services as a side effect of implementation.
+- Do not create a second tools Mix app, namespace root, version, or release pipeline. Keep generic kernel/gateway code independent of concrete `Tools.*` implementations; tool registration and backend startup remain host-selected.
 - Do not copy provider parsers, implement a second memory/Skill service, introduce a new universal database, or add a generic workflow engine to unblock a task.
 - Do not create dual controllers for one context or compare engines by running both against real mutating tools.
 - All source, toolchain, sibling dependency, and platform assumptions must be recorded with actual versions or explicitly marked blocked.
@@ -31,13 +34,13 @@ Work in small PRs. A task is complete only with code, focused tests, exact evide
 | Lane | Scope |
 | --- | --- |
 | R — Runtime | Contracts, kernel, ports, lifecycle, budgets, policy, messaging, recovery. |
-| T — Tools | Optional file/resource, command, plan, memory/Skill wrappers. |
+| T — Tools | Bundled opt-in file/resource, command, plan, and Memory/Skill wrappers within the same runtime package, plus their reference adapters. |
 | S — Sigma | Existing facade/storage compatibility and shared execution adoption. |
 | Y — Synapsis | QueryLoop, graph, role-agent/daemon adapters and storage conformance. |
 | B — Backplane service | Opt-in service-owned profiles and restricted domain-tool integration. |
 | Q — Conformance/release | Fixtures, fault matrix, cross-consumer tests, artifact independence, release evidence. |
 
-One coordinating maintainer owns public contract/schema changes. Contributors propose changes through that owner instead of independently renaming types or modifying shared event semantics. Create worktrees per task/PR and avoid simultaneous edits to the same contract files.
+One coordinating maintainer owns public contract/schema changes and the single package's Mix manifest, dependency declarations, version, and release configuration. Runtime and Tools lanes are module ownership boundaries, not separate release units. Contributors propose changes through that owner instead of independently renaming types or modifying shared event semantics. Create worktrees per task/PR and avoid simultaneous edits to the same contract files.
 
 Consumer teams may inventory and write fixture tests early. They may not work around unfinished shared requirements with a second executor. Use test-only scripted ports while an upstream contract is blocked; record the block and continue independent tasks.
 
@@ -85,25 +88,29 @@ The dependency table is authoritative for integration ordering. A contributor ca
 
 Compare findings with historical sources in `design.md`. Resolve the exact shared AI types and version/consumption path, without inventing a published version. Identify the schema validator and its supported subset. Record which storage operations actually satisfy durable acknowledgements, CAS, and event/outbox atomicity.
 
+Record the single package path/application/namespace and classify each proposed dependency as core, optional-adapter, host-owned, or test-only. Map tool source into `Tools.*` and generic execution into contracts/ports; verify that empty-tool consumers will not require command helpers or service backends. If a partial tools scaffold already exists, inventory its callers and plan a bounded consolidation rather than maintaining two release streams or deleting it blindly.
+
 **Tests/evidence:** Run existing focused baselines when the environment permits; otherwise record the exact blocker, not a pass. Capture public session/event/permission fixtures and known pre-existing failures.
 
 **Acceptance:** Approved dependency/ownership map and baseline evidence. Sources conflicting with the target are distinguished from requirement changes.
 
 **Stop condition:** Missing upstream protocol/storage capability produces a precise upstream request. Do not recreate the missing service or parser inside the runtime.
 
-### T01 — Scaffold independently buildable packages and consumer fixtures
+### T01 — Scaffold one independently buildable package and profile fixtures
 
-**Scope:** Proposed package directories, package-local Mix configuration, formatting/test support, package artifact/clean-consumer CI fixtures. No service integration.
+**Scope:** `apps/backplane_agent_runtime`, its package-local Mix configuration, internal layer layout, formatting/test support, single-artifact/clean-consumer CI harness, and one changelog/release definition. No service integration.
 
-**Work:** Create `backplane_agent_runtime` and `backplane_agent_tools` with explicit versions/dependencies and namespaces. Make the runtime usable without automatic product processes. Establish injected runtime naming/configuration and a minimal scripted no-tool consumer. The tools package may depend on runtime, never vice versa.
+**Work:** Create one `:backplane_agent_runtime` application with the `Backplane.AgentRuntime` namespace and one version. Reserve generic `Tool.*`/`Ports.*` contracts, concrete `Tools.Collaboration.*`, `Tools.Resource.*`, `Tools.Command.*`, `Tools.Plan.*`, `Tools.Memory.*`, `Tools.Skill.*`, and explicitly configured `Adapters.*` modules. Do not create a tools sibling app or separate publication task.
 
-Provide a standalone artifact test harness outside the service release path. Package tests may use ExUnit/support dependencies; production runtime must not depend on fixture servers or test infrastructure. Keep umbrella-relative development settings out of extracted release artifacts.
+Make runtime naming/configuration injectable and startup inert with respect to product agents, tool registration, workspaces, subprocesses, and optional backend clients. Add a module-dependency check that rejects kernel/gateway calls into concrete tools. Record core versus optional/host/test dependencies; optional adapter modules must compile when their optional libraries are absent.
 
-**Tests:** AC-01, initial AC-33, NFR-01. Build runtime alone and runtime+tools in a clean temporary Mix application with no Backplane service configuration.
+Provide a standalone artifact harness outside the service release path and an initial scripted zero-tool consumer. Define empty-tool, bundled-basic, and fake-backend profiles that will all consume the identical artifact/version as the tool tasks land. Package tests may use ExUnit/support libraries, but production must not depend on test infrastructure or umbrella-relative configuration/build/dependency/lockfile paths. Artifact assembly must include the bundled implementation files, not only their descriptors.
 
-**Acceptance:** Both package artifacts resolve declared dependencies and compile independently; installing tools does not start or register tools automatically.
+**Tests:** Initial AC-01/AC-33, NFR-01. Build the standalone skeleton without service configuration or optional backends, verify a zero-tool boot, and exercise the dependency/startup checks. Extend this harness in T12–T15 and T23 for the completed tool profiles; scaffold checks do not count as final acceptance.
 
-**Stop condition:** Do not pin an unavailable sibling package or silently use an `in_umbrella`-only production dependency.
+**Acceptance:** One artifact resolves its declared dependencies and compiles independently. Installing/booting it registers no tools or optional backends, the layer check is active, and no separate tools release exists. Full contents/activation acceptance remains pending until the tool tasks pass.
+
+**Stop condition:** Do not pin an unavailable sibling package, use an `in_umbrella`-only production dependency, or hide a mandatory backend dependency behind a disabled-tool flag.
 
 ### T02 — Domain types and deterministic execution kernel
 
@@ -135,15 +142,17 @@ Integrate staged asynchronous commits with kernel ownership: unacknowledged effe
 
 ### T04 — Policy, tool registry, schemas, and approval contracts
 
-**Scope:** Runtime PolicyPort, versioned ToolDescriptor registry, gateway admission, approval records and decisions.
+**Scope:** Runtime PolicyPort, generic `Backplane.AgentRuntime.Tool.*` registry/gateway contracts, versioned descriptors, profile validation, and approval records/decisions. No concrete tool implementation belongs in the kernel/gateway.
 
 **Work:** Bind caller/run/resource authority from trusted runtime context. Validate tool lookup, schemas, arguments, descriptor/grant revisions, profiles, delegation contracts, and output limits. Separate read-only, retry-safe, and parallel-safe metadata. Use restrictive defaults for untrusted remote metadata.
 
 Make direct APIs and model wrappers share admission. Bind approvals to exact operations, expiry, identity, and revisions; reject model self-approval. Define revocation/revalidation at safe execution boundaries and behaviour when no interaction resolver exists.
 
+Separate bundled availability, host-selected registration, and per-invocation authorization. Optional selections omit unavailable entries with reasons; an explicitly required missing/incapable backend fails profile validation with `missing_backend` or `unsupported_capability`. Adding a backend must not auto-register tools. Backend loss after registration produces a typed error rather than a permissive fallback.
+
 **Tests:** AC-16 through AC-19, AC-34, AC-36, NFR-04. Include forged identity/module names, changed arguments after approval, stale approval, absent backend, and direct-call bypass attempts.
 
-**Acceptance:** No side effect is permitted without a registered descriptor and a successful exact-operation policy decision. Empty tool sets work.
+**Acceptance:** No side effect is permitted without a registered descriptor and a successful exact-operation policy decision. Empty tool sets work, missing explicit requirements fail configuration, and profile validation requires no knowledge of a concrete tool module in the kernel/gateway.
 
 **Stop condition:** Do not interpret Skill metadata, role names, or remote MCP annotations as authorization grants.
 
@@ -249,11 +258,11 @@ Implement asynchronous wait continuations, cycle and held-context dependency che
 
 ### T12 — Runtime collaboration tools and user interaction wrapper
 
-**Scope:** Opt-in built-in wrappers over the completed runtime/gateway APIs.
+**Scope:** Bundled `Backplane.AgentRuntime.Tools.Collaboration.*` wrappers over the completed runtime/gateway APIs, within the single package.
 
 **Work:** Implement `agent_discover`, `agent_spawn`, `agent_delegate`, `agent_send`, `run_status`, `run_wait`, `run_cancel`, and `ask_user`. Define bounded input/output schemas, target visibility, task/context data selection, and normalized errors.
 
-Register tools only through a host-selected profile. Ensure `run_wait` suspends the invocation without holding a tool slot. Keep information requests separate from permission resolution. Status/discovery/waits do not generate model polling calls.
+Register tools only through a host-selected profile, never during package/application startup. Include their implementations and tests in the same artifact as the runtime. Ensure `run_wait` suspends the invocation without holding a tool slot. Keep information requests separate from permission resolution. Status/discovery/waits do not generate model polling calls.
 
 **Tests:** AC-09 through AC-12, AC-16 through AC-19, AC-34. Exercise APIs and wrappers against identical denied/allowed operations, hidden agents, zero-tool profile, and no-resolver headless runs.
 
@@ -263,27 +272,27 @@ Register tools only through a host-selected profile. Ensure `run_wait` suspends 
 
 ### T13 — Shared file/resource tools with revision-safe writes
 
-**Scope:** `backplane_agent_tools` resource family and ResourcePort adapters/tests. No repository manager or shell work.
+**Scope:** `Backplane.AgentRuntime.Tools.Resource.*` and ResourcePort/reference adapters/tests inside `apps/backplane_agent_runtime`. No repository manager, second Mix app, or shell work.
 
 **Work:** Implement `file_read`, `list_dir`, `glob`, `grep`, `file_write`, and `file_edit` through an authorized resource namespace. Support bounded/partial reads and searches, structured resource references, expected-revision replacement, and create-only writes. Preserve the common tool gateway and output/error contracts.
 
 Implement a local-workspace adapter only with explicit supported confinement semantics. Test symlink handling and concurrent replacement; use a stronger backend or reject profiles where the required confinement cannot be guaranteed. Keep schema/input policy separate from OS enforcement. State which writers participate in the resource coordinator; do not claim compare-and-set against arbitrary external writers based on atomic rename.
 
-**Tests:** AC-20, AC-19, relevant AC-16/AC-36. Use temporary directories and a fake non-filesystem resource backend. Race writes against the same revision; attempt traversal, symlink changes, and output overflow.
+**Tests:** AC-20, AC-19, relevant AC-16/AC-36, bundled-basic AC-01/AC-34 coverage. Use temporary directories and a fake non-filesystem resource backend. Race writes against the same revision; attempt traversal, symlink changes, and output overflow. Run the same artifact with the family disabled and with it explicitly configured; no workspace is touched merely by package startup.
 
-**Acceptance:** Valid scoped operations work, stale writes fail without silent overwrite, and platform/backend capabilities are documented. Runtime-only consumers still have no filesystem dependency or path requirement.
+**Acceptance:** Bundled implementations are present in the release artifact; valid scoped operations work, stale writes fail without silent overwrite, and platform/backend capabilities are documented. Consumers with no selected resource tools still require no workspace/path or configured filesystem backend; generic core code has no concrete-resource-tool dependency.
 
 **Stop condition:** Do not call a lexical path-prefix check a sandbox, or silently weaken resource confinement to make a test pass.
 
 ### T14 — Run-owned command jobs and tested cleanup
 
-**Scope:** Optional `exec`, `job_read`, `job_cancel`, CommandPort, supported local backend, platform conformance fixtures.
+**Scope:** Bundled `Backplane.AgentRuntime.Tools.Command.*` implementations of `exec`, `job_read`, and `job_cancel`, plus CommandPort, a supported reference backend, and platform conformance fixtures. Registration stays opt-in.
 
 **Work:** Implement explicit executable/argv execution, separately authorized shell mode, injected working directory, environment allowlist, deadline/output limits, run-owned jobs, cursor-based output, and descendant cleanup. Cancellation and parent completion must account for every live job.
 
 Declare supported OS/backend capabilities based on tests. If isolation is not provided, say so; do not label the tool a sandbox. Refuse required capabilities that cannot be enforced. Do not detach jobs or allow arbitrary process IDs supplied by the model. Default active commands to an exclusive workspace conflict key, shared with resource tools; narrower concurrency requires explicit host-attested semantics.
 
-**Tests:** AC-21, command portions of AC-13/AC-14/AC-35 and NFR-04. Use harmless fixtures that create a child process, stream excess output, stall, and inspect a sentinel environment variable. Verify supported cleanup leaves no descendants.
+**Tests:** AC-21, command portions of AC-13/AC-14/AC-35, profile portions of AC-01/AC-34, and NFR-04. Use harmless fixtures that create a child process, stream excess output, stall, and inspect a sentinel environment variable. Verify supported cleanup leaves no descendants. Compile/boot the same package with CommandPort/helper executables absent; requiring an unavailable command capability fails profile validation, and package startup launches no job.
 
 **Acceptance:** Jobs stay attributable to the initiating run and can be cancelled/observed without leaking secrets or requiring unbounded buffers. Unsupported platform capabilities fail closed.
 
@@ -291,15 +300,17 @@ Declare supported OS/backend capabilities based on tests. If isolation is not pr
 
 ### T15 — Plans and backend-conditional memory/Skill bridges
 
-**Scope:** Optional plan tools, MemoryPort/SkillPort wrappers, scoped fake-port tests, sibling Skill adapter only where verified.
+**Scope:** Bundled `Backplane.AgentRuntime.Tools.Plan.*`, `Tools.Memory.*`, and `Tools.Skill.*`, scoped fake-port tests, and a sibling Skill adapter only where verified. No independent tools release or compulsory backend library.
 
 **Work:** Implement task-scoped `plan_read`/`plan_update` with expected revision. Implement memory search/store and Skill list/load wrappers against host-provided ports. Bind allowed memory scopes, provenance, bundle revision/digest, resource handles, and output limits.
 
-Omit tools when ports are absent. Keep Skill resolution/activation distinct from tool authorization. Real memory stores, remote Skill APIs, long-term consolidation, and Skill selection UX remain host/sibling work.
+Keep all in-scope wrapper implementations in the artifact even when no backend is installed. Omit unavailable entries from optional profile selections with an explanation; explicitly requiring an unavailable port/capability fails configuration under T04. Keep Skill resolution/activation distinct from tool authorization. Real memory stores, remote Skill APIs, long-term consolidation, and Skill selection UX remain host/sibling work.
 
-**Tests:** AC-22, AC-23, AC-33, AC-34, AC-36. Concurrent plan updates; attempted cross-agent memory access; a malicious Skill requesting elevated tools; absent-backend registry contents; a fake immutable Skill bundle.
+Generic wrappers depend only on runtime-owned ports. Any verified optional-library adapter must compile without that library, capability-check before registration, and start only through explicit host configuration; adding the wrapper must not add an unconditional memory/Skill/MCP service dependency.
 
-**Acceptance:** Plans create no hidden tasks, wrappers require configured capabilities, and service implementations do not become runtime dependencies.
+**Tests:** AC-22, AC-23, AC-33, AC-34, AC-36 and NFR-01. Concurrent plan updates; attempted cross-agent memory access; a malicious Skill requesting elevated tools; optional versus explicitly required missing backends; configured fake memory and immutable Skill ports. Test the same artifact with backend libraries absent, fake ports configured, and each declared optional-library adapter dependency present. No unconfigured clients or tools may start/register.
+
+**Acceptance:** Plans and bridge wrappers ship with the runtime and create no hidden tasks. Unconfigured consumers still compile/boot; configured bridge tools enforce grants through the gateway. Service implementations do not become mandatory runtime dependencies, and no per-tools version or artifact is introduced.
 
 **Stop condition:** Do not create a new memory service, replicate Skill parsing, or advertise a nonfunctional placeholder tool when an upstream port is unavailable.
 
@@ -349,11 +360,11 @@ Capture parity for prompt, steer, follow-up, model selection, cancellation, subs
 
 ### T19 — Sigma execution migration, nested agents, and durable adapter proof
 
-**Scope:** Sigma's actual loop/lifecycle replacement, run-owned child integration, optional common tools where compatible, persistence conformance and rollout flag.
+**Scope:** Sigma's actual loop/lifecycle replacement, run-owned child integration, bundled common tools selected where compatible, persistence conformance and rollout flag.
 
 **Work:** Replace duplicated model/tool lifecycle, cancellation, hard-loop protection, root budget handling, and context transitions with shared components. Preserve host-owned hooks, repository/session lifetime, prompt queues, JSONL/history/fork semantics, and public protocols.
 
-Integrate child/grandchild runs and shared tool families through the gateway. Implement/validate durable runtime records or a reviewed sidecar using existing persistence boundaries; do not claim the historical store can already provide missing atomicity. Keep regenerated/forked runs from silently replaying previous mutations.
+Integrate child/grandchild runs and selected `Backplane.AgentRuntime.Tools.*` families through the gateway using the single runtime dependency; retain Sigma-specific tools locally. Implement/validate durable runtime records or a reviewed sidecar using existing persistence boundaries; do not claim the historical store can already provide missing atomicity. Keep regenerated/forked runs from silently replaying previous mutations.
 
 **Tests:** AC-09, AC-13, AC-14, AC-24, AC-26, full AC-29, I24 Sigma coverage. Run real-store restart tests and the same scripted model/tool scenarios as the standalone consumer.
 
@@ -365,7 +376,7 @@ Integrate child/grandchild runs and shared tool families through the gateway. Im
 
 **Scope:** Synapsis QueryLoop and role-agent integration; preserve daemon/routine/control-plane ownership and existing workspace/domain services.
 
-**Work:** Register independently hosted role agents with private context namespaces and explicit tool/delegation profiles. Adapt manual/routine work into tasks without moving scheduling into the runtime. Migrate QueryLoop provider/tool/context/cancellation/budget handling to shared mechanisms.
+**Work:** Register independently hosted role agents with private context namespaces and explicit tool/delegation profiles. Select bundled `Backplane.AgentRuntime.Tools.*` families or host tools through the same registry; do not install or version a second tools package. Adapt manual/routine work into tasks without moving scheduling into the runtime. Migrate QueryLoop provider/tool/context/cancellation/budget handling to shared mechanisms.
 
 Disable eager tool execution from partial provider responses on the shared path. Add Planner→Coder→Reviewer task fixtures, isolated task contexts, acceptance/results, and task-scoped peer cancellation. Keep the graph path visibly legacy until T21 completes.
 
@@ -399,7 +410,7 @@ Provide disabled-by-default configuration and task submission wiring. Use the ge
 
 **Tests:** AC-16, AC-17, AC-24, AC-26, AC-32, AC-34. Fake-domain unit tests followed by sandboxed real domain-service tests; stale revision and unauthorized apply must fail, and core package installation must not start the agent.
 
-**Acceptance:** A non-coding, sessionless consumer runs the same runtime version and proves package independence and controlled mutation boundaries.
+**Acceptance:** A non-coding, sessionless consumer runs the same runtime artifact/version as coding consumers, selects only its domain tools despite the bundled coding implementations, and proves package independence and controlled mutation boundaries.
 
 **Stop condition:** Do not enable the agent in production, add unrestricted administrator tools, or invent a new configuration/content subsystem to complete this integration.
 
@@ -409,13 +420,13 @@ Provide disabled-by-default configuration and task submission wiring. Use the ge
 
 **Scope:** Shared acceptance harness, package verification script, consumer CI matrices, completed requirement/evidence report.
 
-**Work:** Run AC-01 through AC-36 and NFR-01 through NFR-08 against the appropriate standalone and consumer fixtures. Build actual package artifacts and consume them from fresh Mix projects. Record exact package/consumer SHAs, dependency/toolchain versions, store capabilities, and supported command/resource backends.
+**Work:** Run AC-01 through AC-36 and NFR-01 through NFR-08 against the appropriate standalone and consumer fixtures. Build one actual runtime artifact containing all in-scope tools and consume that identical hash/version from fresh empty-tool, bundled-basic, and fake-backend Mix fixtures. Test absent/present optional libraries and explicit unavailable-backend requirements. Record the package version/hash, consumer SHAs, dependency/toolchain versions, store capabilities, and supported command/resource backends.
 
-Run the bounded stress fixture, property/transition tests, durable fault matrix, permission cases, observer overload, Sigma parity, both Synapsis paths, and Backplane domain boundary. Inspect source/dependency graphs for service leakage, duplicate codecs, and migrated direct execution bypasses.
+Run the bounded stress fixture, property/transition tests, durable fault matrix, permission cases, observer overload, Sigma parity, both Synapsis paths, and Backplane domain boundary. Inspect artifact contents and source/dependency/startup graphs for missing bundled implementations, mandatory backend leakage, kernel/gateway dependencies on concrete `Tools.*`, automatic registration/client startup, duplicate codecs, and migrated direct execution bypasses. Verify one Mix app/version/changelog/release path for the runtime and tools.
 
 **Tests:** All release acceptance and design invariants. Fail release readiness on a required skipped case, undeclared dependency, missing real-store proof, or unknown supported-platform claim.
 
-**Acceptance:** Produce a reproducible report with passed/failed/blocked entries and artifact hashes. No live providers are required for a pass and no package publication occurs automatically.
+**Acceptance:** Produce a reproducible report with passed/failed/blocked entries and the single package artifact hash plus dependency evidence. The same hash supports all required profile fixtures. No live providers are required for a pass and no package publication occurs automatically.
 
 **Stop condition:** Partial consumer adoption is an internal milestone, not V1 completion. Do not replace missing evidence with unit-test counts or screenshots.
 
@@ -423,7 +434,7 @@ Run the bounded stress fixture, property/transition tests, durable fault matrix,
 
 **Scope:** Only paths proven migrated by T23, adapter/API documentation, compatibility/release notes, profile/backend support matrix.
 
-**Work:** Remove obsolete duplicated execution/authorization/accounting code in small consumer PRs, keeping required compatibility mappers. Document lifecycle/delegation semantics, supported tools/platforms/store modes, package installation, new-work rollback, event replay/retention, and operational handling of unknown outcomes.
+**Work:** Remove obsolete duplicated execution/authorization/accounting code in small consumer PRs, keeping required compatibility mappers. Document lifecycle/delegation semantics, supported tools/platforms/store modes, single-package installation, profile/backend configuration, new-work rollback, event replay/retention, and operational handling of unknown outcomes. Use `Backplane.AgentRuntime.Tools.*` consistently; consolidate any pre-existing draft tools scaffold/callers after verification, and remove only superseded tools-specific dependency/release instructions. Keep one changelog/version/publication path.
 
 Ensure examples use no real credentials or automatic mutations. Capture unresolved upstream requests and deferred features separately from accepted V1 scope. Re-run focused tests and release artifact checks after cleanup; if cleanup changes semantics, rerun the affected acceptance suite before signing off.
 
@@ -437,7 +448,7 @@ Ensure examples use no real credentials or automatic mutations. Capture unresolv
 
 | Requirement | Acceptance | Primary tasks |
 | --- | --- | --- |
-| FR-01 | AC-01 | T01, T23 |
+| FR-01 | AC-01 | T01, T12, T13, T14, T15, T23 |
 | FR-02 | AC-02 | T09, T23 |
 | FR-03 | AC-03 | T02, T09, T11 |
 | FR-04 | AC-04 | T07, T11 |
@@ -470,7 +481,7 @@ Ensure examples use no real credentials or automatic mutations. Capture unresolv
 | FR-31 | AC-31 | T21, T24 |
 | FR-32 | AC-32 | T22, T24 |
 | FR-33 | AC-33 | T00, T01, T05, T15, T23 |
-| FR-34 | AC-34 | T04, T09, T12, T15, T22 |
+| FR-34 | AC-34 | T04, T09, T12, T13, T14, T15, T22, T23 |
 | FR-35 | AC-35 | T06, T08, T10, T16, T23 |
 | FR-36 | AC-36 | T04, T07, T10, T15 |
 | NFR-01 | Artifact independence | T01, T23, T24 |
@@ -490,17 +501,20 @@ Each PR/task handoff must contain: repository/branch/base SHA, task ID, changed 
 
 A test not run is reported as not run. Distinguish a dependency/environment failure from a product defect. Do not fix unrelated baseline failures inside a scoped PR; record them and continue only independent work.
 
-### 8.2 Package checks
+### 8.2 Single-package and profile checks
 
-Create a repository-owned verification script in T01/T23, for example `scripts/verify_agent_runtime_packages.sh`. It must perform this sequence, rather than merely compile the umbrella:
+Create one repository-owned verification script in T01/T23, for example `scripts/verify_agent_runtime_package.sh`. It must verify the release artifact, not merely compile the umbrella:
 
-1. Run formatting, warnings-as-errors compilation, and focused tests for each new package using the tested toolchain.
-2. Build actual distributable package artifacts with declared dependencies and inspect their file lists/production dependency graph.
-3. Create two fresh temporary Mix consumers: runtime-only and runtime-plus-tools. Install the built artifacts and declared dependency artifacts without a path back to the umbrella.
-4. Boot an empty-tool agent, complete a scripted execution, start two namespaces, and prove no service processes/database/environment config are required.
-5. Run the artifact-backed common contract suite and record package hashes plus exact toolchain/dependency versions.
+1. Run formatting, warnings-as-errors compilation, and focused tests for `apps/backplane_agent_runtime` using the recorded toolchain. Check one Mix application, namespace root, version/changelog, and release path. Check that kernel/gateway modules do not depend on concrete `Tools.*` modules.
+2. Build one distributable artifact and inspect its file list: include the runtime and every in-scope collaboration/resource/command/plan/Memory/Skill implementation, required reference adapters, and documentation. Inspect the production dependency/startup graph for optional-backend leakage and test/service dependencies. Do not equate a disabled profile with dependency independence.
+3. Create three fresh temporary Mix consumers—**empty-tool**, **bundled-basic**, and **fake-backend**—and install the identical artifact/hash/version plus its declared required dependencies. No path may resolve back to the umbrella and no second tools artifact is allowed.
+4. In the empty-tool fixture, omit all optional backend libraries, command helpers, product configuration, workspace paths, and service apps. Compile/boot a scripted zero-tool execution and two runtime namespaces; assert an empty registry and no automatically started optional backend clients, jobs, or service agents.
+5. In the bundled-basic fixture, explicitly configure authorized resource/plan tools and the supported command backend. Exercise harmless scoped operations, revision conflicts, bounded outputs, and cleanup. Do not start jobs or open a workspace before that configuration. Additional backend/platform limitations remain explicit.
+6. In the fake-backend fixture, configure MemoryPort/SkillPort fakes without installing production memory/Skill services. Exercise scoped wrappers. Separately request missing/incapable backends and verify typed configuration failures; optional selections omit unavailable entries with reasons. Adding a backend alone must not register tools or grant permission.
+7. For each declared optional-library adapter, run absent-dependency compile/boot and configured present-dependency contract tests in fresh fixtures. Fail on compile-time references that require the absent library, an undeclared/compulsory backend dependency, or unconfigured application startup.
+8. Run the artifact-backed common suite and record the one package hash/version, exact dependency/toolchain versions, profile configurations, and observed startup/dependency checks. Rebuild and rerun affected checks after cleanup rather than carrying forward stale artifact evidence.
 
-Expected developer checks after scaffolding include `mix format --check-formatted`, `mix compile --warnings-as-errors`, and focused `mix test` commands under the relevant package/consumer root. T00 records valid commands for each current repository; do not assume one root command tests both standalone consumption and host integration.
+Expected developer checks after scaffolding include `mix format --check-formatted`, `mix compile --warnings-as-errors`, and focused `mix test` commands under the relevant package/consumer root. T00 records valid commands for each current repository. T01 establishes the harness; T12–T15 fill in bundled-tool coverage; T23 runs the full matrix. Scaffold-only tests or umbrella compilation do not satisfy final package acceptance.
 
 ### 8.3 Recovery fault matrix
 
@@ -519,7 +533,7 @@ Run this matrix against real durable adapters in their consumer repositories. Si
 
 ### 8.4 End-to-end fixtures
 
-The mandatory fixture set includes a no-tool agent, Sigma main→child→grandchild, Planner→Coder→Reviewer with unrelated peer work, same-context contention, dependency cycles, headless approval, hard tool loop, root reservation race, delayed store/provider/tool, subscriber overload, resource revision race, command descendants, and a sessionless configuration/content agent.
+The mandatory fixture set includes same-artifact empty-tool/bundled-basic/fake-backend profiles, explicit missing-backend errors, absent/present optional-library builds, a no-tool agent, Sigma main→child→grandchild, Planner→Coder→Reviewer with unrelated peer work, same-context contention, dependency cycles, headless approval, hard tool loop, root reservation race, delayed store/provider/tool, subscriber overload, resource revision race, command descendants, and a sessionless configuration/content agent.
 
 All models are scripted. File/command fixtures use temporary locations and harmless commands. Domain writes target test stores/sandbox fixtures only. Optional live smoke tests are separately labelled and cannot replace deterministic acceptance.
 
@@ -527,19 +541,19 @@ All models are scripted. File/command fixtures use temporary locations and harml
 
 | Gate | Required evidence |
 | --- | --- |
-| G0 / M0 | T00/T01 complete; current baseline and dependency/type contract recorded; independent skeleton artifacts work. |
+| G0 / M0 | T00/T01 complete; current baseline, single-package layout, dependency/type contract, and layer checks recorded; one independent skeleton artifact works. |
 | G1 / M1 | T02–T08 complete; deterministic kernel, policy, contexts, attempts, budgets, and ephemeral execution pass their AC cases. |
-| G2 / M2 | T09–T15 complete; main/child/grandchild and hosted peer delegation work; basic tools are opt-in and bounded. |
+| G2 / M2 | T09–T15 complete; main/child/grandchild and hosted peer delegation work; all in-scope tool implementations are bundled, opt-in, bounded, and backend-conditional where specified. |
 | G3 / M3 | T16/T17 complete; canonical events, accounting, generic recovery harness, and explicit storage modes pass. Production durable support still requires consumer adapter proof. |
 | G4 / M4 | T19/T21/T22 complete with their prerequisites; Sigma, both Synapsis paths, and Backplane satisfy product journeys and real-store claims. |
-| G5 / M5 | T23/T24 complete; every mandatory FR/AC/NFR has evidence, artifact consumption succeeds, migrated bypasses are removed, limitations/rollback are documented. |
+| G5 / M5 | T23/T24 complete; every mandatory FR/AC/NFR has evidence, the same single artifact passes all profile/backend fixtures, migrated bypasses are removed, and unified release/limitations/rollback are documented. |
 
 Tasks may progress in parallel; a milestone gate is not passed merely because dependent code exists. Each gate needs observed evidence.
 
 ## 10. Definition of done and final handoff
 
-The implementation is done when the requirements matrix is complete, all three consumers use the same shared enforcement layer, package artifacts are independently usable, and declared durability/security/platform behaviour is backed by tests.
+The implementation is done when the requirements matrix is complete, all three consumers use the same shared enforcement layer, one package artifact includes the runtime and all in-scope tools and is independently usable across the required profiles, and declared durability/security/platform behaviour is backed by tests.
 
-The final handoff must include package versions/artifact hashes, consumer SHAs, full test matrix, public contract changes, supported/unsupported backends, migration status of every execution path, safe rollout/rollback procedure, unresolved upstream requests, and deferred features.
+The final handoff must include the single package version/artifact hash, verified sibling dependency versions, same-artifact profile/backend evidence, consumer SHAs, full test matrix, public contract changes, supported/unsupported backends, migration status of every execution path, safe rollout/rollback procedure, unresolved upstream requests, and deferred features.
 
 Do not report a feature as complete because its module exists, a mock passes, a PR is open, or a progress note says it was implemented. Report exactly what was executed and verified. Package publication, merges, production configuration, and deployment remain separate authorized actions.
