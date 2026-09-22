@@ -61,6 +61,73 @@ defmodule Backplane.SkillProtocol.ClientTest do
            }
   end
 
+  test "catalog negotiates and decodes optional argument hints without weakening strict fields" do
+    parent = self()
+
+    transport = fn request ->
+      send(parent, {:request, request})
+
+      {:ok,
+       %{
+         status: 200,
+         headers: %{},
+         body:
+           JSON.encode!(%{
+             "protocol_version" => "1",
+             "data" => [
+               descriptor_map("with-hint", "FILE"),
+               descriptor_map("null-hint", nil),
+               Map.delete(descriptor_map("legacy", nil), "argument_hint")
+             ],
+             "next_cursor" => nil
+           })
+       }}
+    end
+
+    assert {:ok,
+            %{
+              data: [
+                %Descriptor{argument_hint: "FILE"},
+                %Descriptor{argument_hint: nil},
+                %Descriptor{argument_hint: nil}
+              ]
+            }} = Client.catalog(client(transport), fields: [:argument_hint])
+
+    assert_receive {:request, %{url: url}}
+    assert URI.decode_query(URI.parse(url).query) == %{"fields" => "argument_hint"}
+
+    for invalid <- [123, [], %{}] do
+      body =
+        JSON.encode!(%{
+          "protocol_version" => "1",
+          "data" => [descriptor_map("invalid", invalid)],
+          "next_cursor" => nil
+        })
+
+      assert {:error, %Error{code: :invalid_request}} =
+               Client.catalog(client(fn _ -> {:ok, %{status: 200, headers: %{}, body: body}} end))
+    end
+
+    unknown = Map.put(descriptor_map("unknown", nil), "unexpected", true)
+
+    assert {:error, %Error{code: :invalid_request}} =
+             Client.catalog(
+               client(fn _ ->
+                 {:ok,
+                  %{
+                    status: 200,
+                    headers: %{},
+                    body:
+                      JSON.encode!(%{
+                        "protocol_version" => "1",
+                        "data" => [unknown],
+                        "next_cursor" => nil
+                      })
+                  }}
+               end)
+             )
+  end
+
   test "resolve encodes opaque identity as query values and rejects mismatched manifests" do
     parent = self()
 
@@ -525,5 +592,17 @@ defmodule Backplane.SkillProtocol.ClientTest do
 
   defp catalog_body do
     JSON.encode!(%{"protocol_version" => "1", "data" => [], "next_cursor" => nil})
+  end
+
+  defp descriptor_map(skill_id, argument_hint) do
+    %{
+      "skill_id" => skill_id,
+      "name" => skill_id,
+      "description" => "Example",
+      "revision" => "rev-1",
+      "artifact_digest" => @digest,
+      "publication_status" => "ready",
+      "argument_hint" => argument_hint
+    }
   end
 end

@@ -29,6 +29,7 @@ defmodule Backplane.SkillProtocol.Wire do
 
   @catalog_keys ~w(protocol_version data next_cursor)
   @descriptor_keys ~w(skill_id name description revision artifact_digest publication_status)
+  @descriptor_extended_keys ["argument_hint" | @descriptor_keys]
   @manifest_keys ~w(protocol_version profile skill_id revision root entrypoint document_metadata artifact_format artifact_digest compressed_bytes unpacked_bytes files required_capabilities)
   @file_keys ~w(path bytes sha256)
   @error_envelope_keys ~w(protocol_version error)
@@ -184,7 +185,7 @@ defmodule Backplane.SkillProtocol.Wire do
   end
 
   defp decode_descriptor(value, source_id) do
-    with :ok <- exact_keys(value, @descriptor_keys),
+    with :ok <- descriptor_keys(value),
          %{
            "skill_id" => skill_id,
            "name" => name,
@@ -194,9 +195,11 @@ defmodule Backplane.SkillProtocol.Wire do
          :ok <- nonempty(name),
          true <- status in ~w(ready invalid pending withdrawn),
          description <- Map.get(value, "description"),
+         argument_hint <- Map.get(value, "argument_hint"),
          revision <- Map.get(value, "revision"),
          digest <- Map.get(value, "artifact_digest"),
          true <- is_nil(description) or is_binary(description),
+         true <- is_nil(argument_hint) or is_binary(argument_hint),
          true <- is_nil(revision) or is_binary(revision),
          true <- is_nil(digest) or (is_binary(digest) and Regex.match?(@digest, digest)) do
       ref = %SkillRef{
@@ -211,6 +214,7 @@ defmodule Backplane.SkillProtocol.Wire do
          ref: ref,
          name: name,
          description: description,
+         argument_hint: argument_hint,
          path: nil,
          revision: revision,
          artifact_digest: digest,
@@ -265,6 +269,14 @@ defmodule Backplane.SkillProtocol.Wire do
   end
 
   defp exact_keys(_value, _allowed), do: malformed("response value is not an object")
+
+  defp descriptor_keys(value) when is_map(value) do
+    if Enum.all?(Map.keys(value), &(&1 in @descriptor_extended_keys)),
+      do: :ok,
+      else: malformed("response object has missing or unknown fields")
+  end
+
+  defp descriptor_keys(_value), do: malformed("response value is not an object")
 
   defp expected(_actual, nil, _field), do: :ok
   defp expected(value, value, _field), do: :ok

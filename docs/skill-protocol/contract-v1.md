@@ -16,7 +16,7 @@ BP-04 extends existing auth resources with `:skill_protocol`. Every catalog, res
 
 ## Operations
 
-- `GET /skill-protocol/v1/catalog`: bounded `limit` (default 20, maximum 100), optional filters and opaque context-bound keyset cursor. Returns committed lightweight descriptors and `next_cursor`; ordering is deterministic and pagination over mutations is best effort.
+- `GET /skill-protocol/v1/catalog`: bounded `limit` (default 20, maximum 100), optional filters and opaque context-bound keyset cursor. Returns committed lightweight descriptors and `next_cursor`; ordering is deterministic and pagination over mutations is best effort. The frozen descriptor shape is unchanged by default. `fields=argument_hint` opts into an additional nullable `argument_hint` field sourced only from the committed revision manifest's `document_metadata["argument-hint"]`; the selected fields are bound into the cursor.
 - `GET /skill-protocol/v1/resolve?skill_id=...&revision=...`: omitted revision snapshots current once; explicit revision never falls back. Returns one immutable manifest.
 - `GET /skill-protocol/v1/artifact?skill_id=...&revision=...`: returns exact `application/x-tar+gzip` bytes, content length when known, and a strong ETag derived from the digest.
 

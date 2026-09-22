@@ -8,6 +8,7 @@ defmodule Backplane.SkillProtocol.Descriptor do
     :ref,
     :name,
     :description,
+    :argument_hint,
     :path,
     :revision,
     :artifact_digest,
@@ -18,6 +19,7 @@ defmodule Backplane.SkillProtocol.Descriptor do
   @type t :: %__MODULE__{
           ref: SkillRef.t(),
           name: String.t(),
+          argument_hint: String.t() | nil,
           path: String.t(),
           precedence: integer()
         }

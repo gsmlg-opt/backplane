@@ -60,6 +60,41 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     assert conn |> recycle() |> get("/skills/export") |> response(200)
   end
 
+  test "catalog argument hint is opt-in and cursor-bound", %{conn: conn, tmp_dir: tmp_dir} do
+    first = ingest!(tmp_dir, "hint-alpha", "Alpha", "PATH")
+    _second = ingest!(tmp_dir, "hint-beta", "Beta", nil)
+
+    legacy = conn |> get("/skill-protocol/v1/catalog?q=hint-alpha") |> json_response(200)
+    assert [%{"skill_id" => skill_id} = descriptor] = legacy["data"]
+    assert skill_id == first.id
+    refute Map.has_key?(descriptor, "argument_hint")
+
+    extended =
+      conn
+      |> recycle()
+      |> get("/skill-protocol/v1/catalog?fields=argument_hint&limit=1")
+      |> json_response(200)
+
+    assert [%{"argument_hint" => "PATH"}] = extended["data"]
+    assert is_binary(extended["next_cursor"])
+
+    assert conn
+           |> recycle()
+           |> get(
+             "/skill-protocol/v1/catalog?cursor=#{URI.encode_www_form(extended["next_cursor"])}"
+           )
+           |> json_response(400)
+           |> get_in(["error", "code"]) == "invalid_request"
+
+    for value <- ["unknown", "argument_hint,unknown"] do
+      assert conn
+             |> recycle()
+             |> get("/skill-protocol/v1/catalog?fields=#{URI.encode_www_form(value)}")
+             |> json_response(400)
+             |> get_in(["error", "code"]) == "invalid_request"
+    end
+  end
+
   test "artifact is exact, conditional reads authorize, and missing revisions do not fall back",
        %{
          conn: conn,
@@ -139,10 +174,27 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     end
   end
 
-  test "array and empty query parameters return structured invalid requests", %{conn: conn, tmp_dir: tmp_dir} do
+  test "array and empty query parameters return structured invalid requests", %{
+    conn: conn,
+    tmp_dir: tmp_dir
+  } do
     skill = ingest!(tmp_dir, "malformed-query", "Query")
-    for query <- ["limit[]=1", "cursor[]=x", "q[]=x", "tag[]=x", "skill_id[]=#{skill.id}", "revision[]=old", "revision[key]=old", "revision="] do
-      path = if String.starts_with?(query, "skill_id") or String.starts_with?(query, "revision"), do: "/skill-protocol/v1/resolve?skill_id=#{URI.encode_www_form(skill.id)}&#{query}", else: "/skill-protocol/v1/catalog?#{query}"
+
+    for query <- [
+          "limit[]=1",
+          "cursor[]=x",
+          "q[]=x",
+          "tag[]=x",
+          "skill_id[]=#{skill.id}",
+          "revision[]=old",
+          "revision[key]=old",
+          "revision="
+        ] do
+      path =
+        if String.starts_with?(query, "skill_id") or String.starts_with?(query, "revision"),
+          do: "/skill-protocol/v1/resolve?skill_id=#{URI.encode_www_form(skill.id)}&#{query}",
+          else: "/skill-protocol/v1/catalog?#{query}"
+
       response = conn |> recycle() |> get(path) |> json_response(400)
       assert get_in(response, ["error", "code"]) == "invalid_request"
     end
@@ -178,13 +230,14 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
     assert response(get(conn, "/skill-protocol/v1/catalog"), 404) == "not found"
   end
 
-  defp ingest!(tmp_dir, slug, resource) do
+  defp ingest!(tmp_dir, slug, resource, argument_hint \\ nil) do
     archive = archive_path(tmp_dir, slug)
 
     skill_document = """
     ---
     name: #{slug}
     description: #{slug} protocol fixture
+    #{if argument_hint, do: "argument-hint: #{argument_hint}", else: ""}
     tags: [protocol, #{slug}]
     ---
 

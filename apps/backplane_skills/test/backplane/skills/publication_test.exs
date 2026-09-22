@@ -39,6 +39,32 @@ defmodule Backplane.Skills.PublicationTest do
              {:ok, bytes_a}
   end
 
+  test "catalog optionally exposes argument hint from committed revision metadata", %{
+    tmp_dir: tmp_dir
+  } do
+    archive =
+      create_archive!(
+        tmp_dir,
+        [
+          {"hinted/SKILL.md",
+           skill_md(name: "hinted", description: "Hinted")
+           |> String.replace("tags:", "argument-hint: FILE\ntags:")}
+        ],
+        name: "hinted.tar.gz"
+      )
+
+    assert {:ok, skill} = Ingest.ingest(archive, blob: [root: Path.join(tmp_dir, "blobs")])
+
+    assert %{data: [legacy]} = Publication.catalog(q: "hinted")
+    refute Map.has_key?(legacy, :argument_hint)
+
+    assert %{data: [extended]} =
+             Publication.catalog(q: "hinted", fields: [:argument_hint])
+
+    assert extended.skill_id == skill.id
+    assert extended.argument_hint == "FILE"
+  end
+
   test "resolve rejects malformed or empty explicit revisions", %{tmp_dir: tmp_dir} do
     path = archive(tmp_dir, "revision-shape", "Revision shape", "Revision shape", "revision.txt")
     assert {:ok, _skill} = Ingest.ingest(path, blob: [root: Path.join(tmp_dir, "blobs")])
