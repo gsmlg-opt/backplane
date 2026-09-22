@@ -11,6 +11,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
       client_id: client.id,
       requested_model: "gpt-test",
       input_tokens: 1_000,
+      cached_tokens: 200,
       output_tokens: 250
     })
 
@@ -21,7 +22,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
     assert html =~ "Client Usage"
     assert html =~ "usage-client"
-    assert html =~ "1,000"
+    assert html =~ "1,200"
     assert html =~ "250"
     assert html =~ "MCP Usage"
     assert html =~ "gpt-test"
