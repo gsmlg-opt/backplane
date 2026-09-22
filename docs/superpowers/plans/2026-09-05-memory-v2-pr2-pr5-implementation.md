@@ -280,6 +280,27 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   Observability flags/legacy usage focused tests passed 4/4, but the test-boot
   Observability policy repair and full umbrella rerun remain pending narrow
   approval for three additional test-support files. No local merge or push.
+- Task 20 Observability test-support scope approved by the user on 2026-09-22:
+  `apps/backplane_telemetry/test/backplane/observability/settings_test.exs`,
+  `apps/backplane_llama/test/support/observability_case.ex`, and
+  `apps/backplane_mcp/test/support/observability_case.ex`. Together with the
+  directly implicated `config/test.exs` test-boot setting, these files may be
+  changed only to isolate Observability writers across SQL Sandbox tests while
+  preserving explicit opt-in behavior. Re-run the affected focused suites and
+  then the full umbrella gate before claiming completion.
+- Task 20 Observability test-boot repair committed as `1d79a714` after
+  specification and quality approval: ordinary tests suppress global
+  Observability writers, while tagged LLM/MCP cases explicitly opt in and
+  restore the test default. Focused telemetry/LLM/MCP tests passed 47/47 with
+  warnings-as-errors. A fresh, separately migrated full umbrella run then
+  passed Memory 1230/1230, LLM 233/233, telemetry 32/32, admin 275/275,
+  host-agent 508/508, API 253/253, and the other apps except MCP. MCP had
+  exactly six failures, all in the previously unapproved
+  `apps/backplane_mcp/test/backplane/services/skills_test.exs` setup: it calls
+  `String.starts_with?/2` on a tuple-keyed upstream catalog ETS entry. No
+  production defect was found in that failure. The repository scope rule
+  requires stopping before editing this test; its one-file approval is pending.
+  Full umbrella log: `/tmp/backplane-task20-umbrella-full-final-00011.log`.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
