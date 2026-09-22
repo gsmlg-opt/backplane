@@ -1,7 +1,16 @@
 defmodule Backplane.HostAgent.Memory.Edge.Protection do
   @moduledoc "Fail-closed edge persistence policy, fixed by the compiled build environment."
   @build_env Mix.env()
-  @plaintext_build @build_env in [:dev, :test]
+
+  if @build_env in [:dev, :test] do
+    defp development_status(config) do
+      if Map.get(config, :development_plaintext) == true,
+        do: :plaintext_development,
+        else: :protection_unavailable
+    end
+  else
+    defp development_status(_config), do: :protection_unavailable
+  end
 
   def status(config) do
     cond do
@@ -11,11 +20,8 @@ defmodule Backplane.HostAgent.Memory.Edge.Protection do
       reserved_path?(config) ->
         :protection_unavailable
 
-      @plaintext_build and Map.get(config, :development_plaintext) == true ->
-        :plaintext_development
-
       true ->
-        :protection_unavailable
+        development_status(config)
     end
   end
 
