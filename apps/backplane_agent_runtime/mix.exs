@@ -40,7 +40,7 @@ defmodule Backplane.AgentRuntime.MixProject do
     [
       files: ["lib", "priv", "mix.exs", "*.md", "examples"],
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/gsmlg-dev/backplane"},
+      links: %{"GitHub" => "https://github.com/gsmlg-opt/backplane"},
       maintainers: ["gsmlg-dev"]
     ]
   end
