@@ -37,6 +37,34 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert conn.status == 200
       assert %{"data" => [%{"slug" => "alpha-skill"}]} = json_body(conn)
     end
+
+    test "lists skills with stable offset pagination", %{tmp_dir: tmp_dir} do
+      ingest_archive!(tmp_dir, "alpha-skill", name: "Alpha Skill")
+      ingest_archive!(tmp_dir, "beta-skill", name: "Beta Skill")
+
+      first = api_request(:get, "/skills?limit=1&offset=0")
+      second = api_request(:get, "/skills?limit=1&offset=1")
+
+      assert first.status == 200
+
+      assert %{
+               "data" => [%{"slug" => "alpha-skill"}],
+               "limit" => 1,
+               "offset" => 0,
+               "next_offset" => 1,
+               "has_more" => true
+             } = json_body(first)
+
+      assert second.status == 200
+
+      assert %{
+               "data" => [%{"slug" => "beta-skill"}],
+               "limit" => 1,
+               "offset" => 1,
+               "next_offset" => nil,
+               "has_more" => false
+             } = json_body(second)
+    end
   end
 
   describe "GET /skills/:slug" do
@@ -108,6 +136,44 @@ defmodule Backplane.Skills.ApiRouterTest do
       assert api_request(:delete, "/skills/generated-lessons").status == 409
       assert {:ok, preserved} = Skills.get_by_slug("generated-lessons")
       assert preserved.content == content
+    end
+
+    test "returns content and source metadata for database and github skills" do
+      database_content = "# Database skill\n\nStored in the database."
+      github_content = "# GitHub skill\n\nSynced from GitHub."
+
+      insert_source_skill("database-skill", "database", database_content,
+        source_uri: "db://skills/database-skill",
+        source_rev: "db-revision"
+      )
+
+      insert_source_skill("github-skill", "github", github_content,
+        source_uri: "https://github.com/example/skills",
+        source_rev: "main"
+      )
+
+      for {slug, content, source_kind, source_uri, source_rev} <- [
+            {"database-skill", database_content, "database", "db://skills/database-skill",
+             "db-revision"},
+            {"github-skill", github_content, "github", "https://github.com/example/skills",
+             "main"}
+          ] do
+        conn = api_request(:get, "/skills/#{slug}")
+
+        assert conn.status == 200
+
+        assert %{
+                 "slug" => ^slug,
+                 "content" => ^content,
+                 "content_hash" => content_hash,
+                 "source_kind" => ^source_kind,
+                 "source_uri" => ^source_uri,
+                 "source_rev" => ^source_rev,
+                 "current_revision" => nil
+               } = json_body(conn)
+
+        assert content_hash == :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+      end
     end
 
     test "returns an error when archive-backed file listing cannot read the blob", %{
@@ -420,6 +486,21 @@ defmodule Backplane.Skills.ApiRouterTest do
     archive = create_skill_archive!(tmp_dir, slug, attrs)
     assert {:ok, _skill} = Skills.ingest_archive(archive, [])
     archive
+  end
+
+  defp insert_source_skill(slug, source_kind, content, attrs) do
+    %Skill{}
+    |> Skill.changeset(%{
+      id: "#{source_kind}/#{slug}",
+      slug: slug,
+      name: String.capitalize(slug),
+      content: content,
+      content_hash: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower),
+      source_kind: source_kind,
+      source_uri: attrs[:source_uri],
+      source_rev: attrs[:source_rev]
+    })
+    |> Repo.insert!()
   end
 
   defp create_skill_archive!(tmp_dir, slug, attrs) do

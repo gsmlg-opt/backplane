@@ -1,11 +1,13 @@
 defmodule Backplane.McpProtocol.Client.Request do
   @moduledoc false
 
+  alias Backplane.McpProtocol.Client.ToolCall
+
   @type t :: %__MODULE__{
           id: String.t(),
           logical_id: String.t(),
           method: String.t(),
-          from: GenServer.from(),
+          from: GenServer.from() | nil,
           timer_ref: reference(),
           start_time: integer(),
           params: map(),
@@ -16,7 +18,12 @@ defmodule Backplane.McpProtocol.Client.Request do
           deadline: integer() | nil,
           continuation: term(),
           resolver_supervisor: pid() | nil,
-          resolver_task: Task.t() | nil
+          resolver_task: Task.t() | nil,
+          tool_call: ToolCall.t() | nil,
+          owner_monitor: reference() | nil,
+          dispatch_task: Task.t() | nil,
+          dispatch_status: :registered | :dispatching | :accepted | nil,
+          progress_owner: term()
         }
 
   defstruct [
@@ -32,6 +39,11 @@ defmodule Backplane.McpProtocol.Client.Request do
     :continuation,
     :resolver_supervisor,
     :resolver_task,
+    :tool_call,
+    :owner_monitor,
+    :dispatch_task,
+    :dispatch_status,
+    :progress_owner,
     base_params: %{},
     extra_meta: %{},
     progress_opts: nil
@@ -49,23 +61,37 @@ defmodule Backplane.McpProtocol.Client.Request do
       * `:timer_ref` - Reference to the request-specific timeout timer
   """
   @spec new(%{
-          id: String.t(),
-          method: String.t(),
-          from: GenServer.from(),
-          timer_ref: reference(),
-          params: map()
+          required(:id) => String.t(),
+          required(:method) => String.t(),
+          optional(:from) => GenServer.from() | nil,
+          required(:timer_ref) => reference(),
+          required(:params) => map()
         }) :: t()
   def new(attrs) do
     %__MODULE__{
       id: attrs.id,
       logical_id: attrs.id,
       method: attrs.method,
-      from: attrs.from,
+      from: Map.get(attrs, :from),
       timer_ref: attrs.timer_ref,
       params: attrs.params,
       base_params: attrs.params,
       start_time: System.monotonic_time(:millisecond)
     }
+  end
+
+  @doc false
+  @spec async?(t()) :: boolean()
+  def async?(%__MODULE__{tool_call: handle}), do: ToolCall.handle?(handle)
+
+  @doc false
+  @spec reply(t(), term()) :: :ok
+  def reply(%__MODULE__{tool_call: handle, from: from}, result) do
+    if ToolCall.handle?(handle) do
+      ToolCall.deliver(handle, result)
+    else
+      GenServer.reply(from, result)
+    end
   end
 
   @doc "Retains the immutable operation data and absolute deadline for retries."

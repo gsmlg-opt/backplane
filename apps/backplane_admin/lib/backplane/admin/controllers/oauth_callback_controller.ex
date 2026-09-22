@@ -189,8 +189,13 @@ defmodule Backplane.Admin.OAuthCallbackController do
     end
   end
 
-  defp exchange_code("figma_oauth", code, code_verifier, redirect_uri, _attrs) do
-    with {:ok, headers} <- OAuthRefresher.figma_mcp_client_auth_headers() do
+  defp exchange_code("figma_oauth", code, code_verifier, redirect_uri, attrs) do
+    with {:ok, oauth_client} <- figma_oauth_client(attrs),
+         {:ok, headers} <-
+           OAuthRefresher.figma_mcp_client_auth_headers(
+             figma_mcp_client_id: oauth_client["client_id"],
+             figma_mcp_client_secret: oauth_client["client_secret"]
+           ) do
       token_url = OAuthRefresher.figma_token_url()
 
       body = %{
@@ -208,7 +213,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
       case Req.post(token_url, request_options) do
         {:ok, %{status: 200, body: response}} ->
-          normalize_figma_tokens(response)
+          normalize_figma_tokens(response, attrs, oauth_client)
 
         {:ok, %{status: status, body: response}} ->
           {:error, {:http, status, sanitized_oauth_error(response)}}
@@ -223,26 +228,58 @@ defmodule Backplane.Admin.OAuthCallbackController do
     {:error, {:unsupported_vendor, vendor}}
   end
 
-  defp normalize_figma_tokens(%{
-         "access_token" => access_token,
-         "refresh_token" => refresh_token,
-         "expires_in" => expires_in
-       })
+  defp figma_oauth_client(%{"oauth_client" => client}) when is_map(client) do
+    if is_binary(client["client_id"]) and String.trim(client["client_id"]) != "" and
+         is_binary(client["client_secret"]) and String.trim(client["client_secret"]) != "" and
+         client["token_endpoint_auth_method"] == "client_secret_basic" do
+      {:ok, client}
+    else
+      {:error, :invalid_figma_oauth_client}
+    end
+  end
+
+  defp figma_oauth_client(_attrs) do
+    with {:ok, client_id, client_secret} <- OAuthRefresher.figma_mcp_client_credentials() do
+      {:ok,
+       %{
+         "client_id" => client_id,
+         "client_secret" => client_secret,
+         "token_endpoint_auth_method" => "client_secret_basic"
+       }}
+    end
+  end
+
+  defp normalize_figma_tokens(
+         %{
+           "access_token" => access_token,
+           "refresh_token" => refresh_token,
+           "expires_in" => expires_in
+         },
+         attrs,
+         oauth_client
+       )
        when is_binary(access_token) and is_binary(refresh_token) and
               is_integer(expires_in) and expires_in > 0 do
     if String.trim(access_token) == "" or String.trim(refresh_token) == "" do
       {:error, :invalid_figma_token_response}
     else
-      {:ok,
-       %{
-         access_token: access_token,
-         refresh_token: refresh_token,
-         expires_at: System.system_time(:millisecond) + expires_in * 1_000
-       }, %{}}
+      tokens = %{
+        access_token: access_token,
+        refresh_token: refresh_token,
+        expires_at: System.system_time(:millisecond) + expires_in * 1_000
+      }
+
+      tokens =
+        if attrs["persist_oauth_client"],
+          do: Map.put(tokens, :oauth_client, oauth_client),
+          else: tokens
+
+      {:ok, tokens, %{}}
     end
   end
 
-  defp normalize_figma_tokens(_response), do: {:error, :invalid_figma_token_response}
+  defp normalize_figma_tokens(_response, _attrs, _oauth_client),
+    do: {:error, :invalid_figma_token_response}
 
   defp sanitized_oauth_error(response) when is_map(response) do
     Map.take(response, ["error", "error_description"])
@@ -347,6 +384,9 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
   defp format_error(:invalid_figma_token_response),
     do: "Figma returned an incomplete token response"
+
+  defp format_error(:invalid_figma_oauth_client),
+    do: "The Figma OAuth client context is invalid; reconnect the credential"
 
   defp format_error({:http, status, %{"error_description" => desc}}), do: "#{desc} (#{status})"
 

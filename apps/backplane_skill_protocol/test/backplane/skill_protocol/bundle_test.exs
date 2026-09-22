@@ -195,7 +195,139 @@ defmodule Backplane.SkillProtocol.BundleTest do
     archive = Path.join(tmp_dir, "packed.tar.gz")
 
     assert {:ok, bundle} = Bundle.pack(root, archive)
+    assert bundle.archive_path == archive
     assert Enum.map(bundle.manifest.files, & &1.path) == ["SKILL.md", "references/info.md"]
+    assert File.exists?(archive)
+    assert pack_stages(tmp_dir, archive) == []
+  end
+
+  test "pack produces identical archives for identical content", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "deterministic-skill")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "SKILL.md"), skill_md("deterministic-skill"))
+    first_archive = Path.join(tmp_dir, "first.tar.gz")
+    second_archive = Path.join(tmp_dir, "second.tar.gz")
+
+    assert {:ok, first} = Bundle.pack(root, first_archive)
+    Process.sleep(1_100)
+    assert {:ok, second} = Bundle.pack(root, second_archive)
+
+    assert File.read!(first_archive) == File.read!(second_archive)
+    assert first.manifest.artifact_digest == second.manifest.artifact_digest
+    assert first.manifest == second.manifest
+  end
+
+  test "pack rejects source replacement, addition, removal, and rename without publishing", %{
+    tmp_dir: tmp_dir
+  } do
+    mutations = [
+      replacement: fn root ->
+        replacement = Path.join(root, "replacement")
+        File.write!(replacement, skill_md("packed-skill") <> "\nreplacement")
+        File.rename!(replacement, Path.join(root, "SKILL.md"))
+      end,
+      addition: &File.write!(Path.join(&1, "added.txt"), "added"),
+      removal: &File.rm!(Path.join(&1, "resource.txt")),
+      rename: &File.rename!(Path.join(&1, "resource.txt"), Path.join(&1, "renamed.txt"))
+    ]
+
+    for {change, mutate} <- mutations do
+      case_dir = Path.join(tmp_dir, Atom.to_string(change))
+      root = Path.join(case_dir, "packed-skill")
+      archive = Path.join(case_dir, "packed.tar.gz")
+      File.mkdir_p!(root)
+      File.write!(Path.join(root, "SKILL.md"), skill_md("packed-skill"))
+      File.write!(Path.join(root, "resource.txt"), "resource")
+      {:ok, changed?} = Agent.start_link(fn -> false end)
+
+      cancelled? = fn ->
+        staged_archive_exists? =
+          case_dir
+          |> pack_stages(archive)
+          |> Enum.any?(&File.exists?(Path.join(&1, "archive.tar.gz")))
+
+        if staged_archive_exists? and Agent.get_and_update(changed?, &{not &1, true}) do
+          mutate.(root)
+        end
+
+        false
+      end
+
+      assert {:error,
+              %Error{
+                code: :source_changed,
+                phase: :bundle,
+                retryable: true,
+                context: %{change: _}
+              }} = Bundle.pack(root, archive, cancelled?: cancelled?)
+
+      refute File.exists?(archive)
+      assert pack_stages(case_dir, archive) == []
+    end
+  end
+
+  test "pack cancellation during collection removes staging and does not publish", %{
+    tmp_dir: tmp_dir
+  } do
+    root = Path.join(tmp_dir, "packed-skill")
+    archive = Path.join(tmp_dir, "packed.tar.gz")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "SKILL.md"), skill_md("packed-skill"))
+    File.write!(Path.join(root, "resource.txt"), "resource")
+    {:ok, checks} = Agent.start_link(fn -> 0 end)
+
+    cancelled? = fn -> Agent.get_and_update(checks, &{&1 == 1, &1 + 1}) end
+
+    assert {:error, %Error{code: :cancelled, phase: :bundle}} =
+             Bundle.pack(root, archive, cancelled?: cancelled?)
+
+    refute File.exists?(archive)
+    assert pack_stages(tmp_dir, archive) == []
+  end
+
+  test "pack preserves an existing archive and creates no staging", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "packed-skill")
+    archive = Path.join(tmp_dir, "packed.tar.gz")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "SKILL.md"), skill_md("packed-skill"))
+    File.write!(archive, "existing")
+
+    assert {:error, %Error{code: :invalid_request, phase: :bundle}} =
+             Bundle.pack(root, archive)
+
+    assert File.read!(archive) == "existing"
+    assert pack_stages(tmp_dir, archive) == []
+  end
+
+  test "pack normalizes archive creation failures and removes staging", %{tmp_dir: tmp_dir} do
+    if match?({:unix, _}, :os.type()) do
+      root = Path.join(tmp_dir, "packed-skill")
+      archive = Path.join(tmp_dir, "packed.tar.gz")
+      File.mkdir_p!(root)
+      File.write!(Path.join(root, "SKILL.md"), skill_md("packed-skill"))
+      {:ok, restricted?} = Agent.start_link(fn -> false end)
+
+      cancelled? = fn ->
+        if Agent.get_and_update(restricted?, &{not &1, true}) do
+          [stage] = pack_stages(tmp_dir, archive)
+          File.chmod!(stage, 0o500)
+        end
+
+        false
+      end
+
+      assert {:error,
+              %Error{
+                code: :invalid_bundle,
+                phase: :bundle,
+                context: %{reason: _}
+              }} = Bundle.pack(root, archive, cancelled?: cancelled?)
+
+      refute File.exists?(archive)
+      assert pack_stages(tmp_dir, archive) == []
+    else
+      assert true
+    end
   end
 
   test "owned staging is private while populated and is removed after cancellation", %{
@@ -278,5 +410,9 @@ defmodule Backplane.SkillProtocol.BundleTest do
     if match?({:unix, _}, :os.type()),
       do: assert(permission(path) == expected),
       else: assert(File.exists?(path))
+  end
+
+  defp pack_stages(parent, archive) do
+    Path.wildcard(Path.join(parent, ".#{Path.basename(archive)}.stage.*"), match_dot: true)
   end
 end

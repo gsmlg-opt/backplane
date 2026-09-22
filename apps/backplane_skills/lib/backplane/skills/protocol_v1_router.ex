@@ -16,15 +16,17 @@ defmodule Backplane.Skills.ProtocolV1Router do
   get "/catalog" do
     conn = fetch_query_params(conn)
 
-    with {:ok, params} <- scalar_params(conn.query_params, ~w(limit cursor q tag)),
+    with {:ok, params} <- scalar_params(conn.query_params, ~w(limit cursor q tag fields)),
          {:ok, limit} <- parse_limit(params["limit"]),
+         {:ok, fields} <- parse_fields(params["fields"]),
          {:ok, after_id} <- decode_cursor(params["cursor"], conn, params) do
       result =
         Publication.catalog(
           limit: limit,
           after: after_id,
           q: params["q"],
-          tag: params["tag"]
+          tag: params["tag"],
+          fields: fields
         )
 
       next_cursor =
@@ -71,7 +73,8 @@ defmodule Backplane.Skills.ProtocolV1Router do
     skill_id = conn.query_params["skill_id"]
     revision = conn.query_params["revision"]
 
-    if valid_query_shape?(conn.query_params, ~w(skill_id revision)) and is_binary(skill_id) and skill_id != "" and is_binary(revision) and revision != "" do
+    if valid_query_shape?(conn.query_params, ~w(skill_id revision)) and is_binary(skill_id) and
+         skill_id != "" and is_binary(revision) and revision != "" do
       serve_artifact(conn, skill_id, revision)
     else
       error(conn, 400, :invalid_request, "skill_id and revision are required")
@@ -195,10 +198,15 @@ defmodule Backplane.Skills.ProtocolV1Router do
 
   defp parse_limit(_value), do: {:error, :invalid_request}
 
+  defp parse_fields(nil), do: {:ok, []}
+  defp parse_fields("argument_hint"), do: {:ok, [:argument_hint]}
+  defp parse_fields(_value), do: {:error, :invalid_request}
+
   defp scalar_params(params, keys) do
-    if valid_query_shape?(params, keys) and Enum.all?(keys, fn key -> is_nil(params[key]) or is_binary(params[key]) end),
-      do: {:ok, params},
-      else: {:error, :invalid_request}
+    if valid_query_shape?(params, keys) and
+         Enum.all?(keys, fn key -> is_nil(params[key]) or is_binary(params[key]) end),
+       do: {:ok, params},
+       else: {:error, :invalid_request}
   end
 
   defp valid_query_shape?(params, keys) do
@@ -213,6 +221,7 @@ defmodule Backplane.Skills.ProtocolV1Router do
     payload = %{
       "after" => after_id,
       "access" => access_context(conn),
+      "fields" => params["fields"],
       "q" => params["q"],
       "tag" => params["tag"]
     }
@@ -230,6 +239,7 @@ defmodule Backplane.Skills.ProtocolV1Router do
          {:ok, bytes} <- Base.url_decode64(encoded, padding: false),
          {:ok, payload} <- JSON.decode(bytes),
          true <- payload["access"] == access_context(conn),
+         true <- payload["fields"] == params["fields"],
          true <- payload["q"] == params["q"],
          true <- payload["tag"] == params["tag"],
          after_id when is_binary(after_id) and after_id != "" <- payload["after"] do

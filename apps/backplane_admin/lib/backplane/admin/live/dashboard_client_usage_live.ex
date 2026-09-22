@@ -68,7 +68,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
               <.dm_table :if={row.llm.models != []} id={"client-#{row.id}-models"} data={row.llm.models} hover zebra>
                 <:col :let={model} label="Model"><code>{model.model}</code></:col>
                 <:col :let={model} label="Requests">{format_number(model.requests)}</:col>
-                <:col :let={model} label="Input Tokens">{format_number(model.input_tokens)}</:col>
+                <:col :let={model} label="Input Tokens">{format_input_tokens(model)}</:col>
                 <:col :let={model} label="Output Tokens">{format_number(model.output_tokens)}</:col>
               </.dm_table>
             </section>
@@ -107,6 +107,17 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
   end
 
   defp format_number(value), do: to_string(value || 0)
+
+  defp format_input_tokens(%{input_tokens: input_tokens, cached_tokens: cached_tokens}) do
+    percentage =
+      if input_tokens > 0 do
+        cached_tokens * 100 / input_tokens
+      else
+        0.0
+      end
+
+    "#{format_number(input_tokens)} / #{format_number(cached_tokens)} (#{:erlang.float_to_binary(percentage, decimals: 1)}%)"
+  end
 
   defp safe_call(fun, default) do
     fun.()

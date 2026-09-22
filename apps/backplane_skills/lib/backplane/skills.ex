@@ -34,6 +34,17 @@ defmodule Backplane.Skills do
     Search.query(query, opts)
   end
 
+  @doc "Search enabled skills with offset pagination."
+  @spec search_page(String.t(), keyword()) :: %{
+          results: [map()],
+          limit: pos_integer(),
+          offset: non_neg_integer(),
+          next_offset: non_neg_integer() | nil
+        }
+  def search_page(query, opts \\ []) do
+    Search.query_page(query, opts)
+  end
+
   @doc "Fetch a skill by ID."
   @spec get(String.t()) :: {:ok, Skill.t()} | {:error, :not_found}
   def get(id) when is_binary(id) do

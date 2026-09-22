@@ -775,7 +775,9 @@ defmodule Backplane.Settings.Credentials do
     result =
       :global.trans({{__MODULE__, :oauth_refresh, cred.name}, self()}, fn ->
         case Repo.get_by(Credential, name: cred.name) do
-          nil -> {:error, :not_found}
+          nil ->
+            {:error, :not_found}
+
           current ->
             do_refresh_inner(current, vendor, refresh_window_ms, refresh_interval_ms, force?)
         end
@@ -813,7 +815,7 @@ defmodule Backplane.Settings.Credentials do
            ) do
         with refresh_token when is_binary(refresh_token) <-
                extract_refresh_token(vendor, current_parsed) do
-          refresh_and_persist(current.name, vendor, refresh_token)
+          refresh_and_persist(current.name, vendor, refresh_token, current_parsed)
         else
           _ -> {:error, :missing_refresh_token}
         end
@@ -867,16 +869,33 @@ defmodule Backplane.Settings.Credentials do
     end
   end
 
-  defp refresh_and_persist(name, vendor, refresh_token) do
+  defp refresh_and_persist(name, vendor, refresh_token, parsed) do
     alias Backplane.Settings.OAuthRefresher
 
-    with {:ok, refreshed} <- OAuthRefresher.refresh(vendor, refresh_token),
+    with {:ok, refresh_options} <- oauth_refresh_options(vendor, parsed),
+         {:ok, refreshed} <- OAuthRefresher.refresh(vendor, refresh_token, refresh_options),
          {:ok, updated_cred} <-
            persist_refreshed_tokens(name, vendor, refresh_token, refreshed) do
       notify_changed({:ok, updated_cred})
       cache_and_return(name, refreshed.access_token, refreshed.expires_at)
     end
   end
+
+  defp oauth_refresh_options(:figma_oauth, %{"oauth_client" => client}) do
+    if valid_figma_oauth_client?(client),
+      do: {:ok, figma_client: client},
+      else: {:error, :invalid_figma_oauth_client}
+  end
+
+  defp oauth_refresh_options(_vendor, _parsed), do: {:ok, []}
+
+  defp valid_figma_oauth_client?(client) when is_map(client) do
+    is_binary(client["client_id"]) and String.trim(client["client_id"]) != "" and
+      is_binary(client["client_secret"]) and String.trim(client["client_secret"]) != "" and
+      client["token_endpoint_auth_method"] == "client_secret_basic"
+  end
+
+  defp valid_figma_oauth_client?(_client), do: false
 
   defp persist_refreshed_tokens(name, vendor, refresh_token, refreshed) do
     Repo.transaction(fn ->

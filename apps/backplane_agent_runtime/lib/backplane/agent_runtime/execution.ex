@@ -227,12 +227,13 @@ defmodule Backplane.AgentRuntime.Execution do
           :invocation_id,
           :tool_name,
           :tool_revision,
+          :catalog_revision,
           :tool_call_id,
           :turn_id
         ])
         |> Map.put(:arguments, arguments)
         |> Map.put(:caller, authorization.caller)
-        |> Map.put(:effective_authority, authority_summary(authority))
+        |> Map.put(:effective_authority, authority_summary(authority, opts))
 
       intent = %{type: :tool, status: :started, operation: operation, reservation: reservation}
 
@@ -394,6 +395,7 @@ defmodule Backplane.AgentRuntime.Execution do
             :invocation_id,
             :tool_name,
             :tool_revision,
+            :catalog_revision,
             :tool_call_id,
             :turn_id,
             :arguments,
@@ -612,8 +614,12 @@ defmodule Backplane.AgentRuntime.Execution do
     end)
   end
 
-  defp authority_summary(authority) do
-    Map.take(authority, [:caller, :run_id, :grants, :tool_revision, :scope])
+  defp authority_summary(authority, opts) do
+    summary = Map.take(authority, [:caller, :run_id, :grants, :tool_revision, :scope])
+
+    if Keyword.get(opts, :ephemeral_tool_authority, false),
+      do: Map.delete(summary, :grants),
+      else: summary
   end
 
   defp arguments_digest(arguments) do

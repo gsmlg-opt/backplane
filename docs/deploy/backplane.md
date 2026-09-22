@@ -106,8 +106,8 @@ url = "postgres://backplane:change-me@postgres:5432/backplane"
 | `BACKPLANE_ADMIN_PORT` | Separate admin UI port (default 4101) |
 | `BACKPLANE_API_URL` | Public API origin and OAuth issuer, for example `https://backplane.example.com` |
 | `BACKPLANE_ADMIN_URL` | Trusted admin origin used to build OAuth callbacks, for example `https://admin.backplane.internal` |
-| `FIGMA_MCP_CLIENT_ID` | Figma-issued OAuth client ID for the shared remote MCP connection |
-| `FIGMA_MCP_CLIENT_SECRET` | Figma-issued OAuth client secret; keep it only in deployment secrets |
+| `FIGMA_MCP_CLIENT_ID` | Optional pre-registered Figma OAuth client ID; overrides automatic registration |
+| `FIGMA_MCP_CLIENT_SECRET` | Optional secret for the pre-registered client; keep it only in deployment secrets |
 
 ## After first boot
 
@@ -133,11 +133,14 @@ approved OAuth client:
 ${BACKPLANE_ADMIN_URL}/oauth/callback
 ```
 
-Set `FIGMA_MCP_CLIENT_ID` and `FIGMA_MCP_CLIENT_SECRET`, restart Backplane, then
-open **Settings → Credentials → Connect Figma MCP**. The default credential
-name is `figma-mcp`. Authorizing it stores one shared Figma account for every
-Backplane caller; create a differently named credential only when another
-global upstream should use another shared account.
+Restart Backplane, then open **Settings → Credentials → Connect Figma MCP**.
+When both `FIGMA_MCP_CLIENT_ID` and `FIGMA_MCP_CLIENT_SECRET` are set, Backplane
+uses that pre-registered client. When both are absent, Backplane registers its
+own OAuth client with Figma for the authorization flow. Set both or neither;
+partial configuration is rejected. The default credential name is `figma-mcp`.
+Authorizing it stores one shared Figma account for every Backplane caller;
+create a differently named credential only when another global upstream should
+use another shared account.
 
 Configure the remote upstream in **MCP Hub → Upstreams** with:
 

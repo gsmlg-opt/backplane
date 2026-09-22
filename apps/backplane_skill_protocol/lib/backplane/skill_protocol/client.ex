@@ -79,6 +79,7 @@ defmodule Backplane.SkillProtocol.Client do
       opts
       |> Keyword.take([:limit, :cursor, :q, :tag])
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> maybe_catalog_fields(opts[:fields])
 
     {result, response_bytes} =
       case get(client, "/skill-protocol/v1/catalog", params, client.max_json_bytes, opts) do
@@ -466,6 +467,11 @@ defmodule Backplane.SkillProtocol.Client do
 
   defp build_url(endpoint, path, []), do: endpoint <> path
   defp build_url(endpoint, path, params), do: endpoint <> path <> "?" <> URI.encode_query(params)
+
+  defp maybe_catalog_fields(params, fields) when fields in [[:argument_hint], "argument_hint"],
+    do: Keyword.put(params, :fields, "argument_hint")
+
+  defp maybe_catalog_fields(params, _fields), do: params
 
   defp resolved_metadata(client, {:ok, %{ref: ref}}, _skill_id, _revision) do
     %{

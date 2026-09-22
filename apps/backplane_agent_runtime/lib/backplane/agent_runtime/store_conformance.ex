@@ -255,7 +255,6 @@ defmodule Backplane.AgentRuntime.StoreConformance do
       :ok
     else
       {:error, %Error{} = error} -> {:error, error}
-      other -> invalid_result("terminal reconstruction scenario", other)
     end
   end
 

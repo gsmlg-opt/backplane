@@ -21,16 +21,17 @@ Figma currently restricts its remote MCP server to approved clients in the
 Figma MCP Catalog. Backplane must be registered with Figma before its OAuth
 client credentials can authorize against the production server.
 
-The deployment provides:
+The deployment may provide an explicit client override:
 
 - `FIGMA_MCP_CLIENT_ID`
 - `FIGMA_MCP_CLIENT_SECRET`
-- `BACKPLANE_ADMIN_URL`, whose `/oauth/callback` URL must be registered with
-  Figma byte-for-byte and be publicly reachable over HTTPS
+- `BACKPLANE_ADMIN_URL`, whose `/oauth/callback` URL must be publicly reachable
+  over HTTPS
 
 Backplane must not embed, copy, or impersonate another approved MCP client's
-identity. Missing Figma client configuration prevents the authorization flow
-from starting and produces an actionable admin error.
+identity. When explicit credentials are absent, Backplane uses Figma Dynamic
+Client Registration for its own client; a configured ID and secret override
+that registration. Partial explicit configuration remains invalid.
 
 ## User experience
 
@@ -212,7 +213,8 @@ Focused tests cover:
   the credential, and recognizes it as a managed OAuth type.
 - Starting authorization includes the exact Figma endpoint, client ID, callback,
   scope, state, PKCE, and resource parameters.
-- Missing client configuration produces an admin error without redirecting.
+- Missing client configuration performs Figma Dynamic Client Registration; partial
+  explicit configuration produces an admin error without redirecting.
 - Callback exchange sends form data and HTTP Basic client authentication, then
   stores an encrypted `kind = "upstream"`, `auth_type = "figma_oauth"` row.
 - Malformed successful responses and responses without a refresh token are
@@ -235,9 +237,10 @@ remains pending until Figma approves Backplane's MCP client registration.
 
 ## Documentation
 
-The deployment guide documents `FIGMA_MCP_CLIENT_ID`,
-`FIGMA_MCP_CLIENT_SECRET`, the required callback URL, the Figma catalog approval
-prerequisite, and the upstream's Bearer/credential settings.
+The deployment guide documents the optional `FIGMA_MCP_CLIENT_ID` and
+`FIGMA_MCP_CLIENT_SECRET` override, automatic registration, the required callback
+URL, the Figma catalog approval prerequisite, and the upstream's Bearer/credential
+settings.
 
 ## Non-goals
 

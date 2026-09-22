@@ -97,6 +97,56 @@ stop hook runs after no-tool responses and steering handling, returning `:stop`
 or `{:continue, synthetic_user_message}`. Synthetic stop continuations do not run
 the user prompt hook again, matching Sigma's ordering.
 
+## Tool catalog publication
+
+Each provider request includes `catalog_revision` and canonical provider tool
+definitions shaped as `%{name: binary, description: binary, parameters: map}`.
+The provider attempt and its complete sequential tool batch use that snapshot.
+Existing fixed-catalog callers may continue to pass `registry` and `authority`;
+the initial catalog revision defaults to 1 and definitions are projected from
+the registry unless `tools` is supplied.
+
+An executing trusted tool can stage one complete replacement with
+`Conversation.stage_catalog/2` or `backend_context.stage_catalog/1`:
+
+```elixir
+%{
+  publication_id: "catalog-2",
+  run_id: run_id,
+  incarnation: incarnation,
+  expected_revision: 1,
+  catalog: %{
+    revision: 2,
+    registry: registry,
+    authority: authority,
+    tools: provider_tools
+  }
+}
+```
+
+Catalog revision is independent of descriptor `tool_revision`. Publication
+validates the run/incarnation fence, expected next catalog revision, schemas,
+available backends, exact provider definition/registry membership, and existing
+per-descriptor `Policy` authority. The bundle remains process-local: registry,
+authority, backend contexts, provider context, grants, and credentials are not
+added to the persisted run or provider request.
+
+Staging acknowledges immediately and never waits for its own tool effect. A
+successful discovery effect publishes the complete bundle after the current
+batch checkpoint and before steering, hooks, or another provider attempt. Other
+calls in the discovery response remain pinned to the old catalog. Failed,
+error-marked, cancelled, or storage-failed discovery discards its staging.
+Approval and interaction waits reject new staging.
+
+`status/1` exposes the active revision plus staged/published receipts without
+catalog contents. Reusing a `publication_id` with the structurally identical
+bundle returns its existing receipt, including after publication; different
+content conflicts. The Conversation retains the 16 most recent receipts for
+acknowledgement-loss reconciliation. Older evicted IDs require host-level
+reconciliation and must not be retried blindly. Run/incarnation fencing is
+checked before every receipt lookup. Catalog state is intentionally ephemeral;
+restored Conversations remain inspection-only under the existing recovery contract.
+
 ## Persistence and restart
 
 Every effect uses the existing `Execution.commit/5` gate. Provider completions

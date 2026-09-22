@@ -92,7 +92,8 @@ defmodule Backplane.Skills.Publication do
   @spec resolve(String.t(), String.t() | nil) :: {:ok, Revision.t()} | {:error, atom()}
   def resolve(skill_id, revision \\ nil)
 
-  def resolve(skill_id, revision) when is_binary(skill_id) and (is_nil(revision) or (is_binary(revision) and revision != "")) do
+  def resolve(skill_id, revision)
+      when is_binary(skill_id) and (is_nil(revision) or (is_binary(revision) and revision != "")) do
     query =
       from(r in Revision,
         join: s in Skill,
@@ -132,6 +133,7 @@ defmodule Backplane.Skills.Publication do
   def catalog(opts \\ []) do
     limit = opts |> Keyword.get(:limit, 20) |> min(100) |> max(1)
     after_id = Keyword.get(opts, :after)
+    fields = Keyword.get(opts, :fields, [])
 
     query =
       from(s in Skill,
@@ -150,7 +152,7 @@ defmodule Backplane.Skills.Publication do
     page = Enum.take(rows, limit)
 
     %{
-      data: Enum.map(page, &descriptor/1),
+      data: Enum.map(page, &descriptor(&1, fields)),
       next_cursor: if(length(rows) > limit, do: page |> List.last() |> elem(0) |> Map.fetch!(:id))
     }
   end
@@ -331,7 +333,11 @@ defmodule Backplane.Skills.Publication do
 
   defp temporary_directory!(prefix) do
     Enum.reduce_while(1..5, nil, fn _, _acc ->
-      path = Path.join(System.tmp_dir!(), prefix <> "." <> (:crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)))
+      path =
+        Path.join(
+          System.tmp_dir!(),
+          prefix <> "." <> (:crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false))
+        )
 
       case File.mkdir(path) do
         :ok -> {:halt, path}
@@ -351,10 +357,10 @@ defmodule Backplane.Skills.Publication do
   defp report_entry(skill, detail),
     do: %{skill_id: skill.id, status: skill.publication_status, detail: detail}
 
-  defp descriptor({skill, revision}) do
+  defp descriptor({skill, revision}, fields) do
     metadata = revision.manifest["document_metadata"] || %{}
 
-    %{
+    descriptor = %{
       skill_id: skill.id,
       name: metadata["name"],
       description: metadata["description"],
@@ -362,6 +368,10 @@ defmodule Backplane.Skills.Publication do
       artifact_digest: revision.artifact_digest,
       publication_status: skill.publication_status
     }
+
+    if :argument_hint in fields,
+      do: Map.put(descriptor, :argument_hint, metadata["argument-hint"]),
+      else: descriptor
   end
 
   defp manifest_map(%BundleManifest{} = manifest, skill_id) do

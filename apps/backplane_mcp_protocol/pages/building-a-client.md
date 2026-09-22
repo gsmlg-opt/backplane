@@ -263,6 +263,57 @@ opts = [timeout: 300_000]
 Backplane.McpProtocol.Client.call_tool(MyApp.WeatherClient, "analyze_historical_data", params, opts)
 ```
 
+### Per-call Cancellation
+
+Use a caller-owned handle when one tool call on a shared client must be
+cancelled independently:
+
+```elixir
+{:ok, call} =
+  Backplane.McpProtocol.Client.start_tool_call(
+    MyApp.WeatherClient,
+    "analyze_historical_data",
+    params,
+    timeout: 300_000,
+    registration_timeout: 5_000
+  )
+
+# A finite await timeout does not cancel the operation.
+case Backplane.McpProtocol.Client.await_tool_call(call, 1_000) do
+  {:error, %Backplane.McpProtocol.MCP.Error{reason: :request_timeout}} ->
+    Backplane.McpProtocol.Client.cancel_tool_call(
+      call,
+      "user cancelled",
+      notification_timeout: 1_000
+    )
+
+  result ->
+    result
+end
+```
+
+The handle is bound to its creating process and exact client process. Its
+logical ID stays stable when an `input_required` response causes a retry with a
+new wire request ID. Owner death, timeout, completion, and cancellation race in
+the client; the first terminal event wins and late replies are ignored.
+
+Cancellation always releases local request state before sending
+`notifications/cancelled`. The report distinguishes the original request's
+local transport status (`:not_sent`, `:accepted`, or `:unknown`) from the
+cancellation notification status (`:not_needed`, `:accepted`, `:failed`,
+`:timeout`, or `:unsupported`). `:accepted` means only that the local transport
+accepted a message. `remote: :unknown` is intentional: neither local task death
+nor a cancellation notification proves that remote effects were rolled back.
+When the negotiated protocol does not support cancellation, local settlement
+still succeeds and notification delivery is `:unsupported`. A transport
+rejection or delivery failure is `:failed`; the remote outcome remains unknown.
+
+`registration_timeout` bounds only the registration acknowledgement and
+defaults to 5 seconds. `notification_timeout` bounds cancellation notification
+delivery and defaults to 1 second. The operation `timeout` remains the
+end-to-end deadline. An await timeout only stops that wait and does not cancel
+the operation.
+
 ### Progress Tracking
 
 Need to track progress on long-running operations? Here's how:

@@ -18,12 +18,18 @@ defmodule Backplane.Skills.ApiRouter do
     conn = fetch_query_params(conn)
     params = conn.query_params
 
-    skills =
+    page =
       params
       |> search_opts()
-      |> then(&Skills.search(Map.get(params, "q", ""), &1))
+      |> then(&Skills.search_page(Map.get(params, "q", ""), &1))
 
-    json(conn, 200, %{data: Enum.map(skills, &serialize_metadata/1)})
+    json(conn, 200, %{
+      data: Enum.map(page.results, &serialize_metadata/1),
+      limit: page.limit,
+      offset: page.offset,
+      next_offset: page.next_offset,
+      has_more: not is_nil(page.next_offset)
+    })
   end
 
   get "/:slug/archive" do
@@ -140,7 +146,8 @@ defmodule Backplane.Skills.ApiRouter do
   defp search_opts(params) do
     [
       tags: parse_tags(Map.get(params, "tags")),
-      limit: parse_limit(Map.get(params, "limit"))
+      limit: parse_limit(Map.get(params, "limit")),
+      offset: parse_offset(Map.get(params, "offset"))
     ]
   end
 
@@ -161,6 +168,16 @@ defmodule Backplane.Skills.ApiRouter do
     case Integer.parse(limit) do
       {value, ""} -> value |> max(1) |> min(100)
       _ -> 20
+    end
+  end
+
+  defp parse_offset(nil), do: 0
+  defp parse_offset(""), do: 0
+
+  defp parse_offset(offset) when is_binary(offset) do
+    case Integer.parse(offset) do
+      {value, ""} -> max(value, 0)
+      _ -> 0
     end
   end
 
@@ -277,7 +294,7 @@ defmodule Backplane.Skills.ApiRouter do
      |> Map.put(:meta, skill.meta)}
   end
 
-  defp serialize_detail(%Skill{} = skill) do
+  defp serialize_detail(%Skill{source_kind: "archive"} = skill) do
     with {:ok, files} <- archive_files(skill) do
       detail =
         skill
@@ -288,6 +305,16 @@ defmodule Backplane.Skills.ApiRouter do
     else
       {:error, reason} -> {:error, {:archive_files, reason}}
     end
+  end
+
+  defp serialize_detail(%Skill{} = skill) do
+    detail =
+      skill
+      |> serialize_metadata()
+      |> Map.put(:content, skill.content)
+      |> Map.put(:files, [])
+
+    {:ok, detail}
   end
 
   defp archive_files(%Skill{source_kind: "archive", archive_ref: archive_ref} = skill)
@@ -315,7 +342,10 @@ defmodule Backplane.Skills.ApiRouter do
       archive_ref: skill.archive_ref,
       size_bytes: skill.size_bytes,
       file_count: skill.file_count,
-      source_kind: skill.source_kind
+      source_kind: skill.source_kind,
+      source_uri: skill.source_uri,
+      source_rev: skill.source_rev,
+      current_revision: skill.current_revision
     }
   end
 
@@ -334,7 +364,11 @@ defmodule Backplane.Skills.ApiRouter do
       :content_hash,
       :archive_ref,
       :size_bytes,
-      :file_count
+      :file_count,
+      :source_kind,
+      :source_uri,
+      :source_rev,
+      :current_revision
     ])
   end
 

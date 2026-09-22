@@ -99,6 +99,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Sampling
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.Client.Subscription
+  alias Backplane.McpProtocol.Client.ToolCall
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
@@ -121,6 +122,8 @@ defmodule Backplane.McpProtocol.Client do
   @subscription_cleanup_timeout 100
   @tool_validator_compile_timeout 500
   @tool_validator_supervisor Backplane.McpProtocol.Client.ValidatorSupervisor
+  @operation_supervisor Backplane.McpProtocol.Client.OperationSupervisor
+  @tool_call_registration_timeout to_timeout(second: 5)
 
   @type t :: GenServer.server()
 
@@ -142,7 +145,9 @@ defmodule Backplane.McpProtocol.Client do
     - The return value is ignored
   """
   @type progress_callback ::
-          (progress_token :: String.t() | integer(), progress :: number(), total :: number() | nil ->
+          (progress_token :: String.t() | integer(),
+           progress :: number(),
+           total :: number() | nil ->
              any())
 
   @typedoc """
@@ -244,7 +249,8 @@ defmodule Backplane.McpProtocol.Client do
     {:transport, {:required, {:custom, &Backplane.McpProtocol.client_transport/1}}},
     {:client_info, {:required, :map}},
     {:capabilities, {:required, :map}},
-    {:protocol_version, {{:oneof, [:string, {:enum, [:auto]}]}, {:default, @default_protocol_version}}},
+    {:protocol_version,
+     {{:oneof, [:string, {:enum, [:auto]}]}, {:default, @default_protocol_version}}},
     {:timeout, {:integer, {:default, @default_operation_timeout}}}
   ])
 
@@ -273,12 +279,14 @@ defmodule Backplane.McpProtocol.Client do
         |> Enum.reduce(%{}, &Backplane.McpProtocol.Client.parse_capability/2)
       # => %{"roots" => %{}, "sampling" => %{}}
   """
+
   @spec parse_capability(capability() | {capability(), capability_opts()}, map()) :: map()
   def parse_capability(capability, %{} = capabilities) when is_client_capability(capability) do
     Map.put(capabilities, to_string(capability), %{})
   end
 
-  def parse_capability({capability, opts}, %{} = capabilities) when is_client_capability(capability) do
+  def parse_capability({capability, opts}, %{} = capabilities)
+      when is_client_capability(capability) do
     list_changed? = opts[:list_changed?]
 
     capabilities
@@ -669,6 +677,118 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   @doc """
+  Starts a caller-owned asynchronous tool call.
+
+  Registration is acknowledged before the returned handle can be used. Wire
+  dispatch runs separately from the client process, so cancellation and owner
+  death remain responsive while a transport send is blocked.
+
+  `:registration_timeout` bounds registration only. The existing `:timeout`
+  option remains the end-to-end operation deadline.
+  """
+  @spec start_tool_call(t, String.t(), map() | nil, keyword()) ::
+          {:ok, ToolCall.t()} | {:error, Error.t()}
+  def start_tool_call(client, name, arguments \\ nil, opts \\ []) do
+    params = %{"name" => name}
+    params = if arguments, do: Map.put(params, "arguments", arguments), else: params
+
+    operation =
+      Operation.new(%{
+        method: "tools/call",
+        params: params,
+        extra_meta: Keyword.get(opts, :meta, %{}),
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      })
+
+    registration_timeout =
+      Keyword.get(opts, :registration_timeout, @tool_call_registration_timeout)
+
+    client_pid = GenServer.whereis(client)
+    handle = if is_pid(client_pid), do: ToolCall.new(client_pid, self())
+
+    cond do
+      not is_pid(client_pid) ->
+        {:error, Error.transport(:client_not_found)}
+
+      not (is_integer(registration_timeout) and registration_timeout > 0) ->
+        {:error, Error.protocol(:invalid_params, %{field: "registration_timeout"})}
+
+      true ->
+        deadline = System.monotonic_time(:millisecond) + registration_timeout
+
+        try do
+          case GenServer.call(
+                 client_pid,
+                 {:register_tool_call, handle, operation, deadline},
+                 registration_timeout
+               ) do
+            {:ok, registered_handle} = result ->
+              GenServer.cast(
+                ToolCall.client(registered_handle),
+                {:activate_tool_call, registered_handle}
+              )
+
+              result
+
+            other ->
+              other
+          end
+        catch
+          :exit, {:timeout, _call} ->
+            GenServer.cast(client_pid, {:abandon_tool_call, handle})
+            {:error, Error.transport(:registration_timeout)}
+
+          :exit, reason ->
+            GenServer.cast(client_pid, {:abandon_tool_call, handle})
+            {:error, Error.transport(:registration_failed, %{reason: reason})}
+        end
+    end
+  end
+
+  @doc """
+  Waits for a tool call result in the handle owner's mailbox.
+
+  An await timeout does not cancel the underlying operation.
+  """
+  @spec await_tool_call(ToolCall.t(), timeout()) :: {:ok, Response.t()} | {:error, Error.t()}
+  def await_tool_call(handle, timeout \\ :infinity) do
+    ToolCall.await(handle, timeout)
+  end
+
+  @doc """
+  Cancels one caller-owned tool call and returns a delivery report.
+
+  Local settlement always precedes notification delivery. `:accepted` means
+  only that the local transport accepted the message; the remote outcome is
+  always `:unknown`.
+  """
+  @spec cancel_tool_call(ToolCall.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def cancel_tool_call(handle, reason \\ "client_cancelled", opts \\ [])
+
+  def cancel_tool_call(handle, reason, opts) when is_binary(reason) do
+    if ToolCall.owned_by?(handle, self()) do
+      timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
+
+      if is_integer(timeout) and timeout > 0 do
+        GenServer.call(
+          ToolCall.client(handle),
+          {:cancel_tool_call, handle, reason, timeout},
+          timeout + 250
+        )
+      else
+        {:error, Error.protocol(:invalid_params, %{field: "notification_timeout"})}
+      end
+    else
+      {:error, Error.transport(:request_owner_mismatch)}
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, Error.transport(:cancellation_timeout)}
+    :exit, reason -> {:error, Error.transport(:cancellation_failed, %{reason: reason})}
+  end
+
+  @doc """
   Merges additional capabilities into the client's capabilities.
   """
   @spec merge_capabilities(t, map(), opts :: Keyword.t()) :: map()
@@ -743,7 +863,8 @@ defmodule Backplane.McpProtocol.Client do
   Returns {:ok, result} if successful, {:error, reason} otherwise.
   """
   @spec set_log_level(t, String.t()) :: {:ok, Response.t()} | {:error, Error.t()}
-  def set_log_level(client, level) when level in ~w(debug info notice warning error critical alert emergency) do
+  def set_log_level(client, level)
+      when level in ~w(debug info notice warning error critical alert emergency) do
     operation =
       Operation.new(%{
         method: "logging/setLevel",
@@ -946,6 +1067,7 @@ defmodule Backplane.McpProtocol.Client do
     * `{:ok, requests}` - A list of the Request structs that were cancelled
     * `{:error, reason}` - If an error occurred
   """
+
   @spec cancel_all_requests(t, String.t(), opts :: Keyword.t()) ::
           {:ok, list(Request.t())} | {:error, Error.t()}
   def cancel_all_requests(client, reason \\ "client_cancelled", opts \\ []) do
@@ -1149,6 +1271,32 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   @impl true
+  def handle_call(
+        {:register_tool_call, handle, %Operation{} = operation, deadline},
+        {owner, _tag},
+        state
+      ) do
+    cond do
+      not ToolCall.owned_by?(handle, owner) ->
+        {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:reply, {:error, Error.transport(:registration_timeout)}, state}
+
+      not Process.alive?(owner) ->
+        {:reply, {:error, Error.transport(:request_owner_down)}, state}
+
+      true ->
+        case register_tool_call(state, ToolCall.bind_client(handle, self()), operation) do
+          {:ok, registered_handle, updated_state} ->
+            {:reply, {:ok, registered_handle}, updated_state}
+
+          {:error, %Error{} = error, unchanged_state} ->
+            {:reply, {:error, error}, unchanged_state}
+        end
+    end
+  end
+
   def handle_call({:operation, %Operation{method: method}}, _from, %{era: :modern} = state)
       when method in ["ping", "logging/setLevel"] do
     {:reply,
@@ -1260,7 +1408,11 @@ defmodule Backplane.McpProtocol.Client do
     {:reply, :ok, state}
   end
 
-  def handle_call(:await_ready, _from, %{negotiation_status: :failed, negotiation_error: %Error{} = error} = state) do
+  def handle_call(
+        :await_ready,
+        _from,
+        %{negotiation_status: :failed, negotiation_error: %Error{} = error} = state
+      ) do
     {:reply, {:error, error}, state}
   end
 
@@ -1342,8 +1494,32 @@ defmodule Backplane.McpProtocol.Client do
     end
   end
 
+  def handle_call(
+        {:cancel_tool_call, handle, reason, notification_timeout},
+        {caller, _tag} = from,
+        state
+      ) do
+    with true <- ToolCall.owned_by?(handle, caller),
+         {active_request_id, %Request{} = request} <-
+           find_request(state, ToolCall.logical_id(handle)),
+         true <- matching_tool_call?(request, handle) do
+      cancel_owned_tool_call(
+        state,
+        active_request_id,
+        request,
+        reason,
+        notification_timeout,
+        from
+      )
+    else
+      false -> {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
+      nil -> {:reply, {:error, Error.transport(:request_not_found)}, state}
+      _mismatch -> {:reply, {:error, Error.transport(:request_not_found)}, state}
+    end
+  end
+
   def handle_call({:cancel_all_requests, reason}, _from, state) do
-    {negotiation_requests, pending_requests} =
+    {_negotiation_requests, pending_requests} =
       state
       |> State.list_pending_requests()
       |> Enum.split_with(&negotiation_request?/1)
@@ -1351,12 +1527,10 @@ defmodule Backplane.McpProtocol.Client do
     if Enum.empty?(pending_requests) do
       {:reply, {:ok, []}, state}
     else
-      retained_requests = Map.new(negotiation_requests, &{&1.id, &1})
-      updated_state = %{state | pending_requests: retained_requests}
-
-      cancelled_requests =
-        for request <- pending_requests do
-          Process.cancel_timer(request.timer_ref)
+      {cancelled_requests, updated_state} =
+        Enum.reduce(pending_requests, {[], state}, fn request, {cancelled, current_state} ->
+          {_removed, current_state} = State.remove_request(current_state, request.id)
+          stop_request_dispatch(request)
           stop_request_resolver(request)
 
           error =
@@ -1365,14 +1539,22 @@ defmodule Backplane.McpProtocol.Client do
               reason: reason
             })
 
-          GenServer.reply(request.from, {:error, error})
+          Request.reply(request, {:error, error})
 
-          request
-        end
+          {[request | cancelled], current_state}
+        end)
 
-      Enum.each(cancelled_requests, fn request ->
-        best_effort_cancellation(updated_state, request.id, reason)
-      end)
+      cancelled_requests = Enum.reverse(cancelled_requests)
+
+      updated_state =
+        Enum.reduce(cancelled_requests, updated_state, fn request, current_state ->
+          if Request.async?(request) do
+            maybe_notify_terminal_async(current_state, request, reason)
+          else
+            best_effort_cancellation(current_state, request.id, reason)
+            current_state
+          end
+        end)
 
       {:reply, {:ok, cancelled_requests}, updated_state}
     end
@@ -1390,6 +1572,34 @@ defmodule Backplane.McpProtocol.Client do
   @impl true
   def handle_cast(:close, state) do
     {:stop, :normal, state}
+  end
+
+  def handle_cast({:activate_tool_call, handle}, state) do
+    case find_request(state, ToolCall.logical_id(handle)) do
+      {request_id, %Request{dispatch_status: :registered} = request} ->
+        if matching_tool_call?(request, handle) do
+          {:noreply, activate_tool_call(state, request_id, request)}
+        else
+          {:noreply, state}
+        end
+
+      _missing_or_started ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_cast({:abandon_tool_call, handle}, state) do
+    case find_request(state, ToolCall.logical_id(handle)) do
+      {request_id, %Request{} = request} ->
+        if matching_tool_call?(request, handle) do
+          {:noreply, settle_abandoned_tool_call(state, request_id, request)}
+        else
+          {:noreply, state}
+        end
+
+      nil ->
+        {:noreply, state}
+    end
   end
 
   def handle_cast(:initialize, state) do
@@ -1520,12 +1730,24 @@ defmodule Backplane.McpProtocol.Client do
     do: handle_legacy_elicitation_request(request, state)
 
   @impl true
+  def handle_info({:DOWN, monitor, :process, owner, _reason}, state)
+      when is_reference(monitor) and is_pid(owner) do
+    case find_request_by_owner_monitor(state, monitor, owner) do
+      {request_id, request} ->
+        {:noreply, cancel_owner_down_tool_call(state, request_id, request)}
+
+      nil ->
+        handle_unmatched_down(monitor, owner, state)
+    end
+  end
+
   def handle_info({:request_timeout, request_id}, state) do
     case State.handle_request_timeout(state, request_id) do
       {nil, state} ->
         {:noreply, state}
 
       {request, updated_state} ->
+        stop_request_dispatch(request)
         stop_request_resolver(request)
         elapsed_ms = Request.elapsed_time(request)
 
@@ -1540,76 +1762,44 @@ defmodule Backplane.McpProtocol.Client do
            |> Negotiation.handle_error(request, error)
            |> advance_negotiation()}
         else
-          GenServer.reply(request.from, {:error, error})
-          best_effort_cancellation(updated_state, request_id, "timeout")
-          {:noreply, updated_state}
+          Request.reply(request, {:error, error})
+
+          if Request.async?(request) do
+            {:noreply, maybe_notify_terminal_async(updated_state, request, "timeout")}
+          else
+            best_effort_cancellation(updated_state, request_id, "timeout")
+            {:noreply, updated_state}
+          end
         end
     end
   end
 
-  def handle_info(
-        {task_ref, {:ok, validators}},
-        %{tool_validator_task: %Task{ref: task_ref}} = state
-      )
-      when is_reference(task_ref) and is_list(validators) do
-    Process.demonitor(task_ref, [:flush])
+  def handle_info({task_ref, result}, state) when is_reference(task_ref) do
+    cond do
+      match?(%Task{ref: ^task_ref}, state.tool_validator_task) ->
+        {:noreply, handle_tool_validator_result(state, task_ref, result)}
 
-    client = state.client_info["name"]
-    Cache.replace_tool_validators(client, validators)
+      worker = state.cancellation_workers[task_ref] ->
+        {:noreply, finish_cancellation_worker(state, task_ref, worker, result)}
 
-    {:noreply, clear_tool_validator_task(state)}
-  end
-
-  def handle_info(
-        {task_ref, {:error, reason}},
-        %{tool_validator_task: %Task{ref: task_ref}} = state
-      )
-      when is_reference(task_ref) do
-    Process.demonitor(task_ref, [:flush])
-    client = state.client_info["name"]
-
-    Logging.client_event("schema_validation_disabled", %{
-      client: client,
-      reason: reason
-    })
-
-    {:noreply, clear_tool_validator_task(state)}
-  end
-
-  def handle_info(
-        {:DOWN, task_ref, :process, _pid, reason},
-        %{tool_validator_task: %Task{ref: task_ref}} = state
-      )
-      when is_reference(task_ref) do
-    Logging.client_event("schema_validation_disabled", %{
-      client: state.client_info["name"],
-      reason: reason
-    })
-
-    {:noreply, clear_tool_validator_task(state)}
-  end
-
-  def handle_info({task_ref, resolution}, state) when is_reference(task_ref) do
-    case find_request_by_task_ref(state, task_ref) do
-      nil ->
-        {:noreply, state}
-
-      {request_id, request} ->
+      dispatch = find_request_by_dispatch_ref(state, task_ref) ->
+        {request_id, request} = dispatch
         Process.demonitor(task_ref, [:flush])
-        {:noreply, handle_input_resolution(request_id, request, resolution, state)}
+        {:noreply, finish_tool_call_dispatch(state, request_id, request, result)}
+
+      true ->
+        handle_resolution_result(task_ref, result, state)
     end
   end
 
-  def handle_info({:DOWN, task_ref, :process, _pid, _reason}, state) when is_reference(task_ref) do
-    case find_request_by_task_ref(state, task_ref) do
+  def handle_info({:cancellation_worker_timeout, task_ref}, state) when is_reference(task_ref) do
+    case state.cancellation_workers[task_ref] do
       nil ->
         {:noreply, state}
 
-      {request_id, request} ->
-        error = input_resolution_error()
-        updated_state = fail_pending_request(request_id, request, error, state)
-        best_effort_cancellation(updated_state, request.id, "input resolution failed")
-        {:noreply, updated_state}
+      worker ->
+        stop_supervised_task(worker.task)
+        {:noreply, finish_cancellation_worker(state, task_ref, worker, {:error, :timeout})}
     end
   end
 
@@ -1619,6 +1809,17 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp handle_resolution_result(task_ref, resolution, state) do
+    case find_request_by_task_ref(state, task_ref) do
+      nil ->
+        {:noreply, state}
+
+      {request_id, request} ->
+        Process.demonitor(task_ref, [:flush])
+        {:noreply, handle_input_resolution(request_id, request, resolution, state)}
+    end
+  end
 
   @impl true
   def terminate(reason, %{client_info: %{"name" => name}} = state) do
@@ -1647,6 +1848,7 @@ defmodule Backplane.McpProtocol.Client do
     )
 
     for request <- pending_requests do
+      stop_request_dispatch(request)
       stop_request_resolver(request)
 
       error =
@@ -1656,14 +1858,21 @@ defmodule Backplane.McpProtocol.Client do
         })
 
       if !negotiation_request?(request) do
-        GenServer.reply(request.from, {:error, error})
+        Request.reply(request, {:error, error})
 
-        send_notification(state, "notifications/cancelled", %{
-          "requestId" => request.id,
-          "reason" => "client closed"
-        })
+        unless Request.async?(request) do
+          send_notification(state, "notifications/cancelled", %{
+            "requestId" => request.id,
+            "reason" => "client closed"
+          })
+        end
       end
     end
+
+    Enum.each(state.cancellation_workers, fn {_ref, worker} ->
+      Process.cancel_timer(worker.timer_ref)
+      stop_supervised_task(worker.task)
+    end)
 
     for waiter <- state.ready_waiters do
       GenServer.reply(waiter, {:error, Error.transport(:client_terminated, %{reason: reason})})
@@ -1695,17 +1904,28 @@ defmodule Backplane.McpProtocol.Client do
         handle_error_response(message, message["id"], state)
 
       Message.is_response(message) ->
-        Logging.message("incoming", "response", message["id"], incoming_response_identity(message))
+        Logging.message(
+          "incoming",
+          "response",
+          message["id"],
+          incoming_response_identity(message)
+        )
+
         handle_success_response(message, message["id"], state)
 
       Message.is_notification(message) ->
         Logging.message("incoming", "notification", nil, incoming_notification_identity(message))
 
-        if modern_state?(state) and Subscription.routable?(message) do
-          _handled? = Subscription.dispatch(message)
-          state
-        else
-          Handlers.handle_notification(message, state)
+        cond do
+          modern_state?(state) and Subscription.routable?(message) ->
+            _handled? = Subscription.dispatch(message)
+            state
+
+          message["method"] == "notifications/cancelled" ->
+            handle_cancelled_notification(message, state)
+
+          true ->
+            Handlers.handle_notification(message, state)
         end
 
       Message.is_request(message) ->
@@ -1727,6 +1947,7 @@ defmodule Backplane.McpProtocol.Client do
         state
 
       {request, updated_state} ->
+        stop_request_dispatch(request)
         stop_request_resolver(request)
 
         if negotiation_request?(request) do
@@ -1742,6 +1963,33 @@ defmodule Backplane.McpProtocol.Client do
         end
     end
   end
+
+  defp handle_cancelled_notification(%{"params" => params}, state) when is_map(params) do
+    request_id = params["requestId"]
+    reason = Map.get(params, "reason", "unknown")
+
+    case State.remove_request(state, request_id) do
+      {nil, updated_state} ->
+        updated_state
+
+      {request, updated_state} ->
+        stop_request_dispatch(request)
+        stop_request_resolver(request)
+
+        Logging.client_event("request_cancelled", %{id: request_id, reason: reason})
+
+        error =
+          Error.transport(:request_cancelled, %{
+            message: "Request cancelled by server",
+            reason: reason
+          })
+
+        Request.reply(request, {:error, error})
+        updated_state
+    end
+  end
+
+  defp handle_cancelled_notification(_message, state), do: state
 
   defp log_unknown_error_response(id, json_error) do
     Logging.client_event(
@@ -1761,7 +2009,7 @@ defmodule Backplane.McpProtocol.Client do
     elapsed_ms = Request.elapsed_time(request)
 
     log_error_response(request, id, elapsed_ms, json_error)
-    GenServer.reply(request.from, {:error, error})
+    Request.reply(request, {:error, error})
 
     state
   end
@@ -1790,7 +2038,8 @@ defmodule Backplane.McpProtocol.Client do
     Error.transport(:malformed_response, %{message: "Malformed JSON-RPC error response"})
   end
 
-  defp error_response_meta(%{"code" => code, "message" => message}) when is_integer(code) and is_binary(message) do
+  defp error_response_meta(%{"code" => code, "message" => message})
+       when is_integer(code) and is_binary(message) do
     %{error_code: code, error_message: message}
   end
 
@@ -1825,6 +2074,7 @@ defmodule Backplane.McpProtocol.Client do
     case ResultRouter.route(request, result, state) do
       {:complete, _response, _state} ->
         {_request, updated_state} = State.remove_request(state, id)
+        stop_request_dispatch(request)
         stop_request_resolver(request)
         process_successful_response(request, result, id, updated_state)
 
@@ -1832,6 +2082,9 @@ defmodule Backplane.McpProtocol.Client do
         if match?(%Task{}, request.resolver_task) do
           state
         else
+          stop_request_dispatch(request)
+          request = %{request | dispatch_task: nil, dispatch_status: :accepted}
+          state = put_pending_request(state, id, request)
           start_input_resolution(id, request, continuation, state)
         end
 
@@ -1875,7 +2128,8 @@ defmodule Backplane.McpProtocol.Client do
     _kind, _reason -> {:error, :resolver_start_failed}
   end
 
-  defp handle_input_resolution(request_id, request, {:ok, input_responses}, state) when is_map(input_responses) do
+  defp handle_input_resolution(request_id, request, {:ok, input_responses}, state)
+       when is_map(input_responses) do
     stop_request_resolver(request)
 
     if MapSet.new(Map.keys(input_responses)) ==
@@ -1921,6 +2175,49 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp retry_with_fresh_id(request_id, request, operation, state) do
+    if Request.async?(request) do
+      retry_async_with_fresh_id(request_id, request, operation, state)
+    else
+      retry_sync_with_fresh_id(request_id, request, operation, state)
+    end
+  end
+
+  defp retry_async_with_fresh_id(request_id, request, operation, state) do
+    retry_id = ID.generate_request_id()
+
+    case Request.remaining_time(request) do
+      remaining when is_integer(remaining) and remaining > 0 ->
+        Process.cancel_timer(request.timer_ref)
+        timer_ref = Process.send_after(self(), {:request_timeout, retry_id}, remaining)
+
+        request = %{
+          request
+          | id: retry_id,
+            timer_ref: timer_ref,
+            params: operation.params,
+            continuation: nil,
+            resolver_supervisor: nil,
+            resolver_task: nil,
+            dispatch_task: nil,
+            dispatch_status: :registered
+        }
+
+        state = %{
+          state
+          | pending_requests:
+              state.pending_requests
+              |> Map.delete(request_id)
+              |> Map.put(retry_id, request)
+        }
+
+        activate_tool_call(state, retry_id, request)
+
+      _expired ->
+        timeout_pending_request(request_id, request, state, retry_id)
+    end
+  end
+
+  defp retry_sync_with_fresh_id(request_id, request, operation, state) do
     retry_id = ID.generate_request_id()
 
     result =
@@ -2005,8 +2302,9 @@ defmodule Backplane.McpProtocol.Client do
     case State.get_request(state, request_id) do
       %Request{} ->
         {_request, updated_state} = State.remove_request(state, request_id)
+        stop_request_dispatch(request)
         stop_request_resolver(request)
-        GenServer.reply(request.from, {:error, error})
+        Request.reply(request, {:error, error})
 
         Logging.client_event("operation_failed", %{
           id: request_id,
@@ -2044,13 +2342,13 @@ defmodule Backplane.McpProtocol.Client do
 
       case validator.(structured) do
         {:ok, _} ->
-          GenServer.reply(request.from, {:ok, response})
+          Request.reply(request, {:ok, response})
 
         {:error, errors} ->
           log_error_response(request, id, elapsed_ms, errors)
 
-          GenServer.reply(
-            request.from,
+          Request.reply(
+            request,
             {:error,
              Error.protocol(:parse_error, %{
                errors: errors,
@@ -2063,7 +2361,7 @@ defmodule Backplane.McpProtocol.Client do
       end
     else
       log_success_response(request, id, elapsed_ms)
-      GenServer.reply(request.from, {:ok, response})
+      Request.reply(request, {:ok, response})
     end
 
     state
@@ -2078,11 +2376,10 @@ defmodule Backplane.McpProtocol.Client do
     log_success_response(request, id, elapsed_ms)
 
     method = request.method
-    from = request.from
 
     if method == "ping",
-      do: GenServer.reply(from, :pong),
-      else: GenServer.reply(from, {:ok, response})
+      do: Request.reply(request, :pong),
+      else: Request.reply(request, {:ok, response})
 
     if method == "tools/list" do
       refresh_tool_validators(state, response.result["tools"])
@@ -2628,6 +2925,399 @@ defmodule Backplane.McpProtocol.Client do
     end)
   end
 
+  defp register_tool_call(state, handle, %Operation{} = operation) do
+    logical_id = ToolCall.logical_id(handle)
+
+    with true <- ToolCall.handle?(handle),
+         :ok <- State.validate_capability(state, operation.method),
+         false <- Map.has_key?(state.pending_requests, logical_id),
+         {:ok, state, progress_owner} <-
+           register_tool_call_progress(state, operation.progress_opts, logical_id) do
+      timer_ref =
+        Process.send_after(self(), {:request_timeout, logical_id}, operation.timeout)
+
+      request =
+        %{
+          id: logical_id,
+          method: operation.method,
+          timer_ref: timer_ref,
+          params: operation.params
+        }
+        |> Request.new()
+        |> Request.retain_operation(operation)
+        |> Map.merge(%{
+          tool_call: handle,
+          owner_monitor: ToolCall.monitor_owner(handle),
+          dispatch_status: :registered,
+          progress_owner: progress_owner
+        })
+
+      updated_state = put_pending_request(state, logical_id, request)
+      {:ok, handle, updated_state}
+    else
+      {:error, %Error{} = error} -> {:error, error, state}
+      false -> {:error, Error.transport(:request_owner_mismatch), state}
+      true -> {:error, Error.transport(:request_conflict), state}
+    end
+  end
+
+  defp register_tool_call_progress(state, progress_opts, logical_id) do
+    token = progress_opts && Keyword.get(progress_opts, :token)
+    callback = progress_opts && Keyword.get(progress_opts, :callback)
+
+    if (is_binary(token) or is_integer(token)) and is_function(callback, 3) do
+      case State.register_managed_progress_callback(state, token, callback, logical_id) do
+        {:ok, updated_state} -> {:ok, updated_state, {token, logical_id}}
+        {:error, %Error{} = error} -> {:error, error}
+      end
+    else
+      {:ok, state, nil}
+    end
+  end
+
+  defp start_tool_call_dispatch(state, request_id, request) do
+    operation =
+      Operation.new(%{
+        method: request.method,
+        params: request.params,
+        extra_meta: request.extra_meta,
+        progress_opts: request.progress_opts,
+        timeout: Request.remaining_time(request) || request.timeout
+      })
+
+    with {:ok, request_data, request_context} <-
+           prepare_request(operation, state, request.id),
+         {:ok, task} <-
+           start_operation_task(fn ->
+             safe_send_to_transport(state.transport, request_data,
+               timeout: operation.timeout,
+               request_context: request_context
+             )
+           end) do
+      request = %{request | dispatch_task: task, dispatch_status: :dispatching}
+      put_pending_request(state, request_id, request)
+    else
+      {:error, %Error{} = error} ->
+        fail_pending_request(request_id, request, error, state)
+
+      {:error, _reason} ->
+        fail_pending_request(request_id, request, dispatch_start_error(), state)
+    end
+  end
+
+  defp activate_tool_call(state, request_id, request) do
+    cond do
+      not ToolCall.owner_alive?(request.tool_call) ->
+        settle_owned_tool_call(state, request_id, request, "owner_down", false)
+
+      not positive_remaining_time?(request) ->
+        expire_registered_tool_call(state, request_id, request)
+
+      true ->
+        start_tool_call_dispatch(state, request_id, request)
+    end
+  end
+
+  defp positive_remaining_time?(request) do
+    case Request.remaining_time(request) do
+      remaining when is_integer(remaining) -> remaining > 0
+      nil -> true
+    end
+  end
+
+  defp expire_registered_tool_call(state, request_id, request) do
+    {_request, updated_state} = State.remove_request(state, request_id)
+    stop_request_dispatch(request)
+    stop_request_resolver(request)
+
+    error =
+      Error.transport(:request_timeout, %{
+        message: "Request timed out after #{Request.elapsed_time(request)}ms"
+      })
+
+    Request.reply(request, {:error, error})
+    updated_state
+  end
+
+  defp finish_tool_call_dispatch(state, request_id, request, :ok) do
+    case State.get_request(state, request_id) do
+      %Request{} ->
+        request = %{request | dispatch_task: nil, dispatch_status: :accepted}
+
+        Telemetry.execute(
+          Telemetry.event_client_request(),
+          %{system_time: System.system_time()},
+          %{method: request.method, request_id: request.id}
+        )
+
+        put_pending_request(state, request_id, request)
+
+      _settled_or_replaced ->
+        state
+    end
+  end
+
+  defp finish_tool_call_dispatch(state, request_id, request, _error) do
+    fail_pending_request(request_id, request, dispatch_send_error(), state)
+  end
+
+  defp dispatch_start_error do
+    Error.transport(:send_failure, %{message: "Tool call dispatch could not start"})
+  end
+
+  defp dispatch_send_error do
+    Error.transport(:send_failure, %{message: "Tool call dispatch failed"})
+  end
+
+  defp start_operation_task(fun) do
+    {:ok, Task.Supervisor.async_nolink(@operation_supervisor, fun)}
+  rescue
+    _error -> {:error, :task_start_failed}
+  catch
+    _kind, _reason -> {:error, :task_start_failed}
+  end
+
+  defp find_request_by_owner_monitor(state, monitor, owner) do
+    Enum.find_value(state.pending_requests, fn {request_id, request} ->
+      case request do
+        %Request{owner_monitor: ^monitor, tool_call: handle} when not is_nil(handle) ->
+          if ToolCall.owned_by?(handle, owner), do: {request_id, request}
+
+        _other ->
+          nil
+      end
+    end)
+  end
+
+  defp find_request_by_dispatch_ref(state, task_ref) do
+    Enum.find_value(state.pending_requests, fn {request_id, request} ->
+      case request.dispatch_task do
+        %Task{ref: ^task_ref} -> {request_id, request}
+        _other -> nil
+      end
+    end)
+  end
+
+  defp matching_tool_call?(%Request{tool_call: stored}, handle) do
+    ToolCall.equal?(stored, handle)
+  end
+
+  defp settle_abandoned_tool_call(state, request_id, request) do
+    {_request, updated_state} = State.remove_request(state, request_id)
+    stop_request_dispatch(request)
+    stop_request_resolver(request)
+    updated_state
+  end
+
+  defp cancel_owned_tool_call(state, request_id, request, reason, timeout, from) do
+    delivery = request_delivery(request)
+    updated_state = settle_owned_tool_call(state, request_id, request, reason, true)
+    report = cancellation_report(delivery)
+
+    if delivery == :not_sent or not cancellation_supported?(state) do
+      notification = if delivery == :not_sent, do: :not_needed, else: :unsupported
+      {:reply, {:ok, %{report | notification_delivery: notification}}, updated_state}
+    else
+      start_cancellation_worker(updated_state, request.id, reason, timeout, from, report)
+    end
+  end
+
+  defp cancel_owner_down_tool_call(state, request_id, request) do
+    delivery = request_delivery(request)
+    updated_state = settle_owned_tool_call(state, request_id, request, "owner_down", false)
+
+    if delivery == :not_sent or not cancellation_supported?(state) do
+      updated_state
+    else
+      case start_cancellation_worker(
+             updated_state,
+             request.id,
+             "owner_down",
+             @cancellation_worker_timeout,
+             nil,
+             cancellation_report(delivery)
+           ) do
+        {:noreply, worker_state} -> worker_state
+        {:reply, _reply, worker_state} -> worker_state
+      end
+    end
+  end
+
+  defp maybe_notify_terminal_async(state, request, reason) do
+    delivery = request_delivery(request)
+
+    if delivery == :not_sent or not cancellation_supported?(state) do
+      state
+    else
+      case start_cancellation_worker(
+             state,
+             request.id,
+             reason,
+             @cancellation_worker_timeout,
+             nil,
+             cancellation_report(delivery)
+           ) do
+        {:noreply, worker_state} -> worker_state
+        {:reply, _reply, worker_state} -> worker_state
+      end
+    end
+  end
+
+  defp settle_owned_tool_call(state, request_id, request, reason, notify_owner?) do
+    {_request, updated_state} = State.remove_request(state, request_id)
+    stop_request_dispatch(request)
+    stop_request_resolver(request)
+
+    if notify_owner? do
+      error =
+        Error.transport(:request_cancelled, %{
+          message: "Request cancelled by client",
+          reason: reason
+        })
+
+      Request.reply(request, {:error, error})
+    end
+
+    updated_state
+  end
+
+  defp request_delivery(%Request{dispatch_status: :registered}), do: :not_sent
+  defp request_delivery(%Request{dispatch_status: :accepted}), do: :accepted
+  defp request_delivery(%Request{}), do: :unknown
+
+  defp cancellation_report(request_delivery) do
+    %{
+      local: :cancelled,
+      request_delivery: request_delivery,
+      notification_delivery: :pending,
+      remote: :unknown
+    }
+  end
+
+  defp start_cancellation_worker(state, request_id, reason, timeout, from, report)
+       when is_integer(timeout) and timeout > 0 do
+    case start_operation_task(fn -> safe_send_cancellation(state, request_id, reason) end) do
+      {:ok, task} ->
+        timer_ref = Process.send_after(self(), {:cancellation_worker_timeout, task.ref}, timeout)
+
+        worker = %{
+          task: task,
+          timer_ref: timer_ref,
+          from: from,
+          report: report,
+          request_id: request_id
+        }
+
+        {:noreply,
+         %{state | cancellation_workers: Map.put(state.cancellation_workers, task.ref, worker)}}
+
+      {:error, _reason} ->
+        report = %{report | notification_delivery: :failed}
+        if from, do: {:reply, {:ok, report}, state}, else: {:noreply, state}
+    end
+  end
+
+  defp start_cancellation_worker(state, _request_id, _reason, _timeout, from, report) do
+    report = %{report | notification_delivery: :failed}
+    if from, do: {:reply, {:ok, report}, state}, else: {:noreply, state}
+  end
+
+  defp finish_cancellation_worker(state, task_ref, worker, result) do
+    Process.cancel_timer(worker.timer_ref)
+    Process.demonitor(task_ref, [:flush])
+
+    notification_delivery =
+      case result do
+        :ok -> :accepted
+        {:error, :timeout} -> :timeout
+        _error -> :failed
+      end
+
+    report = %{worker.report | notification_delivery: notification_delivery}
+    if worker.from, do: GenServer.reply(worker.from, {:ok, report})
+
+    if notification_delivery in [:failed, :timeout] do
+      record_cancellation_failure(worker.request_id, notification_delivery)
+    end
+
+    %{state | cancellation_workers: Map.delete(state.cancellation_workers, task_ref)}
+  end
+
+  defp cancellation_supported?(state) do
+    case Registry.profile(state.protocol_version) do
+      {:ok, %Profile{notification_methods: methods}} -> "notifications/cancelled" in methods
+      _unknown_profile -> false
+    end
+  end
+
+  defp stop_request_dispatch(%Request{dispatch_task: %Task{} = task}) do
+    stop_supervised_task(task)
+  end
+
+  defp stop_request_dispatch(%Request{}), do: :ok
+
+  defp stop_supervised_task(%Task{pid: pid, ref: ref}) do
+    Process.demonitor(ref, [:flush])
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp handle_unmatched_down(task_ref, pid, state) do
+    cond do
+      match?(%Task{ref: ^task_ref}, state.tool_validator_task) ->
+        Logging.client_event("schema_validation_disabled", %{
+          client: state.client_info["name"],
+          reason: :task_down
+        })
+
+        {:noreply, clear_tool_validator_task(state)}
+
+      worker = state.cancellation_workers[task_ref] ->
+        {:noreply, finish_cancellation_worker(state, task_ref, worker, {:error, :worker_failed})}
+
+      dispatch = find_request_by_dispatch_ref(state, task_ref) ->
+        {request_id, request} = dispatch
+        {:noreply, fail_pending_request(request_id, request, dispatch_send_error(), state)}
+
+      resolver = find_request_by_task_ref(state, task_ref) ->
+        {request_id, request} = resolver
+        error = input_resolution_error()
+        updated_state = fail_pending_request(request_id, request, error, state)
+        best_effort_cancellation(updated_state, request.id, "input resolution failed")
+        {:noreply, updated_state}
+
+      true ->
+        _ = pid
+        {:noreply, state}
+    end
+  end
+
+  defp handle_tool_validator_result(state, task_ref, {:ok, validators})
+       when is_list(validators) do
+    Process.demonitor(task_ref, [:flush])
+    Cache.replace_tool_validators(state.client_info["name"], validators)
+    clear_tool_validator_task(state)
+  end
+
+  defp handle_tool_validator_result(state, task_ref, {:error, reason}) do
+    Process.demonitor(task_ref, [:flush])
+
+    Logging.client_event("schema_validation_disabled", %{
+      client: state.client_info["name"],
+      reason: reason
+    })
+
+    clear_tool_validator_task(state)
+  end
+
+  defp handle_tool_validator_result(state, task_ref, _invalid) do
+    handle_tool_validator_result(state, task_ref, {:error, :invalid_result})
+  end
+
   defp mrtr_request?(%Request{} = request) do
     not is_nil(request.continuation) or match?(%Task{}, request.resolver_task) or
       request.logical_id != request.id
@@ -2652,6 +3342,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp locally_cancel_request(state, request_id, request, reason) do
     {_request, updated_state} = State.remove_request(state, request_id)
+    stop_request_dispatch(request)
     stop_request_resolver(request)
 
     error =
@@ -2660,7 +3351,7 @@ defmodule Backplane.McpProtocol.Client do
         reason: reason
       })
 
-    GenServer.reply(request.from, {:error, error})
+    Request.reply(request, {:error, error})
     updated_state
   end
 
@@ -2669,6 +3360,38 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp stop_request_resolver(%Request{} = request) do
+    if Request.async?(request) do
+      stop_owned_resolver(request)
+    else
+      stop_legacy_resolver(request)
+    end
+  end
+
+  defp stop_owned_resolver(%Request{} = request) do
+    if match?(%Task{}, request.resolver_task) do
+      Process.demonitor(request.resolver_task.ref, [:flush])
+
+      if Process.alive?(request.resolver_task.pid),
+        do: Process.exit(request.resolver_task.pid, :kill)
+    end
+
+    case request.resolver_supervisor do
+      supervisor when is_pid(supervisor) ->
+        Process.unlink(supervisor)
+        if Process.alive?(supervisor), do: Process.exit(supervisor, :kill)
+
+      _inactive ->
+        :ok
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp stop_legacy_resolver(%Request{} = request) do
     case {request.resolver_supervisor, request.resolver_task} do
       {supervisor, %Task{pid: task_pid}} when is_pid(supervisor) ->
         if Process.alive?(supervisor) and Process.alive?(task_pid) do

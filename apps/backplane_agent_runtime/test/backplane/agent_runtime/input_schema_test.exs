@@ -123,6 +123,83 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
              InputSchema.validate(schema, %{"value" => "list"})
   end
 
+  test "accepts default annotations without applying them" do
+    schema = %{
+      "type" => "object",
+      "default" => "not an object",
+      "properties" => %{
+        "nested" => %{
+          "type" => "object",
+          "default" => "not an object",
+          "properties" => %{"name" => %{"type" => "string", "default" => 1}},
+          "required" => ["name"]
+        },
+        "values" => %{
+          "type" => "array",
+          "default" => %{},
+          "items" => %{"type" => "string", "default" => 1}
+        },
+        "choice" => %{
+          "oneOf" => [
+            %{"type" => "string", "enum" => ["left"], "default" => 1},
+            %{"type" => "integer", "default" => "not an integer"}
+          ],
+          "default" => false
+        },
+        "target" => %{
+          "type" => "object",
+          "default" => [],
+          "properties" => %{
+            "left" => %{"type" => "string", "default" => 1},
+            "right" => %{"type" => "integer", "default" => "not an integer"}
+          },
+          "anyOf" => [
+            %{"required" => ["left"], "default" => false},
+            %{"required" => ["right"], "default" => %{}}
+          ],
+          "additionalProperties" => false
+        }
+      },
+      "required" => ["nested", "values", "choice", "target"],
+      "additionalProperties" => false
+    }
+
+    arguments = %{
+      "nested" => %{"name" => "nested"},
+      "values" => ["item"],
+      "choice" => "left",
+      "target" => %{"left" => "selected"}
+    }
+
+    assert :ok = InputSchema.validate_schema(schema)
+    assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+
+    assert {:error, %Error{class: :validation}} =
+             InputSchema.validate(schema, Map.delete(arguments, "nested"))
+
+    assert {:error, %Error{class: :validation}} =
+             InputSchema.validate(schema, put_in(arguments, ["values"], [1]))
+  end
+
+  test "default annotations do not permit unsupported keywords in unused composition branches" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "value" => %{
+          "oneOf" => [
+            %{"type" => "string", "default" => 1},
+            %{"type" => "integer", "default" => "not an integer", "pattern" => "unused"}
+          ],
+          "default" => false
+        }
+      },
+      "required" => ["value"]
+    }
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+             InputSchema.validate(schema, %{"value" => "selected"})
+  end
+
   defp enum_schema(property) do
     %{"type" => "object", "properties" => %{"value" => property}, "required" => ["value"]}
   end
@@ -218,5 +295,53 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
     }
 
     assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, %{})
+  end
+
+  test "accepts anyOf required branches alongside object constraints" do
+    schema = skill_schema()
+
+    for arguments <- [
+          %{"locator" => "assigned-skill"},
+          %{"name" => "assigned-skill"},
+          %{"locator" => "assigned-skill", "name" => "assigned-skill"}
+        ] do
+      assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+    end
+
+    assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, %{})
+  end
+
+  test "enforces object siblings around anyOf branches" do
+    schema = skill_schema()
+
+    for arguments <- [
+          %{"locator" => 1},
+          %{"name" => false},
+          %{"locator" => "assigned-skill", "unexpected" => true}
+        ] do
+      assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, arguments)
+    end
+  end
+
+  test "rejects unsupported keywords in unused anyOf branches" do
+    schema =
+      update_in(skill_schema(), ["anyOf"], fn branches ->
+        branches ++ [%{"properties" => %{"name" => %{"pattern" => "skill"}}}]
+      end)
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+             InputSchema.validate(schema, %{"locator" => "assigned-skill"})
+  end
+
+  defp skill_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "locator" => %{"type" => "string"},
+        "name" => %{"type" => "string"}
+      },
+      "anyOf" => [%{"required" => ["locator"]}, %{"required" => ["name"]}],
+      "additionalProperties" => false
+    }
   end
 end

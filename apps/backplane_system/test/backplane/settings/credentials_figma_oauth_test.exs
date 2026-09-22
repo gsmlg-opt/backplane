@@ -57,6 +57,13 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
           conn.body_params["resource"] == "https://mcp.figma.com/mcp" and
           get_req_header(conn, "authorization") == [expected_auth]
 
+      dynamic_auth = "Basic " <> Base.encode64("dynamic-client:dynamic-secret")
+
+      dynamic? =
+        conn.body_params["grant_type"] == "refresh_token" and
+          conn.body_params["resource"] == "https://mcp.figma.com/mcp" and
+          get_req_header(conn, "authorization") == [dynamic_auth]
+
       cond do
         valid? and conn.body_params["refresh_token"] == "good-figma" ->
           conn
@@ -66,6 +73,18 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
             Jason.encode!(%{
               "access_token" => "figma-refreshed-access",
               "refresh_token" => "figma-refreshed-refresh",
+              "expires_in" => 3600
+            })
+          )
+
+        dynamic? and conn.body_params["refresh_token"] == "dynamic-refresh" ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "dynamic-refreshed-access",
+              "refresh_token" => "dynamic-rotated-refresh",
               "expires_in" => 3600
             })
           )
@@ -186,6 +205,51 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
     assert stored["access_token"] == "figma-refreshed-access"
     assert stored["refresh_token"] == "figma-refreshed-refresh"
     assert is_binary(stored["last_refresh"])
+  end
+
+  test "refreshes with stored dynamic client context and preserves it on rotation" do
+    oauth_client = %{
+      "client_id" => "dynamic-client",
+      "client_secret" => "dynamic-secret",
+      "token_endpoint_auth_method" => "client_secret_basic"
+    }
+
+    assert {:ok, _} =
+             Credentials.store_oauth_token(
+               "figma-dynamic",
+               "figma_oauth",
+               %{
+                 "access_token" => "dynamic-old-access",
+                 "refresh_token" => "dynamic-refresh",
+                 "expires_at" => System.system_time(:millisecond) - 60_000,
+                 "oauth_client" => oauth_client
+               },
+               "upstream",
+               %{}
+             )
+
+    assert {:ok, "dynamic-refreshed-access"} = Credentials.fetch("figma-dynamic")
+    stored = decrypt_credential_json("figma-dynamic")
+    assert stored["refresh_token"] == "dynamic-rotated-refresh"
+    assert stored["oauth_client"] == oauth_client
+  end
+
+  test "rejects malformed stored dynamic client context instead of falling back to config" do
+    assert {:ok, _} =
+             Credentials.store_oauth_token(
+               "figma-invalid-client",
+               "figma_oauth",
+               %{
+                 "access_token" => "old-access",
+                 "refresh_token" => "dynamic-refresh",
+                 "expires_at" => System.system_time(:millisecond) - 60_000,
+                 "oauth_client" => %{"client_id" => "dynamic-client"}
+               },
+               "upstream",
+               %{}
+             )
+
+    assert {:error, :invalid_figma_oauth_client} = Credentials.fetch("figma-invalid-client")
   end
 
   test "failed refresh preserves the encrypted token blob" do

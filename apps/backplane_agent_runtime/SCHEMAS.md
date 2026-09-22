@@ -14,14 +14,18 @@ host-authored schemas. The supported keywords are:
 | `required` | A list of string property names |
 | `additionalProperties` | Boolean object policy; `additional_properties` is also accepted for Elixir callers |
 | `description` | Annotation only |
+| `default` | Annotation only; never inserted into tool arguments or validated against the schema |
 | `enum` | A list of JSON values allowed by a typed schema; the value must equal one choice |
 | `minimum` | Inclusive numeric lower bound on `integer` and `number` values |
 | `items` | One recursively validated schema for every array item |
 | `oneOf` | A non-empty list of schemas; the value must match exactly one branch |
+| `anyOf` | A non-empty list of schemas; the value must match at least one branch |
 
-A `oneOf` schema may contain only `oneOf` and `description`. Other sibling
+A `oneOf` schema may contain only `oneOf`, `description`, and `default`. Other sibling
 semantics are outside this subset. Object constraints apply at every nesting
 level, so nested `required` and `additionalProperties` rules are enforced.
+`default` is accepted on every supported schema, including nested properties,
+array items, composition branches, and composition siblings.
 
 `enum` narrows the existing type and other constraints; it does not replace
 them. It works on object roots, typed properties, array items, and inside
@@ -41,8 +45,12 @@ that do not satisfy a supported constraint return a `:validation` error. The
 execution gateway performs this check before authorization, approval,
 budget reservation, durable intent commit, or backend invocation.
 
+Hosts can call `InputSchema.validate_schema/1` to preflight the complete schema
+without supplying placeholder arguments. Catalog publication uses this boundary
+before making a revised registry visible.
+
 Keywords outside the table are unsupported. This includes `$ref`,
-`const`, `anyOf`, `allOf`, `not`, `pattern`, string lengths, array lengths,
+`const`, `allOf`, `not`, `pattern`, string lengths, array lengths,
 tuple-style `items`, `maximum`, and exclusive numeric bounds. Hosts must not
 strip these constraints. They should surface the runtime error or use a
 different validator/backend boundary whose contract supports the complete

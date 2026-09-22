@@ -157,6 +157,39 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     })
   end
 
+  defp default_annotated_registry do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "unused-default",
+      tool_revision: 1,
+      schema: %{
+        "type" => "object",
+        "properties" => %{"path" => %{"type" => "string", "default" => 1}}
+      },
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
+  defp skill_registry do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "skill",
+      tool_revision: 1,
+      schema: %{
+        "type" => "object",
+        "properties" => %{
+          "locator" => %{"type" => "string"},
+          "name" => %{"type" => "string"}
+        },
+        "anyOf" => [%{"required" => ["locator"]}, %{"required" => ["name"]}],
+        "additionalProperties" => false
+      },
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
   test "incremental multi-step turn is persisted and settled once" do
     {pid, store} = start()
     assert {:ok, _} = Conversation.prompt(pid, "hello")
@@ -249,6 +282,21 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 
+  test "an unused default-annotated tool schema does not block the provider" do
+    assert {:ok, registry} = default_annotated_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["unused-default"], tool_revision: 1}
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "answer without tools")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
   test "invalid Sigma Todo enum calls never invoke the backend and continue with an error" do
     assert {:ok, registry} = todo_registry(SigmaSchemas.todo())
 
@@ -276,6 +324,71 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert_receive {:provider, %{messages: messages}, next}
     assert List.last(messages).role == :tool
     assert List.last(messages).result.is_error == true
+    assert List.last(messages).result.error.class == :validation
+    send(next, {:events, [done("recovered")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "anyOf tool arguments invoke the backend exactly once when valid" do
+    assert {:ok, registry} = skill_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["skill"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "load the assigned skill")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{
+            id: "skill-valid",
+            name: "skill",
+            arguments: %{"locator" => "assigned-skill"}
+          }
+        },
+        done("loading")
+      ]
+    })
+
+    assert_receive {:tool, %{tool_call_id: "skill-valid"}, tool}
+    refute_receive {:tool, _, _}, 20
+    send(tool, {:result, {:ok, %{text: "loaded"}}})
+    assert_receive {:provider, _, next}
+    send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "anyOf tool arguments never invoke the backend when invalid" do
+    assert {:ok, registry} = skill_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["skill"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "load an unspecified skill")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{id: "skill-invalid", name: "skill", arguments: %{}}
+        },
+        done("loading")
+      ]
+    })
+
+    refute_receive {:tool, _, _}, 50
+    assert_receive {:provider, %{messages: messages}, next}
     assert List.last(messages).result.error.class == :validation
     send(next, {:events, [done("recovered")]})
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}

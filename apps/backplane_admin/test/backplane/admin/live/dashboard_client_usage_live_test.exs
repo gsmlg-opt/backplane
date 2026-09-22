@@ -11,20 +11,28 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
       client_id: client.id,
       requested_model: "gpt-test",
       input_tokens: 1_000,
+      cached_tokens: 200,
       output_tokens: 250
     })
 
     mcp_log = insert_mcp_log(%{client_id: client.id, duration_ms: 40, rpc_method: "tools/call"})
     insert_mcp_tool_call(%{mcp_request_id: mcp_log.event_id, tool_name: "math::add"})
 
-    {:ok, _view, html} = live_with_sandbox(conn, "/dashboard/usage/clients")
+    {:ok, view, html} = live_with_sandbox(conn, "/dashboard/usage/clients")
 
     assert html =~ "Client Usage"
     assert html =~ "usage-client"
-    assert html =~ "1,000"
+    assert html =~ "1,200"
     assert html =~ "250"
     assert html =~ "MCP Usage"
     assert html =~ "gpt-test"
     assert html =~ "math::add"
+    refute has_element?(view, "#client-#{client.id}-models th", "Cached Tokens")
+
+    assert has_element?(
+             view,
+             "#client-#{client.id}-models td",
+             "1,200 / 200 (16.7%)"
+           )
   end
 end

@@ -18,22 +18,56 @@ defmodule Backplane.Skills.Search do
   @archive_ref_pattern "^sha256/[a-f0-9]{64}\\.tar\\.gz$"
   @spec query(String.t(), keyword()) :: [map()]
   def query(search_query, opts \\ []) do
+    %{results: results} = query_page(search_query, Keyword.put(opts, :offset, 0))
+    results
+  end
+
+  @doc """
+  Search skills and return one deterministic offset-based page.
+
+  The page fetches one extra result to determine whether another page exists.
+  """
+  @spec query_page(String.t(), keyword()) :: %{
+          results: [map()],
+          limit: pos_integer(),
+          offset: non_neg_integer(),
+          next_offset: non_neg_integer() | nil
+        }
+  def query_page(search_query, opts \\ []) do
     tags = Keyword.get(opts, :tags, [])
-    limit = Keyword.get(opts, :limit, 10)
+    limit = normalize_limit(Keyword.get(opts, :limit, 10))
+    offset = normalize_offset(Keyword.get(opts, :offset, 0))
     archive_only? = Keyword.get(opts, :archive_only, false)
 
-    Skill
-    |> where([s], s.enabled == true)
-    |> apply_text_search(search_query)
-    |> apply_tag_filter(tags)
-    |> apply_archive_filter(archive_only?)
-    |> order_by_relevance(search_query)
-    |> limit(^limit)
-    |> Repo.all()
-    |> Enum.map(&to_result/1)
+    results =
+      Skill
+      |> where([s], s.enabled == true)
+      |> apply_text_search(search_query)
+      |> apply_tag_filter(tags)
+      |> apply_archive_filter(archive_only?)
+      |> order_by_relevance(search_query)
+      |> offset(^offset)
+      |> limit(^(limit + 1))
+      |> Repo.all()
+
+    {page, remaining} = Enum.split(results, limit)
+
+    %{
+      results: Enum.map(page, &to_result/1),
+      limit: limit,
+      offset: offset,
+      next_offset: if(remaining == [], do: nil, else: offset + limit)
+    }
   end
 
   @max_query_length 500
+  @max_page_size 100
+
+  defp normalize_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_page_size)
+  defp normalize_limit(_limit), do: 10
+
+  defp normalize_offset(offset) when is_integer(offset), do: max(offset, 0)
+  defp normalize_offset(_offset), do: 0
 
   defp apply_text_search(query, search) when is_binary(search) and search != "" do
     sanitized = search |> String.replace(<<0>>, "") |> String.slice(0, @max_query_length)
@@ -70,11 +104,12 @@ defmodule Backplane.Skills.Search do
     order_by(
       query,
       [s],
-      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^sanitized)
+      desc: fragment("ts_rank(search_vector, plainto_tsquery('english', ?))", ^sanitized),
+      asc: s.id
     )
   end
 
-  defp order_by_relevance(query, _), do: order_by(query, [s], asc: s.name)
+  defp order_by_relevance(query, _), do: order_by(query, [s], asc: s.name, asc: s.id)
 
   defp to_result(%Skill{} = s) do
     %{
@@ -90,7 +125,11 @@ defmodule Backplane.Skills.Search do
       content_hash: s.content_hash,
       archive_ref: s.archive_ref,
       size_bytes: s.size_bytes,
-      file_count: s.file_count
+      file_count: s.file_count,
+      source_kind: s.source_kind,
+      source_uri: s.source_uri,
+      source_rev: s.source_rev,
+      current_revision: s.current_revision
     }
   end
 end

@@ -241,7 +241,11 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert response.is_error == false
     end
 
-    @tag server_capabilities: %{"resources" => %{"subscribe" => true}, "tools" => %{}, "prompts" => %{}}
+    @tag server_capabilities: %{
+           "resources" => %{"subscribe" => true},
+           "tools" => %{},
+           "prompts" => %{}
+         }
     test "subscribe_resource sends correct request", %{client: client} do
       test_pid = self()
 
@@ -251,7 +255,9 @@ defmodule Backplane.McpProtocol.ClientTest do
       end)
 
       task =
-        Task.async(fn -> Backplane.McpProtocol.Client.subscribe_resource(client, "file:///watched") end)
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.subscribe_resource(client, "file:///watched")
+        end)
 
       assert_receive {:request_sent, decoded}, 200
       assert decoded["method"] == "resources/subscribe"
@@ -264,7 +270,11 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:ok, %Response{result: %{}}} = Task.await(task)
     end
 
-    @tag server_capabilities: %{"resources" => %{"subscribe" => true}, "tools" => %{}, "prompts" => %{}}
+    @tag server_capabilities: %{
+           "resources" => %{"subscribe" => true},
+           "tools" => %{},
+           "prompts" => %{}
+         }
     test "unsubscribe_resource sends correct request", %{client: client} do
       test_pid = self()
 
@@ -274,7 +284,9 @@ defmodule Backplane.McpProtocol.ClientTest do
       end)
 
       task =
-        Task.async(fn -> Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///watched") end)
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///watched")
+        end)
 
       assert_receive {:request_sent, decoded}, 200
       assert decoded["method"] == "resources/unsubscribe"
@@ -299,7 +311,9 @@ defmodule Backplane.McpProtocol.ClientTest do
     test "unsubscribe_resource fails when server did not declare subscribe capability",
          %{client: client} do
       task =
-        Task.async(fn -> Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///x") end)
+        Task.async(fn ->
+          Backplane.McpProtocol.Client.unsubscribe_resource(client, "file:///x")
+        end)
 
       assert {:error, %Error{reason: :method_not_found, data: %{method: "resources/unsubscribe"}}} =
                Task.await(task)
@@ -674,7 +688,9 @@ defmodule Backplane.McpProtocol.ClientTest do
       progress_token = "unregister_test_token"
 
       :ok =
-        Backplane.McpProtocol.Client.register_progress_callback(client, progress_token, fn _, _, _ ->
+        Backplane.McpProtocol.Client.register_progress_callback(client, progress_token, fn _,
+                                                                                           _,
+                                                                                           _ ->
           send(test_pid, :should_not_be_called)
         end)
 
@@ -1633,7 +1649,9 @@ defmodule Backplane.McpProtocol.ClientTest do
       test_pid = self()
 
       :ok =
-        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema -> :decline end)
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema ->
+          :decline
+        end)
 
       request_id = "elicit_req_decline"
       params = %{"message" => "Name?", "requestedSchema" => @schema}
@@ -1662,7 +1680,9 @@ defmodule Backplane.McpProtocol.ClientTest do
       test_pid = self()
 
       :ok =
-        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema -> :cancel end)
+        Backplane.McpProtocol.Client.register_elicitation_callback(client, fn _msg, _schema ->
+          :cancel
+        end)
 
       request_id = "elicit_req_cancel"
       params = %{"message" => "Name?", "requestedSchema" => @schema}
@@ -2207,6 +2227,7 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       send_response(client, list_response)
       assert {:ok, _response} = Task.await(list_task)
+      assert_tool_validators_ready(client)
 
       expect(Backplane.McpProtocol.MockTransport, :send_message, fn _, message, _ ->
         send(test_pid, {:mcp_send, message})
@@ -2270,7 +2291,9 @@ defmodule Backplane.McpProtocol.ClientTest do
         :ok
       end)
 
-      call_task = Task.async(fn -> Backplane.McpProtocol.Client.call_tool(client, "choice", %{}) end)
+      call_task =
+        Task.async(fn -> Backplane.McpProtocol.Client.call_tool(client, "choice", %{}) end)
+
       call_request_id = get_request_id(client, "tools/call")
 
       send_response(client, %{
@@ -2287,6 +2310,23 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:ok, response} = Task.await(call_task)
       assert response.result["structuredContent"] == true
     end
+  end
+
+  defp assert_tool_validators_ready(client, attempts \\ 1_000)
+
+  defp assert_tool_validators_ready(client, attempts) when attempts > 0 do
+    case :sys.get_state(client).tool_validator_task do
+      nil ->
+        :ok
+
+      %Task{} ->
+        Process.sleep(1)
+        assert_tool_validators_ready(client, attempts - 1)
+    end
+  end
+
+  defp assert_tool_validators_ready(_client, 0) do
+    flunk("tool validator compilation did not finish")
   end
 
   describe "protocol negotiation" do
@@ -2343,8 +2383,7 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:error, %Error{reason: :unsupported_operation, data: %{method: "ping"}}} =
                Backplane.McpProtocol.Client.ping(client)
 
-      assert {:error,
-              %Error{reason: :unsupported_operation, data: %{method: "logging/setLevel"}}} =
+      assert {:error, %Error{reason: :unsupported_operation, data: %{method: "logging/setLevel"}}} =
                Backplane.McpProtocol.Client.set_log_level(client, "info")
 
       refute_receive {:mcp_send, _removed_modern_request}, 50
@@ -2356,7 +2395,9 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       GenServer.cast(client, :negotiate)
       request_id = get_request_id(client, "server/discover")
-      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      waiter =
+        Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
 
       response = %{
         "jsonrpc" => "2.0",
@@ -2394,7 +2435,9 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       GenServer.cast(client, :negotiate)
       request_id = get_request_id(client, "server/discover")
-      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      waiter =
+        Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
 
       GenServer.cast(
         client,
@@ -2413,7 +2456,10 @@ defmodule Backplane.McpProtocol.ClientTest do
       assert {:error, %Error{reason: :unsupported_protocol_version}} = Task.await(waiter, 1_000)
       assert Process.alive?(client)
       assert :sys.get_state(client).pending_requests == %{}
-      assert %{negotiation_status: :failed} = Backplane.McpProtocol.Client.get_protocol_info(client)
+
+      assert %{negotiation_status: :failed} =
+               Backplane.McpProtocol.Client.get_protocol_info(client)
+
       refute_receive {:mcp_send, _retry}, 50
     end
 
@@ -2495,7 +2541,9 @@ defmodule Backplane.McpProtocol.ClientTest do
 
       GenServer.cast(client, :negotiate)
       request_id = get_request_id(client, "server/discover")
-      waiter = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
+
+      waiter =
+        Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000) end)
 
       GenServer.cast(
         client,
@@ -2544,7 +2592,9 @@ defmodule Backplane.McpProtocol.ClientTest do
                Backplane.McpProtocol.Client.await_ready(client, timeout: 1_000)
 
       assert Process.alive?(client)
-      assert %{negotiation_status: :failed} = Backplane.McpProtocol.Client.get_protocol_info(client)
+
+      assert %{negotiation_status: :failed} =
+               Backplane.McpProtocol.Client.get_protocol_info(client)
     end
 
     for failure <- [:raise, :exit] do
@@ -2697,7 +2747,8 @@ defmodule Backplane.McpProtocol.ClientTest do
       allow(Backplane.McpProtocol.MockTransport, self(), client)
 
       # Start waiting before initialization
-      task = Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 5_000) end)
+      task =
+        Task.async(fn -> Backplane.McpProtocol.Client.await_ready(client, timeout: 5_000) end)
 
       # Give the call time to arrive and park
       Process.sleep(50)

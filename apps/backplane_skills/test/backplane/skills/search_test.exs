@@ -78,6 +78,22 @@ defmodule Backplane.Skills.SearchTest do
       assert length(results) <= 1
     end
 
+    test "returns deterministic offset pages with a next offset" do
+      first = Search.query_page(nil, limit: 2, offset: 0)
+      second = Search.query_page(nil, limit: 2, offset: 2)
+
+      assert first.limit == 2
+      assert first.offset == 0
+      assert length(first.results) == 2
+      assert first.next_offset == 2
+
+      assert second.limit == 2
+      assert second.offset == 2
+      assert Enum.map(first.results, & &1.id) == ["s3", "s1"]
+      assert Enum.map(second.results, & &1.id) == ["s2", "s5"]
+      assert second.next_offset == nil
+    end
+
     test "filters to archive-backed skills when archive_only is true" do
       results = Search.query("elixir", archive_only: true)
       names = Enum.map(results, & &1.name)
@@ -102,7 +118,11 @@ defmodule Backplane.Skills.SearchTest do
                archive_ref:
                  "sha256/abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd.tar.gz",
                size_bytes: 4096,
-               file_count: 7
+               file_count: 7,
+               source_kind: "archive",
+               source_uri: nil,
+               source_rev: nil,
+               current_revision: nil
              }
 
       assert byte_size(result.content_hash) == 64
