@@ -173,6 +173,57 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              Codec.stream_feed(:anthropic, state, sse(event))
   end
 
+  test "provider streams report malformed frames and truncated completion" do
+    for protocol <- [:anthropic, :openai, :google] do
+      assert {:error,
+              %Error{
+                kind: :invalid_request,
+                stage: :validation,
+                message: "Provider response is not a JSON object"
+              }, _state} =
+               Codec.stream_feed(protocol, Codec.stream_new(protocol, []), "data: {\n\n")
+
+      state = Codec.stream_new(protocol, [])
+
+      assert {:ok, state, []} = Codec.stream_feed(protocol, state, "data")
+
+      assert {:error,
+              %Error{
+                kind: :upstream_error,
+                stage: :response,
+                message: "Provider stream ended before completion",
+                upstream_outcome: :known,
+                partial_output: %{}
+              }, _state} = Codec.stream_finish(protocol, state, :eof)
+    end
+  end
+
+  test "anthropic error decoding preserves status and provider code while sanitizing message" do
+    assert {:error,
+            %Error{
+              kind: :authentication,
+              stage: :response,
+              http_status: 401,
+              provider_code: "authentication_error",
+              message: "Anthropic provider request failed",
+              retry_hint: :not_retryable,
+              upstream_outcome: :known
+            }} =
+             Codec.decode_error(
+               :anthropic,
+               401,
+               [],
+               %{
+                 "type" => "error",
+                 "error" => %{
+                   "type" => "authentication_error",
+                   "message" => "invalid x-api-key"
+                 }
+               },
+               []
+             )
+  end
+
   test "openai emits indexed interleaved tool deltas and trailing usage once" do
     chunks = [
       sse(%{
