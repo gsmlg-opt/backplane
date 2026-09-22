@@ -7,17 +7,29 @@ defmodule BackplaneSkillProtocol.MixProject do
     [
       app: :backplane_skill_protocol,
       version: @version,
-      build_path: "../../_build",
-      config_path: "../../config/config.exs",
-      deps_path: "../../deps",
-      lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),
       description: "Independent Skill document and bundle protocol core"
-    ]
+    ] ++ umbrella_paths()
+  end
+
+  defp umbrella_paths do
+    umbrella_root = Path.expand("../..", __DIR__)
+
+    if File.regular?(Path.join(umbrella_root, "mix.exs")) and
+         File.dir?(Path.join(umbrella_root, "apps")) do
+      [
+        build_path: "../../_build",
+        config_path: "../../config/config.exs",
+        deps_path: "../../deps",
+        lockfile: "../../mix.lock"
+      ]
+    else
+      []
+    end
   end
 
   def application, do: [extra_applications: [:crypto, :logger]]
