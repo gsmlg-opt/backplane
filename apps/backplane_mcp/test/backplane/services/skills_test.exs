@@ -14,7 +14,9 @@ defmodule Backplane.Services.SkillsTest do
     previous_rows =
       :backplane_tools
       |> :ets.tab2list()
-      |> Enum.filter(fn {name, _tool} -> String.starts_with?(name, "skill::") end)
+      |> Enum.filter(fn {name, _tool} ->
+        is_binary(name) and String.starts_with?(name, "skill::")
+      end)
 
     on_exit(fn ->
       Settings.set(@setting_key, previous_enabled)
