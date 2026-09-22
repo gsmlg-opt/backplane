@@ -371,8 +371,9 @@ defmodule Backplane.Memory.Memories.RelationsTest do
   defp direct_opts(key) do
     [
       agent_id: "agent",
-      memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!("relations-owner"),
+      memory_space_id: Backplane.Memory.IngestFixtures.ensure_memory_space!("host"),
       host_id: "host",
+      client_id: "host:host",
       scope: "scope",
       namespace: "private",
       idempotency_scope: "test",
@@ -436,7 +437,7 @@ defmodule Backplane.Memory.Memories.RelationsTest do
     assert trace["host_id"] == "host"
 
     assert trace["memory_space_id"] ==
-             Backplane.Memory.IngestFixtures.memory_space_id("relations-owner")
+             Backplane.Memory.IngestFixtures.memory_space_id("host")
 
     assert trace["scope"] == "scope"
     assert trace["namespace"] == "private"
@@ -459,9 +460,9 @@ defmodule Backplane.Memory.Memories.RelationsTest do
              "source_memory_id" => relation.source_memory_id,
              "target_memory_id" => relation.target_memory_id,
              "source_host_id" => "host",
-             "source_client_id" => nil,
+             "source_client_id" => "host:host",
              "target_host_id" => "host",
-             "target_client_id" => nil,
+             "target_client_id" => "host:host",
              "domain" => relation.domain,
              "relation_type" => relation.relation_type,
              "classification" => relation.classification,

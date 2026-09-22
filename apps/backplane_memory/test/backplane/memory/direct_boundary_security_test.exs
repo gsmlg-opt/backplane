@@ -161,6 +161,33 @@ defmodule Backplane.Memory.DirectBoundarySecurityTest do
     assert {:ok, %{id: ^id}} = Memories.get(memory.id, partition_a)
   end
 
+  test "remember rejects every incomplete canonical write partition" do
+    partition = partition("host-complete", "client-complete", "scope-complete", "private")
+
+    for field <- [:memory_space_id, :host_id, :client_id, :scope, :namespace],
+        invalid <- [nil, "", "   "] do
+      opts =
+        partition
+        |> Map.put(field, invalid)
+        |> Map.to_list()
+        |> Keyword.merge(agent_id: "agent")
+
+      assert {:error, :incomplete_partition} =
+               Memories.remember("incomplete #{field} #{inspect(invalid)}", opts)
+    end
+
+    assert {:ok, memory} =
+             Memories.remember(
+               "source client remains optional provenance",
+               partition
+               |> Map.put(:source_client_id, nil)
+               |> Map.to_list()
+               |> Keyword.merge(agent_id: "agent")
+             )
+
+    assert is_nil(memory.source_client_id)
+  end
+
   defp create_host!(suffix, scope) do
     {:ok, host, _token, _plaintext} =
       Hosts.create_agent_with_token(%{

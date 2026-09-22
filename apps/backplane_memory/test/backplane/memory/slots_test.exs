@@ -115,7 +115,7 @@ defmodule Backplane.Memory.SlotsTest do
       initial_count = repo().aggregate(Slot, :count)
 
       :ets.insert(:backplane_settings, {key, "true"})
-      assert {:skip, :incomplete_partition} = Reflect.run("session-without-partition")
+      assert {:skip, :device_local_only} = Reflect.run("session-without-partition")
       assert repo().aggregate(Slot, :count) == initial_count
 
       :ets.insert(:backplane_settings, {key, "false"})

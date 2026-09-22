@@ -37,6 +37,24 @@ defmodule Backplane.HostAgent.ReporterTest do
     def status(:capture_uploader), do: exit(:uploader_telemetry_unavailable)
   end
 
+  defmodule MemoryDiagnostics do
+    def snapshot(:edge) do
+      {:ok,
+       %{
+         "edge" => %{
+           "protection_mode" => "plaintext_development",
+           "items" => 4,
+           "bytes" => 512,
+           "revision" => 8,
+           "lag" => 2,
+           "stale_age_seconds" => 7,
+           "retry_count" => 3,
+           "dead_letter_count" => 1
+         }
+       }}
+    end
+  end
+
   test "formats heartbeat payload" do
     config = %{
       machine_name: "t430",
@@ -125,6 +143,27 @@ defmodule Backplane.HostAgent.ReporterTest do
              "upload_latency_ms" => nil,
              "ack_latency_ms" => nil
            } = payload["capture"]
+  end
+
+  test "heartbeat includes content-free edge and command health" do
+    payload =
+      Reporter.heartbeat(%{
+        machine_name: "t430",
+        memory: %{diagnostics_module: MemoryDiagnostics, diagnostics_opts: :edge}
+      })
+
+    assert %{
+             "protection_mode" => "plaintext_development",
+             "items" => 4,
+             "bytes" => 512,
+             "revision" => 8,
+             "lag" => 2,
+             "stale_age_seconds" => 7,
+             "retry_count" => 3,
+             "dead_letter_count" => 1
+           } = payload["memory"]
+
+    refute inspect(payload["memory"]) =~ "content"
   end
 
   test "formats loaded config report payload with token redacted" do

@@ -8,7 +8,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Memories.Relation
   alias Backplane.Memory.Memories.Relations
-  alias Backplane.Memory.Projections.Rebuild
+  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{EpisodicWorker, ProceduralWorker, SummaryWorker}
 
@@ -295,6 +295,58 @@ defmodule Backplane.Memory.Memories.VerificationTest do
              returned_count: 100,
              truncated: true
            }
+  end
+
+  test "canonical session roots resolve in verification" do
+    memory_space_id = ensure_memory_space!("canonical-session-host")
+
+    repo().insert!(%ProjectedSession{
+      subject_id: "verification:canonical-session",
+      memory_space_id: memory_space_id,
+      host_id: "canonical-session-host",
+      client_id: "canonical-session-client",
+      source_client_id: "canonical-session-client",
+      scope: "canonical-session-scope",
+      namespace: "private",
+      session_id: "canonical-session",
+      status: "completed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "session-v1",
+      input_revision: "fixture-v1"
+    })
+
+    assert {:ok, memory} =
+             Memories.remember("canonical session evidence",
+               type: "semantic",
+               memory_space_id: memory_space_id,
+               host_id: "canonical-session-host",
+               client_id: "canonical-session-client",
+               scope: "canonical-session-scope",
+               namespace: "private",
+               agent_id: "agent",
+               evidence: [
+                 %{
+                   source_session_id: "canonical-session",
+                   host_id: "canonical-session-host",
+                   evidence_kind: "derives",
+                   support_score: 1.0
+                 }
+               ]
+             )
+
+    assert {:ok, verification} =
+             Memories.verify(memory.id, %{
+               memory_space_id: memory_space_id,
+               host_id: "canonical-session-host",
+               client_id: "canonical-session-client",
+               scope: "canonical-session-scope",
+               namespace: "private"
+             })
+
+    assert Enum.any?(
+             verification.provenance_roots,
+             &(&1.source_type == "session" and &1.resolved)
+           )
   end
 
   test "relation graph traverses an A-B-C-A cycle once with evidence, requests, and audit" do

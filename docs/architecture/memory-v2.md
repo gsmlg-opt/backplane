@@ -219,6 +219,20 @@ memory, or recall execution path.
 
 ## Relationship to the V1 design
 
+The current host authority and routing contract is
+[`host-memory-v2-protocol.md`](../memory/host-memory-v2-protocol.md). Backplane
+owns canonical events, memories, partition/entitlement, governance, and edge
+revisions; host capture, provisional commands, and the bounded edge mirror are
+separate stores. Connected `memory::recall` uses the authorized central Recall
+V2 path; only classified transport failures permit stale mirror fallback.
+The older [`host-agent-memory-design-final.md`](../host-agent-memory-design-final.md)
+remains useful for V1 command and local device features but its local-first
+memory authority has been superseded. Server migrations through
+`20260905000010` add the revisioned feed and eligible host-origin episodic
+records; `20260905000011` optimizes the action-edge partition guard without
+changing its canonical checks. Host command-store V3 preserves positive
+canonical revisions.
+
 [`docs/memory-design.md`](../memory-design.md) remains useful context for the V1
 schema, retrieval, embedding, consolidation, and host-agent goals that the
 current implementation grew from. This record is the V2 evolution of that

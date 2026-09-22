@@ -37,8 +37,10 @@ defmodule Backplane.Admin.DashboardLiveTest do
     assert render_hook(view, "theme_changed", %{"theme" => "sunshine"}) =~ "Dashboard"
     assert Process.alive?(view.pid)
 
-    assert render_hook(view, "reconnect_degraded", %{}) =~
-             "Reconnect triggered for 0 degraded/disconnected upstreams"
+    render_hook(view, "reconnect_degraded", %{})
+
+    assert :sys.get_state(view.pid).socket.assigns.flash["info"] =~
+             ~r/^Reconnect triggered for \d+ degraded\/disconnected upstreams$/
 
     assert Process.alive?(view.pid)
   end

@@ -141,6 +141,9 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
       {:error, :summary_not_ready} ->
         {:snooze, 5}
 
+      {:error, :crystal_session_disabled} ->
+        {:skipped, :crystal_session_disabled}
+
       {:error, reason} ->
         {:error, reason}
     end

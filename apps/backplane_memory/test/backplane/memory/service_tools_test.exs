@@ -2,6 +2,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.{Audit, Memories, Service}
+  alias Backplane.MemoryToolContract
   alias Backplane.Memory.Coordination.Action
   alias Backplane.MemorySpaces
   alias Backplane.Skills.Host
@@ -17,11 +18,19 @@ defmodule Backplane.Memory.ServiceToolsTest do
     memory::lesson_promote
     memory::lesson_strengthen
     memory::replay_import
-    memory::slot_list
-    memory::slot_read
-    memory::slot_write
     memory::verify
   )
+
+  test "uses the shared canonical-overlap schemas with authority metadata" do
+    tools = Map.new(Service.tools(), &{&1.name, &1})
+
+    for name <- MemoryToolContract.canonical_overlap_names() do
+      contract = MemoryToolContract.tool!(name)
+      assert %{input_schema: schema, meta: meta} = Map.fetch!(tools, name)
+      assert schema == contract.input_schema
+      assert meta == contract.meta
+    end
+  end
 
   @full_tool_contracts Map.new([
                          {"memory::activity_summary",
@@ -747,23 +756,6 @@ defmodule Backplane.Memory.ServiceToolsTest do
                             ],
                             "type" => "object"
                           }},
-                         {"memory::slot_list", %{"properties" => %{}, "type" => "object"}},
-                         {"memory::slot_read",
-                          %{
-                            "properties" => %{"name" => %{"type" => "string"}},
-                            "required" => ["name"],
-                            "type" => "object"
-                          }},
-                         {"memory::slot_write",
-                          %{
-                            "properties" => %{
-                              "content" => %{"type" => "string"},
-                              "name" => %{"type" => "string"},
-                              "updated_by" => %{"type" => "string"}
-                            },
-                            "required" => ["name", "content"],
-                            "type" => "object"
-                          }},
                          {"memory::smart_search",
                           %{
                             "properties" => %{
@@ -944,15 +936,24 @@ defmodule Backplane.Memory.ServiceToolsTest do
   end
 
   describe "tools/0 — extended tools (memory.tools = 'all')" do
-    test "returns the exact 55 full names and input schemas" do
+    test "does not publish device-local slot tools" do
+      set_tool_mode("all")
+      published_names = MapSet.new(Service.tools(), & &1.name)
+
+      for name <- MemoryToolContract.device_local_names() do
+        refute MapSet.member?(published_names, name)
+      end
+    end
+
+    test "returns the exact 52 full server names and input schemas" do
       set_tool_mode("all")
       tools = Service.tools()
       names = Enum.map(tools, & &1.name)
 
-      assert length(tools) == 55
-      assert length(Enum.uniq(names)) == 55
+      assert length(tools) == 52
+      assert length(Enum.uniq(names)) == 52
       assert contracts(tools) == @full_tool_contracts
-      assert map_size(@full_tool_contracts) == 55
+      assert map_size(@full_tool_contracts) == 52
     end
   end
 

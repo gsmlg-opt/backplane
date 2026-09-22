@@ -27,8 +27,7 @@ defmodule Backplane.Memory.Profiles do
   end
 
   @doc """
-  Return cached profile or trigger async rebuild.
-  Returns `{:ok, profile}` or `{:building, nil}`.
+  Return a cached unpartitioned profile as `{:ok, profile}`, or `{:building, nil}`.
   """
   def get_or_build(project) when is_binary(project) do
     case get(project) do
@@ -37,12 +36,19 @@ defmodule Backplane.Memory.Profiles do
     end
   end
 
+  @doc """
+  Return a cached partitioned profile or enqueue a rebuild.
+  Returns `{:ok, profile}`, `{:building, nil}`, or `{:error, reason}` when
+  partition validation or enqueueing rejects the request.
+  """
   def get_or_build(project, partition) when is_binary(project) and is_map(partition) do
     with {:ok, partition} <- PartitionIdentity.validate(partition) do
       case get(project, partition) do
         nil ->
-          ProfileBuildWorker.enqueue(project, partition)
-          {:building, nil}
+          case ProfileBuildWorker.enqueue(project, partition) do
+            {:ok, _job} -> {:building, nil}
+            {:error, _reason} = error -> error
+          end
 
         profile ->
           {:ok, profile}

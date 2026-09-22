@@ -46,7 +46,9 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
       end)
     end)
 
-    %{auth_token: auth_token, host: host}
+    {:ok, partition} = MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private")
+
+    %{auth_token: auth_token, host: host, partition: partition}
   end
 
   test "tools/list exposes the authenticated core catalog without caller ownership arguments", %{
@@ -91,9 +93,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
     end
   end
 
-  test "memory::apply is hidden from read-only clients and callable by writers", %{
-    host: host
-  } do
+  test "memory::apply is hidden from read-only clients and callable by writers", %{host: host} do
     assert {:ok, partition} =
              MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private")
 
@@ -104,6 +104,7 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
                scope: host.memory_scope,
                agent_id: "contract-agent",
                host_id: host.id,
+               memory_space_id: partition.memory_space_id,
                client_id: "host:#{host.id}",
                namespace: "private"
              )

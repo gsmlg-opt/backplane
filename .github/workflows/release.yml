@@ -120,18 +120,82 @@ jobs:
           psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
           mix ecto.migrate
 
+      # Migration 20260525000050 creates eight empty legacy slots without a
+      # host. Resolve only those exact fresh-install fixtures in this CI database;
+      # real installations must investigate their own backfill issues.
+      - name: Resolve migration-seeded empty memory slots in the qualification database
+        run: |
+          psql -X -v ON_ERROR_STOP=1 --dbname backplane_test <<'SQL'
+          DO $qualification$
+          DECLARE
+            names text[];
+            issues integer;
+            removed integer;
+            settled integer;
+          BEGIN
+            SELECT array_agg(name ORDER BY name) INTO names FROM memory_slots;
+            IF names IS DISTINCT FROM ARRAY[
+              'guidance', 'pending_items', 'persona', 'project_context',
+              'self_notes', 'session_patterns', 'tool_guidelines', 'user_preferences'
+            ]::text[] OR EXISTS (
+              SELECT 1 FROM memory_slots
+              WHERE content <> '' OR updated_by IS NOT NULL OR size_limit_chars <> 2000
+                 OR host_id IS NOT NULL OR client_id IS NOT NULL
+                 OR source_client_id IS NOT NULL OR memory_space_id IS NOT NULL
+                 OR scope IS NOT NULL OR namespace IS NOT NULL
+            ) THEN
+              RAISE EXCEPTION 'unexpected legacy slot data in fresh qualification database';
+            END IF;
+
+            SELECT count(*) INTO issues
+            FROM bpm_memory_space_backfill_issues issue
+            JOIN memory_slots slot
+              ON issue.source_id = bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))
+            WHERE issue.source_table = 'memory_slots' AND issue.reason = 'missing_mapping'
+              AND issue.disposition = 'pending';
+            IF issues <> 8 OR (SELECT count(*) FROM bpm_memory_space_backfill_issues) <> 8 THEN
+              RAISE EXCEPTION 'unexpected backfill issues in fresh qualification database';
+            END IF;
+
+            WITH deleted AS (
+              DELETE FROM memory_slots AS slot
+              RETURNING bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot)) AS source_id
+            ), resolved AS (
+              UPDATE bpm_memory_space_backfill_issues AS issue
+              SET disposition = 'resolved', resolved_at = now(), updated_at = now()
+              FROM deleted
+              WHERE issue.source_table = 'memory_slots' AND issue.source_id = deleted.source_id
+                AND issue.disposition = 'pending'
+              RETURNING issue.source_id
+            )
+            SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM resolved)
+            INTO removed, settled;
+            IF removed <> 8 OR settled <> 8 THEN
+              RAISE EXCEPTION 'fresh qualification slot resolution was incomplete';
+            END IF;
+          END
+          $qualification$;
+          SQL
+
+      - name: Verify revisioned edge cutover readiness
+        run: mix backplane.memory.edge_cutover_check
+
       - name: Build admin assets for browser qualification
         run: |
           mix deps.compile
           mix npm.install --frozen
           mix "do" --app backplane_admin assets.build
 
-      - name: Verify M18 migration and rollback contracts
+      - name: Verify Memory V2 migration, upgrade, and projection repair contracts
         run: |
           mix test \
             apps/backplane_memory/test/backplane/memory/m18_migration_chain_test.exs \
             apps/backplane_memory/test/backplane/memory/m18_migration_matrix_test.exs \
             apps/backplane_memory/test/backplane/memory/qualification_test.exs \
+            apps/backplane_memory/test/backplane/memory/readiness_test.exs \
+            apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs \
+            apps/backplane_memory/test/backplane/memory/projections/coalesce_projection_repairs_migration_test.exs \
+            apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs \
             --exclude memory_qualification_runtime
 
       - name: Verify outage, privacy, performance, and integration adapters
@@ -142,7 +206,9 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
-            apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs
+            apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs \
+            apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs \
+            apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs
 
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
@@ -423,7 +489,6 @@ jobs:
 
               %Postgrex.Result{rows: [[last_version]]} =
                 Ecto.Adapters.SQL.query!(repo, "SELECT max(version) FROM schema_migrations", [])
-
               required_tables = [
                 "public.bpm_events",
                 "public.memory_import_batches",
@@ -509,6 +574,8 @@ jobs:
           cp docs/operations/memory-v2.md "dist/memory-v2-operations.md"
           cp docs/deploy/memory-v2-release.md "dist/memory-v2-release.md"
           cp docs/qualification/memory-v2.md "dist/memory-v2-qualification.md"
+          cp docs/memory/host-memory-v2-protocol.md "dist/host-memory-v2-protocol.md"
+          cp docs/operations/host-memory-edge-runbook.md "dist/host-memory-edge-runbook.md"
 
           cat > release-notes-header.md <<EOF
           ## Deployment

@@ -73,17 +73,20 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     insert_event(foreign_event, @foreign, "foreign-evidence-session")
 
     assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
-      repo().transaction(fn ->
-        repo().insert!(
-          Evidence.changeset(%Evidence{}, %{
-            memory_id: wanted.id,
-            source_event_id: foreign_event,
-            host_id: @partition.host_id,
-            evidence_kind: "supports",
-            support_score: 1.0
-          })
-        )
-      end)
+      repo().transaction(
+        fn ->
+          repo().insert!(
+            Evidence.changeset(%Evidence{}, %{
+              memory_id: wanted.id,
+              source_event_id: foreign_event,
+              host_id: @partition.host_id,
+              evidence_kind: "supports",
+              support_score: 1.0
+            })
+          )
+        end,
+        mode: :savepoint
+      )
     end
 
     assert {:ok, plan} =
@@ -109,21 +112,59 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     observation(event_id, @partition, "canonical session event", "evidence-session")
 
     assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
-      repo().transaction(fn ->
-        repo().insert!(
-          Evidence.changeset(%Evidence{}, %{
-            memory_id: memory.id,
-            source_session_id: "evidence-session",
-            host_id: @partition.host_id,
-            evidence_kind: "supports",
-            support_score: 1.0
-          })
-        )
-      end)
+      repo().transaction(
+        fn ->
+          repo().insert!(
+            Evidence.changeset(%Evidence{}, %{
+              memory_id: memory.id,
+              source_session_id: "evidence-session",
+              host_id: @partition.host_id,
+              evidence_kind: "supports",
+              support_score: 1.0
+            })
+          )
+        end,
+        mode: :savepoint
+      )
     end
 
     assert {:ok, plan} =
              QueryPlan.new(Map.merge(@partition, %{query: "session provenance canary"}))
+
+    assert {:ok, []} = Channels.fts(plan, 10)
+  end
+
+  test "FTS excludes session-only evidence even with a canonical session" do
+    memory = memory("canonical session provenance canary", @partition, provenance: false)
+    event_id = Ecto.UUID.generate()
+    observation(event_id, @partition, "canonical session event", "evidence-session")
+
+    repo().insert!(%ProjectedSession{
+      memory_space_id: @partition.memory_space_id,
+      subject_id: "evidence-session-subject",
+      session_id: "evidence-session",
+      host_id: @partition.host_id,
+      client_id: @partition.client_id,
+      scope: @partition.scope,
+      namespace: @partition.namespace,
+      status: "closed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "v1",
+      input_revision: "evidence-r1"
+    })
+
+    repo().insert!(
+      Evidence.changeset(%Evidence{}, %{
+        memory_id: memory.id,
+        source_session_id: "evidence-session",
+        host_id: @partition.host_id,
+        evidence_kind: "supports",
+        support_score: 1.0
+      })
+    )
+
+    assert {:ok, plan} =
+             QueryPlan.new(Map.merge(@partition, %{query: "canonical session provenance canary"}))
 
     assert {:ok, []} = Channels.fts(plan, 10)
   end
@@ -263,15 +304,18 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       assert_raise Ecto.ConstraintError,
                    ~r/memory_summary_source_events_canonical_partition/,
                    fn ->
-                     repo().transaction(fn ->
-                       repo().insert!(%SourceEvent{
-                         summary_id: summary.id,
-                         event_id: event_id,
-                         host_id: @partition.host_id,
-                         session_id: session_id,
-                         inserted_at: now
-                       })
-                     end)
+                     repo().transaction(
+                       fn ->
+                         repo().insert!(%SourceEvent{
+                           summary_id: summary.id,
+                           event_id: event_id,
+                           host_id: @partition.host_id,
+                           session_id: session_id,
+                           inserted_at: now
+                         })
+                       end,
+                       mode: :savepoint
+                     )
                    end
 
       assert {:ok, plan} =
@@ -354,6 +398,24 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     session_id = "writer-session"
     event_id = Ecto.UUID.generate()
     insert_event(event_id, @partition, session_id)
+
+    {:ok, %{input_revision: revision}} =
+      Backplane.Memory.Projections.Source.input_revision(@partition.host_id, session_id)
+
+    repo().insert!(%ProjectedSession{
+      memory_space_id: @partition.memory_space_id,
+      subject_id: Backplane.Memory.Projections.Source.subject_id!(@partition.host_id, session_id),
+      session_id: session_id,
+      host_id: @partition.host_id,
+      client_id: @partition.client_id,
+      scope: @partition.scope,
+      namespace: @partition.namespace,
+      status: "closed",
+      last_event_at: DateTime.utc_now(),
+      processing_version: "v1",
+      input_revision: revision
+    })
+
     observation(event_id, @partition, "writer event", session_id)
     linked = memory("writer memory linked", @partition, session_id: session_id, provenance: false)
 
@@ -407,17 +469,20 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     local = memory("local memory with forged graph evidence", @partition)
 
     assert_raise Ecto.ConstraintError, ~r/bpm_memory_evidence_canonical_partition/, fn ->
-      repo().transaction(fn ->
-        repo().insert!(
-          Evidence.changeset(%Evidence{}, %{
-            memory_id: local.id,
-            source_event_id: foreign_event,
-            host_id: @partition.host_id,
-            evidence_kind: "supports",
-            support_score: 1.0
-          })
-        )
-      end)
+      repo().transaction(
+        fn ->
+          repo().insert!(
+            Evidence.changeset(%Evidence{}, %{
+              memory_id: local.id,
+              source_event_id: foreign_event,
+              host_id: @partition.host_id,
+              evidence_kind: "supports",
+              support_score: 1.0
+            })
+          )
+        end,
+        mode: :savepoint
+      )
     end
 
     repo().insert!(

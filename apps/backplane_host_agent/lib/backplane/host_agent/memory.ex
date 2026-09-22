@@ -367,7 +367,7 @@ defmodule Backplane.HostAgent.Memory do
            memory.agent_id
     FROM memory_outbox AS outbox
     INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-    WHERE outbox.state IN ('pending', 'inflight')
+    WHERE outbox.state IN ('pending', 'inflight', 'retry_wait')
       AND memory.sync_state != 'synced'
       AND memory.scope = ?
       AND NOT EXISTS (
@@ -411,7 +411,7 @@ defmodule Backplane.HostAgent.Memory do
            memory.agent_id
     FROM memory_outbox AS outbox
     INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-    WHERE outbox.state IN ('pending', 'inflight')
+    WHERE outbox.state IN ('pending', 'inflight', 'retry_wait')
       AND memory.sync_state != 'synced'
       AND memory.scope = ?
       AND NOT EXISTS (
@@ -455,7 +455,7 @@ defmodule Backplane.HostAgent.Memory do
     SELECT outbox.seq, 'forget' AS op, memory.id, memory.remote_id
     FROM memory_outbox AS outbox
     INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-    WHERE outbox.state IN ('pending', 'inflight')
+    WHERE outbox.state IN ('pending', 'inflight', 'retry_wait')
       AND memory.sync_state != 'synced'
       AND memory.scope = ?
       AND outbox.op = 'forget'
@@ -505,7 +505,7 @@ defmodule Backplane.HostAgent.Memory do
     SELECT COUNT(*) AS count
     FROM memory_outbox AS outbox
     INNER JOIN memories AS memory ON memory.id = outbox.memory_id
-    WHERE outbox.state IN ('pending', 'inflight')
+    WHERE outbox.state IN ('pending', 'inflight', 'retry_wait')
       AND memory.sync_state != 'synced'
       AND memory.scope = ?
       AND NOT EXISTS (

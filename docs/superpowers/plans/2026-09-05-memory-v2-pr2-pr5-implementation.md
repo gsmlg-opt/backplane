@@ -57,7 +57,305 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   EdgeSync/Config tests: 43/43 after the final failure/rebuild race fix; full
   Memory 1,141/1,141 before that isolated fix; affected System tests 19/19.
   Formatting, warnings-as-errors compilation, and diff checks passed.
-- Task 6: in progress. Tasks 7–20 remain outstanding; PR2–PR5 is not complete.
+- Task 6: committed as `2d9e8d5f`; specification and quality reviews approved.
+  Full API tests: 234/234 with warnings-as-errors, repeated on the merged
+  `bd5bc830` state using the worktree PostgreSQL instance. Scoped formatting and
+  diff checks passed. Locally merged into main at the user's request; no push.
+- Task 7: committed as `d266228c` with schema-before-configuration hardening
+  `62738f48`; specification and quality reviews approved. Full host-agent suite:
+  406/406 with warnings-as-errors; independently repeated edge/supervisor/config
+  tests: 33/33. Formatting and diff checks passed. Production rejection,
+  command/capture path aliases, foreign database preservation, restart durability,
+  and normal supervised shutdown are covered.
+- Task 8: committed as `908ed69e` with schema/replay hardening `ecd54030`,
+  stale-snapshot idempotency `8691809c`, and atomic cleanup/bounded reads
+  `8dfbb904`; the registered-schema startup expectation was corrected in
+  `4aef7f0b`. Specification and quality reviews approved. Focused mirror/migrator
+  tests: 22/22; final affected edge-store/migrator/mirror tests: 24/24 with
+  warnings-as-errors. Scoped formatting and diff checks passed.
+- Task 9: committed as `0ced47f7` with negotiation/lifecycle fixes through
+  `42a00c1c`, `5fa8197e`, `3689c7b7`, and timer/partition guard regressions
+  `8694680b`; specification and quality reviews approved. Fresh final gates:
+  host-agent 452/452 and API channel/e2e 61/61 with warnings-as-errors. Scoped
+  formatting and diff checks passed. Fresh-host bootstrap, negotiated-entitlement
+  revocation, fair snapshot polling, durable apply-before-ACK, v1 protection/wipe
+  behavior, reconnect deselection, normal OTP shutdown, and stale timer suppression
+  are covered.
+- Task 10: committed as `e02f545b` with sequence-preservation repair `7e4b7d89`
+  and late rollback regression `e220299e`; specification and quality reviews
+  approved. The user approved the narrow `mix.lock` scope expansion for
+  `ex_turso` 3.0.4. Final focused tests: 38/38 with warnings-as-errors; the
+  additional late-failure migration regression passed 6/6. Scoped formatting
+  and diff checks passed. Composite tombstone identity, exact outbox states,
+  empty-outbox AUTOINCREMENT high-water preservation, fail-closed rollback, and
+  atomic wipe timestamps are covered.
+- Task 11: committed as `2576bde1` with transition/specification hardening
+  `b27c5e07`, storage-failure and transactional-retention repair `f49c33fa`, and
+  batch-atomic settlement/live recovery `44f65bcc`; specification and quality
+  reviews approved. Final focused reviewer gate: 33/33; final full host-agent
+  gate: 475/475 with warnings-as-errors. Scoped formatting and diff checks passed.
+  Due FIFO, bounded jittered retries, max-attempt dead letters, restart recovery,
+  ordered duplicate-ID ACKs, wipe-safe state guards, selected/all requeue,
+  terminal outbox retention, opt-in tombstone retention, malformed ACK handling,
+  storage-error propagation, and rollback of partial settlement/pruning are
+  covered.
+- Task 12: committed as `7c5d5236`; specification and quality reviews approved
+  after repairing interrupted-V2 upgrade recovery, tombstone quota accounting,
+  bounded retention deletion, failure telemetry, migration rollback, authoritative
+  wire validation, explicit unavailable lag, and PostgreSQL naive-timestamp age
+  eviction. Fresh final focused gates: host-agent 83/83 and server retention/change
+  capture 21/21 with warnings-as-errors. Full formatting and diff checks passed.
+  Durable snapshot item counts, deterministic bounded eviction, recoverable
+  scheduled retention, and content-free edge health reporting are covered.
+- Task 13: committed as `241f4f10`; specification and quality reviews approved
+  after adding persisted authoritative-tuple checks, all-field boundary matrices,
+  content-free stable quarantine issues, bounded source lookups, validation before
+  no-model exits, and a production-like migration regression for restrictive FKs,
+  immutable triggers, edge delete capture, and trigger restoration. Fresh final
+  focused gate: 55/55 with warnings-as-errors; scoped formatting and diff checks
+  passed. Migration `20260905000007` permanently removes incomplete canonical rows
+  and dependent provenance after recording redacted identity diagnostics, so its
+  down path explicitly raises as irreversible instead of claiming false recovery.
+- Task 14: specification and quality reviews approved after the user-approved
+  qualification runner/evaluator scope expansion. Durable host/session frontiers
+  coalesce accepted batches, converted legacy jobs execute the frontier path,
+  downstream scheduling failures roll back completion, and a real executing-job
+  race proves exactly one successor converges. Fresh focused gate: 26/26 with
+  warnings-as-errors, including the passing CI qualification report; focused
+  worker/migration/replay verification: 24/24. The 10,000-event regression
+  advances 101 generations with one pending repair job and completes generation
+  101. Scoped formatting and diff checks passed.
+- Task 15: committed locally as `654eabff`; specification and quality reviews
+  approved. Migration `20260905000009` replaces generic `skipped` with precise
+  terminal states, and all seven processing families record stable identities.
+  Source-first locked revision checks prevent old jobs from replacing newer
+  state; episodic, graph, embedding, procedural, and profile outputs commit
+  atomically with completion after revalidation. Procedural/profile hold short
+  source-table fences during that final transaction. Deterministic R1/R2 races
+  and profile cross-scope isolation are covered. Fresh scoped Task 15 gate:
+  107/107 with warnings-as-errors; focused profile race passed eight repeated
+  runs. Scoped formatting and diff checks passed.
+- Task 16: committed locally as `80a6664b`; specification and quality reviews
+  approved. The process-free shared contract owns tool schemas, permission,
+  authority, consistency, and availability metadata. Direct discovery excludes
+  device-local slots, while the host retains local slot execution; connected
+  canonical tools route remotely and disconnected overlap schemas remain exact.
+  The registry preserves metadata and CI includes the contract app. Fresh
+  affected-app scoped gate: 100/100 with warnings-as-errors; CI workflow
+  contract 4/4, scoped formatting and diff checks passed.
+- Task 17: Scenario J's real 10,000-event projection/replay batching repair is
+  committed as `b4429b69`: 101 durable frontier generations, one pending repair
+  job, all 10,000 projected/replayed rows, and stable ordered fingerprints on
+  repeated rebuild. The revisioned host-origin episodic server migration/API
+  ACK is committed as `c996798b`; host command-store V3 revision persistence as
+  `c5782c30`. Both halves passed specification and quality reviews. The final
+  A–I/facade qualification is committed as `253c779e` and `0dda8ffb` after
+  read-only specification and quality reviews. Real PostgreSQL/Turso/channel A–I tests:
+  8/8 at each seed 101, 202, and 303; M18 outage A/I tests 2/2; focused host
+  facade 46/46, all warnings-as-errors. Scenario E proves the canonical ID and
+  positive revision in the same durable command ACK settlement, a committed
+  edge item, and one canonical result for online and offline recall. Scenario F
+  uses committed PostgreSQL NOTIFY through the actual listener/channel/syncer;
+  a separate trigger test proves emission after commit because ChannelCase
+  keeps its canonical insert sandboxed. Scenario H measured type quota at
+  3 items/1033–1039 bytes, item cap at 2/691–695, byte cap at 1/346–348, and
+  covered partition and age limits. Production plaintext edge persistence
+  remains disabled.
+- Task 18: all nine scoped protocol, runbook, architecture, deployment,
+  qualification, and audit docs passed independent specification and quality
+  reviews. Static link checks found no missing relative targets and diff checks
+  passed. The protocol records exact wire/hash/ACK behavior; the runbook gives
+  exact-partition recovery queries, while rollback text distinguishes reversible
+  00006 from irreversible 00007. Production edge protection remains restricted
+  pending open `gsmlg-dev/concord#91`. Task 20 remains outstanding;
+  PR2–PR5 is not complete.
+- Task 19: committed locally as `059d26cc`; specification and quality reviews
+  approved readiness, upgrade qualification, and release wiring. The cutover
+  entrypoint fails closed across host mappings, all 24 roots and 13 child
+  relationships, audit/jobs, verified current snapshot contents, and exact
+  completed issue dispositions. A completed waiver applies only to its stable
+  inventoried row; host mappings and snapshots remain hard blockers. Real
+  populated server 00009→00010 and host V1→V3/edge upgrades preserve canonical
+  data, commands, tombstones, high-water sequence, and rollback flags. The
+  release gate runs the exact cutover command after migration, checks head
+  00010, includes PR4 and A–J tests, and packages protocol/runbook. Fresh
+  warnings-as-errors gates: migration/projection/readiness 48/48, host/API
+  35/35, release config 10/10; scoped format/diff checks passed. Historical
+  migration 00003 recognizes only `Elixir.`-prefixed memory workers; readiness
+  recognizes both actual Oban spellings. Agent Note `fec843df-1a84-4ef6-b69f-f85112457db6`.
+- Task 20 memory-suite test repair scope approved by the user on 2026-09-22:
+  `apps/backplane_memory/test/backplane/memory/crystal_action_chain_test.exs`,
+  `crystals_test.exs`, `lesson_governance_test.exs`,
+  `memories/evidence_concurrency_test.exs`, `memories/evidence_test.exs`,
+  `memories/relation_classifier_test.exs`,
+  `memories/relations_concurrency_test.exs`, `memories/relations_test.exs`,
+  `memories/verification_test.exs`, `operations/dashboard_metrics_test.exs`,
+  `prompts_test.exs`, `recall/channels_test.exs`, `recall/pipeline_test.exs`,
+  `recall/purge_worker_test.exs`, `recall/store_test.exs`, `service_test.exs`,
+  and `workers/procedural_worker_test.exs` (all under
+  `apps/backplane_memory/test/backplane/memory/`). This approval covers test
+  fixtures and expectations only; it does not expand production or migration
+  file scope. The isolated full memory suite had 67 failures in these files.
+- Task 20 partial verification on 2026-09-22: the 15 completed fixture files
+  were committed as `c605304b` after specification and quality approval;
+  175 focused tests passed with warnings-as-errors. The isolated full Memory
+  suite then reached 1,227 tests with exactly three failures: the 4,000-edge
+  action-graph fixture times out under the O(n²) canonical child trigger, and
+  two Service tests expose accepted-looking profile/consolidate responses
+  without an enqueued job. The remaining `crystal_action_chain_test.exs` and
+  `service_test.exs` edits are preserved uncommitted. Full host and API suites
+  passed 508/508 and 253/253. Formatting, warnings-as-errors compilation,
+  strict Credo (1,428 files, zero issues), root CI-workflow 4/4, and root
+  release-config 10/10 passed. An extracted local production release applied
+  105 migrations on an isolated database; its second pass was a no-op and the
+  head was `20260905000010` with required tables present. Dialyzer remains red
+  on `graph/bfs.ex` and `slots.ex`; the reviewed in-scope cleanup was committed
+  as `3e9b4a80`, then its Slots portion was restored by `49440836` because a
+  new warnings-as-errors compiler diagnostic in legacy `slots/reflect.ex`
+  requires a separate scope decision. Exact scope requests for the Service
+  product fix, forward-only action-edge trigger migration and release head,
+  BFS/ignore-file cleanup, and legacy Reflect cleanup were pending at this
+  checkpoint. Do not run the full umbrella suite or merge while the scoped
+  memory and Dialyzer gates are red.
+- Task 20 scope expansion approved by the user on 2026-09-22: edit only
+  `apps/backplane_memory/lib/backplane/memory/service.ex` and `profiles.ex`
+  to propagate profile/consolidate enqueue rejection; add one forward-only
+  `20260905000011` action-edge trigger migration and one focused migration
+  regression test, updating only `.github/workflows/release.yml` and
+  `test/release_config_test.exs` for the new migration head; correct
+  `apps/backplane_memory/lib/backplane/memory/graph/bfs.ex` and, only if
+  necessary, `.dialyzer_ignore.exs`; and repair the obsolete path in
+  `apps/backplane_memory/lib/backplane/memory/slots/reflect.ex`. The already
+  approved `service_test.exs` and `crystal_action_chain_test.exs` remain test
+  scope. Preserve fail-closed canonical constraints, same trigger SQLSTATE and
+  name, and production plaintext rejection.
+- Task 20 repair checkpoint on 2026-09-22: action-edge trigger migration
+  `20260905000011` and release head were committed as `cd592454` after
+  specification and quality approval. The populated-upgrade and 4,000-action
+  regressions passed together (15/15); the full-batch action test no longer
+  times out. Static cleanup of legacy unpartitioned BFS/Slots APIs and
+  server-side slot reflection was committed as `5e42c348` after both reviews;
+  warnings-as-errors compilation, 18 focused tests, and default-environment
+  Dialyzer passed. Release/rollback documentation was reviewed and committed
+  as `38c80cc3`. A newly packaged production release applied 106 migrations
+  to a fresh isolated database, then applied zero on the second pass and
+  verified head `20260905000011` and required tables. Fresh host and API
+  suites passed 508/508 and 253/253; format, strict Credo, CI-workflow, and
+  release-config gates passed.
+- The three-file Service enqueue-response repair passed 53/53 scoped tests
+  and both review stages but remains uncommitted. A separate existing
+  `profile_build_worker_test.exs` test (1/15 failing) expects `{:building, nil}`
+  without an authoritative source; the corrected response is
+  `{:error, :incomplete_partition}`. The user has been asked to approve that
+  single test file before it is edited. The release browser qualification also
+  stops on event 1 because its test-only Mix task constructs a partition
+  without `memory_space_id`; the user has been asked to approve the task file
+  before repair. Do not claim the full Memory or release gate until these
+  exact scope decisions and their reruns are complete.
+- Task 20 additional scope approved by the user on 2026-09-22: modify only
+  `apps/backplane_memory/test/backplane/memory/memories/profile_build_worker_test.exs`
+  to align missing-source and valid-source enqueue assertions with the
+  fail-closed Service repair, and
+  `apps/backplane_memory/lib/mix/tasks/memory.replay.browser_qualify.ex`
+  to give its disposable qualification partition a canonical memory space.
+  Keep the existing browser qualification as the integration acceptance test;
+  preserve all unrelated files and rerun the affected suites and release gates.
+- Task 20 umbrella-failure repair scope approved by the user on 2026-09-22:
+  investigate and repair the eight failing test files in Observability flags,
+  LLM usage/access observability, MCP request logger/handler, Memory MCP
+  contract, and admin dashboard/recall inspector, together with their directly
+  implicated owning modules. The fresh full umbrella run had 30 failures:
+  Observability 2, LLM 11, MCP 4, Memory MCP contract 2, and admin 11. The
+  Memory, host-agent, and API suites had passed separately. Preserve the exact
+  fail-closed Memory partition constraints and serialize Mix/devenv builds.
+- Task 20 umbrella repair checkpoint: canonical Memory MCP and recall-inspector
+  fixtures committed as `b0cd3aa9`; dashboard reconnect-flash assertion committed
+  as `06de5f2b`; MCP malformed-IP and skill-load audit-context repair committed
+  as `0e5e0a7f`. Specification and quality reviews approved these changes.
+  Focused Memory contract/admin tests passed 27/27, the final inspector rerun
+  passed 11/11, and MCP passed 133/133 with warnings-as-errors. The exact release
+  workflow migration/projection batch passed 50/50; its outage/privacy/adapter
+  batch passed 35/35. Full format, warnings-as-errors compile, strict Credo,
+  and default-environment Dialyzer passed after the MCP repair. The separate
+  Observability flags/legacy usage focused tests passed 4/4, but the test-boot
+  Observability policy repair and full umbrella rerun remain pending narrow
+  approval for three additional test-support files. No local merge or push.
+- Task 20 Observability test-support scope approved by the user on 2026-09-22:
+  `apps/backplane_telemetry/test/backplane/observability/settings_test.exs`,
+  `apps/backplane_llama/test/support/observability_case.ex`, and
+  `apps/backplane_mcp/test/support/observability_case.ex`. Together with the
+  directly implicated `config/test.exs` test-boot setting, these files may be
+  changed only to isolate Observability writers across SQL Sandbox tests while
+  preserving explicit opt-in behavior. Re-run the affected focused suites and
+  then the full umbrella gate before claiming completion.
+- Task 20 Observability test-boot repair committed as `1d79a714` after
+  specification and quality approval: ordinary tests suppress global
+  Observability writers, while tagged LLM/MCP cases explicitly opt in and
+  restore the test default. Focused telemetry/LLM/MCP tests passed 47/47 with
+  warnings-as-errors. A fresh, separately migrated full umbrella run then
+  passed Memory 1230/1230, LLM 233/233, telemetry 32/32, admin 275/275,
+  host-agent 508/508, API 253/253, and the other apps except MCP. MCP had
+  exactly six failures, all in the previously unapproved
+  `apps/backplane_mcp/test/backplane/services/skills_test.exs` setup: it calls
+  `String.starts_with?/2` on a tuple-keyed upstream catalog ETS entry. No
+  production defect was found in that failure. The repository scope rule
+  requires stopping before editing this test; its one-file approval is pending.
+  Full umbrella log: `/tmp/backplane-task20-umbrella-full-final-00011.log`.
+- Task 20 Skills test-only scope approved by the user on 2026-09-22: edit only
+  `apps/backplane_mcp/test/backplane/services/skills_test.exs` to guard its
+  `:backplane_tools` name filter against tuple-keyed upstream catalog entries.
+  Re-run the focused test and a fresh full umbrella suite before merging.
+- Task 20 final pre-merge gate on 2026-09-22: the Skills fixture guard was
+  committed as `b75ba5f6` after focused 6/6 and both reviews. A fresh full
+  umbrella run found one timing-dependent `McpHandlerTest` teardown failure:
+  its test-linked audit processes exited before `on_exit` could stop them.
+  The previously approved MCP handler test scope was repaired in `eecd8a6b`;
+  focused handler tests passed 126/126 and both reviews approved. A complete
+  rerun against a newly created/migrated isolated database then exited zero:
+  all app suites passed, including Memory 1230/1230, MCP 656/656,
+  host-agent 508/508, and API 253/253. Root format, warnings-as-errors
+  compilation, strict Credo (1428 files, zero issues), default-environment
+  Dialyzer (145 pre-existing warnings ignored), release-config 10/10, and
+  CI-workflow 4/4 passed. The exact release qualification batches had passed
+  50/50 and 35/35; the extracted production release applied 106 migrations
+  on the first pass and zero on the second, with head `20260905000011`.
+  Browser, Recall CI, and M18 CI qualification reports passed. Final branch
+  integration and merged-state verification remain outstanding. Production
+  plaintext edge persistence remains disabled; `gsmlg-dev/concord#91` was
+  rechecked open.
+- Task 20 merged-state repair scope approved by the user on 2026-09-22:
+  update only the stale expectations in
+  `apps/backplane_memory/test/backplane/memory/slots_test.exs` and
+  `apps/backplane_admin/test/backplane/admin/route_boundary_test.exs`,
+  repair the FK-aware cleanup in
+  `apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs`,
+  and diagnose/repair the two chunked-transfer assertions in
+  `apps/backplane_api/test/backplane/api/llm_protocol_endpoint_integration_test.exs`
+  and their directly implicated owning response module if a production defect
+  is confirmed. Preserve existing product behavior and rerun focused and
+  merged gates. The final merge review also requires restoring the two timeout
+  tags and 4,000-action traversal fixture in the previously approved
+  `crystal_action_chain_test.exs`. The merge is staged but not committed;
+  the first fresh merged full run found Memory 1, Admin 1, and API 4 failures.
+- Task 20 merged repair verification on 2026-09-22: the four affected
+  suites passed focused checks (Memory 19, Admin 12, API sync 37, LLM endpoint
+  11), and both independent review stages approved the five-file repair.
+  Fresh `mix test` on isolated `_mv2mergedfullfinal00011` exited zero across
+  the full umbrella: Memory 1,238, MCP 665, Admin 321, Host Agent 509,
+  API 275, and all other app suites had zero failures. Root format and
+  warnings-as-errors compilation passed. Strict Credo is red on five findings
+  in three unchanged main files: `api_usage_live.ex`, `router.ex`, and
+  `model_response_test.exs`. Merged Dialyzer is red with 169 errors, 138
+  skipped warnings, and 35 unnecessary skips, led by unchanged AgentRuntime
+  and SkillProtocol modules. These files are outside the approved Memory PRD
+  repair scope. No local merge commit or push; obtain a separate disposition
+  of the pre-existing static failures before marking Task 20 complete.
+- Task 20 baseline disposition approved by the user on 2026-09-22: document
+  the unchanged-main Credo and Dialyzer failures as explicit baseline
+  exceptions and finish local integration without changing unrelated modules.
+  This does not count as a green merged static gate. The durable final report
+  is `docs/memory/memory-v2-final-remediation-report.md`; root release-config
+  and CI-workflow contract checks passed again at 14/14 and 4/4. No push.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
@@ -274,6 +572,10 @@ The eligible shape is semantic/procedural, active/disputed, nondeleted, in an ex
 
 ### Task 7: Add the host protection gate and separate edge database
 
+Scope amendment approved by the user on 2026-09-07: update the two existing
+exact-map expectations in `apps/backplane_host_agent/test/backplane/host_agent/config_test.exs`
+to include the newly introduced host-sync configuration defaults.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/protection.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/store.ex`
@@ -302,10 +604,17 @@ The eligible shape is semantic/procedural, active/disputed, nondeleted, in an ex
 
 ### Task 8: Implement atomic mirror application and offline reads
 
+Scope amendment approved by the user on 2026-09-20: add and register an edge V2
+migration for persistent `sync_status` and `last_delivery_hash`, and add focused
+schema-validation plus V1-to-V2 upgrade/data-preservation tests.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/mirror.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/mirror/store.ex`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/mirror_test.exs`
+- Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/migrations/v2.ex`
+- Modify: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/migrator.ex`
+- Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory/edge/migrator_test.exs`
 
 - [ ] Write failing real-store tests for contiguous delta, duplicate delta, forward gap, snapshot staging invisibility, chunk restart, final manifest activation, restart persistence, and old-upsert non-resurrection.
 - [ ] Implement:
@@ -397,6 +706,16 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 
 ### Task 12: Enforce edge quotas, deterministic eviction, retention, and telemetry
 
+Scope amendment approved by the user on 2026-09-20: add the minimal durable
+schema and runtime support needed to prove bounded snapshot completeness,
+authoritative server eviction ordering, and recoverable scheduled retention.
+This includes a host edge V3 migration/registration/upgrade tests for a durable
+received-item counter, a new server migration and focused PostgreSQL tests that
+emit server-owned `edge_priority` plus canonical `updated_at`, and the minimal
+retention worker/cron tests. The new server migration takes version
+`20260905000006`; Tasks 13-15 and Task 20's expected server head move forward
+one version to avoid a collision.
+
 **Files:**
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/eviction.ex`
 - Create: `apps/backplane_host_agent/lib/backplane/host_agent/memory/edge/telemetry.ex`
@@ -430,7 +749,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 13: Enforce complete partitions in every generator
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000006_enforce_complete_memory_partition.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000007_enforce_complete_memory_partition.exs`
 - Modify: `apps/backplane_memory/lib/backplane/memory/partition_identity.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/memories.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/memories/memory.ex`
@@ -454,7 +773,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 14: Coalesce session repairs and reject stale work
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000007_coalesce_projection_repairs.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000008_coalesce_projection_repairs.exs`
 - Create: `apps/backplane_memory/lib/backplane/memory/projections/repair_frontier.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/events/store.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/projection_repair_worker.ex`
@@ -463,6 +782,15 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/replay_parity_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/qualification_test.exs`
+- Modify: `apps/backplane_memory/lib/backplane/memory/qualification/runner.ex`
+- Modify: `apps/backplane_memory/lib/backplane/memory/qualification.ex`
+- Modify: `apps/backplane_memory/test/backplane/memory/qualification_performance_test.exs`
+- Modify: `apps/backplane_memory/test/mix/tasks/memory_qualify_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: update the qualification
+runner/evaluator and their dependent performance and Mix-task tests because the
+Task 14 host/session frontier intentionally replaces the former one-job-per-event
+measurement contract.
 
 - [ ] Replace tests that expect one job per event with failing tests for one durable frontier and at most one pending repair job per `{host_id, session_id}`. Because `input_revision` is a SHA-256 digest, the frontier stores monotonic `requested_generation`, `inflight_generation`, and `completed_generation` watermarks plus the revision hash for each generation; hashes are never ordered lexically.
 - [ ] Group batch inserts by host/session, atomically increment `requested_generation` once per accepted batch/session while replacing `requested_revision` with the new canonical digest, and enqueue with Oban uniqueness keyed only by host/session across pending/retryable states. Preserve the legacy `event_id` perform clause for outstanding jobs.
@@ -474,7 +802,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 ### Task 15: Record precise processing states across every family
 
 **Files:**
-- Create: `apps/backplane_system/priv/repo/migrations/20260905000008_expand_memory_processing_states.exs`
+- Create: `apps/backplane_system/priv/repo/migrations/20260905000009_expand_memory_processing_states.exs`
 - Create: `apps/backplane_memory/lib/backplane/memory/projections/processing_state.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/projections/state.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/summary_worker.ex`
@@ -484,6 +812,7 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/graph_extract_worker.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/profile_build_worker.ex`
 - Modify: `apps/backplane_memory/lib/backplane/memory/workers/crystal_worker.ex`
+- Modify: `apps/backplane_memory/lib/backplane/memory/crystals/projection_store.ex`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/summary_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/summary_worker_concurrency_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs`
@@ -493,6 +822,15 @@ Preserve provisional-only behavior when no committed mirror exists. Preserve can
 - Modify: `apps/backplane_memory/test/backplane/memory/memories/profile_build_worker_test.exs`
 - Create: `apps/backplane_memory/test/backplane/memory/workers/crystal_worker_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/state_test.exs`
+- Create: `apps/backplane_memory/test/backplane/memory/projections/expand_memory_processing_states_migration_test.exs`
+- Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
+- Modify: `apps/backplane_memory/test/backplane/memory/projections/replay_parity_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: crystallization state
+writes are owned by `Crystals.ProjectionStore`, and the projection repair/parity
+tests must recognize the durable episodic `running` state introduced by Task 15.
+The user separately approved a real migration regression for migration `00009`
+to prove generic `skipped` mapping and the replacement database constraint.
 
 - [ ] Write failing state-transition tests for pending, enqueued compatibility, running, complete, skipped_no_model, skipped_disabled, failed, and dead_letter.
 - [ ] Use stable processing identity for all seven families:
@@ -540,6 +878,12 @@ profile:
 - Modify: `apps/backplane_host_agent/test/backplane/host_agent/memory_router_test.exs`
 - Modify: `.github/workflows/test.yml`
 - Modify: `test/ci_workflow_test.exs`
+- Modify: `apps/backplane_system/lib/backplane/registry/tool_registry.ex`
+- Modify: `apps/backplane_system/test/backplane/registry/tool_registry_test.exs`
+
+Scope amendment approved by the user on 2026-09-21: direct MCP discovery
+serializes registry metadata, so `ToolRegistry.register_managed/2` and its focused
+test must preserve the shared contract's `_meta["backplane"]` value.
 
 - [ ] Classify tools into three explicit sets: canonical-overlap tools have exact shared names/schemas on direct, connected, and disconnected discovery; server-only tools appear direct/connected and are absent offline; device-local tools remain locally executable and are absent from the direct server contract unless intentionally shared.
 - [ ] Write failing transport parity tests for exact names, schemas, required fields, and `_meta["backplane"] = %{permission, authority, consistency, availability}` within each applicable set. Disconnected discovery may expose fewer server-only tools, but must not drift on canonical-overlap definitions.
@@ -549,6 +893,36 @@ profile:
 - [ ] Commit `feat(memory): unify host and canonical tool schemas`.
 
 ### Task 17: Add the A-J real-store qualification suite
+
+Scope expansion approved by the user on 2026-09-22 after the real-store tests
+exposed the two defects above. Scenario J may repair bounded, transactional
+projection inserts in `apps/backplane_memory/lib/backplane/memory/projections/rebuild.ex`
+and `apps/backplane_memory/lib/backplane/memory/replay/store.ex`, with focused
+tests. Scenario E may add a server migration after `20260905000009` for a
+revisioned edge representation of host-origin episodic remembers; change
+`apps/backplane_api/lib/backplane/api/host_agent_memory_sync.ex` and
+`apps/backplane_api/lib/backplane/api/channels/host_agent_channel.ex` so the
+canonical command ACK carries its ID and causally assigned revision; add a host
+command-store migration and registration under
+`apps/backplane_host_agent/lib/backplane/host_agent/memory/`, persist that
+revision in its Syncer, and update their focused API/host/edge tests. Task 19's
+release and upgrade checks must use the resulting migration head. Preserve the
+V1 compatibility envelope for older clients and rollback flags; do not widen
+unrelated runtime paths or migrations without a new scope decision.
+
+On 2026-09-22 the user separately approved updating only
+`apps/backplane_host_agent/test/backplane/host_agent/memory/supervisor_test.exs`
+outside the Task 17 host file list. Its exact `host_sync_v2` config-map
+expectation may add the five existing quota defaults (`max_items`, `max_bytes`,
+`max_items_per_partition`, `max_age_days`, `type_quotas`) exposed by
+`Backplane.HostAgent.Config.load/1`. The approval does not widen production
+configuration or other test scope.
+
+On 2026-09-22 the user additionally approved the narrow Scenario E production
+scope in `apps/backplane_host_agent/lib/backplane/host_agent/memory_facade.ex`,
+with its already listed `memory_facade_test.exs`, to normalize the committed
+edge mirror's `items` response for offline recall. Online canonical routing
+and other host runtime paths are outside this addition.
 
 **Files:**
 - Create: `apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs`
@@ -561,10 +935,10 @@ profile:
 - Modify: `apps/backplane_memory/test/backplane/memory/direct_boundary_security_test.exs`
 - Modify: `apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs`
 
-- [ ] Implement one named test/fixture per handoff Scenario A-J. Use real PostgreSQL/Turso stores and transport integration for C, E, F, G, and H; mock only external LLM/network edges.
-- [ ] Assert automated evidence for canonical Recall V2 metadata, unsafe-fallback rejection, restart persistence, live convergence, delete non-resurrection, quotas, complete partition, and bounded projection jobs.
-- [ ] Run the entire qualification file with three seeds and record edge bytes/items and 10,000-event job counts.
-- [ ] Commit `test(memory): qualify memory v2 authority and convergence`.
+- [x] Implement one named test/fixture per handoff Scenario A-J. Use real PostgreSQL/Turso stores and transport integration for C, E, F, G, and H; mock only external LLM/network edges.
+- [x] Assert automated evidence for canonical Recall V2 metadata, unsafe-fallback rejection, restart persistence, live convergence, delete non-resurrection, quotas, complete partition, and bounded projection jobs.
+- [x] Run the entire qualification file with three seeds and record edge bytes/items and 10,000-event job counts.
+- [x] Commit `test(memory): qualify memory v2 authority and convergence` (`0dda8ffb`).
 
 ### Task 18: Publish protocol, authority model, runbook, and cutover notes
 
@@ -579,11 +953,11 @@ profile:
 - Modify: `docs/qualification/memory-v2-capability-matrix.md`
 - Modify: `docs/memory/memory-v2-implementation-audit.md`
 
-- [ ] Document the exact negotiated wire contract, cursor/snapshot algorithms, error taxonomy, v1 compatibility flags, migration/rollback sequence, and production protection restriction from implemented code.
-- [ ] Mark the old local-first authority text superseded and publish final ownership/routing matrices.
-- [ ] Add exact operator commands/queries for stuck cursors, forced snapshot, dead-letter requeue, stale mirrors, retention/protection incidents, and rollback.
-- [ ] Include measured edge usage and projection scheduling counts from Task 17.
-- [ ] Commit `docs(memory): publish host memory v2 operations model`.
+- [x] Document the exact negotiated wire contract, cursor/snapshot algorithms, error taxonomy, v1 compatibility flags, migration/rollback sequence, and production protection restriction from implemented code.
+- [x] Mark the old local-first authority text superseded and publish final ownership/routing matrices.
+- [x] Add exact operator commands/queries for stuck cursors, forced snapshot, dead-letter requeue, stale mirrors, retention/protection incidents, and rollback.
+- [x] Include measured edge usage and projection scheduling counts from Task 17.
+- [x] Commit `docs(memory): publish host memory v2 operations model`.
 
 ### Task 19: Update release qualification and migration ceiling
 
@@ -596,23 +970,23 @@ profile:
 - Create: `apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs`
 
-- [ ] Write failing release-contract assertions for latest migration `20260905000008`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
-- [ ] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
-- [ ] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
-- [ ] Add real upgrade tests from the previous server migration head through `20260905000008` and from an existing populated host Turso v1 command database through local v2/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
-- [ ] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
-- [ ] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover`.
+- [x] Write failing release-contract assertions for the post-approval latest migration `20260905000010`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
+- [x] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
+- [x] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
+- [x] Add real upgrade tests from the previous server migration head through `20260905000010` and from an existing populated host Turso v1 command database through local v2/v3/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
+- [x] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
+- [x] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover` (`059d26cc`).
 
 ### Task 20: Final completion audit and branch integration gate
 
-- [ ] Run formatting and warnings-as-errors compilation:
+- [x] Run formatting and warnings-as-errors compilation:
 
 ```bash
 devenv shell -- mix format --check-formatted
 devenv shell -- mix compile --warnings-as-errors
 ```
 
-- [ ] Run scoped suites, then the full umbrella suite:
+- [x] Run scoped suites, then the full umbrella suite:
 
 ```bash
 devenv shell -- env MIX_ENV=test mix test apps/backplane_host_agent/test
@@ -621,15 +995,16 @@ devenv shell -- env MIX_ENV=test mix test apps/backplane_memory/test
 devenv shell -- env MIX_ENV=test mix test
 ```
 
-- [ ] Run static analysis:
+- [x] Run static analysis (feature branch green; merged unchanged-main failures
+  documented under the user-approved baseline exception above):
 
 ```bash
 devenv shell -- mix credo --strict
 devenv shell -- mix dialyzer
 ```
 
-- [ ] Run release and installed-migration qualification required by `.github/workflows/release.yml`.
-- [ ] Audit every handoff requirement, PR2 design validation item, migration, feature flag, error class, and A-J scenario against fresh command output.
-- [ ] Confirm production plaintext edge persistence remains disabled while `gsmlg-dev/concord#91` is unresolved; report this as a deployment restriction, not a silent fallback.
-- [ ] Dispatch final spec and code-quality reviews, fix every finding, re-run affected and full gates, then use the finishing-a-development-branch workflow.
-- [ ] Publish the final remediation report with before/after architecture diagrams, ownership and routing matrices, protocol compatibility, migrations/rollback, measured edge usage, projection job counts, remaining issues, and exact CI status. Do not mark any path fixed without an automated integration test.
+- [x] Run release and installed-migration qualification required by `.github/workflows/release.yml`.
+- [x] Audit every handoff requirement, PR2 design validation item, migration, feature flag, error class, and A-J scenario against fresh command output.
+- [x] Confirm production plaintext edge persistence remains disabled while `gsmlg-dev/concord#91` is unresolved; report this as a deployment restriction, not a silent fallback.
+- [x] Dispatch final spec and code-quality reviews, fix every finding, re-run affected and full gates, then use the finishing-a-development-branch workflow.
+- [x] Publish the final remediation report with before/after architecture diagrams, ownership and routing matrices, protocol compatibility, migrations/rollback, measured edge usage, projection job counts, remaining issues, and exact CI status. Do not mark any path fixed without an automated integration test.

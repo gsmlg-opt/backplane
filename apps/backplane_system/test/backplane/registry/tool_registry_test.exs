@@ -377,6 +377,23 @@ defmodule Backplane.Registry.ToolRegistryTest do
     end
   end
 
+  describe "register_managed/2" do
+    test "preserves managed tool metadata" do
+      tool = %{
+        name: "memory::recall",
+        description: "Recall canonical memories",
+        input_schema: %{"type" => "object"},
+        meta: %{"backplane" => %{"authority" => "canonical"}},
+        handler: fn _args -> {:ok, %{}} end
+      }
+
+      assert :ok = ToolRegistry.register_managed("memory", [tool])
+
+      assert %Tool{meta: %{"backplane" => %{"authority" => "canonical"}}} =
+               ToolRegistry.lookup("memory::recall")
+    end
+  end
+
   describe "deregister_upstream/1" do
     test "removes all tools with given prefix" do
       pid = self()

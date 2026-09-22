@@ -29,8 +29,11 @@ defmodule Mix.Tasks.Memory.QualifyTest do
              report["thresholds"]["ingest_events_per_second_min"]
 
     assert report["metrics"]["ingest"]["concurrency"] == 5
-    assert report["metrics"]["ingest"]["projection_jobs_durable"] == 2_000
-    assert report["metrics"]["ingest"]["projection_job_event_ids_unique"] == 2_000
+    assert report["metrics"]["ingest"]["projection_sessions"] == 20
+    assert report["metrics"]["ingest"]["projection_frontiers_durable"] == 20
+    assert report["metrics"]["ingest"]["projection_requested_generations"] == 20
+    assert report["metrics"]["ingest"]["projection_jobs_durable"] == 20
+    assert report["metrics"]["ingest"]["projection_job_subjects_unique"] == 20
     assert report["metrics"]["projection"]["jobs_durable"] == 100
     assert report["metrics"]["projection"]["jobs_completed"] == 100
     assert report["metrics"]["projection"]["complete_subjects"] == 100
@@ -52,6 +55,7 @@ defmodule Mix.Tasks.Memory.QualifyTest do
   test "sandboxed qualification cannot exceed its safe ingest concurrency" do
     assert {:ok, report} = Runner.sandboxed_run(ingest_max_concurrency: 20)
     assert report.metrics.ingest.concurrency == 5
-    assert report.metrics.ingest.projection_jobs_durable == 2_000
+    assert report.metrics.ingest.projection_jobs_durable == 20
+    assert report.metrics.ingest.projection_requested_generations == 20
   end
 end

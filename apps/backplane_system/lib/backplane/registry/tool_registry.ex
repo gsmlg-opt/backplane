@@ -85,6 +85,7 @@ defmodule Backplane.Registry.ToolRegistry do
           output_schema: Map.get(tool, :output_schema),
           annotations: Map.get(tool, :annotations),
           icon: Map.get(tool, :icon),
+          meta: Map.get(tool, :meta),
           origin: {:managed, prefix},
           handler: tool.handler
         }

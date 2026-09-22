@@ -7,6 +7,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
   alias Backplane.Memory.Recall.{Candidate, QueryPlan, Store, TraceCandidate}
   alias Backplane.Memory.Memories.Memory
   alias Backplane.MemorySpaces
+  alias Backplane.MemorySpaces.Entitlement
   alias Backplane.Skills.Host
 
   setup do
@@ -35,7 +36,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
       for foreign <- [
             partition_fixture("foreign-host"),
             partition_fixture("foreign-scope", "personal"),
-            %{partition_fixture("foreign-namespace") | namespace: "other-namespace"}
+            partition_fixture("foreign-namespace", "team", "other-namespace")
           ] do
         trace_fixture(foreign, "foreign #{foreign.host_id} #{foreign.scope} #{foreign.namespace}")
       end
@@ -251,31 +252,30 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
         for index <- 1..count do
           selected = index < count or count == 1
           kind = if(selected, do: :memory, else: :lesson)
+          memory_type = if(kind == :lesson, do: :procedural, else: :semantic)
+          content = "candidate secret content #{System.unique_integer([:positive, :monotonic])}"
 
-          source =
+          memory =
             Backplane.Repo.insert!(
-              Memory.changeset(%Memory{}, %{
-                content: "candidate secret content #{index}",
-                memory_space_id: partition.memory_space_id,
-                memory_type: "semantic",
-                agent_id: "recall-inspector-fixture",
-                host_id: partition.host_id,
-                client_id: partition.client_id,
-                scope: partition.scope,
-                namespace: partition.namespace,
-                metadata: %{}
-              })
+              Memory.changeset(
+                %Memory{},
+                Map.merge(partition, %{
+                  content: content,
+                  memory_type: Atom.to_string(memory_type),
+                  agent_id: "recall-inspector"
+                })
+              )
             )
 
           {:ok, candidate} =
             Candidate.new(
               Map.merge(Map.delete(partition, :source_client_id), %{
-                id: source.id,
+                id: memory.id,
                 kind: kind,
-                memory_type: :semantic,
-                content: "candidate secret content",
-                source_ids: [source.id],
-                source_refs: [%{type: :memory, id: source.id}]
+                memory_type: memory_type,
+                content: content,
+                source_ids: [memory.id],
+                source_refs: [%{type: :memory, id: memory.id}]
               })
             )
 
@@ -316,7 +316,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     }
   end
 
-  defp partition_fixture(prefix, scope \\ "team") do
+  defp partition_fixture(prefix, scope \\ "team", namespace \\ "private") do
     host =
       Backplane.Repo.insert!(
         Host.changeset(%Host{}, %{
@@ -326,12 +326,27 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
       )
 
     assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+
+    if namespace != "private" do
+      Backplane.Repo.insert!(
+        Entitlement.changeset(%Entitlement{}, %{
+          memory_space_id: canonical.memory_space_id,
+          host_id: host.id,
+          scope: scope,
+          namespace: namespace,
+          default_capture: false,
+          status: "active"
+        })
+      )
+    end
+
     source_client_id = "host:#{host.id}"
 
     Map.merge(canonical, %{
       host_id: host.id,
       client_id: source_client_id,
-      source_client_id: source_client_id
+      source_client_id: source_client_id,
+      namespace: namespace
     })
   end
 end

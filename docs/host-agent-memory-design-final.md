@@ -1,6 +1,13 @@
 # Host-Agent On-Device Memory + Backplane Sync — Design
 
 **Status:** Accepted, implementation-ready after PR0 verification on 2026-06-17.
+**Authority update (Memory V2):** The local-first `memory::*` routing and
+long-term host authority in this historical design are superseded by
+[`host-memory-v2-protocol.md`](memory/host-memory-v2-protocol.md). Retain this
+document for command-store, outbox, slots/facets, and V1 compatibility details;
+do not use its `facts`/hash model as the V2 edge cursor or claim local recall is
+the online canonical path. Backplane owns canonical memory and partition
+authorization. The host holds provisional commands and a bounded stale mirror.
 **Repo path:** `docs/host-agent-memory-design-final.md`
 **Engine:** `gsmlg-dev/concord/apps/ex_turso` 3.0.0, a Rustler NIF over the `turso` crate with a `DBConnection` pool. No Ecto in `apps/backplane_host_agent`.
 **PR0 baseline:** SQLite FTS5 virtual tables are unavailable in the bundled Turso engine (`no such module: fts5`), so v1 local recall uses `LIKE` and tags local keyword results as degraded. `ex_turso` 3.0.0 exposes Turso-native FTS indexes, but adopting them is deferred to a separate schema and query migration.
@@ -49,14 +56,14 @@ HostAgent.MemoryRouter ──► HostAgent.Memory ──► Turso DB
 |---|---|
 | D1 | Store is host-level. `scope` is the partition key. `agent_id` is provenance only. Dedup is `(content_hash, scope)` while `deleted_at IS NULL`. |
 | D2 | No team/share tools at host level. Sharing is sync-up plus Backplane memory management. |
-| D3 | Sync up supports outbox ops `remember` and `forget` only. FIFO by `seq`, at-least-once. Hub idempotency uses local `id` and `(content_hash, scope)`. Ack returns `canonical_id`, stored locally as `remote_id`. Local UUIDv7 remains canonical on the originating host. |
-| D4 | Sync down is narrow: hub-curated facts plus wipe directives. There is no general replication. |
+| D3 | Historical V1: sync up supports outbox ops `remember` and `forget` only. FIFO by `seq`, at-least-once. Hub idempotency uses local `id` and `(content_hash, scope)`. V2 authority supersedes the local-canonical-ID claim: ACK returns `canonical_id` and, for edge-eligible host episodic memory, a positive `revision`; command-store V3 records the revision with outbox settlement. |
+| D4 | Historical V1 fact/wipe sync remains available under its compatibility flag. V2 adds a separate revisioned canonical edge mirror; see the protocol document. |
 | D5 | Host engine is `ex_turso`; SQL is raw; migrations use `PRAGMA user_version`; row mapping belongs in functional core modules. |
 | D6 | Recall baseline is `LIKE` with `quality: :degraded`. `ex_turso` 3.0.0 exposes Turso-native FTS indexes and vector functions, but adopting them requires separate product migrations; vector recall also requires local embeddings. |
 | D7 | Local memories expire after `memory.local_ttl_days` (default 90), but only after they are synced. Facts never prune locally. |
 | D8 | `forget` and `wipe` are different. `forget` soft-deletes locally and syncs an originating-host op. `wipe` hard-deletes locally, records a tombstone by `content_hash`, and blocks exact re-remember by default. |
 | D9 | Downstream targeting is scope subscription. The host announces active scopes on join. The hub pushes facts for `entitled ∩ announced`. Join performs reconcile, then incremental updates. |
-| D10 | Host MCP surface is local-only: `remember`, `recall`, `list`, `forget`, `stats`, `slot_read`, `slot_write`, `slot_list`, `facet_tag`, `facet_query`. Hub-only tools must return a stable local error. |
+| D10 | Superseded routing: connected canonical `memory::*` reads go to Backplane; only slots/facets are device-local. Offline mirror reads require an allowlisted transport failure and stale metadata. |
 | D11 | Slots are device-only. Facets/tags live in memory payload JSON. Sessions are metadata only. |
 | D12 | Hub facts live in a separate local `facts` table. `recall/2` unions `memories` and `facts`, then reducer rank-merges hits with `source: :local | :hub_fact`. |
 | D13 | The host computes and stores no embeddings. Backplane embeds synced memories on ingest. |

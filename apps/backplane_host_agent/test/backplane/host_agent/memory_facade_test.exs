@@ -199,6 +199,30 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     def call(_method, _args, _opts), do: {:error, :not_connected}
   end
 
+  defmodule EdgeMirror do
+    def offline_read("recall", args, opts) do
+      send(self(), {:edge_read, "recall", args, opts})
+
+      {:ok,
+       %{
+         "results" => [%{"id" => "canonical-1", "content" => "committed edge"}],
+         "partition_revision" => 7,
+         "as_of" => "2026-09-20T00:00:00Z",
+         "last_sync_age_seconds" => 3
+       }}
+    end
+  end
+
+  defmodule EdgeMirrorItems do
+    def offline_read("recall", _args, _opts) do
+      {:ok,
+       %{
+         "items" => [%{"canonical_id" => "canonical-1", "content" => "committed edge"}],
+         "partition_revision" => 8
+       }}
+    end
+  end
+
   defmodule RemoteTimeout do
     def call(_method, _args, _opts), do: {:error, :timeout}
   end
@@ -282,6 +306,20 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert local_opts[:overlay_mode] == :online
     refute_received :unexpected_local_recall
     refute_received :unexpected_local_facts
+  end
+
+  test "healthy canonical reads preserve revision metadata" do
+    defmodule RevisionRemote do
+      def call(_method, _args, _opts),
+        do: {:ok, %{"results" => [], "partition_revision" => 9, "last_sync_age_seconds" => 2}}
+    end
+
+    assert {:ok, %{"partition_revision" => 9, "last_sync_age_seconds" => 2}} =
+             MemoryFacade.call("recall", %{}, %{
+               agent_id: "codex",
+               remote_adapter: RevisionRemote,
+               local_adapter: EmptyOverlay
+             })
   end
 
   test "healthy list preserves canonical fields and adds the items alias" do
@@ -633,6 +671,85 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
   test "not_connected returns pending commands only and reports canonical history unavailable" do
     assert_offline_pending(RemoteNotConnected)
+  end
+
+  test "offline recall merges a committed edge mirror with the provisional overlay" do
+    partition = %{
+      "memory_space_id" => "space-1",
+      "scope" => "private",
+      "namespace" => "default"
+    }
+
+    assert {:ok,
+            %{
+              "mode" => "offline",
+              "authority" => "canonical_with_provisional",
+              "source" => "edge_mirror",
+              "consistency" => "bounded_stale",
+              "history_available" => true,
+              "partition_revision" => 7,
+              "results" => [%{"id" => "local-1"}, %{"id" => "canonical-1"}]
+            }} =
+             MemoryFacade.call(
+               "recall",
+               %{"query" => "pending"},
+               %{
+                 agent_id: "codex",
+                 remote_adapter: RemoteNotConnected,
+                 local_adapter: PendingOnly,
+                 edge_adapter: EdgeMirror,
+                 edge_partition: partition,
+                 edge_store: :edge_store,
+                 edge_config: %{enabled: true}
+               }
+             )
+
+    assert_received {:edge_read, "recall",
+                     %{
+                       "memory_space_id" => "space-1",
+                       "scope" => "private",
+                       "namespace" => "default"
+                     }, edge_opts}
+
+    assert edge_opts[:agent_id] == "codex"
+    assert edge_opts[:store] == :edge_store
+    assert edge_opts[:config] == %{enabled: true}
+  end
+
+  test "offline recall accepts the real edge mirror's items payload" do
+    assert {:ok,
+            %{
+              "source" => "edge_mirror",
+              "authority" => "canonical",
+              "partition_revision" => 8,
+              "results" => [item],
+              "hits" => [item]
+            }} =
+             MemoryFacade.call("recall", %{"query" => "committed"}, %{
+               agent_id: "codex",
+               remote_adapter: RemoteNotConnected,
+               local_adapter: EmptyOverlay,
+               edge_adapter: EdgeMirrorItems
+             })
+
+    assert item["canonical_id"] == "canonical-1"
+    assert item["content"] == "committed edge"
+  end
+
+  test "offline pending forget removes a canonical item from every public result field" do
+    assert {:ok,
+            %{
+              "results" => [],
+              "hits" => [],
+              "items" => [],
+              "authority" => "canonical_with_provisional"
+            }} =
+             MemoryFacade.call("recall", %{"query" => "committed"}, %{
+               agent_id: "codex",
+               remote_adapter: RemoteNotConnected,
+               local_adapter: PendingForget,
+               edge_adapter: EdgeMirrorItems
+             })
   end
 
   test "timeout returns pending commands only and reports canonical history unavailable" do

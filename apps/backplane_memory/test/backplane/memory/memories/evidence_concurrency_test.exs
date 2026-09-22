@@ -173,6 +173,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
       memory_space_id: memory_space_id("host"),
       agent_id: "agent",
       host_id: "host",
+      client_id: "host:host",
       scope: "global",
       namespace: "private",
       idempotency_scope: "direct",
@@ -199,6 +200,8 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
         session_id: session_id,
         project: "backplane",
         host_id: "host",
+        client_id: "host:host",
+        source_client_id: "host:host",
         scope: "global",
         namespace: "private",
         status: "closed",
@@ -217,6 +220,7 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
         memory_space_id: memory_space_id("host"),
         agent_id: "agent",
         host_id: "host",
+        client_id: "host:host",
         scope: "global",
         namespace: "private"
       })

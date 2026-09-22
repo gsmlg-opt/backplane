@@ -52,6 +52,18 @@ defmodule Backplane.Observability.SettingsTest do
   test "settings enable runtime sink policy via Flags" do
     alias Backplane.Observability.Flags
 
+    previous_disabled =
+      Application.get_env(:backplane_telemetry, :observability_v2_test_disabled)
+
+    Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, false)
+
+    on_exit(fn ->
+      case previous_disabled do
+        nil -> Application.delete_env(:backplane_telemetry, :observability_v2_test_disabled)
+        value -> Application.put_env(:backplane_telemetry, :observability_v2_test_disabled, value)
+      end
+    end)
+
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, false)
     Application.put_env(:backplane_telemetry, :observability_v2_runtime_sink, false)
 

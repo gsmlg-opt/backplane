@@ -1,14 +1,27 @@
 defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  import Ecto.Query
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Events.{Event, Store}
   alias Backplane.Memory.Ingest
+  alias Backplane.Memory.Ingest.{EventValidator, Upcaster}
   alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Memories.Evidence
-  alias Backplane.Memory.Projections.{Snapshot, Source, State}
+  alias Backplane.Memory.Replay.Event, as: ReplayEvent
+
+  alias Backplane.Memory.Projections.{
+    ProjectedObservation,
+    ProjectedSession,
+    Rebuild,
+    RepairFrontier,
+    Snapshot,
+    Source,
+    State
+  }
+
   alias Backplane.Memory.Workers.{LessonCandidateWorker, ProjectionRepairWorker}
 
   test "enqueues a revisioned canonical summary for closed projections after grace" do
@@ -37,8 +50,10 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
     assert :ok = ProjectionRepairWorker.perform(job, complete, enqueue)
     assert_received {:summary_enqueued, "summary-host", "summary-session", "revision-1"}
 
-    assert [%{operation: "projection.repair", target_ids: [^event_id], metadata: metadata}] =
-             Audit.list(operation: "projection.repair")
+    assert %{metadata: metadata} =
+             Enum.find(Audit.list(operation: "projection.repair"), fn audit ->
+               audit.target_ids == [event_id]
+             end)
 
     assert metadata["host_id"] == "summary-host"
     assert metadata["memory_space_id"] == memory_space_id("summary-host")
@@ -89,11 +104,16 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   setup do
     previous_enabled = Application.get_env(:backplane_memory, :projection_repair_enabled)
     previous_enqueue = Application.get_env(:backplane_memory, :projection_repair_enqueue)
+
+    previous_lesson_enqueue =
+      Application.get_env(:backplane_memory, :projection_repair_lesson_enqueue)
+
     Application.put_env(:backplane_memory, :projection_repair_enabled, true)
 
     on_exit(fn ->
       restore_env(:projection_repair_enabled, previous_enabled)
       restore_env(:projection_repair_enqueue, previous_enqueue)
+      restore_env(:projection_repair_lesson_enqueue, previous_lesson_enqueue)
     end)
 
     :ok
@@ -110,11 +130,14 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert accepted(first)
       assert accepted(third)
 
-      assert [first_job, third_job] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [repair_job] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
-      assert Enum.map([first_job, third_job], &Map.keys(&1.args)) == [["event_id"], ["event_id"]]
-      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert repair_job.args == %{
+               "host_id" => "host-repair",
+               "session_id" => repaired_session
+             }
+
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
 
       repaired_subject = Source.subject_id!("host-repair", repaired_session)
 
@@ -159,13 +182,16 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert [_first, _second, _third] = repaired_observations
 
-      assert [_, _, _, _, _, _] = repaired_states = states(repaired_subject)
+      assert [_, _, _, _, _, _, _] = repaired_states = states(repaired_subject)
 
       assert Enum.all?(repaired_states, fn
                %{projector: "crystal", status: "enqueued", attempt_count: 0} ->
                  true
 
                %{projector: "summary", status: "pending", attempt_count: 1} ->
+                 true
+
+               %{projector: "episodic", status: "skipped_no_model", last_error: "no_model"} ->
                  true
 
                %{projector: projector, status: "complete"}
@@ -197,6 +223,409 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                })
 
       assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+    end)
+  end
+
+  test "a converted legacy pending job prevents a second host session job after a new event" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      host_id = unique("upgraded-host")
+      session_id = unique("upgraded-session")
+
+      assert %{"server_event_id" => first_event_id} =
+               accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
+
+      repo().delete_all(
+        from(job in Oban.Job,
+          where: job.worker == "Backplane.Memory.Workers.ProjectionRepairWorker"
+        )
+      )
+
+      assert {:ok, %Oban.Job{id: legacy_job_id}} =
+               %{event_id: first_event_id, host_id: host_id, session_id: session_id}
+               |> ProjectionRepairWorker.new(unique: nil)
+               |> Oban.insert()
+
+      assert accepted(captured_event(host_id, session_id, 2, "agent.prompt.submitted"))
+
+      assert [%Oban.Job{id: ^legacy_job_id, args: args}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      assert args == %{
+               "event_id" => first_event_id,
+               "host_id" => host_id,
+               "session_id" => session_id
+             }
+
+      assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: args})
+
+      assert %RepairFrontier{requested_generation: 2, completed_generation: 2} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      repo().update_all(from(job in Oban.Job, where: job.id == ^legacy_job_id),
+        set: [state: "completed", completed_at: DateTime.utc_now()]
+      )
+
+      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+    end)
+  end
+
+  test "an event arriving during repair creates one successor and both executions converge" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      host_id = unique("concurrent-host")
+      session_id = unique("concurrent-session")
+
+      assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
+
+      assert [%Oban.Job{id: running_job_id, args: running_args}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      repo().update_all(from(job in Oban.Job, where: job.id == ^running_job_id),
+        set: [state: "executing", attempted_at: DateTime.utc_now(), attempt: 1]
+      )
+
+      %RepairFrontier{requested_revision: first_revision} =
+        RepairFrontier.get(repo(), host_id, session_id)
+
+      parent = self()
+
+      repair_task =
+        Task.async(fn ->
+          receive do
+            :run ->
+              ProjectionRepairWorker.perform(
+                %Oban.Job{args: running_args},
+                fn ^host_id, ^session_id ->
+                  send(parent, :repair_running)
+
+                  receive do
+                    :release_repair ->
+                      {:ok,
+                       %{
+                         input_revision: first_revision,
+                         memory_space_id: memory_space_id(host_id),
+                         client_id: "host:#{host_id}",
+                         source_client_id: "codex-cli",
+                         scope: "project:backplane",
+                         namespace: "private"
+                       }}
+                  end
+                end,
+                fn _, _, _ -> {:ok, :not_needed} end
+              )
+          end
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), repair_task.pid)
+      send(repair_task.pid, :run)
+      assert_receive :repair_running, 5_000
+
+      ingest_task =
+        Task.async(fn ->
+          receive do
+            :run ->
+              Oban.Testing.with_testing_mode(:manual, fn ->
+                accepted(captured_event(host_id, session_id, 2, "agent.prompt.submitted"))
+              end)
+          end
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), ingest_task.pid)
+      send(ingest_task.pid, :run)
+      assert Task.yield(ingest_task, 100) == nil
+
+      send(repair_task.pid, :release_repair)
+      assert :ok = Task.await(repair_task, 5_000)
+      assert %{"status" => "accepted"} = Task.await(ingest_task, 5_000)
+
+      assert [%Oban.Job{id: successor_id, args: successor_args}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      refute successor_id == running_job_id
+
+      assert [["available"], ["executing"]] =
+               repo().query!(
+                 """
+                 SELECT state FROM oban_jobs
+                 WHERE id IN ($1, $2)
+                 ORDER BY state
+                 """,
+                 [running_job_id, successor_id]
+               ).rows
+
+      repo().update_all(from(job in Oban.Job, where: job.id == ^running_job_id),
+        set: [state: "completed", completed_at: DateTime.utc_now()]
+      )
+
+      assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: successor_args})
+
+      repo().update_all(from(job in Oban.Job, where: job.id == ^successor_id),
+        set: [state: "completed", completed_at: DateTime.utc_now()]
+      )
+
+      assert %RepairFrontier{requested_generation: 2, completed_generation: 2} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+    end)
+  end
+
+  @tag timeout: 180_000
+  test "Scenario J: 10,000 accepted events coalesce to one pending projection repair job" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      host_id = "scale-host-#{Ecto.UUID.generate()}"
+      session_id = "scale-session-#{Ecto.UUID.generate()}"
+      auth = ingest_auth_context(host_id, %{partition: %{scope: "project:backplane"}})
+
+      assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
+
+      2..10_000
+      |> Enum.chunk_every(100)
+      |> Enum.with_index(2)
+      |> Enum.each(fn {sequences, batch_generation} ->
+        events =
+          Enum.map(sequences, fn sequence ->
+            occurred_at = DateTime.add(~U[2026-08-04 01:00:00Z], sequence, :second)
+
+            valid_event(%{
+              "event_id" => Ecto.UUID.generate(),
+              "host_id" => host_id,
+              "session_id" => session_id,
+              "sequence" => sequence,
+              "occurred_at" => DateTime.to_iso8601(occurred_at),
+              "captured_at" => DateTime.to_iso8601(occurred_at),
+              "idempotency_key" => "#{host_id}:#{session_id}:#{sequence}"
+            })
+          end)
+
+        assert {:ok, %{"results" => results}} =
+                 Ingest.ingest_batch(auth, %{
+                   "batch_id" => Ecto.UUID.generate(),
+                   "host_id" => host_id,
+                   "events" => events
+                 })
+
+        assert length(results) == length(sequences)
+        assert Enum.all?(results, &(&1["status"] == "accepted"))
+
+        assert %RepairFrontier{requested_generation: ^batch_generation} =
+                 RepairFrontier.get(repo(), host_id, session_id)
+      end)
+
+      assert [%Oban.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      assert %RepairFrontier{
+               requested_generation: 101,
+               completed_generation: 0,
+               requested_revision: revision
+             } = RepairFrontier.get(repo(), host_id, session_id)
+
+      assert revision =~ ~r/^[0-9a-f]{64}$/
+
+      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+
+      assert :ok =
+               ProjectionRepairWorker.perform(
+                 job,
+                 &Rebuild.session_locked/2,
+                 fn _, _, _ -> {:ok, :not_needed} end
+               )
+
+      subject_id = Source.subject_id!(host_id, session_id)
+      projected = repo().get!(ProjectedSession, subject_id)
+      assert projected.input_revision == revision
+      assert projected.source_sequence_max == 10_000
+
+      stable_rows = persisted_row_fingerprints(subject_id)
+      assert length(stable_rows.observations) == 10_000
+      assert length(stable_rows.replay) == 10_000
+
+      stable_projection =
+        Map.take(projected, [:input_revision, :source_sequence_max, :status, :scope, :namespace])
+
+      assert {:ok, %{input_revision: ^revision}} = Rebuild.session(host_id, session_id)
+
+      assert Map.take(repo().get!(ProjectedSession, subject_id), Map.keys(stable_projection)) ==
+               stable_projection
+
+      assert persisted_row_fingerprints(subject_id) == stable_rows
+
+      assert %RepairFrontier{
+               requested_generation: 101,
+               inflight_generation: 101,
+               completed_generation: 101,
+               requested_revision: ^revision,
+               completed_revision: ^revision
+             } = RepairFrontier.get(repo(), host_id, session_id)
+
+      assert [%Oban.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      IO.puts(
+        "Scenario J projection scheduling: events=10000 generations=101 pending_jobs=1 completed_generation=101"
+      )
+    end)
+  end
+
+  test "frontier generations order work without ordering opaque revision hashes" do
+    host_id = unique("opaque-host")
+    session_id = unique("opaque-session")
+
+    assert %RepairFrontier{requested_generation: 1, requested_revision: "ffff"} =
+             RepairFrontier.advance(repo(), host_id, session_id, "ffff")
+
+    assert %RepairFrontier{requested_generation: 2, requested_revision: "0000"} =
+             RepairFrontier.advance(repo(), host_id, session_id, "0000")
+  end
+
+  test "one accepted store batch advances a session frontier exactly once" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      host_id = unique("batch-frontier-host")
+      session_id = unique("batch-frontier-session")
+      auth = ingest_auth_context(host_id, %{partition: %{scope: "project:backplane"}})
+
+      attrs =
+        Enum.map(1..2, fn sequence ->
+          raw = captured_event(host_id, session_id, sequence, "agent.prompt.submitted")
+          {:ok, validated} = EventValidator.validate(raw)
+          {:ok, attrs} = Upcaster.V1.upcast(validated, auth)
+          attrs
+        end)
+
+      assert {:ok, [{:inserted, _}, {:inserted, _}]} = Store.append_batch_tagged(attrs)
+
+      assert %RepairFrontier{requested_generation: 1} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      assert [_job] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+    end)
+  end
+
+  test "a revision mismatch marks work stale and a later attempt repairs the authoritative revision" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
+      on_exit(fn -> :ets.delete(:backplane_settings, "memory.lesson_auto_extract") end)
+
+      host_id = unique("stale-host")
+      session_id = unique("stale-session")
+
+      assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
+      frontier = RepairFrontier.get(repo(), host_id, session_id)
+      RepairFrontier.replace_requested_revision(repo(), frontier, String.duplicate("f", 64))
+
+      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+
+      assert :ok = ProjectionRepairWorker.perform(job)
+
+      assert [_successor] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      assert [] = Oban.Testing.all_enqueued(repo(), worker: LessonCandidateWorker)
+
+      assert %RepairFrontier{
+               requested_generation: 1,
+               completed_generation: 0,
+               requested_revision: authoritative_revision
+             } = RepairFrontier.get(repo(), host_id, session_id)
+
+      refute authoritative_revision == String.duplicate("f", 64)
+
+      assert :ok =
+               ProjectionRepairWorker.perform(
+                 job,
+                 &Backplane.Memory.Projections.Rebuild.session_locked/2,
+                 fn _, _, _ -> {:ok, :not_needed} end
+               )
+
+      assert %RepairFrontier{
+               completed_generation: 1,
+               completed_revision: ^authoritative_revision
+             } = RepairFrontier.get(repo(), host_id, session_id)
+
+      assert {:ok, :already_complete} =
+               ProjectionRepairWorker.perform(
+                 job,
+                 fn _, _ -> flunk("a completed successor must not rebuild") end,
+                 fn _, _, _ -> flunk("a completed successor must not summarize") end
+               )
+    end)
+  end
+
+  test "lesson scheduling failure rolls back completion and succeeds on retry" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:backplane_memory, :projection_repair_lesson_enqueue, fn _event_id ->
+        case Agent.get_and_update(attempts, &{&1, &1 + 1}) do
+          0 -> {:error, :lesson_unavailable}
+          _ -> {:ok, :disabled}
+        end
+      end)
+
+      host_id = unique("lesson-retry-host")
+      session_id = unique("lesson-retry-session")
+
+      assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
+      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+
+      assert {:error, :lesson_unavailable} = ProjectionRepairWorker.perform(job)
+
+      assert %RepairFrontier{requested_generation: 1, completed_generation: 0} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      assert :ok = ProjectionRepairWorker.perform(job)
+
+      assert %RepairFrontier{requested_generation: 1, completed_generation: 1} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      assert Agent.get(attempts, & &1) == 2
+    end)
+  end
+
+  test "summary scheduling failure rolls back completion and succeeds on retry" do
+    Oban.Testing.with_testing_mode(:manual, fn ->
+      host_id = unique("summary-retry-host")
+      session_id = unique("summary-retry-session")
+
+      assert accepted(captured_event(host_id, session_id, 1, "agent.session.ended"))
+
+      %RepairFrontier{requested_revision: revision} =
+        RepairFrontier.get(repo(), host_id, session_id)
+
+      result = %{
+        input_revision: revision,
+        memory_space_id: memory_space_id(host_id),
+        client_id: "host:#{host_id}",
+        source_client_id: "codex-cli",
+        scope: "project:backplane",
+        namespace: "private",
+        gaps: [],
+        session_status: "completed",
+        last_event_at: ~U[2026-08-04 01:00:00Z],
+        states: %{"session" => %{status: "complete"}}
+      }
+
+      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+
+      assert {:error, :summary_unavailable} =
+               ProjectionRepairWorker.perform(
+                 job,
+                 fn _, _ -> {:ok, result} end,
+                 fn _, _, _ -> {:error, :summary_unavailable} end
+               )
+
+      assert %RepairFrontier{requested_generation: 1, completed_generation: 0} =
+               RepairFrontier.get(repo(), host_id, session_id)
+
+      assert :ok =
+               ProjectionRepairWorker.perform(
+                 job,
+                 fn _, _ -> {:ok, result} end,
+                 fn _, _, _ -> {:ok, %Oban.Job{state: "available"}} end
+               )
+
+      assert %RepairFrontier{requested_generation: 1, completed_generation: 1} =
+               RepairFrontier.get(repo(), host_id, session_id)
     end)
   end
 
@@ -265,7 +694,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert %{"server_event_id" => failed_event_id} = accepted(failed)
       assert %{"server_event_id" => fixed_event_id} = accepted(fixed)
-      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
       assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory_lessons)
 
       assert :ok =
@@ -330,7 +759,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       [failed_event_id, _lint_event_id, fixed_event_id, _repeat_event_id] =
         Enum.map(events, &accepted(&1)["server_event_id"])
 
-      assert %{success: 4, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
       assert %{success: 4, failure: 0} = Oban.drain_queue(queue: :memory_lessons)
 
       assert [%Lesson{memory_id: memory_id}] = repo().all(Lesson)
@@ -398,6 +827,11 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
              ProjectionRepairWorker.perform(%Oban.Job{args: %{"event_id" => "  "}})
   end
 
+  test "locked rebuild entrypoint rejects callers without a transaction" do
+    assert {:error, :transaction_required} =
+             Backplane.Memory.Projections.Rebuild.session_locked("host", "session")
+  end
+
   test "a retryable inline worker result cannot masquerade as a durable repair job" do
     Application.put_env(:backplane_memory, :projection_repair_enqueue, fn _event_id ->
       {:ok, %Oban.Job{state: "retryable"}}
@@ -434,7 +868,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
   defp accepted(event) do
     assert {:ok, %{"results" => [result]}} = ingest(event)
-    assert result["status"] == "accepted"
+    assert result["status"] == "accepted", inspect(result)
     result
   end
 
@@ -496,6 +930,33 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
           )
         )
     }
+  end
+
+  defp persisted_row_fingerprints(subject_id) do
+    %{
+      observations:
+        repo().all(
+          from(row in ProjectedObservation,
+            where: row.subject_id == ^subject_id,
+            order_by: [asc: row.source_sequence, asc: row.event_id]
+          )
+        )
+        |> Enum.map(&semantic_row/1),
+      replay:
+        repo().all(
+          from(row in ReplayEvent,
+            where: row.subject_id == ^subject_id,
+            order_by: [asc: row.position]
+          )
+        )
+        |> Enum.map(&semantic_row/1)
+    }
+  end
+
+  defp semantic_row(row) do
+    row
+    |> Map.from_struct()
+    |> Map.drop([:__meta__, :inserted_at, :updated_at])
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

@@ -76,6 +76,17 @@ defmodule Backplane.HostAgent.Memory.FactsTest do
     assert_count(store, "facts", 2)
   end
 
+  test "content-bearing facts fail closed when edge protection is unavailable", %{store: store} do
+    assert {:error, :protection_unavailable} =
+             Facts.apply_facts(
+               %{"scope" => "proj_local", "facts" => [fact("fact_1", "blocked")]},
+               store: store,
+               edge_config: %{enabled: true, development_plaintext: false}
+             )
+
+    assert_count(store, "facts", 0)
+  end
+
   test "wipe hard-deletes local memory and facts, cancels queued outbox, and tombstones", %{
     store: store,
     opts: opts
@@ -158,6 +169,67 @@ defmodule Backplane.HostAgent.Memory.FactsTest do
                store,
                "SELECT state, last_error FROM memory_outbox WHERE memory_id = ?",
                [id]
+             )
+  end
+
+  test "wipe cancels retry-wait rows and preserves same-hash tombstones in other scopes", %{
+    store: store,
+    opts: opts
+  } do
+    content = "retry waiting wipe target"
+    hash = Reducer.content_hash(content)
+    now = "2026-06-17T00:00:00Z"
+
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => content}, opts)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET state = 'retry_wait' WHERE memory_id = ?",
+               [id]
+             )
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id) VALUES (?, ?, ?, ?)",
+               [hash, "other_scope", now, "other-wipe"]
+             )
+
+    assert {:ok, %{"items" => [%{"status" => "ok"}]}} =
+             Facts.apply_wipe(
+               %{
+                 "directive_id" => "local-wipe",
+                 "items" => [%{"content_hash" => hash, "scope" => "proj_local"}]
+               },
+               store: store
+             )
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "state" => "done",
+                  "completed_at" => completed_at,
+                  "updated_at" => updated_at
+                }
+              ]
+            }} =
+             Store.query(
+               store,
+               "SELECT state, completed_at, updated_at FROM memory_outbox WHERE memory_id = ?",
+               [id]
+             )
+
+    assert is_binary(completed_at)
+    assert updated_at == completed_at
+
+    assert {:ok,
+            %Result{rows: [%{"directive_id" => "other-wipe"}, %{"directive_id" => "local-wipe"}]}} =
+             Store.query(
+               store,
+               "SELECT directive_id FROM tombstones WHERE content_hash = ? ORDER BY scope",
+               [hash]
              )
   end
 

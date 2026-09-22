@@ -13,6 +13,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
   alias Backplane.Api.HostMemoryRevocation
   alias Backplane.Skills.Host
   alias Backplane.Memory.EdgeSync.{CompatReceipt, SnapshotBuilder}
+  alias Backplane.Memory.EdgeSync.Change
 
   @max_compat_items 100
   @max_compat_bytes 524_288
@@ -329,18 +330,121 @@ defmodule Backplane.Api.HostAgentMemorySync do
            if revoked?(host.id, local_id), do: Repo.rollback(:mapping_revoked)
 
            replay? = request_exists?(host.id, local_id)
+           before_revision = partition_revision(partition)
 
            case Memories.remember(content, opts) do
-             {:ok, %MemorySchema{} = memory} -> {memory, replay?}
-             {:error, reason} -> Repo.rollback(reason)
+             {:ok, %MemorySchema{} = memory} ->
+               request =
+                 Repo.one!(
+                   from(r in RememberRequest,
+                     where:
+                       r.idempotency_scope == ^host_request_scope(host.id) and
+                         r.idempotency_key == ^local_id,
+                     lock: "FOR UPDATE"
+                   )
+                 )
+
+               existing_revision = command_receipt_revision(request.id)
+
+               revision =
+                 existing_revision ||
+                   if(replay?,
+                     do: nil,
+                     else: inserted_host_revision(memory, before_revision, local_id)
+                   ) || force_host_command_revision!(memory, request.id, host.id)
+
+               if is_integer(revision) and is_nil(existing_revision) do
+                 Repo.query!(
+                   "INSERT INTO bpm_host_memory_command_receipts (source_request_id, memory_id, edge_revision) VALUES ($1, $2, $3)",
+                   [Ecto.UUID.dump!(request.id), Ecto.UUID.dump!(memory.id), revision]
+                 )
+               end
+
+               {memory, replay?, revision}
+
+             {:error, reason} ->
+               Repo.rollback(reason)
            end
          end) do
-      {:ok, {memory, replay?}} ->
+      {:ok, {memory, replay?, revision}} ->
         status = if replay?, do: :duplicate, else: :ok
-        {:ok, %{status: status, canonical_id: memory.id}}
+        {:ok, %{status: status, canonical_id: memory.id, revision: revision}}
 
       {:error, reason} ->
         {:error, :validation, reason}
+    end
+  end
+
+  defp partition_revision(partition) do
+    case Repo.query!(
+           "SELECT current_revision FROM bpm_memory_partition_revisions WHERE memory_space_id = $1 AND scope = $2 AND namespace = $3",
+           [Ecto.UUID.dump!(partition.memory_space_id), partition.scope, partition.namespace]
+         ).rows do
+      [[revision]] -> revision
+      [] -> 0
+    end
+  end
+
+  defp inserted_host_revision(memory, before_revision, local_id) do
+    Change
+    |> where([change], change.memory_space_id == ^memory.memory_space_id)
+    |> where([change], change.scope == ^memory.scope and change.namespace == ^memory.namespace)
+    |> where([change], change.memory_id == ^memory.id and change.op == "upsert")
+    |> where([change], change.revision > ^before_revision)
+    |> where(
+      [change],
+      fragment("? #>> '{metadata,host_memory,local_id}' = ?", change.payload, ^local_id)
+    )
+    |> order_by([change], desc: change.revision)
+    |> select([change], change.revision)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp force_host_command_revision!(memory, request_id, host_id) do
+    # Duplicate lookup holds only KEY SHARE; serialize the metadata preflight
+    # with every canonical writer before reading its revision or metadata.
+    Repo.query!("SELECT id FROM bpm_memories WHERE id = $1 FOR UPDATE", [
+      Ecto.UUID.dump!(memory.id)
+    ])
+
+    before_revision = memory_edge_revision(memory, 0) || 0
+
+    %{num_rows: updated} =
+      Repo.query!(
+        "WITH proposed AS (SELECT jsonb_set(metadata, '{host_memory_command_revision}', to_jsonb($2::text), true) AS metadata, timezone('UTC', clock_timestamp()) AS updated_at FROM bpm_memories WHERE id = $1) UPDATE bpm_memories m SET metadata = proposed.metadata, updated_at = proposed.updated_at FROM proposed WHERE m.id = $1 AND m.host_id = $3 AND m.client_id = 'host:' || $3 AND bpm_memory_edge_eligible(jsonb_populate_record(m, jsonb_build_object('metadata', proposed.metadata, 'updated_at', proposed.updated_at)))",
+        [Ecto.UUID.dump!(memory.id), request_id, host_id]
+      )
+
+    if updated == 0 do
+      nil
+    else
+      case memory_edge_revision(memory, before_revision) do
+        nil -> Repo.rollback(:edge_revision_unavailable)
+        revision -> revision
+      end
+    end
+  end
+
+  defp memory_edge_revision(memory, after_revision) do
+    Change
+    |> where([change], change.memory_space_id == ^memory.memory_space_id)
+    |> where([change], change.scope == ^memory.scope and change.namespace == ^memory.namespace)
+    |> where([change], change.memory_id == ^memory.id and change.op == "upsert")
+    |> where([change], change.revision > ^after_revision)
+    |> order_by([change], desc: change.revision)
+    |> select([change], change.revision)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp command_receipt_revision(request_id) do
+    case Repo.query!(
+           "SELECT edge_revision FROM bpm_host_memory_command_receipts WHERE source_request_id = $1",
+           [Ecto.UUID.dump!(request_id)]
+         ).rows do
+      [[revision]] -> revision
+      [] -> nil
     end
   end
 

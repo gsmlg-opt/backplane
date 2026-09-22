@@ -68,6 +68,20 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: 50
       max_attempts: 5
       tombstone_relearn: block
+      host_sync_v1:
+        enabled: false
+      host_sync_v2:
+        enabled: false
+        db_path: #{Path.join(work_dir, "memory/edge_memory.db")}
+        development_plaintext: false
+        max_frame_bytes: 524288
+        max_changes: 100
+        max_items: 10000
+        max_bytes: 67108864
+        max_items_per_partition: 5000
+        max_age_days: 90
+        type_quotas: {}
+        sync_interval_ms: 5000
       # Server-triggered imports name an opaque profile; only this host config
       # resolves that profile to a path and approved roots.
       import_profiles:
@@ -179,6 +193,11 @@ defmodule Backplane.HostAgent.Config do
     host_id = agent["host_id"]
     work_dir = expand_path(agent["work_dir"])
     http_port = parse_port(agent["http_port"])
+    capture = parse_capture(raw["capture"], work_dir, http_port)
+    memory = parse_memory(raw["memory"], work_dir, http_port)
+
+    memory =
+      put_in(memory, [:host_sync_v2, :reserved_db_paths], [memory.db_path, capture.db_path])
 
     %__MODULE__{
       host_id: host_id,
@@ -191,8 +210,8 @@ defmodule Backplane.HostAgent.Config do
       work_dir: work_dir,
       http_bind: agent["http_bind"] || "127.0.0.1",
       http_port: http_port,
-      memory: parse_memory(raw["memory"], work_dir, http_port),
-      capture: parse_capture(raw["capture"], work_dir, http_port),
+      memory: memory,
+      capture: capture,
       telemetry: parse_telemetry(raw["telemetry"], work_dir),
       targets: parse_targets(raw["targets"] || [])
     }
@@ -227,9 +246,48 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50),
       max_attempts: parse_positive_int(raw["max_attempts"], 5),
       tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"]),
+      host_sync_v1: %{enabled: parse_bool(sync_config(raw, "host_sync_v1")["enabled"], false)},
+      host_sync_v2: parse_edge(sync_config(raw, "host_sync_v2"), work_dir),
       import_profiles: parse_import_profiles(raw["import_profiles"])
     }
   end
+
+  defp sync_config(raw, key) do
+    case raw[key] do
+      value when is_map(value) -> value
+      _ -> %{}
+    end
+  end
+
+  defp parse_edge(raw, work_dir) do
+    %{
+      enabled: parse_bool(raw["enabled"], false),
+      development_plaintext: parse_bool(raw["development_plaintext"], false),
+      db_path:
+        expand_path(
+          parse_non_empty_string(
+            raw["db_path"],
+            Path.join(work_dir || default_work_dir(), "memory/edge_memory.db")
+          )
+        ),
+      max_frame_bytes: parse_bounded_positive_int(raw["max_frame_bytes"], 524_288, 524_288),
+      max_changes: parse_bounded_positive_int(raw["max_changes"], 100, 100),
+      max_items: parse_positive_int(raw["max_items"], 10_000),
+      max_bytes: parse_positive_int(raw["max_bytes"], 64 * 1024 * 1024),
+      max_items_per_partition: parse_positive_int(raw["max_items_per_partition"], 5_000),
+      max_age_days: parse_positive_int(raw["max_age_days"], 90),
+      type_quotas: parse_type_quotas(raw["type_quotas"]),
+      sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000)
+    }
+  end
+
+  defp parse_type_quotas(quotas) when is_map(quotas) do
+    quotas
+    |> Enum.filter(fn {type, quota} -> is_binary(type) and is_integer(quota) and quota > 0 end)
+    |> Map.new()
+  end
+
+  defp parse_type_quotas(_quotas), do: %{}
 
   defp parse_import_profiles(profiles) when is_map(profiles) do
     profiles

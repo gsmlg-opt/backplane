@@ -23,6 +23,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
   @subject_type "captured_session"
   @projector_names ~w(observations session activity replay)
+  @insert_batch_size 1_000
   @processing_versions %{
     "observations" => "observations-v1",
     "session" => "session-v1",
@@ -30,36 +31,15 @@ defmodule Backplane.Memory.Projections.Rebuild do
     "replay" => "replay-v1"
   }
 
+  def authoritative_revision(host_id, session_id) do
+    Source.input_revision(host_id, session_id)
+  end
+
   def session(host_id, session_id) do
     with {:ok, subject_id} <- Source.subject_id(host_id, session_id) do
       case repo().transaction(fn ->
              Source.lock_streams(host_id, session_id)
-
-             case Source.events(host_id, session_id) do
-               {:ok, [_ | _] = events} ->
-                 case canonical_partition(events) do
-                   {:ok, partition} ->
-                     input_revision = Revision.input_revision(events)
-
-                     try do
-                       rebuild(host_id, session_id, subject_id, events, input_revision, partition)
-                     rescue
-                       exception ->
-                         repo().rollback(
-                           {:projection_failed, input_revision, exception, __STACKTRACE__}
-                         )
-                     end
-
-                   {:error, reason} ->
-                     repo().rollback(reason)
-                 end
-
-               {:ok, []} ->
-                 repo().rollback(:not_found)
-
-               {:error, reason} ->
-                 repo().rollback(reason)
-             end
+             rebuild_locked(host_id, session_id, subject_id)
            end) do
         {:ok, result} ->
           {:ok, result}
@@ -79,6 +59,43 @@ defmodule Backplane.Memory.Projections.Rebuild do
       end
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Rebuilds a session inside the caller's transaction after its streams are locked."
+  def session_locked(host_id, session_id) do
+    if repo().in_transaction?() do
+      with {:ok, subject_id} <- Source.subject_id(host_id, session_id) do
+        {:ok, rebuild_locked(host_id, session_id, subject_id)}
+      end
+    else
+      {:error, :transaction_required}
+    end
+  end
+
+  defp rebuild_locked(host_id, session_id, subject_id) do
+    case Source.events(host_id, session_id) do
+      {:ok, [_ | _] = events} ->
+        case canonical_partition(events) do
+          {:ok, partition} ->
+            input_revision = Revision.input_revision(events)
+
+            try do
+              rebuild(host_id, session_id, subject_id, events, input_revision, partition)
+            rescue
+              exception ->
+                repo().rollback({:projection_failed, input_revision, exception, __STACKTRACE__})
+            end
+
+          {:error, reason} ->
+            repo().rollback(reason)
+        end
+
+      {:ok, []} ->
+        repo().rollback(:not_found)
+
+      {:error, reason} ->
+        repo().rollback(reason)
     end
   end
 
@@ -394,9 +411,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     repo().delete_all(from(row in ProjectedObservation, where: row.subject_id == ^subject_id))
 
-    if rows != [] do
-      repo().insert_all(ProjectedObservation, rows)
-    end
+    rows
+    |> Enum.chunk_every(@insert_batch_size)
+    |> Enum.each(&repo().insert_all(ProjectedObservation, &1))
   end
 
   defp replace_activity_rows(subject_id, input_revision, partition, read_model) do

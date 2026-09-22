@@ -132,7 +132,11 @@ defmodule Backplane.Admin.RouteBoundaryTest do
       end)
 
     assert groups == [
-             {"Monitor", [{"Plan Usage", "/system/monitor/plans"}]},
+             {"Monitor",
+              [
+                {"Plan Usage", "/system/monitor/plans"},
+                {"API Usage", "/system/monitor/api-usage"}
+              ]},
              {"Log",
               [
                 {"LLM Log", "/system/logs/llm"},

@@ -2,7 +2,7 @@ defmodule Backplane.Memory.Projections.State do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @statuses ~w(pending enqueued running complete skipped failed dead_letter)
+  alias Backplane.Memory.Projections.ProcessingState
 
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_projection_states" do
@@ -25,7 +25,7 @@ defmodule Backplane.Memory.Projections.State do
     timestamps(type: :utc_datetime_usec)
   end
 
-  def statuses, do: @statuses
+  def statuses, do: ProcessingState.statuses()
 
   def changeset(state, attrs) do
     state
@@ -58,7 +58,7 @@ defmodule Backplane.Memory.Projections.State do
       :status,
       :attempt_count
     ])
-    |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:status, ProcessingState.statuses())
     |> validate_number(:attempt_count, greater_than_or_equal_to: 0)
     |> unique_constraint([:projector, :subject_type, :subject_id],
       name: :bpm_projection_states_subject_uniq

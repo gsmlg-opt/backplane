@@ -9,6 +9,7 @@ defmodule Backplane.HostAgent.Memory.Pruner do
   alias Turso.Result
 
   @default_ttl_days 90
+  @default_outbox_retention_days 30
   @default_interval_ms :timer.hours(1)
 
   def child_spec(opts) do
@@ -59,26 +60,48 @@ defmodule Backplane.HostAgent.Memory.Pruner do
             SELECT 1
             FROM memory_outbox
             WHERE memory_outbox.memory_id = memories.id
-              AND memory_outbox.state IN ('pending', 'inflight', 'failed')
+              AND memory_outbox.state IN ('pending', 'inflight', 'retry_wait')
           )
         )
       )
     """
 
-    case Store.execute(opts.store, sql, [cutoff]) do
-      {:ok, %Result{num_rows: deleted}} ->
-        duration = System.monotonic_time() - started_at
+    with {:ok,
+          %{
+            deleted: deleted,
+            outbox_deleted: outbox_deleted,
+            tombstones_deleted: tombstones_deleted
+          }} <-
+           Store.transaction(opts.store, fn conn ->
+             with {:ok, %Result{num_rows: deleted}} <- Store.execute(conn, sql, [cutoff]),
+                  {:ok, %Result{num_rows: outbox_deleted}} <- prune_outbox(conn, opts),
+                  {:ok, %Result{num_rows: tombstones_deleted}} <- prune_tombstones(conn, opts) do
+               %{
+                 deleted: deleted,
+                 outbox_deleted: outbox_deleted,
+                 tombstones_deleted: tombstones_deleted
+               }
+             else
+               {:error, reason} -> DBConnection.rollback(conn, {:storage_error, reason})
+             end
+           end) do
+      duration = System.monotonic_time() - started_at
 
-        :telemetry.execute(
-          [:backplane, :host_agent, :memory_pruner, :run],
-          %{deleted: deleted, duration: duration},
-          %{cutoff: cutoff}
-        )
+      :telemetry.execute(
+        [:backplane, :host_agent, :memory_pruner, :run],
+        %{deleted: deleted, duration: duration},
+        %{cutoff: cutoff}
+      )
 
-        {:ok, %{"deleted" => deleted, "cutoff" => cutoff}}
-
-      {:error, reason} ->
-        {:error, {:storage_error, reason}}
+      {:ok,
+       %{
+         "deleted" => deleted,
+         "outbox_deleted" => outbox_deleted,
+         "tombstones_deleted" => tombstones_deleted,
+         "cutoff" => cutoff
+       }}
+    else
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -94,6 +117,9 @@ defmodule Backplane.HostAgent.Memory.Pruner do
           Application.get_env(:backplane_host_agent, :memory_store, Store)
         ),
       cutoff: Keyword.get(opts, :cutoff),
+      outbox_cutoff: Keyword.get(opts, :outbox_cutoff),
+      tombstone_cutoff: Keyword.get(opts, :tombstone_cutoff),
+      tombstone_retention_days: config_value(config, :tombstone_retention_days),
       local_ttl_days:
         Keyword.get(
           opts,
@@ -105,6 +131,12 @@ defmodule Backplane.HostAgent.Memory.Pruner do
           opts,
           :interval_ms,
           config_value(config, :prune_interval_ms) || @default_interval_ms
+        ),
+      outbox_retention_days:
+        Keyword.get(
+          opts,
+          :outbox_retention_days,
+          config_value(config, :outbox_retention_days) || @default_outbox_retention_days
         )
     }
   end
@@ -130,6 +162,27 @@ defmodule Backplane.HostAgent.Memory.Pruner do
   end
 
   defp cutoff_from_ttl(_ttl_days), do: cutoff_from_ttl(@default_ttl_days)
+
+  defp prune_outbox(store, opts) do
+    cutoff = Map.get(opts, :outbox_cutoff) || cutoff_from_ttl(opts.outbox_retention_days)
+
+    Store.execute(
+      store,
+      "DELETE FROM memory_outbox WHERE (state = 'done' AND completed_at IS NOT NULL AND completed_at < ?) OR (state = 'dead_letter' AND dead_lettered_at IS NOT NULL AND dead_lettered_at < ?)",
+      [cutoff, cutoff]
+    )
+  end
+
+  defp prune_tombstones(store, %{tombstone_cutoff: cutoff}) when is_binary(cutoff) do
+    Store.execute(store, "DELETE FROM tombstones WHERE wiped_at < ?", [cutoff])
+  end
+
+  defp prune_tombstones(store, %{tombstone_retention_days: days})
+       when is_integer(days) and days >= 0 do
+    Store.execute(store, "DELETE FROM tombstones WHERE wiped_at < ?", [cutoff_from_ttl(days)])
+  end
+
+  defp prune_tombstones(_store, _opts), do: {:ok, %Result{num_rows: 0}}
 
   defp config_value(config, key) when is_map(config) do
     Map.get(config, key, Map.get(config, Atom.to_string(key)))

@@ -364,6 +364,15 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
 
       assert input_revision == result.input_revision
       assert error =~ constraint
+
+      assert_raise Ecto.ConstraintError, fn ->
+        perform(result.host_id, result.session_id, result.input_revision,
+          attempt: 3,
+          max_attempts: 3
+        )
+      end
+
+      assert %State{status: "dead_letter", attempt_count: 2} = state(result.subject_id)
     after
       repo().query!("ALTER TABLE memory_summaries DROP CONSTRAINT #{constraint}")
     end
@@ -501,7 +510,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
     )
   end
 
-  defp perform(host_id, session_id, input_revision) do
+  defp perform(host_id, session_id, input_revision, opts \\ []) do
     partition =
       case repo().get(ProjectedSession, Source.subject_id!(host_id, session_id)) do
         %ProjectedSession{} = session ->
@@ -519,6 +528,8 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
       end
 
     SummaryWorker.perform(%Oban.Job{
+      attempt: Keyword.get(opts, :attempt, 0),
+      max_attempts: Keyword.get(opts, :max_attempts, 20),
       args: %{
         "memory_space_id" => partition.memory_space_id,
         "host_id" => host_id,

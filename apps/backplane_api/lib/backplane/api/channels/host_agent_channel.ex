@@ -686,6 +686,17 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp apply_memory_sync_item(adapter, host, %{"id" => id} = item) when is_binary(id) do
     case adapter.apply_sync_item(host, item) do
+      {:ok, %{status: status, canonical_id: canonical_id, revision: revision}}
+      when status in [:ok, :duplicate] and is_integer(revision) and revision > 0 ->
+        {:ok,
+         %{
+           "id" => id,
+           "status" => Atom.to_string(status),
+           "canonical_id" => canonical_id,
+           "revision" => revision,
+           "error" => nil
+         }}
+
       {:ok, %{status: status, canonical_id: canonical_id}} when status in [:ok, :duplicate] ->
         {:ok,
          %{

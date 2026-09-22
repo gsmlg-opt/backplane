@@ -5,7 +5,7 @@ defmodule Backplane.Memory.Slots do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @doc "Read a slot by name. Returns {:ok, slot} or {:error, :not_found}."
+  @doc "Read a slot by name. The unpartitioned overload rejects the request."
   def read(name) when is_binary(name), do: {:error, :incomplete_partition}
 
   def read(name, partition) when is_binary(name) do
@@ -19,7 +19,7 @@ defmodule Backplane.Memory.Slots do
     end
   end
 
-  @doc "Write content to a named slot, creating it if it does not exist."
+  @doc "Write content to a named slot. The unpartitioned overload rejects the request."
   def write(name, content, _updated_by \\ nil) when is_binary(name) and is_binary(content),
     do: {:error, :incomplete_partition}
 
@@ -39,7 +39,7 @@ defmodule Backplane.Memory.Slots do
     end
   end
 
-  @doc "List all slots ordered by name."
+  @doc "List slots ordered by name. The unpartitioned overload returns an empty list."
   def list, do: []
 
   def list(partition) do

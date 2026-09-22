@@ -12,6 +12,9 @@ defmodule Backplane.Memory.Memories.MemoryTest do
           content: "Paris is the capital of France.",
           agent_id: "a",
           host_id: "h",
+          client_id: "client",
+          scope: "global",
+          namespace: "private",
           memory_space_id: Ecto.UUID.generate()
         })
 
@@ -87,6 +90,9 @@ defmodule Backplane.Memory.Memories.MemoryTest do
           content: "Rome is the capital of Italy.",
           agent_id: "a",
           host_id: "h",
+          client_id: "client",
+          scope: "global",
+          namespace: "private",
           memory_space_id: insert_space!()
         })
         |> Backplane.Repo.insert()
@@ -178,5 +184,68 @@ defmodule Backplane.Memory.Memories.MemoryTest do
     |> MemorySpace.changeset(%{kind: "private", status: "active"})
     |> Backplane.Repo.insert!()
     |> Map.fetch!(:id)
+  end
+
+  describe "complete generator partitions" do
+    alias Backplane.Memory.PartitionIdentity
+
+    test "requires every authoritative and legacy owner field" do
+      partition = canonical_partition("complete-owner")
+      assert {:ok, validated} = PartitionIdentity.validate_generator(partition)
+      assert validated.source_client_id == partition.source_client_id
+
+      for field <- [:memory_space_id, :host_id, :client_id, :scope, :namespace],
+          invalid <- [nil, "", "   "] do
+        assert {:error, :incomplete_partition} =
+                 partition |> Map.put(field, invalid) |> PartitionIdentity.validate_generator()
+      end
+
+      assert {:ok, without_source_client} =
+               partition
+               |> Map.delete(:source_client_id)
+               |> PartitionIdentity.validate_generator()
+
+      refute Map.has_key?(without_source_client, :source_client_id)
+    end
+
+    test "rejects every mismatched owner field" do
+      expected = canonical_partition("expected-owner")
+
+      for {field, mismatch} <- [
+            memory_space_id: Ecto.UUID.generate(),
+            host_id: "other-host",
+            client_id: "other-client",
+            scope: "other-scope",
+            namespace: "other-namespace"
+          ] do
+        assert {:error, :partition_mismatch} =
+                 expected
+                 |> Map.put(field, mismatch)
+                 |> PartitionIdentity.validate_generator(expected)
+      end
+
+      assert {:error, :partition_mismatch} =
+               expected
+               |> Map.put("host_id", "other-host")
+               |> PartitionIdentity.validate_generator()
+    end
+
+    test "memory changesets reject blank complete-partition fields" do
+      attrs =
+        canonical_partition("changeset-owner")
+        |> Map.merge(%{content: "complete memory", agent_id: "agent"})
+
+      assert %Ecto.Changeset{valid?: true} = Memory.changeset(%Memory{}, attrs)
+
+      for field <- [:host_id, :client_id, :scope, :namespace], invalid <- [nil, "", "   "] do
+        changeset = Memory.changeset(%Memory{}, Map.put(attrs, field, invalid))
+        refute changeset.valid?
+        assert "can't be blank" in errors_on(changeset)[field]
+      end
+
+      changeset = Memory.changeset(%Memory{}, Map.put(attrs, :memory_space_id, nil))
+      refute changeset.valid?
+      assert "can't be blank" in errors_on(changeset).memory_space_id
+    end
   end
 end

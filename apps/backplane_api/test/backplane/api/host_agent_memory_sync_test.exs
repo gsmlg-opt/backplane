@@ -153,16 +153,347 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert partition_id == "host:#{host.id}"
   end
 
+  test "host remember persists the exact edge revision for duplicate replies" do
+    host = create_host!("edge-receipt", "scope:edge-receipt")
+    item = remember_item("local_edge", host.memory_scope, "edge memory")
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert is_integer(revision) and revision > 0
+
+    assert {:ok, %{revision: later_revision}} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               remember_item("another_local", host.memory_scope, "another edge memory")
+             )
+
+    assert later_revision > revision
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: ^revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert %{revision: ^revision, op: "upsert"} =
+             Repo.one!(
+               from(c in Backplane.Memory.EdgeSync.Change,
+                 where: c.memory_id == ^canonical_id,
+                 order_by: [desc: c.revision],
+                 limit: 1,
+                 select: %{revision: c.revision, op: c.op}
+               )
+             )
+
+    request = Repo.one!(from(r in RememberRequest, where: r.memory_id == ^canonical_id))
+
+    assert [[^revision]] =
+             Repo.query!(
+               "SELECT edge_revision FROM bpm_host_memory_command_receipts WHERE source_request_id = $1",
+               [Ecto.UUID.dump!(request.id)]
+             ).rows
+  end
+
+  test "a newly inserted item keeps its insertion revision when a marker would exceed the edge budget" do
+    host = create_host!("insert-edge-limit", "scope:insert-edge-limit")
+    first = remember_item("first-local", host.memory_scope, "edge memory one")
+    second = remember_item("other-local", host.memory_scope, "edge memory two")
+
+    assert {:ok, %{canonical_id: first_id}} = HostAgentMemorySync.apply_sync_item(host, first)
+
+    assert [[budget]] =
+             Repo.query!(
+               "SELECT octet_length(bpm_memory_edge_payload(jsonb_populate_record(m, jsonb_build_object('metadata', m.metadata - 'host_memory_command_revision')))::text) FROM bpm_memories m WHERE id = $1",
+               [Ecto.UUID.dump!(first_id)]
+             ).rows
+
+    Repo.query!(
+      "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes',jsonb_build_object('v',$1::integer),'integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [budget]
+    )
+
+    assert {:ok, %{status: :ok, canonical_id: second_id, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, second)
+
+    assert second_id != first_id
+    assert is_integer(revision) and revision > 0
+
+    assert %{revision: ^revision, op: "upsert"} =
+             Repo.one!(
+               from(c in Backplane.Memory.EdgeSync.Change,
+                 where: c.memory_id == ^second_id,
+                 select: %{revision: c.revision, op: c.op}
+               )
+             )
+
+    assert {:ok, %{status: :duplicate, revision: ^revision}} =
+             HostAgentMemorySync.apply_sync_item(host, second)
+  end
+
+  test "a marker preflight includes its updated timestamp at the byte limit" do
+    host = create_host!("timestamp-edge-limit", "scope:timestamp-edge-limit")
+
+    crystal =
+      insert_memory!(host, host.memory_scope, "timestamp edge limit",
+        memory_type: "episodic",
+        metadata: %{"crystal" => %{"source" => "summary"}}
+      )
+
+    Repo.query!(
+      "UPDATE bpm_memories SET updated_at = '2026-01-01 00:00:00'::timestamp WHERE id = $1",
+      [Ecto.UUID.dump!(crystal.id)]
+    )
+
+    # The old row fits, but the marker plus a fractional updated_at does not.
+    assert [[budget]] =
+             Repo.query!(
+               "SELECT octet_length(bpm_memory_edge_payload(jsonb_populate_record(m, jsonb_build_object('metadata', jsonb_set(m.metadata, '{host_memory_command_revision}', to_jsonb($2::text), true))))::text) FROM bpm_memories m WHERE id = $1",
+               [Ecto.UUID.dump!(crystal.id), Ecto.UUID.generate()]
+             ).rows
+
+    Repo.query!(
+      "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes',jsonb_build_object('v',$1::integer),'integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [budget]
+    )
+
+    item = remember_item("timestamp-local", host.memory_scope, crystal.content)
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id, revision: nil}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert canonical_id == crystal.id
+    assert Repo.get!(MemorySchema, crystal.id).metadata == crystal.metadata
+  end
+
+  test "valid remember outside the edge item byte budget keeps its canonical result" do
+    host = create_host!("oversized-edge", "scope:oversized-edge")
+    item = remember_item("large-local", host.memory_scope, String.duplicate("large", 200))
+
+    Repo.query!(
+      "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes','{\"v\":512}','integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      []
+    )
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id, revision: nil}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: nil}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert Repo.get!(MemorySchema, canonical_id).content == item["content"]
+
+    assert Repo.aggregate(
+             from(c in Backplane.Memory.EdgeSync.Change, where: c.memory_id == ^canonical_id),
+             :count
+           ) == 0
+
+    assert Repo.aggregate(from(r in RememberRequest, where: r.memory_id == ^canonical_id), :count) ==
+             1
+
+    assert [] ==
+             Repo.query!(
+               "SELECT edge_revision FROM bpm_host_memory_command_receipts WHERE memory_id = $1",
+               [Ecto.UUID.dump!(canonical_id)]
+             ).rows
+  end
+
+  test "replay of a pre-receipt host remember lazily assigns one durable revision" do
+    host = create_host!("legacy-edge", "scope:legacy-edge")
+    item = remember_item("legacy-local", host.memory_scope, String.duplicate("legacy", 200))
+
+    Repo.query!(
+      "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes','{\"v\":512}','integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      []
+    )
+
+    # A previously committed command without a receipt has the same persisted
+    # shape as a pre-migration host request. Make it edge-eligible for replay.
+    assert {:ok, %{canonical_id: canonical_id, revision: nil}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    Repo.query!(
+      "UPDATE system_settings SET value = '{\"v\":262144}' WHERE key = 'memory.host_sync_max_item_bytes'",
+      []
+    )
+
+    request = Repo.one!(from(r in RememberRequest, where: r.memory_id == ^canonical_id))
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert is_integer(revision) and revision > 0
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: ^revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert [[^revision]] =
+             Repo.query!(
+               "SELECT edge_revision FROM bpm_host_memory_command_receipts WHERE source_request_id = $1",
+               [Ecto.UUID.dump!(request.id)]
+             ).rows
+  end
+
+  test "rolled back host remember leaves neither edge change nor command receipt" do
+    host = create_host!("rolled-back-edge", "scope:rolled-back-edge")
+    item = remember_item("rolled-back-local", host.memory_scope, "rolled back memory")
+
+    assert {:error, :abort} =
+             Repo.transaction(fn ->
+               assert {:ok, %{revision: revision}} =
+                        HostAgentMemorySync.apply_sync_item(host, item)
+
+               assert revision > 0
+               Repo.rollback(:abort)
+             end)
+
+    assert [] ==
+             Repo.query!(
+               "SELECT receipt.source_request_id FROM bpm_host_memory_command_receipts receipt JOIN bpm_memory_remember_requests request ON request.id = receipt.source_request_id WHERE request.idempotency_scope = $1",
+               ["host-memory.v1:#{host.id}"]
+             ).rows
+
+    assert {:ok, %{status: :ok, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert revision > 0
+  end
+
+  test "a second local id deduplicated onto one canonical memory receives that memory revision" do
+    host = create_host!("dedup-edge-receipt", "scope:dedup-edge")
+    first = remember_item("first-local", host.memory_scope, "same memory")
+    second = remember_item("second-local", host.memory_scope, "same memory")
+
+    assert {:ok, %{canonical_id: canonical_id, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, first)
+
+    assert {:ok, %{status: :ok, canonical_id: ^canonical_id, revision: second_revision}} =
+             HostAgentMemorySync.apply_sync_item(host, second)
+
+    assert second_revision > revision
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: ^second_revision}} =
+             HostAgentMemorySync.apply_sync_item(host, second)
+
+    assert 2 ==
+             Repo.aggregate(
+               from(c in Backplane.Memory.EdgeSync.Change, where: c.memory_id == ^canonical_id),
+               :count
+             )
+
+    assert 2 ==
+             Repo.aggregate(
+               from(r in RememberRequest, where: r.memory_id == ^canonical_id),
+               :count
+             )
+  end
+
+  test "same-content host remember gives a crystal-origin canonical memory an edge revision without changing provenance" do
+    host = create_host!("crystal-dedup-edge", "scope:crystal-dedup-edge")
+    metadata = %{"crystal" => %{"source" => "summary"}}
+
+    crystal =
+      insert_memory!(host, host.memory_scope, "crystal-origin memory",
+        memory_type: "episodic",
+        metadata: metadata
+      )
+
+    item = remember_item("crystal-local", host.memory_scope, crystal.content)
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id, revision: revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert canonical_id == crystal.id
+    assert is_integer(revision) and revision > 0
+
+    stored = Repo.get!(MemorySchema, canonical_id)
+    assert Map.drop(stored.metadata, ["host_memory_command_revision"]) == metadata
+    refute Map.has_key?(stored.metadata, "host_memory")
+    assert stored.host_id == host.id
+    assert stored.client_id == "host:#{host.id}"
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^canonical_id, revision: ^revision}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert [%{revision: ^revision, op: "upsert"}] =
+             Repo.all(
+               from(c in Backplane.Memory.EdgeSync.Change,
+                 where: c.memory_id == ^canonical_id,
+                 select: %{revision: c.revision, op: c.op}
+               )
+             )
+  end
+
+  test "deduplicated host remember stays ID-only when the revision marker would exceed the edge budget" do
+    host = create_host!("crystal-edge-budget", "scope:crystal-edge-budget")
+    metadata = %{"crystal" => %{"source" => "summary"}}
+
+    crystal =
+      insert_memory!(host, host.memory_scope, "crystal at edge limit",
+        memory_type: "episodic",
+        metadata: metadata
+      )
+
+    assert [[budget]] =
+             Repo.query!(
+               "SELECT octet_length(bpm_memory_edge_payload(m)::text) FROM bpm_memories m WHERE id = $1",
+               [Ecto.UUID.dump!(crystal.id)]
+             ).rows
+
+    Repo.query!(
+      "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes',jsonb_build_object('v',$1::integer),'integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [budget]
+    )
+
+    Repo.query!(
+      "INSERT INTO bpm_memory_partition_revisions (memory_space_id,scope,namespace,current_revision) VALUES ($1,$2,'private',0) ON CONFLICT DO NOTHING",
+      [Ecto.UUID.dump!(crystal.memory_space_id), host.memory_scope]
+    )
+
+    Repo.query!(
+      "INSERT INTO bpm_host_memory_cursors (host_id,memory_space_id,scope,namespace,applied_revision,acknowledged_at) VALUES ($1,$2,$3,'private',0,now())",
+      [Ecto.UUID.dump!(host.id), Ecto.UUID.dump!(crystal.memory_space_id), host.memory_scope]
+    )
+
+    item = remember_item("crystal-budget-local", host.memory_scope, crystal.content)
+
+    assert {:ok, %{status: :ok, canonical_id: canonical_id, revision: nil}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert canonical_id == crystal.id
+    assert Repo.get!(MemorySchema, canonical_id).metadata == metadata
+
+    assert [[false]] =
+             Repo.query!(
+               "SELECT bpm_memory_edge_eligible(m) FROM bpm_memories m WHERE id = $1",
+               [Ecto.UUID.dump!(crystal.id)]
+             ).rows
+
+    assert [[0, %NaiveDateTime{}]] =
+             Repo.query!(
+               "SELECT applied_revision, acknowledged_at FROM bpm_host_memory_cursors WHERE host_id = $1 AND memory_space_id = $2 AND scope = $3 AND namespace = 'private'",
+               [
+                 Ecto.UUID.dump!(host.id),
+                 Ecto.UUID.dump!(crystal.memory_space_id),
+                 host.memory_scope
+               ]
+             ).rows
+
+    assert Repo.aggregate(
+             from(c in Backplane.Memory.EdgeSync.Change, where: c.memory_id == ^canonical_id),
+             :count
+           ) == 0
+  end
+
   test "remember retries keep one immutable request and one request evidence row" do
     host = create_host!("retry-ledger", "scope:retry")
     item = remember_item("local_retry", "scope:retry", "retry-safe memory")
 
     results = Enum.map(1..10, fn _attempt -> HostAgentMemorySync.apply_sync_item(host, item) end)
 
-    assert [{:ok, %{status: :ok, canonical_id: canonical_id}} | retries] = results
+    assert [{:ok, %{status: :ok, canonical_id: canonical_id, revision: revision}} | retries] =
+             results
 
     assert Enum.all?(retries, fn result ->
-             result == {:ok, %{status: :duplicate, canonical_id: canonical_id}}
+             result ==
+               {:ok, %{status: :duplicate, canonical_id: canonical_id, revision: revision}}
            end)
 
     assert 1 ==
@@ -1025,6 +1356,7 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
           "bpm_host_memory_revocations",
           "memory_audit_log",
           "bpm_memory_evidence",
+          "bpm_host_memory_command_receipts",
           "bpm_memory_remember_requests"
         ]
 
@@ -1044,6 +1376,15 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
 
           Repo.query!(
             """
+            DELETE FROM bpm_host_memory_command_receipts
+            WHERE source_request_id IN
+              (SELECT id FROM bpm_memory_remember_requests WHERE idempotency_scope = $1)
+            """,
+            ["host-memory.v1:#{host_id}"]
+          )
+
+          Repo.query!(
+            """
             DELETE FROM bpm_memory_remember_requests
             WHERE idempotency_scope = $1
             """,
@@ -1051,6 +1392,28 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
           )
 
           Repo.query!("DELETE FROM bpm_memories WHERE host_id = $1", [host_id])
+
+          for table <- [
+                "bpm_host_memory_deliveries",
+                "bpm_host_memory_cursors",
+                "bpm_memory_snapshot_chunks",
+                "bpm_memory_snapshots",
+                "bpm_memory_changes",
+                "bpm_memory_partition_revisions"
+              ] do
+            case table do
+              "bpm_memory_snapshot_chunks" ->
+                Repo.query!(
+                  "DELETE FROM bpm_memory_snapshot_chunks WHERE snapshot_id IN (SELECT id FROM bpm_memory_snapshots WHERE memory_space_id = $1::uuid)",
+                  [Ecto.UUID.dump!(memory_space_id)]
+                )
+
+              _ ->
+                Repo.query!("DELETE FROM #{table} WHERE memory_space_id = $1::uuid", [
+                  Ecto.UUID.dump!(memory_space_id)
+                ])
+            end
+          end
 
           Repo.query!("DELETE FROM bpm_memory_space_entitlements WHERE host_id = $1::uuid", [
             Ecto.UUID.dump!(host_id)
@@ -1060,6 +1423,12 @@ defmodule Backplane.Api.HostAgentMemorySyncConcurrencyTest do
             "DELETE FROM bpm_memory_space_legacy_aliases WHERE memory_space_id = $1::uuid",
             [Ecto.UUID.dump!(memory_space_id)]
           )
+
+          for table <- ["bpm_projection_snapshots", "bpm_projection_states"] do
+            Repo.query!("DELETE FROM #{table} WHERE memory_space_id = $1::uuid", [
+              Ecto.UUID.dump!(memory_space_id)
+            ])
+          end
 
           Repo.query!("DELETE FROM bpm_memory_spaces WHERE id = $1::uuid", [
             Ecto.UUID.dump!(memory_space_id)

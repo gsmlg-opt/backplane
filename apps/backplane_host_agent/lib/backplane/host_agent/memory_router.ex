@@ -26,6 +26,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   alias Backplane.HostAgent.Services
   alias Backplane.HostAgent.Services.Memory, as: MemoryService
   alias Backplane.HostAgent.Trace
+  alias Backplane.MemoryToolContract
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -391,11 +392,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
         _ -> %{}
       end
 
-    case Backplane.HostAgent.Services.Memory.call(
-           method,
-           args,
-           memory_service_ctx(conn, agent_id, args)
-         ) do
+    case direct_memory_call(conn, agent_id, method, args) do
       {:ok, result} ->
         send_json(conn, 200, %{"ok" => true, "result" => result})
 
@@ -410,6 +407,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
           "ok" => false,
           "error" => "canonical memory facade is unavailable"
         })
+
+      {:error, {:hub_unavailable, _reason}} ->
+        send_json(conn, 503, %{"ok" => false, "error" => "canonical memory is unavailable"})
 
       {:error, reason} ->
         send_json(conn, 400, %{"ok" => false, "error" => format_error(reason)})
@@ -473,6 +473,20 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
+    case MemoryToolContract.route_class(name) do
+      class when class in [:canonical_overlap, :server_only] ->
+        route_remote_memory_tool(conn, id, agent_id, name, args, class)
+
+      _other ->
+        call_resolved_local_tool(conn, id, agent_id, name, args)
+    end
+  end
+
+  defp tool_call(conn, id, _agent_id, _params) do
+    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
+  end
+
+  defp call_resolved_local_tool(conn, id, agent_id, name, args) do
     case Services.resolve(name) do
       {:ok, service, bare} ->
         call_local_tool(
@@ -490,9 +504,66 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  defp tool_call(conn, id, _agent_id, _params) do
-    send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
+  defp route_remote_memory_tool(conn, id, agent_id, name, args, class) do
+    case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
+      {:ok, result} ->
+        send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
+
+      {:error, :not_connected} when class == :canonical_overlap ->
+        call_resolved_local_tool(conn, id, agent_id, name, args)
+
+      {:error, reason} ->
+        send_json(
+          conn,
+          200,
+          jsonrpc_result(id, tool_result(hub_unreachable_message(reason), true))
+        )
+    end
   end
+
+  defp direct_memory_call(conn, agent_id, method, args) do
+    name = "memory::" <> method
+    context = memory_service_ctx(conn, agent_id, args)
+
+    case MemoryToolContract.route_class(name) do
+      :device_local ->
+        MemoryService.call(method, args, context)
+
+      class when class in [:canonical_overlap, :server_only] ->
+        case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
+          {:ok, result} ->
+            {:ok, result}
+
+          {:error, :not_connected} when class == :canonical_overlap ->
+            MemoryService.call(method, args, context)
+
+          {:error, reason} ->
+            {:error, {:hub_unavailable, reason}}
+        end
+
+      :unknown ->
+        MemoryService.call(method, args, context)
+    end
+  end
+
+  defp remote_memory_args(name, args, agent_id) do
+    case MemoryToolContract.tool(name) do
+      {:ok, %{input_schema: %{"properties" => properties}}} when is_map(properties) ->
+        if Map.has_key?(properties, "agent_id") do
+          put_remote_agent_id(args, agent_id)
+        else
+          args
+        end
+
+      :error ->
+        args
+    end
+  end
+
+  defp put_remote_agent_id(args, agent_id) when is_binary(agent_id) and agent_id != "",
+    do: Map.put(args, "agent_id", agent_id)
+
+  defp put_remote_agent_id(args, _agent_id), do: Map.put_new(args, "agent_id", "local")
 
   defp strip_prefix("memory::" <> rest), do: rest
   defp strip_prefix(name), do: name
@@ -566,19 +637,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp merge_hub_tools(local_tools, hub_tools) do
-    seen =
-      Enum.reduce(local_tools, MapSet.new(), fn tool, names ->
-        case valid_tool_name(tool) do
-          {:ok, name} -> MapSet.put(names, name)
-          :error -> names
-        end
-      end)
-
     {_seen, accepted} =
-      Enum.reduce(hub_tools, {seen, []}, fn tool, {names, accepted} ->
+      Enum.reduce(hub_tools, {MapSet.new(), []}, fn tool, {names, accepted} ->
         case valid_tool_name(tool) do
           {:ok, name} ->
-            if MapSet.member?(names, name) do
+            if MapSet.member?(names, name) or
+                 MemoryToolContract.route_class(name) in [:canonical_overlap, :device_local] do
               {names, accepted}
             else
               {MapSet.put(names, name), [tool | accepted]}

@@ -273,7 +273,7 @@ defmodule Backplane.MCP.AccessEvent do
 
   defp format_ip(ip) do
     case :inet.ntoa(ip) do
-      {:error, :einval} -> nil
+      {:error, _reason} -> nil
       address -> to_string(address)
     end
   end

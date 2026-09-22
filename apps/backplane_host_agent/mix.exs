@@ -36,6 +36,7 @@ defmodule Backplane.HostAgent.MixProject do
       {:plug, "~> 1.16"},
       {:bandit, "~> 1.5"},
       {:telemetry, "~> 1.2"},
+      {:backplane_memory_contract, in_umbrella: true},
       {:backplane_memory, in_umbrella: true, only: [:dev, :test], runtime: false},
       {:day_ex, in_umbrella: true},
       {:math_ex, in_umbrella: true},

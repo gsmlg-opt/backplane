@@ -42,6 +42,7 @@ jobs:
           - backplane_mcp
           - backplane_mcp_protocol
           - backplane_memory
+          - backplane_memory_contract
           - backplane_monitor
           - backplane_skill_protocol
           - backplane_skills

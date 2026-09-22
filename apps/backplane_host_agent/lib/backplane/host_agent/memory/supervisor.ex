@@ -37,7 +37,15 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        interval_ms: Map.get(opts, :sync_interval_ms),
        batch_size: Map.get(opts, :sync_batch_size),
        max_attempts: Map.get(opts, :max_attempts)},
-      {Pruner, store: store_name, config: opts, name: Map.fetch!(opts, :pruner_name)}
+      {Pruner, store: store_name, config: opts, name: Map.fetch!(opts, :pruner_name)},
+      {Backplane.HostAgent.Memory.Edge.Supervisor,
+       opts
+       |> Map.get(:host_sync_v2, %{})
+       |> Map.update(
+         :reserved_db_paths,
+         [Map.fetch!(opts, :db_path)],
+         &[Map.fetch!(opts, :db_path) | &1]
+       )}
     ]
 
     Elixir.Supervisor.init(children, strategy: :one_for_one)

@@ -70,8 +70,9 @@ not rollback evidence.
    counts, projection lag, queue depth, and dead letters through the trusted
    admin Overview and Activity pages.
 
-Do not run `mix ecto.rollback` across the Memory V2 chain. Migrations 00006 and
-00007 are intentionally irreversible; rollback is restore plus event replay.
+Do not run `mix ecto.rollback` blindly across the Memory V2 chain. Migration
+00006 has `down/0`, but 00007 is explicitly irreversible; crossing it requires
+the restore-plus-event-replay plan.
 
 ## Consistency checks
 
@@ -169,6 +170,12 @@ partition/session/project dimensions. Content, raw payloads, prompts, tool
 input/output, and errors are never included in telemetry metadata.
 
 ## Host spool recovery and resynchronization
+
+For V2 cursor, snapshot, dead-letter command, stale mirror, retention, and
+protection procedures, use the
+[host edge runbook](host-memory-edge-runbook.md). Capture spool, command
+outbox, and edge mirror are independent stores. A V1 fact-set hash is not a V2
+cursor; never delete a mirror or reset a cursor as a spool recovery shortcut.
 
 The capture spool is the host-local durability boundary. Its default path is
 `<work_dir>/memory/capture_spool.db`; do not copy, delete, or edit it while the

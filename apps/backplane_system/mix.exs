@@ -29,6 +29,7 @@ defmodule BackplaneSystem.MixProject do
 
   defp deps do
     [
+      {:backplane_memory_contract, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},

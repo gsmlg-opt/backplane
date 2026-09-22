@@ -13,8 +13,8 @@ defmodule Backplane.Memory.Graph.BFS do
   @doc """
   BFS from nodes matching entity_name up to depth hops.
 
-  Optional `relation_filter` (string) restricts edge traversal to that
-  relation type. Returns `{:ok, %{nodes: [...], edges: [...]}}`.
+  A partition is required. This unpartitioned overload returns
+  `{:error, :unauthorized}`.
   """
   @spec query(String.t(), pos_integer(), String.t() | nil) ::
           {:error, :unauthorized}
@@ -42,10 +42,10 @@ defmodule Backplane.Memory.Graph.BFS do
   @doc """
   BFS starting from a pre-fetched list of seed nodes up to depth hops.
 
-  Avoids a redundant DB lookup when the caller already has the seed nodes.
-  Returns `{:ok, %{nodes: [...], edges: [...]}}`.
+  A partition is required. This unpartitioned overload returns
+  `{:error, :unauthorized}`.
   """
-  @spec query_from_nodes([Node.t()], pos_integer(), String.t() | nil) ::
+  @spec query_from_nodes([map()], pos_integer(), String.t() | nil) ::
           {:error, :unauthorized}
   def query_from_nodes(_seed_nodes, _depth, _relation_filter \\ nil), do: {:error, :unauthorized}
 

@@ -2158,15 +2158,18 @@ defmodule Backplane.Transport.McpHandlerTest do
   defp start_audit_writer_for_tests! do
     stop_audit_writer_for_tests!()
 
-    {:ok, _} =
+    {:ok, buffer} =
       GenServer.start_link(Backplane.Audit.Buffer, [name: :audit, capacity: 100], name: :audit)
 
-    {:ok, _} =
+    {:ok, writer} =
       Backplane.Audit.Writer.start_link(
         batch_size: 50,
         flush_interval_ms: 60_000,
         subscribe_settings: false
       )
+
+    Process.unlink(buffer)
+    Process.unlink(writer)
 
     :ok
   end

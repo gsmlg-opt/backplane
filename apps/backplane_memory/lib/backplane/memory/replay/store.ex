@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Replay.Store do
   @moduledoc false
   alias Backplane.Memory.Replay.Event
   @version "replay-v1"
+  @insert_batch_size 1_000
 
   def put!(subject_id, input_revision, partition, session_id, rows) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
@@ -32,7 +33,9 @@ defmodule Backplane.Memory.Replay.Store do
         }
       end)
 
-    if entries != [], do: repo().insert_all(Event, entries, on_conflict: :nothing)
+    entries
+    |> Enum.chunk_every(@insert_batch_size)
+    |> Enum.each(&repo().insert_all(Event, &1, on_conflict: :nothing))
 
     Backplane.Memory.ReplayNotifier.enqueue(repo(), %{
       memory_space_id: partition.memory_space_id,

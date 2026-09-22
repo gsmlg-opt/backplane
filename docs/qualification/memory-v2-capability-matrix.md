@@ -26,3 +26,12 @@ at `/memory`.
 The executable contract tests verify that all named MCP tools remain registered,
 all documented REST paths remain routed, all LiveView roots remain routed, and
 the matrix retains every product capability and surface column.
+
+The host-agent `memory::*` route has a distinct authority rule: connected
+canonical operations use Backplane's authenticated exact partition; host
+remember/forget hold provisional command durability until canonical ACK;
+offline recall/list/stats may read a bounded revisioned mirror only after a
+classified transport failure. Slots/facets are explicitly device-local.
+The [host protocol](../memory/host-memory-v2-protocol.md) supplies the routing
+matrix and ACK/consistency envelope; this product matrix does not imply a
+second host-authoritative memory surface.

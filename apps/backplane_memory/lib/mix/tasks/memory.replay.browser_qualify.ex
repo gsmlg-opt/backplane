@@ -184,10 +184,9 @@ defmodule Mix.Tasks.Memory.Replay.BrowserQualify do
   defp partition(run_id) do
     memory_space_id = Ecto.UUID.generate()
 
-    {:ok, _space} =
-      %MemorySpace{}
-      |> MemorySpace.changeset(%{id: memory_space_id, kind: "private", status: "active"})
-      |> Backplane.Repo.insert()
+    %MemorySpace{}
+    |> MemorySpace.changeset(%{id: memory_space_id, kind: "private", status: "active"})
+    |> Backplane.Repo.insert!()
 
     %{
       memory_space_id: memory_space_id,

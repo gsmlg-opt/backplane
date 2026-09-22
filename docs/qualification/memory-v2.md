@@ -113,6 +113,19 @@ all four deterministic projection states are `complete`.
 
 ## Production qualification record
 
+The host-edge A–J qualification adds three deterministic A–I seeds (101, 202,
+303) and a real 10,000-event projection/replay case. The bounded-storage case
+measured three retained items at 1,033–1,039 bytes, two at 691–695 bytes,
+and one at 346–348 bytes across the configured quotas. The 10,000-event case
+completed projection and replay in bounded batches, observed 101 durable
+frontier generations, and only one pending repair job at the measured point.
+Record exact test command/results and migration versions with the release;
+these measurements are correctness fixtures, not production performance
+throughput. See [protocol](../memory/host-memory-v2-protocol.md) and
+[runbook](../operations/host-memory-edge-runbook.md). Production plaintext
+edge qualification is prohibited while
+[concord#91](https://github.com/gsmlg-dev/concord/issues/91) remains open.
+
 Attach the workflow CI-smoke artifact and installed-release smoke result to the
 release. Record authoritative `performance` reports separately when they are
 run on controlled hardware; their absence does not block GitHub artifact

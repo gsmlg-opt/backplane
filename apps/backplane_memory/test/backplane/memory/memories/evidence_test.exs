@@ -432,6 +432,7 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
         project: "backplane",
         host_id: partition.host_id,
         client_id: partition.client_id,
+        source_client_id: partition.source_client_id,
         scope: partition.scope,
         namespace: partition.namespace,
         status: "closed",

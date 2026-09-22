@@ -388,13 +388,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     send(upstream_pid, :release_chunked_json)
 
     response = Task.await(request, 5_000)
-    {headers, body} = split_http_response(response)
+    response_parts = split_http_response(response)
     native_body = OpenAIUpstream.chunked_json_body()
 
-    headers = String.downcase(headers)
-    assert String.contains?(headers, "transfer-encoding: chunked")
-    refute String.contains?(headers, "content-length:")
-    assert decode_chunked_body(body) == native_body
+    assert_response_body(response_parts, native_body)
     assert submission_count() == 1
 
     log = one_log!()
@@ -415,13 +412,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     endpoint_port: endpoint_port
   } do
     response = post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-overflow"))
-    {headers, body} = split_http_response(response)
+    response_parts = split_http_response(response)
     native_body = OpenAIUpstream.oversized_chunked_json_body()
 
-    headers = String.downcase(headers)
-    assert String.contains?(headers, "transfer-encoding: chunked")
-    refute String.contains?(headers, "content-length:")
-    assert decode_chunked_body(body) == native_body
+    assert_response_body(response_parts, native_body)
     assert submission_count() == 1
 
     log = one_log!()
@@ -722,6 +716,17 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   defp decode_chunked_body(body), do: decode_chunked_body(body, [])
+
+  defp assert_response_body({headers, body}, expected) do
+    headers = String.downcase(headers)
+
+    if String.contains?(headers, "transfer-encoding: chunked") do
+      assert decode_chunked_body(body) == expected
+    else
+      assert String.contains?(headers, "content-length: #{byte_size(expected)}")
+      assert body == expected
+    end
+  end
 
   defp decode_chunked_body(body, chunks) do
     [size_line, rest] = :binary.split(body, "\r\n")

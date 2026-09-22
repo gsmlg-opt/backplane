@@ -52,6 +52,17 @@ defmodule Backplane.HostAgent.ChannelTest do
     end
   end
 
+  defmodule FakeMirror do
+    def offer(_opts),
+      do:
+        {:ok,
+         %{
+           "offers" => ["host_memory.v2"],
+           "max_frame_bytes" => 123_456,
+           "partitions" => []
+         }}
+  end
+
   setup do
     previous = Application.get_env(:backplane_host_agent, :socket_client_module)
     previous_channel = Application.get_env(:backplane_host_agent, :socket_channel_module)
@@ -61,6 +72,8 @@ defmodule Backplane.HostAgent.ChannelTest do
 
     previous_store = Application.get_env(:backplane_host_agent, :memory_store)
     previous_memory_config = Application.get_env(:backplane_host_agent, :memory_config)
+    previous_edge_config = Application.get_env(:backplane_host_agent, :memory_host_sync_v2)
+    previous_edge_mirror = Application.get_env(:backplane_host_agent, :edge_mirror_module)
 
     :persistent_term.put({FakeSocketClient, :owner}, self())
     :persistent_term.put({AlreadyStartedSocketClient, :owner}, self())
@@ -78,6 +91,8 @@ defmodule Backplane.HostAgent.ChannelTest do
       restore_env(:socket_channel_join_module, previous_channel_join)
       restore_env(:memory_store, previous_store)
       restore_env(:memory_config, previous_memory_config)
+      restore_env(:memory_host_sync_v2, previous_edge_config)
+      restore_env(:edge_mirror_module, previous_edge_mirror)
 
       :persistent_term.erase({FakeSocketClient, :owner})
       :persistent_term.erase({AlreadyStartedSocketClient, :owner})
@@ -143,7 +158,7 @@ defmodule Backplane.HostAgent.ChannelTest do
     refute_receive {:connect, ^socket}
   end
 
-  test "join announces active memory scopes with fact set hashes" do
+  test "join preserves the v1 offer when v2 persistence is unavailable" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
     Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
     Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
@@ -161,6 +176,31 @@ defmodule Backplane.HostAgent.ChannelTest do
 
     assert socket == self()
     assert hash == :crypto.hash(:sha256, "[]") |> Base.encode16(case: :lower)
+  end
+
+  test "join adds the protected v2 offer without dropping the v1 block" do
+    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
+    Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
+    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
+
+    Application.put_env(:backplane_host_agent, :memory_host_sync_v2, %{
+      enabled: true,
+      development_plaintext: true
+    })
+
+    Application.put_env(:backplane_host_agent, :edge_mirror_module, FakeMirror)
+
+    assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
+
+    assert_receive {:join, _socket, "host_agent:host-1",
+                    %{
+                      "memory" => %{"protocol" => "host_memory.v1"},
+                      "memory_v2" => %{
+                        "offers" => ["host_memory.v2"],
+                        "max_frame_bytes" => 123_456,
+                        "partitions" => []
+                      }
+                    }}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_host_agent, key)

@@ -1,14 +1,13 @@
 defmodule Backplane.Memory.Slots.Reflect do
   @moduledoc """
-  Stop-hook slot reflection. Scans recent observations for TODO/FIXME/blocked patterns
-  and updates pending_items, session_patterns, and project_context slots.
-  Only runs when memory.reflect_enabled=true.
+  Legacy stop-hook slot reflection. Server-side reflection requires a device-local
+  partition, so this entry point does not read observations or write slots.
   """
 
-  @doc "Run slot reflection for a session. Returns :ok or {:skip, reason}."
+  @doc "Return why server-side slot reflection did not run."
   def run(_session_id) do
     if Backplane.Settings.get("memory.reflect_enabled") == "true" do
-      {:skip, :incomplete_partition}
+      {:skip, :device_local_only}
     else
       {:skip, :disabled}
     end

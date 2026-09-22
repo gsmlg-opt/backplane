@@ -10,6 +10,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Projections.{ProcessingState, ProjectedSession}
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -30,16 +31,87 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         } = job
       ) do
     Backplane.Memory.PipelineTelemetry.span("profile", job.args, fn ->
-      case generator_partition(partition) do
-        {:ok, partition} -> perform_partition(project, partition, job.args["force"] == true)
-        {:error, _reason} -> {:discard, :incomplete_partition}
+      case generator_partition(project, partition) do
+        {:ok, partition} ->
+          perform_partition(project, partition, job.args["force"] == true, job)
+
+        {:error, reason} ->
+          record_partition_issue(project, partition, reason)
+          {:discard, reason}
       end
     end)
   end
 
   def perform(%Oban.Job{}), do: {:discard, :ambiguous_partition}
 
-  defp perform_partition(project, partition, force?) do
+  defp perform_partition(project, partition, force?, job) do
+    with {:ok, state_attrs} <- processing_attrs(project, partition) do
+      case transition_current(project, partition, state_attrs, "running") do
+        {:ok, _state} ->
+          run_current(project, partition, state_attrs, force?, job)
+
+        {:stale, _state} ->
+          {:discard, :stale}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp run_current(project, partition, state_attrs, force?, job) do
+    try do
+      case do_perform_partition(project, partition, force?) do
+        {:build, profile_attrs} ->
+          await_test_persistence_gate()
+
+          case persist_profile(project, partition, state_attrs, profile_attrs) do
+            {:error, _reason} = error ->
+              record_processing_outcome(project, partition, state_attrs, error, job)
+              error
+
+            result ->
+              result
+          end
+
+        result ->
+          record_processing_outcome(project, partition, state_attrs, result, job)
+          result
+      end
+    rescue
+      exception ->
+        _ =
+          transition_current(
+            project,
+            partition,
+            state_attrs,
+            ProcessingState.failure_status(job),
+            reason: exception
+          )
+
+        reraise exception, __STACKTRACE__
+    end
+  end
+
+  if Mix.env() == :test do
+    defp await_test_persistence_gate do
+      case Process.get({__MODULE__, :persistence_gate}) do
+        owner when is_pid(owner) ->
+          send(owner, {:profile_ready_to_persist, self()})
+
+          receive do
+            :continue_profile_persistence -> :ok
+          end
+
+        _ ->
+          :ok
+      end
+    end
+  else
+    defp await_test_persistence_gate, do: :ok
+  end
+
+  defp do_perform_partition(project, partition, force?) do
     host_id = partition.host_id
     memory_space_id = partition.memory_space_id
     client_id = partition.client_id
@@ -59,7 +131,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     if fresh?(existing) and not force? do
       {:ok, :cached}
     else
-      build_and_upsert(project, partition)
+      {:build, build_attrs(project, partition)}
     end
   end
 
@@ -71,19 +143,24 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   end
 
   def enqueue(project, partition, opts) when is_list(opts) do
-    with {:ok, partition} <- generator_partition(partition) do
-      %{
-        project: project,
-        memory_space_id: Map.fetch!(partition, :memory_space_id),
-        host_id: Map.fetch!(partition, :host_id),
-        client_id: Map.fetch!(partition, :client_id),
-        source_client_id: Map.get(partition, :source_client_id),
-        scope: Map.fetch!(partition, :scope),
-        namespace: Map.fetch!(partition, :namespace),
-        force: Keyword.get(opts, :force, false)
-      }
-      |> new()
-      |> Oban.insert()
+    case generator_partition(project, partition) do
+      {:ok, partition} ->
+        %{
+          project: project,
+          memory_space_id: Map.fetch!(partition, :memory_space_id),
+          host_id: Map.fetch!(partition, :host_id),
+          client_id: Map.fetch!(partition, :client_id),
+          source_client_id: Map.get(partition, :source_client_id),
+          scope: Map.fetch!(partition, :scope),
+          namespace: Map.fetch!(partition, :namespace),
+          force: Keyword.get(opts, :force, false)
+        }
+        |> new()
+        |> Oban.insert()
+
+      {:error, reason} = error ->
+        record_partition_issue(project, partition, reason)
+        error
     end
   end
 
@@ -93,7 +170,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     DateTime.diff(DateTime.utc_now(), updated_at, :second) < @cache_ttl_seconds
   end
 
-  defp build_and_upsert(project, partition) do
+  defp build_attrs(project, partition) do
     host_id = partition.host_id
     memory_space_id = partition.memory_space_id
     client_id = partition.client_id
@@ -160,7 +237,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     recent_summaries = recent_summaries(partition, project, session_ids)
     session_count = length(session_ids)
 
-    attrs = %{
+    %{
       project: project,
       memory_space_id: memory_space_id,
       host_id: host_id,
@@ -186,7 +263,22 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
       total_observations: total_obs,
       updated_at: DateTime.utc_now()
     }
+  end
 
+  defp persist_profile(project, partition, state_attrs, profile_attrs) do
+    case ProcessingState.persist_current(
+           repo(),
+           state_attrs,
+           fn -> current_attrs(project, partition) end,
+           fn -> upsert_profile(profile_attrs) end
+         ) do
+      {:ok, _profile, _state} -> {:ok, :built}
+      {:stale, _state} -> {:discard, :stale}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp upsert_profile(attrs) do
     %Profile{}
     |> Profile.changeset(attrs)
     |> repo().insert(
@@ -207,8 +299,6 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
          ]},
       conflict_target: [:memory_space_id, :host_id, :client_id, :scope, :namespace, :project]
     )
-
-    {:ok, :built}
   end
 
   # Returns top-20 entries sorted by frequency as a map %{item => count}
@@ -275,15 +365,219 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     |> Map.new()
   end
 
-  defp generator_partition(partition) do
-    with {:ok, partition} <- PartitionIdentity.validate(partition),
-         true <- present?(partition[:host_id]) and present?(partition[:client_id]) do
-      {:ok, partition}
-    else
-      false -> {:error, :incomplete_partition}
-      {:error, reason} -> {:error, reason}
+  defp generator_partition(project, partition) do
+    with {:ok, claim} <- PartitionIdentity.validate_generator(partition),
+         {:ok, expected} <- authoritative_partition(project, claim),
+         {:ok, validated} <- PartitionIdentity.validate_generator(claim, expected) do
+      {:ok, validated}
     end
   end
 
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+  defp authoritative_partition(project, claim) do
+    cond do
+      exact_source?(project, claim) -> {:ok, claim}
+      any_source?(project) -> {:error, :partition_mismatch}
+      true -> {:error, :incomplete_partition}
+    end
+  end
+
+  defp exact_source?(project, claim) do
+    repo().exists?(
+      from(m in Memory,
+        where:
+          fragment("?->>'project'", m.metadata) == ^project and
+            m.memory_space_id == ^claim.memory_space_id and m.host_id == ^claim.host_id and
+            m.client_id == ^claim.client_id and m.scope == ^claim.scope and
+            m.namespace == ^claim.namespace and is_nil(m.deleted_at)
+      )
+    ) or
+      repo().exists?(
+        from(s in Summary,
+          join: session in ProjectedSession,
+          on: session.subject_id == s.subject_id,
+          where:
+            s.project == ^project and is_nil(s.superseded_at) and
+              session.memory_space_id == ^claim.memory_space_id and
+              session.host_id == ^claim.host_id and session.client_id == ^claim.client_id and
+              session.scope == ^claim.scope and session.namespace == ^claim.namespace
+        )
+      ) or
+      repo().exists?(
+        from(p in Profile,
+          where:
+            p.project == ^project and p.memory_space_id == ^claim.memory_space_id and
+              p.host_id == ^claim.host_id and p.client_id == ^claim.client_id and
+              p.scope == ^claim.scope and p.namespace == ^claim.namespace
+        )
+      )
+  end
+
+  defp any_source?(project) do
+    repo().exists?(
+      from(m in Memory,
+        where: fragment("?->>'project'", m.metadata) == ^project and is_nil(m.deleted_at)
+      )
+    ) or
+      repo().exists?(
+        from(s in Summary,
+          join: session in ProjectedSession,
+          on: session.subject_id == s.subject_id,
+          where: s.project == ^project and is_nil(s.superseded_at)
+        )
+      ) or repo().exists?(from(p in Profile, where: p.project == ^project))
+  end
+
+  defp record_partition_issue(project, partition, reason) do
+    claim = issue_partition(partition)
+    details = Map.put(claim, :project, project)
+
+    source_id =
+      [project, claim]
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    Backplane.Memory.Memories.record_partition_issue(
+      "memory_profile_generator",
+      source_id,
+      reason,
+      details
+    )
+  end
+
+  defp issue_partition(partition) do
+    Map.new([:memory_space_id, :host_id, :client_id, :scope, :namespace], fn key ->
+      value = Map.get(partition, key, Map.get(partition, Atom.to_string(key)))
+      {key, if(is_binary(value), do: String.trim(value), else: value)}
+    end)
+  end
+
+  defp processing_attrs(project, partition) do
+    memory_revisions =
+      repo().all(
+        from(memory in Memory,
+          where:
+            memory.memory_space_id == ^partition.memory_space_id and
+              memory.host_id == ^partition.host_id and memory.client_id == ^partition.client_id and
+              memory.scope == ^partition.scope and memory.namespace == ^partition.namespace and
+              fragment("?->>'project'", memory.metadata) == ^project and is_nil(memory.deleted_at),
+          select: {memory.id, memory.content_hash}
+        )
+      )
+      |> Enum.sort()
+      |> Enum.map(fn {id, hash} ->
+        "memory:" <> id <> ":" <> Base.encode16(hash || <<>>, case: :lower)
+      end)
+
+    lesson_revisions =
+      repo().all(
+        from(lesson in Lesson,
+          join: memory in Memory,
+          on: memory.id == lesson.memory_id,
+          where:
+            lesson.status == "active" and memory.memory_space_id == ^partition.memory_space_id and
+              memory.host_id == ^partition.host_id and memory.client_id == ^partition.client_id and
+              memory.scope == ^partition.scope and memory.namespace == ^partition.namespace and
+              is_nil(memory.deleted_at),
+          select: {lesson.memory_id, memory.content_hash}
+        )
+      )
+      |> Enum.sort()
+      |> Enum.map(fn {id, hash} ->
+        "lesson:" <> id <> ":" <> Base.encode16(hash || <<>>, case: :lower)
+      end)
+
+    crystal_revisions =
+      repo().all(
+        from(crystal in Crystal,
+          where:
+            crystal.memory_space_id == ^partition.memory_space_id and
+              crystal.host_id == ^partition.host_id and
+              crystal.client_id == ^partition.client_id and crystal.scope == ^partition.scope and
+              crystal.namespace == ^partition.namespace and crystal.project == ^project and
+              crystal.status == "complete",
+          order_by: [desc: crystal.completed_at, desc: crystal.id],
+          limit: 10,
+          select: {crystal.id, crystal.output_revision}
+        )
+      )
+      |> Enum.sort()
+      |> Enum.map(fn {id, revision} -> "crystal:" <> id <> ":" <> revision end)
+
+    summary_revisions =
+      repo().all(
+        from(summary in Summary,
+          where:
+            summary.memory_space_id == ^partition.memory_space_id and
+              summary.host_id == ^partition.host_id and
+              summary.source_client_id == ^partition[:source_client_id] and
+              summary.scope == ^partition.scope and
+              summary.namespace == ^partition.namespace and summary.project == ^project and
+              is_nil(summary.superseded_at),
+          order_by: [desc: summary.created_at, desc: summary.id],
+          limit: 10,
+          select: {summary.id, summary.output_revision}
+        )
+      )
+      |> Enum.sort()
+      |> Enum.map(fn {id, revision} -> "summary:" <> id <> ":" <> revision end)
+
+    revisions =
+      Enum.sort(memory_revisions ++ lesson_revisions ++ crystal_revisions ++ summary_revisions)
+      |> Enum.join("\n")
+
+    subject = [
+      partition.memory_space_id,
+      partition.host_id,
+      partition.client_id,
+      partition.scope,
+      partition.namespace,
+      project
+    ]
+
+    {:ok,
+     %{
+       memory_space_id: partition.memory_space_id,
+       host_id: partition.host_id,
+       source_client_id: partition[:source_client_id],
+       scope: partition.scope,
+       namespace: partition.namespace,
+       projector: "profile",
+       subject_type: "memory_profile",
+       subject_id:
+         Base.url_encode64(:erlang.term_to_binary(subject, [:deterministic]), padding: false),
+       processing_version: "profile-v1",
+       input_revision: :crypto.hash(:sha256, revisions) |> Base.encode16(case: :lower),
+       output_revision: nil
+     }}
+  end
+
+  defp record_processing_outcome(project, partition, attrs, {:ok, _result}, _job),
+    do: transition_current(project, partition, attrs, "complete")
+
+  defp record_processing_outcome(project, partition, attrs, {:error, reason}, job),
+    do:
+      transition_current(project, partition, attrs, ProcessingState.failure_status(job),
+        reason: reason
+      )
+
+  defp transition_current(project, partition, attrs, status, opts \\ []) do
+    ProcessingState.transition_current(
+      repo(),
+      attrs,
+      status,
+      fn -> current_attrs(project, partition) end,
+      opts
+    )
+  end
+
+  defp current_attrs(project, partition) do
+    # Generation stays outside this transaction. The short source fence prevents a new aggregate
+    # revision from committing between this authoritative re-read and profile/state persistence.
+    repo().query!(
+      "LOCK TABLE bpm_memories, memory_crystals, memory_lessons, memory_summaries IN SHARE MODE"
+    )
+
+    processing_attrs(project, partition)
+  end
 end
