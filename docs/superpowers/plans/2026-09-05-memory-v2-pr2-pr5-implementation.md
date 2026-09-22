@@ -252,6 +252,34 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   without `memory_space_id`; the user has been asked to approve the task file
   before repair. Do not claim the full Memory or release gate until these
   exact scope decisions and their reruns are complete.
+- Task 20 additional scope approved by the user on 2026-09-22: modify only
+  `apps/backplane_memory/test/backplane/memory/memories/profile_build_worker_test.exs`
+  to align missing-source and valid-source enqueue assertions with the
+  fail-closed Service repair, and
+  `apps/backplane_memory/lib/mix/tasks/memory.replay.browser_qualify.ex`
+  to give its disposable qualification partition a canonical memory space.
+  Keep the existing browser qualification as the integration acceptance test;
+  preserve all unrelated files and rerun the affected suites and release gates.
+- Task 20 umbrella-failure repair scope approved by the user on 2026-09-22:
+  investigate and repair the eight failing test files in Observability flags,
+  LLM usage/access observability, MCP request logger/handler, Memory MCP
+  contract, and admin dashboard/recall inspector, together with their directly
+  implicated owning modules. The fresh full umbrella run had 30 failures:
+  Observability 2, LLM 11, MCP 4, Memory MCP contract 2, and admin 11. The
+  Memory, host-agent, and API suites had passed separately. Preserve the exact
+  fail-closed Memory partition constraints and serialize Mix/devenv builds.
+- Task 20 umbrella repair checkpoint: canonical Memory MCP and recall-inspector
+  fixtures committed as `b0cd3aa9`; dashboard reconnect-flash assertion committed
+  as `06de5f2b`; MCP malformed-IP and skill-load audit-context repair committed
+  as `0e5e0a7f`. Specification and quality reviews approved these changes.
+  Focused Memory contract/admin tests passed 27/27, the final inspector rerun
+  passed 11/11, and MCP passed 133/133 with warnings-as-errors. The exact release
+  workflow migration/projection batch passed 50/50; its outage/privacy/adapter
+  batch passed 35/35. Full format, warnings-as-errors compile, strict Credo,
+  and default-environment Dialyzer passed after the MCP repair. The separate
+  Observability flags/legacy usage focused tests passed 4/4, but the test-boot
+  Observability policy repair and full umbrella rerun remain pending narrow
+  approval for three additional test-support files. No local merge or push.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
