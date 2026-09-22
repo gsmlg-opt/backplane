@@ -101,7 +101,6 @@
   {"lib/backplane/transport/idempotency.ex",
    "Type mismatch in call with opaque term in normalize_replay_headers."},
   {"lib/backplane/transport/idempotency.ex", "Type mismatch in call without opaque term in put."},
-  {"lib/backplane/memory/graph/bfs.ex", :unknown_type},
   {"lib/backplane/memory/memories.ex", :pattern_match_cov},
   {"lib/backplane/memory/service.ex", :pattern_match_cov},
   {"lib/backplane/mcp_protocol.ex", :call},
