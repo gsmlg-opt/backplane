@@ -1,6 +1,7 @@
 defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  import Ecto.Query
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Audit
@@ -9,7 +10,18 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   alias Backplane.Memory.Ingest.{EventValidator, Upcaster}
   alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Memories.Evidence
-  alias Backplane.Memory.Projections.{RepairFrontier, Snapshot, Source, State}
+  alias Backplane.Memory.Replay.Event, as: ReplayEvent
+
+  alias Backplane.Memory.Projections.{
+    ProjectedObservation,
+    ProjectedSession,
+    Rebuild,
+    RepairFrontier,
+    Snapshot,
+    Source,
+    State
+  }
+
   alias Backplane.Memory.Workers.{LessonCandidateWorker, ProjectionRepairWorker}
 
   test "enqueues a revisioned canonical summary for closed projections after grace" do
@@ -357,8 +369,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
     end)
   end
 
-  @tag timeout: 120_000
-  test "10,000 accepted events advance one frontier while pending repair work stays bounded" do
+  @tag timeout: 180_000
+  test "Scenario J: 10,000 accepted events coalesce to one pending projection repair job" do
     Oban.Testing.with_testing_mode(:manual, fn ->
       host_id = "scale-host-#{Ecto.UUID.generate()}"
       session_id = "scale-session-#{Ecto.UUID.generate()}"
@@ -415,19 +427,28 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert :ok =
                ProjectionRepairWorker.perform(
                  job,
-                 fn ^host_id, ^session_id ->
-                   {:ok,
-                    %{
-                      input_revision: revision,
-                      memory_space_id: memory_space_id(host_id),
-                      client_id: "host:#{host_id}",
-                      source_client_id: "codex-cli",
-                      scope: "project:backplane",
-                      namespace: "private"
-                    }}
-                 end,
+                 &Rebuild.session_locked/2,
                  fn _, _, _ -> {:ok, :not_needed} end
                )
+
+      subject_id = Source.subject_id!(host_id, session_id)
+      projected = repo().get!(ProjectedSession, subject_id)
+      assert projected.input_revision == revision
+      assert projected.source_sequence_max == 10_000
+
+      stable_rows = persisted_row_fingerprints(subject_id)
+      assert length(stable_rows.observations) == 10_000
+      assert length(stable_rows.replay) == 10_000
+
+      stable_projection =
+        Map.take(projected, [:input_revision, :source_sequence_max, :status, :scope, :namespace])
+
+      assert {:ok, %{input_revision: ^revision}} = Rebuild.session(host_id, session_id)
+
+      assert Map.take(repo().get!(ProjectedSession, subject_id), Map.keys(stable_projection)) ==
+               stable_projection
+
+      assert persisted_row_fingerprints(subject_id) == stable_rows
 
       assert %RepairFrontier{
                requested_generation: 101,
@@ -436,6 +457,13 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                requested_revision: ^revision,
                completed_revision: ^revision
              } = RepairFrontier.get(repo(), host_id, session_id)
+
+      assert [%Oban.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
+               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+
+      IO.puts(
+        "Scenario J projection scheduling: events=10000 generations=101 pending_jobs=1 completed_generation=101"
+      )
     end)
   end
 
@@ -902,6 +930,33 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
           )
         )
     }
+  end
+
+  defp persisted_row_fingerprints(subject_id) do
+    %{
+      observations:
+        repo().all(
+          from(row in ProjectedObservation,
+            where: row.subject_id == ^subject_id,
+            order_by: [asc: row.source_sequence, asc: row.event_id]
+          )
+        )
+        |> Enum.map(&semantic_row/1),
+      replay:
+        repo().all(
+          from(row in ReplayEvent,
+            where: row.subject_id == ^subject_id,
+            order_by: [asc: row.position]
+          )
+        )
+        |> Enum.map(&semantic_row/1)
+    }
+  end
+
+  defp semantic_row(row) do
+    row
+    |> Map.from_struct()
+    |> Map.drop([:__meta__, :inserted_at, :updated_at])
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
