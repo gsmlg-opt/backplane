@@ -46,8 +46,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
   def validate(_schema, _input), do: validation("tool schema and arguments must be maps")
 
   defp validate_root_schema(schema) do
-    case {fetch_value(schema, :oneOf), value(schema, :type, "object")} do
-      {:error, type} when type in ["object", :object] -> validate_schema(schema, :root)
+    case value(schema, :type, "object") do
+      type when type in ["object", :object] -> validate_schema(schema, :root)
       _ -> {:error, Error.new(:unsupported_capability, "only object tool schemas are supported")}
     end
   end
@@ -62,7 +62,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
            Error.new(:unsupported_capability, "combining schema compositions is unsupported")}
 
         {{:ok, branches}, :error} ->
-          validate_one_of_schema(schema, branches)
+          validate_one_of_schema(schema, branches, position)
 
         {:error, {:ok, branches}} ->
           validate_any_of_schema(schema, branches, position)
@@ -106,25 +106,37 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp json_value?(_value), do: false
 
-  defp validate_one_of_schema(schema, branches) do
+  defp validate_one_of_schema(schema, branches, position) do
+    sibling_schema = delete_value(schema, :oneOf)
+
     sibling_keys =
-      schema
+      sibling_schema
       |> Map.keys()
-      |> Enum.reject(&(schema_key(&1) in ["oneOf", "description", "default"]))
+      |> Enum.reject(&(schema_key(&1) in ["description", "default"]))
 
     cond do
-      sibling_keys != [] ->
+      not is_list(branches) or branches == [] ->
+        validation("schema oneOf must be a non-empty list")
+
+      sibling_keys == [] and position not in [:root, :object_branch] ->
+        reduce_schemas(branches)
+
+      not object_schema?(sibling_schema, position) ->
         {:error,
          Error.new(:unsupported_capability, "oneOf sibling keywords are unsupported",
            details: %{keywords: sibling_keys}
          )}
 
-      not is_list(branches) or branches == [] ->
-        validation("schema oneOf must be a non-empty list")
-
       true ->
-        reduce_schemas(branches)
+        with :ok <- validate_typed_schema(sibling_schema, position),
+             :ok <- reduce_schemas(branches, :object_branch) do
+          :ok
+        end
     end
+  end
+
+  defp object_schema?(schema, position) do
+    position in [:root, :object_branch] or value(schema, :type, nil) in ["object", :object]
   end
 
   defp validate_any_of_schema(schema, branches, position) do
@@ -276,7 +288,11 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp validate_shape(value, schema, path) do
     case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
       {{:ok, branches}, :error} ->
-        validate_one_of_value(value, branches, path)
+        sibling_schema = delete_value(schema, :oneOf)
+
+        with :ok <- validate_one_of_sibling_value(value, sibling_schema, path) do
+          validate_one_of_value(value, branches, path)
+        end
 
       {:error, {:ok, branches}} ->
         with :ok <- validate_typed_value(value, delete_value(schema, :anyOf), path) do
@@ -285,6 +301,14 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
       {:error, :error} ->
         validate_typed_value(value, schema, path)
+    end
+  end
+
+  defp validate_one_of_sibling_value(value, schema, path) do
+    if Enum.all?(Map.keys(schema), &(schema_key(&1) in ["description", "default"])) do
+      :ok
+    else
+      validate_typed_value(value, schema, path)
     end
   end
 

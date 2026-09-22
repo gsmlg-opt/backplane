@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1
+
+- Support `oneOf` alongside object schema constraints at the tool root and in
+  nested schemas while enforcing both the sibling constraints and exactly one
+  matching branch. Catalog preflight remains recursive and fail-closed.
+
 ## 1.7.9
 
 - Accept JSON Schema `default` annotations at every supported schema position

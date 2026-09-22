@@ -21,9 +21,15 @@ host-authored schemas. The supported keywords are:
 | `oneOf` | A non-empty list of schemas; the value must match exactly one branch |
 | `anyOf` | A non-empty list of schemas; the value must match at least one branch |
 
-A `oneOf` schema may contain only `oneOf`, `description`, and `default`. Other sibling
-semantics are outside this subset. Object constraints apply at every nesting
-level, so nested `required` and `additionalProperties` rules are enforced.
+A `oneOf` schema may be used alone for nested scalar or object alternatives, or
+alongside supported object keywords. In the latter form, the object siblings
+must all match and exactly one `oneOf` branch must match. Object branches may
+omit `type`; they inherit the composition's object context. This works at the
+tool root, in nested properties, and in array items. Combining `oneOf` and
+`anyOf` in the same schema remains unsupported.
+
+Object constraints apply at every nesting level, so nested `required`, property
+types, `additionalProperties`, and typed object `enum` rules are enforced.
 `default` is accepted on every supported schema, including nested properties,
 array items, composition branches, and composition siblings.
 
@@ -36,7 +42,9 @@ including string-keyed objects; arbitrary Elixir atoms, structs, and tuples are
 not accepted as choices. An empty enum rejects every supplied value; repeated
 choices do not change membership. These membership rules follow the
 [JSON Schema enum contract](https://json-schema.org/draft/2020-12/json-schema-validation#name-enum).
-Enum-only property schemas and `enum` beside `oneOf` remain outside this subset.
+Enum-only property schemas and untyped `enum` beside nested `oneOf` remain
+outside this subset. A typed object `enum` may narrow an object schema composed
+with `oneOf`.
 
 The validator first checks the complete schema, including absent properties
 and every composition branch. An unknown keyword or unsupported type returns

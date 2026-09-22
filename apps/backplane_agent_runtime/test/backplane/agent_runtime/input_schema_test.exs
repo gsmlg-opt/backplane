@@ -333,6 +333,169 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
              InputSchema.validate(schema, %{"locator" => "assigned-skill"})
   end
 
+  test "accepts the reported nested oneOf object composition" do
+    mixed = %{
+      "type" => "object",
+      "properties" => %{"kind" => %{"type" => "string"}},
+      "required" => ["kind"],
+      "additionalProperties" => false,
+      "oneOf" => [%{"type" => "object"}]
+    }
+
+    schema = %{"type" => "object", "properties" => %{"item" => mixed}}
+
+    assert :ok = InputSchema.validate_schema(schema)
+
+    assert {:ok, %{"item" => %{"kind" => "note"}}} =
+             InputSchema.validate(schema, %{"item" => %{"kind" => "note"}})
+  end
+
+  test "composes oneOf with object siblings at root, nested properties, and array items" do
+    composed = one_of_object_schema()
+    root_without_type = Map.delete(composed, "type")
+
+    for schema <- [
+          composed,
+          root_without_type,
+          %{
+            "type" => "object",
+            "properties" => %{"item" => composed},
+            "required" => ["item"]
+          },
+          %{
+            "type" => "object",
+            "properties" => %{
+              "items" => %{"type" => "array", "items" => composed}
+            },
+            "required" => ["items"]
+          }
+        ] do
+      assert :ok = InputSchema.validate_schema(schema)
+    end
+
+    assert {:ok, %{"kind" => "left", "left" => "selected"}} =
+             InputSchema.validate(composed, %{"kind" => "left", "left" => "selected"})
+
+    nested = %{
+      "type" => "object",
+      "properties" => %{"item" => composed},
+      "required" => ["item"]
+    }
+
+    assert {:ok, %{"item" => %{"kind" => "right", "right" => 1}}} =
+             InputSchema.validate(nested, %{
+               "item" => %{"kind" => "right", "right" => 1}
+             })
+
+    array = %{
+      "type" => "object",
+      "properties" => %{"items" => %{"type" => "array", "items" => composed}},
+      "required" => ["items"]
+    }
+
+    assert {:ok, %{"items" => [%{"kind" => "left", "left" => "selected"}]}} =
+             InputSchema.validate(array, %{
+               "items" => [%{"kind" => "left", "left" => "selected"}]
+             })
+  end
+
+  test "requires exactly one oneOf object branch to match" do
+    schema = one_of_object_schema()
+
+    for arguments <- [
+          %{"kind" => "neither"},
+          %{"kind" => "left", "left" => "selected", "right" => 1}
+        ] do
+      assert {:error,
+              %Error{
+                class: :validation,
+                message: "tool argument must match exactly one oneOf branch"
+              }} = InputSchema.validate(schema, arguments)
+    end
+  end
+
+  test "enforces required, property types, additionalProperties, and enum siblings around oneOf" do
+    schema = one_of_object_schema()
+
+    assert {:ok, %{"kind" => "left", "left" => "ok"}} =
+             InputSchema.validate(schema, %{"kind" => "left", "left" => "ok"})
+
+    assert {:error, %Error{class: :validation, details: %{property: "kind"}}} =
+             InputSchema.validate(schema, %{"left" => "ok"})
+
+    assert {:error, %Error{class: :validation, details: %{type: "string"}}} =
+             InputSchema.validate(schema, %{"kind" => 1, "left" => "ok"})
+
+    assert {:error, %Error{class: :validation, details: %{property: "extra"}}} =
+             InputSchema.validate(schema, %{
+               "kind" => "left",
+               "left" => "ok",
+               "extra" => true
+             })
+
+    enum_schema = Map.put(schema, "enum", [%{"kind" => "left", "left" => "ok"}])
+
+    assert {:error,
+            %Error{
+              class: :validation,
+              message: "tool argument is not an allowed enum value"
+            }} =
+             InputSchema.validate(enum_schema, %{"kind" => "left", "left" => "not-enumerated"})
+  end
+
+  test "accepts atom keys for oneOf object composition" do
+    schema = %{
+      type: :object,
+      properties: %{kind: %{type: :string}},
+      required: ["kind"],
+      additionalProperties: false,
+      oneOf: [%{properties: %{kind: %{type: :string, enum: ["selected"]}}}]
+    }
+
+    assert :ok = InputSchema.validate_schema(schema)
+
+    assert {:ok, %{"kind" => "selected"}} =
+             InputSchema.validate(schema, %{"kind" => "selected"})
+  end
+
+  test "preflights malformed and unsupported constraints in unused oneOf branches" do
+    for invalid_branch <- [
+          %{"properties" => %{"unused" => %{"type" => "integer", "minimum" => "one"}}},
+          %{"properties" => %{"unused" => %{"type" => "string", "pattern" => "unused"}}}
+        ] do
+      schema =
+        update_in(one_of_object_schema(), ["oneOf"], fn branches ->
+          branches ++ [invalid_branch]
+        end)
+
+      assert {:error, %Error{}} = InputSchema.validate_schema(schema)
+    end
+  end
+
+  test "keeps combined oneOf and anyOf unsupported" do
+    schema = %{
+      "type" => "object",
+      "oneOf" => [%{"required" => ["left"]}],
+      "anyOf" => [%{"required" => ["right"]}]
+    }
+
+    assert {:error,
+            %Error{
+              class: :unsupported_capability,
+              message: "combining schema compositions is unsupported"
+            }} = InputSchema.validate_schema(schema)
+  end
+
+  test "rejects empty and non-list oneOf branches" do
+    for branches <- [[], %{}] do
+      schema = %{"type" => "object", "oneOf" => branches}
+
+      assert {:error,
+              %Error{class: :validation, message: "schema oneOf must be a non-empty list"}} =
+               InputSchema.validate_schema(schema)
+    end
+  end
+
   defp skill_schema do
     %{
       "type" => "object",
@@ -342,6 +505,23 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
       },
       "anyOf" => [%{"required" => ["locator"]}, %{"required" => ["name"]}],
       "additionalProperties" => false
+    }
+  end
+
+  defp one_of_object_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "kind" => %{"type" => "string"},
+        "left" => %{"type" => "string"},
+        "right" => %{"type" => "integer"}
+      },
+      "required" => ["kind"],
+      "additionalProperties" => false,
+      "oneOf" => [
+        %{"required" => ["left"]},
+        %{"required" => ["right"]}
+      ]
     }
   end
 end

@@ -18,6 +18,29 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
     assert catalog.authority.tool_revision == 7
   end
 
+  test "preflights oneOf object composition before publishing a catalog" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{"kind" => %{"type" => "string"}},
+      "required" => ["kind"],
+      "additionalProperties" => false,
+      "oneOf" => [%{"properties" => %{"kind" => %{"type" => "string"}}}]
+    }
+
+    registry = registry("read", 1, schema)
+    assert {:ok, _catalog} = ToolCatalog.validate(update(registry, 1, 2), 1, run())
+
+    unsupported =
+      update_in(schema, ["oneOf"], fn branches ->
+        branches ++ [%{"properties" => %{"unused" => %{"pattern" => "unused"}}}]
+      end)
+
+    registry = registry("read", 1, unsupported)
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+             ToolCatalog.validate(update(registry, 1, 2), 1, run())
+  end
+
   test "rejects malformed forged registries, descriptors, schemas, and definitions" do
     valid = registry("read", 1)
 
@@ -101,12 +124,12 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
     }
   end
 
-  defp registry(name, revision) do
+  defp registry(name, revision, schema \\ %{"type" => "object", "properties" => %{}}) do
     {:ok, registry} =
       ToolRegistry.register(%ToolRegistry{}, %{
         tool_name: name,
         tool_revision: revision,
-        schema: %{"type" => "object", "properties" => %{}},
+        schema: schema,
         safety: %{read_only: true, retry_safe: true, parallel_safe: false},
         backend: Backend,
         backend_context: %{}
@@ -114,4 +137,6 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
 
     registry
   end
+
+  defp run, do: %{run_id: "run", incarnation: 1}
 end

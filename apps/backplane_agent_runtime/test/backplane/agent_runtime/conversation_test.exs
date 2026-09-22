@@ -190,6 +190,29 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     })
   end
 
+  defp one_of_registry do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "choose",
+      tool_revision: 1,
+      schema: %{
+        "type" => "object",
+        "properties" => %{
+          "kind" => %{"type" => "string"},
+          "value" => %{"type" => "string"}
+        },
+        "required" => ["kind", "value"],
+        "additionalProperties" => false,
+        "oneOf" => [
+          %{"properties" => %{"kind" => %{"type" => "string", "enum" => ["left"]}}},
+          %{"properties" => %{"kind" => %{"type" => "string", "enum" => ["right"]}}}
+        ]
+      },
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
   test "incremental multi-step turn is persisted and settled once" do
     {pid, store} = start()
     assert {:ok, _} = Conversation.prompt(pid, "hello")
@@ -384,6 +407,90 @@ defmodule Backplane.AgentRuntime.ConversationTest do
           tool_call: %{id: "skill-invalid", name: "skill", arguments: %{}}
         },
         done("loading")
+      ]
+    })
+
+    refute_receive {:tool, _, _}, 50
+    assert_receive {:provider, %{messages: messages}, next}
+    assert List.last(messages).result.error.class == :validation
+    send(next, {:events, [done("recovered")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "an unused compatible oneOf catalog dispatches the provider" do
+    assert {:ok, registry} = one_of_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["choose"], tool_revision: 1}
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "answer without tools")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "valid oneOf object arguments invoke the backend exactly once" do
+    assert {:ok, registry} = one_of_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["choose"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "choose left")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{
+            id: "choose-valid",
+            name: "choose",
+            arguments: %{"kind" => "left", "value" => "selected"}
+          }
+        },
+        done("choosing")
+      ]
+    })
+
+    assert_receive {:tool, %{tool_call_id: "choose-valid"}, tool}
+    refute_receive {:tool, _, _}, 20
+    send(tool, {:result, {:ok, %{text: "selected"}}})
+    assert_receive {:provider, _, next}
+    send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "invalid oneOf object arguments never invoke the backend" do
+    assert {:ok, registry} = one_of_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{caller: "test", run_id: "test", grants: ["choose"], tool_revision: 1}
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "choose neither")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{
+            id: "choose-invalid",
+            name: "choose",
+            arguments: %{"kind" => "neither", "value" => "selected"}
+          }
+        },
+        done("choosing")
       ]
     })
 
