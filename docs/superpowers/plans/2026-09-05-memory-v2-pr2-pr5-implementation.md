@@ -183,6 +183,19 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   35/35, release config 10/10; scoped format/diff checks passed. Historical
   migration 00003 recognizes only `Elixir.`-prefixed memory workers; readiness
   recognizes both actual Oban spellings. Agent Note `fec843df-1a84-4ef6-b69f-f85112457db6`.
+- Task 20 memory-suite test repair scope approved by the user on 2026-09-22:
+  `apps/backplane_memory/test/backplane/memory/crystal_action_chain_test.exs`,
+  `crystals_test.exs`, `lesson_governance_test.exs`,
+  `memories/evidence_concurrency_test.exs`, `memories/evidence_test.exs`,
+  `memories/relation_classifier_test.exs`,
+  `memories/relations_concurrency_test.exs`, `memories/relations_test.exs`,
+  `memories/verification_test.exs`, `operations/dashboard_metrics_test.exs`,
+  `prompts_test.exs`, `recall/channels_test.exs`, `recall/pipeline_test.exs`,
+  `recall/purge_worker_test.exs`, `recall/store_test.exs`, `service_test.exs`,
+  and `workers/procedural_worker_test.exs` (all under
+  `apps/backplane_memory/test/backplane/memory/`). This approval covers test
+  fixtures and expectations only; it does not expand production or migration
+  file scope. The isolated full memory suite had 67 failures in these files.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
 
