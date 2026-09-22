@@ -1100,6 +1100,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       send(owner, {:host_memory_sync, {:apply_sync_item, host.id, item}})
 
       case item["id"] do
+        "revisioned" -> {:ok, %{status: :ok, canonical_id: "hub_revisioned", revision: 7}}
         "dup" -> {:ok, %{status: :duplicate, canonical_id: "hub_dup"}}
         "bad" -> {:error, :validation, "invalid scope"}
         "transient" -> {:error, :transient, "temporarily unavailable"}
@@ -1218,6 +1219,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
           "protocol" => "host_memory.v1",
           "items" => [
             %{"id" => "local_1", "op" => "remember", "content" => "one"},
+            %{"id" => "revisioned", "op" => "remember", "content" => "revisioned"},
             %{"id" => "dup", "op" => "remember", "content" => "duplicate"},
             %{"id" => "bad", "op" => "remember", "content" => "bad"}
           ]
@@ -1226,6 +1228,12 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_reply(ref, :ok, %{
         "items" => [
           %{"id" => "local_1", "status" => "ok", "canonical_id" => "hub_local_1"},
+          %{
+            "id" => "revisioned",
+            "status" => "ok",
+            "canonical_id" => "hub_revisioned",
+            "revision" => 7
+          },
           %{"id" => "dup", "status" => "duplicate", "canonical_id" => "hub_dup"},
           %{"id" => "bad", "status" => "error", "error" => "invalid scope"}
         ]
