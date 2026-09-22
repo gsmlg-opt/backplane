@@ -219,4 +219,52 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
 
     assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, %{})
   end
+
+  test "accepts anyOf required branches alongside object constraints" do
+    schema = skill_schema()
+
+    for arguments <- [
+          %{"locator" => "assigned-skill"},
+          %{"name" => "assigned-skill"},
+          %{"locator" => "assigned-skill", "name" => "assigned-skill"}
+        ] do
+      assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+    end
+
+    assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, %{})
+  end
+
+  test "enforces object siblings around anyOf branches" do
+    schema = skill_schema()
+
+    for arguments <- [
+          %{"locator" => 1},
+          %{"name" => false},
+          %{"locator" => "assigned-skill", "unexpected" => true}
+        ] do
+      assert {:error, %Error{class: :validation}} = InputSchema.validate(schema, arguments)
+    end
+  end
+
+  test "rejects unsupported keywords in unused anyOf branches" do
+    schema =
+      update_in(skill_schema(), ["anyOf"], fn branches ->
+        branches ++ [%{"properties" => %{"name" => %{"pattern" => "skill"}}}]
+      end)
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+             InputSchema.validate(schema, %{"locator" => "assigned-skill"})
+  end
+
+  defp skill_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "locator" => %{"type" => "string"},
+        "name" => %{"type" => "string"}
+      },
+      "anyOf" => [%{"required" => ["locator"]}, %{"required" => ["name"]}],
+      "additionalProperties" => false
+    }
+  end
 end

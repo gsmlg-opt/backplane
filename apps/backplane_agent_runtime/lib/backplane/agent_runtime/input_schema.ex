@@ -20,7 +20,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
     :enum,
     :minimum,
     :items,
-    :oneOf
+    :oneOf,
+    :anyOf
   ]
   @spec validate(term(), term()) :: {:ok, map()} | {:error, Error.t()}
   def validate(schema, input) when is_map(schema) and is_map(input) do
@@ -46,9 +47,19 @@ defmodule Backplane.AgentRuntime.InputSchema do
   defp validate_schema(schema, position) when is_map(schema) do
     with :ok <- supported_keys(schema, @schema_keys),
          :ok <- validate_enum_schema(schema) do
-      case fetch_value(schema, :oneOf) do
-        {:ok, branches} -> validate_one_of_schema(schema, branches)
-        :error -> validate_typed_schema(schema, position)
+      case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
+        {{:ok, _one_of_branches}, {:ok, _any_of_branches}} ->
+          {:error,
+           Error.new(:unsupported_capability, "combining schema compositions is unsupported")}
+
+        {{:ok, branches}, :error} ->
+          validate_one_of_schema(schema, branches)
+
+        {:error, {:ok, branches}} ->
+          validate_any_of_schema(schema, branches, position)
+
+        {:error, :error} ->
+          validate_typed_schema(schema, position)
       end
     end
   end
@@ -99,8 +110,31 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
+  defp validate_any_of_schema(schema, branches, position) do
+    sibling_schema = delete_value(schema, :anyOf)
+
+    cond do
+      not is_list(branches) or branches == [] ->
+        validation("schema anyOf must be a non-empty list")
+
+      true ->
+        branch_position =
+          if value(sibling_schema, :type, if(position == :root, do: "object")) in [
+               "object",
+               :object
+             ],
+             do: :object_branch,
+             else: :nested
+
+        with :ok <- validate_typed_schema(sibling_schema, position),
+             :ok <- reduce_schemas(branches, branch_position) do
+          :ok
+        end
+    end
+  end
+
   defp validate_typed_schema(schema, position) do
-    default = if position == :root, do: "object", else: nil
+    default = if position in [:root, :object_branch], do: "object", else: nil
 
     case value(schema, :type, default) do
       type when type in ["object", :object] -> validate_object_schema(schema)
@@ -151,9 +185,9 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
-  defp reduce_schemas(schemas) do
+  defp reduce_schemas(schemas, position \\ :nested) do
     Enum.reduce_while(schemas, :ok, fn schema, :ok ->
-      case validate_schema(schema, :nested) do
+      case validate_schema(schema, position) do
         :ok -> {:cont, :ok}
         {:error, %Error{} = error} -> {:halt, {:error, error}}
       end
@@ -218,9 +252,17 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_shape(value, schema, path) do
-    case fetch_value(schema, :oneOf) do
-      {:ok, branches} -> validate_one_of_value(value, branches, path)
-      :error -> validate_typed_value(value, schema, path)
+    case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
+      {{:ok, branches}, :error} ->
+        validate_one_of_value(value, branches, path)
+
+      {:error, {:ok, branches}} ->
+        with :ok <- validate_typed_value(value, delete_value(schema, :anyOf), path) do
+          validate_any_of_value(value, branches, path)
+        end
+
+      {:error, :error} ->
+        validate_typed_value(value, schema, path)
     end
   end
 
@@ -230,6 +272,12 @@ defmodule Backplane.AgentRuntime.InputSchema do
     if matches == 1,
       do: :ok,
       else: validation("tool argument must match exactly one oneOf branch", %{path: path})
+  end
+
+  defp validate_any_of_value(value, branches, path) do
+    if Enum.any?(branches, &(validate_value(value, &1, path) == :ok)),
+      do: :ok,
+      else: validation("tool argument must match at least one anyOf branch", %{path: path})
   end
 
   defp validate_typed_value(value, schema, path) do
@@ -388,6 +436,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
       :error -> default
     end
   end
+
+  defp delete_value(map, key), do: map |> Map.delete(key) |> Map.delete(Atom.to_string(key))
 
   defp validation(message, details \\ %{}),
     do: {:error, Error.new(:validation, message, details: details)}
