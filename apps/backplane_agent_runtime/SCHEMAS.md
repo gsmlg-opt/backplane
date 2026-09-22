@@ -9,29 +9,42 @@ host-authored schemas. The supported keywords are:
 
 | Keyword | Supported use |
 | --- | --- |
-| `type` | `object`, `array`, `string`, `integer`, `number`, or `boolean` |
+| `type` | `object`, `array`, `string`, `integer`, `number`, `boolean`, or `null`; a non-empty unique list forms a union |
 | `properties` | Object property schemas, validated recursively |
 | `required` | A list of string property names |
-| `additionalProperties` | Boolean object policy; `additional_properties` is also accepted for Elixir callers |
+| `additionalProperties` | Boolean object policy or a schema applied to every additional property; `additional_properties` is also accepted for Elixir callers |
 | `description` | Annotation only |
 | `default` | Annotation only; never inserted into tool arguments or validated against the schema |
-| `enum` | A list of JSON values allowed by a typed schema; the value must equal one choice |
+| `format`, `contentEncoding`, `$schema`, `x-mcp-header` | String annotations only; values are retained by the host but not interpreted or asserted |
+| `enum` | A list of JSON values; the value must equal one choice |
 | `minimum` | Inclusive numeric lower bound on `integer` and `number` values |
+| `maximum` | Inclusive numeric upper bound on `integer` and `number` values |
+| `minLength` | Minimum Unicode code-point count for strings |
+| `pattern` | Regular-expression search constraint for strings, within the portable subset below |
 | `items` | One recursively validated schema for every array item |
+| `minItems`, `maxItems` | Inclusive array length bounds |
 | `oneOf` | A non-empty list of schemas; the value must match exactly one branch |
 | `anyOf` | A non-empty list of schemas; the value must match at least one branch |
+| `not` | One recursively validated schema that the value must not match |
 
 A `oneOf` schema may be used alone for nested scalar or object alternatives, or
 alongside supported object keywords. In the latter form, the object siblings
 must all match and exactly one `oneOf` branch must match. Object branches may
-omit `type`; they inherit the composition's object context. This works at the
-tool root, in nested properties, and in array items. Combining `oneOf` and
-`anyOf` in the same schema remains unsupported.
+omit `type`; object assertions in those branches apply when the value is an
+object. This works at the tool root, in nested properties, and in array items.
+Combining `oneOf` and `anyOf` in the same schema remains unsupported.
 
 Object constraints apply at every nesting level, so nested `required`, property
 types, `additionalProperties`, and typed object `enum` rules are enforced.
 `default` is accepted on every supported schema, including nested properties,
 array items, composition branches, and composition siblings.
+
+Nested schemas may omit `type`. An empty schema accepts every value in the JSON
+input domain. Assertions without an explicit type follow JSON Schema keyword
+applicability: numeric bounds apply only to numbers, string constraints only to
+strings, array constraints only to arrays, and object constraints only to
+objects. Thus a `required`-only composition branch tests object values without
+turning scalar values into objects. The tool schema root remains object-only.
 
 `enum` narrows the existing type and other constraints; it does not replace
 them. It works on object roots, typed properties, array items, and inside
@@ -42,9 +55,26 @@ including string-keyed objects; arbitrary Elixir atoms, structs, and tuples are
 not accepted as choices. An empty enum rejects every supplied value; repeated
 choices do not change membership. These membership rules follow the
 [JSON Schema enum contract](https://json-schema.org/draft/2020-12/json-schema-validation#name-enum).
-Enum-only property schemas and untyped `enum` beside nested `oneOf` remain
-outside this subset. A typed object `enum` may narrow an object schema composed
-with `oneOf`.
+Enum-only property schemas and `enum` alongside compositions are supported.
+Annotations and defaults never modify arguments or bypass assertions.
+
+### Pattern subset
+
+`pattern` uses JSON Schema search semantics: an unanchored expression may match
+any substring. Patterns are limited to 1,024 UTF-8 bytes and compiled in Unicode
+mode. The supported portable subset includes literals, character classes,
+capturing and noncapturing groups, alternation, normal quantifiers, anchors, and
+escaped punctuation. It rejects other `(?...)` groups, PCRE verbs, possessive
+quantifiers, POSIX classes, backreferences, and letter or digit escapes such as
+`\u`, `\d`, and `\p`. This intentionally avoids assigning PCRE behavior to syntax
+whose ECMAScript semantics differ.
+
+Before compilation, an unescaped `.` outside a character class is translated to
+exclude LF, CR, U+2028, and U+2029, and an unescaped `$` outside a character class
+is translated to absolute end-of-input. These preserve ECMAScript behavior on
+the underlying PCRE engine. Matching has a fixed engine work limit. Exhausting
+that limit returns an `:execution_failure` and propagates through `not`, `oneOf`,
+and `anyOf`; it is never treated as an ordinary branch mismatch.
 
 The validator first checks the complete schema, including absent properties
 and every composition branch. An unknown keyword or unsupported type returns
@@ -57,12 +87,11 @@ Hosts can call `InputSchema.validate_schema/1` to preflight the complete schema
 without supplying placeholder arguments. Catalog publication uses this boundary
 before making a revised registry visible.
 
-Keywords outside the table are unsupported. This includes `$ref`,
-`const`, `allOf`, `not`, `pattern`, string lengths, array lengths,
-tuple-style `items`, `maximum`, and exclusive numeric bounds. Hosts must not
-strip these constraints. They should surface the runtime error or use a
-different validator/backend boundary whose contract supports the complete
-schema.
+Keywords outside the table are unsupported. This includes `$ref`, `$defs`,
+`const`, `allOf`, tuple-style `items`, string maximum length, and exclusive
+numeric bounds. Hosts must not strip these constraints. They should surface the
+runtime error or use a different validator/backend boundary whose contract
+supports the complete schema.
 
 ## Sigma and MCP boundary
 
@@ -79,6 +108,13 @@ such a descriptor unchanged, but execution will reject unsupported schema
 features before invoking the MCP tool. Supporting additional MCP schemas
 requires an explicit package change with validation tests; silently dropping
 constraints is not supported.
+
+The issue #46 fixture is a sanitized, schema-only capture of the 58 tools exposed
+by the locally configured hub on 2026-09-23. Each record contains only the tool
+name and `inputSchema`; it contains no invocation arguments or credentials. It
+proves that captured catalog plus focused forms reported by the requester. The
+requester's separate 70-schema catalog was not available when this support was
+implemented and remains a distinct live compatibility gate.
 
 This document concerns tool-call input validation. Sigma's MCP elicitation UI
 has its own narrower form-rendering boundary and remains a host concern.

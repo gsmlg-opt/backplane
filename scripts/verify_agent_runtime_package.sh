@@ -115,6 +115,10 @@ cp "$source_dir/test/backplane/agent_runtime/store_conformance_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/store_conformance_test.exs"
 cp "$source_dir/test/fixtures/sigma_builtin_tool_schemas.exs" \
   "$conversation_fixture/test/fixtures/sigma_builtin_tool_schemas.exs"
+cp "$source_dir/test/fixtures/issue_46_tool_schemas.exs" \
+  "$conversation_fixture/test/fixtures/issue_46_tool_schemas.exs"
+cp "$source_dir/test/fixtures/issue_46_live_catalog.json" \
+  "$conversation_fixture/test/fixtures/issue_46_live_catalog.json"
 
 (
   cd "$conversation_fixture"

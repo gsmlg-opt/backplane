@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.2
+
+- Accept the current MCP input-schema forms reported in issue #46: string
+  annotations, numeric/string/array assertions, portable patterns, `not`,
+  schema-valued `additionalProperties`, null and union types, untyped nested
+  schemas, and scalar/array/null composition branches. Preserve recursive
+  fail-closed preflight and argument validation before backend execution.
+
 ## 1.8.1
 
 - Support `oneOf` alongside object schema constraints at the tool root and in

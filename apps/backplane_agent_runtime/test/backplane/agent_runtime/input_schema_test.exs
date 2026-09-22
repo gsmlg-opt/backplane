@@ -1,10 +1,12 @@
 Code.require_file("../../fixtures/sigma_builtin_tool_schemas.exs", __DIR__)
+Code.require_file("../../fixtures/issue_46_tool_schemas.exs", __DIR__)
 
 defmodule Backplane.AgentRuntime.InputSchemaTest do
   use ExUnit.Case, async: true
 
   alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.InputSchema
+  alias Backplane.AgentRuntime.Issue46ToolSchemas
   alias Backplane.AgentRuntime.SigmaBuiltinToolSchemas, as: SigmaSchemas
 
   test "validates string enums without bypassing required or type constraints" do
@@ -112,15 +114,14 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
   end
 
   test "enum support keeps unknown keywords fail-closed" do
-    schema = enum_schema(%{"type" => "string", "enum" => ["list"], "pattern" => "list"})
+    schema = enum_schema(%{"type" => "string", "enum" => ["list"], "$ref" => "#/$defs/list"})
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
              InputSchema.validate(schema, %{"value" => "list"})
 
     schema = enum_schema(%{"oneOf" => [%{"type" => "string"}], "enum" => ["list"]})
 
-    assert {:error, %Error{class: :unsupported_capability}} =
-             InputSchema.validate(schema, %{"value" => "list"})
+    assert {:ok, %{"value" => "list"}} = InputSchema.validate(schema, %{"value" => "list"})
   end
 
   test "accepts default annotations without applying them" do
@@ -188,7 +189,7 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
         "value" => %{
           "oneOf" => [
             %{"type" => "string", "default" => 1},
-            %{"type" => "integer", "default" => "not an integer", "pattern" => "unused"}
+            %{"type" => "integer", "default" => "not an integer", "$ref" => "#/$defs/unused"}
           ],
           "default" => false
         }
@@ -196,7 +197,7 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
       "required" => ["value"]
     }
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
              InputSchema.validate(schema, %{"value" => "selected"})
   end
 
@@ -281,10 +282,10 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
       put_in(
         SigmaSchemas.ask_user_question(),
         ["properties", "options", "items", "oneOf", Access.at(1), "properties", "value"],
-        %{"type" => "string", "pattern" => "^[a-z]+$"}
+        %{"type" => "string", "$ref" => "#/$defs/value"}
       )
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
              InputSchema.validate(schema, %{"question" => "No options supplied"})
   end
 
@@ -326,10 +327,10 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
   test "rejects unsupported keywords in unused anyOf branches" do
     schema =
       update_in(skill_schema(), ["anyOf"], fn branches ->
-        branches ++ [%{"properties" => %{"name" => %{"pattern" => "skill"}}}]
+        branches ++ [%{"properties" => %{"name" => %{"$ref" => "#/$defs/skill"}}}]
       end)
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
              InputSchema.validate(schema, %{"locator" => "assigned-skill"})
   end
 
@@ -461,7 +462,7 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
   test "preflights malformed and unsupported constraints in unused oneOf branches" do
     for invalid_branch <- [
           %{"properties" => %{"unused" => %{"type" => "integer", "minimum" => "one"}}},
-          %{"properties" => %{"unused" => %{"type" => "string", "pattern" => "unused"}}}
+          %{"properties" => %{"unused" => %{"type" => "string", "$ref" => "#/$defs/unused"}}}
         ] do
       schema =
         update_in(one_of_object_schema(), ["oneOf"], fn branches ->
@@ -493,6 +494,190 @@ defmodule Backplane.AgentRuntime.InputSchemaTest do
       assert {:error,
               %Error{class: :validation, message: "schema oneOf must be a non-empty list"}} =
                InputSchema.validate_schema(schema)
+    end
+  end
+
+  test "accepts reported annotations without modifying arguments" do
+    schema = Issue46ToolSchemas.annotated_upload()
+    arguments = %{"archive" => "not validated as base64"}
+
+    assert :ok = InputSchema.validate_schema(schema)
+    assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+  end
+
+  test "validates union types, null, untyped properties, and bare mixed compositions" do
+    schema = Issue46ToolSchemas.mixed_inputs()
+
+    for value <- ["text", 1, 1.5, true, nil], metadata <- [nil, "text", 1, [], %{}] do
+      arguments = %{
+        "value" => value,
+        "metadata" => metadata,
+        "choice" => nil,
+        "files" => ["content"]
+      }
+
+      assert {:ok, ^arguments} = InputSchema.validate(schema, arguments)
+    end
+
+    assert {:error, %Error{class: :validation, details: %{path: "$arguments.value"}}} =
+             InputSchema.validate(schema, %{
+               "value" => [],
+               "metadata" => %{},
+               "choice" => true,
+               "files" => "content"
+             })
+
+    assert {:error, %Error{class: :validation, details: %{path: "$arguments.choice"}}} =
+             InputSchema.validate(schema, %{
+               "value" => nil,
+               "metadata" => %{},
+               "choice" => "other",
+               "files" => "content"
+             })
+  end
+
+  test "enforces numeric, Unicode string, array, pattern, not, and additional schemas" do
+    schema = Issue46ToolSchemas.constrained()
+
+    valid = %{
+      "count" => 2,
+      "code" => "none",
+      "tags" => ["one"],
+      "vars" => %{"x" => 10},
+      "attachment" => %{"url" => "https://example.test"}
+    }
+
+    assert {:ok, ^valid} = InputSchema.validate(schema, valid)
+
+    for {path, arguments} <- [
+          {"$arguments.count", %{valid | "count" => 4}},
+          {"$arguments.code", %{valid | "code" => "A"}},
+          {"$arguments.code", %{valid | "code" => "AB"}},
+          {"$arguments.tags", %{valid | "tags" => []}},
+          {"$arguments.tags", %{valid | "tags" => ["one", "two", "three"]}},
+          {"$arguments.tags[0]", %{valid | "tags" => [1]}},
+          {"$arguments.vars.x", %{valid | "vars" => %{"x" => 11}}},
+          {"$arguments.vars.x", %{valid | "vars" => %{"x" => "eleven"}}},
+          {"$arguments.attachment",
+           %{
+             valid
+             | "attachment" => %{"url" => "https://example.test", "content" => "data"}
+           }}
+        ] do
+      assert {:error, %Error{class: :validation, details: %{path: ^path}}} =
+               InputSchema.validate(schema, arguments)
+    end
+
+    unicode = put_in(schema, ["properties", "code"], %{"type" => "string", "minLength" => 2})
+    assert {:ok, _} = InputSchema.validate(unicode, %{valid | "code" => "e\u0301"})
+  end
+
+  test "applies constraints only to their JSON instance types in untyped schemas" do
+    property = %{
+      "minimum" => 1,
+      "maximum" => 3,
+      "minLength" => 2,
+      "pattern" => "^[A-Z]+$",
+      "minItems" => 1,
+      "maxItems" => 2,
+      "required" => ["name"]
+    }
+
+    schema = enum_schema(property)
+
+    for value <- [2, "OK", [1], %{"name" => true}, nil, false] do
+      assert {:ok, %{"value" => ^value}} = InputSchema.validate(schema, %{"value" => value})
+    end
+  end
+
+  test "rejects malformed and non-portable patterns during recursive preflight" do
+    for pattern <- ["[", "(?R)", "(?>atomic)", "(*ACCEPT)", "\\K", String.duplicate("a", 1_025)] do
+      schema = enum_schema(%{"type" => "string", "pattern" => pattern})
+      assert {:error, %Error{class: :validation}} = InputSchema.validate_schema(schema)
+    end
+  end
+
+  test "recursively rejects unsupported schemas in unused nested locations" do
+    for schema <- [
+          %{"type" => "object", "properties" => %{"unused" => %{"$ref" => "#/$defs/x"}}},
+          %{"type" => "object", "additionalProperties" => %{"$ref" => "#/$defs/x"}},
+          %{"type" => "array", "items" => %{"$ref" => "#/$defs/x"}},
+          %{"not" => %{"$ref" => "#/$defs/x"}},
+          %{"anyOf" => [%{"type" => "string"}, %{"$ref" => "#/$defs/x"}]},
+          %{"oneOf" => [%{"type" => "string"}, %{"$ref" => "#/$defs/x"}]}
+        ] do
+      root = %{"type" => "object", "properties" => %{"value" => schema}}
+
+      assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
+               InputSchema.validate_schema(root)
+    end
+  end
+
+  test "not follows keyword applicability for object and non-object values" do
+    property = %{"not" => %{"required" => ["blocked"]}}
+    schema = enum_schema(property)
+
+    assert {:ok, %{"value" => %{}}} = InputSchema.validate(schema, %{"value" => %{}})
+
+    for value <- [%{"blocked" => true}, "text", 1, nil] do
+      assert {:error, %Error{class: :validation, details: %{path: "$arguments.value"}}} =
+               InputSchema.validate(schema, %{"value" => value})
+    end
+  end
+
+  test "pattern resource failures propagate through not and composition branches" do
+    expensive = %{"type" => "string", "pattern" => "(a+)+$"}
+    input = String.duplicate("a", 1_000) <> "X"
+
+    for property <- [
+          %{"not" => expensive},
+          %{"oneOf" => [expensive, %{"type" => "integer"}]},
+          %{"anyOf" => [expensive, %{"type" => "integer"}]}
+        ] do
+      assert {:error, %Error{class: :execution_failure, details: %{path: "$arguments.value"}}} =
+               InputSchema.validate(enum_schema(property), %{"value" => input})
+    end
+  end
+
+  test "pattern dot and end anchor use ECMAScript line terminator semantics" do
+    schema = enum_schema(%{"type" => "string", "pattern" => "^.$"})
+
+    assert {:ok, %{"value" => "A"}} = InputSchema.validate(schema, %{"value" => "A"})
+
+    for suffix <- ["\n", "\r", "\r\n", "\u2028", "\u2029"] do
+      assert {:error, %Error{class: :validation}} =
+               InputSchema.validate(schema, %{"value" => "A" <> suffix})
+    end
+
+    literal = enum_schema(%{"type" => "string", "pattern" => "^[.$]\\.\\$$"})
+    assert {:ok, _} = InputSchema.validate(literal, %{"value" => "..$"})
+
+    noncapturing = enum_schema(%{"type" => "string", "pattern" => "^(?:left|right)$"})
+    assert {:ok, _} = InputSchema.validate(noncapturing, %{"value" => "left"})
+  end
+
+  test "optional constrained properties may be absent" do
+    schema = %{
+      "type" => "object",
+      "properties" => %{
+        "count" => %{"type" => "number", "minimum" => 1, "maximum" => 2},
+        "name" => %{"type" => "string", "minLength" => 1, "pattern" => "name"},
+        "items" => %{"type" => "array", "minItems" => 1, "maxItems" => 2},
+        "value" => %{"not" => %{"type" => "null"}}
+      }
+    }
+
+    assert {:ok, %{}} = InputSchema.validate(schema, %{})
+  end
+
+  test "preflights the captured 58-schema live catalog" do
+    path = Path.expand("../../fixtures/issue_46_live_catalog.json", __DIR__)
+    catalog = path |> File.read!() |> JSON.decode!()
+
+    assert length(catalog) == 58
+
+    for %{"name" => name, "inputSchema" => schema} <- catalog do
+      assert :ok = InputSchema.validate_schema(schema), name
     end
   end
 

@@ -1,8 +1,10 @@
 Code.require_file("../../fixtures/sigma_builtin_tool_schemas.exs", __DIR__)
+Code.require_file("../../fixtures/issue_46_tool_schemas.exs", __DIR__)
 
 defmodule Backplane.AgentRuntime.ConversationTest do
   use ExUnit.Case, async: true
   alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Error, InputSchema, ToolRegistry}
+  alias Backplane.AgentRuntime.Issue46ToolSchemas
   alias Backplane.AgentRuntime.SigmaBuiltinToolSchemas, as: SigmaSchemas
 
   defmodule Provider do
@@ -207,6 +209,17 @@ defmodule Backplane.AgentRuntime.ConversationTest do
           %{"properties" => %{"kind" => %{"type" => "string", "enum" => ["right"]}}}
         ]
       },
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    })
+  end
+
+  defp constrained_registry do
+    ToolRegistry.register(%ToolRegistry{}, %{
+      tool_name: "constrained",
+      tool_revision: 1,
+      schema: Issue46ToolSchemas.constrained(),
       safety: %{read_only: true, retry_safe: true, parallel_safe: false},
       backend: Backend,
       backend_context: %{test: self()}
@@ -491,6 +504,115 @@ defmodule Backplane.AgentRuntime.ConversationTest do
           }
         },
         done("choosing")
+      ]
+    })
+
+    refute_receive {:tool, _, _}, 50
+    assert_receive {:provider, %{messages: messages}, next}
+    assert List.last(messages).result.error.class == :validation
+    send(next, {:events, [done("recovered")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "an unused current MCP schema dispatches the provider" do
+    assert {:ok, registry} = constrained_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["constrained"],
+          tool_revision: 1
+        }
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "answer without tools")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "valid current MCP arguments invoke the backend exactly once" do
+    assert {:ok, registry} = constrained_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["constrained"],
+          tool_revision: 1
+        }
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "use constrained input")
+    assert_receive {:provider, _, provider}
+
+    arguments = %{
+      "count" => 2,
+      "code" => "none",
+      "tags" => ["one"],
+      "vars" => %{"x" => 10},
+      "attachment" => %{"url" => "https://example.test"}
+    }
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{id: "constrained-valid", name: "constrained", arguments: arguments}
+        },
+        done("using")
+      ]
+    })
+
+    assert_receive {:tool, %{tool_call_id: "constrained-valid"}, tool}
+    refute_receive {:tool, _, _}, 20
+    send(tool, {:result, {:ok, %{text: "used"}}})
+    assert_receive {:provider, _, next}
+    send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "invalid current MCP arguments never invoke the backend" do
+    assert {:ok, registry} = constrained_registry()
+
+    {pid, _} =
+      start(
+        registry: registry,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["constrained"],
+          tool_revision: 1
+        }
+      )
+
+    {:ok, _} = Conversation.prompt(pid, "use invalid constrained input")
+    assert_receive {:provider, _, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{
+            id: "constrained-invalid",
+            name: "constrained",
+            arguments: %{
+              "count" => 4,
+              "code" => "none",
+              "tags" => ["one"],
+              "vars" => %{},
+              "attachment" => %{}
+            }
+          }
+        },
+        done("using")
       ]
     })
 

@@ -20,10 +20,26 @@ defmodule Backplane.AgentRuntime.InputSchema do
     :default,
     :enum,
     :minimum,
+    :maximum,
+    :minLength,
+    :minItems,
+    :maxItems,
+    :pattern,
     :items,
     :oneOf,
-    :anyOf
+    :anyOf,
+    :not,
+    :format,
+    :contentEncoding,
+    :"$schema",
+    :"x-mcp-header"
   ]
+
+  @type_names ~w(object array string integer number boolean null)
+  @string_annotations [:description, :format, :contentEncoding, :"$schema", :"x-mcp-header"]
+  @escaped_pattern_characters ~c"\\.^$|?*+()[]{}-/"
+  @max_pattern_bytes 1_024
+  @pattern_match_limit 100_000
 
   @spec validate_schema(term()) :: :ok | {:error, Error.t()}
   def validate_schema(schema) when is_map(schema), do: validate_root_schema(schema)
@@ -46,41 +62,80 @@ defmodule Backplane.AgentRuntime.InputSchema do
   def validate(_schema, _input), do: validation("tool schema and arguments must be maps")
 
   defp validate_root_schema(schema) do
-    case value(schema, :type, "object") do
-      type when type in ["object", :object] -> validate_schema(schema, :root)
+    case fetch_value(schema, :type) do
+      :error -> validate_schema(schema, :root)
+      {:ok, type} when type in ["object", :object] -> validate_schema(schema, :root)
+      {:ok, [type]} when type in ["object", :object] -> validate_schema(schema, :root)
       _ -> {:error, Error.new(:unsupported_capability, "only object tool schemas are supported")}
     end
   end
 
   defp validate_schema(schema, position) when is_map(schema) do
     with :ok <- supported_keys(schema, @schema_keys),
-         :ok <- validate_description(schema),
-         :ok <- validate_enum_schema(schema) do
-      case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
-        {{:ok, _one_of_branches}, {:ok, _any_of_branches}} ->
-          {:error,
-           Error.new(:unsupported_capability, "combining schema compositions is unsupported")}
-
-        {{:ok, branches}, :error} ->
-          validate_one_of_schema(schema, branches, position)
-
-        {:error, {:ok, branches}} ->
-          validate_any_of_schema(schema, branches, position)
-
-        {:error, :error} ->
-          validate_typed_schema(schema, position)
-      end
+         :ok <- validate_annotations(schema),
+         :ok <- validate_type_schema(schema),
+         :ok <- validate_enum_schema(schema),
+         :ok <- validate_number_keyword(schema, :minimum),
+         :ok <- validate_number_keyword(schema, :maximum),
+         :ok <- validate_non_negative_integer_keyword(schema, :minLength),
+         :ok <- validate_non_negative_integer_keyword(schema, :minItems),
+         :ok <- validate_non_negative_integer_keyword(schema, :maxItems),
+         :ok <- validate_pattern_schema(schema),
+         :ok <- validate_properties_schema(schema),
+         :ok <- validate_required_schema(schema),
+         :ok <- validate_additional_properties_schema(schema),
+         :ok <- validate_child_schema(schema, :items),
+         :ok <- validate_child_schema(schema, :not),
+         :ok <- validate_composition_schema(schema, :oneOf, position),
+         :ok <- validate_composition_schema(schema, :anyOf, position),
+         :ok <- validate_composition_combination(schema) do
+      :ok
     end
   end
 
   defp validate_schema(_schema, _position), do: validation("property schema must be a map")
 
-  defp validate_description(schema) do
-    case fetch_value(schema, :description) do
-      :error -> :ok
-      {:ok, description} when is_binary(description) -> :ok
-      {:ok, _description} -> validation("schema description must be a string")
+  defp validate_annotations(schema) do
+    Enum.reduce_while(@string_annotations, :ok, fn keyword, :ok ->
+      case fetch_value(schema, keyword) do
+        :error ->
+          {:cont, :ok}
+
+        {:ok, annotation} when is_binary(annotation) ->
+          {:cont, :ok}
+
+        {:ok, _annotation} ->
+          {:halt, validation("schema #{schema_key(keyword)} must be a string")}
+      end
+    end)
+  end
+
+  defp validate_type_schema(schema) do
+    case fetch_value(schema, :type) do
+      :error ->
+        :ok
+
+      {:ok, type} when is_binary(type) or is_atom(type) ->
+        validate_type_name(type)
+
+      {:ok, types} when is_list(types) and types != [] ->
+        normalized = Enum.map(types, &schema_key/1)
+
+        with true <- Enum.all?(types, &(is_binary(&1) or is_atom(&1))),
+             true <- length(normalized) == length(Enum.uniq(normalized)),
+             true <- Enum.all?(types, &(validate_type_name(&1) == :ok)) do
+          :ok
+        else
+          _ -> validation("schema type must be a supported type or non-empty unique list")
+        end
+
+      {:ok, _type} ->
+        validation("schema type must be a supported type or non-empty unique list")
     end
+  end
+
+  defp validate_type_name(type) do
+    if schema_key(type) in @type_names, do: :ok, else: unsupported_type(type)
   end
 
   defp validate_enum_schema(schema) do
@@ -95,121 +150,153 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
-  defp json_value?(value)
-       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
-       do: true
+  defp validate_number_keyword(schema, keyword) do
+    case fetch_value(schema, keyword) do
+      :error -> :ok
+      {:ok, number} when is_number(number) -> :ok
+      {:ok, _number} -> validation("schema #{schema_key(keyword)} must be a number")
+    end
+  end
 
-  defp json_value?(value) when is_list(value), do: Enum.all?(value, &json_value?/1)
+  defp validate_non_negative_integer_keyword(schema, keyword) do
+    case fetch_value(schema, keyword) do
+      :error -> :ok
+      {:ok, count} when is_integer(count) and count >= 0 -> :ok
+      {:ok, _count} -> validation("schema #{schema_key(keyword)} must be a non-negative integer")
+    end
+  end
 
-  defp json_value?(value) when is_map(value) and not is_struct(value),
-    do: Enum.all?(value, fn {key, item} -> is_binary(key) and json_value?(item) end)
+  defp validate_pattern_schema(schema) do
+    case fetch_value(schema, :pattern) do
+      :error ->
+        :ok
 
-  defp json_value?(_value), do: false
+      {:ok, pattern} when is_binary(pattern) ->
+        cond do
+          byte_size(pattern) > @max_pattern_bytes ->
+            validation("schema pattern exceeds the supported size")
 
-  defp validate_one_of_schema(schema, branches, position) do
-    sibling_schema = delete_value(schema, :oneOf)
+          not portable_pattern?(pattern) ->
+            validation("schema pattern uses unsupported syntax")
 
-    sibling_keys =
-      sibling_schema
-      |> Map.keys()
-      |> Enum.reject(&(schema_key(&1) in ["description", "default"]))
-
-    cond do
-      not is_list(branches) or branches == [] ->
-        validation("schema oneOf must be a non-empty list")
-
-      sibling_keys == [] and position not in [:root, :object_branch] ->
-        reduce_schemas(branches)
-
-      not object_schema?(sibling_schema, position) ->
-        {:error,
-         Error.new(:unsupported_capability, "oneOf sibling keywords are unsupported",
-           details: %{keywords: sibling_keys}
-         )}
-
-      true ->
-        with :ok <- validate_typed_schema(sibling_schema, position),
-             :ok <- reduce_schemas(branches, :object_branch) do
-          :ok
+          true ->
+            case compile_pattern(pattern) do
+              {:ok, _regex} -> :ok
+              {:error, _reason} -> validation("schema pattern must be a valid regular expression")
+            end
         end
+
+      {:ok, _pattern} ->
+        validation("schema pattern must be a string")
     end
   end
 
-  defp object_schema?(schema, position) do
-    position in [:root, :object_branch] or value(schema, :type, nil) in ["object", :object]
+  defp portable_pattern?(pattern) do
+    allowed_group? = not String.contains?(String.replace(pattern, "(?:", ""), "(?")
+
+    allowed_escapes? =
+      Regex.scan(~r/\\(.)/us, pattern, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.all?(fn <<character::utf8>> -> character in @escaped_pattern_characters end)
+
+    allowed_group? and allowed_escapes? and
+      not String.contains?(pattern, ["(*", "*+", "++", "?+", "}+", "[[:"])
   end
 
-  defp validate_any_of_schema(schema, branches, position) do
-    sibling_schema = delete_value(schema, :anyOf)
+  defp compile_pattern(pattern), do: pattern |> translate_pattern() |> Regex.compile("u")
 
-    cond do
-      not is_list(branches) or branches == [] ->
-        validation("schema anyOf must be a non-empty list")
+  defp translate_pattern(pattern),
+    do: translate_pattern(pattern, false, []) |> IO.iodata_to_binary()
 
-      true ->
-        branch_position =
-          if value(sibling_schema, :type, if(position == :root, do: "object")) in [
-               "object",
-               :object
-             ],
-             do: :object_branch,
-             else: :nested
+  defp translate_pattern(<<>>, _in_class?, acc), do: Enum.reverse(acc)
 
-        with :ok <- validate_typed_schema(sibling_schema, position),
-             :ok <- reduce_schemas(branches, branch_position) do
-          :ok
+  defp translate_pattern(<<"\\", character::utf8, rest::binary>>, in_class?, acc) do
+    translate_pattern(rest, in_class?, [<<"\\", character::utf8>> | acc])
+  end
+
+  defp translate_pattern(<<"[", rest::binary>>, false, acc),
+    do: translate_pattern(rest, true, ["[" | acc])
+
+  defp translate_pattern(<<"]", rest::binary>>, true, acc),
+    do: translate_pattern(rest, false, ["]" | acc])
+
+  defp translate_pattern(<<".", rest::binary>>, false, acc),
+    do: translate_pattern(rest, false, ["[^\\n\\r\\x{2028}\\x{2029}]" | acc])
+
+  defp translate_pattern(<<"$", rest::binary>>, false, acc),
+    do: translate_pattern(rest, false, ["\\z" | acc])
+
+  defp translate_pattern(<<character::utf8, rest::binary>>, in_class?, acc),
+    do: translate_pattern(rest, in_class?, [<<character::utf8>> | acc])
+
+  defp validate_properties_schema(schema) do
+    case fetch_value(schema, :properties) do
+      :error ->
+        :ok
+
+      {:ok, properties} when is_map(properties) ->
+        if Enum.all?(Map.keys(properties), &(not is_nil(schema_key(&1)))) do
+          reduce_schemas(Map.values(properties))
+        else
+          validation("schema property names must be strings or atoms")
         end
+
+      {:ok, _properties} ->
+        validation("schema properties must be a map")
     end
   end
 
-  defp validate_typed_schema(schema, position) do
-    default = if position in [:root, :object_branch], do: "object", else: nil
+  defp validate_required_schema(schema) do
+    case fetch_value(schema, :required) do
+      :error ->
+        :ok
 
-    case value(schema, :type, default) do
-      type when type in ["object", :object] -> validate_object_schema(schema)
-      type when type in ["array", :array] -> validate_array_schema(schema)
-      type when type in ["integer", :integer] -> validate_numeric_schema(schema)
-      type when type in ["number", :number] -> validate_numeric_schema(schema)
-      type when type in ["string", :string, "boolean", :boolean] -> validate_scalar_schema(schema)
-      nil -> validation("property schema type is required")
-      type -> unsupported_type(type)
+      {:ok, required} when is_list(required) ->
+        if Enum.all?(required, &is_binary/1),
+          do: :ok,
+          else: validation("schema required must be a list of property names")
+
+      {:ok, _required} ->
+        validation("schema required must be a list of property names")
     end
   end
 
-  defp validate_object_schema(schema) do
-    with {:ok, properties} <- properties(schema),
-         {:ok, _required} <- required(schema),
-         :ok <- additional_properties(schema),
-         :ok <- disallow_keywords(schema, [:minimum, :items]),
-         :ok <- reduce_schemas(Map.values(properties)) do
-      :ok
+  defp validate_additional_properties_schema(schema) do
+    case additional_properties(schema) do
+      :error -> :ok
+      {:ok, additional} when is_boolean(additional) -> :ok
+      {:ok, additional} when is_map(additional) -> validate_schema(additional, :nested)
+      {:ok, _additional} -> validation("schema additionalProperties must be a boolean or schema")
     end
   end
 
-  defp validate_array_schema(schema) do
-    with :ok <- disallow_keywords(schema, [:properties, :required, :minimum]),
-         :ok <- additional_properties_absent(schema) do
-      case fetch_value(schema, :items) do
-        {:ok, items} -> validate_schema(items, :nested)
-        :error -> :ok
-      end
+  defp validate_child_schema(schema, keyword) do
+    case fetch_value(schema, keyword) do
+      :error -> :ok
+      {:ok, child} when is_map(child) -> validate_schema(child, :nested)
+      {:ok, _child} -> validation("schema #{schema_key(keyword)} must be a schema map")
     end
   end
 
-  defp validate_numeric_schema(schema) do
-    with :ok <- disallow_keywords(schema, [:properties, :required, :items]),
-         :ok <- additional_properties_absent(schema) do
-      case fetch_value(schema, :minimum) do
-        {:ok, minimum} when is_number(minimum) -> :ok
-        {:ok, _minimum} -> validation("schema minimum must be a number")
-        :error -> :ok
-      end
+  defp validate_composition_schema(schema, keyword, position) do
+    case fetch_value(schema, keyword) do
+      :error ->
+        :ok
+
+      {:ok, branches} when is_list(branches) and branches != [] ->
+        branch_position = if position == :root, do: :object_branch, else: :nested
+        reduce_schemas(branches, branch_position)
+
+      {:ok, _branches} ->
+        validation("schema #{schema_key(keyword)} must be a non-empty list")
     end
   end
 
-  defp validate_scalar_schema(schema) do
-    with :ok <- disallow_keywords(schema, [:properties, :required, :minimum, :items]),
-         :ok <- additional_properties_absent(schema) do
+  defp validate_composition_combination(schema) do
+    if match?({:ok, _}, fetch_value(schema, :oneOf)) and
+         match?({:ok, _}, fetch_value(schema, :anyOf)) do
+      {:error, Error.new(:unsupported_capability, "combining schema compositions is unsupported")}
+    else
       :ok
     end
   end
@@ -223,175 +310,65 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end)
   end
 
-  defp properties(schema) do
-    case value(schema, :properties, %{}) do
-      properties when is_map(properties) ->
-        if Enum.all?(Map.keys(properties), &(not is_nil(schema_key(&1)))),
-          do: {:ok, properties},
-          else: validation("schema property names must be strings or atoms")
-
-      _ ->
-        validation("schema properties must be a map")
-    end
-  end
-
-  defp required(schema) do
-    case value(schema, :required, []) do
-      required when is_list(required) ->
-        if Enum.all?(required, &is_binary/1),
-          do: {:ok, required},
-          else: validation("schema required must be a list of property names")
-
-      _ ->
-        validation("schema required must be a list of property names")
-    end
-  end
-
-  defp additional_properties(schema) do
-    case value(schema, :additionalProperties, value(schema, :additional_properties, true)) do
-      additional? when is_boolean(additional?) -> :ok
-      _ -> validation("schema additionalProperties must be a boolean")
-    end
-  end
-
-  defp additional_properties_absent(schema) do
-    disallow_keywords(schema, [:additionalProperties, :additional_properties])
-  end
-
-  defp disallow_keywords(schema, keywords) do
-    case Enum.find(keywords, &match?({:ok, _}, fetch_value(schema, &1))) do
-      nil ->
-        :ok
-
-      keyword ->
-        {:error,
-         Error.new(:unsupported_capability, "schema keyword is unsupported for this type",
-           details: %{keyword: keyword}
-         )}
-    end
-  end
-
   defp validate_value(value, schema, path) do
-    with :ok <- validate_shape(value, schema, path) do
-      case fetch_value(schema, :enum) do
-        :error ->
-          :ok
-
-        {:ok, choices} ->
-          if Enum.any?(choices, &(&1 == value)),
-            do: :ok,
-            else: validation("tool argument is not an allowed enum value", %{path: path})
-      end
-    end
-  end
-
-  defp validate_shape(value, schema, path) do
-    case {fetch_value(schema, :oneOf), fetch_value(schema, :anyOf)} do
-      {{:ok, branches}, :error} ->
-        sibling_schema = delete_value(schema, :oneOf)
-
-        with :ok <- validate_one_of_sibling_value(value, sibling_schema, path) do
-          validate_one_of_value(value, branches, path)
-        end
-
-      {:error, {:ok, branches}} ->
-        with :ok <- validate_typed_value(value, delete_value(schema, :anyOf), path) do
-          validate_any_of_value(value, branches, path)
-        end
-
-      {:error, :error} ->
-        validate_typed_value(value, schema, path)
-    end
-  end
-
-  defp validate_one_of_sibling_value(value, schema, path) do
-    if Enum.all?(Map.keys(schema), &(schema_key(&1) in ["description", "default"])) do
+    with :ok <- validate_type_value(value, schema, path),
+         :ok <- validate_enum_value(value, schema, path),
+         :ok <- validate_numeric_value(value, schema, path),
+         :ok <- validate_string_value(value, schema, path),
+         :ok <- validate_array_value(value, schema, path),
+         :ok <- validate_object_value(value, schema, path),
+         :ok <- validate_any_of_value(value, schema, path),
+         :ok <- validate_one_of_value(value, schema, path),
+         :ok <- validate_not_value(value, schema, path) do
       :ok
-    else
-      validate_typed_value(value, schema, path)
     end
   end
 
-  defp validate_one_of_value(value, branches, path) do
-    matches = Enum.count(branches, &(validate_value(value, &1, path) == :ok))
-
-    if matches == 1,
-      do: :ok,
-      else: validation("tool argument must match exactly one oneOf branch", %{path: path})
-  end
-
-  defp validate_any_of_value(value, branches, path) do
-    if Enum.any?(branches, &(validate_value(value, &1, path) == :ok)),
-      do: :ok,
-      else: validation("tool argument must match at least one anyOf branch", %{path: path})
-  end
-
-  defp validate_typed_value(value, schema, path) do
-    case value(schema, :type, "object") do
-      type when type in ["object", :object] -> validate_object_value(value, schema, path)
-      type when type in ["array", :array] -> validate_array_value(value, schema, path)
-      type when type in ["integer", :integer] -> validate_integer(value, schema, path)
-      type when type in ["number", :number] -> validate_number(value, schema, path)
-      type when type in ["string", :string] -> validate_primitive(is_binary(value), type, path)
-      type when type in ["boolean", :boolean] -> validate_primitive(is_boolean(value), type, path)
-    end
-  end
-
-  defp validate_object_value(value, schema, path) when is_map(value) do
-    {:ok, properties} = properties(schema)
-    {:ok, required} = required(schema)
-
-    with :ok <- validate_required(value, required, path),
-         :ok <- validate_additional(value, properties, schema, path) do
-      Enum.reduce_while(properties, :ok, fn {name, property_schema}, :ok ->
-        case fetch_property(value, name) do
-          {:ok, property_value} ->
-            case validate_value(property_value, property_schema, property_path(path, name)) do
-              :ok -> {:cont, :ok}
-              {:error, %Error{} = error} -> {:halt, {:error, error}}
-            end
-
-          :error ->
-            {:cont, :ok}
-        end
-      end)
-    end
-  end
-
-  defp validate_object_value(_value, _schema, path),
-    do: validation("tool argument has the wrong type", %{path: path, type: "object"})
-
-  defp validate_array_value(value, schema, path) when is_list(value) do
-    case fetch_value(schema, :items) do
-      {:ok, items} ->
-        value
-        |> Enum.with_index()
-        |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
-          case validate_value(item, items, "#{path}[#{index}]") do
-            :ok -> {:cont, :ok}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
-          end
-        end)
-
+  defp validate_type_value(value, schema, path) do
+    case fetch_value(schema, :type) do
       :error ->
         :ok
+
+      {:ok, types} when is_list(types) ->
+        if Enum.any?(types, &type_matches?(value, &1)),
+          do: :ok,
+          else: validation("tool argument has the wrong type", %{path: path, type: types})
+
+      {:ok, type} ->
+        if type_matches?(value, type),
+          do: :ok,
+          else: validation("tool argument has the wrong type", %{path: path, type: type})
     end
   end
 
-  defp validate_array_value(_value, _schema, path),
-    do: validation("tool argument has the wrong type", %{path: path, type: "array"})
+  defp type_matches?(value, type) when type in ["object", :object], do: is_map(value)
+  defp type_matches?(value, type) when type in ["array", :array], do: is_list(value)
+  defp type_matches?(value, type) when type in ["string", :string], do: is_binary(value)
+  defp type_matches?(value, type) when type in ["integer", :integer], do: is_integer(value)
+  defp type_matches?(value, type) when type in ["number", :number], do: is_number(value)
+  defp type_matches?(value, type) when type in ["boolean", :boolean], do: is_boolean(value)
+  defp type_matches?(value, type) when type in ["null", :null], do: is_nil(value)
 
-  defp validate_integer(value, schema, path) when is_integer(value),
-    do: validate_minimum(value, schema, path)
+  defp validate_enum_value(value, schema, path) do
+    case fetch_value(schema, :enum) do
+      :error ->
+        :ok
 
-  defp validate_integer(_value, _schema, path),
-    do: validation("tool argument has the wrong type", %{path: path, type: "integer"})
+      {:ok, choices} ->
+        if Enum.any?(choices, &(&1 == value)),
+          do: :ok,
+          else: validation("tool argument is not an allowed enum value", %{path: path})
+    end
+  end
 
-  defp validate_number(value, schema, path) when is_number(value),
-    do: validate_minimum(value, schema, path)
+  defp validate_numeric_value(value, schema, path) when is_number(value) do
+    with :ok <- validate_minimum(value, schema, path),
+         :ok <- validate_maximum(value, schema, path) do
+      :ok
+    end
+  end
 
-  defp validate_number(_value, _schema, path),
-    do: validation("tool argument has the wrong type", %{path: path, type: "number"})
+  defp validate_numeric_value(_value, _schema, _path), do: :ok
 
   defp validate_minimum(value, schema, path) do
     case fetch_value(schema, :minimum) do
@@ -403,10 +380,127 @@ defmodule Backplane.AgentRuntime.InputSchema do
     end
   end
 
-  defp validate_primitive(true, _type, _path), do: :ok
+  defp validate_maximum(value, schema, path) do
+    case fetch_value(schema, :maximum) do
+      {:ok, maximum} when value > maximum ->
+        validation("tool argument is above the maximum", %{path: path, maximum: maximum})
 
-  defp validate_primitive(false, type, path),
-    do: validation("tool argument has the wrong type", %{path: path, type: type})
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_string_value(value, schema, path) when is_binary(value) do
+    with :ok <- validate_string_length(value, schema, path),
+         :ok <- validate_pattern_value(value, schema, path) do
+      :ok
+    end
+  end
+
+  defp validate_string_value(_value, _schema, _path), do: :ok
+
+  defp validate_string_length(value, schema, path) do
+    codepoint_count = value |> String.to_charlist() |> length()
+
+    case fetch_value(schema, :minLength) do
+      {:ok, minimum} when codepoint_count < minimum ->
+        validation("tool argument is shorter than the minimum length", %{
+          path: path,
+          minLength: minimum
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_pattern_value(value, schema, path) do
+    case fetch_value(schema, :pattern) do
+      :error ->
+        :ok
+
+      {:ok, pattern} ->
+        {:ok, regex} = compile_pattern(pattern)
+        options = [:report_errors, {:capture, :none}, {:match_limit, @pattern_match_limit}]
+
+        case :re.run(value, regex.re_pattern, options) do
+          :match -> :ok
+          :nomatch -> validation("tool argument does not match the pattern", %{path: path})
+          {:error, reason} -> pattern_execution_failure(path, reason)
+        end
+    end
+  end
+
+  defp validate_array_value(value, schema, path) when is_list(value) do
+    with :ok <- validate_array_length(value, schema, path),
+         :ok <- validate_array_items(value, schema, path) do
+      :ok
+    end
+  end
+
+  defp validate_array_value(_value, _schema, _path), do: :ok
+
+  defp validate_array_length(value, schema, path) do
+    count = length(value)
+    minimum = value(schema, :minItems, nil)
+    maximum = value(schema, :maxItems, nil)
+
+    cond do
+      is_integer(minimum) and count < minimum ->
+        validation("tool argument has too few items", %{path: path, minItems: minimum})
+
+      is_integer(maximum) and count > maximum ->
+        validation("tool argument has too many items", %{path: path, maxItems: maximum})
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_array_items(value, schema, path) do
+    case fetch_value(schema, :items) do
+      :error ->
+        :ok
+
+      {:ok, items} ->
+        value
+        |> Enum.with_index()
+        |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
+          case validate_value(item, items, "#{path}[#{index}]") do
+            :ok -> {:cont, :ok}
+            {:error, %Error{} = error} -> {:halt, {:error, error}}
+          end
+        end)
+    end
+  end
+
+  defp validate_object_value(value, schema, path) when is_map(value) do
+    properties = value(schema, :properties, %{})
+    required = value(schema, :required, [])
+
+    with :ok <- validate_required(value, required, path),
+         :ok <- validate_properties(value, properties, path),
+         :ok <- validate_additional(value, properties, schema, path) do
+      :ok
+    end
+  end
+
+  defp validate_object_value(_value, _schema, _path), do: :ok
+
+  defp validate_properties(input, properties, path) do
+    Enum.reduce_while(properties, :ok, fn {name, property_schema}, :ok ->
+      case fetch_property(input, name) do
+        {:ok, property_value} ->
+          case validate_value(property_value, property_schema, property_path(path, name)) do
+            :ok -> {:cont, :ok}
+            {:error, %Error{} = error} -> {:halt, {:error, error}}
+          end
+
+        :error ->
+          {:cont, :ok}
+      end
+    end)
+  end
 
   defp validate_required(input, required, path) do
     case Enum.find(required, &(not has_property?(input, &1))) do
@@ -420,22 +514,104 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp validate_additional(input, properties, schema, path) do
     allowed = properties |> Map.keys() |> Enum.map(&schema_key/1) |> MapSet.new()
+    additional = additional_properties(schema)
 
-    additional? =
-      value(schema, :additionalProperties, value(schema, :additional_properties, true))
+    input
+    |> Enum.reject(fn {name, _value} -> MapSet.member?(allowed, schema_key(name)) end)
+    |> Enum.reduce_while(:ok, fn {name, additional_value}, :ok ->
+      case additional do
+        :error ->
+          {:cont, :ok}
 
-    if additional? do
-      :ok
-    else
-      case Enum.find(Map.keys(input), &(not MapSet.member?(allowed, schema_key(&1)))) do
-        nil ->
-          :ok
+        {:ok, true} ->
+          {:cont, :ok}
 
-        property ->
-          validation("additional tool argument is not allowed", %{path: path, property: property})
+        {:ok, false} ->
+          {:halt,
+           validation("additional tool argument is not allowed", %{path: path, property: name})}
+
+        {:ok, additional_schema} ->
+          case validate_value(additional_value, additional_schema, property_path(path, name)) do
+            :ok -> {:cont, :ok}
+            {:error, %Error{} = error} -> {:halt, {:error, error}}
+          end
       end
+    end)
+  end
+
+  defp validate_any_of_value(value, schema, path) do
+    case fetch_value(schema, :anyOf) do
+      :error -> :ok
+      {:ok, branches} -> validate_branch_matches(value, branches, path, :any)
     end
   end
+
+  defp validate_one_of_value(value, schema, path) do
+    case fetch_value(schema, :oneOf) do
+      :error -> :ok
+      {:ok, branches} -> validate_branch_matches(value, branches, path, :one)
+    end
+  end
+
+  defp validate_branch_matches(value, branches, path, mode) do
+    result =
+      Enum.reduce_while(branches, 0, fn branch, matches ->
+        case validate_value(value, branch, path) do
+          :ok -> {:cont, matches + 1}
+          {:error, %Error{class: :validation}} -> {:cont, matches}
+          {:error, %Error{} = error} -> {:halt, {:error, error}}
+        end
+      end)
+
+    case {mode, result} do
+      {_mode, {:error, %Error{} = error}} ->
+        {:error, error}
+
+      {:any, matches} when matches > 0 ->
+        :ok
+
+      {:one, 1} ->
+        :ok
+
+      {:any, _matches} ->
+        validation("tool argument must match at least one anyOf branch", %{path: path})
+
+      {:one, _matches} ->
+        validation("tool argument must match exactly one oneOf branch", %{path: path})
+    end
+  end
+
+  defp validate_not_value(value, schema, path) do
+    case fetch_value(schema, :not) do
+      :error ->
+        :ok
+
+      {:ok, negated} ->
+        case validate_value(value, negated, path) do
+          :ok -> validation("tool argument must not match the negated schema", %{path: path})
+          {:error, %Error{class: :validation}} -> :ok
+          {:error, %Error{} = error} -> {:error, error}
+        end
+    end
+  end
+
+  defp pattern_execution_failure(path, reason) do
+    {:error,
+     Error.new(:execution_failure, "schema pattern evaluation failed",
+       details: %{path: path, reason: reason}
+     )}
+  end
+
+  defp json_value?(value)
+       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
+       do: true
+
+  defp json_value?(value) when is_list(value), do: Enum.all?(value, &json_value?/1)
+
+  defp json_value?(value) when is_map(value) and not is_struct(value),
+    do: Enum.all?(value, fn {key, item} -> is_binary(key) and json_value?(item) end)
+
+  defp json_value?(_value), do: false
 
   defp supported_keys(map, allowed) when is_map(map) do
     allowed = allowed |> Enum.map(&schema_key/1) |> MapSet.new()
@@ -457,6 +633,13 @@ defmodule Backplane.AgentRuntime.InputSchema do
      Error.new(:unsupported_capability, "property schema type is unsupported",
        details: %{type: type}
      )}
+  end
+
+  defp additional_properties(schema) do
+    case fetch_value(schema, :additionalProperties) do
+      :error -> fetch_value(schema, :additional_properties)
+      result -> result
+    end
   end
 
   defp fetch_property(input, name) do
@@ -482,8 +665,6 @@ defmodule Backplane.AgentRuntime.InputSchema do
       :error -> default
     end
   end
-
-  defp delete_value(map, key), do: map |> Map.delete(key) |> Map.delete(Atom.to_string(key))
 
   defp schema_key(key) when is_binary(key), do: key
   defp schema_key(key) when is_atom(key), do: Atom.to_string(key)

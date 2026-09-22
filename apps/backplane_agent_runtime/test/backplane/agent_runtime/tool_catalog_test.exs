@@ -1,7 +1,10 @@
+Code.require_file("../../fixtures/issue_46_tool_schemas.exs", __DIR__)
+
 defmodule Backplane.AgentRuntime.ToolCatalogTest do
   use ExUnit.Case, async: true
 
   alias Backplane.AgentRuntime.{Error, ToolCatalog, ToolRegistry}
+  alias Backplane.AgentRuntime.Issue46ToolSchemas
 
   defmodule Backend do
     def execute(_operation), do: {:ok, %{text: "ok"}}
@@ -32,13 +35,74 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
 
     unsupported =
       update_in(schema, ["oneOf"], fn branches ->
-        branches ++ [%{"properties" => %{"unused" => %{"pattern" => "unused"}}}]
+        branches ++ [%{"properties" => %{"unused" => %{"$ref" => "#/$defs/unused"}}}]
       end)
 
     registry = registry("read", 1, unsupported)
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "pattern"}}} =
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
              ToolCatalog.validate(update(registry, 1, 2), 1, run())
+  end
+
+  test "preflights current MCP schema features before publishing a catalog" do
+    registry = registry("read", 1, Issue46ToolSchemas.mixed_inputs())
+    assert {:ok, _catalog} = ToolCatalog.validate(update(registry, 1, 2), 1, run())
+
+    unsupported =
+      put_in(Issue46ToolSchemas.mixed_inputs(), ["properties", "metadata"], %{
+        "$ref" => "#/$defs/metadata"
+      })
+
+    registry = registry("read", 1, unsupported)
+
+    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
+             ToolCatalog.validate(update(registry, 1, 2), 1, run())
+  end
+
+  test "preflights the captured 58-tool live catalog as one publication" do
+    path = Path.expand("../../fixtures/issue_46_live_catalog.json", __DIR__)
+    definitions = path |> File.read!() |> JSON.decode!()
+
+    registry =
+      definitions
+      |> Enum.reduce(%ToolRegistry{}, fn %{"name" => name, "inputSchema" => schema}, registry ->
+        {:ok, registry} =
+          ToolRegistry.register(registry, %{
+            tool_name: name,
+            tool_revision: 1,
+            schema: schema,
+            safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+            backend: Backend,
+            backend_context: %{}
+          })
+
+        registry
+      end)
+
+    tools =
+      Enum.map(definitions, fn %{"name" => name, "inputSchema" => schema} ->
+        %{name: name, description: "", parameters: schema}
+      end)
+
+    update = %{
+      publication_id: "issue-46-catalog",
+      run_id: "run",
+      incarnation: 1,
+      expected_revision: 1,
+      catalog: %{
+        revision: 2,
+        registry: registry,
+        authority: %{
+          caller: "host",
+          run_id: "run",
+          grants: Enum.map(definitions, & &1["name"]),
+          tool_revision: 1
+        },
+        tools: tools
+      }
+    }
+
+    assert {:ok, _catalog} = ToolCatalog.validate(update, 1, run())
   end
 
   test "rejects malformed forged registries, descriptors, schemas, and definitions" do
