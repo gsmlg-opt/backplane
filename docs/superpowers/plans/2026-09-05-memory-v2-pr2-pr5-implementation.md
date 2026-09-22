@@ -151,14 +151,15 @@ The host failure is `worker_test.exs:227`: the test imposes ordering between `Fa
   checks passed. The stronger real 10,000-event Scenario J test is red:
   `Rebuild.replace_observation_rows/3` inserts 250,000 Postgrex parameters
   against its 65,535 limit. Replay insertion also batches potentially 10,000
-  rows and requires qualification after repairing observations. Proposed
-  production repair in `projections/rebuild.ex` and `replay/store.ex` is outside
-  Task 17's approved test-only scope; no approval has been inferred.
+  rows and requires qualification after repairing observations. On 2026-09-22
+  the user approved the bounded production repair scope recorded under Task 17.
   Scenario E proves provisional identity, command ACK, and one canonical online
   recall result, but the literal canonical revision cannot be asserted: the
   V1 compatibility import creates an episodic memory and returns ID only,
-  whereas V2 edge revisions cover semantic/procedural records. A separate
-  product-contract decision is required before calling E complete.
+  whereas V2 edge revisions cover semantic/procedural records. On 2026-09-22
+  the user approved a revisioned edge representation for host-origin episodic
+  remembers, including server/host migrations, ACK/storage changes, tests, and
+  Task 19's migration ceiling. This approval does not itself complete E.
   Tasks 17–20 remain outstanding; PR2–PR5 is not complete.
 
 ### Task 1: Repair the invalid baseline assertion and approve the design status
@@ -698,6 +699,22 @@ test must preserve the shared contract's `_meta["backplane"]` value.
 
 ### Task 17: Add the A-J real-store qualification suite
 
+Scope expansion approved by the user on 2026-09-22 after the real-store tests
+exposed the two defects above. Scenario J may repair bounded, transactional
+projection inserts in `apps/backplane_memory/lib/backplane/memory/projections/rebuild.ex`
+and `apps/backplane_memory/lib/backplane/memory/replay/store.ex`, with focused
+tests. Scenario E may add a server migration after `20260905000009` for a
+revisioned edge representation of host-origin episodic remembers; change
+`apps/backplane_api/lib/backplane/api/host_agent_memory_sync.ex` and
+`apps/backplane_api/lib/backplane/api/channels/host_agent_channel.ex` so the
+canonical command ACK carries its ID and causally assigned revision; add a host
+command-store migration and registration under
+`apps/backplane_host_agent/lib/backplane/host_agent/memory/`, persist that
+revision in its Syncer, and update their focused API/host/edge tests. Task 19's
+release and upgrade checks must use the resulting migration head. Preserve the
+V1 compatibility envelope for older clients and rollback flags; do not widen
+unrelated runtime paths or migrations without a new scope decision.
+
 **Files:**
 - Create: `apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs`
 - Modify: `apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs`
@@ -744,10 +761,10 @@ test must preserve the shared contract's `_meta["backplane"]` value.
 - Create: `apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs`
 - Create: `apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs`
 
-- [ ] Write failing release-contract assertions for latest migration `20260905000009`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
+- [ ] Write failing release-contract assertions for the post-approval latest migration `20260905000010`, packaged protocol/runbook, PR4 qualifications, and A-J edge qualification.
 - [ ] Define issue dispositions as `pending | resolved | approved_waiver`. `resolved` and `approved_waiver` count as complete only with `resolved_at`; every other row blocks cutover.
 - [ ] Implement one fail-closed `Backplane.Memory.Readiness.edge_cutover/0` entrypoint and `mix backplane.memory.edge_cutover_check` wrapper. It returns success only when mappings, root/child/audit/job inventories, initial snapshots, and issue dispositions are ready; `.github/workflows/release.yml` must run that exact command.
-- [ ] Add real upgrade tests from the previous server migration head through `20260905000009` and from an existing populated host Turso v1 command database through local v2/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
+- [ ] Add real upgrade tests from the previous server migration head through `20260905000010` and from an existing populated host Turso v1 command database through local v2/v3/edge migrations. Assert preserved commands, tombstones, canonical data, and rollback-compatible feature flags, not only fresh-schema idempotency.
 - [ ] Add focused workflow commands without weakening existing format/compile/Credo/Dialyzer/per-app gates.
 - [ ] Run release-config and workflow tests; commit `ci(memory): qualify revisioned edge cutover`.
 
