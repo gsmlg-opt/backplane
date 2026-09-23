@@ -89,7 +89,7 @@ defmodule Backplane.Auth.ResourcesTest do
     assert Resources.valid_scope?(:mcp, "llm::models")
     assert Resources.valid_scope?(:mcp, "*")
 
-    for scope <- ["llm::models", "llm::invoke", "llm::*", "*"] do
+    for scope <- ["llm::models", "llm::invoke", "llm::manage", "llm::*", "*"] do
       assert Resources.valid_scope?(:v1, scope)
       assert Resources.operation_scope?(:v1, scope)
     end

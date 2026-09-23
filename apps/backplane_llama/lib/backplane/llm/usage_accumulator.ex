@@ -37,6 +37,8 @@ defmodule Backplane.LLM.UsageAccumulator do
           | :openai_json_body
           | :anthropic_json_body
           | :google_generate_content
+          | :google_antigravity
+          | :google_antigravity_body
           | :google_generate_content_body
           | :google_count_tokens_body
         ) :: pid()
@@ -53,6 +55,8 @@ defmodule Backplane.LLM.UsageAccumulator do
           | :openai_json_body
           | :anthropic_json_body
           | :google_generate_content
+          | :google_antigravity
+          | :google_antigravity_body
           | :google_generate_content_body
           | :google_count_tokens_body,
           keyword()
@@ -69,6 +73,8 @@ defmodule Backplane.LLM.UsageAccumulator do
         :openai_json_body -> json_body_state(:openai_json_body)
         :anthropic_json_body -> json_body_state(:anthropic_json_body)
         :google_generate_content -> google_generate_content_state()
+        :google_antigravity -> antigravity_state()
+        :google_antigravity_body -> response_body_state(:google_antigravity_body)
         :google_generate_content_body -> response_body_state(:google_generate_content_body)
         :google_count_tokens_body -> response_body_state(:google_count_tokens_body)
         :legacy -> legacy_state(:legacy)
@@ -115,6 +121,18 @@ defmodule Backplane.LLM.UsageAccumulator do
     %{
       protocol: :google_generate_content,
       observer: Backplane.AiProtocol.GoogleGenerateContentObserver.new(),
+      chunk_count: 0,
+      first_chunk_at: nil,
+      first_content_at: nil,
+      last_chunk_at: nil,
+      started_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp antigravity_state do
+    %{
+      protocol: :google_antigravity,
+      observer: Backplane.AiProtocol.Antigravity.Observer.new(),
       chunk_count: 0,
       first_chunk_at: nil,
       first_content_at: nil,
@@ -226,11 +244,26 @@ defmodule Backplane.LLM.UsageAccumulator do
 
               {next, next}
 
+            %{protocol: :google_antigravity, observer: observer} = state ->
+              observer =
+                Backplane.AiProtocol.Antigravity.Observer.finish(observer, transport_reason)
+
+              next =
+                state
+                |> Map.put(:observer, observer)
+                |> put_antigravity_first_content(System.monotonic_time(:millisecond))
+
+              {next, next}
+
             %{body_facts: _facts} = state ->
               {state, state}
 
             %{protocol: protocol} = state
-            when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+            when protocol in [
+                   :google_generate_content_body,
+                   :google_count_tokens_body,
+                   :google_antigravity_body
+                 ] ->
               facts = google_response_body_facts(state, status)
 
               facts = apply_google_body_transport(facts, transport_reason)
@@ -299,8 +332,17 @@ defmodule Backplane.LLM.UsageAccumulator do
 
           merge_google_observer_facts(base, facts, first_content_ms(state))
 
+        %{protocol: :google_antigravity, observer: observer} ->
+          facts = Backplane.AiProtocol.Antigravity.Observer.facts(observer)
+
+          merge_google_observer_facts(base, facts, first_content_ms(state))
+
         %{protocol: protocol} = state
-        when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+        when protocol in [
+               :google_generate_content_body,
+               :google_count_tokens_body,
+               :google_antigravity_body
+             ] ->
           facts = state.body_facts
 
           merge_google_observer_facts(base, facts, first_content_ms(state))
@@ -472,9 +514,13 @@ defmodule Backplane.LLM.UsageAccumulator do
         else: :generate
 
     facts =
-      Backplane.AiProtocol.GoogleGenerateContentObserver.observe_response(status, body,
-        operation: operation
-      )
+      if state.protocol == :google_antigravity_body do
+        Backplane.AiProtocol.Antigravity.Observer.observe_response(status, body)
+      else
+        Backplane.AiProtocol.GoogleGenerateContentObserver.observe_response(status, body,
+          operation: operation
+        )
+      end
 
     if state.body_truncated do
       facts
@@ -574,11 +620,21 @@ defmodule Backplane.LLM.UsageAccumulator do
               | observer: Backplane.AiProtocol.GoogleGenerateContentObserver.feed(observer, chunk)
             }
 
+          %{protocol: :google_antigravity, observer: observer} ->
+            %{
+              state
+              | observer: Backplane.AiProtocol.Antigravity.Observer.feed(observer, chunk)
+            }
+
           %{protocol: :openai_responses_body} ->
             put_response_body_chunk(state, chunk)
 
           %{protocol: protocol}
-          when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+          when protocol in [
+                 :google_generate_content_body,
+                 :google_count_tokens_body,
+                 :google_antigravity_body
+               ] ->
             put_response_body_chunk(state, chunk)
 
           %{protocol: protocol} when protocol in [:openai_json_body, :anthropic_json_body] ->
@@ -588,7 +644,7 @@ defmodule Backplane.LLM.UsageAccumulator do
             extract_usage_from_chunk(state, chunk)
         end
 
-      put_google_first_content(next, now)
+      next |> put_google_first_content(now) |> put_antigravity_first_content(now)
     rescue
       _ -> Map.put(state, :observer_error, true)
     end
@@ -844,6 +900,17 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   defp put_google_first_content(state, _now), do: state
 
+  defp put_antigravity_first_content(
+         %{protocol: :google_antigravity, first_content_at: nil, observer: observer} = state,
+         now
+       ) do
+    if Backplane.AiProtocol.Antigravity.Observer.facts(observer).content_seen,
+      do: %{state | first_content_at: now},
+      else: state
+  end
+
+  defp put_antigravity_first_content(state, _now), do: state
+
   defp put_google_body_first_content(%{first_content_at: nil} = state, facts, now) do
     if facts.content_seen, do: %{state | first_content_at: now}, else: state
   end
@@ -867,6 +934,8 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   defp legacy_protocol(:compact), do: :compact
   defp legacy_protocol(:google_generate_content), do: :google_generate_content
+  defp legacy_protocol(:google_antigravity), do: :google_antigravity
+  defp legacy_protocol(:google_antigravity_body), do: :google_antigravity
   defp legacy_protocol(:google_generate_content_body), do: :google_generate_content
   defp legacy_protocol(:google_count_tokens_body), do: :google_generate_content
   defp legacy_protocol(_protocol), do: :legacy

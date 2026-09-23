@@ -33,6 +33,31 @@ defmodule Backplane.LLM.ResourceAuthorization do
   def required_scope(%Plug.Conn{method: "POST", path_info: ["v1beta", "models" | _rest]}),
     do: "llm::invoke"
 
+  def required_scope(%Plug.Conn{
+        method: "POST",
+        path_info: ["antigravity", "providers", _provider, "v1internal:loadCodeAssist"]
+      }),
+      do: "llm::models"
+
+  def required_scope(%Plug.Conn{
+        method: "POST",
+        path_info: ["antigravity", "providers", _provider, "v1internal:fetchAvailableModels"]
+      }),
+      do: "llm::models"
+
+  def required_scope(%Plug.Conn{
+        method: "POST",
+        path_info: ["antigravity", "providers", _provider, "v1internal:onboardUser"]
+      }),
+      do: "llm::manage"
+
+  def required_scope(%Plug.Conn{
+        method: "POST",
+        path_info: ["antigravity", "providers", _provider, operation]
+      })
+      when operation in ["v1internal:generateContent", "v1internal:streamGenerateContent"],
+      do: "llm::invoke"
+
   def required_scope(_conn), do: nil
 
   @impl true
@@ -58,7 +83,7 @@ defmodule Backplane.LLM.ResourceAuthorization do
     else
       conn = BearerChallenge.put(conn, :v1, error: "insufficient_scope", scope: scope)
 
-      if match?(["v1beta" | _], conn.path_info) do
+      if match?([prefix | _] when prefix in ["v1beta", "antigravity"], conn.path_info) do
         Backplane.LLM.Google.Error.send(conn, 403, "Credential does not grant #{scope}")
       else
         conn

@@ -15,6 +15,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   }
 
   alias Backplane.Repo
+  alias Backplane.AiProtocol.Antigravity
   alias Backplane.LLM.Google.RequestTarget
   alias Backplane.Settings.Credential
   alias Backplane.Settings.Credentials
@@ -102,6 +103,19 @@ defmodule Backplane.LLM.ModelDiscovery do
       api.api_surface == :google ->
         with {:ok, headers} <- discovery_headers(provider, api),
              {:ok, details} <- get_google_model_pages(api, headers) do
+          {:ok, details}
+        end
+
+      api.api_surface == :antigravity ->
+        with {:ok, headers} <- discovery_headers(provider, api),
+             {:ok, request} <-
+               Antigravity.build_request(:fetch_available_models, %{},
+                 project: (api.backend_config || %{})["project_id"],
+                 user_agent: (api.backend_config || %{})["user_agent"],
+                 client_version: (api.backend_config || %{})["client_version"]
+               ),
+             {:ok, response} <- post_antigravity_models(api, headers, request),
+             {:ok, details} <- parse_antigravity_model_details(response.body, api) do
           {:ok, details}
         end
 
@@ -336,6 +350,65 @@ defmodule Backplane.LLM.ModelDiscovery do
     do_get_google_model_pages(api, headers, nil, MapSet.new(), [], 0)
   end
 
+  defp post_antigravity_models(api, auth_headers, request) do
+    url = String.trim_trailing(api.base_url, "/") <> request.path
+
+    headers =
+      request.headers ++
+        Enum.reject(auth_headers, fn {name, _value} ->
+          String.downcase(to_string(name)) in ~w(x-api-key api-key x-goog-api-key proxy-authorization cookie x-goog-user-project x-machine-session-id x-client-name x-client-version user-agent content-type accept)
+        end)
+
+    url
+    |> Req.post(
+      req_options(url, headers)
+      |> Keyword.put(:json, request.body)
+      |> Keyword.put(:redirect, false)
+      |> Keyword.put(:retry, false)
+    )
+    |> case do
+      {:ok, %{status: status} = response} when status in 200..299 -> {:ok, response}
+      {:ok, %{status: status}} -> {:error, "HTTP #{status}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp parse_antigravity_model_details(body, api) when is_map(body) do
+    case Antigravity.models(body) do
+      models when is_map(models) and map_size(models) > 0 ->
+        models
+        |> Enum.map(fn {id, metadata} -> antigravity_model_detail(id, metadata, api) end)
+        |> Enum.reduce_while({:ok, []}, fn
+          %ModelDetail{} = detail, {:ok, details} -> {:cont, {:ok, [detail | details]}}
+          nil, _acc -> {:halt, {:error, :invalid_model_list}}
+        end)
+        |> case do
+          {:ok, details} -> {:ok, details |> Enum.reverse() |> Enum.uniq_by(& &1.id)}
+          error -> error
+        end
+
+      _ ->
+        {:error, :empty_model_list}
+    end
+  end
+
+  defp parse_antigravity_model_details(_body, _api), do: {:error, :invalid_model_list}
+
+  defp antigravity_model_detail(id, metadata, api)
+       when is_binary(id) and is_map(metadata) do
+    if Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,254}\z/, id) do
+      metadata =
+        metadata
+        |> normalize_metadata()
+        |> Map.put("provenance", "antigravity_fetch_available_models")
+        |> Map.put("provider_api_id", api.id)
+
+      %ModelDetail{id: id, metadata: metadata}
+    end
+  end
+
+  defp antigravity_model_detail(_id, _metadata, _api), do: nil
+
   defp do_get_google_model_pages(_api, _headers, _token, _seen, _details, @max_google_pages),
     do: {:error, :too_many_model_pages}
 
@@ -561,6 +634,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp default_discovery_path(:openai), do: "/models"
   defp default_discovery_path(:anthropic), do: "/v1/models"
   defp default_discovery_path(:google), do: "/models"
+  defp default_discovery_path(:antigravity), do: "/v1internal:fetchAvailableModels"
 
   defp parse_model_details(%{"data" => models}) when is_list(models),
     do: if(models == [], do: {:error, :empty_model_list}, else: parse_model_details(models))
@@ -888,6 +962,7 @@ defmodule Backplane.LLM.ModelDiscovery do
           api_surface: api.api_surface,
           base_url: api.base_url,
           discovery_path: api.model_discovery_path,
+          backend_config: api.backend_config,
           models: model_generation(provider.id),
           surfaces: surface_generation(provider.id)
         }

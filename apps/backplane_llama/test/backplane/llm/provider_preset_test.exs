@@ -20,6 +20,7 @@ defmodule Backplane.LLM.ProviderPresetTest do
              "anthropic",
              "x-ai",
              "google-gemini-developer",
+             "google-antigravity",
              "moonshot-cn"
            ] = ProviderPreset.keys()
   end
@@ -225,6 +226,27 @@ defmodule Backplane.LLM.ProviderPresetTest do
            }
 
     assert ProviderPreset.native_protocols(preset, :google) == [:google_generate_content]
+    refute preset.openai.enabled
+    refute preset.anthropic.enabled
+  end
+
+  test "google antigravity uses only the native OAuth subscription surface" do
+    preset = ProviderPreset.fetch!("google-antigravity")
+
+    assert preset.default_credential == "google-antigravity"
+    assert preset.credential_auth_type == "google_oauth"
+    assert preset.default_base_url == "https://cloudcode-pa.googleapis.com"
+
+    assert ProviderPreset.surfaces(preset) == %{
+             antigravity: %{
+               enabled: true,
+               base_url: "https://cloudcode-pa.googleapis.com",
+               discovery_path: "/v1internal:fetchAvailableModels",
+               native_protocols: [:google_antigravity],
+               backend_config: %{}
+             }
+           }
+
     refute preset.openai.enabled
     refute preset.anthropic.enabled
   end

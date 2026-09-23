@@ -35,6 +35,7 @@ defmodule Backplane.Api.Endpoint do
   end
 
   plug(Backplane.LLM.Google.RequestAuthPlug)
+  plug(Backplane.LLM.Antigravity.RequestAuthPlug)
   plug(Plug.RequestId)
   plug(Backplane.Observability.ContextPlug)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])

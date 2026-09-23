@@ -125,6 +125,34 @@ defmodule Backplane.LLM.CredentialPlugTest do
   # ── build_auth_headers/1 ──────────────────────────────────────────────────────
 
   describe "build_auth_headers/1" do
+    test "uses only Google OAuth bearer credentials for Antigravity" do
+      Credentials.store_device_token("antigravity-oauth", "google_oauth", %{
+        "access_token" => "oauth-access-token",
+        "refresh_token" => "refresh-token",
+        "expires_at" => System.system_time(:millisecond) + 3_600_000
+      })
+
+      Credentials.store("antigravity-api-key", "api-key", "llm", %{
+        "auth_type" => "api_key"
+      })
+
+      assert {:ok, headers} =
+               CredentialPlug.build_auth_headers(
+                 %Provider{credential: "antigravity-oauth"},
+                 :antigravity
+               )
+
+      assert {"authorization", "Bearer oauth-access-token"} in headers
+      assert {"x-api-key", nil} in headers
+      assert {"x-goog-api-key", nil} in headers
+
+      assert {:error, :unsupported_antigravity_auth_type} =
+               CredentialPlug.build_auth_headers(
+                 %Provider{credential: "antigravity-api-key"},
+                 :antigravity
+               )
+    end
+
     test "returns anthropic headers" do
       {:ok, provider} = Provider.create(@anthropic_attrs)
 

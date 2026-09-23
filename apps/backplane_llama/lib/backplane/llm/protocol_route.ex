@@ -14,6 +14,7 @@ defmodule Backplane.LLM.ProtocolRoute do
           | :openai_responses
           | :anthropic_messages
           | :google_generate_content
+          | :google_antigravity
 
   @spec client_protocol(String.t()) :: protocol() | :unknown
   def client_protocol("/v1/responses"), do: :openai_responses
@@ -33,7 +34,8 @@ defmodule Backplane.LLM.ProtocolRoute do
              :openai_chat_completions,
              :openai_responses,
              :anthropic_messages,
-             :google_generate_content
+             :google_generate_content,
+             :google_antigravity
            ] and is_list(native_protocols) do
     if client_protocol in native_protocols do
       {:ok, :native}

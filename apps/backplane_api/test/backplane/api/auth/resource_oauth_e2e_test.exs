@@ -108,7 +108,7 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
       |> json_response(200)
 
     assert metadata["resource"] == Resources.uri(:v1)
-    assert metadata["scopes_supported"] == ["llm::models", "llm::invoke"]
+    assert metadata["scopes_supported"] == ["llm::models", "llm::invoke", "llm::manage"]
 
     descriptor = v1_request(:get, "/v1")
 

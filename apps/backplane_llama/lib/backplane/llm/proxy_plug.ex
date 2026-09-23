@@ -19,6 +19,12 @@ defmodule Backplane.LLM.ProxyPlug do
     |> Plug.Conn.halt()
   end
 
+  def call(%Plug.Conn{path_info: ["antigravity" | _rest]} = conn, _opts) do
+    conn
+    |> Backplane.LLM.Antigravity.Router.call(Backplane.LLM.Antigravity.Router.init([]))
+    |> Plug.Conn.halt()
+  end
+
   def call(conn, _opts), do: conn
 
   defp forward_to_llm_router(conn, path_info, ["providers", _provider_name | _rest]) do

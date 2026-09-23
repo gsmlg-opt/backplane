@@ -72,7 +72,7 @@ defmodule Backplane.Api.Auth.DiscoveryControllerTest do
              "bearer_methods_supported" => ["header"],
              "resource_name" => "Backplane LLM API",
              "resource_documentation" => Resources.documentation_uri(:v1),
-             "scopes_supported" => ["llm::models", "llm::invoke"]
+             "scopes_supported" => ["llm::models", "llm::invoke", "llm::manage"]
            }
   end
 

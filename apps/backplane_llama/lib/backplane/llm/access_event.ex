@@ -65,12 +65,12 @@ defmodule Backplane.LLM.AccessEvent do
   @spec put_resolution(
           t(),
           map() | Provider.t() | nil,
-          String.t(),
+          String.t() | nil,
           ProviderApi.t() | nil,
           keyword()
         ) :: t()
   def put_resolution(%__MODULE__{} = state, provider, resolved_model, provider_api, opts \\ [])
-      when is_binary(resolved_model) do
+      when is_binary(resolved_model) or is_nil(resolved_model) do
     %{
       state
       | provider: provider,
@@ -101,7 +101,8 @@ defmodule Backplane.LLM.AccessEvent do
              :openai_json_body,
              :anthropic_json_body,
              :google_generate_content_body,
-             :google_count_tokens_body
+             :google_count_tokens_body,
+             :google_antigravity_body
            ] ->
         %{state | usage_acc: new_usage_accumulator(protocol)}
 
@@ -316,6 +317,9 @@ defmodule Backplane.LLM.AccessEvent do
   defp accumulator_protocol(%__MODULE__{api_surface: "google_generate_content"}),
     do: :google_generate_content
 
+  defp accumulator_protocol(%__MODULE__{api_surface: "google_antigravity"}),
+    do: :google_antigravity
+
   defp accumulator_protocol(%__MODULE__{path: path})
        when is_binary(path) and path != "/v1/responses" do
     if String.ends_with?(path, "/responses/compact"), do: :compact, else: :legacy
@@ -335,6 +339,9 @@ defmodule Backplane.LLM.AccessEvent do
 
       state.api_surface == "google_generate_content" ->
         :google_generate_content_body
+
+      state.api_surface == "google_antigravity" ->
+        :google_antigravity_body
 
       state.api_surface in ["openai_chat_completions", "openai"] ->
         :openai_json_body

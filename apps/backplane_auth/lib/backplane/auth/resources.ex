@@ -11,7 +11,7 @@ defmodule Backplane.Auth.Resources do
   @identity_scopes ["openid", "profile", "email"]
   @local_http_hosts ["localhost", "127.0.0.1", "::1"]
   @operation_scope_pattern ~r/\A(?:\*|[\w-]+::(?:\*|[\w-]+))\z/
-  @v1_scopes ["llm::models", "llm::invoke", "llm::*", "*"]
+  @v1_scopes ["llm::models", "llm::invoke", "llm::manage", "llm::*", "*"]
   @skill_protocol_scopes ["skill::read", "skill::*", "*"]
 
   @spec keys() :: [key()]

@@ -121,6 +121,29 @@ defmodule Backplane.LLM.ProviderTest do
       assert provider.credential == api_key
     end
 
+    test "accepts Antigravity provider only with a Google OAuth credential" do
+      oauth = credential_name()
+      api_key = credential_name()
+      Credentials.store(oauth, "oauth-token", "llm", %{"auth_type" => "google_oauth"})
+      Credentials.store(api_key, "api-key", "llm", %{"auth_type" => "api_key"})
+
+      attrs =
+        oauth
+        |> valid_provider_attrs()
+        |> Map.put(:preset_key, "google-antigravity")
+
+      assert {:ok, provider} = Provider.create(attrs)
+      assert provider.credential == oauth
+
+      assert {:error, changeset} =
+               attrs
+               |> Map.put(:name, "antigravity-key-#{System.unique_integer([:positive])}")
+               |> Map.put(:credential, api_key)
+               |> Provider.create()
+
+      assert %{credential: ["must use google_oauth auth type"]} = errors_on(changeset)
+    end
+
     test "rejects non-positive rpm_limit" do
       credential = credential_name()
       Credentials.store(credential, "sk-test-value", "llm")
@@ -187,6 +210,47 @@ defmodule Backplane.LLM.ProviderTest do
   end
 
   describe "ProviderApi" do
+    test "validates Antigravity backend config and native protocol" do
+      provider = create_provider()
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :antigravity,
+                 base_url: "https://cloudcode-pa.googleapis.com/",
+                 backend_config: %{
+                   "project_id" => "managed-project",
+                   "user_agent" => "Backplane/1.7",
+                   "client_version" => "1.7.0"
+                 }
+               })
+
+      assert api.native_protocols == [:google_antigravity]
+      assert api.base_url == "https://cloudcode-pa.googleapis.com"
+      assert api.backend_config["project_id"] == "managed-project"
+
+      for config <- [
+            %{"secret" => "must-not-store"},
+            %{"project_id" => "bad/project"},
+            %{"project_id" => "trailing-newline\n"},
+            %{"user_agent" => "bad\r\nheader"},
+            %{"client_version" => String.duplicate("x", 257)}
+          ] do
+        assert {:error, changeset} = ProviderApi.update(api, %{backend_config: config})
+        assert %{backend_config: [_ | _]} = errors_on(changeset)
+      end
+
+      assert {:error, changeset} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://example.test/v1",
+                 backend_config: %{"project_id" => "must-not-apply"}
+               })
+
+      assert %{backend_config: [_ | _]} = errors_on(changeset)
+    end
+
     test "creates and reloads a native Google provider and model surface" do
       credential = credential_name()
       Credentials.store(credential, "google-api-key", "llm", %{"auth_type" => "api_key"})
@@ -669,7 +733,7 @@ defmodule Backplane.LLM.ProviderTest do
   end
 
   describe "seeded auto models" do
-    test "seeds fast, smart, and expert with openai, anthropic, and Google routes" do
+    test "seeds fast, smart, and expert with all four native API surfaces" do
       models = AutoModel.list()
       assert [%{name: "fast"}, %{name: "smart"}, %{name: "expert"}] = models
 
@@ -678,6 +742,7 @@ defmodule Backplane.LLM.ProviderTest do
 
         assert [
                  %{api_surface: :anthropic},
+                 %{api_surface: :antigravity},
                  %{api_surface: :google},
                  %{api_surface: :openai}
                ] = routes

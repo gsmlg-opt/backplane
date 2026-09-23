@@ -8,6 +8,7 @@ defmodule Backplane.LLM.ProviderPreset do
 
   @type api_defaults :: %{
           optional(:native_protocols) => [atom()],
+          optional(:backend_config) => map(),
           enabled: boolean(),
           base_url: String.t(),
           discovery_path: String.t() | nil
@@ -371,6 +372,26 @@ defmodule Backplane.LLM.ProviderPreset do
       notes:
         "Official Gemini Developer API using native GenerateContent and an API-key credential.",
       docs_urls: ["https://ai.google.dev/api"]
+    },
+    %{
+      key: "google-antigravity",
+      name: "Google Antigravity",
+      default_name: "google-antigravity",
+      default_credential: "google-antigravity",
+      credential_kind: "llm",
+      credential_auth_type: "google_oauth",
+      default_base_url: "https://cloudcode-pa.googleapis.com",
+      surfaces: %{
+        antigravity: %{
+          enabled: true,
+          base_url: "https://cloudcode-pa.googleapis.com",
+          discovery_path: "/v1internal:fetchAvailableModels",
+          native_protocols: [:google_antigravity],
+          backend_config: %{}
+        }
+      },
+      notes: "Google Antigravity subscription API using its native Cloud Code protocol.",
+      docs_urls: []
     },
     %{
       key: "moonshot-cn",

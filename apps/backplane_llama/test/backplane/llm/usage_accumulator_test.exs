@@ -236,6 +236,33 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
   end
 
   describe "observation isolation" do
+    test "observes wrapped Antigravity JSON and SSE" do
+      body =
+        Jason.encode!(%{
+          "response" => %{
+            "candidates" => [%{"finishReason" => "STOP"}],
+            "usageMetadata" => %{"promptTokenCount" => 7, "candidatesTokenCount" => 4}
+          },
+          "native" => %{"keep" => true}
+        })
+
+      for {protocol, chunk} <- [
+            {:google_antigravity_body, body},
+            {:google_antigravity, "data: " <> body <> "\n\n"}
+          ] do
+        pid = UsageAccumulator.new(protocol)
+        UsageAccumulator.scan_chunk(pid, chunk)
+
+        assert %{
+                 input_tokens: 7,
+                 output_tokens: 4,
+                 metadata: %{protocol_observation: %{source: :google_antigravity}}
+               } = UsageAccumulator.snapshot(pid, 200)
+
+        UsageAccumulator.stop(pid)
+      end
+    end
+
     test "observer metadata does not depend on the process that created it" do
       parent = self()
 

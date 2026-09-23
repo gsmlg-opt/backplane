@@ -32,7 +32,11 @@ defmodule Backplane.LLM.Provider do
     field(:rpm_limit, :integer)
     field(:enabled, :boolean, default: true)
     field(:deleted_at, :utc_datetime_usec)
-    field(:api_type, Ecto.Enum, values: [:anthropic, :google, :openai], virtual: true)
+
+    field(:api_type, Ecto.Enum,
+      values: [:anthropic, :antigravity, :google, :openai],
+      virtual: true
+    )
 
     has_many(:apis, ProviderApi, foreign_key: :provider_id)
     has_many(:models, ProviderModel, foreign_key: :provider_id)

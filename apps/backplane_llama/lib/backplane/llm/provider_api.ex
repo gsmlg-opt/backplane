@@ -20,14 +20,15 @@ defmodule Backplane.LLM.ProviderApi do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "llm_provider_apis" do
-    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic, :google])
+    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic, :google, :antigravity])
 
     field(:native_protocols, {:array, Ecto.Enum},
       values: [
         :openai_chat_completions,
         :openai_responses,
         :anthropic_messages,
-        :google_generate_content
+        :google_generate_content,
+        :google_antigravity
       ],
       default: []
     )
@@ -35,6 +36,7 @@ defmodule Backplane.LLM.ProviderApi do
     field(:base_url, :string)
     field(:enabled, :boolean, default: true)
     field(:default_headers, :map, default: %{})
+    field(:backend_config, :map, default: %{})
     field(:model_discovery_enabled, :boolean, default: true)
     field(:model_discovery_path, :string)
     field(:last_discovered_at, :utc_datetime_usec)
@@ -46,7 +48,7 @@ defmodule Backplane.LLM.ProviderApi do
   end
 
   @required_fields ~w(provider_id api_surface base_url)a
-  @optional_fields ~w(native_protocols enabled default_headers model_discovery_enabled model_discovery_path last_discovered_at)a
+  @optional_fields ~w(native_protocols enabled default_headers backend_config model_discovery_enabled model_discovery_path last_discovered_at)a
 
   @doc "Changeset for creating or updating a provider API surface."
   def changeset(api, attrs) do
@@ -60,6 +62,7 @@ defmodule Backplane.LLM.ProviderApi do
     |> validate_google_version()
     |> Provider.validate_api_url(:base_url)
     |> validate_default_headers()
+    |> validate_backend_config()
     |> foreign_key_constraint(:provider_id)
     |> unique_constraint([:provider_id, :api_surface])
   end
@@ -130,6 +133,7 @@ defmodule Backplane.LLM.ProviderApi do
               :openai -> put_change(changeset, :native_protocols, [:openai_chat_completions])
               :anthropic -> put_change(changeset, :native_protocols, [:anthropic_messages])
               :google -> put_change(changeset, :native_protocols, [:google_generate_content])
+              :antigravity -> put_change(changeset, :native_protocols, [:google_antigravity])
               _ -> changeset
             end
         end
@@ -145,6 +149,7 @@ defmodule Backplane.LLM.ProviderApi do
           :openai -> [:openai_chat_completions, :openai_responses]
           :anthropic -> [:anthropic_messages]
           :google -> [:google_generate_content]
+          :antigravity -> [:google_antigravity]
           _ -> []
         end
 
@@ -162,6 +167,54 @@ defmodule Backplane.LLM.ProviderApi do
       :default_headers, _headers -> [default_headers: "must be a map"]
     end)
   end
+
+  defp validate_backend_config(changeset) do
+    validate_change(changeset, :backend_config, fn
+      :backend_config, config when is_map(config) -> backend_config_errors(config, changeset)
+      :backend_config, _config -> [backend_config: "must be a map"]
+    end)
+  end
+
+  defp backend_config_errors(config, changeset) do
+    allowed = ~w(project_id user_agent client_version)
+    keys = Map.keys(config)
+
+    cond do
+      get_field(changeset, :api_surface) != :antigravity and map_size(config) > 0 ->
+        [backend_config: "is only supported for Antigravity APIs"]
+
+      Enum.any?(keys, &(not is_binary(&1) or &1 not in allowed)) ->
+        [backend_config: "contains an unsupported key"]
+
+      invalid_project?(config["project_id"]) ->
+        [backend_config: "project_id must be a safe identifier"]
+
+      invalid_header_value?(config["user_agent"]) ->
+        [backend_config: "user_agent must be a safe header value"]
+
+      invalid_header_value?(config["client_version"]) ->
+        [backend_config: "client_version must be a safe header value"]
+
+      true ->
+        []
+    end
+  end
+
+  defp invalid_project?(nil), do: false
+
+  defp invalid_project?(value) when is_binary(value),
+    do: not Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,254}\z/, value)
+
+  defp invalid_project?(_value), do: true
+
+  defp invalid_header_value?(nil), do: false
+
+  defp invalid_header_value?(value) when is_binary(value),
+    do:
+      value == "" or byte_size(value) > 256 or not String.valid?(value) or
+        String.contains?(value, ["\r", "\n"])
+
+  defp invalid_header_value?(_value), do: true
 
   defp validate_google_version(changeset) do
     if get_field(changeset, :api_surface) == :google do

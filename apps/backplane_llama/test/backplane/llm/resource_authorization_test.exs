@@ -21,6 +21,22 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
              conn(:post, "/v1beta/models/gemini:generateContent")
            ) == "llm::invoke"
 
+    for rpc <- ["loadCodeAssist", "fetchAvailableModels"] do
+      assert ResourceAuthorization.required_scope(
+               conn(:post, "/antigravity/providers/account/v1internal:#{rpc}")
+             ) == "llm::models"
+    end
+
+    assert ResourceAuthorization.required_scope(
+             conn(:post, "/antigravity/providers/account/v1internal:onboardUser")
+           ) == "llm::manage"
+
+    for rpc <- ["generateContent", "streamGenerateContent"] do
+      assert ResourceAuthorization.required_scope(
+               conn(:post, "/antigravity/providers/account/v1internal:#{rpc}")
+             ) == "llm::invoke"
+    end
+
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/unknown")) == nil
   end
 
@@ -88,6 +104,30 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
     conn = authorize(:get, "/v1beta/models", :client_token, ["llm::invoke"])
     assert conn.status == 403
     assert Jason.decode!(conn.resp_body)["error"]["status"] == "PERMISSION_DENIED"
+  end
+
+  test "Antigravity enforces least privilege for both OAuth and database clients" do
+    for kind <- [:oauth, :client_token],
+        {rpc, required} <- [
+          {"loadCodeAssist", "llm::models"},
+          {"fetchAvailableModels", "llm::models"},
+          {"onboardUser", "llm::manage"},
+          {"generateContent", "llm::invoke"},
+          {"streamGenerateContent", "llm::invoke"}
+        ] do
+      path = "/antigravity/providers/account/v1internal:#{rpc}"
+
+      for granted <- ["llm::models", "llm::invoke", "llm::manage", "llm::*"] do
+        result = authorize(:post, path, kind, [granted])
+
+        if granted in [required, "llm::*"] do
+          refute result.halted
+        else
+          assert result.status == 403
+          assert Jason.decode!(result.resp_body)["error"]["status"] == "PERMISSION_DENIED"
+        end
+      end
+    end
   end
 
   defp authorize(method, path, kind, scopes) do
