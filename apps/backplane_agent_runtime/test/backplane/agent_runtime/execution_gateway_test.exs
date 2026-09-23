@@ -96,7 +96,10 @@ defmodule Backplane.AgentRuntime.ExecutionGatewayTest do
 
   test "unsupported schema constraints fail before dispatch" do
     {_registry, descriptor} = registry(self())
-    unsupported = put_in(descriptor.schema[:properties]["value"], %{type: "string", pattern: "x"})
+
+    unsupported =
+      put_in(descriptor.schema[:properties]["value"], %{"$ref" => "#/$defs/value"})
+
     {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, unsupported)
     {:ok, budget} = Budget.new(%{work: 1})
 
