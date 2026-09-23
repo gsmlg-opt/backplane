@@ -120,6 +120,31 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       refute has_element?(view, "#provider-credential option[value='openai-codex']")
     end
 
+    test "google native preset defaults to its API-key credential and surface", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='google-gemini-developer']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#provider-google-base-url[value='https://generativelanguage.googleapis.com/v1beta']"
+             )
+
+      assert has_element?(view, "#provider-google-generate-content-enabled[checked]")
+
+      assert has_element?(
+               view,
+               "#provider-credential option[value='test-cred']",
+               "test-cred (llm)"
+             )
+
+      refute has_element?(view, "#provider-credential option[value='openai-codex']")
+      refute has_element?(view, "#provider-credential option[value='google-antigravity']")
+      refute has_element?(view, "#provider-openai-responses-enabled")
+    end
+
     test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
@@ -286,6 +311,71 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert provider.preset_key == "moonshot-cn"
 
       assert [%{api_surface: :openai, base_url: "https://api.moonshot.cn/v1"}] =
+               ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "creates, reopens, and disables a Google native API surface", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='google-gemini-developer']")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "google-native-test",
+          "credential" => "test-cred",
+          "base_url" => "https://generativelanguage.googleapis.com/v1beta",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "google_enabled" => "true",
+          "google_base_url" => "https://generativelanguage.googleapis.com/v1beta",
+          "google_generate_content_enabled" => "true",
+          "google_model_discovery_enabled" => "true",
+          "google_model_discovery_path" => "/models",
+          "google_default_headers" => "{}"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+
+      provider = Repo.get_by!(Provider, name: "google-native-test")
+
+      assert [
+               %{
+                 api_surface: :google,
+                 base_url: "https://generativelanguage.googleapis.com/v1beta",
+                 enabled: true,
+                 native_protocols: [:google_generate_content]
+               }
+             ] = ProviderApi.list_for_provider(provider.id)
+
+      {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
+      assert html =~ "Google GenerateContent API"
+      assert html =~ "Google GenerateContent"
+      refute html =~ "Responses"
+
+      view
+      |> form("form[phx-submit=save_provider]", %{
+        "provider" => %{
+          "name" => "google-native-test",
+          "credential" => "test-cred",
+          "enabled" => "true",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "google_enabled" => "false",
+          "google_base_url" => "https://generativelanguage.googleapis.com/v1beta",
+          "google_generate_content_enabled" => "true",
+          "google_model_discovery_enabled" => "true",
+          "google_model_discovery_path" => "/models",
+          "google_default_headers" => "{}"
+        }
+      })
+      |> render_submit()
+
+      assert [%{api_surface: :google, enabled: false}] =
                ProviderApi.list_for_provider(provider.id)
     end
 
@@ -645,6 +735,69 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       refute ProviderModelSurface.get_by_model_and_api(stale_model.id, api.id)
     end
 
+    test "shows Google native model metadata and discovery state without inferring unknown capabilities",
+         %{
+           conn: conn
+         } do
+      discovered_at = ~U[2026-09-23 08:15:00.000000Z]
+
+      {:ok, provider} =
+        Provider.create(%{
+          name: "google-native-metadata",
+          preset_key: "google-gemini-developer",
+          credential: "test-cred"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :google,
+          base_url: "https://generativelanguage.googleapis.com/v1beta",
+          model_discovery_path: "/models",
+          last_discovered_at: discovered_at
+        })
+
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: provider.id,
+          model: "gemini-3-pro-preview",
+          display_name: "Gemini 3 Pro Preview",
+          source: :discovered,
+          metadata: %{
+            "name" => "models/gemini-3-pro-preview",
+            "displayName" => "Gemini 3 Pro Preview",
+            "inputTokenLimit" => 1_048_576,
+            "outputTokenLimit" => 65_536,
+            "supportedGenerationMethods" => ["generateContent", "countTokens"]
+          }
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: api.id,
+          enabled: true,
+          metadata: %{}
+        })
+
+      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
+
+      assert html =~ "Directory refresh"
+      assert html =~ "API version: v1beta"
+      assert html =~ "Credential auth: API key"
+      assert html =~ "Last successful discovery"
+      assert html =~ "never starts a generation"
+      assert html =~ "2026-09-23"
+      assert html =~ "Native Google GenerateContent"
+      assert html =~ "Translation unavailable"
+      assert html =~ "models/gemini-3-pro-preview"
+      assert html =~ "Input token limit: 1048576"
+      assert html =~ "Output token limit: 65536"
+      assert html =~ "generateContent"
+      assert html =~ "countTokens"
+      assert html =~ "Unknown"
+    end
+
     test "provider detail loads openai codex oauth models from api", %{conn: conn} do
       previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
 
@@ -831,6 +984,40 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert html =~ "Credential must use google_oauth auth type"
       assert Repo.get!(Provider, provider.id).credential == "google-antigravity"
+    end
+
+    test "shows an exact legacy Google diagnostic without changing configuration", %{conn: conn} do
+      {:ok, provider} =
+        Provider.create(%{
+          name: "google-ai-studio-legacy",
+          preset_key: "google-ai-studio",
+          credential: "google-antigravity"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :openai,
+          base_url: "https://legacy.example.test/v1beta/openai",
+          native_protocols: [:openai_chat_completions],
+          model_discovery_path: "/models"
+        })
+
+      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
+
+      assert html =~ "Legacy Google configuration"
+      assert html =~ "https://legacy.example.test/v1beta/openai"
+      assert html =~ "google-antigravity"
+      assert html =~ "google_oauth"
+      assert html =~ "No automatic migration is performed."
+      assert html =~ "Google Gemini Developer API"
+      assert html =~ "Google Gemini OpenAI Compatibility"
+
+      assert %Provider{preset_key: "google-ai-studio", credential: "google-antigravity"} =
+               Repo.get!(Provider, provider.id)
+
+      assert %ProviderApi{base_url: "https://legacy.example.test/v1beta/openai"} =
+               Repo.get!(ProviderApi, api.id)
     end
 
     test "does not show soft-deleted providers", %{conn: conn} do

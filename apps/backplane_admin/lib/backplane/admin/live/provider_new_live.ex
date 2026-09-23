@@ -82,8 +82,7 @@ defmodule Backplane.Admin.ProviderNewLive do
                rpm_limit: parse_optional_integer(params["rpm_limit"]),
                default_headers: decode_json_map(params["default_headers"])
              }),
-           :ok <- create_api(provider.id, preset, :openai, params),
-           :ok <- create_api(provider.id, preset, :anthropic, params) do
+           :ok <- create_apis(provider.id, preset, params) do
         provider
       else
         {:error, %Ecto.Changeset{} = changeset} ->
@@ -94,6 +93,17 @@ defmodule Backplane.Admin.ProviderNewLive do
 
         {:error, reason} ->
           Repo.rollback(%{base: inspect(reason)})
+      end
+    end)
+  end
+
+  defp create_apis(provider_id, preset, params) do
+    preset
+    |> ProviderPreset.surfaces()
+    |> Enum.reduce_while(:ok, fn {surface, _defaults}, :ok ->
+      case create_api(provider_id, preset, surface, params) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
@@ -131,30 +141,18 @@ defmodule Backplane.Admin.ProviderNewLive do
     root = Map.get(params, "base_url", preset.default_base_url)
 
     params =
-      %{
-        "name" => preset.default_name,
-        "credential" => "",
-        "base_url" => root,
-        "rpm_limit" => "",
-        "default_headers" => "{}",
-        "openai_enabled" => checkbox_value(preset.openai.enabled),
-        "openai_base_url" => Map.get(params, "openai_base_url", preset.openai.base_url),
-        "openai_chat_completions_enabled" =>
-          checkbox_value(
-            :openai_chat_completions in ProviderPreset.native_protocols(preset, :openai)
-          ),
-        "openai_responses_enabled" =>
-          checkbox_value(:openai_responses in ProviderPreset.native_protocols(preset, :openai)),
-        "openai_model_discovery_enabled" => checkbox_value(!is_nil(preset.openai.discovery_path)),
-        "openai_model_discovery_path" => preset.openai.discovery_path || "",
-        "openai_default_headers" => "{}",
-        "anthropic_enabled" => checkbox_value(preset.anthropic.enabled),
-        "anthropic_base_url" => Map.get(params, "anthropic_base_url", preset.anthropic.base_url),
-        "anthropic_model_discovery_enabled" =>
-          checkbox_value(!is_nil(preset.anthropic.discovery_path)),
-        "anthropic_model_discovery_path" => preset.anthropic.discovery_path || "",
-        "anthropic_default_headers" => "{}"
-      }
+      preset
+      |> ProviderPreset.surfaces()
+      |> Enum.reduce(
+        %{
+          "name" => preset.default_name,
+          "credential" => "",
+          "base_url" => root,
+          "rpm_limit" => "",
+          "default_headers" => "{}"
+        },
+        &put_surface_defaults/2
+      )
       |> Map.merge(params)
 
     to_form(params, as: :provider)
@@ -165,8 +163,7 @@ defmodule Backplane.Admin.ProviderNewLive do
     |> require_field(params, "name", "Name is required")
     |> require_field(params, "credential", "Credential is required")
     |> require_allowed_credential(preset, params)
-    |> require_surface(params, "openai")
-    |> require_surface(params, "anthropic")
+    |> require_surfaces(params, preset)
   end
 
   defp assign_preset_form(socket, preset, params) do
@@ -275,6 +272,36 @@ defmodule Backplane.Admin.ProviderNewLive do
     end
   end
 
+  defp require_surfaces(errors, params, preset) do
+    preset
+    |> ProviderPreset.surfaces()
+    |> Map.keys()
+    |> Enum.reduce(errors, fn surface, errors ->
+      require_surface(errors, params, Atom.to_string(surface))
+    end)
+  end
+
+  defp put_surface_defaults({surface, defaults}, params) do
+    prefix = Atom.to_string(surface)
+
+    params
+    |> Map.put_new("#{prefix}_enabled", checkbox_value(defaults.enabled))
+    |> Map.put_new("#{prefix}_base_url", defaults.base_url)
+    |> Map.put_new(
+      "#{prefix}_model_discovery_enabled",
+      checkbox_value(!is_nil(defaults.discovery_path))
+    )
+    |> Map.put_new("#{prefix}_model_discovery_path", defaults.discovery_path || "")
+    |> Map.put_new("#{prefix}_default_headers", "{}")
+    |> put_protocol_defaults(Map.get(defaults, :native_protocols, []))
+  end
+
+  defp put_protocol_defaults(params, protocols) do
+    Enum.reduce(protocols, params, fn protocol, params ->
+      Map.put_new(params, "#{protocol}_enabled", "true")
+    end)
+  end
+
   defp require_field(errors, params, field, message) do
     if blank?(params[field]), do: Map.put(errors, field, message), else: errors
   end
@@ -291,6 +318,7 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp surface_label("openai"), do: "OpenAI-compatible"
   defp surface_label("anthropic"), do: "Anthropic Messages"
+  defp surface_label("google"), do: "Google GenerateContent"
 
   defp parse_optional_integer(value) when value in [nil, ""], do: nil
 
@@ -339,7 +367,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <div>
           <h1 class="text-2xl font-bold">Add LLM Provider</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            Choose a provider preset, select a credential, then adjust OpenAI and Anthropic API surfaces.
+            Choose a provider preset, select a credential, then adjust its configured API surfaces.
           </p>
         </div>
 
@@ -366,7 +394,9 @@ defmodule Backplane.Admin.ProviderNewLive do
             <span class="font-semibold">{preset.name}</span>
             <span class="text-xs uppercase tracking-normal">{preset.key}</span>
           </div>
-          <div class="text-xs opacity-80">{preset.default_base_url}</div>
+          <div class="truncate text-xs opacity-80" title={preset.default_base_url}>
+            {preset.default_base_url}
+          </div>
         </button>
       </div>
 
@@ -426,21 +456,14 @@ defmodule Backplane.Admin.ProviderNewLive do
 
         <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <.api_surface_section
+            :for={{surface, defaults} <- preset_surfaces(@selected_preset)}
             form={@form}
             errors={@errors}
-            key="openai"
-            title="OpenAI-compatible API"
-            badge="OpenAI"
-            description="Used by clients calling /v1."
-          />
-
-          <.api_surface_section
-            form={@form}
-            errors={@errors}
-            key="anthropic"
-            title="Anthropic Messages API"
-            badge="Anthropic"
-            description="Used by clients calling /v1/messages."
+            key={Atom.to_string(surface)}
+            title={surface_title(surface)}
+            badge={api_label(surface)}
+            description={surface_description(surface)}
+            protocols={Map.get(defaults, :native_protocols, [])}
           />
         </div>
 
@@ -473,7 +496,7 @@ defmodule Backplane.Admin.ProviderNewLive do
       <:title>
         <div class="flex items-center justify-between gap-3">
           <span>{@title}</span>
-          <.dm_badge variant={if @key == "openai", do: "info", else: "tertiary"} size="sm">
+          <.dm_badge variant={badge_variant(@key)} size="sm">
             {@badge}
           </.dm_badge>
         </div>
@@ -485,7 +508,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <.dm_checkbox
           id={"provider-#{@key}-enabled"}
           name={"provider[#{@key}_enabled]"}
-          label={"Enable #{surface_title(@key)}"}
+          label={"Enable #{@title}"}
           value="true"
           checked={field_value(@form, @key, "enabled") in [true, "true", "on"]}
         />
@@ -500,29 +523,19 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.error errors={@errors} field={"#{@key}_base_url"} />
         </div>
 
-        <div :if={@key == "openai"} class="space-y-2">
+        <div :if={@protocols != []} class="space-y-2">
           <p class="text-sm font-medium">Native wire protocols</p>
-          <input
-            type="hidden"
-            name="provider[openai_chat_completions_enabled]"
-            value="false"
-          />
-          <.dm_checkbox
-            id="provider-openai-chat-completions-enabled"
-            name="provider[openai_chat_completions_enabled]"
-            label="Chat Completions"
-            value="true"
-            checked={field_value(@form, "openai", "chat_completions_enabled") in [true, "true", "on"]}
-          />
-          <input type="hidden" name="provider[openai_responses_enabled]" value="false" />
-          <.dm_checkbox
-            id="provider-openai-responses-enabled"
-            name="provider[openai_responses_enabled]"
-            label="Responses"
-            value="true"
-            checked={field_value(@form, "openai", "responses_enabled") in [true, "true", "on"]}
-          />
-          <.error errors={@errors} field="openai_native_protocols" />
+          <div :for={protocol <- @protocols}>
+            <input type="hidden" name={protocol_input_name(@key, protocol)} value="false" />
+            <.dm_checkbox
+              id={protocol_input_id(@key, protocol)}
+              name={protocol_input_name(@key, protocol)}
+              label={protocol_label(protocol)}
+              value="true"
+              checked={protocol_field_value(@form, protocol) in [true, "true", "on"]}
+            />
+          </div>
+          <.error errors={@errors} field={"#{@key}_native_protocols"} />
         </div>
 
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
@@ -539,7 +552,7 @@ defmodule Backplane.Admin.ProviderNewLive do
           name={"provider[#{@key}_model_discovery_path]"}
           label="Model Discovery Path"
           value={field_value(@form, @key, "model_discovery_path")}
-          placeholder={if @key == "openai", do: "/models", else: "/v1/models"}
+          placeholder="/models"
         />
 
         <.dm_textarea
@@ -555,30 +568,59 @@ defmodule Backplane.Admin.ProviderNewLive do
     """
   end
 
-  defp surface_title("openai"), do: "OpenAI-compatible API"
-  defp surface_title("anthropic"), do: "Anthropic Messages API"
+  defp preset_surfaces(preset) do
+    preset
+    |> ProviderPreset.surfaces()
+    |> Enum.sort_by(fn {surface, _defaults} -> surface_order(surface) end)
+  end
+
+  defp surface_order(:openai), do: 1
+  defp surface_order(:anthropic), do: 2
+  defp surface_order(:google), do: 3
+  defp surface_order(_), do: 99
+
+  defp surface_title(:openai), do: "OpenAI-compatible API"
+  defp surface_title(:anthropic), do: "Anthropic Messages API"
+  defp surface_title(:google), do: "Google GenerateContent API"
+
+  defp surface_description(:openai), do: "Used by clients calling /v1."
+  defp surface_description(:anthropic), do: "Used by clients calling /v1/messages."
+
+  defp surface_description(:google),
+    do: "Native Google protocol. The configured Base URL includes its API version."
+
+  defp api_label(:openai), do: "OpenAI"
+  defp api_label(:anthropic), do: "Anthropic"
+  defp api_label(:google), do: "Google"
+
+  defp badge_variant("openai"), do: "info"
+  defp badge_variant("anthropic"), do: "tertiary"
+  defp badge_variant("google"), do: "success"
+
+  defp protocol_input_name(_key, protocol), do: "provider[#{protocol}_enabled]"
+
+  defp protocol_input_id(_key, protocol),
+    do: "provider-#{protocol |> Atom.to_string() |> String.replace("_", "-")}-enabled"
+
+  defp protocol_label(:openai_chat_completions), do: "Chat Completions"
+  defp protocol_label(:openai_responses), do: "Responses"
+  defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
+  defp protocol_label(:google_generate_content), do: "Google GenerateContent"
 
   defp field_value(form, key, suffix) do
     form[String.to_atom("#{key}_#{suffix}")].value
   end
 
-  defp native_protocols_from_params(_params, :anthropic, _default), do: [:anthropic_messages]
+  defp protocol_field_value(form, protocol),
+    do: form[String.to_atom("#{protocol}_enabled")].value
 
-  defp native_protocols_from_params(params, :openai, default) do
-    keys = ["openai_chat_completions_enabled", "openai_responses_enabled"]
+  defp native_protocols_from_params(params, _surface, default) do
+    keys = Enum.map(default, &"#{&1}_enabled")
 
     if Enum.any?(keys, &Map.has_key?(params, &1)) do
-      []
-      |> maybe_add_protocol(
-        truthy?(params["openai_chat_completions_enabled"]),
-        :openai_chat_completions
-      )
-      |> maybe_add_protocol(truthy?(params["openai_responses_enabled"]), :openai_responses)
+      Enum.filter(default, &truthy?(params["#{&1}_enabled"]))
     else
       default
     end
   end
-
-  defp maybe_add_protocol(protocols, true, protocol), do: protocols ++ [protocol]
-  defp maybe_add_protocol(protocols, false, _protocol), do: protocols
 end

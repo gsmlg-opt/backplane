@@ -82,10 +82,12 @@ defmodule Backplane.Admin.ProvidersLive do
 
   defp api_badge_variant(:openai), do: "info"
   defp api_badge_variant(:anthropic), do: "tertiary"
+  defp api_badge_variant(:google), do: "success"
   defp api_badge_variant(_), do: "neutral"
 
   defp api_label(:openai), do: "OpenAI"
   defp api_label(:anthropic), do: "Anthropic"
+  defp api_label(:google), do: "Google"
   defp api_label(other), do: to_string(other)
 
   defp provider_enabled_badge(true), do: "success"
@@ -146,11 +148,21 @@ defmodule Backplane.Admin.ProvidersLive do
                   {provider_enabled_text(api.enabled)}
                 </.dm_badge>
               </div>
-              <div class="mt-1 truncate font-mono text-xs text-on-surface">{api.base_url}</div>
+              <div class="mt-1 truncate font-mono text-xs text-on-surface" title={api.base_url}>
+                {api.base_url}
+              </div>
               <div class="mt-1 text-xs text-on-surface-variant">
                 Discovery:
                 <code>{api.model_discovery_path || "-"}</code>
                 · headers: {headers_count(api.default_headers)}
+              </div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <.dm_badge :for={protocol <- api.native_protocols} variant="neutral" size="sm">
+                  {protocol_label(protocol)}
+                </.dm_badge>
+              </div>
+              <div :if={api.last_discovered_at} class="mt-1 text-xs text-on-surface-variant">
+                Last discovered: {api.last_discovered_at}
               </div>
             </div>
             <span :if={provider.apis == []} class="text-sm text-on-surface-variant">
@@ -211,4 +223,9 @@ defmodule Backplane.Admin.ProvidersLive do
     </div>
     """
   end
+
+  defp protocol_label(:openai_chat_completions), do: "Chat Completions"
+  defp protocol_label(:openai_responses), do: "Responses"
+  defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
+  defp protocol_label(:google_generate_content), do: "Google GenerateContent"
 end

@@ -7,6 +7,7 @@ defmodule Backplane.Admin.LogsLiveTest do
 
   alias Backplane.Audit
   alias Backplane.Clients
+  alias Backplane.LLM.UsageAccumulator
   alias Backplane.Memory.Workers.GraphExtractWorker
   alias Backplane.Repo
 
@@ -114,6 +115,88 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ ">28,885<"
     assert html =~ ">4,992<"
     assert html =~ ">95<"
+  end
+
+  test "llm logs show Google protocol, operation, and real usage observation states", %{
+    conn: conn
+  } do
+    body =
+      Jason.encode!(%{
+        "responseId" => "google-log-observation",
+        "candidates" => [%{"index" => 0, "finishReason" => "STOP"}],
+        "usageMetadata" => %{
+          "promptTokenCount" => 8,
+          "candidatesTokenCount" => 4,
+          "totalTokenCount" => 12
+        }
+      })
+
+    complete_metadata = google_usage_metadata(body, :eof)
+    incomplete_metadata = google_usage_metadata(body, :error)
+
+    complete_log =
+      insert_llm_log(%{
+        api_surface: "google_generate_content",
+        operation: "generate",
+        metadata: complete_metadata
+      })
+
+    incomplete_log =
+      insert_llm_log(%{
+        api_surface: "google_generate_content",
+        operation: "stream_generate",
+        metadata: incomplete_metadata
+      })
+
+    unavailable_log =
+      insert_llm_log(%{
+        api_surface: "google_generate_content",
+        operation: "count_tokens",
+        metadata: %{"observation" => %{"unavailable" => true}}
+      })
+
+    unknown_log =
+      insert_llm_log(%{
+        api_surface: "google_generate_content",
+        operation: "generate",
+        metadata: %{}
+      })
+
+    complete_log = Repo.reload!(complete_log)
+    incomplete_log = Repo.reload!(incomplete_log)
+
+    assert get_in(complete_log.metadata, ["protocol_observation", "usage_status"]) ==
+             "complete"
+
+    assert get_in(incomplete_log.metadata, ["protocol_observation", "observation_status"]) ==
+             "incomplete"
+
+    {:ok, _view, html} = live_with_sandbox(conn, "/system/logs/llm")
+
+    assert html =~ "Protocol"
+    assert html =~ "Operation"
+    assert html =~ "Usage observation"
+    assert html =~ "Google GenerateContent"
+    assert html =~ "stream_generate"
+    assert html =~ "Complete"
+    assert html =~ "Incomplete"
+    assert html =~ "Unavailable"
+    assert html =~ "Unknown"
+
+    for {log, expected} <- [
+          {complete_log, "Complete"},
+          {incomplete_log, "Incomplete"},
+          {unavailable_log, "Unavailable"},
+          {unknown_log, "Unknown"}
+        ] do
+      {:ok, _view, detail} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
+
+      assert detail =~ "Protocol"
+      assert detail =~ "Operation"
+      assert detail =~ "Usage observation"
+      assert detail =~ "Google GenerateContent"
+      assert detail =~ expected
+    end
   end
 
   test "llm logs fall back to client ID when the client no longer exists", %{conn: conn} do
@@ -345,6 +428,17 @@ defmodule Backplane.Admin.LogsLiveTest do
           "/system/logs/sinks"
         ] do
       assert {:ok, _view, _html} = live_with_sandbox(conn, path)
+    end
+  end
+
+  defp google_usage_metadata(body, transport_reason) do
+    accumulator = UsageAccumulator.new(:google_generate_content_body)
+
+    try do
+      :ok = UsageAccumulator.scan_chunk(accumulator, body)
+      UsageAccumulator.snapshot(accumulator, 200, transport_reason).metadata
+    after
+      UsageAccumulator.stop(accumulator)
     end
   end
 end

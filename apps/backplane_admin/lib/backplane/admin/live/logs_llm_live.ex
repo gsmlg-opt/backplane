@@ -78,6 +78,9 @@ defmodule Backplane.Admin.LogsLlmLive do
             <div><dt class="text-on-surface-variant">Client</dt><dd>{client_label(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Outcome</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
             <div><dt class="text-on-surface-variant">Status</dt><dd>{@record.status || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">Protocol</dt><dd>{protocol_label(@record.api_surface)}</dd></div>
+            <div><dt class="text-on-surface-variant">Operation</dt><dd>{@record.operation || "Unknown"}</dd></div>
+            <div><dt class="text-on-surface-variant">Usage observation</dt><dd>{usage_observation(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
             <div><dt class="text-on-surface-variant">Tokens</dt><dd>{token_summary(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Payload</dt><dd>{payload_status(@record)}</dd></div>
@@ -135,6 +138,9 @@ defmodule Backplane.Admin.LogsLlmLive do
             {model_label(row)}
           </.link>
         </:col>
+        <:col :let={row} label="Protocol">{protocol_label(row.api_surface)}</:col>
+        <:col :let={row} label="Operation">{row.operation || "Unknown"}</:col>
+        <:col :let={row} label="Usage observation">{usage_observation(row)}</:col>
         <:col :let={row} label="Outcome">
           <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
         </:col>
@@ -229,6 +235,62 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp client_label(%{client_name: name}) when is_binary(name) and name != "", do: name
   defp client_label(%{client_id: client_id}) when is_binary(client_id), do: client_id
   defp client_label(_record), do: "-"
+
+  defp protocol_label("google_generate_content"), do: "Google GenerateContent"
+  defp protocol_label("openai_chat_completions"), do: "OpenAI Chat Completions"
+  defp protocol_label("openai_responses"), do: "OpenAI Responses"
+  defp protocol_label("anthropic_messages"), do: "Anthropic Messages"
+  defp protocol_label(nil), do: "Unknown"
+  defp protocol_label(value), do: value
+
+  defp usage_observation(%{metadata: metadata}) when is_map(metadata) do
+    observation =
+      Map.get(metadata, "protocol_observation") || Map.get(metadata, :protocol_observation)
+
+    fallback = Map.get(metadata, "observation") || Map.get(metadata, :observation)
+
+    case observation do
+      observation when is_map(observation) ->
+        observation_status =
+          Map.get(observation, "observation_status") ||
+            Map.get(observation, :observation_status)
+
+        usage_status =
+          Map.get(observation, "usage_status") || Map.get(observation, :usage_status)
+
+        cond do
+          observation_status in ["unavailable", :unavailable] ->
+            "Unavailable"
+
+          observation_status in ["incomplete", :incomplete] ->
+            "Incomplete"
+
+          usage_status in ["partial", :partial] ->
+            "Incomplete"
+
+          observation_status in ["complete", :complete] and
+              usage_status in ["complete", :complete] ->
+            "Complete"
+
+          usage_status in ["not_applicable", :not_applicable] ->
+            "Unavailable"
+
+          true ->
+            "Unknown"
+        end
+
+      _ ->
+        if unavailable_observation?(fallback), do: "Unavailable", else: "Unknown"
+    end
+  end
+
+  defp usage_observation(_record), do: "Unknown"
+
+  defp unavailable_observation?(observation) when is_map(observation) do
+    Map.get(observation, "unavailable") == true or Map.get(observation, :unavailable) == true
+  end
+
+  defp unavailable_observation?(_observation), do: false
 
   defp format_token_count(nil), do: "-"
 

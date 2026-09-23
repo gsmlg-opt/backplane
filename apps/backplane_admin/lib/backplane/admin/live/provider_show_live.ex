@@ -27,7 +27,8 @@ defmodule Backplane.Admin.ProviderShowLive do
        editing_model: nil,
        edit_model_form: nil,
        edit_model_errors: %{},
-       deleting_model: nil
+       deleting_model: nil,
+       model_reload_status: nil
      )}
   end
 
@@ -111,7 +112,10 @@ defmodule Backplane.Admin.ProviderShowLive do
         )
       end
 
-    {:noreply, assign_provider(socket, Provider.get(provider.id))}
+    {:noreply,
+     socket
+     |> assign_provider(Provider.get(provider.id))
+     |> assign(model_reload_status: result)}
   end
 
   def handle_event("validate_model", %{"model" => params}, socket) do
@@ -276,7 +280,8 @@ defmodule Backplane.Admin.ProviderShowLive do
     assign(socket,
       provider: provider,
       provider_form: to_form(provider_params(provider), as: :provider),
-      provider_errors: %{}
+      provider_errors: %{},
+      legacy_diagnostic: Provider.legacy_migration_diagnostic(provider)
     )
   end
 
@@ -356,13 +361,23 @@ defmodule Backplane.Admin.ProviderShowLive do
                enabled: truthy?(params["enabled"]),
                default_headers: decode_json_map(params["default_headers"])
              }),
-           :ok <- upsert_api(updated_provider, :openai, params),
-           :ok <- upsert_api(updated_provider, :anthropic, params) do
+           :ok <- upsert_apis(updated_provider, params) do
         Provider.get(updated_provider.id)
       else
         {:error, %Ecto.Changeset{} = changeset} -> Repo.rollback(changeset_errors(changeset))
         {:error, reason} when is_map(reason) -> Repo.rollback(reason)
         {:error, reason} -> Repo.rollback(%{base: inspect(reason)})
+      end
+    end)
+  end
+
+  defp upsert_apis(provider, params) do
+    provider.id
+    |> ProviderApi.list_for_provider()
+    |> Enum.reduce_while(:ok, fn api, :ok ->
+      case upsert_api(provider, api.api_surface, params) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
@@ -489,8 +504,7 @@ defmodule Backplane.Admin.ProviderShowLive do
     |> require_field(params, "name", "Name is required")
     |> require_field(params, "credential", "Credential is required")
     |> require_allowed_credential(provider_preset(provider), params)
-    |> require_api_surface(params, "openai")
-    |> require_api_surface(params, "anthropic")
+    |> require_api_surfaces(params, provider)
   end
 
   defp require_allowed_credential(errors, nil, _params), do: errors
@@ -537,6 +551,12 @@ defmodule Backplane.Admin.ProviderShowLive do
     end
   end
 
+  defp require_api_surfaces(errors, params, provider) do
+    Enum.reduce(provider.apis, errors, fn api, errors ->
+      require_api_surface(errors, params, Atom.to_string(api.api_surface))
+    end)
+  end
+
   defp validate_model_params(provider, params) do
     %{}
     |> require_field(params, "model", "Model is required")
@@ -556,31 +576,31 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp provider_params(provider) do
-    api_by_surface = Map.new(provider.apis, &{&1.api_surface, &1})
-
-    %{
+    params = %{
       "name" => provider.name,
       "credential" => provider.credential || "",
       "enabled" => checkbox_value(provider.enabled),
       "rpm_limit" => provider.rpm_limit && Integer.to_string(provider.rpm_limit),
-      "default_headers" => encode_json_map(provider.default_headers),
-      "openai_enabled" => api_enabled(api_by_surface[:openai]),
-      "openai_base_url" => api_value(api_by_surface[:openai], :base_url),
-      "openai_chat_completions_enabled" =>
-        protocol_enabled(api_by_surface[:openai], :openai_chat_completions),
-      "openai_responses_enabled" => protocol_enabled(api_by_surface[:openai], :openai_responses),
-      "openai_model_discovery_enabled" =>
-        api_enabled(api_by_surface[:openai], :model_discovery_enabled),
-      "openai_model_discovery_path" => api_value(api_by_surface[:openai], :model_discovery_path),
-      "openai_default_headers" => encode_json_map(api_headers(api_by_surface[:openai])),
-      "anthropic_enabled" => api_enabled(api_by_surface[:anthropic]),
-      "anthropic_base_url" => api_value(api_by_surface[:anthropic], :base_url),
-      "anthropic_model_discovery_enabled" =>
-        api_enabled(api_by_surface[:anthropic], :model_discovery_enabled),
-      "anthropic_model_discovery_path" =>
-        api_value(api_by_surface[:anthropic], :model_discovery_path),
-      "anthropic_default_headers" => encode_json_map(api_headers(api_by_surface[:anthropic]))
+      "default_headers" => encode_json_map(provider.default_headers)
     }
+
+    Enum.reduce(provider.apis, params, &put_api_params(provider, &1, &2))
+  end
+
+  defp put_api_params(provider, api, params) do
+    prefix = Atom.to_string(api.api_surface)
+
+    params =
+      params
+      |> Map.put("#{prefix}_enabled", api_enabled(api))
+      |> Map.put("#{prefix}_base_url", api_value(api, :base_url))
+      |> Map.put("#{prefix}_model_discovery_enabled", api_enabled(api, :model_discovery_enabled))
+      |> Map.put("#{prefix}_model_discovery_path", api_value(api, :model_discovery_path))
+      |> Map.put("#{prefix}_default_headers", encode_json_map(api_headers(api)))
+
+    Enum.reduce(protocols_for(provider, api), params, fn protocol, params ->
+      Map.put(params, "#{protocol}_enabled", protocol_enabled(api, protocol))
+    end)
   end
 
   defp model_defaults do
@@ -621,15 +641,11 @@ defmodule Backplane.Admin.ProviderShowLive do
     Enum.any?(model.surfaces || [], &(&1.provider_api_id == api.id and &1.enabled))
   end
 
-  defp api_enabled(nil), do: "false"
   defp api_enabled(api), do: checkbox_value(api.enabled)
-  defp api_enabled(nil, _field), do: "false"
   defp api_enabled(api, field), do: checkbox_value(Map.get(api, field))
 
-  defp api_value(nil, _field), do: ""
   defp api_value(api, field), do: Map.get(api, field) || ""
 
-  defp api_headers(nil), do: %{}
   defp api_headers(api), do: api.default_headers || %{}
 
   defp changeset_errors(changeset) do
@@ -692,13 +708,16 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp surface_label("openai"), do: "OpenAI-compatible"
   defp surface_label("anthropic"), do: "Anthropic Messages"
+  defp surface_label("google"), do: "Google GenerateContent"
 
   defp api_label(:openai), do: "OpenAI"
   defp api_label(:anthropic), do: "Anthropic"
+  defp api_label(:google), do: "Google"
   defp api_label(other), do: to_string(other)
 
   defp badge_variant(:openai), do: "info"
   defp badge_variant(:anthropic), do: "tertiary"
+  defp badge_variant(:google), do: "success"
   defp badge_variant(_), do: "neutral"
 
   defp enabled_variant(true), do: "success"
@@ -706,6 +725,53 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp enabled_text(true), do: "Enabled"
   defp enabled_text(false), do: "Disabled"
+
+  defp google_apis(provider) do
+    Enum.filter(provider.apis, &(&1.api_surface == :google))
+  end
+
+  defp google_api_version(api) do
+    if String.contains?(api.base_url || "", "/v1beta"), do: "v1beta", else: "Unknown"
+  end
+
+  defp google_credential_auth_type(provider) do
+    case provider_preset(provider) do
+      %{credential_auth_type: "api_key"} -> "API key"
+      %{credential_auth_type: auth_type} when is_binary(auth_type) -> auth_type
+      _ -> "Unknown"
+    end
+  end
+
+  defp google_model_metadata(model, provider) do
+    google_api_ids = MapSet.new(google_apis(provider), & &1.id)
+
+    case Enum.filter(model.surfaces || [], &MapSet.member?(google_api_ids, &1.provider_api_id)) do
+      [] -> nil
+      surfaces -> Enum.reduce(surfaces, model.metadata || %{}, &Map.merge(&2, &1.metadata || %{}))
+    end
+  end
+
+  defp metadata_value(metadata, keys) do
+    Enum.find_value(keys, "Unknown", fn key ->
+      case Map.get(metadata, key) do
+        value when value in [nil, ""] -> nil
+        value -> to_string(value)
+      end
+    end)
+  end
+
+  defp metadata_list(metadata, key) do
+    case Map.get(metadata, key) do
+      values when is_list(values) and values != [] -> Enum.join(values, ", ")
+      _ -> "Unknown"
+    end
+  end
+
+  defp directory_status(nil), do: nil
+  defp directory_status(%{errors: []}), do: "Last reload completed successfully."
+
+  defp directory_status(%{errors: errors}),
+    do: "Last reload incomplete: #{Enum.join(errors, "; ")}"
 
   defp error(assigns) do
     ~H"""
@@ -731,10 +797,36 @@ defmodule Backplane.Admin.ProviderShowLive do
             </.dm_badge>
             <span :if={@provider.preset_key}>Preset: {@provider.preset_key}</span>
             <span>Credential: <code>{@provider.credential}</code></span>
+            <span :if={google_apis(@provider) != []}>
+              Credential auth: {google_credential_auth_type(@provider)}
+            </span>
           </div>
         </div>
 
       </div>
+
+      <.dm_card :if={@legacy_diagnostic} variant="bordered" class="mb-6">
+        <:title>Legacy Google configuration</:title>
+        <div class="space-y-3 text-sm">
+          <p class="text-on-surface-variant">{@legacy_diagnostic.impact}</p>
+          <p>
+            Credential: <code>{@legacy_diagnostic.credential}</code>
+            <span :if={@legacy_diagnostic.credential_auth_type}>
+              ({@legacy_diagnostic.credential_auth_type})
+            </span>
+          </p>
+          <div :for={surface <- @legacy_diagnostic.configured_surfaces}>
+            <code>{surface.api_surface}</code>: <code>{surface.base_url}</code>
+          </div>
+          <p>{@legacy_diagnostic.required_action}</p>
+          <p>No automatic migration is performed.</p>
+          <div class="flex flex-wrap gap-2">
+            <.dm_badge :for={target <- @legacy_diagnostic.targets} variant="warning" size="sm">
+              {legacy_target_label(target.preset_key)} ({target.credential_auth_type})
+            </.dm_badge>
+          </div>
+        </div>
+      </.dm_card>
 
       <.dm_card variant="bordered" class="mb-6">
         <:title>Edit Provider</:title>
@@ -789,18 +881,13 @@ defmodule Backplane.Admin.ProviderShowLive do
 
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <.api_form_section
+              :for={api <- @provider.apis}
               form={@provider_form}
               errors={@provider_errors}
-              key="openai"
-              title="OpenAI-compatible API"
-              badge="OpenAI"
-            />
-            <.api_form_section
-              form={@provider_form}
-              errors={@provider_errors}
-              key="anthropic"
-              title="Anthropic Messages API"
-              badge="Anthropic"
+              key={Atom.to_string(api.api_surface)}
+              title={surface_title(api.api_surface)}
+              badge={api_label(api.api_surface)}
+              protocols={protocols_for(@provider, api)}
             />
           </div>
 
@@ -815,6 +902,24 @@ defmodule Backplane.Admin.ProviderShowLive do
 
           <.dm_btn type="submit" variant="primary">Save Provider</.dm_btn>
         </.form>
+      </.dm_card>
+
+      <.dm_card :if={google_apis(@provider) != []} variant="bordered" class="mb-6">
+        <:title>Directory refresh</:title>
+        <div class="space-y-2 text-sm">
+          <div :for={api <- google_apis(@provider)}>
+            <span class="font-medium">Google GenerateContent:</span>
+            <span>API version: {google_api_version(api)}.</span>
+            <span :if={api.last_discovered_at}>
+              Last successful discovery: {api.last_discovered_at}
+            </span>
+            <span :if={!api.last_discovered_at}>No successful discovery recorded.</span>
+          </div>
+          <p :if={directory_status(@model_reload_status)} class="text-on-surface-variant">
+            {directory_status(@model_reload_status)}
+          </p>
+          <p class="text-on-surface-variant">Directory refresh reads the model catalog only; it never starts a generation.</p>
+        </div>
       </.dm_card>
 
       <.dm_card variant="bordered" class="mb-6">
@@ -872,6 +977,10 @@ defmodule Backplane.Admin.ProviderShowLive do
               <span :if={model.display_name} class="mt-1 block text-sm text-on-surface-variant">
                 {model.display_name}
               </span>
+              <.google_model_metadata
+                :if={google_model_metadata(model, @provider)}
+                metadata={google_model_metadata(model, @provider)}
+              />
             </div>
           </:col>
           <:col :let={model} label="Status">
@@ -896,6 +1005,13 @@ defmodule Backplane.Admin.ProviderShowLive do
                 {api_label(api.api_surface)} {if surface_enabled?(model, api), do: "on", else: "off"}
               </.dm_badge>
             </div>
+          </:col>
+          <:col :let={model} label="Routing">
+            <div :if={google_model_metadata(model, @provider)} class="flex flex-wrap gap-2">
+              <.dm_badge variant="success" size="sm">Native Google GenerateContent</.dm_badge>
+              <.dm_badge variant="neutral" size="sm">Translation unavailable</.dm_badge>
+            </div>
+            <span :if={!google_model_metadata(model, @provider)} class="text-on-surface-variant">Unknown</span>
           </:col>
           <:col :let={model} label="Actions">
             <div class="flex items-center gap-1">
@@ -995,12 +1111,26 @@ defmodule Backplane.Admin.ProviderShowLive do
     """
   end
 
+  attr(:metadata, :map, required: true)
+
+  defp google_model_metadata(assigns) do
+    ~H"""
+    <dl class="mt-2 space-y-1 text-xs text-on-surface-variant">
+      <div>Native resource: <code>{metadata_value(@metadata, ["name", "resource_name"])}</code></div>
+      <div>Input token limit: {metadata_value(@metadata, ["inputTokenLimit", "context_window"])}</div>
+      <div>Output token limit: {metadata_value(@metadata, ["outputTokenLimit", "max_output_tokens"])}</div>
+      <div>Supported methods: {metadata_list(@metadata, "supportedGenerationMethods")}</div>
+      <div>Advanced capabilities: Unknown</div>
+    </dl>
+    """
+  end
+
   defp api_form_section(assigns) do
     ~H"""
     <div class="rounded-md border border-outline-variant p-4">
       <div class="mb-3 flex items-center justify-between gap-3">
         <span class="font-medium">{@title}</span>
-        <.dm_badge variant={if @key == "openai", do: "info", else: "tertiary"} size="sm">
+        <.dm_badge variant={badge_variant(String.to_existing_atom(@key))} size="sm">
           {@badge}
         </.dm_badge>
       </div>
@@ -1025,29 +1155,19 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.error errors={@errors} field={"#{@key}_base_url"} />
         </div>
 
-        <div :if={@key == "openai"} class="space-y-2">
+        <div :if={@protocols != []} class="space-y-2">
           <p class="text-sm font-medium">Native wire protocols</p>
-          <input
-            type="hidden"
-            name="provider[openai_chat_completions_enabled]"
-            value="false"
-          />
-          <.dm_checkbox
-            id="provider-openai-chat-completions-enabled"
-            name="provider[openai_chat_completions_enabled]"
-            label="Chat Completions"
-            value="true"
-            checked={field_value(@form, "openai", "chat_completions_enabled") in [true, "true", "on"]}
-          />
-          <input type="hidden" name="provider[openai_responses_enabled]" value="false" />
-          <.dm_checkbox
-            id="provider-openai-responses-enabled"
-            name="provider[openai_responses_enabled]"
-            label="Responses"
-            value="true"
-            checked={field_value(@form, "openai", "responses_enabled") in [true, "true", "on"]}
-          />
-          <.error errors={@errors} field="openai_native_protocols" />
+          <div :for={protocol <- @protocols}>
+            <input type="hidden" name={protocol_input_name(@key, protocol)} value="false" />
+            <.dm_checkbox
+              id={protocol_input_id(@key, protocol)}
+              name={protocol_input_name(@key, protocol)}
+              label={protocol_label(protocol)}
+              value="true"
+              checked={protocol_field_value(@form, protocol) in [true, "true", "on"]}
+            />
+          </div>
+          <.error errors={@errors} field={"#{@key}_native_protocols"} />
         </div>
 
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
@@ -1147,31 +1267,53 @@ defmodule Backplane.Admin.ProviderShowLive do
     form[String.to_atom("#{key}_#{suffix}")].value
   end
 
-  defp protocol_enabled(nil, _protocol), do: "false"
-
   defp protocol_enabled(api, protocol) do
     checkbox_value(protocol in api.native_protocols)
   end
 
-  defp native_protocols_from_params(_params, :anthropic, _default), do: [:anthropic_messages]
-
-  defp native_protocols_from_params(params, :openai, default) do
-    keys = ["openai_chat_completions_enabled", "openai_responses_enabled"]
+  defp native_protocols_from_params(params, surface, default) do
+    protocols = supported_protocols(surface)
+    keys = Enum.map(protocols, &"#{&1}_enabled")
 
     if Enum.any?(keys, &Map.has_key?(params, &1)) do
-      []
-      |> maybe_add_protocol(
-        truthy?(params["openai_chat_completions_enabled"]),
-        :openai_chat_completions
-      )
-      |> maybe_add_protocol(truthy?(params["openai_responses_enabled"]), :openai_responses)
+      Enum.filter(protocols, &truthy?(params["#{&1}_enabled"]))
     else
       default
     end
   end
 
-  defp maybe_add_protocol(protocols, true, protocol), do: protocols ++ [protocol]
-  defp maybe_add_protocol(protocols, false, _protocol), do: protocols
+  defp protocols_for(provider, api) do
+    case provider_preset(provider) do
+      nil -> supported_protocols(api.api_surface)
+      preset -> ProviderPreset.native_protocols(preset, api.api_surface)
+    end
+  end
+
+  defp supported_protocols(:openai), do: [:openai_chat_completions, :openai_responses]
+  defp supported_protocols(:anthropic), do: [:anthropic_messages]
+  defp supported_protocols(:google), do: [:google_generate_content]
+
+  defp surface_title(:openai), do: "OpenAI-compatible API"
+  defp surface_title(:anthropic), do: "Anthropic Messages API"
+  defp surface_title(:google), do: "Google GenerateContent API"
+
+  defp protocol_input_name(_key, protocol), do: "provider[#{protocol}_enabled]"
+
+  defp protocol_input_id(_key, protocol),
+    do: "provider-#{protocol |> Atom.to_string() |> String.replace("_", "-")}-enabled"
+
+  defp protocol_label(:openai_chat_completions), do: "Chat Completions"
+  defp protocol_label(:openai_responses), do: "Responses"
+  defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
+  defp protocol_label(:google_generate_content), do: "Google GenerateContent"
+
+  defp legacy_target_label("google-gemini-developer"), do: "Google Gemini Developer API"
+
+  defp legacy_target_label("google-gemini-openai-compatible"),
+    do: "Google Gemini OpenAI Compatibility"
+
+  defp protocol_field_value(form, protocol),
+    do: form[String.to_atom("#{protocol}_enabled")].value
 
   defp form_value(form, key), do: form[key].value
 end
