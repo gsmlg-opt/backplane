@@ -76,10 +76,21 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
     cases = [
       {:anthropic, "anthropic_signed_thinking", %{"thinking" => "private", "signature" => "a"}},
       {:openai, "minimax_reasoning_details", [%{"type" => "reasoning", "text" => "opaque"}]},
-      {:google, "google_thought_signature", %{"thinking" => "private", "signature" => "g"}}
+      {:google, "google_thought_signature",
+       %{
+         "part" => %{"text" => "private", "thought" => true, "thoughtSignature" => "g"},
+         "position" => %{"candidate" => 0, "part" => 0}
+       }}
     ]
 
-    opts = [profile: "p", endpoint: "https://api.example", model: "original"]
+    opts = [
+      profile: "p",
+      endpoint: "https://api.example",
+      account: "account-a",
+      model: "original",
+      credential_scope: "scope-a",
+      credential_version: "1"
+    ]
 
     for {protocol, kind, payload} <- cases do
       {:ok, state} = provider_state(protocol, kind, payload, "original")
@@ -492,8 +503,10 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
       <<left::binary-size(^split), right::binary>> = wire
       {state, events} = feed_all(:google, [left, right])
       assert Enum.any?(events, &match?(%StreamEvent{type: :text_delta, text: "ok"}, &1))
-      assert Enum.count(events, &(&1.type == :terminal)) == 1
-      assert {:ok, _, []} = Codec.stream_finish(:google, state, :eof)
+      refute Enum.any?(events, &(&1.type == :terminal))
+
+      assert {:ok, _, [%StreamEvent{type: :terminal}]} =
+               Codec.stream_finish(:google, state, :eof)
     end
   end
 
@@ -526,6 +539,9 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              Codec.decode_response(:google, 200, [], body,
                profile: "p",
                endpoint: "https://google.example",
+               account: "account-a",
+               credential_scope: "scope-a",
+               credential_version: "1",
                model: "m"
              )
 
@@ -683,6 +699,9 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
         profile: "p",
         protocol: Atom.to_string(protocol),
         endpoint: if(model, do: "https://api.example"),
+        account: if(model, do: "account-a"),
+        credential_scope: if(model, do: "scope-a"),
+        credential_version: if(model, do: "1"),
         model: model
       },
       payload: payload
@@ -690,9 +709,21 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
   end
 
   defp replay_request(model, state) do
+    content =
+      case state do
+        %ProviderState{
+          kind: "google_thought_signature",
+          payload: %{"part" => %{"text" => text, "thought" => true}}
+        } ->
+          [%{type: :reasoning, data: text}, %{type: :provider_state, state: state}]
+
+        _ ->
+          [%{type: :provider_state, state: state}]
+      end
+
     Request.new(%{
       model: model,
-      input: [%{role: :assistant, content: [%{type: :provider_state, state: state}]}]
+      input: [%{role: :assistant, content: content}]
     })
   end
 

@@ -23,6 +23,7 @@ The facade exposes:
 
 ```elixir
 Codec.encode_request(protocol, request, opts)
+Codec.encode_rest_request(:google, request, opts)
 Codec.decode_response(protocol, status, headers, body, opts)
 Codec.decode_error(protocol, status, headers, body, opts)
 Codec.stream_new(protocol, opts)
@@ -34,6 +35,11 @@ Request encoding returns `{:ok, string_keyed_wire_map}` or a structured
 `{:error, %Backplane.AiProtocol.Error{}}`. Response and error decoding are also
 tagged. Stream state is an ordinary caller-owned value; the package starts no
 processes.
+
+For Google GenerateContent, `encode_rest_request/3` is the preferred API. It
+returns separate `target` and `body` maps so model/operation/stream transport
+metadata cannot leak into the REST entity. `encode_request/3` remains the
+compatibility envelope used by existing consumers.
 
 `stream_new/2` returns the initial state directly. `stream_feed/3` and
 `stream_finish/3` use these tagged shapes:
@@ -61,9 +67,11 @@ for persisting and restoring them without interpreting the payload.
 Replay is origin-bound. Encoding requires matching source protocol and profile,
 plus complete matching origin/destination affinity for profile, endpoint, and
 model; optional account and workspace values must also match when present.
-Missing or changed origin metadata is rejected as incompatible. Google content
-that carries a thought signature without `thought: true` is also rejected
-because the package cannot preserve it faithfully.
+Google signed parts additionally require account, credential scope, and
+credential version bindings. Missing or changed origin metadata is rejected as
+incompatible. Google stores the exact signed part and its original position, so
+signatures on function calls and other supported parts are never moved into
+synthetic thought content.
 
 Unsupported response content, multiple outputs where only one can be preserved,
 and other lossy conversions return structured incompatibility errors rather
@@ -89,9 +97,9 @@ selection, or host observation behavior.
 
 ## Consumption status
 
-Synapsis currently consumes this application from a local sibling checkout path.
-The package is published independently, but this integration does not imply a
-standalone-package or independent-CI portability guarantee.
+The package verifier builds and unpacks a real Hex archive and runs an independent
+consumer against that artifact. This portability check does not imply that the
+Backplane production runtime dispatches Google traffic through the codec.
 
 ## Source notices
 

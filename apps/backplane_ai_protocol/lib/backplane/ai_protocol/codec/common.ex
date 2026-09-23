@@ -24,11 +24,18 @@ defmodule Backplane.AiProtocol.Codec.Common do
     do: {:error, Error.invalid!("Stream chunk must be binary"), state}
 
   def finish(state, reason, decoder) do
+    finish(state, reason, decoder, fn state, events, reason ->
+      if state.terminal? or state.done?,
+        do: {:ok, state, events},
+        else: {:error, incomplete_error(reason), state}
+    end)
+  end
+
+  def finish(state, reason, decoder, finalizer) do
     case SSE.finish(state.sse) do
       {:ok, sse, frames} ->
         case decode_frames(%{state | sse: sse}, frames, decoder, []) do
-          {:ok, state, events} when state.terminal? or state.done? -> {:ok, state, events}
-          {:ok, state, _events} -> {:error, incomplete_error(reason), state}
+          {:ok, state, events} -> finalizer.(state, events, reason)
           error -> error
         end
 
@@ -119,7 +126,9 @@ defmodule Backplane.AiProtocol.Codec.Common do
       endpoint: Keyword.get(opts, :endpoint),
       account: Keyword.get(opts, :account),
       workspace: Keyword.get(opts, :workspace),
-      model: Keyword.get(opts, :model)
+      model: Keyword.get(opts, :model),
+      credential_scope: Keyword.get(opts, :credential_scope),
+      credential_version: Keyword.get(opts, :credential_version)
     }
   end
 
@@ -143,12 +152,20 @@ defmodule Backplane.AiProtocol.Codec.Common do
       {Keyword.get(opts, :endpoint), affinity.endpoint, "destination endpoint"},
       {Keyword.get(opts, :account), affinity.account, "destination account"},
       {Keyword.get(opts, :workspace), affinity.workspace, "destination workspace"},
-      {Keyword.get(opts, :model), affinity.model, "destination model"}
+      {Keyword.get(opts, :model), affinity.model, "destination model"},
+      {Keyword.get(opts, :credential_scope), affinity.credential_scope,
+       "destination credential scope"},
+      {Keyword.get(opts, :credential_version), affinity.credential_version,
+       "destination credential version"}
     ]
 
     case Enum.find(required, fn {value, _field} -> not (is_binary(value) and value != "") end) do
       {_value, field} ->
-        {:error, Error.incompatible!("Opaque provider state #{field} is required for replay")}
+        {:error,
+         Error.incompatible!("Opaque provider state #{field} is required for replay", %{
+           "field" => "affinity",
+           "reason" => "missing_origin"
+         })}
 
       nil ->
         case Enum.find(checks, fn
@@ -160,7 +177,10 @@ defmodule Backplane.AiProtocol.Codec.Common do
 
           {_actual, _expected, field} ->
             {:error,
-             Error.incompatible!("Opaque provider state #{field} does not match its origin")}
+             Error.incompatible!("Opaque provider state #{field} does not match its origin", %{
+               "field" => "affinity",
+               "reason" => "cross_origin"
+             })}
         end
     end
   end

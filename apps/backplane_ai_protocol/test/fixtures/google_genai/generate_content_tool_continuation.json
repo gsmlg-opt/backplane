@@ -1,0 +1,49 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "functionCall": {
+            "args": {"q": "alpha"},
+            "id": "native-a",
+            "name": "lookup"
+          },
+          "thoughtSignature": "sig-a"
+        },
+        {
+          "functionCall": {
+            "args": {"q": "beta"},
+            "id": "native-b",
+            "name": "lookup"
+          },
+          "thoughtSignature": "sig-b"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "native-a",
+            "name": "lookup",
+            "response": {"result": {"nested": {"ok": true}, "value": 1}}
+          }
+        },
+        {
+          "functionResponse": {
+            "id": "native-b",
+            "name": "lookup",
+            "response": {"result": {"nested": {"ok": false}, "value": 2}}
+          }
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 64,
+    "responseModalities": ["TEXT"],
+    "temperature": 0.2
+  }
+}

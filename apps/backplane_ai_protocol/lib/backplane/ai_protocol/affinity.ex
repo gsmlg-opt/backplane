@@ -2,12 +2,22 @@ defmodule Backplane.AiProtocol.Affinity do
   @moduledoc """
   Explicit public affinity for provider-bound state.
 
-  This struct deliberately contains no credential identifier. Host-owned credential
-  bindings remain in `Backplane.AiProtocol.ExecutionContext`.
+  This struct deliberately contains no credential identifier. Public credential scope and
+  version labels may bind opaque state to a host-selected credential generation, while the
+  credential binding itself remains in `Backplane.AiProtocol.ExecutionContext`.
   """
 
   @enforce_keys [:profile]
-  defstruct [:profile, :protocol, :endpoint, :account, :workspace, :model]
+  defstruct [
+    :profile,
+    :protocol,
+    :endpoint,
+    :account,
+    :workspace,
+    :model,
+    :credential_scope,
+    :credential_version
+  ]
 
   @type field :: String.t() | nil
 
@@ -17,10 +27,21 @@ defmodule Backplane.AiProtocol.Affinity do
           endpoint: field(),
           account: field(),
           workspace: field(),
-          model: field()
+          model: field(),
+          credential_scope: field(),
+          credential_version: field()
         }
 
-  @keys [:profile, :protocol, :endpoint, :account, :workspace, :model]
+  @keys [
+    :profile,
+    :protocol,
+    :endpoint,
+    :account,
+    :workspace,
+    :model,
+    :credential_scope,
+    :credential_version
+  ]
 
   @doc """
   Builds a public affinity. Any credential-like field is rejected to prevent accidental
@@ -38,7 +59,9 @@ defmodule Backplane.AiProtocol.Affinity do
          endpoint: attrs[:endpoint],
          account: attrs[:account],
          workspace: attrs[:workspace],
-         model: attrs[:model]
+         model: attrs[:model],
+         credential_scope: attrs[:credential_scope],
+         credential_version: attrs[:credential_version]
        }}
     end
   end

@@ -23,6 +23,24 @@ defmodule Backplane.AiProtocol.Codec do
   def encode_request(protocol, request, opts \\ []),
     do: call(protocol, :encode_request, [request, opts])
 
+  @doc """
+  Encodes a provider-native REST body with transport targeting kept out of the body.
+
+  This API currently supports only `:google` GenerateContent. Other selectors return a
+  structured incompatibility error.
+  """
+  @spec encode_rest_request(atom(), Request.t(), keyword()) ::
+          {:ok, %{target: map(), body: map()}} | {:error, Error.t()}
+  def encode_rest_request(protocol, request, opts \\ [])
+
+  def encode_rest_request(:google, request, opts),
+    do: Backplane.AiProtocol.Codec.Google.encode_rest_request(request, opts)
+
+  def encode_rest_request(protocol, _request, _opts),
+    do:
+      {:error,
+       Error.incompatible!("REST request encoding is unsupported for #{inspect(protocol)}")}
+
   @spec decode_response(atom(), integer(), list(), binary() | map(), keyword()) ::
           {:ok, Response.t()} | {:error, Error.t()}
   def decode_response(protocol, status, headers, body, opts \\ []),
