@@ -93,4 +93,23 @@ reservation, durable intent publication, or backend dispatch.
 - Issue #46 and the captured Sigma/MCP schema fixtures remain catalog-preflight
   inputs; schemas are retained unchanged and validated by Draft 2020-12.
 - The package now has a production dependency on `jsonschex` and
-  `ex_json_pointer`; it is no longer a dependency-free artifact.
+  `ex_json_pointer`, with `decimal` for arbitrary-precision numeric
+  assertions; it is no longer a dependency-free artifact.
+# Batch admission and quarantine
+
+`Backplane.AgentRuntime.ToolCatalog.admit_batch/2` is the public batch boundary.
+It is strict by default; pass `mode: :quarantine` explicitly to omit only tools
+whose direct `InputSchema.validate_schema/1` result is
+`%Error{class: :unsupported_capability}`. Validation, metadata, backend,
+authority, duplicate-name, and unresolved-reference errors remain fatal.
+
+The result is one executable bundle: `registry`, provider `tools`, narrowed
+`authority`, `accepted` names, and ordered `rejected` diagnostics containing the
+tool name, descriptor revision, and original structured error. Grants are only
+removed for rejected tools; caller/run and other authority fields are retained.
+An empty input or an all-rejected quarantine batch returns an empty registry,
+provider list, and grants. Rejected diagnostics are trusted-host data and must
+not be serialized into model requests, subscriber events, or checkpoints.
+
+Use `schema_admission: :strict | :quarantine` when starting a Conversation or
+on a dynamic catalog update; both paths consume the same admitted bundle.

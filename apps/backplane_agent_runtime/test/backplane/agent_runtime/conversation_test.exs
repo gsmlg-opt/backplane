@@ -226,6 +226,47 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     })
   end
 
+  test "initial quarantine admission only sends accepted tools to the provider" do
+    valid = %{
+      tool_name: "read",
+      tool_revision: 1,
+      schema: %{"type" => "object"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    unsupported = %{
+      tool_name: "legacy",
+      tool_revision: 2,
+      schema: %{"type" => "object", "$schema" => "https://example.invalid/schema"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    {:ok, first} = ToolRegistry.register(%ToolRegistry{}, valid)
+    {:ok, registry} = ToolRegistry.register(first, unsupported)
+
+    {pid, _store} =
+      start(
+        registry: registry,
+        schema_admission: :quarantine,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["read", "legacy"],
+          tool_revision: 1,
+          tool_revisions: %{"read" => 1, "legacy" => 2}
+        }
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "hello")
+    assert_receive {:provider, %{tools: [%{name: "read"}]}, provider}
+    send(provider, {:events, [done("answer")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
   test "incremental multi-step turn is persisted and settled once" do
     {pid, store} = start()
     assert {:ok, _} = Conversation.prompt(pid, "hello")

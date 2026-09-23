@@ -99,6 +99,26 @@ the user prompt hook again, matching Sigma's ordering.
 
 ## Tool catalog publication
 
+Hosts that discover a batch can opt into schema quarantine at the runtime
+boundary. For example:
+
+```elixir
+{:ok, bundle} = Backplane.AgentRuntime.ToolCatalog.admit_batch(
+  %{registry: registry, authority: authority, tools: provider_tools},
+  mode: :quarantine
+)
+```
+
+Strict mode is the default. The returned `bundle.registry`, `bundle.tools`, and
+`bundle.authority` must be passed together; do not retain the original registry
+or independently append `:tools`. `bundle.rejected` is a trusted-host
+diagnostic only. A repaired descriptor can be admitted again at a new
+descriptor revision; quarantine is not a name denylist. The same option is
+available as `schema_admission: :quarantine` for initial Conversation options
+and dynamic catalog updates. Sigma adapters may map deterministic admission
+errors to their own non-retryable migration guidance; this package does not
+change Sigma error classes.
+
 Each provider request includes `catalog_revision` and canonical provider tool
 definitions shaped as `%{name: binary, description: binary, parameters: map}`.
 The provider attempt and its complete sequential tool batch use that snapshot.

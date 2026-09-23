@@ -32,9 +32,42 @@ defmodule Backplane.AgentRuntime.Conversation do
   """
 
   def start_link(opts) do
-    with {:ok, _} <- Execution.validate_limits(opts),
+    with {:ok, opts} <- admit_initial_catalog(opts),
+         {:ok, _} <- Execution.validate_limits(opts),
          {:ok, _} <- Budget.new(%{work: Keyword.get(opts, :work, 100)}) do
       GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
+    end
+  end
+
+  defp admit_initial_catalog(opts) do
+    mode = Keyword.get(opts, :schema_admission, Keyword.get(opts, :admission_mode))
+
+    cond do
+      is_nil(mode) ->
+        {:ok, opts}
+
+      mode not in [:strict, :quarantine] ->
+        {:error, Error.new(:validation, "admission mode must be :strict or :quarantine")}
+
+      true ->
+        registry = Keyword.get(opts, :registry, %ToolRegistry{})
+        authority = Keyword.get(opts, :authority, %{})
+
+        case ToolCatalog.admit_batch(
+               %{registry: registry, authority: authority, tools: Keyword.get(opts, :tools)},
+               mode: mode
+             ) do
+          {:ok, bundle} ->
+            {:ok,
+             opts
+             |> Keyword.put(:registry, bundle.registry)
+             |> Keyword.put(:tools, bundle.tools)
+             |> Keyword.put(:authority, bundle.authority)
+             |> Keyword.put(:admission, bundle)}
+
+          {:error, %Error{} = error} ->
+            {:error, error}
+        end
     end
   end
 

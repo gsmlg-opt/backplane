@@ -1,6 +1,300 @@
 defmodule Backplane.AgentRuntime.ToolCatalog do
   alias Backplane.AgentRuntime.{Error, InputSchema, Policy, ToolRegistry}
 
+  @type admission :: %{
+          registry: ToolRegistry.t(),
+          tools: [provider_tool()],
+          authority: map(),
+          accepted: [String.t()],
+          rejected: [map()]
+        }
+
+  @doc """
+  Admits a complete tool batch without mutating a registry or dispatching a backend.
+
+  Admission is strict by default. `mode: :quarantine` is the only mode that
+  turns a direct `InputSchema.validate_schema/1` `:unsupported_capability`
+  result into a rejected diagnostic. Every other error remains fatal.
+  """
+  @spec admit_batch(term(), keyword()) :: {:ok, admission()} | {:error, Error.t()}
+  def admit_batch(batch, opts \\ [])
+
+  def admit_batch(batch, opts) when is_list(opts) do
+    with :ok <- validate_options(opts),
+         {:ok, mode} <- admission_mode(opts),
+         {:ok, %{descriptors: descriptors, tools: supplied_tools, authority: authority}} <-
+           admission_input(batch, opts),
+         :ok <- reject_duplicate_names(descriptors),
+         {:ok, names} <- descriptor_names(descriptors),
+         :ok <- validate_authority(authority, names),
+         {:ok, entries} <- validate_descriptors(descriptors, authority, mode),
+         {:ok, accepted, rejected} <- split_entries(entries),
+         :ok <- validate_supplied_tools(supplied_tools, entries),
+         {:ok, registry} <- registry_from_entries(accepted),
+         {:ok, tools} <- provider_definitions(accepted, supplied_tools),
+         {:ok, authority} <- narrowed_authority(authority, accepted) do
+      {:ok,
+       %{
+         registry: registry,
+         tools: tools,
+         authority: authority,
+         accepted: Enum.map(accepted, & &1.name),
+         rejected: rejected
+       }}
+    end
+  end
+
+  def admit_batch(_batch, _opts),
+    do: {:error, validation_error("admission options must be a list")}
+
+  @spec admit_batch(ToolRegistry.t(), map(), keyword()) ::
+          {:ok, admission()} | {:error, Error.t()}
+  def admit_batch(%ToolRegistry{} = registry, authority, opts) when is_map(authority) do
+    admit_batch(%{registry: registry, authority: authority}, opts)
+  end
+
+  defp admission_mode(opts) do
+    case Keyword.get(opts, :mode, :strict) do
+      mode when mode in [:strict, :quarantine] -> {:ok, mode}
+      _ -> {:error, validation_error("admission mode must be :strict or :quarantine")}
+    end
+  end
+
+  defp validate_options(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, validation_error("admission options must be a keyword list")}
+
+      Enum.any?(opts, fn {key, _value} -> key not in [:mode, :authority, :tools] end) ->
+        {:error, validation_error("unknown admission option")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp admission_input(%ToolRegistry{tools: tools} = registry, opts) when is_map(tools) do
+    admission_input(
+      %{
+        registry: registry,
+        authority: Keyword.get(opts, :authority, %{}),
+        tools: Keyword.get(opts, :tools)
+      },
+      opts
+    )
+  end
+
+  defp admission_input(
+         %{registry: %ToolRegistry{tools: tools}, authority: authority} = batch,
+         _opts
+       )
+       when is_map(tools) and is_map(authority) do
+    descriptors =
+      tools
+      |> Enum.sort_by(fn {name, _descriptor} -> name end)
+      |> Enum.map(&elem(&1, 1))
+
+    {:ok, %{descriptors: descriptors, tools: Map.get(batch, :tools), authority: authority}}
+  end
+
+  defp admission_input(descriptors, opts) when is_list(descriptors) do
+    authority = Keyword.get(opts, :authority, %{})
+
+    if is_map(authority),
+      do:
+        {:ok, %{descriptors: descriptors, tools: Keyword.get(opts, :tools), authority: authority}},
+      else: {:error, validation_error("admission authority must be a map")}
+  end
+
+  defp admission_input(_batch, _opts),
+    do: {:error, validation_error("admission batch is malformed")}
+
+  defp reject_duplicate_names(descriptors) do
+    names = Enum.map(descriptors, &candidate_name/1)
+
+    if length(names) == length(Enum.uniq(names)),
+      do: :ok,
+      else: {:error, validation_error("admission batch contains duplicate tool names")}
+  end
+
+  defp descriptor_names(descriptors) do
+    Enum.reduce_while(descriptors, {:ok, []}, fn descriptor, {:ok, acc} ->
+      case descriptor_name(descriptor) do
+        {:ok, name} -> {:cont, {:ok, [name | acc]}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp descriptor_name(descriptor) when is_map(descriptor) do
+    case Map.get(descriptor, :tool_name) || Map.get(descriptor, "tool_name") do
+      name when is_binary(name) and name != "" -> {:ok, name}
+      _ -> {:error, validation_error("tool name is required")}
+    end
+  end
+
+  defp descriptor_name(_), do: {:error, validation_error("tool descriptor must be a map")}
+
+  defp validate_authority(authority, names) do
+    grants = Map.get(authority, :grants, Map.get(authority, "grants"))
+
+    if is_list(grants) and length(grants) == length(Enum.uniq(grants)) and
+         MapSet.new(grants) == MapSet.new(names),
+       do: :ok,
+       else:
+         {:error,
+          Error.new(:forbidden, "admission authority must exactly match the candidate tools")}
+  end
+
+  defp validate_descriptors(descriptors, authority, mode) do
+    Enum.reduce_while(descriptors, {:ok, []}, fn descriptor, {:ok, acc} ->
+      case validate_admission_descriptor(descriptor, authority, mode) do
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp validate_admission_descriptor(descriptor, authority, mode) when is_map(descriptor) do
+    with {:ok, name} <- descriptor_name(descriptor),
+         {:ok, revision} <- descriptor_revision(descriptor),
+         :ok <- descriptor_metadata(descriptor),
+         :ok <- available_backend(descriptor),
+         {:ok, _} <-
+           Policy.authorize_tool(authority_for_tool(authority, name), descriptor, %{
+             tool_name: name,
+             run_id: Map.get(authority, :run_id)
+           }) do
+      case InputSchema.validate_schema(Map.get(descriptor, :schema)) do
+        :ok ->
+          {:ok, %{name: name, revision: revision, descriptor: descriptor, status: :accepted}}
+
+        {:error, %Error{class: :unsupported_capability} = error} when mode == :quarantine ->
+          {:ok,
+           %{
+             name: name,
+             revision: revision,
+             descriptor: descriptor,
+             status: :rejected,
+             error: error
+           }}
+
+        {:error, %Error{} = error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  defp validate_admission_descriptor(_descriptor, _authority, _mode),
+    do: {:error, validation_error("tool descriptor must be a map")}
+
+  defp descriptor_revision(descriptor) do
+    case Map.get(descriptor, :tool_revision) || Map.get(descriptor, "tool_revision") do
+      revision when is_integer(revision) and revision > 0 -> {:ok, revision}
+      _ -> {:error, validation_error("tool revision is required")}
+    end
+  end
+
+  defp authority_for_tool(authority, name) do
+    revisions = Map.get(authority, :tool_revisions, Map.get(authority, "tool_revisions", %{}))
+
+    if is_map(revisions) and is_integer(Map.get(revisions, name)),
+      do: Map.put(authority, :tool_revision, Map.get(revisions, name)),
+      else: authority
+  end
+
+  defp split_entries(entries) do
+    {accepted, rejected} = Enum.split_with(entries, &(&1.status == :accepted))
+
+    rejected =
+      Enum.map(rejected, fn entry ->
+        %{name: entry.name, descriptor_revision: entry.revision, error: entry.error}
+      end)
+
+    {:ok, Enum.reverse(accepted), Enum.reverse(rejected)}
+  end
+
+  defp validate_supplied_tools(nil, _accepted), do: :ok
+
+  defp validate_supplied_tools(tools, accepted) when is_list(tools) do
+    accepted_names = MapSet.new(Enum.map(accepted, & &1.name))
+    supplied_names = Enum.map(tools, &candidate_name(&1, :name))
+
+    cond do
+      length(supplied_names) != length(Enum.uniq(supplied_names)) or
+          MapSet.new(supplied_names) != accepted_names ->
+        {:error, validation_error("provider tools must match the admitted registry")}
+
+      Enum.any?(accepted, fn entry ->
+        tool = Enum.find(tools, &(candidate_name(&1, :name) == entry.name))
+
+        not is_map(tool) or
+            Map.get(tool, :parameters, Map.get(tool, "parameters")) != entry.descriptor.schema
+      end) ->
+        {:error,
+         Error.new(
+           :resource_conflict,
+           "provider tool schema differs from its registered descriptor"
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_supplied_tools(_, _),
+    do: {:error, validation_error("provider tools must be a list")}
+
+  defp registry_from_entries(entries) do
+    Enum.reduce_while(entries, {:ok, %ToolRegistry{}}, fn entry, {:ok, registry} ->
+      case ToolRegistry.register(registry, entry.descriptor) do
+        {:ok, registry} -> {:cont, {:ok, registry}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp provider_definitions(entries, nil), do: {:ok, Enum.map(entries, &provider_definition/1)}
+
+  defp provider_definitions(entries, supplied) do
+    by_name =
+      Map.new(supplied, fn tool -> {candidate_name(tool, :name), tool} end)
+
+    {:ok,
+     Enum.map(entries, fn entry ->
+       Map.fetch!(by_name, entry.name) |> normalize_provider_definition(entry)
+     end)}
+  end
+
+  defp normalize_provider_definition(tool, entry) do
+    %{
+      name: entry.name,
+      description: Map.get(tool, :description, Map.get(tool, "description", "")),
+      parameters: entry.descriptor.schema
+    }
+  end
+
+  defp candidate_name(value), do: candidate_name(value, :tool_name)
+
+  defp candidate_name(value, key) when is_map(value),
+    do: Map.get(value, key, Map.get(value, Atom.to_string(key)))
+
+  defp candidate_name(_value, _key), do: nil
+
+  defp provider_definition(entry),
+    do: %{
+      name: entry.name,
+      description: Map.get(entry.descriptor, :description, ""),
+      parameters: entry.descriptor.schema
+    }
+
+  defp narrowed_authority(authority, accepted) do
+    names = Enum.map(accepted, & &1.name)
+    {:ok, Map.put(authority, :grants, names)}
+  end
+
+  defp validation_error(message), do: Error.new(:validation, message)
+
   @moduledoc """
   Validates complete, host-authored tool catalog revisions for a Conversation.
 
@@ -50,7 +344,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   @spec validate(term(), pos_integer(), map()) :: {:ok, map()} | {:error, Error.t()}
   def validate(update, current_revision, run)
       when is_map(update) and is_integer(current_revision) and is_map(run) do
-    with :ok <- fence(update, run),
+    with {:ok, update} <- admit_catalog_update(update),
+         :ok <- fence(update, run),
          {:ok, publication_id} <- required_binary(update, :publication_id, "publication id"),
          {:ok, expected_revision} <-
            required_positive_integer(update, :expected_revision, "expected catalog revision"),
@@ -68,6 +363,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
          registry: registry,
          authority: authority,
          tools: tools,
+         rejected: Map.get(catalog, :rejected, []),
          publication_id: publication_id
        }}
     end
@@ -75,6 +371,50 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   def validate(_update, _current_revision, _run),
     do: validation("catalog publication is malformed")
+
+  defp admit_catalog_update(update) do
+    catalog = field(update, :catalog)
+
+    mode =
+      field(update, :schema_admission) ||
+        if(is_map(catalog), do: field(catalog, :schema_admission), else: nil)
+
+    cond do
+      is_nil(mode) ->
+        {:ok, update}
+
+      mode not in [:strict, :quarantine] ->
+        {:error, validation_error("admission mode must be :strict or :quarantine")}
+
+      not is_map(catalog) ->
+        {:ok, update}
+
+      true ->
+        case admit_batch(
+               %{
+                 registry: field(catalog, :registry),
+                 authority: field(catalog, :authority),
+                 tools: field(catalog, :tools)
+               },
+               mode: mode
+             ) do
+          {:ok, bundle} ->
+            {:ok,
+             put_in(
+               update,
+               [:catalog],
+               catalog
+               |> Map.put(:registry, bundle.registry)
+               |> Map.put(:authority, bundle.authority)
+               |> Map.put(:tools, bundle.tools)
+               |> Map.put(:rejected, bundle.rejected)
+             )}
+
+          {:error, error} ->
+            {:error, error}
+        end
+    end
+  end
 
   @spec receipt(map(), :staged | :published) :: map()
   def receipt(catalog, status) do

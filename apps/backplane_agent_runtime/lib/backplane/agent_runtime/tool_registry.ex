@@ -9,6 +9,20 @@ defmodule Backplane.AgentRuntime.ToolRegistry do
           tools: map()
         }
 
+  @doc "Delegates batch admission to the catalog boundary without changing single-tool registration semantics."
+  @spec admit_batch(t() | [map()], map() | keyword()) ::
+          {:ok, map()} | {:error, Backplane.AgentRuntime.Error.t()}
+  def admit_batch(%__MODULE__{} = registry, authority_or_opts) do
+    if is_map(authority_or_opts) do
+      Backplane.AgentRuntime.ToolCatalog.admit_batch(registry, authority_or_opts, [])
+    else
+      Backplane.AgentRuntime.ToolCatalog.admit_batch(registry, authority_or_opts)
+    end
+  end
+
+  def admit_batch(descriptors, opts) when is_list(descriptors) and is_list(opts),
+    do: Backplane.AgentRuntime.ToolCatalog.admit_batch(descriptors, opts)
+
   @spec register(t(), map()) :: {:ok, t()} | {:error, Backplane.AgentRuntime.Error.t()}
   def register(%__MODULE__{} = registry, descriptor) when is_map(descriptor) do
     with {:ok, name} <- validate_name(descriptor),

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit strict batch tool admission with opt-in schema quarantine at the
+  ToolCatalog/Conversation boundary. Quarantine only removes direct
+  `:unsupported_capability` schema results and returns accepted/rejected bundle
+  diagnostics without changing execution-time argument validation.
+- Declare the optional `jsonschex` precision dependency so the standalone
+  package runs the complete Draft 2020-12 numeric conformance suite.
+
 ## 1.8.3
 
 - Replace the hand-written schema subset with `jsonschex 0.10.0`, targeting
