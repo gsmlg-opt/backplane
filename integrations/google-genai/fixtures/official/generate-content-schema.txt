@@ -1,0 +1,48 @@
+{
+  "candidates": [
+    {
+      object (Candidate)
+    }
+  ],
+  "promptFeedback": {
+    object (PromptFeedback)
+  },
+  "usageMetadata": {
+    object (UsageMetadata)
+  },
+  "modelVersion": string,
+  "responseId": string,
+  "modelStatus": {
+    object (ModelStatus)
+  }
+}
+
+{
+  "promptTokenCount": integer,
+  "cachedContentTokenCount": integer,
+  "candidatesTokenCount": integer,
+  "toolUsePromptTokenCount": integer,
+  "thoughtsTokenCount": integer,
+  "totalTokenCount": integer,
+  "promptTokensDetails": [
+    {
+      object (ModalityTokenCount)
+    }
+  ],
+  "cacheTokensDetails": [
+    {
+      object (ModalityTokenCount)
+    }
+  ],
+  "candidatesTokensDetails": [
+    {
+      object (ModalityTokenCount)
+    }
+  ],
+  "toolUsePromptTokensDetails": [
+    {
+      object (ModalityTokenCount)
+    }
+  ],
+  "serviceTier": enum (ServiceTier)
+}

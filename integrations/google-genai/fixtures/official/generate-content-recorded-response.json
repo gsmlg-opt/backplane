@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "[SANITIZED_OFFICIAL_RESPONSE_TEXT]"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "MAX_TOKENS",
+      "index": 0
+    }
+  ],
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "sanitized-official-response-id",
+  "turnToken": "[REDACTED_OPAQUE_TOKEN]",
+  "usageMetadata": {
+    "candidatesTokenCount": 149,
+    "promptTokenCount": 7,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 7
+      }
+    ],
+    "thoughtsTokenCount": 48,
+    "totalTokenCount": 204
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "backplane-google-genai-contract",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test:typescript": "node --import tsx --test test/typescript.contract.test.ts",
+    "test:python": ".venv/bin/python -m unittest discover -s test -p 'python_contract_test.py'",
+    "test:go": "go test ./test/go"
+  },
+  "devDependencies": {
+    "@google/genai": "2.24.0",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3"
+  }
+}

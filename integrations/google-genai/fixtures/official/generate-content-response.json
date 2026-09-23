@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "recording response"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "recording-response-id",
+  "usageMetadata": {
+    "candidatesTokenCount": 2,
+    "promptTokenCount": 3,
+    "totalTokenCount": 5
+  }
+}
