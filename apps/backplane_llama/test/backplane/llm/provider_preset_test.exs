@@ -20,10 +20,13 @@ defmodule Backplane.LLM.ProviderPresetTest do
              "anthropic",
              "x-ai",
              "google-gemini-developer",
-             "google-gemini-openai-compatible",
-             "google-ai-studio",
              "moonshot-cn"
            ] = ProviderPreset.keys()
+  end
+
+  test "does not expose retired Google compatibility presets" do
+    refute ProviderPreset.get("google-ai-studio")
+    refute ProviderPreset.get("google-gemini-openai-compatible")
   end
 
   test "deepseek has openai and anthropic defaults" do
@@ -195,17 +198,8 @@ defmodule Backplane.LLM.ProviderPresetTest do
     assert preset.openai.base_url == "https://chatgpt.com/backend-api/codex"
   end
 
-  test "google ai studio and moonshot.cn use openai-compatible defaults" do
-    google = ProviderPreset.fetch!("google-ai-studio")
+  test "moonshot.cn uses OpenAI-compatible defaults" do
     moonshot = ProviderPreset.fetch!("moonshot-cn")
-
-    assert google.default_credential == "google-antigravity"
-    assert google.credential_kind == "llm"
-    assert google.credential_auth_type == "google_oauth"
-    assert google.openai.enabled
-    assert google.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert google.openai.discovery_path == "/models"
-    refute google.anthropic.enabled
 
     assert moonshot.name == "Moonshot.cn"
     assert moonshot.openai.enabled
@@ -235,42 +229,6 @@ defmodule Backplane.LLM.ProviderPresetTest do
     refute preset.anthropic.enabled
   end
 
-  test "google OpenAI compatibility is separate and does not claim Responses" do
-    preset = ProviderPreset.fetch!("google-gemini-openai-compatible")
-
-    assert preset.credential_auth_type == "api_key"
-    assert preset.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert ProviderPreset.native_protocols(preset, :openai) == [:openai_chat_completions]
-
-    assert ProviderPreset.surfaces(preset).openai.native_protocols == [
-             :openai_chat_completions
-           ]
-  end
-
-  test "legacy google ai studio retains its binding and exposes migration choices" do
-    preset = ProviderPreset.fetch!("google-ai-studio")
-
-    assert preset.legacy
-    assert preset.default_credential == "google-antigravity"
-    assert preset.credential_auth_type == "google_oauth"
-    assert preset.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-
-    assert %{
-             impact: impact,
-             required_action: required_action,
-             targets: [
-               %{preset_key: "google-gemini-developer", credential_auth_type: "api_key"},
-               %{
-                 preset_key: "google-gemini-openai-compatible",
-                 credential_auth_type: "api_key"
-               }
-             ]
-           } = preset.migration_diagnostic
-
-    assert impact =~ "not changed automatically"
-    assert required_action =~ "choose"
-  end
-
   test "legacy slots remain available through normalized surfaces" do
     preset = ProviderPreset.fetch!("deepseek")
 
@@ -285,7 +243,6 @@ defmodule Backplane.LLM.ProviderPresetTest do
       expected =
         case preset.key do
           "openai-codex" -> [:openai_responses]
-          "google-gemini-openai-compatible" -> [:openai_chat_completions]
           _ -> [:openai_chat_completions, :openai_responses]
         end
 

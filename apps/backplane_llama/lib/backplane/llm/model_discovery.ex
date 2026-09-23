@@ -27,23 +27,6 @@ defmodule Backplane.LLM.ModelDiscovery do
     @type t :: %__MODULE__{id: String.t(), metadata: map()}
   end
 
-  @default_google_antigravity_models ~w(
-    gemini-3.8-flash
-    gemini-3.8-flash-cyber
-    gemini-3.7-flash-tiered
-    gemini-3.6-flash-high
-    gemini-3.6-flash-medium
-    gemini-3.6-flash-low
-    gemini-3.1-pro-high
-    gemini-3.1-pro-low
-    gemini-3.1-flash-lite
-    gemini-3.5-flash-low
-    claude-opus-4-6
-    claude-opus-4-6-thinking
-    claude-sonnet-4-6
-    gpt-oss-120b
-  )
-
   @discovery_stale_key "backplane_discovery_stale"
   @default_openai_codex_client_version "0.0.0"
   @request_timeout_ms 30_000
@@ -115,10 +98,6 @@ defmodule Backplane.LLM.ModelDiscovery do
             emit_discovery_failed(provider, :remote, reason)
             {:error, reason}
         end
-
-      google_antigravity_oauth_api?(provider, api) ->
-        details = Enum.map(google_antigravity_models(), &%ModelDetail{id: &1, metadata: %{}})
-        {:ok, details}
 
       api.api_surface == :google ->
         with {:ok, headers} <- discovery_headers(provider, api),
@@ -260,12 +239,6 @@ defmodule Backplane.LLM.ModelDiscovery do
     }
   end
 
-  defp google_antigravity_oauth_api?(%Provider{} = provider, %ProviderApi{} = api) do
-    provider.preset_key == "google-ai-studio" and
-      api.api_surface == :openai and
-      credential_auth_type(provider.credential) == "google_oauth"
-  end
-
   defp openai_codex_oauth_api?(%Provider{} = provider, %ProviderApi{} = api) do
     provider.preset_key == "openai-codex" and
       api.api_surface == :openai and
@@ -281,11 +254,6 @@ defmodule Backplane.LLM.ModelDiscovery do
       nil -> nil
       cred -> credential_metadata_auth_type(cred.metadata)
     end
-  end
-
-  defp google_antigravity_models do
-    Application.get_env(:backplane, :google_antigravity_model_catalog) ||
-      @default_google_antigravity_models
   end
 
   defp credential_metadata_auth_type(metadata) when is_map(metadata) do

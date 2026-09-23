@@ -24,8 +24,6 @@ defmodule Backplane.LLM.ProviderPreset do
           surfaces: %{atom() => api_defaults()},
           openai: api_defaults(),
           anthropic: api_defaults(),
-          legacy: boolean(),
-          migration_diagnostic: map() | nil,
           notes: String.t(),
           docs_urls: [String.t()]
         }
@@ -41,9 +39,7 @@ defmodule Backplane.LLM.ProviderPreset do
     :surfaces,
     :openai,
     :anthropic,
-    :migration_diagnostic,
     :notes,
-    legacy: false,
     docs_urls: []
   ]
 
@@ -375,60 +371,6 @@ defmodule Backplane.LLM.ProviderPreset do
       notes:
         "Official Gemini Developer API using native GenerateContent and an API-key credential.",
       docs_urls: ["https://ai.google.dev/api"]
-    },
-    %{
-      key: "google-gemini-openai-compatible",
-      name: "Google Gemini OpenAI Compatibility",
-      default_name: "google-gemini-openai-compatible",
-      credential_kind: "llm",
-      credential_auth_type: "api_key",
-      default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-      surfaces: %{
-        openai: %{
-          enabled: true,
-          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-          discovery_path: "/models",
-          native_protocols: [:openai_chat_completions]
-        }
-      },
-      notes:
-        "Official Gemini OpenAI-compatible endpoint using an API-key credential. Responses is not enabled by default.",
-      docs_urls: ["https://ai.google.dev/gemini-api/docs/openai"]
-    },
-    %{
-      key: "google-ai-studio",
-      name: "Google AI Studio",
-      default_name: "google-ai-studio",
-      default_credential: "google-antigravity",
-      credential_kind: "llm",
-      credential_auth_type: "google_oauth",
-      default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-      legacy: true,
-      migration_diagnostic: %{
-        impact:
-          "Existing endpoint and Google OAuth credential bindings are not changed automatically.",
-        required_action:
-          "Inspect the configured endpoint and credential, then explicitly choose a supported target preset and API-key credential.",
-        targets: [
-          %{preset_key: "google-gemini-developer", credential_auth_type: "api_key"},
-          %{
-            preset_key: "google-gemini-openai-compatible",
-            credential_auth_type: "api_key"
-          }
-        ]
-      },
-      openai: %{
-        enabled: true,
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-        discovery_path: "/models"
-      },
-      anthropic: %{
-        enabled: false,
-        base_url: "",
-        discovery_path: nil
-      },
-      notes: "Google AI Studio subscription access uses the Antigravity Google OAuth credential.",
-      docs_urls: ["https://ai.google.dev/gemini-api/docs/openai"]
     },
     %{
       key: "moonshot-cn",

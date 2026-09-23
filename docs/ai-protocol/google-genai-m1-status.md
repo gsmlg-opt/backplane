@@ -33,8 +33,16 @@ listener, SDK and live-provider checks must still pass before release.
   from generation. Admin pages show native protocol, API version, metadata,
   refresh status and usage completeness without inventing advanced capabilities.
 - Google surface migration preserves existing data and refuses a rollback that
-  would discard configured Google APIs. Legacy presets retain explicit migration
-  diagnostics rather than silently changing endpoints or authentication.
+  would discard configured Google APIs.
+
+## Retired LLM compatibility entries
+
+The LLM provider catalog no longer offers the obsolete `google-ai-studio` or
+`google-gemini-openai-compatible` presets, and no longer contains the Gemini
+OpenAI-compatible endpoint or Antigravity static model catalog. Existing rows
+are not migrated or deleted; they remain stored configuration. Antigravity
+OAuth handling and usage monitoring remain outside the LLM proxy and are
+unchanged.
 
 ## Passing non-E2E evidence
 

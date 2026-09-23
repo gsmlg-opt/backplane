@@ -98,33 +98,6 @@ defmodule Backplane.LLM.ProviderTest do
       assert message =~ "not found"
     end
 
-    test "rejects google ai studio provider with non-google oauth credential" do
-      credential = credential_name()
-      Credentials.store(credential, "sk-test-value", "llm")
-
-      assert {:error, changeset} =
-               credential
-               |> valid_provider_attrs()
-               |> Map.put(:preset_key, "google-ai-studio")
-               |> Provider.create()
-
-      assert %{credential: [message]} = errors_on(changeset)
-      assert message =~ "google_oauth"
-    end
-
-    test "accepts google ai studio provider with google oauth credential" do
-      credential = credential_name()
-      Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
-
-      assert {:ok, provider} =
-               credential
-               |> valid_provider_attrs()
-               |> Map.put(:preset_key, "google-ai-studio")
-               |> Provider.create()
-
-      assert provider.credential == credential
-    end
-
     test "accepts native Google provider only with an API-key credential" do
       api_key = credential_name()
       oauth = credential_name()
@@ -314,7 +287,7 @@ defmodule Backplane.LLM.ProviderTest do
       assert %{native_protocols: [_ | _]} = errors_on(changeset)
     end
 
-    test "reports the exact legacy Google configuration without redirecting it" do
+    test "retains a stored retired preset key without applying a migration" do
       credential = credential_name()
       Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
 
@@ -333,23 +306,6 @@ defmodule Backplane.LLM.ProviderTest do
                  native_protocols: [:openai_chat_completions]
                })
 
-      assert %{
-               status: :legacy,
-               preset_key: "google-ai-studio",
-               credential: ^credential,
-               credential_auth_type: "google_oauth",
-               configured_surfaces: [
-                 %{
-                   id: api_id,
-                   api_surface: :openai,
-                   base_url: "https://legacy.example.test/custom-google",
-                   native_protocols: [:openai_chat_completions]
-                 }
-               ],
-               automatic_migration: false
-             } = Provider.legacy_migration_diagnostic(provider)
-
-      assert api_id == api.id
       assert Provider.get(provider.id).preset_key == "google-ai-studio"
       assert ProviderApi.get(api.id).base_url == "https://legacy.example.test/custom-google"
     end
@@ -669,31 +625,27 @@ defmodule Backplane.LLM.ProviderTest do
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end
 
-    test "loads Google Antigravity OAuth models from local catalog instead of provider API" do
-      previous_catalog = Application.get_env(:backplane, :google_antigravity_model_catalog)
+    test "uses the configured endpoint instead of a retired static Google catalog" do
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.request_path == "/v1/models"
 
-      Application.put_env(:backplane, :google_antigravity_model_catalog, [
-        "gemini-antigravity-test"
-      ])
+        assert ["Bearer configured-google-access-token"] =
+                 Plug.Conn.get_req_header(conn, "authorization")
 
-      on_exit(fn ->
-        if previous_catalog do
-          Application.put_env(:backplane, :google_antigravity_model_catalog, previous_catalog)
-        else
-          Application.delete_env(:backplane, :google_antigravity_model_catalog)
-        end
-      end)
-
-      Req.Test.stub(__MODULE__, fn _conn ->
-        flunk("Google Antigravity OAuth discovery should not call the provider /models endpoint")
+        Req.Test.json(conn, %{"data" => [%{"id" => "configured-google-model"}]})
       end)
 
       credential = credential_name()
-      Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
+
+      Credentials.store_device_token(credential, "google_oauth", %{
+        "access_token" => "configured-google-access-token",
+        "refresh_token" => "configured-google-refresh-token",
+        "expires_at" => System.system_time(:millisecond) + 3_600_000
+      })
 
       {:ok, provider} =
         Provider.create(%{
-          name: "google-antigravity-test-#{System.unique_integer([:positive])}",
+          name: "stored-google-provider-#{System.unique_integer([:positive])}",
           credential: credential,
           preset_key: "google-ai-studio"
         })
@@ -702,7 +654,7 @@ defmodule Backplane.LLM.ProviderTest do
         ProviderApi.create(%{
           provider_id: provider.id,
           api_surface: :openai,
-          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+          base_url: "https://configured.example.test/v1",
           model_discovery_path: "/models"
         })
 
@@ -711,7 +663,7 @@ defmodule Backplane.LLM.ProviderTest do
       assert %{discovered: 1, created: 1, updated: 0, errors: []} =
                ModelDiscovery.reload_provider(provider)
 
-      assert ProviderModel.get_by_provider_and_model(provider.id, "gemini-antigravity-test")
+      assert ProviderModel.get_by_provider_and_model(provider.id, "configured-google-model")
       assert [%{last_discovered_at: %DateTime{}}] = ProviderApi.list_for_provider(provider.id)
     end
   end

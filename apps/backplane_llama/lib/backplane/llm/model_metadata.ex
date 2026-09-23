@@ -149,8 +149,7 @@ defmodule Backplane.LLM.ModelMetadata do
     }
   end
 
-  defp provider_metadata(preset_key, raw)
-       when preset_key in ["google-ai-studio", "google-gemini-developer"] do
+  defp provider_metadata("google-gemini-developer", raw) do
     %{
       "context_window" => positive_integer(raw["inputTokenLimit"]),
       "max_output_tokens" => positive_integer(raw["outputTokenLimit"]),
@@ -160,9 +159,7 @@ defmodule Backplane.LLM.ModelMetadata do
 
   defp provider_metadata(_preset_key, _raw), do: %{}
 
-  defp provider_display_name(preset_key, raw)
-       when preset_key in ["google-ai-studio", "google-gemini-developer"],
-       do: raw["displayName"]
+  defp provider_display_name("google-gemini-developer", raw), do: raw["displayName"]
 
   defp provider_display_name(_preset_key, _raw), do: nil
 

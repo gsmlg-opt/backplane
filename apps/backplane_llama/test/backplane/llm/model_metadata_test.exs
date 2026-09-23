@@ -108,9 +108,9 @@ defmodule Backplane.LLM.ModelMetadataTest do
     refute Map.has_key?(metadata, "max_output_tokens")
   end
 
-  test "Google AI Studio token limits are normalized without invented modalities" do
+  test "Google Gemini Developer token limits are normalized without invented modalities" do
     metadata =
-      ModelMetadata.normalize("google-ai-studio", %{
+      ModelMetadata.normalize("google-gemini-developer", %{
         "inputTokenLimit" => 1_048_576,
         "outputTokenLimit" => 65536,
         "displayName" => "Gemini"

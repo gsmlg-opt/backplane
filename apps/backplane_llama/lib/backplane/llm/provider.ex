@@ -138,18 +138,6 @@ defmodule Backplane.LLM.Provider do
     end
   end
 
-  defp declared_credential_auth_type(name) do
-    Credentials.list()
-    |> Enum.find(&(&1.name == name))
-    |> case do
-      %{metadata: metadata} when is_map(metadata) ->
-        Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type)
-
-      _ ->
-        nil
-    end
-  end
-
   defp credential_metadata_auth_type(metadata) when is_map(metadata) do
     Map.get(metadata, "auth_type") || Map.get(metadata, :auth_type) || "api_key"
   end
@@ -225,37 +213,6 @@ defmodule Backplane.LLM.Provider do
     |> where([p], is_nil(p.deleted_at))
     |> preload([:apis, models: [:surfaces]])
     |> Repo.get(id)
-  end
-
-  @doc "Return the exact configured state and explicit choices for a legacy provider preset."
-  @spec legacy_migration_diagnostic(t()) :: map() | nil
-  def legacy_migration_diagnostic(%__MODULE__{} = provider) do
-    with %ProviderPreset{legacy: true, migration_diagnostic: diagnostic} <-
-           ProviderPreset.get(provider.preset_key) do
-      configured_surfaces =
-        provider.id
-        |> ProviderApi.list_for_provider()
-        |> Enum.map(fn api ->
-          %{
-            id: api.id,
-            api_surface: api.api_surface,
-            base_url: api.base_url,
-            native_protocols: api.native_protocols,
-            enabled: api.enabled
-          }
-        end)
-
-      Map.merge(diagnostic, %{
-        status: :legacy,
-        preset_key: provider.preset_key,
-        credential: provider.credential,
-        credential_auth_type: declared_credential_auth_type(provider.credential),
-        configured_surfaces: configured_surfaces,
-        automatic_migration: false
-      })
-    else
-      _ -> nil
-    end
   end
 
   @doc "Normalize and validate a provider API URL."

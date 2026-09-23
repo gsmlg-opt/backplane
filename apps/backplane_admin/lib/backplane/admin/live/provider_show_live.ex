@@ -280,8 +280,7 @@ defmodule Backplane.Admin.ProviderShowLive do
     assign(socket,
       provider: provider,
       provider_form: to_form(provider_params(provider), as: :provider),
-      provider_errors: %{},
-      legacy_diagnostic: Provider.legacy_migration_diagnostic(provider)
+      provider_errors: %{}
     )
   end
 
@@ -805,29 +804,6 @@ defmodule Backplane.Admin.ProviderShowLive do
 
       </div>
 
-      <.dm_card :if={@legacy_diagnostic} variant="bordered" class="mb-6">
-        <:title>Legacy Google configuration</:title>
-        <div class="space-y-3 text-sm">
-          <p class="text-on-surface-variant">{@legacy_diagnostic.impact}</p>
-          <p>
-            Credential: <code>{@legacy_diagnostic.credential}</code>
-            <span :if={@legacy_diagnostic.credential_auth_type}>
-              ({@legacy_diagnostic.credential_auth_type})
-            </span>
-          </p>
-          <div :for={surface <- @legacy_diagnostic.configured_surfaces}>
-            <code>{surface.api_surface}</code>: <code>{surface.base_url}</code>
-          </div>
-          <p>{@legacy_diagnostic.required_action}</p>
-          <p>No automatic migration is performed.</p>
-          <div class="flex flex-wrap gap-2">
-            <.dm_badge :for={target <- @legacy_diagnostic.targets} variant="warning" size="sm">
-              {legacy_target_label(target.preset_key)} ({target.credential_auth_type})
-            </.dm_badge>
-          </div>
-        </div>
-      </.dm_card>
-
       <.dm_card variant="bordered" class="mb-6">
         <:title>Edit Provider</:title>
         <.form
@@ -1306,11 +1282,6 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp protocol_label(:openai_responses), do: "Responses"
   defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
   defp protocol_label(:google_generate_content), do: "Google GenerateContent"
-
-  defp legacy_target_label("google-gemini-developer"), do: "Google Gemini Developer API"
-
-  defp legacy_target_label("google-gemini-openai-compatible"),
-    do: "Google Gemini OpenAI Compatibility"
 
   defp protocol_field_value(form, protocol),
     do: form[String.to_atom("#{protocol}_enabled")].value

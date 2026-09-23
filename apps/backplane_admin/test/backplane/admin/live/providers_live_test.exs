@@ -69,7 +69,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "OpenAI Codex"
       assert html =~ "Anthropic"
       assert html =~ "x.ai"
-      assert html =~ "Google AI Studio"
+      assert html =~ "Google Gemini Developer API"
       assert html =~ "Moonshot.cn"
       assert html =~ "OpenAI-compatible API"
       assert html =~ "Anthropic Messages API"
@@ -98,26 +98,11 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       refute has_element?(view, "#provider-credential option[value='test-cred']")
     end
 
-    test "google ai studio preset defaults to antigravity oauth credential options", %{conn: conn} do
+    test "does not expose retired Google compatibility presets", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
-      view
-      |> element("button[phx-value-preset='google-ai-studio']")
-      |> render_click()
-
-      assert has_element?(
-               view,
-               "#provider-credential option[value='google-antigravity']",
-               "google-antigravity (google_oauth)"
-             )
-
-      assert has_element?(
-               view,
-               "#provider-credential option[value='google-antigravity'][selected]"
-             )
-
-      refute has_element?(view, "#provider-credential option[value='test-cred']")
-      refute has_element?(view, "#provider-credential option[value='openai-codex']")
+      refute has_element?(view, "button[phx-value-preset='google-ai-studio']")
+      refute has_element?(view, "button[phx-value-preset='google-gemini-openai-compatible']")
     end
 
     test "google native preset defaults to its API-key credential and surface", %{conn: conn} do
@@ -411,38 +396,6 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       refute Repo.get_by(Provider, name: "openai-codex-test")
     end
 
-    test "google ai studio preset rejects non antigravity oauth credentials", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/llama/providers/new")
-
-      view
-      |> element("button[phx-value-preset='google-ai-studio']")
-      |> render_click()
-
-      html =
-        render_submit(view, "save", %{
-          "provider" => %{
-            "name" => "google-ai-studio-test",
-            "credential" => "test-cred",
-            "base_url" => "https://generativelanguage.googleapis.com/v1beta/openai",
-            "rpm_limit" => "",
-            "default_headers" => "{}",
-            "openai_enabled" => "true",
-            "openai_base_url" => "https://generativelanguage.googleapis.com/v1beta/openai",
-            "openai_model_discovery_enabled" => "true",
-            "openai_model_discovery_path" => "/models",
-            "openai_default_headers" => "{}",
-            "anthropic_enabled" => "false",
-            "anthropic_base_url" => "",
-            "anthropic_model_discovery_enabled" => "false",
-            "anthropic_model_discovery_path" => "",
-            "anthropic_default_headers" => "{}"
-          }
-        })
-
-      assert html =~ "Credential must use google_oauth auth type"
-      refute Repo.get_by(Provider, name: "google-ai-studio-test")
-    end
-
     test "creates openai codex provider with openai oauth credential", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 
@@ -488,50 +441,6 @@ defmodule Backplane.Admin.ProvidersLiveTest do
                ProviderApi.list_for_provider(provider.id)
 
       assert base_url == OpenAICodex.default_backend_base_url()
-    end
-
-    test "creates google ai studio provider with antigravity oauth credential", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/llama/providers/new")
-
-      view
-      |> element("button[phx-value-preset='google-ai-studio']")
-      |> render_click()
-
-      view
-      |> form("form[phx-submit=save]", %{
-        "provider" => %{
-          "name" => "google-ai-studio-test",
-          "credential" => "google-antigravity",
-          "base_url" => "https://generativelanguage.googleapis.com/v1beta/openai",
-          "rpm_limit" => "",
-          "default_headers" => "{}",
-          "openai_enabled" => "true",
-          "openai_base_url" => "https://generativelanguage.googleapis.com/v1beta/openai",
-          "openai_model_discovery_enabled" => "true",
-          "openai_model_discovery_path" => "/models",
-          "openai_default_headers" => "{}",
-          "anthropic_enabled" => "false",
-          "anthropic_base_url" => "",
-          "anthropic_model_discovery_enabled" => "false",
-          "anthropic_model_discovery_path" => "",
-          "anthropic_default_headers" => "{}"
-        }
-      })
-      |> render_submit()
-
-      assert_redirect(view, "/llama/providers")
-
-      provider = Repo.get_by!(Provider, name: "google-ai-studio-test")
-      assert provider.preset_key == "google-ai-studio"
-      assert provider.credential == "google-antigravity"
-
-      assert [
-               %{
-                 api_surface: :openai,
-                 base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-               }
-             ] =
-               ProviderApi.list_for_provider(provider.id)
     end
 
     test "shows a created provider", %{conn: conn} do
@@ -871,122 +780,9 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert Repo.get_by!(ProviderModel, provider_id: provider.id, model: "gpt-codex-live-test")
     end
 
-    test "provider detail loads google antigravity oauth models from local catalog", %{conn: conn} do
-      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
-      previous_catalog = Application.get_env(:backplane, :google_antigravity_model_catalog)
-
-      Application.put_env(:backplane, :llm_model_discovery_req_options,
-        plug: {Req.Test, __MODULE__}
-      )
-
-      Application.put_env(:backplane, :google_antigravity_model_catalog, [
-        "gemini-antigravity-live-test"
-      ])
-
-      on_exit(fn ->
-        if previous do
-          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
-        else
-          Application.delete_env(:backplane, :llm_model_discovery_req_options)
-        end
-
-        if previous_catalog do
-          Application.put_env(:backplane, :google_antigravity_model_catalog, previous_catalog)
-        else
-          Application.delete_env(:backplane, :google_antigravity_model_catalog)
-        end
-      end)
-
-      Req.Test.stub(__MODULE__, fn _conn ->
-        flunk("Google Antigravity OAuth discovery should not call the provider /models endpoint")
-      end)
-
-      {:ok, provider} =
-        Provider.create(%{
-          name: "google-antigravity-live",
-          preset_key: "google-ai-studio",
-          credential: "google-antigravity"
-        })
-
-      {:ok, _api} =
-        ProviderApi.create(%{
-          provider_id: provider.id,
-          api_surface: :openai,
-          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-          model_discovery_path: "/models"
-        })
-
-      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
-
-      html =
-        view
-        |> element("[phx-click='reload_models']", "Load Models from API")
-        |> render_click()
-
-      assert html =~ "gemini-antigravity-live-test"
-
-      assert Repo.get_by!(
-               ProviderModel,
-               provider_id: provider.id,
-               model: "gemini-antigravity-live-test"
-             )
-    end
-
-    test "provider detail restricts google ai studio credentials to antigravity oauth", %{
+    test "retains stored retired provider rows without rendering a migration diagnostic", %{
       conn: conn
     } do
-      {:ok, provider} =
-        Provider.create(%{
-          name: "google-ai-studio-live",
-          preset_key: "google-ai-studio",
-          credential: "google-antigravity"
-        })
-
-      {:ok, _api} =
-        ProviderApi.create(%{
-          provider_id: provider.id,
-          api_surface: :openai,
-          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-          model_discovery_path: "/models"
-        })
-
-      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
-
-      assert has_element?(
-               view,
-               "#provider-credential option[value='google-antigravity']",
-               "google-antigravity (google_oauth)"
-             )
-
-      refute has_element?(view, "#provider-credential option[value='test-cred']")
-      refute has_element?(view, "#provider-credential option[value='openai-codex']")
-
-      html =
-        render_submit(view, "save_provider", %{
-          "provider" => %{
-            "name" => "google-ai-studio-live",
-            "credential" => "test-cred",
-            "enabled" => "true",
-            "rpm_limit" => "",
-            "default_headers" => "{}",
-            "openai_enabled" => "true",
-            "openai_base_url" => "https://generativelanguage.googleapis.com/v1beta/openai",
-            "openai_model_discovery_enabled" => "true",
-            "openai_model_discovery_path" => "/models",
-            "openai_default_headers" => "{}",
-            "anthropic_enabled" => "false",
-            "anthropic_base_url" => "",
-            "anthropic_model_discovery_enabled" => "false",
-            "anthropic_model_discovery_path" => "",
-            "anthropic_default_headers" => "{}"
-          }
-        })
-
-      assert html =~ "Credential must use google_oauth auth type"
-      assert Repo.get!(Provider, provider.id).credential == "google-antigravity"
-    end
-
-    test "shows an exact legacy Google diagnostic without changing configuration", %{conn: conn} do
       {:ok, provider} =
         Provider.create(%{
           name: "google-ai-studio-legacy",
@@ -1005,13 +801,9 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
 
-      assert html =~ "Legacy Google configuration"
       assert html =~ "https://legacy.example.test/v1beta/openai"
       assert html =~ "google-antigravity"
-      assert html =~ "google_oauth"
-      assert html =~ "No automatic migration is performed."
-      assert html =~ "Google Gemini Developer API"
-      assert html =~ "Google Gemini OpenAI Compatibility"
+      refute html =~ "Legacy Google configuration"
 
       assert %Provider{preset_key: "google-ai-studio", credential: "google-antigravity"} =
                Repo.get!(Provider, provider.id)
