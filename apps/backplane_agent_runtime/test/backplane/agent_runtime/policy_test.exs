@@ -31,6 +31,29 @@ defmodule Backplane.AgentRuntime.PolicyTest do
                )
     end
 
+    test "authorizes heterogeneous descriptor revisions with per-tool revision grants" do
+      authority = %{
+        caller: "agent_1",
+        run_id: "run_1",
+        grants: ["example", "other"],
+        tool_revisions: %{"example" => 1, "other" => 2}
+      }
+
+      assert {:ok, %{status: :authorized}} =
+               Policy.authorize_tool(
+                 authority,
+                 %{tool_name: "other", tool_revision: 2},
+                 %{tool_name: "other", run_id: "run_1", arguments: %{}}
+               )
+
+      assert {:error, %Backplane.AgentRuntime.Error{class: :forbidden}} =
+               Policy.authorize_tool(
+                 authority,
+                 %{tool_name: "other", tool_revision: 3},
+                 %{tool_name: "other", run_id: "run_1", arguments: %{}}
+               )
+    end
+
     test "rejects unauthorized tools" do
       assert {:error, %Backplane.AgentRuntime.Error{}} =
                Policy.authorize_tool(

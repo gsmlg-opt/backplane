@@ -267,6 +267,211 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 
+  test "all-rejected quarantine stays text-only without retaining raw diagnostics" do
+    secret = "schema-secret-sentinel"
+
+    unsupported = %{
+      tool_name: "legacy",
+      tool_revision: 1,
+      description: secret,
+      schema: %{"type" => "object", "$schema" => "https://example.invalid/#{secret}"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, unsupported)
+
+    {pid, store} =
+      start(
+        registry: registry,
+        schema_admission: :quarantine,
+        authority: %{caller: "test", run_id: "test", grants: ["legacy"], tool_revision: 1}
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "text only")
+    assert_receive {:provider, %{tools: []} = request, provider}
+    refute inspect(request) =~ secret
+    send(provider, {:events, [done("answer")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed} = event}
+    refute inspect(event) =~ secret
+
+    assert {:ok, record} = EphemeralStore.load(store, "test")
+    refute inspect(record) =~ secret
+    refute inspect(:sys.get_state(pid)) =~ secret
+  end
+
+  test "initial admission rejects authority bound to another run" do
+    unsupported = %{
+      tool_name: "legacy",
+      tool_revision: 1,
+      schema: %{"type" => "object", "$schema" => "https://example.invalid/schema"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, unsupported)
+
+    assert {:error, %Error{class: :forbidden}} =
+             Conversation.start_link(
+               run_id: "test",
+               registry: registry,
+               schema_admission: :quarantine,
+               authority: %{
+                 caller: "test",
+                 run_id: "other",
+                 grants: ["legacy"],
+                 tool_revision: 1
+               }
+             )
+  end
+
+  test "initial admission executes tools with heterogeneous descriptor revisions" do
+    descriptors = [
+      %{
+        tool_name: "read",
+        tool_revision: 1,
+        schema: %{"type" => "object"},
+        safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+        backend: Backend,
+        backend_context: %{test: self()}
+      },
+      %{
+        tool_name: "write",
+        tool_revision: 2,
+        schema: %{"type" => "object"},
+        safety: %{read_only: false, retry_safe: false, parallel_safe: false},
+        backend: Backend,
+        backend_context: %{test: self()}
+      }
+    ]
+
+    registry =
+      Enum.reduce(descriptors, %ToolRegistry{}, fn descriptor, registry ->
+        {:ok, registry} = ToolRegistry.register(registry, descriptor)
+        registry
+      end)
+
+    {pid, _store} =
+      start(
+        registry: registry,
+        schema_admission: :strict,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["read", "write"],
+          tool_revisions: %{"read" => 1, "write" => 2}
+        }
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "write")
+    assert_receive {:provider, %{tools: tools}, provider}
+    assert Enum.map(tools, & &1.name) == ["read", "write"]
+
+    send(provider, {
+      :events,
+      [
+        %{type: :tool_call_completed, tool_call: %{id: "write-1", name: "write", arguments: %{}}},
+        done("writing")
+      ]
+    })
+
+    assert_receive {:tool, %{tool_name: "write", tool_revision: 2}, backend}
+    send(backend, {:result, {:ok, %{text: "written"}}})
+    assert_receive {:provider, _, final_provider}
+    send(final_provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "accepted quarantine tools retain argument, approval, and durability gates" do
+    valid = %{
+      tool_name: "read",
+      tool_revision: 1,
+      schema: %{
+        "type" => "object",
+        "properties" => %{"path" => %{"type" => "string"}},
+        "required" => ["path"]
+      },
+      safety: %{
+        read_only: true,
+        retry_safe: true,
+        parallel_safe: false,
+        requires_approval: true
+      },
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    unsupported = %{
+      tool_name: "legacy",
+      tool_revision: 1,
+      schema: %{"type" => "object", "$schema" => "https://example.invalid/schema"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    {:ok, first} = ToolRegistry.register(%ToolRegistry{}, valid)
+    {:ok, registry} = ToolRegistry.register(first, unsupported)
+
+    {pid, store} =
+      start(
+        registry: registry,
+        schema_admission: :quarantine,
+        authority: %{
+          caller: "test",
+          run_id: "test",
+          grants: ["read", "legacy"],
+          tool_revision: 1
+        }
+      )
+
+    assert {:ok, _} = Conversation.prompt(pid, "read")
+    assert_receive {:provider, %{tools: [%{name: "read"}]}, provider}
+
+    send(provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{id: "invalid", name: "read", arguments: %{"path" => 1}}
+        },
+        done("invalid")
+      ]
+    })
+
+    refute_receive {:tool, %{tool_name: "read"}, _}, 20
+    assert_receive {:provider, %{messages: messages}, retry_provider}
+    assert List.last(messages).result.is_error == true
+
+    send(retry_provider, {
+      :events,
+      [
+        %{
+          type: :tool_call_completed,
+          tool_call: %{id: "valid", name: "read", arguments: %{"path" => "x"}}
+        },
+        done("valid")
+      ]
+    })
+
+    assert_receive {:agent_runtime, "test",
+                    %{type: :interaction_requested, interaction_id: interaction_id}}
+
+    refute_receive {:tool, %{tool_name: "read"}, _}, 20
+    assert :ok = Conversation.resolve(pid, interaction_id, :approved)
+    assert_receive {:tool, %{tool_name: "read"}, backend}
+
+    assert {:ok, record} = EphemeralStore.load(store, "test")
+    assert Enum.any?(record.run.execution_intents, fn {_id, intent} -> intent.type == :tool end)
+
+    send(backend, {:result, {:ok, %{text: "read"}}})
+    assert_receive {:provider, _, final_provider}
+    send(final_provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
   test "incremental multi-step turn is persisted and settled once" do
     {pid, store} = start()
     assert {:ok, _} = Conversation.prompt(pid, "hello")

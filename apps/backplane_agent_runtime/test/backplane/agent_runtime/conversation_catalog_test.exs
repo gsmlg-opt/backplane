@@ -156,6 +156,73 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     assert_receive {:agent_runtime, "run", %{type: :run_completed}}
   end
 
+  test "quarantine publication keeps rejected tools out of old and new snapshots" do
+    {pid, _store, update} = start()
+
+    unsupported = %{
+      tool_name: "legacy",
+      tool_revision: 1,
+      description: "legacy tool",
+      schema: %{"type" => "object", "$schema" => "https://example.invalid/legacy"},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false},
+      backend: Backend,
+      backend_context: %{test: self()}
+    }
+
+    {:ok, revised} = ToolRegistry.register(update.catalog.registry, unsupported)
+
+    quarantine =
+      update
+      |> Map.put(:schema_admission, :quarantine)
+      |> put_in([:catalog, :registry], revised)
+      |> update_in([:catalog, :authority, :grants], &(&1 ++ ["legacy"]))
+      |> put_in([:catalog, :tools], definitions(revised))
+
+    {:ok, _} = Conversation.prompt(pid, "discover")
+    assert_receive {:provider, %{catalog_revision: 1}, provider}
+
+    send(provider, {
+      :events,
+      [call("d1", "discover"), call("l1", "legacy"), done("old batch")]
+    })
+
+    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}
+    send(discovery, {:stage, quarantine, {:ok, %{text: "found"}}})
+    assert_receive {:stage_receipt, {:ok, %{status: :staged, catalog_revision: 2}}}
+    refute_receive {:tool, %{tool_name: "legacy"}, _}, 20
+
+    assert_receive {:provider, %{catalog_revision: 2, tools: tools}, next}
+    assert Enum.map(tools, & &1.name) == ["discover", "new"]
+
+    changed_schema = %{"type" => "object", "$schema" => "https://example.invalid/changed"}
+
+    conflicting =
+      quarantine
+      |> put_in(
+        [:catalog, :registry, Access.key(:tools), "legacy", :schema],
+        changed_schema
+      )
+      |> update_in([:catalog, :tools], fn tools ->
+        Enum.map(tools, fn
+          %{name: "legacy"} = tool -> %{tool | parameters: changed_schema}
+          tool -> tool
+        end)
+      end)
+
+    assert {:error,
+            %Error{
+              class: :resource_conflict,
+              message: "publication id was already used for another catalog"
+            }} =
+             Conversation.stage_catalog(pid, conflicting)
+
+    send(next, {:events, [call("l2", "legacy"), done("hallucinated")]})
+    refute_receive {:tool, %{tool_name: "legacy"}, _}, 20
+    assert_receive {:provider, %{catalog_revision: 2}, final_provider}
+    send(final_provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "run", %{type: :run_completed}}
+  end
+
   test "a stale injected effect token cannot reconcile an existing receipt" do
     {pid, _store, update} = start()
     {:ok, _} = Conversation.prompt(pid, "discover")
@@ -248,6 +315,15 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
             |> put_in([:publication_id], "invalid-schema")
             |> put_in([:catalog, :registry, Access.key(:tools), "discover", :schema], schema)
             |> put_in([:catalog, :tools, Access.at(0), :parameters], schema)
+          end,
+          fn update ->
+            update
+            |> Map.put(:publication_id, "fatal-after-accepted")
+            |> Map.put(:schema_admission, :quarantine)
+            |> put_in(
+              [:catalog, :registry, Access.key(:tools), "new", :backend],
+              Backplane.AgentRuntime.MissingCatalogBackend
+            )
           end
         ] do
       {pid, _store, update} = start()

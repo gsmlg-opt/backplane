@@ -22,11 +22,17 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   def admit_batch(batch, opts) when is_list(opts) do
     with :ok <- validate_options(opts),
          {:ok, mode} <- admission_mode(opts),
-         {:ok, %{descriptors: descriptors, tools: supplied_tools, authority: authority}} <-
+         {:ok,
+          %{
+            descriptors: descriptors,
+            tools: supplied_tools,
+            authority: authority,
+            run_id: run_id
+          }} <-
            admission_input(batch, opts),
          :ok <- reject_duplicate_names(descriptors),
          {:ok, names} <- descriptor_names(descriptors),
-         :ok <- validate_authority(authority, names),
+         :ok <- validate_authority(authority, names, run_id),
          {:ok, entries} <- validate_descriptors(descriptors, authority, mode),
          {:ok, accepted, rejected} <- split_entries(entries),
          :ok <- validate_supplied_tools(supplied_tools, entries),
@@ -65,7 +71,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       not Keyword.keyword?(opts) ->
         {:error, validation_error("admission options must be a keyword list")}
 
-      Enum.any?(opts, fn {key, _value} -> key not in [:mode, :authority, :tools] end) ->
+      Enum.any?(opts, fn {key, _value} -> key not in [:mode, :authority, :tools, :run_id] end) ->
         {:error, validation_error("unknown admission option")}
 
       true ->
@@ -78,7 +84,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       %{
         registry: registry,
         authority: Keyword.get(opts, :authority, %{}),
-        tools: Keyword.get(opts, :tools)
+        tools: Keyword.get(opts, :tools),
+        run_id: Keyword.get(opts, :run_id)
       },
       opts
     )
@@ -86,7 +93,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp admission_input(
          %{registry: %ToolRegistry{tools: tools}, authority: authority} = batch,
-         _opts
+         opts
        )
        when is_map(tools) and is_map(authority) do
     descriptors =
@@ -94,7 +101,13 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       |> Enum.sort_by(fn {name, _descriptor} -> name end)
       |> Enum.map(&elem(&1, 1))
 
-    {:ok, %{descriptors: descriptors, tools: Map.get(batch, :tools), authority: authority}}
+    {:ok,
+     %{
+       descriptors: descriptors,
+       tools: Map.get(batch, :tools),
+       authority: authority,
+       run_id: field(batch, :run_id) || Keyword.get(opts, :run_id)
+     }}
   end
 
   defp admission_input(descriptors, opts) when is_list(descriptors) do
@@ -102,7 +115,13 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
     if is_map(authority),
       do:
-        {:ok, %{descriptors: descriptors, tools: Keyword.get(opts, :tools), authority: authority}},
+        {:ok,
+         %{
+           descriptors: descriptors,
+           tools: Keyword.get(opts, :tools),
+           authority: authority,
+           run_id: Keyword.get(opts, :run_id)
+         }},
       else: {:error, validation_error("admission authority must be a map")}
   end
 
@@ -135,16 +154,41 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp descriptor_name(_), do: {:error, validation_error("tool descriptor must be a map")}
 
-  defp validate_authority(authority, names) do
+  defp validate_authority(authority, names, run_id) do
     grants = Map.get(authority, :grants, Map.get(authority, "grants"))
 
-    if is_list(grants) and length(grants) == length(Enum.uniq(grants)) and
-         MapSet.new(grants) == MapSet.new(names),
-       do: :ok,
-       else:
-         {:error,
-          Error.new(:forbidden, "admission authority must exactly match the candidate tools")}
+    cond do
+      names == [] and is_nil(grants) ->
+        validate_authority_run(authority, run_id, names)
+
+      not is_list(grants) or length(grants) != length(Enum.uniq(grants)) or
+          MapSet.new(grants) != MapSet.new(names) ->
+        {:error,
+         Error.new(:forbidden, "admission authority must exactly match the candidate tools")}
+
+      true ->
+        validate_authority_run(authority, run_id, names)
+    end
   end
+
+  defp validate_authority_run(_authority, nil, _names), do: :ok
+
+  defp validate_authority_run(authority, run_id, names)
+       when is_binary(run_id) and run_id != "" do
+    case field(authority, :run_id) do
+      nil when names == [] ->
+        :ok
+
+      ^run_id ->
+        :ok
+
+      _ ->
+        {:error, Error.new(:forbidden, "admission authority belongs to another run")}
+    end
+  end
+
+  defp validate_authority_run(_authority, _run_id, _names),
+    do: {:error, validation_error("admission run id must be a non-empty string")}
 
   defp validate_descriptors(descriptors, authority, mode) do
     Enum.reduce_while(descriptors, {:ok, []}, fn descriptor, {:ok, acc} ->
@@ -290,7 +334,24 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp narrowed_authority(authority, accepted) do
     names = Enum.map(accepted, & &1.name)
-    {:ok, Map.put(authority, :grants, names)}
+
+    authority =
+      authority
+      |> Map.put(:grants, names)
+      |> narrow_revision_map(:tool_revisions, names)
+      |> narrow_revision_map("tool_revisions", names)
+
+    {:ok, authority}
+  end
+
+  defp narrow_revision_map(authority, key, names) do
+    case Map.fetch(authority, key) do
+      {:ok, revisions} when is_map(revisions) ->
+        Map.put(authority, key, Map.take(revisions, names))
+
+      _ ->
+        authority
+    end
   end
 
   defp validation_error(message), do: Error.new(:validation, message)
@@ -344,8 +405,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   @spec validate(term(), pos_integer(), map()) :: {:ok, map()} | {:error, Error.t()}
   def validate(update, current_revision, run)
       when is_map(update) and is_integer(current_revision) and is_map(run) do
-    with {:ok, update} <- admit_catalog_update(update),
-         :ok <- fence(update, run),
+    with :ok <- fence(update, run),
+         {:ok, update} <- admit_catalog_update(update),
          {:ok, publication_id} <- required_binary(update, :publication_id, "publication id"),
          {:ok, expected_revision} <-
            required_positive_integer(update, :expected_revision, "expected catalog revision"),
@@ -394,7 +455,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
                %{
                  registry: field(catalog, :registry),
                  authority: field(catalog, :authority),
-                 tools: field(catalog, :tools)
+                 tools: field(catalog, :tools),
+                 run_id: field(update, :run_id)
                },
                mode: mode
              ) do

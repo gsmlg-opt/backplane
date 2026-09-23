@@ -78,7 +78,12 @@ defmodule Backplane.AgentRuntime.Policy do
   end
 
   defp validate_revision(authority, descriptor, tool_name) do
-    invocation_revision = Map.get(authority, :tool_revision)
+    revisions = Map.get(authority, :tool_revisions, Map.get(authority, "tool_revisions"))
+
+    invocation_revision =
+      if is_map(revisions) and Map.has_key?(revisions, tool_name),
+        do: Map.get(revisions, tool_name),
+        else: Map.get(authority, :tool_revision, Map.get(authority, "tool_revision"))
 
     descriptor_revision =
       Map.get(descriptor, :tool_revision) || Map.get(descriptor, "tool_revision")

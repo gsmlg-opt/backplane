@@ -95,7 +95,8 @@ reservation, durable intent publication, or backend dispatch.
 - The package now has a production dependency on `jsonschex` and
   `ex_json_pointer`, with `decimal` for arbitrary-precision numeric
   assertions; it is no longer a dependency-free artifact.
-# Batch admission and quarantine
+
+## Batch admission and quarantine
 
 `Backplane.AgentRuntime.ToolCatalog.admit_batch/2` is the public batch boundary.
 It is strict by default; pass `mode: :quarantine` explicitly to omit only tools
@@ -106,10 +107,20 @@ authority, duplicate-name, and unresolved-reference errors remain fatal.
 The result is one executable bundle: `registry`, provider `tools`, narrowed
 `authority`, `accepted` names, and ordered `rejected` diagnostics containing the
 tool name, descriptor revision, and original structured error. Grants are only
-removed for rejected tools; caller/run and other authority fields are retained.
+removed for rejected tools; a `tool_revisions` map is narrowed to the same
+accepted set while caller/run and other authority fields are retained. A legacy
+single `tool_revision` remains supported. Pass `run_id: expected_run_id` when a
+direct admission must prove the authority belongs to a particular run; initial
+Conversation and dynamic publication paths bind this automatically.
 An empty input or an all-rejected quarantine batch returns an empty registry,
 provider list, and grants. Rejected diagnostics are trusted-host data and must
 not be serialized into model requests, subscriber events, or checkpoints.
+
+Draft 2020-12 local `$defs`/`$ref` schemas are supported by the current runtime
+and therefore are not quarantined merely for using references. Unsupported
+dialects, required vocabularies, keywords, or non-object tool roots are current
+examples of quarantine-eligible capability errors. Invalid or unresolved
+references remain fatal validation errors.
 
 Use `schema_admission: :strict | :quarantine` when starting a Conversation or
 on a dynamic catalog update; both paths consume the same admitted bundle.

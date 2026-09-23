@@ -60,25 +60,236 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
     assert parameters == valid.schema
   end
 
+  test "quarantine scans complete schemas and preserves accepted schemas verbatim" do
+    unsupported_schemas = [
+      %{
+        "type" => "object",
+        "properties" => %{"optional" => %{"$schema" => "https://example.invalid/optional"}}
+      },
+      %{
+        "type" => "object",
+        "properties" => %{
+          "nested" => %{
+            "type" => "object",
+            "properties" => %{"value" => %{"$schema" => "https://example.invalid/nested"}}
+          }
+        }
+      },
+      %{
+        "type" => "object",
+        "properties" => %{
+          "items" => %{
+            "type" => "array",
+            "items" => %{"$schema" => "https://example.invalid/items"}
+          }
+        }
+      },
+      %{
+        "type" => "object",
+        "oneOf" => [
+          %{"properties" => %{"kind" => %{"const" => "used"}}},
+          %{"properties" => %{"unused" => %{"$schema" => "https://example.invalid/branch"}}}
+        ]
+      }
+    ]
+
+    for schema <- unsupported_schemas do
+      candidate = descriptor("candidate", 1, schema)
+
+      assert {:ok, %{accepted: [], rejected: [%{error: %Error{class: :unsupported_capability}}]}} =
+               ToolCatalog.admit_batch([candidate],
+                 mode: :quarantine,
+                 authority: authority(["candidate"])
+               )
+    end
+
+    schema = %{
+      "$schema" => "https://json-schema.org/draft/2020-12/schema",
+      "type" => "object",
+      "properties" => %{
+        "kind" => %{"type" => "string", "enum" => ["read"], "default" => "read"},
+        "value" => %{"oneOf" => [%{"type" => "string"}, %{"type" => "integer"}]}
+      },
+      "description" => "annotations remain intact"
+    }
+
+    candidate = descriptor("read", 1, schema)
+
+    assert {:ok, bundle} =
+             ToolCatalog.admit_batch([candidate], authority: authority(["read"]))
+
+    assert bundle.registry.tools["read"].schema == schema
+    assert [%{parameters: ^schema}] = bundle.tools
+  end
+
   test "admission options reject unknown keys" do
     assert {:error, %Error{class: :validation, message: "unknown admission option"}} =
              ToolCatalog.admit_batch([], mode: :strict, unexpected: true)
   end
 
-  test "strict batch admission rejects unsupported schema and duplicate names before filtering" do
+  test "strict admission and legacy catalog validation reject unsupported schemas" do
     unsupported =
-      descriptor("legacy", 1, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
+      descriptor("read", 1, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
 
     assert {:error, %Error{class: :unsupported_capability}} =
              ToolCatalog.admit_batch([unsupported],
-               authority: %{caller: "host", run_id: "run", grants: ["legacy"], tool_revision: 1}
+               authority: %{caller: "host", run_id: "run", grants: ["read"], tool_revision: 1}
+             )
+
+    {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, unsupported)
+
+    assert {:error, %Error{class: :unsupported_capability}} =
+             ToolCatalog.validate(update(registry, 1, 2), 1, run())
+  end
+
+  test "duplicate names fail before filtering and single registration still overwrites" do
+    valid = descriptor("same", 1, %{"type" => "object"})
+
+    unsupported =
+      descriptor("same", 2, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
+
+    for descriptors <- [[valid, unsupported], [unsupported, valid]] do
+      assert {:error,
+              %Error{class: :validation, message: "admission batch contains duplicate tool names"}} =
+               ToolCatalog.admit_batch(descriptors,
+                 mode: :quarantine,
+                 authority: authority(["same"])
+               )
+    end
+
+    assert {:ok, first} = ToolRegistry.register(%ToolRegistry{}, valid)
+    assert {:ok, overwritten} = ToolRegistry.register(first, unsupported)
+    assert overwritten.tools["same"].tool_revision == 2
+    assert overwritten.tools["same"].schema == unsupported.schema
+  end
+
+  test "quarantine never masks independent descriptor, backend, schema, or authority errors" do
+    valid = descriptor("candidate", 1, %{"type" => "object"})
+
+    unsupported =
+      descriptor("candidate", 1, %{
+        "type" => "object",
+        "$schema" => "https://example.invalid/schema"
+      })
+
+    missing_backend = Map.put(valid, :backend, Backplane.AgentRuntime.MissingCatalogBackend)
+
+    unsupported_missing_backend =
+      Map.put(unsupported, :backend, Backplane.AgentRuntime.MissingCatalogBackend)
+
+    malformed_metadata = put_in(unsupported, [:safety, :read_only], :yes)
+    invalid_schema = Map.put(valid, :schema, %{"type" => "object", "required" => "path"})
+
+    assert {:error,
+            %Error{
+              class: :unsupported_capability,
+              message: "registered tool backend is unavailable"
+            }} =
+             ToolCatalog.admit_batch([missing_backend],
+               mode: :quarantine,
+               authority: authority(["candidate"])
              )
 
     assert {:error,
-            %Error{class: :validation, message: "admission batch contains duplicate tool names"}} =
-             ToolCatalog.admit_batch([unsupported, unsupported],
+            %Error{
+              class: :unsupported_capability,
+              message: "registered tool backend is unavailable"
+            }} =
+             ToolCatalog.admit_batch([unsupported_missing_backend],
                mode: :quarantine,
-               authority: %{caller: "host", run_id: "run", grants: ["legacy"], tool_revision: 1}
+               authority: authority(["candidate"])
+             )
+
+    assert {:error, %Error{class: :validation}} =
+             ToolCatalog.admit_batch([malformed_metadata],
+               mode: :quarantine,
+               authority: authority(["candidate"])
+             )
+
+    assert {:error, %Error{class: :validation}} =
+             ToolCatalog.admit_batch([invalid_schema],
+               mode: :quarantine,
+               authority: authority(["candidate"])
+             )
+
+    assert {:error, %Error{class: :forbidden}} =
+             ToolCatalog.admit_batch([unsupported],
+               mode: :quarantine,
+               authority: authority([])
+             )
+
+    assert {:error, %Error{class: :forbidden}} =
+             ToolCatalog.admit_batch([unsupported],
+               mode: :quarantine,
+               authority: %{authority(["candidate"]) | caller: ""}
+             )
+
+    assert {:error, %Error{class: :forbidden}} =
+             ToolCatalog.admit_batch([unsupported],
+               mode: :quarantine,
+               authority: %{authority(["candidate"]) | tool_revision: 2}
+             )
+  end
+
+  test "empty and all-rejected batches stay empty and repaired revisions can return" do
+    assert {:ok, %{accepted: [], tools: [], rejected: [], authority: %{grants: []}}} =
+             ToolCatalog.admit_batch([])
+
+    unsupported =
+      descriptor("legacy", 1, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
+
+    assert {:ok, %{accepted: [], tools: [], authority: %{grants: []}} = quarantined} =
+             ToolCatalog.admit_batch([unsupported],
+               mode: :quarantine,
+               authority: authority(["legacy"])
+             )
+
+    assert [%{name: "legacy", descriptor_revision: 1}] = quarantined.rejected
+
+    repaired = descriptor("legacy", 2, %{"type" => "object"})
+    repaired_authority = %{authority(["legacy"]) | tool_revision: 2}
+
+    assert {:ok, %{accepted: ["legacy"], rejected: []}} =
+             ToolCatalog.admit_batch([repaired],
+               mode: :quarantine,
+               authority: repaired_authority
+             )
+  end
+
+  test "per-tool revision authority remains executable and is narrowed with the bundle" do
+    read = descriptor("read", 1, %{"type" => "object"})
+    write = descriptor("write", 2, %{"type" => "object"})
+
+    unsupported =
+      descriptor("legacy", 3, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
+
+    authority = %{
+      caller: "host",
+      run_id: "run",
+      grants: ["read", "write", "legacy"],
+      tool_revisions: %{"read" => 1, "write" => 2, "legacy" => 3}
+    }
+
+    assert {:ok, bundle} =
+             ToolCatalog.admit_batch([read, write, unsupported],
+               mode: :quarantine,
+               authority: authority
+             )
+
+    assert bundle.accepted == ["read", "write"]
+    assert bundle.authority.grants == ["read", "write"]
+    assert bundle.authority.tool_revisions == %{"read" => 1, "write" => 2}
+  end
+
+  test "an expected run id rejects mismatched authority before schema quarantine" do
+    unsupported =
+      descriptor("legacy", 1, %{"type" => "object", "$schema" => "https://example.invalid/schema"})
+
+    assert {:error, %Error{class: :forbidden}} =
+             ToolCatalog.admit_batch([unsupported],
+               mode: :quarantine,
+               run_id: "expected-run",
+               authority: authority(["legacy"])
              )
   end
 
@@ -296,6 +507,15 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
                run_id: "run",
                incarnation: 1
              })
+
+    malformed =
+      candidate
+      |> Map.put(:schema_admission, :quarantine)
+      |> Map.put(:run_id, "other")
+      |> put_in([:catalog, :registry, Access.key(:tools), "read", :safety], %{})
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             ToolCatalog.validate(malformed, 1, %{run_id: "run", incarnation: 1})
   end
 
   defp update(registry, expected, revision) do
@@ -337,6 +557,9 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
   end
 
   defp run, do: %{run_id: "run", incarnation: 1}
+
+  defp authority(grants),
+    do: %{caller: "host", run_id: "run", grants: grants, tool_revision: 1}
 
   defp descriptor(name, revision, schema) do
     %{

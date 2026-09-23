@@ -6,8 +6,11 @@
   ToolCatalog/Conversation boundary. Quarantine only removes direct
   `:unsupported_capability` schema results and returns accepted/rejected bundle
   diagnostics without changing execution-time argument validation.
-- Declare the optional `jsonschex` precision dependency so the standalone
+- Declare `decimal` explicitly so the standalone
   package runs the complete Draft 2020-12 numeric conformance suite.
+- Bind admission authority to the expected run, support executable per-tool
+  revision grants, keep empty catalogs valid, and avoid retaining raw rejection
+  bundles in Conversation options.
 
 ## 1.8.3
 

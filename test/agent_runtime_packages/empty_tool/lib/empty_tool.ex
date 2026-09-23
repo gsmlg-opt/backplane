@@ -25,6 +25,15 @@ defmodule EmptyTool do
       backend_context: %{}
     }
 
+    second = %{
+      tool_name: "write",
+      tool_revision: 2,
+      schema: %{"type" => "object"},
+      safety: %{read_only: false, retry_safe: false, parallel_safe: false},
+      backend: EmptyToolBackend,
+      backend_context: %{}
+    }
+
     rejected = %{
       tool_name: "legacy",
       tool_revision: 2,
@@ -35,23 +44,25 @@ defmodule EmptyTool do
     }
 
     {:ok, bundle} =
-      ToolCatalog.admit_batch([valid, rejected],
+      ToolCatalog.admit_batch([valid, second, rejected],
         mode: :quarantine,
+        run_id: "fixture",
         authority: %{
           caller: "fixture",
           run_id: "fixture",
-          grants: ["read", "legacy"],
-          tool_revisions: %{"read" => 1, "legacy" => 2}
+          grants: ["read", "write", "legacy"],
+          tool_revisions: %{"read" => 1, "write" => 2, "legacy" => 2}
         }
       )
 
-    ["read"] = bundle.accepted
+    ["read", "write"] = bundle.accepted
+    %{"read" => 1, "write" => 2} = bundle.authority.tool_revisions
 
     [%{name: "legacy", descriptor_revision: 2, error: %Error{class: :unsupported_capability}}] =
       bundle.rejected
 
     {:ok, %{accepted: [], tools: [], authority: %{grants: []}}} =
-      ToolCatalog.admit_batch([], authority: %{grants: []})
+      ToolCatalog.admit_batch([])
 
     {:error, %Error{class: :unsupported_capability}} =
       Tools.memory_search(tools, %{memory_scope: "task"}, %{scope: "task"})

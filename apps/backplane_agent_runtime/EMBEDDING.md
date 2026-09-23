@@ -105,7 +105,8 @@ boundary. For example:
 ```elixir
 {:ok, bundle} = Backplane.AgentRuntime.ToolCatalog.admit_batch(
   %{registry: registry, authority: authority, tools: provider_tools},
-  mode: :quarantine
+  mode: :quarantine,
+  run_id: run_id
 )
 ```
 
@@ -118,6 +119,11 @@ available as `schema_admission: :quarantine` for initial Conversation options
 and dynamic catalog updates. Sigma adapters may map deterministic admission
 errors to their own non-retryable migration guidance; this package does not
 change Sigma error classes.
+
+For catalogs whose descriptors have different revisions, authority may carry
+`tool_revisions: %{tool_name => revision}`. Admission and execution use the
+per-tool value when present and retain the legacy single `tool_revision`
+fallback. Rejected entries are removed from both `grants` and `tool_revisions`.
 
 Each provider request includes `catalog_revision` and canonical provider tool
 definitions shaped as `%{name: binary, description: binary, parameters: map}`.

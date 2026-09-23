@@ -54,7 +54,12 @@ defmodule Backplane.AgentRuntime.Conversation do
         authority = Keyword.get(opts, :authority, %{})
 
         case ToolCatalog.admit_batch(
-               %{registry: registry, authority: authority, tools: Keyword.get(opts, :tools)},
+               %{
+                 registry: registry,
+                 authority: authority,
+                 tools: Keyword.get(opts, :tools),
+                 run_id: Keyword.get(opts, :run_id)
+               },
                mode: mode
              ) do
           {:ok, bundle} ->
@@ -62,8 +67,7 @@ defmodule Backplane.AgentRuntime.Conversation do
              opts
              |> Keyword.put(:registry, bundle.registry)
              |> Keyword.put(:tools, bundle.tools)
-             |> Keyword.put(:authority, bundle.authority)
-             |> Keyword.put(:admission, bundle)}
+             |> Keyword.put(:authority, bundle.authority)}
 
           {:error, %Error{} = error} ->
             {:error, error}
