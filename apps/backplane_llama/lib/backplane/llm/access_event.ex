@@ -96,7 +96,13 @@ defmodule Backplane.LLM.AccessEvent do
       :openai_responses ->
         %{state | usage_acc: new_usage_accumulator(:openai_responses_body)}
 
-      protocol when protocol in [:openai_json_body, :anthropic_json_body] ->
+      protocol
+      when protocol in [
+             :openai_json_body,
+             :anthropic_json_body,
+             :google_generate_content_body,
+             :google_count_tokens_body
+           ] ->
         %{state | usage_acc: new_usage_accumulator(protocol)}
 
       nil ->
@@ -123,7 +129,7 @@ defmodule Backplane.LLM.AccessEvent do
   @doc "Finalizes a terminal proxy outcome and emits observability events."
   @spec finalize(t(), Plug.Conn.t(), atom(), keyword()) :: :ok
   def finalize(%__MODULE__{} = state, %Plug.Conn{} = conn, outcome, opts \\ []) do
-    usage = stream_usage(state, conn, opts)
+    usage = stream_usage(state, conn, outcome, opts)
     {outcome, opts} = protocol_outcome(outcome, opts, usage)
     record = build_record(state, conn, outcome, opts, usage)
     measurements = build_measurements(state, usage)
@@ -262,9 +268,9 @@ defmodule Backplane.LLM.AccessEvent do
     |> maybe_put(:stream_chunks, usage.stream_chunks)
   end
 
-  defp stream_usage(%__MODULE__{usage_acc: acc, stream?: stream?}, conn, _opts)
+  defp stream_usage(%__MODULE__{usage_acc: acc, stream?: stream?}, conn, outcome, _opts)
        when is_pid(acc) do
-    usage = UsageAccumulator.snapshot(acc, conn.status || 0)
+    usage = UsageAccumulator.snapshot(acc, conn.status || 0, transport_reason(outcome))
 
     if stream? do
       usage
@@ -273,7 +279,7 @@ defmodule Backplane.LLM.AccessEvent do
     end
   end
 
-  defp stream_usage(_state, _conn, opts) do
+  defp stream_usage(_state, _conn, _outcome, opts) do
     {input, output} = Keyword.get(opts, :tokens, {nil, nil})
 
     %{
@@ -307,6 +313,9 @@ defmodule Backplane.LLM.AccessEvent do
 
   defp accumulator_protocol(%__MODULE__{operation: "compact"}), do: :compact
 
+  defp accumulator_protocol(%__MODULE__{api_surface: "google_generate_content"}),
+    do: :google_generate_content
+
   defp accumulator_protocol(%__MODULE__{path: path})
        when is_binary(path) and path != "/v1/responses" do
     if String.ends_with?(path, "/responses/compact"), do: :compact, else: :legacy
@@ -318,10 +327,23 @@ defmodule Backplane.LLM.AccessEvent do
 
   defp response_accumulator_protocol(state) do
     cond do
-      shared_responses?(state) -> :openai_responses
-      state.api_surface in ["openai_chat_completions", "openai"] -> :openai_json_body
-      state.api_surface == "anthropic_messages" -> :anthropic_json_body
-      true -> nil
+      shared_responses?(state) ->
+        :openai_responses
+
+      state.api_surface == "google_generate_content" and state.operation == "count_tokens" ->
+        :google_count_tokens_body
+
+      state.api_surface == "google_generate_content" ->
+        :google_generate_content_body
+
+      state.api_surface in ["openai_chat_completions", "openai"] ->
+        :openai_json_body
+
+      state.api_surface == "anthropic_messages" ->
+        :anthropic_json_body
+
+      true ->
+        nil
     end
   end
 
@@ -352,6 +374,10 @@ defmodule Backplane.LLM.AccessEvent do
   end
 
   defp protocol_outcome(outcome, opts, _usage), do: {outcome, opts}
+
+  defp transport_reason(:cancelled), do: :cancelled
+  defp transport_reason(:error), do: :error
+  defp transport_reason(_outcome), do: :eof
 
   defp observation_error_code(usage, outcome, opts, status) do
     fallback = error_code(outcome, opts, status)

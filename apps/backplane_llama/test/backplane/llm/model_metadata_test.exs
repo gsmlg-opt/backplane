@@ -122,6 +122,24 @@ defmodule Backplane.LLM.ModelMetadataTest do
     refute Map.has_key?(metadata, "input_modalities")
   end
 
+  test "Google Gemini Developer metadata preserves advertised methods and provenance" do
+    metadata =
+      ModelMetadata.normalize("google-gemini-developer", %{
+        "name" => "models/gemini-2.5-pro",
+        "displayName" => "Gemini 2.5 Pro",
+        "inputTokenLimit" => 1_048_576,
+        "outputTokenLimit" => 65_536,
+        "supportedGenerationMethods" => ["generateContent", "countTokens"],
+        "provenance" => "google_models_api"
+      })
+
+    assert metadata["context_window"] == 1_048_576
+    assert metadata["max_output_tokens"] == 65_536
+    assert metadata["display_name"] == "Gemini 2.5 Pro"
+    assert metadata["raw"]["supportedGenerationMethods"] == ["generateContent", "countTokens"]
+    refute Map.has_key?(metadata, "supports_tool_calling")
+  end
+
   test "explicit canonical metadata including false overrides provider mappings" do
     raw = %{
       "max_model_len" => 32768,

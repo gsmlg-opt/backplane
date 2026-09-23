@@ -34,6 +34,7 @@ defmodule Backplane.Api.Endpoint do
     plug(DuskmoonBundler.DevServer, profile: :backplane_api, root: "apps/backplane_api/assets/js")
   end
 
+  plug(Backplane.LLM.Google.RequestAuthPlug)
   plug(Plug.RequestId)
   plug(Backplane.Observability.ContextPlug)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])

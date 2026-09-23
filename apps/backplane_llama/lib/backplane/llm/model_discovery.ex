@@ -15,6 +15,8 @@ defmodule Backplane.LLM.ModelDiscovery do
   }
 
   alias Backplane.Repo
+  alias Backplane.LLM.Google.RequestTarget
+  alias Backplane.Settings.Credential
   alias Backplane.Settings.Credentials
 
   defmodule ModelDetail do
@@ -45,6 +47,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   @discovery_stale_key "backplane_discovery_stale"
   @default_openai_codex_client_version "0.0.0"
   @request_timeout_ms 30_000
+  @max_google_pages 1_000
 
   @type discovery_result :: %{
           discovered: non_neg_integer(),
@@ -73,8 +76,10 @@ defmodule Backplane.LLM.ModelDiscovery do
   @doc "Reload models for one provider API surface."
   @spec reload_api(Provider.t(), ProviderApi.t()) :: discovery_result()
   def reload_api(%Provider{} = provider, %ProviderApi{} = api) do
-    with {:ok, model_details} <- discover_model_details(provider, api) do
-      persist_models(provider, api, model_details)
+    with {:ok, provider, api, generation} <- discovery_generation(provider.id, api.id),
+         {:ok, model_details} <- discover_model_details(provider, api),
+         :ok <- ensure_discovery_generation(generation) do
+      persist_models(provider, api, model_details, generation)
     else
       {:error, reason} ->
         add_error(empty_result(), "#{api.api_surface}: #{format_error(reason)}")
@@ -114,6 +119,12 @@ defmodule Backplane.LLM.ModelDiscovery do
       google_antigravity_oauth_api?(provider, api) ->
         details = Enum.map(google_antigravity_models(), &%ModelDetail{id: &1, metadata: %{}})
         {:ok, details}
+
+      api.api_surface == :google ->
+        with {:ok, headers} <- discovery_headers(provider, api),
+             {:ok, details} <- get_google_model_pages(api, headers) do
+          {:ok, details}
+        end
 
       true ->
         with {:ok, headers} <- discovery_headers(provider, api),
@@ -308,7 +319,11 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp generic_discovery_headers(provider, api) do
     with {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api.api_surface) do
-      headers = put_default_headers(auth_headers, default_header_pairs(api.default_headers))
+      headers =
+        auth_headers
+        |> Enum.reject(fn {_name, value} -> is_nil(value) end)
+        |> put_default_headers(default_header_pairs(api.default_headers))
+
       {:ok, put_header_new(headers, "content-type", "application/json")}
     end
   end
@@ -349,6 +364,108 @@ defmodule Backplane.LLM.ModelDiscovery do
     end
   end
 
+  defp get_google_model_pages(api, headers) do
+    do_get_google_model_pages(api, headers, nil, MapSet.new(), [], 0)
+  end
+
+  defp do_get_google_model_pages(_api, _headers, _token, _seen, _details, @max_google_pages),
+    do: {:error, :too_many_model_pages}
+
+  defp do_get_google_model_pages(api, headers, token, seen, details, page_count) do
+    url = google_page_url(discovery_url(api), token)
+
+    case Req.get(url, google_req_options(url, headers)) do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        with {:ok, page_details} <- parse_google_model_details(body, api),
+             {:ok, next_token} <- google_next_page_token(body, seen) do
+          details = details ++ page_details
+
+          case next_token do
+            nil ->
+              if details == [],
+                do: {:error, :empty_model_list},
+                else: {:ok, Enum.uniq_by(details, & &1.id)}
+
+            token ->
+              do_get_google_model_pages(
+                api,
+                headers,
+                token,
+                MapSet.put(seen, token),
+                details,
+                page_count + 1
+              )
+          end
+        end
+
+      {:ok, %{status: status}} ->
+        {:error, "HTTP #{status}"}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _response ->
+        {:error, :invalid_model_list}
+    end
+  end
+
+  defp google_page_url(url, nil), do: url
+
+  defp google_page_url(url, token) do
+    uri = URI.parse(url)
+    query = uri.query |> then(&URI.decode_query(&1 || "")) |> Map.put("pageToken", token)
+    %{uri | query: URI.encode_query(query)} |> URI.to_string()
+  end
+
+  defp parse_google_model_details(%{"models" => models}, api) when is_list(models) do
+    details_from(models, &google_model_detail(&1, api))
+    |> case do
+      {:error, :empty_model_list} when models == [] -> {:ok, []}
+      result -> result
+    end
+  end
+
+  defp parse_google_model_details(_body, _api), do: {:error, :invalid_model_list}
+
+  defp google_model_detail(%{"name" => name} = model, api) when is_binary(name) do
+    case name do
+      "models/" <> id ->
+        if RequestTarget.valid_model?(id) do
+          metadata =
+            model
+            |> normalize_metadata()
+            |> Map.put("provenance", "google_models_api")
+            |> Map.put("api_version", "v1beta")
+            |> Map.put("provider_api_id", api.id)
+
+          %ModelDetail{id: id, metadata: metadata}
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp google_model_detail(_model, _api), do: nil
+
+  defp google_next_page_token(body, seen) do
+    case body["nextPageToken"] do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      token when is_binary(token) ->
+        if MapSet.member?(seen, token),
+          do: {:error, :repeated_page_token},
+          else: {:ok, token}
+
+      _ ->
+        {:error, :invalid_page_token}
+    end
+  end
+
   defp req_options(url, headers) do
     [
       headers: headers,
@@ -356,6 +473,13 @@ defmodule Backplane.LLM.ModelDiscovery do
     ]
     |> Keyword.merge(default_req_options(url))
     |> Keyword.merge(Application.get_env(:backplane, :llm_model_discovery_req_options, []))
+  end
+
+  defp google_req_options(url, headers) do
+    url
+    |> req_options(headers)
+    |> Keyword.put(:redirect, false)
+    |> Keyword.put(:retry, false)
   end
 
   defp default_req_options(url) do
@@ -468,6 +592,7 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp default_discovery_path(:openai), do: "/models"
   defp default_discovery_path(:anthropic), do: "/v1/models"
+  defp default_discovery_path(:google), do: "/models"
 
   defp parse_model_details(%{"data" => models}) when is_list(models),
     do: if(models == [], do: {:error, :empty_model_list}, else: parse_model_details(models))
@@ -544,22 +669,81 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp normalize_metadata(model) when is_map(model),
     do: Map.new(model, fn {key, value} -> {to_string(key), value} end)
 
-  defp persist_models(provider, api, model_details) do
-    Enum.reduce(model_details, empty_result(), fn %ModelDetail{} = detail, result ->
-      case persist_model_surface(provider, api, detail) do
-        {:created, _model, _surface} ->
-          %{result | discovered: result.discovered + 1, created: result.created + 1}
+  defp persist_models(provider, api, model_details, generation) do
+    Repo.transaction(fn ->
+      lock_discovery_rows(provider, api)
 
-        {:updated, _model, _surface} ->
-          %{result | discovered: result.discovered + 1, updated: result.updated + 1}
+      with :ok <- ensure_discovery_generation(generation) do
+        result = do_persist_models(provider, api, model_details)
 
-        {:error, reason} ->
-          add_error(result, "#{detail.id}: #{format_error(reason)}")
+        case result do
+          %{errors: []} -> result
+          result -> Repo.rollback({:persistence_failed, result})
+        end
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
-    |> maybe_prune_stale_models(provider, api, model_details)
+    |> case do
+      {:ok, result} ->
+        result
+
+      {:error, {:persistence_failed, result}} ->
+        %{result | discovered: 0, created: 0, updated: 0}
+
+      {:error, reason} ->
+        add_error(empty_result(), format_error(reason))
+    end
+  end
+
+  defp do_persist_models(provider, api, model_details) do
+    model_details
+    |> Enum.reduce_while(empty_result(), fn %ModelDetail{} = detail, result ->
+      case persist_model_surface(provider, api, detail) do
+        {:created, _model, _surface} ->
+          {:cont, %{result | discovered: result.discovered + 1, created: result.created + 1}}
+
+        {:updated, _model, _surface} ->
+          {:cont, %{result | discovered: result.discovered + 1, updated: result.updated + 1}}
+
+        {:error, reason} ->
+          {:halt, add_error(result, "#{detail.id}: #{format_error(reason)}")}
+      end
+    end)
+    |> maybe_finish_persistence(provider, api, model_details)
+  end
+
+  defp lock_discovery_rows(provider, api) do
+    Provider |> where([row], row.id == ^provider.id) |> lock("FOR UPDATE") |> Repo.one()
+    ProviderApi |> where([row], row.id == ^api.id) |> lock("FOR UPDATE") |> Repo.one()
+
+    Credential
+    |> where([row], row.name == ^provider.credential)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+
+    model_ids =
+      ProviderModel
+      |> where([model], model.provider_id == ^provider.id)
+      |> lock("FOR UPDATE")
+      |> select([model], model.id)
+      |> Repo.all()
+
+    ProviderModelSurface
+    |> where([surface], surface.provider_model_id in ^model_ids)
+    |> lock("FOR UPDATE")
+    |> Repo.all()
+
+    :ok
+  end
+
+  defp maybe_finish_persistence(%{errors: []} = result, provider, api, details) do
+    result
+    |> maybe_prune_stale_models(provider, api, details)
     |> maybe_record_discovered_at(api)
   end
+
+  defp maybe_finish_persistence(result, _provider, _api, _details), do: result
 
   defp persist_model_surface(provider, api, detail) do
     Repo.transaction(fn ->
@@ -574,23 +758,19 @@ defmodule Backplane.LLM.ModelDiscovery do
     end
   end
 
-  defp maybe_prune_stale_models(%{errors: []} = result, provider, api, model_ids) do
+  defp maybe_prune_stale_models(result, provider, api, model_ids) do
     remove_stale_model_surfaces(provider, api, model_ids)
     disable_orphan_discovered_models(provider)
 
     result
   end
 
-  defp maybe_prune_stale_models(result, _provider, _api, _model_ids), do: result
-
-  defp maybe_record_discovered_at(%{errors: []} = result, api) do
+  defp maybe_record_discovered_at(result, api) do
     case ProviderApi.update(api, %{last_discovered_at: DateTime.utc_now()}) do
       {:ok, _api} -> result
       {:error, reason} -> add_error(result, "last_discovered_at: #{format_error(reason)}")
     end
   end
-
-  defp maybe_record_discovered_at(result, _api), do: result
 
   defp remove_stale_model_surfaces(provider, api, [] = _model_ids) do
     ProviderModelSurface
@@ -635,7 +815,7 @@ defmodule Backplane.LLM.ModelDiscovery do
              model: detail.id,
              source: :discovered,
              enabled: true,
-             display_name: detail.id,
+             display_name: detail.metadata["displayName"] || detail.id,
              metadata: metadata
            }),
          {:ok, surface} <- create_or_refresh_surface(model, api, metadata) do
@@ -715,6 +895,74 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp revive_discovered_model?(%ProviderModel{} = model) do
     model.source == :discovered and model.enabled == false and
       (model.surfaces == [] or (model.metadata || %{})[@discovery_stale_key] == true)
+  end
+
+  defp discovery_generation(provider_id, api_id) do
+    provider = Provider.get(provider_id)
+    api = ProviderApi.get(api_id)
+
+    cond do
+      is_nil(provider) or is_nil(api) or api.provider_id != provider_id ->
+        {:error, :discovery_configuration_changed}
+
+      not provider.enabled or not is_nil(provider.deleted_at) or not api.enabled or
+          not api.model_discovery_enabled ->
+        {:error, :discovery_disabled}
+
+      true ->
+        generation = %{
+          provider_id: provider.id,
+          provider_updated_at: provider.updated_at,
+          credential: provider.credential,
+          credential_updated_at: credential_updated_at(provider.credential),
+          api_id: api.id,
+          api_updated_at: api.updated_at,
+          api_surface: api.api_surface,
+          base_url: api.base_url,
+          discovery_path: api.model_discovery_path,
+          models: model_generation(provider.id),
+          surfaces: surface_generation(provider.id)
+        }
+
+        {:ok, provider, api, generation}
+    end
+  end
+
+  defp ensure_discovery_generation(generation) do
+    case discovery_generation(generation.provider_id, generation.api_id) do
+      {:ok, _provider, _api, ^generation} -> :ok
+      _ -> {:error, :discovery_configuration_changed}
+    end
+  end
+
+  defp credential_updated_at(name) do
+    Credentials.list()
+    |> Enum.find(&(&1.name == name))
+    |> case do
+      nil -> nil
+      credential -> credential.updated_at
+    end
+  end
+
+  defp model_generation(provider_id) do
+    ProviderModel
+    |> where([model], model.provider_id == ^provider_id)
+    |> order_by([model], model.id)
+    |> select([model], {model.id, model.updated_at, model.enabled, model.source})
+    |> Repo.all()
+  end
+
+  defp surface_generation(provider_id) do
+    ProviderModelSurface
+    |> join(:inner, [surface], model in ProviderModel, on: surface.provider_model_id == model.id)
+    |> where([_surface, model], model.provider_id == ^provider_id)
+    |> order_by([surface, _model], surface.id)
+    |> select(
+      [surface, _model],
+      {surface.id, surface.provider_model_id, surface.provider_api_id, surface.updated_at,
+       surface.enabled}
+    )
+    |> Repo.all()
   end
 
   defp put_codex_client_version(url) do

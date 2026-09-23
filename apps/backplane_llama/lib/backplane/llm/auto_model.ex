@@ -95,7 +95,7 @@ defmodule Backplane.LLM.AutoModel do
   @doc "List distinct enabled provider model ids that can be selected as auto-model targets."
   @spec list_available_target_model_ids() :: [String.t()]
   def list_available_target_model_ids do
-    [:openai, :anthropic]
+    [:openai, :anthropic, :google]
     |> Enum.flat_map(&ProviderModelSurface.list_enabled/1)
     |> Enum.map(fn surface ->
       "#{surface.provider_model.provider.name}/#{surface.provider_model.model}"
@@ -106,7 +106,8 @@ defmodule Backplane.LLM.AutoModel do
 
   @doc "List currently available provider model surfaces for model ids on an API surface."
   @spec available_surfaces_for(atom(), [String.t()]) :: [ProviderModelSurface.t()]
-  def available_surfaces_for(api_surface, model_ids) when api_surface in [:openai, :anthropic] do
+  def available_surfaces_for(api_surface, model_ids)
+      when api_surface in [:openai, :anthropic, :google] do
     enabled_surfaces_for(api_surface, model_ids)
   end
 

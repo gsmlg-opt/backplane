@@ -19,8 +19,7 @@ defmodule Backplane.LLM.ProtocolRouteTest do
       native_protocols: [:openai_responses]
     }
 
-    assert {:error,
-            {:unsupported_translation, :openai_chat_completions, [:openai_responses]}} =
+    assert {:error, {:unsupported_translation, :openai_chat_completions, [:openai_responses]}} =
              ProtocolRoute.select(:openai_chat_completions, api)
   end
 
@@ -28,5 +27,14 @@ defmodule Backplane.LLM.ProtocolRouteTest do
     assert ProtocolRoute.client_protocol("/v1/responses") == :openai_responses
     assert ProtocolRoute.client_protocol("/v1/chat/completions") == :openai_chat_completions
     assert ProtocolRoute.client_protocol("/v1/messages") == :anthropic_messages
+  end
+
+  test "selects the native Google GenerateContent protocol" do
+    api = %ProviderApi{
+      api_surface: :google,
+      native_protocols: [:google_generate_content]
+    }
+
+    assert {:ok, :native} = ProtocolRoute.select(:google_generate_content, api)
   end
 end

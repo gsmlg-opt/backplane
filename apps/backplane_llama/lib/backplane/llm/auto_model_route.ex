@@ -17,7 +17,7 @@ defmodule Backplane.LLM.AutoModelRoute do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "llm_auto_model_routes" do
-    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic])
+    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic, :google])
     field(:strategy, Ecto.Enum, values: [:first_available], default: :first_available)
     field(:enabled, :boolean, default: true)
 
@@ -41,7 +41,8 @@ defmodule Backplane.LLM.AutoModelRoute do
 
   @doc "Get a route by auto model name and API surface."
   @spec get_by_model_and_surface(String.t(), atom()) :: t() | nil
-  def get_by_model_and_surface(name, api_surface) when api_surface in [:openai, :anthropic] do
+  def get_by_model_and_surface(name, api_surface)
+      when api_surface in [:openai, :anthropic, :google] do
     target_query =
       from(target in AutoModelTarget,
         order_by: [asc: target.priority],

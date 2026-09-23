@@ -66,7 +66,7 @@ defmodule Backplane.LLM.ProviderModelSurface do
 
   @doc "List enabled model surfaces for an API surface."
   @spec list_enabled(atom()) :: [t()]
-  def list_enabled(api_surface) when api_surface in [:openai, :anthropic] do
+  def list_enabled(api_surface) when api_surface in [:openai, :anthropic, :google] do
     __MODULE__
     |> join(:inner, [surface], model in assoc(surface, :provider_model))
     |> join(:inner, [_surface, model], provider in assoc(model, :provider))

@@ -9,7 +9,11 @@ defmodule Backplane.LLM.ProtocolRoute do
 
   alias Backplane.LLM.ProviderApi
 
-  @type protocol :: :openai_chat_completions | :openai_responses | :anthropic_messages
+  @type protocol ::
+          :openai_chat_completions
+          | :openai_responses
+          | :anthropic_messages
+          | :google_generate_content
 
   @spec client_protocol(String.t()) :: protocol() | :unknown
   def client_protocol("/v1/responses"), do: :openai_responses
@@ -28,7 +32,8 @@ defmodule Backplane.LLM.ProtocolRoute do
       when client_protocol in [
              :openai_chat_completions,
              :openai_responses,
-             :anthropic_messages
+             :anthropic_messages,
+             :google_generate_content
            ] and is_list(native_protocols) do
     if client_protocol in native_protocols do
       {:ok, :native}

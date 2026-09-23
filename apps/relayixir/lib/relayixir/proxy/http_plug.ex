@@ -74,11 +74,19 @@ defmodule Relayixir.Proxy.HttpPlug do
           Map.merge(metadata, %{reason: reason})
         )
 
-        if conn.state == :sent do
-          conn
-        else
-          ErrorMapper.send_error(conn, reason)
-        end
+        handle_proxy_error(conn, reason, opts)
+    end
+  end
+
+  @doc false
+  def handle_proxy_error(%Plug.Conn{state: state} = conn, _reason, _opts)
+      when state in [:sent, :chunked],
+      do: conn
+
+  def handle_proxy_error(conn, reason, opts) do
+    case Keyword.get(opts, :on_proxy_error) do
+      callback when is_function(callback, 2) -> callback.(conn, reason)
+      _ -> ErrorMapper.send_error(conn, reason)
     end
   end
 

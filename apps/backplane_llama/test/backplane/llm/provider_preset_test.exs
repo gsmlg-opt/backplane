@@ -19,6 +19,8 @@ defmodule Backplane.LLM.ProviderPresetTest do
              "openai-codex",
              "anthropic",
              "x-ai",
+             "google-gemini-developer",
+             "google-gemini-openai-compatible",
              "google-ai-studio",
              "moonshot-cn"
            ] = ProviderPreset.keys()
@@ -212,12 +214,80 @@ defmodule Backplane.LLM.ProviderPresetTest do
     refute moonshot.anthropic.enabled
   end
 
-  test "defaults every OpenAI-compatible preset to Responses with Codex remaining Responses-only" do
+  test "google gemini developer uses the native v1beta API-key surface" do
+    preset = ProviderPreset.fetch!("google-gemini-developer")
+
+    assert preset.default_credential == nil
+    assert preset.credential_auth_type == "api_key"
+    assert preset.default_base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+    assert ProviderPreset.surfaces(preset) == %{
+             google: %{
+               enabled: true,
+               base_url: "https://generativelanguage.googleapis.com/v1beta",
+               discovery_path: "/models",
+               native_protocols: [:google_generate_content]
+             }
+           }
+
+    assert ProviderPreset.native_protocols(preset, :google) == [:google_generate_content]
+    refute preset.openai.enabled
+    refute preset.anthropic.enabled
+  end
+
+  test "google OpenAI compatibility is separate and does not claim Responses" do
+    preset = ProviderPreset.fetch!("google-gemini-openai-compatible")
+
+    assert preset.credential_auth_type == "api_key"
+    assert preset.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert ProviderPreset.native_protocols(preset, :openai) == [:openai_chat_completions]
+
+    assert ProviderPreset.surfaces(preset).openai.native_protocols == [
+             :openai_chat_completions
+           ]
+  end
+
+  test "legacy google ai studio retains its binding and exposes migration choices" do
+    preset = ProviderPreset.fetch!("google-ai-studio")
+
+    assert preset.legacy
+    assert preset.default_credential == "google-antigravity"
+    assert preset.credential_auth_type == "google_oauth"
+    assert preset.openai.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    assert %{
+             impact: impact,
+             required_action: required_action,
+             targets: [
+               %{preset_key: "google-gemini-developer", credential_auth_type: "api_key"},
+               %{
+                 preset_key: "google-gemini-openai-compatible",
+                 credential_auth_type: "api_key"
+               }
+             ]
+           } = preset.migration_diagnostic
+
+    assert impact =~ "not changed automatically"
+    assert required_action =~ "choose"
+  end
+
+  test "legacy slots remain available through normalized surfaces" do
+    preset = ProviderPreset.fetch!("deepseek")
+
+    assert ProviderPreset.surface(preset, :openai).base_url == preset.openai.base_url
+    assert ProviderPreset.surface(preset, :anthropic).base_url == preset.anthropic.base_url
+    assert ProviderPreset.surfaces(preset).openai.enabled
+    assert ProviderPreset.surfaces(preset).anthropic.enabled
+  end
+
+  test "preserves declared OpenAI protocols without widening compatibility presets" do
     for preset <- ProviderPreset.all(), preset.openai.enabled do
       expected =
-        if preset.key == "openai-codex",
-          do: [:openai_responses],
-          else: [:openai_chat_completions, :openai_responses]
+        case preset.key do
+          "openai-codex" -> [:openai_responses]
+          "google-gemini-openai-compatible" -> [:openai_chat_completions]
+          _ -> [:openai_chat_completions, :openai_responses]
+        end
 
       assert ProviderPreset.native_protocols(preset, :openai) == expected,
              "unexpected OpenAI default protocols for #{preset.key}"

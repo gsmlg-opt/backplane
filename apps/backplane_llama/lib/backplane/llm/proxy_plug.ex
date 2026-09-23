@@ -13,6 +13,12 @@ defmodule Backplane.LLM.ProxyPlug do
     forward_to_llm_router(conn, ["v1" | rest], rest)
   end
 
+  def call(%Plug.Conn{path_info: ["v1beta" | _rest]} = conn, _opts) do
+    conn
+    |> Backplane.LLM.Google.Router.call(Backplane.LLM.Google.Router.init([]))
+    |> Plug.Conn.halt()
+  end
+
   def call(conn, _opts), do: conn
 
   defp forward_to_llm_router(conn, path_info, ["providers", _provider_name | _rest]) do

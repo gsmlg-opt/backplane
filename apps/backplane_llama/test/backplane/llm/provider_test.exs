@@ -125,6 +125,29 @@ defmodule Backplane.LLM.ProviderTest do
       assert provider.credential == credential
     end
 
+    test "accepts native Google provider only with an API-key credential" do
+      api_key = credential_name()
+      oauth = credential_name()
+      Credentials.store(api_key, "google-api-key", "llm", %{"auth_type" => "api_key"})
+      Credentials.store(oauth, "{}", "llm", %{"auth_type" => "google_oauth"})
+
+      attrs =
+        api_key
+        |> valid_provider_attrs()
+        |> Map.put(:preset_key, "google-gemini-developer")
+
+      assert {:ok, provider} = Provider.create(attrs)
+
+      assert {:error, changeset} =
+               attrs
+               |> Map.put(:name, "native-google-oauth-#{System.unique_integer([:positive])}")
+               |> Map.put(:credential, oauth)
+               |> Provider.create()
+
+      assert %{credential: ["must use api_key auth type"]} = errors_on(changeset)
+      assert provider.credential == api_key
+    end
+
     test "rejects non-positive rpm_limit" do
       credential = credential_name()
       Credentials.store(credential, "sk-test-value", "llm")
@@ -136,6 +159,29 @@ defmodule Backplane.LLM.ProviderTest do
                |> Provider.create()
 
       assert %{rpm_limit: [_ | _]} = errors_on(changeset)
+    end
+  end
+
+  describe "Google provider API version" do
+    test "accepts only an explicit v1beta base URL" do
+      provider = create_provider()
+
+      assert {:ok, _api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :google,
+                 base_url: "https://generativelanguage.googleapis.com/v1beta"
+               })
+
+      assert {:error, changeset} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :google,
+                 base_url: "https://generativelanguage.googleapis.com/v1"
+               })
+
+      assert %{base_url: ["must end with /v1beta for Google GenerateContent"]} =
+               errors_on(changeset)
     end
   end
 
@@ -168,6 +214,63 @@ defmodule Backplane.LLM.ProviderTest do
   end
 
   describe "ProviderApi" do
+    test "creates and reloads a native Google provider and model surface" do
+      credential = credential_name()
+      Credentials.store(credential, "google-api-key", "llm", %{"auth_type" => "api_key"})
+
+      assert {:ok, provider} =
+               Provider.create(%{
+                 name: "google-native-#{System.unique_integer([:positive])}",
+                 credential: credential,
+                 preset_key: "google-gemini-developer"
+               })
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :google,
+                 base_url: "https://generativelanguage.googleapis.com/v1beta/",
+                 model_discovery_path: "/models"
+               })
+
+      assert api.base_url == "https://generativelanguage.googleapis.com/v1beta"
+      assert api.native_protocols == [:google_generate_content]
+
+      assert {:ok, model} =
+               ProviderModel.create(%{
+                 provider_id: provider.id,
+                 model: "models/gemini-2.5-flash",
+                 source: :manual
+               })
+
+      assert {:ok, surface} =
+               ProviderModelSurface.create(%{
+                 provider_model_id: model.id,
+                 provider_api_id: api.id
+               })
+
+      assert %{apis: [%{api_surface: :google}], models: [%{surfaces: [reloaded_surface]}]} =
+               Provider.get(provider.id)
+
+      assert reloaded_surface.id == surface.id
+      assert [%{id: enabled_surface_id}] = ProviderModelSurface.list_enabled(:google)
+      assert enabled_surface_id == surface.id
+    end
+
+    test "rejects Google protocol on a non-Google API family" do
+      provider = create_provider()
+
+      assert {:error, changeset} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://api.openai.com/v1",
+                 native_protocols: [:google_generate_content]
+               })
+
+      assert %{native_protocols: [_ | _]} = errors_on(changeset)
+    end
+
     test "records the concrete native wire protocols independently of the broad API family" do
       provider = create_provider()
 
@@ -209,6 +312,46 @@ defmodule Backplane.LLM.ProviderTest do
                })
 
       assert %{native_protocols: [_ | _]} = errors_on(changeset)
+    end
+
+    test "reports the exact legacy Google configuration without redirecting it" do
+      credential = credential_name()
+      Credentials.store(credential, "{}", "llm", %{"auth_type" => "google_oauth"})
+
+      assert {:ok, provider} =
+               Provider.create(%{
+                 name: "legacy-google-#{System.unique_integer([:positive])}",
+                 credential: credential,
+                 preset_key: "google-ai-studio"
+               })
+
+      assert {:ok, api} =
+               ProviderApi.create(%{
+                 provider_id: provider.id,
+                 api_surface: :openai,
+                 base_url: "https://legacy.example.test/custom-google",
+                 native_protocols: [:openai_chat_completions]
+               })
+
+      assert %{
+               status: :legacy,
+               preset_key: "google-ai-studio",
+               credential: ^credential,
+               credential_auth_type: "google_oauth",
+               configured_surfaces: [
+                 %{
+                   id: api_id,
+                   api_surface: :openai,
+                   base_url: "https://legacy.example.test/custom-google",
+                   native_protocols: [:openai_chat_completions]
+                 }
+               ],
+               automatic_migration: false
+             } = Provider.legacy_migration_diagnostic(provider)
+
+      assert api_id == api.id
+      assert Provider.get(provider.id).preset_key == "google-ai-studio"
+      assert ProviderApi.get(api.id).base_url == "https://legacy.example.test/custom-google"
     end
 
     test "creates independent API surfaces for one provider" do
@@ -574,13 +717,18 @@ defmodule Backplane.LLM.ProviderTest do
   end
 
   describe "seeded auto models" do
-    test "seeds fast, smart, and expert with openai and anthropic routes" do
+    test "seeds fast, smart, and expert with openai, anthropic, and Google routes" do
       models = AutoModel.list()
       assert [%{name: "fast"}, %{name: "smart"}, %{name: "expert"}] = models
 
       for auto_model <- models do
         routes = Enum.sort_by(auto_model.routes, &to_string(&1.api_surface))
-        assert [%{api_surface: :anthropic}, %{api_surface: :openai}] = routes
+
+        assert [
+                 %{api_surface: :anthropic},
+                 %{api_surface: :google},
+                 %{api_surface: :openai}
+               ] = routes
       end
     end
 

@@ -2,8 +2,8 @@ defmodule Backplane.LLM.ProviderApi do
   @moduledoc """
   API surface configuration for an LLM provider.
 
-  One provider can expose independent OpenAI-compatible and Anthropic Messages
-  surfaces.
+  One provider can expose independent OpenAI-compatible, Anthropic Messages,
+  and Google GenerateContent surfaces.
   """
 
   use Ecto.Schema
@@ -20,11 +20,18 @@ defmodule Backplane.LLM.ProviderApi do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "llm_provider_apis" do
-    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic])
+    field(:api_surface, Ecto.Enum, values: [:openai, :anthropic, :google])
+
     field(:native_protocols, {:array, Ecto.Enum},
-      values: [:openai_chat_completions, :openai_responses, :anthropic_messages],
+      values: [
+        :openai_chat_completions,
+        :openai_responses,
+        :anthropic_messages,
+        :google_generate_content
+      ],
       default: []
     )
+
     field(:base_url, :string)
     field(:enabled, :boolean, default: true)
     field(:default_headers, :map, default: %{})
@@ -50,6 +57,7 @@ defmodule Backplane.LLM.ProviderApi do
     |> validate_required(@required_fields)
     |> validate_length(:native_protocols, min: 1)
     |> validate_native_protocols()
+    |> validate_google_version()
     |> Provider.validate_api_url(:base_url)
     |> validate_default_headers()
     |> foreign_key_constraint(:provider_id)
@@ -121,6 +129,7 @@ defmodule Backplane.LLM.ProviderApi do
             case get_field(changeset, :api_surface) do
               :openai -> put_change(changeset, :native_protocols, [:openai_chat_completions])
               :anthropic -> put_change(changeset, :native_protocols, [:anthropic_messages])
+              :google -> put_change(changeset, :native_protocols, [:google_generate_content])
               _ -> changeset
             end
         end
@@ -135,6 +144,7 @@ defmodule Backplane.LLM.ProviderApi do
         case api_surface do
           :openai -> [:openai_chat_completions, :openai_responses]
           :anthropic -> [:anthropic_messages]
+          :google -> [:google_generate_content]
           _ -> []
         end
 
@@ -151,6 +161,20 @@ defmodule Backplane.LLM.ProviderApi do
       :default_headers, headers when is_map(headers) -> []
       :default_headers, _headers -> [default_headers: "must be a map"]
     end)
+  end
+
+  defp validate_google_version(changeset) do
+    if get_field(changeset, :api_surface) == :google do
+      validate_change(changeset, :base_url, fn :base_url, base_url ->
+        path = URI.parse(base_url).path || ""
+
+        if String.ends_with?(String.trim_trailing(path, "/"), "/v1beta"),
+          do: [],
+          else: [base_url: "must end with /v1beta for Google GenerateContent"]
+      end)
+    else
+      changeset
+    end
   end
 
   defp broadcast_on_ok({:ok, _} = result) do

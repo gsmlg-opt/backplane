@@ -7,6 +7,7 @@ defmodule Backplane.LLM.ProviderPreset do
   """
 
   @type api_defaults :: %{
+          optional(:native_protocols) => [atom()],
           enabled: boolean(),
           base_url: String.t(),
           discovery_path: String.t() | nil
@@ -20,8 +21,11 @@ defmodule Backplane.LLM.ProviderPreset do
           credential_kind: String.t(),
           credential_auth_type: String.t() | nil,
           default_base_url: String.t(),
+          surfaces: %{atom() => api_defaults()},
           openai: api_defaults(),
           anthropic: api_defaults(),
+          legacy: boolean(),
+          migration_diagnostic: map() | nil,
           notes: String.t(),
           docs_urls: [String.t()]
         }
@@ -34,9 +38,12 @@ defmodule Backplane.LLM.ProviderPreset do
     :credential_kind,
     :credential_auth_type,
     :default_base_url,
+    :surfaces,
     :openai,
     :anthropic,
+    :migration_diagnostic,
     :notes,
+    legacy: false,
     docs_urls: []
   ]
 
@@ -351,6 +358,44 @@ defmodule Backplane.LLM.ProviderPreset do
       docs_urls: ["https://docs.x.ai/docs/guides/chat-completions"]
     },
     %{
+      key: "google-gemini-developer",
+      name: "Google Gemini Developer API",
+      default_name: "google-gemini-developer",
+      credential_kind: "llm",
+      credential_auth_type: "api_key",
+      default_base_url: "https://generativelanguage.googleapis.com/v1beta",
+      surfaces: %{
+        google: %{
+          enabled: true,
+          base_url: "https://generativelanguage.googleapis.com/v1beta",
+          discovery_path: "/models",
+          native_protocols: [:google_generate_content]
+        }
+      },
+      notes:
+        "Official Gemini Developer API using native GenerateContent and an API-key credential.",
+      docs_urls: ["https://ai.google.dev/api"]
+    },
+    %{
+      key: "google-gemini-openai-compatible",
+      name: "Google Gemini OpenAI Compatibility",
+      default_name: "google-gemini-openai-compatible",
+      credential_kind: "llm",
+      credential_auth_type: "api_key",
+      default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+      surfaces: %{
+        openai: %{
+          enabled: true,
+          base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+          discovery_path: "/models",
+          native_protocols: [:openai_chat_completions]
+        }
+      },
+      notes:
+        "Official Gemini OpenAI-compatible endpoint using an API-key credential. Responses is not enabled by default.",
+      docs_urls: ["https://ai.google.dev/gemini-api/docs/openai"]
+    },
+    %{
       key: "google-ai-studio",
       name: "Google AI Studio",
       default_name: "google-ai-studio",
@@ -358,6 +403,20 @@ defmodule Backplane.LLM.ProviderPreset do
       credential_kind: "llm",
       credential_auth_type: "google_oauth",
       default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+      legacy: true,
+      migration_diagnostic: %{
+        impact:
+          "Existing endpoint and Google OAuth credential bindings are not changed automatically.",
+        required_action:
+          "Inspect the configured endpoint and credential, then explicitly choose a supported target preset and API-key credential.",
+        targets: [
+          %{preset_key: "google-gemini-developer", credential_auth_type: "api_key"},
+          %{
+            preset_key: "google-gemini-openai-compatible",
+            credential_auth_type: "api_key"
+          }
+        ]
+      },
       openai: %{
         enabled: true,
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -394,7 +453,7 @@ defmodule Backplane.LLM.ProviderPreset do
 
   @doc "List all built-in provider presets."
   @spec all() :: [t()]
-  def all, do: Enum.map(@presets, &struct!(__MODULE__, &1))
+  def all, do: Enum.map(@presets, &normalize/1)
 
   @doc "Return all preset keys."
   @spec keys() :: [String.t()]
@@ -407,9 +466,11 @@ defmodule Backplane.LLM.ProviderPreset do
     |> Enum.find(&(&1.key == key))
     |> case do
       nil -> nil
-      preset -> struct!(__MODULE__, preset)
+      preset -> normalize(preset)
     end
   end
+
+  def get(_key), do: nil
 
   @doc "Fetch a preset by key, raising when the key is unknown."
   @spec fetch!(String.t()) :: t()
@@ -417,13 +478,55 @@ defmodule Backplane.LLM.ProviderPreset do
     get(key) || raise ArgumentError, "unknown LLM provider preset: #{inspect(key)}"
   end
 
-  @doc "Default wire protocols enabled for a preset's API surface."
-  @spec native_protocols(t(), :openai | :anthropic) :: [atom()]
-  def native_protocols(%__MODULE__{key: "openai-codex"}, :openai),
-    do: [:openai_responses]
+  @doc "Normalized API surfaces configured by a preset."
+  @spec surfaces(t()) :: %{atom() => api_defaults()}
+  def surfaces(%__MODULE__{surfaces: surfaces}), do: surfaces
 
-  def native_protocols(%__MODULE__{}, :openai),
+  @doc "Fetch one normalized API surface configured by a preset."
+  @spec surface(t(), atom()) :: api_defaults() | nil
+  def surface(%__MODULE__{} = preset, api_surface) do
+    Map.get(preset.surfaces, api_surface)
+  end
+
+  @doc "Default wire protocols enabled for a preset's API surface."
+  @spec native_protocols(t(), atom()) :: [atom()]
+  def native_protocols(%__MODULE__{} = preset, api_surface) do
+    case surface(preset, api_surface) do
+      %{native_protocols: protocols} -> protocols
+      _ -> []
+    end
+  end
+
+  defp normalize(preset) do
+    surfaces = Map.get(preset, :surfaces) || legacy_surfaces(preset)
+
+    preset
+    |> Map.put(:surfaces, surfaces)
+    |> Map.put(:openai, compatibility_slot(surfaces, :openai))
+    |> Map.put(:anthropic, compatibility_slot(surfaces, :anthropic))
+    |> then(&struct!(__MODULE__, &1))
+  end
+
+  defp legacy_surfaces(preset) do
+    [:openai, :anthropic]
+    |> Map.new(fn api_surface ->
+      defaults = Map.fetch!(preset, api_surface)
+
+      {api_surface,
+       Map.put(defaults, :native_protocols, legacy_native_protocols(preset.key, api_surface))}
+    end)
+  end
+
+  defp compatibility_slot(surfaces, api_surface) do
+    surfaces
+    |> Map.get(api_surface, %{enabled: false, base_url: "", discovery_path: nil})
+    |> Map.drop([:native_protocols])
+  end
+
+  defp legacy_native_protocols("openai-codex", :openai), do: [:openai_responses]
+
+  defp legacy_native_protocols(_preset_key, :openai),
     do: [:openai_chat_completions, :openai_responses]
 
-  def native_protocols(%__MODULE__{}, :anthropic), do: [:anthropic_messages]
+  defp legacy_native_protocols(_preset_key, :anthropic), do: [:anthropic_messages]
 end

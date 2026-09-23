@@ -35,7 +35,8 @@ defmodule Backplane.LLM.ModelMetadata do
         ]),
       "supported_reasoning_levels" => levels,
       "default_reasoning_level" => nonblank(raw["default_reasoning_level"]),
-      "display_name" => nonblank(raw["display_name"] || raw["name"]),
+      "display_name" =>
+        nonblank(raw["display_name"] || provider_display_name(preset_key, raw) || raw["name"]),
       "description" => nonblank(raw["description"])
     }
 
@@ -148,7 +149,8 @@ defmodule Backplane.LLM.ModelMetadata do
     }
   end
 
-  defp provider_metadata("google-ai-studio", raw) do
+  defp provider_metadata(preset_key, raw)
+       when preset_key in ["google-ai-studio", "google-gemini-developer"] do
     %{
       "context_window" => positive_integer(raw["inputTokenLimit"]),
       "max_output_tokens" => positive_integer(raw["outputTokenLimit"]),
@@ -157,6 +159,12 @@ defmodule Backplane.LLM.ModelMetadata do
   end
 
   defp provider_metadata(_preset_key, _raw), do: %{}
+
+  defp provider_display_name(preset_key, raw)
+       when preset_key in ["google-ai-studio", "google-gemini-developer"],
+       do: raw["displayName"]
+
+  defp provider_display_name(_preset_key, _raw), do: nil
 
   defp ollama_context(parameters) when is_binary(parameters) do
     case Regex.run(~r/^\s*num_ctx\s+(\d+)\s*$/m, parameters) do

@@ -12,7 +12,7 @@ defmodule Backplane.LLM.UsageAccumulator do
           protocol_terminal: atom() | nil,
           error_code: String.t() | nil,
           error_type: String.t() | nil,
-          protocol: :legacy | :compact | :responses,
+          protocol: :legacy | :compact | :responses | :google_generate_content,
           tool_calls: [map()],
           partial: boolean(),
           usage_complete: boolean(),
@@ -36,6 +36,9 @@ defmodule Backplane.LLM.UsageAccumulator do
           | :openai_responses_body
           | :openai_json_body
           | :anthropic_json_body
+          | :google_generate_content
+          | :google_generate_content_body
+          | :google_count_tokens_body
         ) :: pid()
   def new(protocol \\ :legacy)
 
@@ -48,7 +51,10 @@ defmodule Backplane.LLM.UsageAccumulator do
           | :openai_responses
           | :openai_responses_body
           | :openai_json_body
-          | :anthropic_json_body,
+          | :anthropic_json_body
+          | :google_generate_content
+          | :google_generate_content_body
+          | :google_count_tokens_body,
           keyword()
         ) :: pid()
   def new(protocol, opts) do
@@ -62,6 +68,9 @@ defmodule Backplane.LLM.UsageAccumulator do
         :openai_responses_body -> response_body_state()
         :openai_json_body -> json_body_state(:openai_json_body)
         :anthropic_json_body -> json_body_state(:anthropic_json_body)
+        :google_generate_content -> google_generate_content_state()
+        :google_generate_content_body -> response_body_state(:google_generate_content_body)
+        :google_count_tokens_body -> response_body_state(:google_count_tokens_body)
         :legacy -> legacy_state(:legacy)
         :compact -> legacy_state(:compact)
       end
@@ -81,21 +90,37 @@ defmodule Backplane.LLM.UsageAccumulator do
   end
 
   defp response_body_state do
+    response_body_state(:openai_responses_body)
+  end
+
+  defp response_body_state(protocol) do
     %{
-      protocol: :openai_responses_body,
+      protocol: protocol,
       body_chunks: [],
       body_bytes: 0,
       body_truncated: false,
       chunk_count: 0,
       first_chunk_at: nil,
+      first_content_at: nil,
       last_chunk_at: nil,
       started_at: System.monotonic_time(:millisecond)
     }
   end
 
   defp json_body_state(protocol) do
-    response_body_state()
-    |> Map.put(:protocol, protocol)
+    response_body_state(protocol)
+  end
+
+  defp google_generate_content_state do
+    %{
+      protocol: :google_generate_content,
+      observer: Backplane.AiProtocol.GoogleGenerateContentObserver.new(),
+      chunk_count: 0,
+      first_chunk_at: nil,
+      first_content_at: nil,
+      last_chunk_at: nil,
+      started_at: System.monotonic_time(:millisecond)
+    }
   end
 
   defp legacy_state(protocol) do
@@ -173,16 +198,48 @@ defmodule Backplane.LLM.UsageAccumulator do
     {snapshot.input_tokens, snapshot.output_tokens}
   end
 
-  @spec snapshot(pid(), non_neg_integer()) :: snapshot()
-  def snapshot(pid, status \\ 200) do
+  @spec snapshot(pid(), non_neg_integer(), atom()) :: snapshot()
+  def snapshot(pid, status \\ 200, transport_reason \\ :eof) do
     state =
       try do
         Agent.get_and_update(
           pid,
           fn
             %{protocol: :openai_responses, observer: observer} = state ->
-              observer = Backplane.AiProtocol.OpenAIResponsesObserver.finish(observer, :eof)
+              observer =
+                Backplane.AiProtocol.OpenAIResponsesObserver.finish(observer, transport_reason)
+
               next = %{state | observer: observer}
+              {next, next}
+
+            %{protocol: :google_generate_content, observer: observer} = state ->
+              observer =
+                Backplane.AiProtocol.GoogleGenerateContentObserver.finish(
+                  observer,
+                  transport_reason
+                )
+
+              next =
+                state
+                |> Map.put(:observer, observer)
+                |> put_google_first_content(System.monotonic_time(:millisecond))
+
+              {next, next}
+
+            %{body_facts: _facts} = state ->
+              {state, state}
+
+            %{protocol: protocol} = state
+            when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+              facts = google_response_body_facts(state, status)
+
+              facts = apply_google_body_transport(facts, transport_reason)
+
+              next =
+                state
+                |> Map.put(:body_facts, facts)
+                |> put_google_body_first_content(facts, System.monotonic_time(:millisecond))
+
               {next, next}
 
             state ->
@@ -236,6 +293,17 @@ defmodule Backplane.LLM.UsageAccumulator do
           facts = response_body_facts(state, status)
 
           merge_observer_facts(base, facts)
+
+        %{protocol: :google_generate_content, observer: observer} ->
+          facts = Backplane.AiProtocol.GoogleGenerateContentObserver.facts(observer)
+
+          merge_google_observer_facts(base, facts, first_content_ms(state))
+
+        %{protocol: protocol} = state
+        when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+          facts = state.body_facts
+
+          merge_google_observer_facts(base, facts, first_content_ms(state))
 
         %{protocol: protocol} = state
         when protocol in [:openai_json_body, :anthropic_json_body] ->
@@ -324,6 +392,50 @@ defmodule Backplane.LLM.UsageAccumulator do
     })
   end
 
+  defp merge_google_observer_facts(base, facts, first_content_ms) do
+    Map.merge(base, %{
+      input_tokens: facts.input_tokens,
+      output_tokens: facts.output_tokens,
+      cached_tokens: facts.cached_tokens,
+      reasoning_tokens: facts.reasoning_tokens,
+      finish_reason: facts.finish_reason,
+      provider_request_id: facts.provider_request_id,
+      observation_status: facts.observation_status,
+      protocol_terminal: facts.protocol_terminal,
+      error_code: facts.error_code,
+      error_type: facts.error_type,
+      protocol: :google_generate_content,
+      tool_calls: [],
+      partial: facts.partial,
+      usage_complete:
+        facts.source == :google_generate_content and facts.usage_status == :complete and
+          facts.observation_status == :complete,
+      metadata: google_metadata(facts, first_content_ms)
+    })
+  end
+
+  defp google_metadata(%{source: :google_count_tokens} = facts, first_content_ms) do
+    %{
+      protocol_observation: sanitize_google_facts(facts),
+      operation: %{name: "count_tokens", total_tokens: facts.count_tokens_total},
+      timing: %{first_content_ms: first_content_ms}
+    }
+  end
+
+  defp google_metadata(facts, first_content_ms) do
+    %{
+      protocol_observation: sanitize_google_facts(facts),
+      timing: %{first_content_ms: first_content_ms},
+      usage_semantics: %{
+        input_tokens: "promptTokenCount_includes_cached_content",
+        output_tokens: "candidatesTokenCount_excludes_thoughts",
+        cached_tokens: "cachedContentTokenCount_subset_of_input",
+        reasoning_tokens: "thoughtsTokenCount",
+        native_total: "totalTokenCount_unmodified"
+      }
+    }
+  end
+
   defp response_body_facts(state, status) do
     body = state.body_chunks |> Enum.reverse() |> IO.iodata_to_binary()
 
@@ -349,6 +461,67 @@ defmodule Backplane.LLM.UsageAccumulator do
     else
       facts
     end
+  end
+
+  defp google_response_body_facts(state, status) do
+    body = state.body_chunks |> Enum.reverse() |> IO.iodata_to_binary()
+
+    operation =
+      if state.protocol == :google_count_tokens_body,
+        do: :count_tokens,
+        else: :generate
+
+    facts =
+      Backplane.AiProtocol.GoogleGenerateContentObserver.observe_response(status, body,
+        operation: operation
+      )
+
+    if state.body_truncated do
+      facts
+      |> Map.merge(%{
+        observation_status: :incomplete,
+        protocol_terminal: :incomplete,
+        usage_status: :unknown,
+        input_tokens: nil,
+        output_tokens: nil,
+        cached_tokens: nil,
+        reasoning_tokens: nil,
+        native_total: nil,
+        native_usage: %{},
+        count_tokens_total: nil,
+        finish_reason: nil,
+        finish_reasons: [],
+        provider_request_id: nil,
+        input_truncated: true,
+        partial: true,
+        bytes_seen: state.body_bytes
+      })
+      |> Map.update!(:diagnostics, &Enum.take(["response_bytes_exceeded" | &1], 32))
+    else
+      facts
+    end
+  end
+
+  defp apply_google_body_transport(facts, :eof), do: Map.put(facts, :transport_terminal, :eof)
+
+  defp apply_google_body_transport(facts, :cancelled) do
+    Map.merge(facts, %{
+      observation_status: :incomplete,
+      protocol_terminal: :cancelled,
+      transport_terminal: :cancelled,
+      partial: true,
+      usage_status: :unknown
+    })
+  end
+
+  defp apply_google_body_transport(facts, _reason) do
+    Map.merge(facts, %{
+      observation_status: :incomplete,
+      protocol_terminal: :incomplete,
+      transport_terminal: :failed,
+      partial: true,
+      usage_status: :unknown
+    })
   end
 
   defp put_response_body_chunk(%{body_truncated: true} = state, chunk) do
@@ -387,19 +560,35 @@ defmodule Backplane.LLM.UsageAccumulator do
       |> Map.put(:last_chunk_at, now)
 
     try do
-      case state do
-        %{protocol: :openai_responses, observer: observer} ->
-          %{state | observer: Backplane.AiProtocol.OpenAIResponsesObserver.feed(observer, chunk)}
+      next =
+        case state do
+          %{protocol: :openai_responses, observer: observer} ->
+            %{
+              state
+              | observer: Backplane.AiProtocol.OpenAIResponsesObserver.feed(observer, chunk)
+            }
 
-        %{protocol: :openai_responses_body} ->
-          put_response_body_chunk(state, chunk)
+          %{protocol: :google_generate_content, observer: observer} ->
+            %{
+              state
+              | observer: Backplane.AiProtocol.GoogleGenerateContentObserver.feed(observer, chunk)
+            }
 
-        %{protocol: protocol} when protocol in [:openai_json_body, :anthropic_json_body] ->
-          put_response_body_chunk(state, chunk)
+          %{protocol: :openai_responses_body} ->
+            put_response_body_chunk(state, chunk)
 
-        _ ->
-          extract_usage_from_chunk(state, chunk)
-      end
+          %{protocol: protocol}
+          when protocol in [:google_generate_content_body, :google_count_tokens_body] ->
+            put_response_body_chunk(state, chunk)
+
+          %{protocol: protocol} when protocol in [:openai_json_body, :anthropic_json_body] ->
+            put_response_body_chunk(state, chunk)
+
+          _ ->
+            extract_usage_from_chunk(state, chunk)
+        end
+
+      put_google_first_content(next, now)
     rescue
       _ -> Map.put(state, :observer_error, true)
     end
@@ -607,6 +796,35 @@ defmodule Backplane.LLM.UsageAccumulator do
     |> Map.update(:implementation, nil, &inspect/1)
   end
 
+  defp sanitize_google_facts(facts) do
+    Map.take(facts, [
+      :implementation,
+      :source,
+      :observation_status,
+      :protocol_terminal,
+      :transport_terminal,
+      :content_seen,
+      :content_finished,
+      :usage_status,
+      :native_total,
+      :native_usage,
+      :finish_reasons,
+      :candidate_count,
+      :candidate_ambiguous,
+      :blocked,
+      :block_reason,
+      :partial,
+      :bytes_seen,
+      :events_seen,
+      :parse_time_us,
+      :parse_budget_exhausted,
+      :diagnostics,
+      :diagnostics_truncated,
+      :input_truncated
+    ])
+    |> Map.update(:implementation, nil, &inspect/1)
+  end
+
   defp normalize_tool_call(%{arguments: arguments} = tool) when is_binary(arguments) do
     decoded =
       case Jason.decode(arguments) do
@@ -616,6 +834,27 @@ defmodule Backplane.LLM.UsageAccumulator do
 
     %{tool | arguments: decoded}
   end
+
+  defp put_google_first_content(
+         %{protocol: :google_generate_content, first_content_at: nil, observer: observer} = state,
+         now
+       ) do
+    if observer.content_seen, do: %{state | first_content_at: now}, else: state
+  end
+
+  defp put_google_first_content(state, _now), do: state
+
+  defp put_google_body_first_content(%{first_content_at: nil} = state, facts, now) do
+    if facts.content_seen, do: %{state | first_content_at: now}, else: state
+  end
+
+  defp put_google_body_first_content(state, _facts, _now), do: state
+
+  defp first_content_ms(%{first_content_at: first_content_at, started_at: started_at})
+       when is_integer(first_content_at),
+       do: max(first_content_at - started_at, 0)
+
+  defp first_content_ms(_state), do: nil
 
   defp partial_observation?(facts) do
     facts.observation_status != :complete or
@@ -627,5 +866,8 @@ defmodule Backplane.LLM.UsageAccumulator do
   end
 
   defp legacy_protocol(:compact), do: :compact
+  defp legacy_protocol(:google_generate_content), do: :google_generate_content
+  defp legacy_protocol(:google_generate_content_body), do: :google_generate_content
+  defp legacy_protocol(:google_count_tokens_body), do: :google_generate_content
   defp legacy_protocol(_protocol), do: :legacy
 end

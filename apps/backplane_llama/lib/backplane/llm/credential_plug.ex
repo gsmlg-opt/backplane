@@ -62,14 +62,14 @@ defmodule Backplane.LLM.CredentialPlug do
   @spec build_auth_headers(Provider.t(), atom()) ::
           {:ok, [{String.t(), String.t()}]} | {:error, atom()}
   def build_auth_headers(%Provider{} = provider, api_type)
-      when api_type in [:anthropic, :openai] do
-    case resolve_credential(provider) do
+      when api_type in [:anthropic, :google, :openai] do
+    case resolve_surface_credential(provider, api_type) do
       {:ok, token, meta} ->
         headers =
           base_headers(provider, api_type, meta.auth_type, token) ++
-            meta.extra_headers ++
+            safe_extra_headers(meta.extra_headers, api_type) ++
             anthropic_version_pair(api_type) ++
-            default_header_pairs(provider.default_headers)
+            safe_default_headers(provider.default_headers, api_type)
 
         {:ok, headers}
 
@@ -82,7 +82,7 @@ defmodule Backplane.LLM.CredentialPlug do
 
   @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
   def build_auth_headers(%Provider{api_type: api_type} = provider)
-      when api_type in [:anthropic, :openai],
+      when api_type in [:anthropic, :google, :openai],
       do: build_auth_headers(provider, api_type)
 
   def build_auth_headers(%Provider{}), do: {:error, :api_surface_required}
@@ -132,6 +132,21 @@ defmodule Backplane.LLM.CredentialPlug do
   end
 
   # ── Private helpers ───────────────────────────────────────────────────────────
+
+  defp resolve_surface_credential(%Provider{credential: name} = provider, :google)
+       when is_binary(name) and name != "" do
+    case Backplane.Settings.Credentials.Vault.get(name) do
+      nil ->
+        {:error, :not_found}
+
+      %{metadata: metadata} ->
+        if (metadata || %{})["auth_type"] in [nil, "api_key"],
+          do: resolve_credential(provider),
+          else: {:error, :unsupported_google_auth_type}
+    end
+  end
+
+  defp resolve_surface_credential(provider, _surface), do: resolve_credential(provider)
 
   defp resolve_credential(%Provider{credential: credential})
        when is_binary(credential) and credential != "" do
@@ -193,6 +208,9 @@ defmodule Backplane.LLM.CredentialPlug do
   defp base_headers(_provider, :openai, _auth_type, token),
     do: [{"authorization", "Bearer #{token}"}]
 
+  defp base_headers(_provider, :google, _auth_type, token),
+    do: [{"authorization", nil}, {"x-api-key", nil}, {"x-goog-api-key", token}]
+
   defp anthropic_api?(%Provider{preset_key: "ollama-cloud"}), do: false
 
   defp anthropic_api?(%Provider{} = provider) do
@@ -211,6 +229,21 @@ defmodule Backplane.LLM.CredentialPlug do
 
   defp default_header_pairs(headers) when is_map(headers) do
     Enum.map(headers, fn {k, v} -> {String.downcase(k), v} end)
+  end
+
+  defp safe_extra_headers(headers, :google), do: reject_credential_headers(headers)
+  defp safe_extra_headers(headers, _api_type), do: headers
+
+  defp safe_default_headers(headers, :google) do
+    headers |> default_header_pairs() |> reject_credential_headers()
+  end
+
+  defp safe_default_headers(headers, _api_type), do: default_header_pairs(headers)
+
+  defp reject_credential_headers(headers) do
+    Enum.reject(headers, fn {name, _value} ->
+      String.downcase(to_string(name)) in ["authorization", "x-api-key", "x-goog-api-key"]
+    end)
   end
 
   defp merge_default_headers(conn, headers) when is_map(headers) do

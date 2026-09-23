@@ -27,7 +27,8 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
     %{
       resource: resource,
-      required_scope: Keyword.get(opts, :required_scope)
+      required_scope: Keyword.get(opts, :required_scope),
+      error_format: Keyword.get(opts, :error_format, :default)
     }
   end
 
@@ -68,7 +69,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
         oauth_reject(conn, resource, opts, nil)
 
       Clients.any_clients?() or legacy_configured?() ->
-        compatibility_reject(conn)
+        compatibility_reject(conn, opts)
 
       true ->
         unrestricted_success(conn, resource, :open)
@@ -79,7 +80,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
     if OAuth.enabled_client_for_resource?(resource) do
       oauth_reject(conn, resource, opts, "invalid_token")
     else
-      compatibility_reject(conn)
+      compatibility_reject(conn, opts)
     end
   end
 
@@ -137,17 +138,31 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       |> maybe_put(:error, challenge_error)
       |> maybe_put(:scope, required_scope(conn, opts))
 
+    conn = BearerChallenge.put(conn, resource, challenge_opts)
+    send_auth_error(conn, opts, 401, "invalid_token")
+  end
+
+  defp compatibility_reject(conn, opts), do: send_auth_error(conn, opts, 401, "Unauthorized")
+
+  defp send_auth_error(conn, %{error_format: :google}, status, message) do
+    body = %{
+      "error" => %{
+        "code" => status,
+        "message" => message,
+        "status" => "UNAUTHENTICATED"
+      }
+    }
+
     conn
-    |> BearerChallenge.put(resource, challenge_opts)
     |> put_resp_content_type("application/json")
-    |> send_resp(401, Jason.encode!(%{error: "invalid_token"}))
+    |> send_resp(status, Jason.encode!(body))
     |> halt()
   end
 
-  defp compatibility_reject(conn) do
+  defp send_auth_error(conn, _opts, status, message) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
+    |> send_resp(status, Jason.encode!(%{error: message}))
     |> halt()
   end
 

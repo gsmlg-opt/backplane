@@ -15,6 +15,12 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
 
     assert ResourceAuthorization.required_scope(conn(:post, "/v1/responses")) == "llm::invoke"
     assert ResourceAuthorization.required_scope(conn(:post, "/v1/messages")) == "llm::invoke"
+    assert ResourceAuthorization.required_scope(conn(:get, "/v1beta/models")) == "llm::models"
+
+    assert ResourceAuthorization.required_scope(
+             conn(:post, "/v1beta/models/gemini:generateContent")
+           ) == "llm::invoke"
+
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/unknown")) == nil
   end
 
@@ -62,13 +68,26 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
     end
   end
 
-  test "PAT, legacy, and open assignments bypass operation scopes" do
-    for kind <- [:client_token, :legacy, :open] do
+  test "database clients enforce operation scopes while legacy and open remain unrestricted" do
+    denied = authorize(:post, "/v1/responses", :client_token, ["llm::models"])
+    assert denied.halted
+    assert denied.status == 403
+
+    allowed = authorize(:post, "/v1/responses", :client_token, ["llm::invoke"])
+    refute allowed.halted
+
+    for kind <- [:legacy, :open] do
       conn = authorize(:post, "/v1/responses", kind, [])
 
       refute conn.halted
       assert conn.status == nil
     end
+  end
+
+  test "Google scope failures use a native error envelope" do
+    conn = authorize(:get, "/v1beta/models", :client_token, ["llm::invoke"])
+    assert conn.status == 403
+    assert Jason.decode!(conn.resp_body)["error"]["status"] == "PERMISSION_DENIED"
   end
 
   defp authorize(method, path, kind, scopes) do

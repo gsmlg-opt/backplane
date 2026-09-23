@@ -48,6 +48,14 @@ defmodule Backplane.LLM.ModelResolver do
           | {:error, :no_provider}
           | {:error, :api_type_mismatch, Provider.t()}
   def resolve(api_type, model_string) when is_atom(api_type) and is_binary(model_string) do
+    if api_type == :google do
+      do_resolve(api_type, model_string)
+    else
+      cached_resolve(api_type, model_string)
+    end
+  end
+
+  defp cached_resolve(api_type, model_string) do
     cache_key = {api_type, model_string}
 
     case lookup_cache(cache_key) do
