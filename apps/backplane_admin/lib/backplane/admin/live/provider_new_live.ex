@@ -125,7 +125,8 @@ defmodule Backplane.Admin.ProviderNewLive do
         enabled: truthy?(params["#{prefix}_enabled"]),
         default_headers: decode_json_map(params["#{prefix}_default_headers"]),
         model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
-        model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"])
+        model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"]),
+        backend_config: backend_config_from_params(surface, params)
       }
 
       case ProviderApi.create(attrs) do
@@ -293,8 +294,30 @@ defmodule Backplane.Admin.ProviderNewLive do
     )
     |> Map.put_new("#{prefix}_model_discovery_path", defaults.discovery_path || "")
     |> Map.put_new("#{prefix}_default_headers", "{}")
+    |> put_backend_config_defaults(surface)
     |> put_protocol_defaults(Map.get(defaults, :native_protocols, []))
   end
+
+  defp put_backend_config_defaults(params, :antigravity) do
+    params
+    |> Map.put_new("antigravity_project_id", "")
+    |> Map.put_new("antigravity_user_agent", "")
+    |> Map.put_new("antigravity_client_version", "")
+  end
+
+  defp put_backend_config_defaults(params, _surface), do: params
+
+  defp backend_config_from_params(:antigravity, params) do
+    %{
+      "project_id" => blank_to_nil(params["antigravity_project_id"]),
+      "user_agent" => blank_to_nil(params["antigravity_user_agent"]),
+      "client_version" => blank_to_nil(params["antigravity_client_version"])
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp backend_config_from_params(_surface, _params), do: %{}
 
   defp put_protocol_defaults(params, protocols) do
     Enum.reduce(protocols, params, fn protocol, params ->
@@ -319,6 +342,7 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_label("openai"), do: "OpenAI-compatible"
   defp surface_label("anthropic"), do: "Anthropic Messages"
   defp surface_label("google"), do: "Google GenerateContent"
+  defp surface_label("antigravity"), do: "Google Antigravity"
 
   defp parse_optional_integer(value) when value in [nil, ""], do: nil
 
@@ -523,6 +547,27 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.error errors={@errors} field={"#{@key}_base_url"} />
         </div>
 
+        <div :if={@key == "antigravity"} class="space-y-4">
+          <.dm_input
+            id="provider-antigravity-project-id"
+            name="provider[antigravity_project_id]"
+            label="Project ID"
+            value={field_value(@form, "antigravity", "project_id")}
+          />
+          <.dm_input
+            id="provider-antigravity-user-agent"
+            name="provider[antigravity_user_agent]"
+            label="User Agent"
+            value={field_value(@form, "antigravity", "user_agent")}
+          />
+          <.dm_input
+            id="provider-antigravity-client-version"
+            name="provider[antigravity_client_version]"
+            label="Client Version"
+            value={field_value(@form, "antigravity", "client_version")}
+          />
+        </div>
+
         <div :if={@protocols != []} class="space-y-2">
           <p class="text-sm font-medium">Native wire protocols</p>
           <div :for={protocol <- @protocols}>
@@ -577,11 +622,13 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_order(:openai), do: 1
   defp surface_order(:anthropic), do: 2
   defp surface_order(:google), do: 3
+  defp surface_order(:antigravity), do: 4
   defp surface_order(_), do: 99
 
   defp surface_title(:openai), do: "OpenAI-compatible API"
   defp surface_title(:anthropic), do: "Anthropic Messages API"
   defp surface_title(:google), do: "Google GenerateContent API"
+  defp surface_title(:antigravity), do: "Google Antigravity Native API"
 
   defp surface_description(:openai), do: "Used by clients calling /v1."
   defp surface_description(:anthropic), do: "Used by clients calling /v1/messages."
@@ -589,13 +636,18 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_description(:google),
     do: "Native Google protocol. The configured Base URL includes its API version."
 
+  defp surface_description(:antigravity),
+    do: "Native account API. Configure a project after explicit bootstrap or enrollment."
+
   defp api_label(:openai), do: "OpenAI"
   defp api_label(:anthropic), do: "Anthropic"
   defp api_label(:google), do: "Google"
+  defp api_label(:antigravity), do: "Antigravity"
 
   defp badge_variant("openai"), do: "info"
   defp badge_variant("anthropic"), do: "tertiary"
   defp badge_variant("google"), do: "success"
+  defp badge_variant("antigravity"), do: "warning"
 
   defp protocol_input_name(_key, protocol), do: "provider[#{protocol}_enabled]"
 
@@ -606,6 +658,7 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp protocol_label(:openai_responses), do: "Responses"
   defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
   defp protocol_label(:google_generate_content), do: "Google GenerateContent"
+  defp protocol_label(:google_antigravity), do: "Google Antigravity"
 
   defp field_value(form, key, suffix) do
     form[String.to_atom("#{key}_#{suffix}")].value

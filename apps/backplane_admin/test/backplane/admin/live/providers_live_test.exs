@@ -70,6 +70,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "Anthropic"
       assert html =~ "x.ai"
       assert html =~ "Google Gemini Developer API"
+      assert html =~ "Google Antigravity"
       assert html =~ "Moonshot.cn"
       assert html =~ "OpenAI-compatible API"
       assert html =~ "Anthropic Messages API"
@@ -128,6 +129,37 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       refute has_element?(view, "#provider-credential option[value='openai-codex']")
       refute has_element?(view, "#provider-credential option[value='google-antigravity']")
       refute has_element?(view, "#provider-openai-responses-enabled")
+    end
+
+    test "Antigravity preset accepts only Google OAuth and shows its native configuration", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='google-antigravity']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#provider-antigravity-base-url[value='https://cloudcode-pa.googleapis.com']"
+             )
+
+      assert has_element?(view, "#provider-google-antigravity-enabled[checked]")
+
+      assert has_element?(
+               view,
+               "#provider-antigravity-discovery-path[value='/v1internal:fetchAvailableModels']"
+             )
+
+      assert has_element?(
+               view,
+               "#provider-credential option[value='google-antigravity'][selected]"
+             )
+
+      refute has_element?(view, "#provider-credential option[value='test-cred']")
+      refute has_element?(view, "#provider-openai-base-url")
+      refute has_element?(view, "#provider-anthropic-base-url")
     end
 
     test "selecting a provider preset repopulates the form defaults", %{conn: conn} do
@@ -362,6 +394,146 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert [%{api_surface: :google, enabled: false}] =
                ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "creates, reopens, and updates Antigravity project configuration", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/llama/providers/new")
+
+      view
+      |> element("button[phx-value-preset='google-antigravity']")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "antigravity-native-test",
+          "credential" => "google-antigravity",
+          "base_url" => "https://cloudcode-pa.googleapis.com",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "antigravity_enabled" => "true",
+          "antigravity_base_url" => "https://cloudcode-pa.googleapis.com",
+          "google_antigravity_enabled" => "true",
+          "antigravity_model_discovery_enabled" => "true",
+          "antigravity_model_discovery_path" => "/v1internal:fetchAvailableModels",
+          "antigravity_default_headers" => "{}",
+          "antigravity_project_id" => "project-one",
+          "antigravity_user_agent" => "BackplaneAdmin/1.0",
+          "antigravity_client_version" => "1.0"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+
+      provider = Repo.get_by!(Provider, name: "antigravity-native-test")
+
+      assert [
+               %{
+                 api_surface: :antigravity,
+                 base_url: "https://cloudcode-pa.googleapis.com",
+                 native_protocols: [:google_antigravity],
+                 backend_config: %{
+                   "project_id" => "project-one",
+                   "user_agent" => "BackplaneAdmin/1.0",
+                   "client_version" => "1.0"
+                 }
+               }
+             ] = ProviderApi.list_for_provider(provider.id)
+
+      {:ok, view, html} = live(conn, "/llama/providers/#{provider.id}")
+      assert html =~ "Google Antigravity Native API"
+      assert html =~ "Google Antigravity"
+      assert has_element?(view, "#provider-antigravity-project-id[value='project-one']")
+      refute has_element?(view, "#provider-openai-base-url")
+
+      view
+      |> form("form[phx-submit=save_provider]", %{
+        "provider" => %{
+          "name" => "antigravity-native-test",
+          "credential" => "google-antigravity",
+          "enabled" => "true",
+          "rpm_limit" => "",
+          "default_headers" => "{}",
+          "antigravity_enabled" => "true",
+          "antigravity_base_url" => "https://cloudcode-pa.googleapis.com",
+          "google_antigravity_enabled" => "true",
+          "antigravity_model_discovery_enabled" => "true",
+          "antigravity_model_discovery_path" => "/v1internal:fetchAvailableModels",
+          "antigravity_default_headers" => "{}",
+          "antigravity_project_id" => "project-two",
+          "antigravity_user_agent" => "BackplaneAdmin/2.0",
+          "antigravity_client_version" => "2.0"
+        }
+      })
+      |> render_submit()
+
+      assert [
+               %{
+                 backend_config: %{
+                   "project_id" => "project-two",
+                   "user_agent" => "BackplaneAdmin/2.0",
+                   "client_version" => "2.0"
+                 }
+               }
+             ] = ProviderApi.list_for_provider(provider.id)
+    end
+
+    test "renders native Antigravity model metadata and keeps missing quota unavailable", %{
+      conn: conn
+    } do
+      {:ok, provider} =
+        Provider.create(%{
+          name: "antigravity-metadata-test",
+          preset_key: "google-antigravity",
+          credential: "google-antigravity"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :antigravity,
+          base_url: "https://cloudcode-pa.googleapis.com"
+        })
+
+      for {model_id, metadata} <- [
+            {"gemini-quota",
+             %{
+               "displayName" => "Gemini With Quota",
+               "quotaInfo" => %{
+                 "remainingFraction" => 0.75,
+                 "resetTime" => "2026-09-24T00:00:00Z"
+               },
+               "nativeUnknown" => %{"preserved" => true}
+             }},
+            {"gemini-no-quota", %{"displayName" => "Gemini Without Quota"}}
+          ] do
+        {:ok, model} =
+          ProviderModel.create(%{
+            provider_id: provider.id,
+            model: model_id,
+            source: :discovered,
+            metadata: metadata
+          })
+
+        {:ok, _surface} =
+          ProviderModelSurface.create(%{
+            provider_model_id: model.id,
+            provider_api_id: api.id,
+            metadata: metadata
+          })
+      end
+
+      {:ok, _view, html} = live(conn, "/llama/providers/#{provider.id}")
+
+      assert html =~ "Gemini With Quota"
+      assert html =~ "remainingFraction"
+      assert html =~ "0.75"
+      assert html =~ "2026-09-24T00:00:00Z"
+      assert html =~ "nativeUnknown"
+      assert html =~ "Gemini Without Quota"
+      assert html =~ "Quota: Unavailable"
+      refute html =~ "Quota: 0"
     end
 
     test "openai codex preset rejects non openai oauth credentials", %{conn: conn} do

@@ -162,6 +162,13 @@ defmodule Backplane.Admin.LogsLiveTest do
         metadata: %{}
       })
 
+    antigravity_log =
+      insert_llm_log(%{
+        api_surface: "google_antigravity",
+        operation: "stream_generate_content",
+        metadata: complete_metadata
+      })
+
     complete_log = Repo.reload!(complete_log)
     incomplete_log = Repo.reload!(incomplete_log)
 
@@ -177,26 +184,33 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ "Operation"
     assert html =~ "Usage observation"
     assert html =~ "Google GenerateContent"
+    assert html =~ "Google Antigravity"
+    assert html =~ "Stream Generate Content"
     assert html =~ "stream_generate"
     assert html =~ "Complete"
     assert html =~ "Incomplete"
     assert html =~ "Unavailable"
     assert html =~ "Unknown"
 
-    for {log, expected} <- [
-          {complete_log, "Complete"},
-          {incomplete_log, "Incomplete"},
-          {unavailable_log, "Unavailable"},
-          {unknown_log, "Unknown"}
+    for {log, expected, protocol} <- [
+          {complete_log, "Complete", "Google GenerateContent"},
+          {incomplete_log, "Incomplete", "Google GenerateContent"},
+          {unavailable_log, "Unavailable", "Google GenerateContent"},
+          {unknown_log, "Unknown", "Google GenerateContent"},
+          {antigravity_log, "Complete", "Google Antigravity"}
         ] do
       {:ok, _view, detail} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
 
       assert detail =~ "Protocol"
       assert detail =~ "Operation"
       assert detail =~ "Usage observation"
-      assert detail =~ "Google GenerateContent"
+      assert detail =~ protocol
       assert detail =~ expected
     end
+
+    {:ok, _view, detail} = live_with_sandbox(conn, "/system/logs/llm/#{antigravity_log.id}")
+    assert detail =~ "Google Antigravity"
+    assert detail =~ "Stream Generate Content"
   end
 
   test "llm logs fall back to client ID when the client no longer exists", %{conn: conn} do

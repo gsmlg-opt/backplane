@@ -79,7 +79,7 @@ defmodule Backplane.Admin.LogsLlmLive do
             <div><dt class="text-on-surface-variant">Outcome</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
             <div><dt class="text-on-surface-variant">Status</dt><dd>{@record.status || "-"}</dd></div>
             <div><dt class="text-on-surface-variant">Protocol</dt><dd>{protocol_label(@record.api_surface)}</dd></div>
-            <div><dt class="text-on-surface-variant">Operation</dt><dd>{@record.operation || "Unknown"}</dd></div>
+            <div><dt class="text-on-surface-variant">Operation</dt><dd>{operation_label(@record.operation)}</dd></div>
             <div><dt class="text-on-surface-variant">Usage observation</dt><dd>{usage_observation(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
             <div><dt class="text-on-surface-variant">Tokens</dt><dd>{token_summary(@record)}</dd></div>
@@ -139,7 +139,7 @@ defmodule Backplane.Admin.LogsLlmLive do
           </.link>
         </:col>
         <:col :let={row} label="Protocol">{protocol_label(row.api_surface)}</:col>
-        <:col :let={row} label="Operation">{row.operation || "Unknown"}</:col>
+        <:col :let={row} label="Operation">{operation_label(row.operation)}</:col>
         <:col :let={row} label="Usage observation">{usage_observation(row)}</:col>
         <:col :let={row} label="Outcome">
           <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
@@ -237,11 +237,20 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp client_label(_record), do: "-"
 
   defp protocol_label("google_generate_content"), do: "Google GenerateContent"
+  defp protocol_label("google_antigravity"), do: "Google Antigravity"
   defp protocol_label("openai_chat_completions"), do: "OpenAI Chat Completions"
   defp protocol_label("openai_responses"), do: "OpenAI Responses"
   defp protocol_label("anthropic_messages"), do: "Anthropic Messages"
   defp protocol_label(nil), do: "Unknown"
   defp protocol_label(value), do: value
+
+  defp operation_label("load_code_assist"), do: "Load Code Assist"
+  defp operation_label("onboard_user"), do: "Onboard User"
+  defp operation_label("fetch_available_models"), do: "Fetch Available Models"
+  defp operation_label("generate_content"), do: "Generate Content"
+  defp operation_label("stream_generate_content"), do: "Stream Generate Content"
+  defp operation_label(nil), do: "Unknown"
+  defp operation_label(value), do: value
 
   defp usage_observation(%{metadata: metadata}) when is_map(metadata) do
     observation =

@@ -395,7 +395,8 @@ defmodule Backplane.Admin.ProviderShowLive do
       enabled: truthy?(params["#{prefix}_enabled"]),
       default_headers: decode_json_map(params["#{prefix}_default_headers"]),
       model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
-      model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"])
+      model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"]),
+      backend_config: backend_config_from_params(surface, params)
     }
 
     attrs =
@@ -596,11 +597,35 @@ defmodule Backplane.Admin.ProviderShowLive do
       |> Map.put("#{prefix}_model_discovery_enabled", api_enabled(api, :model_discovery_enabled))
       |> Map.put("#{prefix}_model_discovery_path", api_value(api, :model_discovery_path))
       |> Map.put("#{prefix}_default_headers", encode_json_map(api_headers(api)))
+      |> put_backend_config_params(api)
 
     Enum.reduce(protocols_for(provider, api), params, fn protocol, params ->
       Map.put(params, "#{protocol}_enabled", protocol_enabled(api, protocol))
     end)
   end
+
+  defp put_backend_config_params(params, %{api_surface: :antigravity} = api) do
+    config = Map.get(api, :backend_config, %{}) || %{}
+
+    params
+    |> Map.put("antigravity_project_id", Map.get(config, "project_id", ""))
+    |> Map.put("antigravity_user_agent", Map.get(config, "user_agent", ""))
+    |> Map.put("antigravity_client_version", Map.get(config, "client_version", ""))
+  end
+
+  defp put_backend_config_params(params, _api), do: params
+
+  defp backend_config_from_params(:antigravity, params) do
+    %{
+      "project_id" => blank_to_nil(params["antigravity_project_id"]),
+      "user_agent" => blank_to_nil(params["antigravity_user_agent"]),
+      "client_version" => blank_to_nil(params["antigravity_client_version"])
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp backend_config_from_params(_surface, _params), do: %{}
 
   defp model_defaults do
     %{
@@ -708,15 +733,18 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp surface_label("openai"), do: "OpenAI-compatible"
   defp surface_label("anthropic"), do: "Anthropic Messages"
   defp surface_label("google"), do: "Google GenerateContent"
+  defp surface_label("antigravity"), do: "Google Antigravity"
 
   defp api_label(:openai), do: "OpenAI"
   defp api_label(:anthropic), do: "Anthropic"
   defp api_label(:google), do: "Google"
+  defp api_label(:antigravity), do: "Antigravity"
   defp api_label(other), do: to_string(other)
 
   defp badge_variant(:openai), do: "info"
   defp badge_variant(:anthropic), do: "tertiary"
   defp badge_variant(:google), do: "success"
+  defp badge_variant(:antigravity), do: "warning"
   defp badge_variant(_), do: "neutral"
 
   defp enabled_variant(true), do: "success"
@@ -957,6 +985,10 @@ defmodule Backplane.Admin.ProviderShowLive do
                 :if={google_model_metadata(model, @provider)}
                 metadata={google_model_metadata(model, @provider)}
               />
+              <.antigravity_model_metadata
+                :if={antigravity_model_metadata(model, @provider)}
+                metadata={antigravity_model_metadata(model, @provider)}
+              />
             </div>
           </:col>
           <:col :let={model} label="Status">
@@ -1101,6 +1133,38 @@ defmodule Backplane.Admin.ProviderShowLive do
     """
   end
 
+  defp antigravity_model_metadata(model, provider) do
+    api_ids =
+      provider.apis
+      |> Enum.filter(&(&1.api_surface == :antigravity))
+      |> MapSet.new(& &1.id)
+
+    case Enum.filter(model.surfaces || [], &MapSet.member?(api_ids, &1.provider_api_id)) do
+      [] -> nil
+      surfaces -> Enum.reduce(surfaces, model.metadata || %{}, &Map.merge(&2, &1.metadata || %{}))
+    end
+  end
+
+  attr(:metadata, :map, required: true)
+
+  defp antigravity_model_metadata(assigns) do
+    ~H"""
+    <dl class="mt-2 space-y-1 text-xs text-on-surface-variant">
+      <div>Native display name: {metadata_value(@metadata, ["displayName"])}</div>
+      <div>Quota: {native_metadata_value(@metadata, "quotaInfo")}</div>
+      <div>Native metadata: <code>{encode_json_map(@metadata)}</code></div>
+    </dl>
+    """
+  end
+
+  defp native_metadata_value(metadata, key) do
+    case Map.get(metadata, key) do
+      value when value in [nil, ""] -> "Unavailable"
+      value when is_map(value) or is_list(value) -> Jason.encode!(value)
+      value -> to_string(value)
+    end
+  end
+
   defp api_form_section(assigns) do
     ~H"""
     <div class="rounded-md border border-outline-variant p-4">
@@ -1129,6 +1193,27 @@ defmodule Backplane.Admin.ProviderShowLive do
             value={field_value(@form, @key, "base_url")}
           />
           <.error errors={@errors} field={"#{@key}_base_url"} />
+        </div>
+
+        <div :if={@key == "antigravity"} class="space-y-4">
+          <.dm_input
+            id="provider-antigravity-project-id"
+            name="provider[antigravity_project_id]"
+            label="Project ID"
+            value={field_value(@form, "antigravity", "project_id")}
+          />
+          <.dm_input
+            id="provider-antigravity-user-agent"
+            name="provider[antigravity_user_agent]"
+            label="User Agent"
+            value={field_value(@form, "antigravity", "user_agent")}
+          />
+          <.dm_input
+            id="provider-antigravity-client-version"
+            name="provider[antigravity_client_version]"
+            label="Client Version"
+            value={field_value(@form, "antigravity", "client_version")}
+          />
         </div>
 
         <div :if={@protocols != []} class="space-y-2">
@@ -1268,10 +1353,12 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp supported_protocols(:openai), do: [:openai_chat_completions, :openai_responses]
   defp supported_protocols(:anthropic), do: [:anthropic_messages]
   defp supported_protocols(:google), do: [:google_generate_content]
+  defp supported_protocols(:antigravity), do: [:google_antigravity]
 
   defp surface_title(:openai), do: "OpenAI-compatible API"
   defp surface_title(:anthropic), do: "Anthropic Messages API"
   defp surface_title(:google), do: "Google GenerateContent API"
+  defp surface_title(:antigravity), do: "Google Antigravity Native API"
 
   defp protocol_input_name(_key, protocol), do: "provider[#{protocol}_enabled]"
 
@@ -1282,6 +1369,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp protocol_label(:openai_responses), do: "Responses"
   defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
   defp protocol_label(:google_generate_content), do: "Google GenerateContent"
+  defp protocol_label(:google_antigravity), do: "Google Antigravity"
 
   defp protocol_field_value(form, protocol),
     do: form[String.to_atom("#{protocol}_enabled")].value

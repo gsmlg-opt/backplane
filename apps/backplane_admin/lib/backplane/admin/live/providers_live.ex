@@ -228,4 +228,5 @@ defmodule Backplane.Admin.ProvidersLive do
   defp protocol_label(:openai_responses), do: "Responses"
   defp protocol_label(:anthropic_messages), do: "Anthropic Messages"
   defp protocol_label(:google_generate_content), do: "Google GenerateContent"
+  defp protocol_label(:google_antigravity), do: "Google Antigravity"
 end
