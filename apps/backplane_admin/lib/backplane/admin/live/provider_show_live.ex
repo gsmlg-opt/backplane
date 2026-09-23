@@ -291,8 +291,13 @@ defmodule Backplane.Admin.ProviderShowLive do
         models:
           provider.models
           |> List.wrap()
+          |> Enum.reject(&hidden_stale_discovered_model?/1)
           |> Enum.sort_by(& &1.model)
     }
+  end
+
+  defp hidden_stale_discovered_model?(model) do
+    model.source == :discovered and not model.enabled and model.surfaces == []
   end
 
   defp load_credentials(socket) do

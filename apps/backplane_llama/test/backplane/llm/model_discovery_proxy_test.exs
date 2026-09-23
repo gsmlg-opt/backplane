@@ -296,6 +296,10 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
     provider: provider,
     api: api
   } do
+    Application.put_env(:backplane, :openai_codex_client_version, "0.0.0")
+
+    on_exit(fn -> Application.delete_env(:backplane, :openai_codex_client_version) end)
+
     {:ok, _api} =
       ProviderApi.update(api, %{
         base_url: "https://codex-gateway.internal/backend-api/codex",
@@ -320,10 +324,14 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
   test "uses the Codex compatibility client version when none is configured", %{
     provider: provider
   } do
+    Application.put_env(:backplane, :openai_codex_client_version, "0.0.0")
     previous_env = System.get_env("OPENAI_CODEX_CLIENT_VERSION")
     System.delete_env("OPENAI_CODEX_CLIENT_VERSION")
 
-    on_exit(fn -> restore_system_env("OPENAI_CODEX_CLIENT_VERSION", previous_env) end)
+    on_exit(fn ->
+      Application.delete_env(:backplane, :openai_codex_client_version)
+      restore_system_env("OPENAI_CODEX_CLIENT_VERSION", previous_env)
+    end)
 
     Req.Test.stub(__MODULE__, fn conn ->
       assert conn.query_string == "client_version=0.0.0"

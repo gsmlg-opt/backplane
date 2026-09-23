@@ -814,6 +814,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       refute stale_model.enabled
       refute ProviderModelSurface.get_by_model_and_api(stale_model.id, api.id)
+      refute html =~ "provider-stale-model"
     end
 
     test "shows Google native model metadata and discovery state without inferring unknown capabilities",

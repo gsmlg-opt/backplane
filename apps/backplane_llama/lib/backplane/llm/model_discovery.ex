@@ -6,6 +6,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   import Ecto.Query
 
   alias Backplane.LLM.{
+    CodexVersion,
     CredentialPlug,
     OpenAICodex,
     Provider,
@@ -29,7 +30,6 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   @discovery_stale_key "backplane_discovery_stale"
-  @default_openai_codex_client_version "0.0.0"
   @request_timeout_ms 30_000
   @max_google_pages 1_000
 
@@ -1009,10 +1009,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   defp put_codex_client_version(url) do
-    client_version =
-      Application.get_env(:backplane, :openai_codex_client_version) ||
-        System.get_env("OPENAI_CODEX_CLIENT_VERSION") ||
-        @default_openai_codex_client_version
+    client_version = CodexVersion.current()
 
     uri = URI.parse(url)
     query = URI.decode_query(uri.query || "")

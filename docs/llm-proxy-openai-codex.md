@@ -53,10 +53,14 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
-Management discovery always sends `client_version`; it uses the backend's
-compatibility sentinel `0.0.0` unless `OPENAI_CODEX_CLIENT_VERSION` or the
-`:openai_codex_client_version` application setting overrides it. Direct client
-query parameters are forwarded unchanged.
+Management discovery always sends `client_version`. An explicit
+`OPENAI_CODEX_CLIENT_VERSION` environment variable or
+`:openai_codex_client_version` application setting takes precedence; otherwise
+Backplane fetches the latest non-draft GitHub release from
+`openai/codex` and uses its semantic version. If GitHub is unavailable, it
+uses the installed `codex --version` result and then falls back to the backend
+compatibility sentinel `0.0.0`. Direct client query parameters are forwarded
+unchanged.
 
 ## Credential requirements
 
