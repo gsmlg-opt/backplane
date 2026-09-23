@@ -1,0 +1,51 @@
+{
+  "loadCodeAssist": {
+    "allowedTiers": [{"id": "standard-tier", "isDefault": true}],
+    "cloudaicompanionProject": {"id": "example-project"}
+  },
+  "onboardPending": {"done": false},
+  "onboardDone": {
+    "done": true,
+    "response": {"cloudaicompanionProject": {"id": "example-project"}}
+  },
+  "models": {
+    "models": {
+      "gemini-example": {
+        "displayName": "Gemini Example",
+        "quotaInfo": {"remainingFraction": 0.75, "resetTime": "2099-01-01T00:00:00Z"},
+        "unknownNativeField": {"keep": true}
+      }
+    }
+  },
+  "toolResponse": {
+    "response": {
+      "responseId": "response-example",
+      "candidates": [
+        {
+          "index": 0,
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {"name": "lookup", "args": {"city": "Shanghai"}},
+                "thoughtSignature": "opaque-signature"
+              }
+            ]
+          },
+          "finishReason": "STOP"
+        },
+        {
+          "index": 1,
+          "content": {"role": "model", "parts": [{"text": "alternate"}]},
+          "finishReason": "MAX_TOKENS"
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 12,
+        "candidatesTokenCount": 8,
+        "totalTokenCount": 20
+      },
+      "unknownResponseField": [1, 2, 3]
+    }
+  }
+}

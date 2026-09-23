@@ -101,6 +101,39 @@ The package verifier builds and unpacks a real Hex archive and runs an independe
 consumer against that artifact. This portability check does not imply that the
 Backplane production runtime dispatches Google traffic through the codec.
 
+## Antigravity native protocol
+
+`Backplane.AiProtocol.Antigravity` provides a pure native protocol facade for
+the five evidenced Cloud Code RPCs: `loadCodeAssist`, `onboardUser`,
+`fetchAvailableModels`, `generateContent`, and `streamGenerateContent`. It does
+not perform HTTP calls, look up OAuth credentials, choose endpoints, enroll
+accounts automatically, or translate OpenAI/Anthropic messages.
+
+Hosts call `build_request/3` with a native body plus trusted bindings. Generation
+requires `:project`; optional `:model`, `:session_id`, and `:request_id` bindings
+must agree with caller fields. The returned descriptor contains no credentials:
+
+```elixir
+{:ok, descriptor} =
+  Backplane.AiProtocol.Antigravity.build_request(
+    :generate_content,
+    %{"request" => %{"contents" => contents}},
+    project: "configured-project",
+    model: "gemini-example"
+  )
+```
+
+`decode_response/5` and the stream functions preserve native envelopes and
+unknown fields. `project/1`, `models/1`, and `onboarding_status/1` expose only
+fields actually returned upstream. `Antigravity.Observer` extracts bounded,
+sanitized Google-shaped usage facts with source `:google_antigravity`; it never
+rewrites bytes forwarded by the host.
+
+The host owns endpoint selection, OAuth injection, authorization, retries,
+polling, persistence, and transport cancellation. In particular, the package
+does not contain OAuth client secrets, a fallback project, a Node client
+fingerprint, prompt modifications, model-name inference, or a signature cache.
+
 ## Source notices
 
 See [`SOURCE_NOTES.md`](SOURCE_NOTES.md) for the pinned extraction candidates
