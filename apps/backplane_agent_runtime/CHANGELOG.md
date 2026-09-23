@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Scope provider output accounting to each provider response so multi-step tool
+  conversations do not consume one cumulative turn limit. Include the limit,
+  observed size, and accounting scope when an event stream exceeds its bound.
 - Add explicit strict batch tool admission with opt-in schema quarantine at the
   ToolCatalog/Conversation boundary. Quarantine only removes direct
   `:unsupported_capability` schema results and returns accepted/rejected bundle

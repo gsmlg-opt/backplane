@@ -564,6 +564,40 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 
+  test "provider output accounting resets for each tool continuation" do
+    {pid, _} = start(output_limit: 600)
+    {:ok, _} = Conversation.prompt(pid, "use several tools")
+
+    for {tool_id, final_text} <- [{"tc1", "first"}, {"tc2", "second"}] do
+      assert_receive {:provider, _, provider}
+
+      send(provider, {
+        :events,
+        [
+          %{type: :content_text_delta, delta: String.duplicate("x", 300)},
+          %{
+            type: :tool_call_completed,
+            tool_call: %{id: tool_id, name: "read", arguments: %{"path" => "x"}}
+          },
+          done(final_text)
+        ]
+      })
+
+      assert_receive {:tool, _, tool}
+      send(tool, {:result, {:ok, %{text: "read #{tool_id}"}}})
+    end
+
+    assert_receive {:provider, _, provider}
+
+    send(
+      provider,
+      {:events,
+       [%{type: :content_text_delta, delta: String.duplicate("x", 300)}, done("complete")]}
+    )
+
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
   test "an unused default-annotated tool schema does not block the provider" do
     assert {:ok, registry} = default_annotated_registry()
 

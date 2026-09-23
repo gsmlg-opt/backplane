@@ -13,6 +13,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   alias Backplane.AgentRuntime.Kernel, as: RunKernel
 
+  @default_output_limit 1_048_576
+
   @moduledoc """
   Single authoritative owner of a bounded embedded conversation.
 
@@ -224,12 +226,17 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_call({:chunk, token, event}, _from, s) do
     if current_effect?(s, token) and is_map(event) do
       bytes = s.bytes + :erlang.external_size(event)
+      limit = output_limit(s.opts)
 
-      if bytes <= Keyword.get(s.opts, :output_limit, 1_048_576) do
+      if bytes <= limit do
         emit(s, event)
         {:reply, :ok, %{s | bytes: bytes}}
       else
-        {:reply, {:error, Error.new(:resource_conflict, "provider output limit exceeded")}, s}
+        {:reply,
+         {:error,
+          Error.new(:resource_conflict, "provider output limit exceeded",
+            details: %{limit: limit, size: bytes, scope: :provider_response}
+          )}, s}
       end
     else
       {:reply, {:error, Error.new(:resource_conflict, "stale stream")}, s}
@@ -607,7 +614,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         {:error, "provider ended without terminal event"}
 
       {:ok, response} ->
-        if :erlang.external_size(response) <= Keyword.get(s.opts, :output_limit, 1_048_576),
+        if :erlang.external_size(response) <= output_limit(s.opts),
           do: {:ok, response},
           else: {:error, "provider result exceeds output limit"}
 
@@ -637,6 +644,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       end)
     end
   end
+
+  defp output_limit(opts), do: Keyword.get(opts, :output_limit, @default_output_limit)
 
   defp collect(acc, %{
          type: :tool_call_completed,
