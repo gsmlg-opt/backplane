@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: refs/heads/main
 
@@ -76,7 +76,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore Mix cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: deps
           key: release-memory-v2-qualification-v2-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
@@ -281,7 +281,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
 
@@ -309,7 +309,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Restore Mix cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             deps
@@ -407,12 +407,12 @@ jobs:
 
     steps:
       - name: Checkout authoritative migration inventory
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
 
       - name: Download Linux x64 Backplane release
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: backplane-linux-x64
           path: dist
@@ -552,7 +552,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
 
@@ -588,7 +588,7 @@ jobs:
           EOF
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -632,7 +632,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
 
@@ -648,7 +648,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore Mix cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             deps

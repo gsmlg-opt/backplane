@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -108,7 +108,7 @@ jobs:
           echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
 
       - name: Restore dependencies cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
