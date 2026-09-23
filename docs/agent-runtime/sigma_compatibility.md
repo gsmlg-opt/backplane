@@ -52,7 +52,7 @@ entry. Historical PRD/design/plan/baseline milestone claims are not current proo
 
 See the shipped [embedded adapter guide](../../apps/backplane_agent_runtime/EMBEDDING.md),
 [executable example](../../apps/backplane_agent_runtime/examples/embedded.exs),
-[schema subset](../../apps/backplane_agent_runtime/SCHEMAS.md), and
+[schema boundary](../../apps/backplane_agent_runtime/SCHEMAS.md), and
 [persistence contract](../../apps/backplane_agent_runtime/PERSISTENCE.md).
 
 The isolated conversation consumer uses deterministic provider/tool doubles and
@@ -109,7 +109,7 @@ checkout. It ran:
 | `mix compile --warnings-as-errors` | Passed |
 | `mix docs --warnings-as-errors` | Passed; README, embedding, persistence, schemas and changelog included |
 | Package `mix test` | **232 tests, 0 failures** |
-| `mix hex.build`, artifact metadata/content and production-dependency checks | Passed; **zero production dependencies** |
+| `mix hex.build`, artifact metadata/content and production-dependency checks | Passed; the package now requires `jsonschex` (with `ex_json_pointer`) in production |
 | Existing empty_tool, bundled_basic and fake_backend consumers | All passed against the same artifact |
 | Packaged `examples/embedded.exs` executed from an artifact consumer | Passed |
 | Installed-artifact Conversation, schema and store conformance tests | **33 tests, 0 failures** |
@@ -136,7 +136,7 @@ ExUnit.configure(
   exclude: [:test],
   include: [
     test: :"test umbrella releases version and publish the Hex package",
-    test: :"test published agent runtime provides a documentation task without production dependencies"
+    test: :"test published agent runtime documents its JSON Schema production dependency"
   ]
 )
 Code.require_file("test/release_config_test.exs")'

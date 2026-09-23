@@ -121,9 +121,10 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
   end
 
-  test "published agent runtime provides a documentation task without production dependencies" do
+  test "published agent runtime documents its JSON Schema production dependency" do
     package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
 
+    assert package_mix =~ "{:jsonschex, \"~> 0.10.0\"}"
     assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: :dev, runtime: false}"
     assert package_mix =~ "main: \"readme\""
 

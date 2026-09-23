@@ -40,7 +40,7 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
 
     registry = registry("read", 1, unsupported)
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
+    assert {:error, %Error{class: :validation, details: %{reference: "#/$defs/unused"}}} =
              ToolCatalog.validate(update(registry, 1, 2), 1, run())
   end
 
@@ -55,7 +55,7 @@ defmodule Backplane.AgentRuntime.ToolCatalogTest do
 
     registry = registry("read", 1, unsupported)
 
-    assert {:error, %Error{class: :unsupported_capability, details: %{keyword: "$ref"}}} =
+    assert {:error, %Error{class: :validation, details: %{reference: "#/$defs/metadata"}}} =
              ToolCatalog.validate(update(registry, 1, 2), 1, run())
   end
 

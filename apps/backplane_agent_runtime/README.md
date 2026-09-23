@@ -1,15 +1,18 @@
 # Backplane Agent Runtime
 
-A dependency-free embedded OTP execution package. Hosts own sessions, repositories,
+A standalone embedded OTP execution package. Hosts own sessions, repositories,
 configuration, history, UI and public protocols. Optional tools and their backends
 start only when selected by the host. No Phoenix, database, Sigma or Backplane
 server application is required.
+
+The package uses `jsonschex 0.10.0` as its production JSON Schema Draft
+2020-12 engine; it is intentionally not dependency-free.
 
 `Backplane.AgentRuntime.Conversation` drives prompt → lazy provider stream →
 authorized tools → provider continuation → settlement. It is an alternative owner
 to the existing explicit-command `ExecutionController`, not another controller to
 run beside it. See [EMBEDDING.md](EMBEDDING.md) for contracts and an example,
-[SCHEMAS.md](SCHEMAS.md) for the strict tool-schema subset, and
+[SCHEMAS.md](SCHEMAS.md) for the Draft 2020-12 tool-schema boundary, and
 [PERSISTENCE.md](PERSISTENCE.md) for host storage and recovery requirements.
 
 `examples/embedded.exs` is a deterministic complete provider/tool turn. Run it

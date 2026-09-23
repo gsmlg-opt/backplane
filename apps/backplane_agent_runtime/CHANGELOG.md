@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.3
+
+- Replace the hand-written schema subset with `jsonschex 0.10.0`, targeting
+  JSON Schema Draft 2020-12 across the catalog preflight and execution gateway.
+- Add fixed-commit official Draft 2020-12 conformance coverage, explicit
+  external schema registries/loaders, dialect/vocabulary checks, boolean and
+  recursive references, and bounded schema/input resource handling.
+- Document format/content annotation defaults and the production dependency;
+  the package is no longer dependency-free.
+
 ## 1.8.2
 
 - Accept the current MCP input-schema forms reported in issue #46: string

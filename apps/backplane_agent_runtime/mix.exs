@@ -25,6 +25,7 @@ defmodule Backplane.AgentRuntime.MixProject do
 
   defp deps do
     [
+      {:jsonschex, "~> 0.10.0"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end

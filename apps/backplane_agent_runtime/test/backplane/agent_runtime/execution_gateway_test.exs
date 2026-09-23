@@ -94,7 +94,7 @@ defmodule Backplane.AgentRuntime.ExecutionGatewayTest do
     refute Map.has_key?(operation, :committed)
   end
 
-  test "unsupported schema constraints fail before dispatch" do
+  test "invalid schema references fail before dispatch" do
     {_registry, descriptor} = registry(self())
 
     unsupported =
@@ -103,7 +103,11 @@ defmodule Backplane.AgentRuntime.ExecutionGatewayTest do
     {:ok, registry} = ToolRegistry.register(%ToolRegistry{}, unsupported)
     {:ok, budget} = Budget.new(%{work: 1})
 
-    assert {:error, %Error{class: :unsupported_capability}} =
+    assert {:error,
+            %Error{
+              class: :validation,
+              message: "schema reference could not be resolved"
+            }} =
              Execution.run(
                EphemeralStore,
                new_store(),

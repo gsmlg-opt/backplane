@@ -64,9 +64,13 @@ if rg -n 'in_umbrella:|path:' "$unpacked/mix.exs"; then
   exit 1
 fi
 
-dependencies="$(cd "$unpacked" && MIX_ENV=prod "${mix_command[@]}" deps)"
-if [[ -n "$dependencies" ]]; then
-  printf 'The artifact unexpectedly resolves production dependencies:\n%s\n' "$dependencies" >&2
+dependencies="$(cd "$unpacked" && MIX_ENV=prod "${mix_command[@]}" deps.tree --only prod)"
+if ! grep -q 'jsonschex ~> 0.10.0' <<<"$dependencies"; then
+  printf 'The artifact is missing its required JSON Schema production dependency:\n%s\n' "$dependencies" >&2
+  exit 1
+fi
+if grep -Eq 'backplane_(system|api|admin|mcp|llama|skills)|phoenix|ecto|postgrex' <<<"$dependencies"; then
+  printf 'The artifact unexpectedly resolves umbrella or server dependencies:\n%s\n' "$dependencies" >&2
   exit 1
 fi
 

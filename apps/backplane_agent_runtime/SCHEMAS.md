@@ -1,120 +1,96 @@
-# Tool input schema support
+# Tool Input Schemas
 
-`Backplane.AgentRuntime.InputSchema` validates tool arguments at the execution
-gateway. It implements a dependency-free, explicit subset of JSON Schema; it
-is not a general JSON Schema validator.
+`Backplane.AgentRuntime.InputSchema` is the MCP tool-call boundary. Schema
+semantics are provided by `jsonschex 0.10.0`, whose target is JSON Schema Draft
+2020-12. The runtime keeps the existing `validate_schema/1` and `validate/2`
+contracts and adds optional `opts` forms for explicit external schema
+registries/loaders.
 
-Tool schemas must have an object root. String and atom keys are accepted for
-host-authored schemas. The supported keywords are:
+## Dialect And Vocabularies
 
-| Keyword | Supported use |
-| --- | --- |
-| `type` | `object`, `array`, `string`, `integer`, `number`, `boolean`, or `null`; a non-empty unique list forms a union |
-| `properties` | Object property schemas, validated recursively |
-| `required` | A list of string property names |
-| `additionalProperties` | Boolean object policy or a schema applied to every additional property; `additional_properties` is also accepted for Elixir callers |
-| `description` | Annotation only |
-| `default` | Annotation only; never inserted into tool arguments or validated against the schema |
-| `format`, `contentEncoding`, `$schema`, `x-mcp-header` | String annotations only; values are retained by the host but not interpreted or asserted |
-| `enum` | A list of JSON values; the value must equal one choice |
-| `minimum` | Inclusive numeric lower bound on `integer` and `number` values |
-| `maximum` | Inclusive numeric upper bound on `integer` and `number` values |
-| `minLength` | Minimum Unicode code-point count for strings |
-| `pattern` | Regular-expression search constraint for strings, within the portable subset below |
-| `items` | One recursively validated schema for every array item |
-| `minItems`, `maxItems` | Inclusive array length bounds |
-| `oneOf` | A non-empty list of schemas; the value must match exactly one branch |
-| `anyOf` | A non-empty list of schemas; the value must match at least one branch |
-| `not` | One recursively validated schema that the value must not match |
+The supported dialect is exactly:
 
-A `oneOf` schema may be used alone for nested scalar or object alternatives, or
-alongside supported object keywords. In the latter form, the object siblings
-must all match and exactly one `oneOf` branch must match. Object branches may
-omit `type`; object assertions in those branches apply when the value is an
-object. This works at the tool root, in nested properties, and in array items.
-Combining `oneOf` and `anyOf` in the same schema remains unsupported.
+`https://json-schema.org/draft/2020-12/schema`
 
-Object constraints apply at every nesting level, so nested `required`, property
-types, `additionalProperties`, and typed object `enum` rules are enforced.
-`default` is accepted on every supported schema, including nested properties,
-array items, composition branches, and composition siblings.
+The `$schema` keyword may be omitted or may include the canonical URI with a
+trailing `#`. Older drafts, unknown dialect URIs, and unsupported required
+vocabularies return `:unsupported_capability`; they are never interpreted as a
+different draft. The original schema is retained by the tool descriptor and is
+never made less restrictive to pass validation.
 
-Nested schemas may omit `type`. An empty schema accepts every value in the JSON
-input domain. Assertions without an explicit type follow JSON Schema keyword
-applicability: numeric bounds apply only to numbers, string constraints only to
-strings, array constraints only to arrays, and object constraints only to
-objects. Thus a `required`-only composition branch tests object values without
-turning scalar values into objects. The tool schema root remains object-only.
+The standard core, applicator, validation, unevaluated, meta-data,
+format-annotation, and content vocabularies are supported. `format` is
+annotation-only by default. `contentEncoding`, `contentMediaType`, and
+`contentSchema` are also annotation-only by default; the runtime never decodes
+or mutates tool arguments. A host that explicitly needs assertions can pass
+`format_assertion: true` or `content_assertion: true` to the `opts` form. An
+explicit required `format-assertion` vocabulary follows the dialect contract.
 
-`enum` narrows the existing type and other constraints; it does not replace
-them. It works on object roots, typed properties, array items, and inside
-`oneOf` branches. Strings are case-sensitive, numbers compare by numeric value
-(for example, `1` equals `1.0`), and arrays/objects compare by their contents.
-Boolean values are distinct from numbers. Enum choices must be JSON values,
-including string-keyed objects; arbitrary Elixir atoms, structs, and tuples are
-not accepted as choices. An empty enum rejects every supplied value; repeated
-choices do not change membership. These membership rules follow the
-[JSON Schema enum contract](https://json-schema.org/draft/2020-12/json-schema-validation#name-enum).
-Enum-only property schemas and `enum` alongside compositions are supported.
-Annotations and defaults never modify arguments or bypass assertions.
+## Draft 2020-12 Coverage
 
-### Pattern subset
+The engine covers the complete Draft 2020-12 core, applicator, validation,
+unevaluated, and content vocabularies, including:
 
-`pattern` uses JSON Schema search semantics: an unanchored expression may match
-any substring. Patterns are limited to 1,024 UTF-8 bytes and compiled in Unicode
-mode. The supported portable subset includes literals, character classes,
-capturing and noncapturing groups, alternation, normal quantifiers, anchors, and
-escaped punctuation. It rejects other `(?...)` groups, PCRE verbs, possessive
-quantifiers, POSIX classes, backreferences, and letter or digit escapes such as
-`\u`, `\d`, and `\p`. This intentionally avoids assigning PCRE behavior to syntax
-whose ECMAScript semantics differ.
+- boolean schemas, all seven JSON types, unions, `enum`, `const`, and JSON
+  numeric/structural equality;
+- `multipleOf`, inclusive and exclusive numeric bounds, Unicode string lengths,
+  ECMA-262-compatible `pattern`, and `format` policy above;
+- `properties`, `patternProperties`, `additionalProperties`, `propertyNames`,
+  `required`, `minProperties`, `maxProperties`, `dependentRequired`, and
+  `dependentSchemas`;
+- `prefixItems`, `items`, `contains`, `minContains`, `maxContains`,
+  `minItems`, `maxItems`, and `uniqueItems`;
+- arbitrary nesting and coexistence of `allOf`, `anyOf`, `oneOf`, `not`,
+  `if`/`then`/`else`, including sibling keywords next to `$ref`;
+- `$id`, `$schema`, `$defs`, `$ref`, `$anchor`, `$dynamicRef`,
+  `$dynamicAnchor`, reference scopes, recursive references, and dynamic scope;
+- evaluated-result propagation for `unevaluatedProperties` and
+  `unevaluatedItems` across composition branches and references.
 
-Before compilation, an unescaped `.` outside a character class is translated to
-exclude LF, CR, U+2028, and U+2029, and an unescaped `$` outside a character class
-is translated to absolute end-of-input. These preserve ECMAScript behavior on
-the underlying PCRE engine. Matching has a fixed engine work limit. Exhausting
-that limit returns an `:execution_failure` and propagates through `not`, `oneOf`,
-and `anyOf`; it is never treated as an ordinary branch mismatch.
+The package's official Draft 2020-12 test suite is vendored at
+`test/fixtures/json_schema_test_suite` and pinned by `COMMIT`. The required
+non-optional suite is run by `json_schema_draft202012_test.exs`; optional format
+and content assertion behavior is tested separately according to the policy
+above.
 
-The validator first checks the complete schema, including absent properties
-and every composition branch. An unknown keyword or unsupported type returns
-an `:unsupported_capability` error. A malformed supported schema or arguments
-that do not satisfy a supported constraint return a `:validation` error. The
-execution gateway performs this check before authorization, approval,
-budget reservation, durable intent commit, or backend invocation.
+## Runtime Boundary
 
-Hosts can call `InputSchema.validate_schema/1` to preflight the complete schema
-without supplying placeholder arguments. Catalog publication uses this boundary
-before making a revised registry visible.
+Tool schemas must be maps with an object root. A missing root `type` retains the
+MCP object boundary; an explicit root union is rejected unless it is exactly
+`"object"` (or `["object"]`). Nested schemas may be maps or boolean schemas.
 
-Keywords outside the table are unsupported. This includes `$ref`, `$defs`,
-`const`, `allOf`, tuple-style `items`, string maximum length, and exclusive
-numeric bounds. Hosts must not strip these constraints. They should surface the
-runtime error or use a different validator/backend boundary whose contract
-supports the complete schema.
+Elixir host schemas may use atom keys and atom values only for the `type`
+keyword. Keys are converted to existing strings with `Atom.to_string/1`; no
+untrusted atoms are created. The input argument term is returned unchanged:
+there are no defaults, coercions, unknown-property trimming, or default-based
+authorization decisions.
 
-## Sigma and MCP boundary
+External references are never fetched implicitly. Pass either:
 
-The original nine Sigma coding-tool fixtures come from
-`143c8db27f5f3d32efc5dafffb2755dba1daa23b` and retain `minimum`, nested
-`items`, nested object, and `oneOf` constraints. The todo-tool fixture comes from
-`5114a42efe449ca2a5b91aa8e40df8aba27c04e4` and retains both the `action` and
-`status` enums. The optional read-only source probe checks these ten actual
-schema functions and drives a todo call through the adapted provider stream.
+```elixir
+InputSchema.validate(schema, arguments,
+  schema_registry: %{"https://example.test/name" => %{"type" => "string"}}
+)
+```
 
-Sigma can receive arbitrary `inputSchema` maps from MCP `tools/list`; MCP does
-not restrict those maps to this package's subset. A Sigma adapter may register
-such a descriptor unchanged, but execution will reject unsupported schema
-features before invoking the MCP tool. Supporting additional MCP schemas
-requires an explicit package change with validation tests; silently dropping
-constraints is not supported.
+or an explicit `schema_loader: &loader/1`. Missing local references and failed
+explicit loads are reported before catalog publication or backend invocation.
 
-The issue #46 fixture is a sanitized, schema-only capture of the 58 tools exposed
-by the locally configured hub on 2026-09-23. Each record contains only the tool
-name and `inputSchema`; it contains no invocation arguments or credentials. It
-proves that captured catalog plus focused forms reported by the requester. The
-requester's separate 70-schema catalog was not available when this support was
-implemented and remains a distinct live compatibility gate.
+Schema size, nesting, node, reference, and input-shape limits fail closed with
+`:execution_failure`. Validator execution failures are not converted into
+ordinary `oneOf`/`anyOf`/`not` mismatches. Schema compilation errors are
+`:validation`, while unsupported dialect/vocabulary capability errors are
+`:unsupported_capability`.
 
-This document concerns tool-call input validation. Sigma's MCP elicitation UI
-has its own narrower form-rendering boundary and remains a host concern.
+`ToolCatalog` preflight and the `Execution`/`Conversation` gateways call this
+same boundary. The check occurs before authorization, approval, budget
+reservation, durable intent publication, or backend dispatch.
+
+## Compatibility Evidence
+
+- Issue #45 oneOf/object sibling composition remains covered by the existing
+  catalog and execution regressions.
+- Issue #46 and the captured Sigma/MCP schema fixtures remain catalog-preflight
+  inputs; schemas are retained unchanged and validated by Draft 2020-12.
+- The package now has a production dependency on `jsonschex` and
+  `ex_json_pointer`; it is no longer a dependency-free artifact.
