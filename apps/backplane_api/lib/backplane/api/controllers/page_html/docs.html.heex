@@ -84,11 +84,23 @@
       <p class="mt-4 max-w-3xl text-base leading-7 text-on-surface-variant">
         Public gateway references for MCP tools, model traffic, skills, agent setup, and authentication.
       </p>
+      <div class="mt-6 grid gap-3 sm:grid-cols-2">
+        <a href={~p"/docs/mcp"} class="rounded-md border border-secondary bg-secondary-container/30 p-4 text-on-surface no-underline hover:bg-secondary-container">
+          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Tools</span><code class="text-xs text-secondary">/mcp</code></div>
+          <p class="mt-2 text-sm font-semibold">MCP Hub</p>
+          <p class="mt-1 text-xs leading-5 text-on-surface-variant">Streamable HTTP, OAuth discovery, and namespaced tools.</p>
+        </a>
+        <a href={~p"/docs/llm"} class="rounded-md border border-primary bg-primary-container/30 p-4 text-on-surface no-underline hover:bg-primary-container">
+          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Models</span><code class="text-xs text-primary">/v1</code></div>
+          <p class="mt-2 text-sm font-semibold">LLM proxy</p>
+          <p class="mt-1 text-xs leading-5 text-on-surface-variant">Compatible model APIs with resource-bound access tokens.</p>
+        </a>
+      </div>
     </header>
 
     <div class="grid min-w-0 gap-8 py-8 lg:grid-cols-[16rem_minmax(0,1fr)]">
       <aside class="lg:sticky lg:top-24 lg:self-start">
-        <div class="mb-3 text-sm font-semibold text-on-surface">Choose a guide</div>
+        <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Choose a guide</div>
         <nav class="grid gap-2" aria-label="Docs">
           <a
             href={~p"/docs"}
@@ -102,8 +114,9 @@
           >
             Overview
           </a>
+          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Use Backplane</div>
           <a
-            :for={section <- @doc_sections}
+            :for={section <- Enum.take(@doc_sections, 4)}
             href={~p"/docs/#{section.slug}"}
             class={[
               "rounded-md border px-3 py-2 text-sm no-underline",
@@ -115,6 +128,15 @@
           >
             {section.label}
           </a>
+          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Connect & secure</div>
+          <a href={~p"/docs/agents"} class={[
+            "rounded-md border px-3 py-2 text-sm no-underline",
+            if(@selected_section && @selected_section.slug == "agents", do: "border-primary bg-primary-container text-on-primary-container", else: "border-outline-variant text-on-surface hover:bg-surface-container")
+          ]}>Agent setup</a>
+          <a href={~p"/docs/authentication"} class={[
+            "rounded-md border px-3 py-2 text-sm no-underline",
+            if(@selected_section && @selected_section.slug == "authentication", do: "border-primary bg-primary-container text-on-primary-container", else: "border-outline-variant text-on-surface hover:bg-surface-container")
+          ]}>Authentication</a>
         </nav>
       </aside>
 
@@ -145,7 +167,7 @@
             </div>
 
             <section :if={Map.get(@selected_section, :steps, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">Setup</h3>
+              <h3 class="text-lg font-semibold text-on-surface">Configure your client</h3>
               <ol class="mt-3 list-decimal space-y-3 break-words pl-6 text-sm leading-6 text-on-surface-variant">
                 <li :for={step <- Map.get(@selected_section, :steps, [])}>
                   {step}
@@ -154,7 +176,7 @@
             </section>
 
             <section :if={Map.get(@selected_section, :examples, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">Examples</h3>
+              <h3 class="text-lg font-semibold text-on-surface">Request examples</h3>
               <div class="mt-3 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
                 <div
                   :for={example <- Map.get(@selected_section, :examples, [])}
@@ -167,7 +189,7 @@
             </section>
 
             <section :if={Map.get(@selected_section, :routes, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">Reference</h3>
+              <h3 class="text-lg font-semibold text-on-surface">API reference</h3>
               <div class="mt-3 flex flex-wrap gap-2">
                 <code
                   :for={route <- Map.get(@selected_section, :routes, [])}

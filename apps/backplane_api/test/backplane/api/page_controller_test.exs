@@ -260,6 +260,28 @@ defmodule Backplane.Api.PageControllerTest do
     refute authorize_example =~ "$CLIENT_SECRET"
   end
 
+  test "Google guide documents native GenAI and separate Antigravity routes", %{conn: conn} do
+    html = conn |> get("/docs/google") |> html_response(200)
+
+    for marker <- [
+          "Google GenAI and agy",
+          "google-gemini-developer",
+          "Google GenerateContent",
+          "Google Antigravity (agy)",
+          "x-goog-api-key",
+          "GET /v1beta/models",
+          "POST /v1beta/models/:model:generateContent",
+          "streamGenerateContent?alt=sse",
+          "countTokens",
+          "separate OAuth subscription surface"
+        ] do
+      assert html =~ marker
+    end
+
+    refute html =~ "/v1/v1beta"
+    refute html =~ "google-ai-studio"
+  end
+
   test "agents guide has distinct ChatGPT Claude Code and Codex configurations", %{conn: conn} do
     html = conn |> get("/docs/agents") |> html_response(200)
 

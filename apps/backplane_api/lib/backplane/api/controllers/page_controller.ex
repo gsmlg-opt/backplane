@@ -49,6 +49,7 @@ defmodule Backplane.Api.PageController do
     mcp_url = join_url(base_url, "/mcp")
     mcp_metadata_url = join_url(base_url, "/.well-known/oauth-protected-resource/mcp")
     v1_url = join_url(base_url, "/v1")
+    google_url = join_url(base_url, "/v1beta")
     v1_metadata_url = join_url(base_url, "/.well-known/oauth-protected-resource/v1")
     authorize_url = join_url(base_url, "/oauth/authorize")
     token_url = join_url(base_url, "/oauth/token")
@@ -153,6 +154,63 @@ defmodule Backplane.Api.PageController do
         ]
       },
       %{
+        slug: "google",
+        label: "Google GenAI",
+        heading: "Google GenAI and agy",
+        summary:
+          "Use the native Gemini Developer API through Backplane, or keep the existing Google Antigravity (agy) subscription route explicit and separate.",
+        entries: [
+          %{
+            title: "Gemini Developer API",
+            body:
+              "The google-gemini-developer provider uses the official Gemini GenerateContent API at /v1beta. Configure an API-key credential in the admin provider settings; Backplane injects it upstream and never forwards caller credentials. Clients may authenticate with Authorization: Bearer, x-api-key, or the Google SDK's x-goog-api-key compatibility header using the same Backplane client token."
+          },
+          %{
+            title: "Native Google GenerateContent operations",
+            body:
+              "The native Google surface supports model listing, model details, generateContent, streamGenerateContent with alt=sse, and countTokens. Use the Google-shaped request and response bodies; this route does not silently translate to OpenAI."
+          },
+          %{
+            title: "Google Antigravity (agy)",
+            body:
+              "The google-antigravity provider is a separate OAuth subscription surface for the existing agy workflow. It uses its own native Cloud Code protocol and credential; do not reuse a Gemini API key or treat Antigravity as the public Gemini Developer API."
+          }
+        ],
+        steps: [
+          "In the admin LLM provider page, create Google Gemini Developer API with the google-gemini-developer preset, bind an API-key credential, and confirm the base URL ends in /v1beta.",
+          "Grant the client llm::models and/or llm::invoke, then use the Google resource path under /v1beta with the Backplane bearer token.",
+          "For agy, select the separate google-antigravity preset and its Google OAuth credential. Keep its model aliases and project configuration separate from the Gemini API-key provider."
+        ],
+        examples: [
+          %{
+            title: "List Google models",
+            code: "curl -H \"Authorization: Bearer $LLM_ACCESS_TOKEN\" #{google_url}/models"
+          },
+          %{
+            title: "Generate content",
+            code:
+              "curl -X POST \\\n  -H \"Authorization: Bearer $LLM_ACCESS_TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  #{google_url}/models/gemini-2.5-flash:generateContent \\\n  -d '{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Hello from Backplane\"}]}]}'"
+          },
+          %{
+            title: "Stream or count tokens",
+            code:
+              "curl -N -X POST #{google_url}/models/gemini-2.5-flash:streamGenerateContent?alt=sse \\\n  -H \"Authorization: Bearer $LLM_ACCESS_TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d @request.json\n\ncurl -X POST #{google_url}/models/gemini-2.5-flash:countTokens \\\n  -H \"Authorization: Bearer $LLM_ACCESS_TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d @request.json"
+          },
+          %{
+            title: "Google GenAI SDK base URL",
+            code:
+              "# Point the SDK at the Backplane origin and pass the Backplane bearer token.\n# The native Google path is /v1beta; do not use /v1/chat/completions.\nBACKPLANE_GOOGLE_BASE_URL=#{base_url}\nBACKPLANE_LLM_ACCESS_TOKEN=$LLM_ACCESS_TOKEN"
+          }
+        ],
+        routes: [
+          "GET /v1beta/models",
+          "GET /v1beta/models/:model",
+          "POST /v1beta/models/:model:generateContent",
+          "POST /v1beta/models/:model:streamGenerateContent?alt=sse",
+          "POST /v1beta/models/:model:countTokens"
+        ]
+      },
+      %{
         slug: "skills",
         label: "Skills library",
         heading: "Skills library",
@@ -233,6 +291,11 @@ defmodule Backplane.Api.PageController do
             title: "Separate resource audiences",
             body:
               "#{mcp_url} and #{v1_url} are separate OAuth audiences. Resource-bound OAuth access tokens are audience-specific: a token issued for one resource is not valid for the other. PAT and legacy credentials follow the configured compatibility policy."
+          },
+          %{
+            title: "Credential header compatibility",
+            body:
+              "All protected API resources accept Authorization: Bearer <token>. x-api-key is an equivalent Backplane client-token alias. Google GenAI clients may also use x-goog-api-key on /v1beta; send only one credential header per request."
           },
           %{
             title: "Predefined clients and PKCE",
