@@ -155,6 +155,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       stopping: nil,
       cleanup_due: nil,
       timer: timer,
+      effect_live_deadline: nil,
+      paused_run_remaining: nil,
+      paused_effect_remaining: nil,
       callers: [],
       admission: nil,
       last_error: nil,
@@ -375,6 +378,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
       checkpoint(s, %{s.conversation | pending_interaction: interaction}, fn s ->
         emit(s, %{type: :interaction_requested, interaction_id: interaction.id, request: request})
+        s = pause_deadlines(s)
         %{s | interaction: %{id: interaction.id, from: from}, phase: :waiting_interaction}
       end)
     else
@@ -386,12 +390,20 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:resolve, id, value, from}) do
     case s.interaction do
       %{id: ^id, from: waiter} ->
-        checkpoint(s, %{s.conversation | pending_interaction: nil}, fn s ->
-          GenServer.reply(waiter, {:ok, value})
-          s = reply(s, from, :ok)
-          emit(s, %{type: :interaction_resolved, interaction_id: id})
-          %{s | interaction: nil, phase: :running}
-        end)
+        deadline = resume_deadline(s)
+
+        checkpoint(
+          s,
+          %{s.conversation | pending_interaction: nil},
+          fn s ->
+            GenServer.reply(waiter, {:ok, value})
+            s = reply(s, from, :ok)
+            emit(s, %{type: :interaction_resolved, interaction_id: id})
+            s = %{s | interaction: nil, phase: :running}
+            resume_deadlines(s)
+          end,
+          execution_deadline: deadline
+        )
 
       _ ->
         reply(s, from, {:error, Error.new(:not_found, "interaction is not pending")})
@@ -796,8 +808,14 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp fail(s, reason), do: finish_turn(%{s | last_error: reason}, :failed)
 
-  defp checkpoint(s, conversation, next) do
+  defp checkpoint(s, conversation, next, opts \\ []) do
     input = Map.merge(identity(s), %{conversation: conversation})
+
+    input =
+      case Keyword.get(opts, :execution_deadline) do
+        deadline when is_integer(deadline) -> Map.put(input, :execution_deadline, deadline)
+        _ -> input
+      end
 
     commit(s, {:conversation_updated, now(), input}, %{}, [], fn s, _ ->
       next.(%{s | conversation: conversation})
@@ -867,7 +885,13 @@ defmodule Backplane.AgentRuntime.Conversation do
     task = Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
     timeout = max(1, min(s.limits.effect, s.run.deadline - now()))
     timer = Process.send_after(self(), {:timeout, task.ref}, timeout)
-    %{s | effect: %{task: task, timer: timer, role: role, token: token}, phase: :running}
+
+    %{
+      s
+      | effect: %{task: task, timer: timer, role: role, token: token},
+        effect_live_deadline: System.monotonic_time(:millisecond) + timeout,
+        phase: :running
+    }
   end
 
   defp hook(s, function, args, default) do
@@ -1000,6 +1024,57 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
   defp current_effect?(%{effect: %{token: token}, stopping: nil}, token), do: true
   defp current_effect?(_, _), do: false
+
+  defp pause_deadlines(s) do
+    run_remaining = max(0, s.run.deadline - now())
+
+    effect_remaining =
+      case s.effect_live_deadline do
+        deadline when is_integer(deadline) ->
+          max(0, deadline - System.monotonic_time(:millisecond))
+
+        _ ->
+          nil
+      end
+
+    if s.timer, do: Process.cancel_timer(s.timer)
+    if s.effect, do: Process.cancel_timer(s.effect.timer)
+
+    %{
+      s
+      | timer: nil,
+        effect: if(s.effect, do: %{s.effect | timer: nil}, else: nil),
+        effect_live_deadline: nil,
+        paused_run_remaining: run_remaining,
+        paused_effect_remaining: effect_remaining
+    }
+  end
+
+  defp resume_deadline(%{paused_run_remaining: remaining}) when is_integer(remaining),
+    do: now() + remaining
+
+  defp resume_deadline(s), do: s.run.deadline
+
+  defp resume_deadlines(s) do
+    timer = Process.send_after(self(), :deadline, max(0, s.run.deadline - now()))
+    s = %{s | timer: timer}
+
+    case {s.effect, s.paused_effect_remaining} do
+      {%{task: task} = effect, remaining} when is_integer(remaining) and remaining >= 0 ->
+        timer = Process.send_after(self(), {:timeout, task.ref}, remaining)
+
+        %{
+          s
+          | effect: %{effect | timer: timer},
+            effect_live_deadline: System.monotonic_time(:millisecond) + remaining,
+            paused_run_remaining: nil,
+            paused_effect_remaining: nil
+        }
+
+      _ ->
+        %{s | paused_run_remaining: nil, paused_effect_remaining: nil}
+    end
+  end
 
   defp stage_catalog(s, token, update) do
     with :ok <- ToolCatalog.fence(update, s.run),
@@ -1141,7 +1216,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp clear_task(entry) do
     Process.demonitor(entry.task.ref, [:flush])
-    Process.cancel_timer(entry.timer)
+    if entry.timer, do: Process.cancel_timer(entry.timer)
   end
 
   defp kill_task(entry) do

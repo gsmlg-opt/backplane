@@ -72,6 +72,7 @@ defmodule Backplane.AgentRuntime.Kernel do
          {:ok, conversation} <- required_map(input, :conversation, "conversation") do
       run
       |> Map.put(:context, Map.put(Map.get(run, :context, %{}), :conversation, conversation))
+      |> maybe_update_execution_deadline(input)
       |> commit(:running, :conversation_updated, at, input)
     end
   end
@@ -678,6 +679,18 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   defp validation_error(message), do: {:error, Error.new(:validation, message)}
+
+  defp maybe_update_execution_deadline(run, input) do
+    case fetch_field(input, :execution_deadline) do
+      {:ok, deadline} when is_integer(deadline) ->
+        if deadline >= Map.get(run, :deadline, 0),
+          do: Map.put(run, :deadline, deadline),
+          else: run
+
+      _ ->
+        run
+    end
+  end
 
   defp deep_stringify_keys(term) when is_map(term) do
     Map.new(term, fn {key, value} ->

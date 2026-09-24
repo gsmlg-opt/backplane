@@ -75,9 +75,11 @@ context.emit.(%{type: :tool_update, ...})
 The host receives `interaction_requested` with a fresh `interaction_id`, then
 calls `Conversation.resolve(pid, id, answer)` after authenticating the responder.
 The answer is persisted before the worker continues. Stale/duplicate IDs fail.
-The finite effect and root deadlines include waiting time. Cancellation closes
-pending interaction ownership. MCP form rendering and answer validation remain
-in the Sigma tool/interaction adapter.
+An explicitly requested human interaction suspends the active effect and root
+deadlines. On resolution, each resumes with the remaining pre-wait budget;
+provider and tool execution outside an interaction remains bounded. Cancellation
+closes pending interaction ownership. MCP form rendering and answer validation
+remain in the Sigma tool/interaction adapter.
 
 For descriptors with `requires_approval: true`, the runtime asks for an exact
 operation approval before invocation; only `:approved` allows dispatch. It binds

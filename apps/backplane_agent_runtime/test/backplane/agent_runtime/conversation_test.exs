@@ -944,6 +944,27 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     end
   end
 
+  test "human interaction suspends run deadline and resumes with remaining budget" do
+    {pid, _} = start(run_timeout: 500)
+    {:ok, _} = Conversation.prompt(pid, "question")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, tool_response()})
+    assert_receive {:tool, _, tool}
+    send(tool, :ask)
+    assert_receive {:agent_runtime, "test", %{type: :interaction_requested, interaction_id: id}}
+
+    pending = Conversation.status(pid)
+    Process.sleep(600)
+    assert Conversation.status(pid).phase == :waiting_interaction
+
+    assert :ok = Conversation.resolve(pid, id, :allow)
+    assert_receive {:answer, {:ok, :allow}}
+    assert_receive {:provider, _, next}, 500
+    assert Conversation.status(pid).run.deadline > pending.run.deadline
+    send(next, {:events, [done("done")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}, 500
+  end
+
   test "cancel provider, tool and interaction waits" do
     for phase <- [:provider, :tool, :interaction] do
       {pid, _} = start()
