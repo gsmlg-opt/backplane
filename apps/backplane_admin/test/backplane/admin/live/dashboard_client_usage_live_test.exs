@@ -22,7 +22,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
     assert html =~ "Client Usage"
     assert html =~ "usage-client"
-    assert html =~ "1,200"
+    assert html =~ "1,000"
     assert html =~ "250"
     assert html =~ "MCP Usage"
     assert html =~ "gpt-test"
@@ -32,7 +32,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
     assert has_element?(
              view,
              "#client-#{client.id}-models td",
-             "1,200 / 200 (16.7%)"
+             "1,000 / 200 (20.0%)"
            )
   end
 end

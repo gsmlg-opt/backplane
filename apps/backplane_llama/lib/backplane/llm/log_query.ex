@@ -197,9 +197,8 @@ defmodule Backplane.LLM.LogQuery do
       where: not is_nil(l.client_id),
       group_by: [l.client_id, l.requested_model],
       select:
-        {l.client_id, l.requested_model, count(l.id),
-         sum(fragment("COALESCE(?, 0) + COALESCE(?, 0)", l.input_tokens, l.cached_tokens)),
-         sum(l.cached_tokens), sum(l.output_tokens)}
+        {l.client_id, l.requested_model, count(l.id), sum(l.input_tokens), sum(l.cached_tokens),
+         sum(l.output_tokens)}
     )
     |> Repo.all()
     |> Enum.group_by(&elem(&1, 0))
