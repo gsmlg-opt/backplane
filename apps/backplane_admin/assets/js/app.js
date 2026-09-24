@@ -12,11 +12,13 @@ import {register as registerCard} from "@duskmoon-dev/el-card"
 import {register as registerBadge} from "@duskmoon-dev/el-badge"
 import {register as registerDialog} from "@duskmoon-dev/el-dialog"
 import {register as registerAlert} from "@duskmoon-dev/el-alert"
+import {register as registerPopover} from "@duskmoon-dev/el-popover"
 registerButton()
 registerCard()
 registerBadge()
 registerDialog()
 registerAlert()
+registerPopover()
 
 const replayShortcutKeys = new Set(["ArrowLeft", "ArrowRight", "Home", "End", " ", "Spacebar"])
 
