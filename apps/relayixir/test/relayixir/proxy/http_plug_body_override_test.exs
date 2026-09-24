@@ -27,6 +27,56 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
     def chunk(_state, _body), do: {:error, :closed}
   end
 
+  defmodule StatefulMapper do
+    def init(status, headers, owner) do
+      send(owner, {:mapper_init, status, headers})
+      {:ok, owner}
+    end
+
+    def feed(owner, chunk) do
+      send(owner, {:mapper_feed, chunk})
+      {:ok, owner, [String.upcase(chunk)]}
+    end
+
+    def finish(owner, reason) do
+      send(owner, {:mapper_finish, reason})
+      {:ok, owner, ["<done>"]}
+    end
+  end
+
+  defmodule FailingFinishMapper do
+    def init(_status, _headers, _arg), do: {:ok, nil}
+    def feed(state, chunk), do: {:ok, state, [chunk]}
+    def finish(state, :eof), do: {:error, :truncated, state, ["<stream-error>"]}
+    def finish(state, _reason), do: {:ok, state, []}
+  end
+
+  defmodule InitFailureMapper do
+    def init(_status, _headers, _arg), do: {:error, :cannot_initialize}
+  end
+
+  defmodule CloseFinalChunkAdapter do
+    @behaviour Plug.Conn.Adapter
+
+    defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+
+    defdelegate send_file(state, status, headers, path, offset, length),
+      to: Plug.Adapters.Test.Conn
+
+    defdelegate send_chunked(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+    defdelegate inform(state, status, headers), to: Plug.Adapters.Test.Conn
+    defdelegate upgrade(state, protocol, opts), to: Plug.Adapters.Test.Conn
+    defdelegate push(state, path, headers), to: Plug.Adapters.Test.Conn
+    defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_sock_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_ssl_data(state), to: Plug.Adapters.Test.Conn
+    defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
+
+    def chunk(_state, "<done>"), do: {:error, :closed}
+    defdelegate chunk(state, body), to: Plug.Adapters.Test.Conn
+  end
+
   setup do
     {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
@@ -183,6 +233,107 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
 
       assert result.status == 200
       assert result.resp_body == "mapped: chunk1chunk2"
+    end
+
+    test "passes status and headers to a status-aware body mapper", %{port: port} do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/with-content-length")
+
+      result =
+        HttpPlug.call(conn, upstream,
+          map_response_body: fn status, headers, body ->
+            "#{status}:#{length(headers)}:#{body}"
+          end
+        )
+
+      assert result.resp_body =~ "200:"
+      assert result.resp_body =~ ":Hello, World!"
+    end
+
+    test "a status-aware mapper can replace status and mark translation failure", %{port: port} do
+      result =
+        HttpPlug.call(conn(:get, "/with-content-length"), build_upstream(port),
+          map_response_body: fn _status, headers, _body ->
+            {:error, :invalid_translation, 502, headers, "mapped error"}
+          end
+        )
+
+      assert result.status == 502
+      assert result.resp_body == "mapped error"
+      assert result.private[:relayixir_proxy_error] == :invalid_translation
+    end
+  end
+
+  describe "response_stream_mapper: opt" do
+    test "streams content-length responses through stateful feed and EOF without buffering", %{
+      port: port
+    } do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/with-content-length")
+
+      result =
+        HttpPlug.call(conn, upstream, response_stream_mapper: {StatefulMapper, self()})
+
+      assert result.status == 200
+      assert result.resp_body == "HELLO, WORLD!<done>"
+      assert Plug.Conn.get_resp_header(result, "content-length") == []
+      assert_received {:mapper_init, 200, _headers}
+      assert_received {:mapper_feed, "Hello, World!"}
+      assert_received {:mapper_finish, :eof}
+    end
+
+    test "keeps mapper state across chunked response frames", %{port: port} do
+      upstream = build_upstream(port)
+      conn = conn(:get, "/chunked")
+
+      result =
+        HttpPlug.call(conn, upstream, response_stream_mapper: {StatefulMapper, self()})
+
+      assert result.resp_body == "CHUNK1CHUNK2<done>"
+      assert_received {:mapper_feed, "chunk1"}
+      assert_received {:mapper_feed, "chunk2"}
+      assert_received {:mapper_finish, :eof}
+    end
+
+    test "emits mapper EOF errors and marks the proxy result as failed", %{port: port} do
+      upstream = build_upstream(port)
+
+      result =
+        HttpPlug.call(conn(:get, "/chunked"), upstream,
+          response_stream_mapper: {FailingFinishMapper, nil}
+        )
+
+      assert result.resp_body == "chunk1chunk2<stream-error>"
+
+      assert result.private[:relayixir_proxy_error] ==
+               {:response_stream_mapper, :truncated}
+    end
+
+    test "marks a disconnect while sending final mapper chunks", %{port: port} do
+      conn = conn(:get, "/chunked")
+      {_adapter, adapter_state} = conn.adapter
+      conn = %{conn | adapter: {CloseFinalChunkAdapter, adapter_state}}
+
+      result =
+        HttpPlug.call(conn, build_upstream(port),
+          response_stream_mapper: {StatefulMapper, self()}
+        )
+
+      assert result.private[:relayixir_downstream_disconnected] == true
+      refute result.private[:relayixir_proxy_error]
+      assert_received {:mapper_finish, :eof}
+    end
+
+    test "reports mapper initialization failure before sending a response", %{port: port} do
+      result =
+        HttpPlug.call(conn(:get, "/chunked"), build_upstream(port),
+          response_stream_mapper: {InitFailureMapper, nil}
+        )
+
+      assert result.status == 502
+
+      assert result.private[:relayixir_proxy_error] ==
+               {:response_stream_mapper, :cannot_initialize}
     end
   end
 

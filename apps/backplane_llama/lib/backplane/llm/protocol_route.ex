@@ -28,7 +28,8 @@ defmodule Backplane.LLM.ProtocolRoute do
   def client_protocol(_path), do: :unknown
 
   @spec select(protocol(), ProviderApi.t()) ::
-          {:ok, :native} | {:error, {:unsupported_translation, protocol(), [protocol()]}}
+          {:ok, :native | {:translate, :google_to_antigravity}}
+          | {:error, {:unsupported_translation, protocol(), [protocol()]}}
   def select(client_protocol, %ProviderApi{native_protocols: native_protocols})
       when client_protocol in [
              :openai_chat_completions,
@@ -37,10 +38,15 @@ defmodule Backplane.LLM.ProtocolRoute do
              :google_generate_content,
              :google_antigravity
            ] and is_list(native_protocols) do
-    if client_protocol in native_protocols do
-      {:ok, :native}
-    else
-      {:error, {:unsupported_translation, client_protocol, native_protocols}}
+    cond do
+      client_protocol in native_protocols ->
+        {:ok, :native}
+
+      client_protocol == :google_generate_content and :google_antigravity in native_protocols ->
+        {:ok, {:translate, :google_to_antigravity}}
+
+      true ->
+        {:error, {:unsupported_translation, client_protocol, native_protocols}}
     end
   end
 end

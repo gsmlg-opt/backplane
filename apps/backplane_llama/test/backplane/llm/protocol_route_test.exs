@@ -37,4 +37,16 @@ defmodule Backplane.LLM.ProtocolRouteTest do
 
     assert {:ok, :native} = ProtocolRoute.select(:google_generate_content, api)
   end
+
+  test "selects only the implemented Google to Antigravity direction" do
+    api = %ProviderApi{
+      api_surface: :antigravity,
+      native_protocols: [:google_antigravity]
+    }
+
+    assert {:ok, {:translate, :google_to_antigravity}} =
+             ProtocolRoute.select(:google_generate_content, api)
+
+    assert {:ok, :native} = ProtocolRoute.select(:google_antigravity, api)
+  end
 end

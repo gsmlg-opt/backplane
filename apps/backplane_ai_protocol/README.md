@@ -129,6 +129,17 @@ fields actually returned upstream. `Antigravity.Observer` extracts bounded,
 sanitized Google-shaped usage facts with source `:google_antigravity`; it never
 rewrites bytes forwarded by the host.
 
+`Backplane.AiProtocol.Antigravity.Google` is the explicit, directed compatibility
+boundary for Google GenerateContent clients backed by Antigravity. It wraps the
+supported Google request fields unchanged inside the native `request`, unwraps
+the upstream `response`, and translates SSE incrementally through the bounded
+native decoder. It does not accept caller-supplied project or model bindings,
+and it also exposes a separate text-only `countTokens` conversion. Count
+requests reject tools, system instructions, cached content, media, and function
+parts because the upstream operation does not count those fields reliably. An
+empty successful response object is normalized to `totalTokens: 0`, matching the
+protobuf scalar default omitted by the upstream JSON encoder.
+
 The host owns endpoint selection, OAuth injection, authorization, retries,
 polling, persistence, and transport cancellation. In particular, the package
 does not contain OAuth client secrets, a fallback project, a Node client

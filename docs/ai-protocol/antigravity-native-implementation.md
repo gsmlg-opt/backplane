@@ -3,8 +3,8 @@
 Status: implemented and locally verified. User objective: complete native API access
 based on `/Users/gao/Workspace/Github/antigravity-claude-proxy`, with reusable
 protocol support in `backplane_ai_protocol`. OpenAI/Anthropic conversion is a
-separate future scope. No live subscription calls or E2E tests are authorized in
-this session; component and independent-package checks remain required.
+separate future scope. Live subscription calls were later verified through the
+standard Gemini compatibility surface; component checks remain required.
 
 ## Evidence and supported contract
 
@@ -20,10 +20,13 @@ implementation evidence, not an official public Google API specification.
 | generate_content | POST `/v1internal:generateContent`, native envelope | `src/cloudcode/request-builder.js:67`, `message-handler.js:139` |
 | stream_generate_content | POST `/v1internal:streamGenerateContent?alt=sse` | `src/cloudcode/streaming-handler.js:152` |
 
-The reference exposes five RPC operations. Onboarding polls by resubmitting its
-request and reading `done/response.cloudaicompanionProject.id`, not a getOperation
-endpoint. It contains no countTokens, Files, embeddings, Interactions, Batch or
-cancel RPC; unsupported operations must fail explicitly, not use guessed URLs.
+The original reference exposes five RPC operations. Onboarding polls by
+resubmitting its request and reading
+`done/response.cloudaicompanionProject.id`, not a getOperation endpoint. It
+contains no Files, embeddings, Interactions, Batch or cancel RPC; unsupported
+operations must fail explicitly, not use guessed URLs. A later authenticated
+wire probe verified `POST /v1internal:countTokens`, which is used only behind the
+standard Gemini compatibility surface and is not added to the native public API.
 
 Generation envelope: `project`, `model`, opaque `request`, `userAgent`,
 `requestType`, `requestId`; sessionId is inside request and mirrored in
@@ -252,6 +255,115 @@ token is resolved from the configured vault credential and never belongs in the
 client request. These examples omit the outer project binding intentionally:
 the host supplies the configured project, and conflicting values are rejected.
 
+### Google GenerateContent compatibility
+
+The standard `/v1beta/models` surface also lists resolvable aliases backed by
+enabled Antigravity model surfaces. Resolution prefers an enabled native Google
+provider and falls back to the directed Google-to-Antigravity translation only
+when native resolution has no match. The Antigravity API continues to advertise
+only `google_antigravity` in `native_protocols`.
+
+For `generateContent` and `streamGenerateContent?alt=sse`, the host preserves
+Google contents, tools, function calls and results, thought signatures,
+generation configuration, labels, and the client session ID inside the native
+request. It injects the configured project and provider OAuth credential outside
+that request. Antigravity response envelopes are unwrapped to Google JSON or
+incremental Google SSE. Provider HTTP errors, retry headers, and error bodies
+retain their upstream status and contents.
+
+The standard `countTokens` route accepts direct `contents` or a mutually
+exclusive `generateContentRequest`. It forwards only text parts and binds the
+resolved model inside the upstream request. It sends no project, generation
+request ID, or session ID. System instructions, tools, tool configuration,
+cached content, media, function calls and results, and unknown fields return 422
+instead of producing an incomplete count. Malformed structures and caller-owned
+routing fields return 400. A successful upstream response must contain a
+non-negative integer `totalTokens`; otherwise the gateway returns 502. The exact
+empty response object is normalized to `totalTokens: 0` because the verified
+protobuf response omits its scalar field when the count is zero. Other nonempty
+objects without `totalTokens` remain invalid.
+
+#### Live `agy` verification
+
+On 2026-09-24, `agy` reporting `User-Agent: cli/1.2.9` completed a real streamed
+generation through the standard Gemini surface. The test used the existing
+aliases `gemini-3.8-flash` to
+`google-antigravity/gemini-3.8-flash-low` and `gemini-3.1-flash-lite` to
+`google-antigravity/gemini-3.1-flash-lite`. The account project discovered by
+`loadCodeAssist` was configured on the provider and remained server-side.
+
+Use only the Backplane gateway URL and authorization header. Remove native
+Antigravity, Gemini API-key, and custom model overrides for this test:
+
+```bash
+env -u CLOUD_CODE_URL \
+  -u GEMINI_API_KEY \
+  -u AGY_GATEWAY_API_KEY \
+  -u AGY_GATEWAY_MODELS \
+  AGY_GATEWAY_URL=http://localhost:4220 \
+  AGY_GATEWAY_HEADERS="Authorization: Bearer $LOCAL_BACKPLANE_TOKEN" \
+  agy -p 'Reply only BACKPLANE_GEMINI_OK. Do not use tools.' \
+  --model gemini-3.8-flash-low \
+  --print-timeout 60s \
+  --mode plan
+```
+
+The command exited 0 and returned `BACKPLANE_GEMINI_OK`. `llm_logs` recorded a
+`google_generate_content` request on the `/v1beta` path, resolution to the
+Antigravity provider and `gemini-3.8-flash-low`, HTTP 200, success, and
+`finish_reason: STOP`. `GET /v1beta/models` listed the configured aliases. A
+non-streaming `generateContent` call returned `BACKPLANE_JSON_OK` as unwrapped
+standard Gemini JSON. Caller project injection returned 400.
+
+To verify token counting through the same Gemini surface, send the Backplane
+token in the `Authorization` header. The request is translated to the native
+Antigravity `countTokens` RPC; the OAuth credential and project remain
+server-side:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $LOCAL_BACKPLANE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  http://localhost:4220/v1beta/models/gemini-3.8-flash:countTokens \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Hello world"}]}]}'
+```
+
+The verified response is `{"totalTokens":2}`. Empty text returns zero, while
+unsupported system instructions, tools, and media return 422 instead of an
+incomplete estimate. `llm_logs` records this as `count_tokens` with the result
+under `metadata.operation.total_tokens`; it does not add the count to a
+generation usage record.
+
+An `agy` file-read tool loop also exited 0 and returned a random marker from a
+temporary file when `--add-dir` and the absolute file path were supplied. A
+relative path was not a valid test because this CLI defaults its workspace to
+the user's home directory.
+
+The reproducible tool-loop form is:
+
+```bash
+agy_tmp="$(mktemp -d)"
+printf 'BACKPLANE_TOOL_OK\n' > "$agy_tmp/probe.txt"
+env -u CLOUD_CODE_URL \
+  -u GEMINI_API_KEY \
+  -u AGY_GATEWAY_API_KEY \
+  -u AGY_GATEWAY_MODELS \
+  AGY_GATEWAY_URL=http://localhost:4220 \
+  AGY_GATEWAY_HEADERS="Authorization: Bearer $LOCAL_BACKPLANE_TOKEN" \
+  agy --add-dir "$agy_tmp" \
+  -p "Read $agy_tmp/probe.txt with the file reading tool and reply with only its exact marker. Do not modify files or execute shell commands." \
+  --model gemini-3.8-flash-low \
+  --print-timeout 60s \
+  --mode plan
+rm -rf "$agy_tmp"
+```
+
+The expected response contains `BACKPLANE_TOOL_OK` and the command exits 0.
+
+For this account, `https://daily-cloudcode-pa.googleapis.com` accepted the live
+request. The same request to `https://cloudcode-pa.googleapis.com` returned 429;
+this observation is account-specific and is not a universal endpoint rule.
+
 ## Final acceptance evidence
 
 All eight acceptance groups above passed local verification on 2026-09-23.
@@ -279,6 +391,8 @@ sandbox/background-task diagnostics remain; they did not fail the scoped suites.
 No production configuration was changed. The in-progress migration was reapplied
 only to the test database, and isolated schemas exercised upgrade/downgrade.
 
-Not run: real subscription/API calls, browser/E2E tests, full umbrella suite,
-Credo, Dialyzer or CI workflows. The existing OAuth E2E metadata expectation was
-updated for the new advertised scope, but that E2E test was not executed.
+The original 2026-09-23 acceptance did not run real subscription/API calls. The
+2026-09-24 verification above adds that evidence. Browser E2E, the full umbrella
+suite, Credo, Dialyzer, and CI workflows were not run. The existing OAuth E2E
+metadata expectation was updated for the new advertised scope, but that E2E test
+was not executed.

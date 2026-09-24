@@ -30,6 +30,10 @@ defmodule Relayixir.Proxy.HttpPlug do
     * `:map_response_body` — when present, maps a collected non-streaming response
       body before it is sent downstream.
 
+    * `:response_stream_mapper` — `{module, init_arg}` for a request-local streaming
+      mapper implementing `init/3`, `feed/2`, and `finish/2`. This path remains
+      streaming even when upstream supplies `content-length`.
+
   """
   @spec call(Plug.Conn.t(), Upstream.t(), keyword()) :: Plug.Conn.t()
   def call(%Plug.Conn{} = conn, %Upstream{} = upstream, opts \\ []) do
@@ -317,7 +321,38 @@ defmodule Relayixir.Proxy.HttpPlug do
          completeness,
          opts
        ) do
-    if has_content_length?(response_headers) or map_response_body?(opts) do
+    with {:ok, stream_mapper} <- init_stream_mapper(opts, status, response_headers) do
+      forward_response_body(
+        conn,
+        mint_conn,
+        upstream,
+        status,
+        response_headers,
+        chunks,
+        completeness,
+        opts,
+        stream_mapper
+      )
+    else
+      {:error, reason} ->
+        HttpClient.close(mint_conn)
+        {:error, reason, conn}
+    end
+  end
+
+  defp forward_response_body(
+         conn,
+         mint_conn,
+         upstream,
+         status,
+         response_headers,
+         chunks,
+         completeness,
+         opts,
+         stream_mapper
+       ) do
+    if (has_content_length?(response_headers) and is_nil(stream_mapper)) or
+         map_response_body?(opts) do
       # Collect body — bounded by the declared content-length.
       case collect_body(
              mint_conn,
@@ -329,19 +364,25 @@ defmodule Relayixir.Proxy.HttpPlug do
         {:ok, mint_conn, body_chunks} ->
           release_conn(upstream, mint_conn)
 
-          body =
+          mapped =
             body_chunks
             |> IO.iodata_to_binary()
-            |> maybe_map_response_body(opts)
+            |> maybe_map_response_body(status, response_headers, opts)
+
+          {result, mapped_status, mapped_headers, body} =
+            normalize_mapped_body(mapped, status, response_headers)
 
           observe_response_body(body, opts)
 
           conn =
             conn
-            |> put_response_headers(body_response_headers(response_headers, opts))
-            |> Plug.Conn.send_resp(status, body)
+            |> put_response_headers(body_response_headers(mapped_headers, opts))
+            |> Plug.Conn.send_resp(mapped_status, body)
 
-          {:ok, conn}
+          case result do
+            :ok -> {:ok, conn}
+            {:error, reason} -> {:error, reason, conn}
+          end
 
         {:error, reason} ->
           {:error, map_error(reason, "collect_body", upstream, conn.request_path), conn}
@@ -350,15 +391,15 @@ defmodule Relayixir.Proxy.HttpPlug do
       # Stream each chunk to downstream immediately — no buffering.
       conn =
         conn
-        |> put_response_headers(response_headers)
+        |> put_response_headers(stream_response_headers(response_headers, stream_mapper))
         |> Plug.Conn.send_chunked(status)
 
       case completeness do
         :done ->
-          send_pending_chunks(conn, mint_conn, upstream, chunks, opts)
+          send_pending_chunks(conn, mint_conn, upstream, chunks, opts, stream_mapper)
 
         :more ->
-          stream_chunks_from_mint(conn, mint_conn, upstream, chunks, opts)
+          stream_chunks_from_mint(conn, mint_conn, upstream, chunks, opts, stream_mapper)
       end
     end
   end
@@ -382,20 +423,38 @@ defmodule Relayixir.Proxy.HttpPlug do
     HttpClient.recv_body(mint_conn, timeout, chunks, max_size)
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, [], _opts) do
-    release_conn(upstream, mint_conn)
-    {:ok, conn}
+  defp send_pending_chunks(conn, mint_conn, upstream, [], opts, stream_mapper) do
+    case finish_mapped_stream(conn, stream_mapper, :eof, opts) do
+      {:ok, conn, _stream_mapper} ->
+        release_conn(upstream, mint_conn)
+        {:ok, conn}
+
+      {:error, reason, conn, _stream_mapper} ->
+        HttpClient.close(mint_conn)
+
+        if reason == :closed do
+          emit_downstream_disconnect()
+          {:ok, Plug.Conn.put_private(conn, :relayixir_downstream_disconnected, true)}
+        else
+          {:error, reason, conn}
+        end
+    end
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest], opts) do
-    case send_mapped_chunk(conn, chunk, opts) do
-      {:ok, conn} ->
-        send_pending_chunks(conn, mint_conn, upstream, rest, opts)
+  defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest], opts, stream_mapper) do
+    case send_mapped_chunk(conn, chunk, opts, stream_mapper) do
+      {:ok, conn, stream_mapper} ->
+        send_pending_chunks(conn, mint_conn, upstream, rest, opts, stream_mapper)
 
       {:error, :closed} ->
         HttpClient.close(mint_conn)
+        finish_stream_mapper(stream_mapper, :cancelled)
         emit_downstream_disconnect()
         {:ok, Plug.Conn.put_private(conn, :relayixir_downstream_disconnected, true)}
+
+      {:error, reason, conn, _stream_mapper} ->
+        HttpClient.close(mint_conn)
+        {:error, reason, conn}
     end
   end
 
@@ -405,21 +464,27 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   # Streams chunks from Mint to the downstream client immediately as they arrive.
   # pending_chunks holds any data already received during the headers phase.
-  defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks, opts) do
+  defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks, opts, stream_mapper) do
     conn_key = {__MODULE__, :stream_conn, make_ref()}
-    Process.put(conn_key, conn)
+    Process.put(conn_key, {conn, stream_mapper, nil})
 
     try do
       on_chunk = fn chunk ->
-        current_conn = Process.get(conn_key, conn)
+        {current_conn, current_mapper, _error} =
+          Process.get(conn_key, {conn, stream_mapper, nil})
 
-        case send_mapped_chunk(current_conn, chunk, opts) do
-          {:ok, next_conn} ->
-            Process.put(conn_key, next_conn)
+        case send_mapped_chunk(current_conn, chunk, opts, current_mapper) do
+          {:ok, next_conn, next_mapper} ->
+            Process.put(conn_key, {next_conn, next_mapper, nil})
             :ok
 
           {:error, :closed} ->
+            finish_stream_mapper(current_mapper, :cancelled)
             emit_downstream_disconnect()
+            :stop
+
+          {:error, reason, next_conn, next_mapper} ->
+            Process.put(conn_key, {next_conn, next_mapper, reason})
             :stop
         end
       end
@@ -431,22 +496,56 @@ defmodule Relayixir.Proxy.HttpPlug do
              on_chunk
            ) do
         {:ok, mint_conn} ->
-          release_conn(upstream, mint_conn)
-          {:ok, Process.get(conn_key, conn)}
+          {final_conn, final_mapper, _error} =
+            Process.get(conn_key, {conn, stream_mapper, nil})
+
+          case finish_mapped_stream(final_conn, final_mapper, :eof, opts) do
+            {:ok, final_conn, _final_mapper} ->
+              release_conn(upstream, mint_conn)
+              {:ok, final_conn}
+
+            {:error, reason, final_conn, _final_mapper} ->
+              HttpClient.close(mint_conn)
+
+              if reason == :closed do
+                emit_downstream_disconnect()
+
+                {:ok,
+                 Plug.Conn.put_private(
+                   final_conn,
+                   :relayixir_downstream_disconnected,
+                   true
+                 )}
+              else
+                {:error, reason, final_conn}
+              end
+          end
 
         {:stop, mint_conn} ->
-          # Downstream disconnected — don't return to pool (request may be incomplete)
           HttpClient.close(mint_conn)
 
-          disconnected_conn =
-            conn_key
-            |> Process.get(conn)
-            |> Plug.Conn.put_private(:relayixir_downstream_disconnected, true)
+          {stopped_conn, _stopped_mapper, mapper_error} =
+            Process.get(conn_key, {conn, stream_mapper, nil})
 
-          {:ok, disconnected_conn}
+          if mapper_error do
+            {:error, mapper_error, stopped_conn}
+          else
+            # Downstream disconnected — don't return to pool (request may be incomplete)
+            disconnected_conn =
+              Plug.Conn.put_private(stopped_conn, :relayixir_downstream_disconnected, true)
+
+            {:ok, disconnected_conn}
+          end
 
         {:error, reason} ->
-          final_conn = Process.get(conn_key, conn)
+          {final_conn, final_mapper, _error} =
+            Process.get(conn_key, {conn, stream_mapper, nil})
+
+          final_conn =
+            case finish_mapped_stream(final_conn, final_mapper, reason, opts) do
+              {:ok, mapped_conn, _mapper} -> mapped_conn
+              {:error, _mapper_error, mapped_conn, _mapper} -> mapped_conn
+            end
 
           {:error, map_error(reason, "stream_body", upstream, final_conn.request_path),
            final_conn}
@@ -456,12 +555,26 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp maybe_map_response_body(body, opts) do
+  defp maybe_map_response_body(body, status, headers, opts) do
     case opts[:map_response_body] do
+      mapper when is_function(mapper, 3) -> mapper.(status, headers, body)
       mapper when is_function(mapper, 1) -> mapper.(body)
       _ -> body
     end
   end
+
+  defp normalize_mapped_body({:ok, body}, status, headers) when is_binary(body),
+    do: {:ok, status, headers, body}
+
+  defp normalize_mapped_body({:error, reason, status, headers, body}, _status, _headers)
+       when is_integer(status) and is_list(headers) and is_binary(body),
+       do: {{:error, reason}, status, headers, body}
+
+  defp normalize_mapped_body(body, status, headers) when is_binary(body),
+    do: {:ok, status, headers, body}
+
+  defp normalize_mapped_body(_mapped, _status, headers),
+    do: {{:error, :invalid_response_body_mapping}, 502, headers, "Invalid mapped response"}
 
   defp observe_response_body(body, opts) do
     case opts[:on_response_body] do
@@ -470,7 +583,8 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp map_response_body?(opts), do: is_function(opts[:map_response_body], 1)
+  defp map_response_body?(opts),
+    do: is_function(opts[:map_response_body], 1) or is_function(opts[:map_response_body], 3)
 
   defp body_response_headers(headers, opts) do
     if map_response_body?(opts) do
@@ -480,11 +594,24 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp send_mapped_chunk(conn, chunk, opts) do
+  defp send_mapped_chunk(conn, chunk, opts, stream_mapper) do
+    case feed_stream_mapper(stream_mapper, chunk) do
+      {:ok, stream_mapper, chunks} ->
+        send_mapped_chunks(conn, chunks, opts, stream_mapper)
+
+      {:error, reason, stream_mapper, chunks} ->
+        case send_mapped_chunks(conn, chunks, opts, stream_mapper) do
+          {:ok, conn, stream_mapper} -> {:error, reason, conn, stream_mapper}
+          error -> error
+        end
+    end
+  end
+
+  defp send_mapped_chunks(conn, chunks, opts, stream_mapper) do
     response_callback = opts[:on_response_chunk]
 
-    chunk
-    |> mapped_response_chunks(opts)
+    chunks
+    |> Enum.flat_map(&mapped_response_chunks(&1, opts))
     |> Enum.reduce_while({:ok, conn}, fn mapped_chunk, {:ok, acc} ->
       if response_callback, do: safe_observe(response_callback, mapped_chunk)
 
@@ -493,6 +620,74 @@ defmodule Relayixir.Proxy.HttpPlug do
         {:error, :closed} -> {:halt, {:error, :closed}}
       end
     end)
+    |> case do
+      {:ok, conn} -> {:ok, conn, stream_mapper}
+      {:error, :closed} -> {:error, :closed}
+    end
+  end
+
+  defp init_stream_mapper(opts, status, headers) do
+    case opts[:response_stream_mapper] do
+      {module, init_arg} when is_atom(module) ->
+        case module.init(status, headers, init_arg) do
+          {:ok, state} -> {:ok, %{module: module, state: state}}
+          {:error, reason} -> {:error, {:response_stream_mapper, reason}}
+        end
+
+      nil ->
+        {:ok, nil}
+
+      _ ->
+        {:error, {:response_stream_mapper, :invalid}}
+    end
+  end
+
+  defp feed_stream_mapper(nil, chunk), do: {:ok, nil, [chunk]}
+
+  defp feed_stream_mapper(%{module: module, state: state} = mapper, chunk) do
+    case module.feed(state, chunk) do
+      {:ok, state, chunks} ->
+        {:ok, %{mapper | state: state}, normalize_mapped_chunks(chunks)}
+
+      {:error, reason, state, chunks} ->
+        {:error, {:response_stream_mapper, reason}, %{mapper | state: state},
+         normalize_mapped_chunks(chunks)}
+    end
+  end
+
+  defp finish_mapped_stream(conn, stream_mapper, reason, opts) do
+    case finish_stream_mapper(stream_mapper, reason) do
+      {:ok, stream_mapper, chunks} ->
+        case send_mapped_chunks(conn, chunks, opts, stream_mapper) do
+          {:error, :closed} -> {:error, :closed, conn, stream_mapper}
+          result -> result
+        end
+
+      {:error, error, stream_mapper, chunks} ->
+        case send_mapped_chunks(conn, chunks, opts, stream_mapper) do
+          {:ok, conn, stream_mapper} -> {:error, error, conn, stream_mapper}
+          {:error, :closed} -> {:error, :closed, conn, stream_mapper}
+        end
+    end
+  end
+
+  defp finish_stream_mapper(nil, _reason), do: {:ok, nil, []}
+
+  defp finish_stream_mapper(%{module: module, state: state} = mapper, reason) do
+    case module.finish(state, reason) do
+      {:ok, state, chunks} ->
+        {:ok, %{mapper | state: state}, normalize_mapped_chunks(chunks)}
+
+      {:error, error, state, chunks} ->
+        {:error, {:response_stream_mapper, error}, %{mapper | state: state},
+         normalize_mapped_chunks(chunks)}
+    end
+  end
+
+  defp stream_response_headers(headers, nil), do: headers
+
+  defp stream_response_headers(headers, _mapper) do
+    Enum.reject(headers, fn {name, _value} -> String.downcase(name) == "content-length" end)
   end
 
   defp mapped_response_chunks(chunk, opts) do

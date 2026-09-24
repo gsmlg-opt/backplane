@@ -1,8 +1,8 @@
 defmodule Backplane.LLM.Google.Catalog do
   @moduledoc false
 
-  alias Backplane.LLM.{ModelAlias, ModelResolver, ProviderModelSurface}
-  alias Backplane.LLM.Google.RequestTarget
+  alias Backplane.LLM.{ModelAlias, ProviderModelSurface}
+  alias Backplane.LLM.Google.{RequestTarget, Resolution}
 
   @default_page_size 50
   @max_page_size 1_000
@@ -33,7 +33,9 @@ defmodule Backplane.LLM.Google.Catalog do
   end
 
   defp resolvable_entries do
-    surfaces = ProviderModelSurface.list_enabled(:google)
+    surfaces =
+      ProviderModelSurface.list_enabled(:google) ++
+        ProviderModelSurface.list_enabled(:antigravity)
 
     aliases =
       surfaces
@@ -44,12 +46,12 @@ defmodule Backplane.LLM.Google.Catalog do
     aliases
     |> Enum.filter(&RequestTarget.valid_model?/1)
     |> Enum.flat_map(fn alias_name ->
-      with {:ok, provider, raw_model} <- ModelResolver.resolve(:google, alias_name),
+      with {:ok, provider, raw_model, api, _route} <- Resolution.resolve(alias_name),
            {:ok, raw_model} <- RequestTarget.normalize_model(raw_model),
            surface when not is_nil(surface) <-
              Enum.find(surfaces, fn surface ->
                surface.provider_model.provider_id == provider.id and
-                 surface.provider_model.model == raw_model
+                 surface.provider_model.model == raw_model and surface.provider_api_id == api.id
              end) do
         [{alias_name, descriptor(surface, alias_name)}]
       else
