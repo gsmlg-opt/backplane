@@ -60,7 +60,11 @@ defmodule Backplane.LLM.ModelDiscovery do
   @doc "Reload models for one provider API surface."
   @spec reload_api(Provider.t(), ProviderApi.t()) :: discovery_result()
   def reload_api(%Provider{} = provider, %ProviderApi{} = api) do
-    with {:ok, provider, api, generation} <- discovery_generation(provider.id, api.id),
+    # Resolving OAuth headers can refresh and persist the credential. Complete that
+    # before capturing the generation that guards the upstream request and writes.
+    with {:ok, provider, api, _generation} <- discovery_generation(provider.id, api.id),
+         {:ok, _headers} <- discovery_headers(provider, api),
+         {:ok, provider, api, generation} <- discovery_generation(provider.id, api.id),
          {:ok, model_details} <- discover_model_details(provider, api),
          :ok <- ensure_discovery_generation(generation) do
       persist_models(provider, api, model_details, generation)

@@ -76,6 +76,40 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
     assert model.metadata["provenance"] == "antigravity_fetch_available_models"
   end
 
+  test "refreshes expired OAuth credentials before capturing the discovery generation", %{
+    provider: provider,
+    api: api
+  } do
+    refresher = Backplane.Settings.OAuthRefresher
+    previous = Application.get_env(:backplane, refresher)
+    Application.put_env(:backplane, refresher, req_options: [plug: {Req.Test, __MODULE__}])
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane, refresher, previous),
+        else: Application.delete_env(:backplane, refresher)
+    end)
+
+    {:ok, _} =
+      Credentials.store_device_token(provider.credential, "google_oauth", %{
+        "access_token" => "expired",
+        "refresh_token" => "refresh-token",
+        "expires_at" => System.system_time(:millisecond) - 60_000
+      })
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      if conn.request_path == "/v1internal:fetchAvailableModels" do
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer refreshed-token"]
+        json(conn, %{"models" => %{"refreshed-model" => %{"displayName" => "Refreshed"}}})
+      else
+        json(conn, %{"access_token" => "refreshed-token", "expires_in" => 3600})
+      end
+    end)
+
+    assert %{created: 1, discovered: 1, errors: []} = ModelDiscovery.reload_api(provider, api)
+    assert ProviderModel.get_by_provider_and_model(provider.id, "refreshed-model")
+  end
+
   test "drops results when backend configuration rotates in flight", %{
     provider: provider,
     api: api
