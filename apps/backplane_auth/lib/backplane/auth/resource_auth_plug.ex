@@ -188,10 +188,30 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   defp memory_principal_metadata(_metadata), do: %{}
 
   defp bearer_credential(conn) do
-    case get_req_header(conn, "authorization") do
-      [] -> :missing
-      [header] -> parse_bearer(header)
-      _headers -> :invalid
+    authorization = get_req_header(conn, "authorization")
+    api_key = get_req_header(conn, "x-api-key")
+
+    cond do
+      length(authorization) > 1 or length(api_key) > 1 ->
+        :invalid
+
+      authorization != [] and api_key != [] ->
+        :invalid
+
+      authorization != [] ->
+        case authorization do
+          [header] -> parse_bearer(header)
+          _ -> :invalid
+        end
+
+      api_key != [] ->
+        case api_key do
+          [token] when is_binary(token) and token != "" -> {:ok, token}
+          _ -> :invalid
+        end
+
+      true ->
+        :missing
     end
   end
 

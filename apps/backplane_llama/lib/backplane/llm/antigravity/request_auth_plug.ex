@@ -39,7 +39,10 @@ defmodule Backplane.LLM.Antigravity.RequestAuthPlug do
   end
 
   defp unsupported_credential?(conn) do
-    Enum.any?(@credential_headers -- ["authorization"], &(get_req_header(conn, &1) != []))
+    Enum.any?(
+      @credential_headers -- ["authorization", "x-api-key"],
+      &(get_req_header(conn, &1) != [])
+    )
   end
 
   defp allowed_query?(%Plug.Conn{query_string: ""}), do: true

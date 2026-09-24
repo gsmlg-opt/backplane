@@ -238,6 +238,32 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     refute conn.assigns[:resource_auth]
   end
 
+  test "accepts x-api-key as a compatibility alias for the bearer token" do
+    {client, token} = pat_fixture!(scopes: ["llm::models"])
+
+    conn =
+      :get
+      |> conn("/v1/models")
+      |> put_req_header("x-api-key", token)
+      |> authenticate(:v1)
+
+    assert conn.assigns.resource_auth.kind == :client_token
+    assert conn.assigns.resource_auth.client_id == client.id
+    refute conn.halted
+  end
+
+  test "rejects conflicting authorization and x-api-key credentials" do
+    conn =
+      :get
+      |> conn("/v1/models")
+      |> put_req_header("authorization", "Bearer first")
+      |> put_req_header("x-api-key", "second")
+      |> authenticate(:v1)
+
+    assert conn.status == 401
+    refute conn.assigns[:resource_auth]
+  end
+
   test "rejects malformed, empty, and multiple authorization headers" do
     for headers <- [
           ["Basic abc"],

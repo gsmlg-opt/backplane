@@ -49,12 +49,21 @@ defmodule Backplane.LLM.Antigravity.RequestBoundaryTest do
     for headers <- [
           [{"authorization", "Bearer private"}, {"authorization", "Bearer second"}],
           [{"authorization", "Bearer private"}, {"x-goog-api-key", "second"}],
-          [{"x-api-key", "private"}],
           [{"api-key", "private"}]
         ] do
       result = %{conn(:post, @path) | req_headers: headers} |> RequestAuthPlug.call([])
       assert result.status == 400
       refute result.resp_body =~ "private"
     end
+  end
+
+  test "allows the x-api-key compatibility alias" do
+    result =
+      conn(:post, @path)
+      |> put_req_header("x-api-key", "backplane-client-token")
+      |> RequestAuthPlug.call([])
+
+    refute result.halted
+    assert result.status == nil
   end
 end

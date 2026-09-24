@@ -18,6 +18,18 @@ defmodule Backplane.LLM.Google.RequestAuthPlugTest do
     refute conn.halted
   end
 
+  test "adapts the x-api-key compatibility alias to the Backplane bearer credential" do
+    conn =
+      :post
+      |> conn("/v1beta/models/gemini:generateContent", "{}")
+      |> put_req_header("x-api-key", "backplane-client-token")
+      |> RequestAuthPlug.call([])
+
+    assert get_req_header(conn, "authorization") == ["Bearer backplane-client-token"]
+    assert get_req_header(conn, "x-api-key") == []
+    refute conn.halted
+  end
+
   test "fails closed for repeated or conflicting credential carriers" do
     repeated =
       :post
@@ -40,13 +52,13 @@ defmodule Backplane.LLM.Google.RequestAuthPlugTest do
 
     assert conflicting.status == 400
 
-    unsupported =
+    supported_alias =
       :post
       |> conn("/v1beta/models/gemini:generateContent", "{}")
-      |> put_req_header("x-api-key", "unsupported")
+      |> put_req_header("x-api-key", "backplane-client-token")
       |> RequestAuthPlug.call([])
 
-    assert unsupported.status == 400
+    assert supported_alias.status == nil
   end
 
   test "rejects query key before later endpoint telemetry and removes it from the conn" do

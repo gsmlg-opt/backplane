@@ -24,13 +24,6 @@ defmodule Backplane.LLM.Google.RequestAuthPlug do
       conflicting_credentials?(conn) ->
         Error.send(conn, 400, "Supply exactly one Backplane credential")
 
-      get_req_header(conn, "x-api-key") != [] ->
-        Error.send(
-          conn,
-          400,
-          "x-api-key is not a supported Backplane credential for Google routes"
-        )
-
       true ->
         adapt_google_header(conn)
     end
@@ -39,10 +32,11 @@ defmodule Backplane.LLM.Google.RequestAuthPlug do
   def call(conn, _opts), do: conn
 
   defp adapt_google_header(conn) do
-    case get_req_header(conn, "x-goog-api-key") do
+    case get_req_header(conn, "x-goog-api-key") ++ get_req_header(conn, "x-api-key") do
       [token] when token != "" ->
         conn
         |> delete_req_header("x-goog-api-key")
+        |> delete_req_header("x-api-key")
         |> put_req_header("authorization", "Bearer #{token}")
 
       [] ->
