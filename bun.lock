@@ -18,6 +18,7 @@
         "@duskmoon-dev/el-button": "1.7.2",
         "@duskmoon-dev/el-card": "1.7.2",
         "@duskmoon-dev/el-dialog": "1.7.2",
+        "@duskmoon-dev/el-popover": "1.8.0",
         "@duskmoon-dev/elements": "1.7.2",
       },
     },
@@ -148,7 +149,7 @@
 
     "@duskmoon-dev/el-pin-input": ["@duskmoon-dev/el-pin-input@1.7.2", "", { "dependencies": { "@duskmoon-dev/core": "1.18.1", "@duskmoon-dev/el-base": "1.7.2" } }, "sha512-wpWraiv1eGIfdNcY/7ii8T4Ddf4TKMXPX3B/k/Yv2p34YSmVYRfFym3ZOTFatJllBtIPKdrqb9KfSM069La3dQ=="],
 
-    "@duskmoon-dev/el-popover": ["@duskmoon-dev/el-popover@1.7.2", "", { "dependencies": { "@duskmoon-dev/core": "1.18.1", "@duskmoon-dev/el-base": "1.7.2" } }, "sha512-qMmllRaEzN+s3WqssSKVk7lYdHEVA1qRHm4/971FrHSabuT+WiiZC/+STA2P9MhRMAUDPeI0Cr4YVVR1Qj5Q4w=="],
+    "@duskmoon-dev/el-popover": ["@duskmoon-dev/el-popover@1.8.0", "", { "dependencies": { "@duskmoon-dev/core": "1.19.9", "@duskmoon-dev/el-base": "1.8.0" } }, "sha512-dbCdBCdzsh+jM+BY1EMtQZoyoVxsig/OB4bETAODdSCaPaovJyGGr8pfaa/lQ1dtRl+TmbuR+SWOtgR6fNxnpA=="],
 
     "@duskmoon-dev/el-pro-data-grid": ["@duskmoon-dev/el-pro-data-grid@1.7.2", "", { "dependencies": { "@duskmoon-dev/el-base": "1.7.2" } }, "sha512-YHz+qeN7hjafnOU/yckOKqDZ/lAESZl2532CANaCl7Ndd8bxV1QxEl+yUdkh4IBd82BbHhRpbf7ZmGzWGOpbQw=="],
 
@@ -653,6 +654,12 @@
     "ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, ""],
+
+    "@duskmoon-dev/el-popover/@duskmoon-dev/core": ["@duskmoon-dev/core@1.19.9", "", { "peerDependencies": { "tailwindcss": "^4.0.0" } }, "sha512-2SyrspWSPy/iUQe5iAHSWpPQCBfXyCwO+Qbz8tup7u2zWW+GyqskrhPSSVfSD6RdJLQzxAZOE37DnyXC2R7Clw=="],
+
+    "@duskmoon-dev/el-popover/@duskmoon-dev/el-base": ["@duskmoon-dev/el-base@1.8.0", "", {}, "sha512-m1usLXsuAVrVK2RGovBn13pzUFJ7ch6SjN5nlI2y6wB8PYCPevHTdaetEoKbiNH32oRpqCbjb+pFBkAiUFSIGw=="],
+
+    "@duskmoon-dev/elements/@duskmoon-dev/el-popover": ["@duskmoon-dev/el-popover@1.7.2", "", { "dependencies": { "@duskmoon-dev/core": "1.18.1", "@duskmoon-dev/el-base": "1.7.2" } }, "sha512-qMmllRaEzN+s3WqssSKVk7lYdHEVA1qRHm4/971FrHSabuT+WiiZC/+STA2P9MhRMAUDPeI0Cr4YVVR1Qj5Q4w=="],
 
     "cytoscape-fcose/cose-base": ["cose-base@2.2.0", "", { "dependencies": { "layout-base": "^2.0.0" } }, ""],
 

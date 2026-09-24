@@ -1299,7 +1299,7 @@ defmodule Backplane.Admin.ProviderShowLive do
     ~H"""
     <.dm_popover
       id={"model-metadata-#{@model.id}"}
-      placement="bottom-end"
+      placement="bottom-start"
       class="max-w-2xl"
     >
       <:trigger>
@@ -1311,7 +1311,7 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_mdi name="information-outline" class="h-4 w-4" />
         </button>
       </:trigger>
-      <div class="max-w-2xl space-y-2 p-3 text-xs text-on-surface-variant">
+      <div class="relative z-50 max-w-2xl space-y-2 rounded-md border border-outline-variant bg-surface p-3 text-xs text-on-surface-variant shadow-lg">
         <div>
           <span class="font-medium">Native display name:</span>
           {metadata_value(@metadata, ["displayName"])}
