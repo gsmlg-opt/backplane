@@ -28,7 +28,8 @@ defmodule Backplane.Admin.ProviderShowLive do
        edit_model_form: nil,
        edit_model_errors: %{},
        deleting_model: nil,
-       model_reload_status: nil
+       model_reload_status: nil,
+       model_groups: []
      )}
   end
 
@@ -279,6 +280,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     assign(socket,
       provider: provider,
+      model_groups: antigravity_model_groups(provider),
       provider_form: to_form(provider_params(provider), as: :provider),
       provider_errors: %{}
     )
@@ -298,6 +300,67 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp hidden_stale_discovered_model?(model) do
     model.source == :discovered and not model.enabled and model.surfaces == []
+  end
+
+  defp antigravity_model_groups(%Provider{apis: apis, models: models}) do
+    if Enum.any?(apis || [], &(&1.api_surface == :antigravity)) do
+      models
+      |> List.wrap()
+      |> Enum.reject(&hidden_stale_discovered_model?/1)
+      |> Enum.filter(&antigravity_display_model?/1)
+      |> Enum.group_by(&antigravity_model_family/1)
+      |> Enum.map(fn {family, variants} ->
+        %{
+          family: family,
+          label: antigravity_family_label(family, variants),
+          variants: Enum.sort_by(variants, & &1.model)
+        }
+      end)
+      |> Enum.sort_by(& &1.label)
+    else
+      []
+    end
+  end
+
+  defp antigravity_provider?(%Provider{apis: apis}),
+    do: Enum.any?(apis || [], &(&1.api_surface == :antigravity))
+
+  defp antigravity_provider?(_provider), do: false
+
+  defp antigravity_display_model?(%{source: :manual}), do: true
+
+  defp antigravity_display_model?(%{source: "manual"}), do: true
+
+  defp antigravity_display_model?(model) do
+    metadata = model.metadata || %{}
+    # Keep hand-authored/legacy rows that predate the native catalog shape.
+    if is_nil(metadata["slug"]) do
+      true
+    else
+      recommended? = metadata["recommended"] == true
+
+      recommended? and model.model != "gemini-pro-agent" and
+        not String.match?(model.model, ~r/^gemini-2(?:\.\d+)?-/)
+    end
+  end
+
+  defp antigravity_model_family(model) do
+    model.model
+    |> String.replace(~r/-(?:extra-)?low\z/, "")
+    |> String.replace(~r/-(?:high|medium|tiered|thinking)\z/, "")
+    |> case do
+      "gemini-pro-agent" -> "gemini-3.1-pro"
+      family -> family
+    end
+  end
+
+  defp antigravity_family_label(family, variants) do
+    variants
+    |> Enum.find(&(&1.model == family))
+    |> case do
+      %{display_name: name} when is_binary(name) and name != "" -> name
+      _ -> family
+    end
   end
 
   defp load_credentials(socket) do
@@ -973,8 +1036,86 @@ defmodule Backplane.Admin.ProviderShowLive do
           No models configured.
         </div>
 
+        <div :if={antigravity_provider?(@provider)} class="space-y-3">
+          <div :for={group <- @model_groups} class="rounded-md border border-outline-variant p-4">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="font-medium">{group.label}</div>
+                <div class="text-xs text-on-surface-variant">
+                  {length(group.variants)} backend variants
+                </div>
+              </div>
+              <.dm_badge variant="neutral" size="sm">{group.family}</.dm_badge>
+            </div>
+            <div class="mt-3 space-y-2">
+              <div
+                :for={model <- group.variants}
+                class="flex flex-wrap items-center justify-between gap-2 rounded border border-outline-variant px-3 py-2"
+              >
+                <div class="min-w-0">
+                  <code class="block truncate text-sm">{model.model}</code>
+                  <div class="mt-1 flex flex-wrap gap-2 text-xs text-on-surface-variant">
+                    <span>{model.source}</span>
+                    <span :if={model.metadata["tagTitle"]}>{model.metadata["tagTitle"]}</span>
+                    <span :if={model.metadata["thinkingBudget"]}>
+                      thinking budget: {model.metadata["thinkingBudget"]}
+                    </span>
+                  </div>
+                  <.antigravity_model_metadata_popover
+                    :if={antigravity_model_metadata(model, @provider)}
+                    metadata={antigravity_model_metadata(model, @provider)}
+                    model={model}
+                  />
+                </div>
+                <div class="flex items-center gap-1">
+                  <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
+                    {enabled_text(model.enabled)}
+                  </.dm_badge>
+                  <.dm_btn
+                    id={"edit-model-#{model.id}"}
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant="outline"
+                    aria-label={"Edit model #{model.model}"}
+                    phx-click="edit_model"
+                    phx-value-id={model.id}
+                  >
+                    <.dm_mdi name="pencil" class="h-4 w-4" />
+                    <span class="sr-only">Edit</span>
+                  </.dm_btn>
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant={if model.enabled, do: "warning", else: "success"}
+                    aria-label={if model.enabled, do: "Disable model #{model.model}", else: "Enable model #{model.model}"}
+                    phx-click="toggle_model"
+                    phx-value-id={model.id}
+                  >
+                    <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
+                    <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
+                  </.dm_btn>
+                  <.dm_btn
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant="error"
+                    aria-label={"Remove model #{model.model}"}
+                    phx-click="confirm_delete_model"
+                    phx-value-id={model.id}
+                  >
+                    <.dm_mdi name="delete" class="h-4 w-4" />
+                    <span class="sr-only">Remove</span>
+                  </.dm_btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <.dm_table
-          :if={@provider.models != []}
+          :if={@provider.models != [] and not antigravity_provider?(@provider)}
           id="provider-models-table"
           data={@provider.models}
           hover
@@ -990,9 +1131,10 @@ defmodule Backplane.Admin.ProviderShowLive do
                 :if={google_model_metadata(model, @provider)}
                 metadata={google_model_metadata(model, @provider)}
               />
-              <.antigravity_model_metadata
+              <.antigravity_model_metadata_popover
                 :if={antigravity_model_metadata(model, @provider)}
                 metadata={antigravity_model_metadata(model, @provider)}
+                model={model}
               />
             </div>
           </:col>
@@ -1151,14 +1293,39 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   attr(:metadata, :map, required: true)
+  attr(:model, :map, required: true)
 
-  defp antigravity_model_metadata(assigns) do
+  defp antigravity_model_metadata_popover(assigns) do
     ~H"""
-    <dl class="mt-2 space-y-1 text-xs text-on-surface-variant">
-      <div>Native display name: {metadata_value(@metadata, ["displayName"])}</div>
-      <div>Quota: {native_metadata_value(@metadata, "quotaInfo")}</div>
-      <div>Native metadata: <code>{encode_json_map(@metadata)}</code></div>
-    </dl>
+    <.dm_popover
+      id={"model-metadata-#{@model.id}"}
+      placement="bottom-end"
+      class="max-w-2xl"
+    >
+      <:trigger>
+        <button
+          type="button"
+          class="inline-flex items-center rounded p-1 text-on-surface-variant hover:bg-surface-container-high"
+          aria-label={"Show metadata for #{@model.model}"}
+        >
+          <.dm_mdi name="information-outline" class="h-4 w-4" />
+        </button>
+      </:trigger>
+      <div class="max-w-2xl space-y-2 p-3 text-xs text-on-surface-variant">
+        <div>
+          <span class="font-medium">Native display name:</span>
+          {metadata_value(@metadata, ["displayName"])}
+        </div>
+        <div>
+          <span class="font-medium">Quota:</span>
+          {native_metadata_value(@metadata, "quotaInfo")}
+        </div>
+        <div>
+          <div class="font-medium">Native metadata:</div>
+          <pre class="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-container p-2"><code>{encode_json_map(@metadata)}</code></pre>
+        </div>
+      </div>
+    </.dm_popover>
     """
   end
 

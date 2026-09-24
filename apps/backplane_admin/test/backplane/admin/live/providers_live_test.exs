@@ -532,7 +532,8 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "2026-09-24T00:00:00Z"
       assert html =~ "nativeUnknown"
       assert html =~ "Gemini Without Quota"
-      assert html =~ "Quota: Unavailable"
+      assert html =~ "Quota:"
+      assert html =~ "Unavailable"
       refute html =~ "Quota: 0"
     end
 

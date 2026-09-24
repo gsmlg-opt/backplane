@@ -958,17 +958,26 @@ defmodule Backplane.LLM.ModelDiscovery do
           credential: provider.credential,
           credential_updated_at: credential_updated_at(provider.credential),
           api_id: api.id,
-          api_updated_at: api.updated_at,
           api_surface: api.api_surface,
-          base_url: api.base_url,
-          discovery_path: api.model_discovery_path,
-          backend_config: api.backend_config,
+          api_configuration: api_configuration(api),
           models: model_generation(provider.id),
           surfaces: surface_generation(provider.id)
         }
 
         {:ok, provider, api, generation}
     end
+  end
+
+  defp api_configuration(api) do
+    Map.take(api, [
+      :base_url,
+      :default_headers,
+      :backend_config,
+      :enabled,
+      :model_discovery_enabled,
+      :model_discovery_path,
+      :native_protocols
+    ])
   end
 
   defp ensure_discovery_generation(generation) do
