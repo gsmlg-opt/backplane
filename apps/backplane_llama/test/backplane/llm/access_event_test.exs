@@ -149,6 +149,60 @@ defmodule Backplane.LLM.AccessEventTest do
     UsageAccumulator.stop(access.usage_acc)
   end
 
+  test "Codex Responses streaming persists usage from a fragmented terminal event" do
+    conn = conn(:post, "/v1/responses", "{}") |> send_resp(200, "")
+
+    access =
+      conn
+      |> AccessEvent.start("responses", :openai_responses)
+      |> AccessEvent.put_requested_model("codex-stream-usage")
+      |> AccessEvent.put_resolution(%Provider{preset_key: "openai-codex"}, "gpt", nil)
+      |> AccessEvent.mark_stream()
+
+    event =
+      ~S(data: {"type":"response.completed","response":{"id":"resp_codex","status":"completed","usage":{"input_tokens":123,"output_tokens":45,"input_tokens_details":{"cached_tokens":67}}}}) <>
+        "\n\n"
+
+    for <<chunk::binary-size(1) <- event>>, do: AccessEvent.scan_stream_chunk(access, chunk)
+
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+
+    log = log_for_model("codex-stream-usage")
+    assert log.input_tokens == 123
+    assert log.cached_tokens == 67
+    assert log.output_tokens == 45
+    assert log.total_tokens == 168
+    assert log.provider_request_id == "resp_codex"
+    assert log.metadata["protocol_observation"]["usage_status"] == "complete"
+  end
+
+  test "Codex Responses nonstreaming persists usage from the response body" do
+    body =
+      ~S({"id":"resp_codex_body","status":"completed","usage":{"input_tokens":123,"output_tokens":45,"input_tokens_details":{"cached_tokens":67}}})
+
+    conn = conn(:post, "/v1/responses", "{}") |> send_resp(200, body)
+
+    access =
+      conn
+      |> AccessEvent.start("responses", :openai_responses)
+      |> AccessEvent.put_requested_model("codex-body-usage")
+      |> AccessEvent.put_resolution(%Provider{preset_key: "openai-codex"}, "gpt", nil)
+      |> AccessEvent.prepare_response_observation()
+
+    AccessEvent.scan_stream_chunk(access, body)
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+
+    log = log_for_model("codex-body-usage")
+    assert log.input_tokens == 123
+    assert log.cached_tokens == 67
+    assert log.output_tokens == 45
+    assert log.total_tokens == 168
+    assert log.provider_request_id == "resp_codex_body"
+    assert log.metadata["protocol_observation"]["usage_status"] == "complete"
+  end
+
   test "ordinary Responses streaming requests retain the shared observer" do
     conn = conn(:post, "/v1/responses", "{}")
 

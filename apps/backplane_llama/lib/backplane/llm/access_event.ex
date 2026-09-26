@@ -304,9 +304,8 @@ defmodule Backplane.LLM.AccessEvent do
   defp shared_responses?(%__MODULE__{
          api_surface: "openai_responses",
          path: path,
-         provider: %Provider{preset_key: preset}
-       })
-       when preset != "openai-codex" do
+         provider: %Provider{}
+       }) do
     not String.ends_with?(path, "/responses/compact")
   end
 

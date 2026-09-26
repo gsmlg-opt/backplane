@@ -108,12 +108,26 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       output = ~S({"type":"response.output_text.done","text":"endpoint stream"})
       {:ok, conn} = chunk(conn, "event: response.output_text.done\r\ndata: #{output}\r\n\r\n")
 
-      completion =
-        ~S({"type":"response.completed","response":{"id":"resp_endpoint_stream","status":"completed","usage":{"input_tokens":6,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}}})
+      completion = completed_stream_completion()
 
       {:ok, conn} = chunk(conn, "data: " <> binary_part(completion, 0, 57))
       {:ok, conn} = chunk(conn, binary_part(completion, 57, byte_size(completion) - 57) <> "\n\n")
       conn
+    end
+
+    def completed_stream_body do
+      [
+        "event: response.output_text.done\r\n",
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"endpoint stream\"}\r\n\r\n",
+        "data: ",
+        completed_stream_completion(),
+        "\n\n"
+      ]
+      |> IO.iodata_to_binary()
+    end
+
+    defp completed_stream_completion do
+      ~S({"type":"response.completed","response":{"id":"resp_endpoint_stream","status":"completed","usage":{"input_tokens":6,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}}})
     end
 
     defp chunked_json(conn, body, pause_before_completion?) do
@@ -331,7 +345,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       )
     end)
 
-    %{endpoint_port: endpoint_port}
+    %{endpoint_port: endpoint_port, upstream_port: upstream_port}
   end
 
   test "ordinary Responses traverses the listening API endpoint and submits once", %{
@@ -451,6 +465,82 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert log.reasoning_tokens == 1
     assert log.provider_request_id == "resp_endpoint_stream"
     assert get_in(log.metadata, ["protocol_observation", "terminal_count"]) == 1
+  end
+
+  test "generic Codex Responses SSE preserves bytes and records complete usage", %{
+    endpoint_port: endpoint_port,
+    upstream_port: upstream_port
+  } do
+    credential = "endpoint-codex-provider-key"
+    model_name = "endpoint-codex/gpt-6-sol"
+
+    {:ok, _} =
+      Credentials.store_device_token(
+        credential,
+        "openai_oauth",
+        %{
+          "type" => "codex_device_oauth",
+          "access_token" => "endpoint-codex-access-token",
+          "refresh_token" => "endpoint-codex-refresh-token",
+          "expires_at" => System.system_time(:millisecond) + 3_600_000
+        },
+        %{"account_id" => "endpoint-codex-account"}
+      )
+
+    {:ok, provider} =
+      Provider.create(%{
+        name: "endpoint-codex",
+        preset_key: "openai-codex",
+        credential: credential
+      })
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "http://127.0.0.1:#{upstream_port}",
+        native_protocols: [:openai_responses]
+      })
+
+    {:ok, model} =
+      ProviderModel.create(%{provider_id: provider.id, model: "gpt-6-sol", source: :manual})
+
+    {:ok, _surface} =
+      ProviderModelSurface.create(%{
+        provider_model_id: model.id,
+        provider_api_id: api.id,
+        enabled: true
+      })
+
+    ModelResolver.clear_cache()
+
+    on_exit(fn ->
+      Provider.soft_delete(provider)
+      Credentials.delete(credential)
+      ModelResolver.clear_cache()
+    end)
+
+    response =
+      post_over_socket(
+        endpoint_port,
+        "/v1/responses",
+        Jason.encode!(%{"model" => model_name, "input" => "codex-stream", "stream" => true})
+      )
+
+    {headers, body} = split_http_response(response)
+    assert headers =~ "200 OK"
+    assert decode_chunked_body(body) == OpenAIUpstream.completed_stream_body()
+    assert submission_count() == 1
+
+    log = one_log_for_model!(model_name)
+    assert log.stream == true
+    assert log.input_tokens == 6
+    assert log.cached_tokens == 1
+    assert log.output_tokens == 3
+    assert log.reasoning_tokens == 1
+    assert log.provider_request_id == "resp_endpoint_stream"
+    assert get_in(log.metadata, ["protocol_observation", "observation_status"]) == "complete"
+    assert get_in(log.metadata, ["protocol_observation", "usage_status"]) == "complete"
   end
 
   test "native SSE forwards unknown events before the upstream completes and preserves bytes", %{
@@ -603,14 +693,19 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
 
   defp one_log! do
     deadline = System.monotonic_time(:millisecond) + 2_000
-    await_one_log!(deadline)
+    await_one_log!(deadline, "endpoint-provider/endpoint-model")
   end
 
-  defp await_one_log!(deadline) do
+  defp one_log_for_model!(model) do
+    deadline = System.monotonic_time(:millisecond) + 2_000
+    await_one_log!(deadline, model)
+  end
+
+  defp await_one_log!(deadline, model) do
     :sys.get_state(:llm_proxy)
     :ok = LogWriter.flush()
 
-    logs = endpoint_logs()
+    logs = endpoint_logs(model)
 
     cond do
       length(logs) == 1 ->
@@ -618,17 +713,15 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
 
       logs == [] and System.monotonic_time(:millisecond) < deadline ->
         Process.sleep(10)
-        await_one_log!(deadline)
+        await_one_log!(deadline, model)
 
       true ->
         flunk("expected exactly one durable endpoint log, got: #{length(logs)}")
     end
   end
 
-  defp endpoint_logs do
-    Backplane.Repo.all(
-      from(l in ProxyRequest, where: l.requested_model == "endpoint-provider/endpoint-model")
-    )
+  defp endpoint_logs(model \\ "endpoint-provider/endpoint-model") do
+    Backplane.Repo.all(from(l in ProxyRequest, where: l.requested_model == ^model))
   end
 
   defp post_over_socket(port, path, body) do
@@ -691,8 +784,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       path,
       " HTTP/1.1\r\n",
       "host: 127.0.0.1\r\n",
-      "authorization: Bearer endpoint-client-token\r\n",
-      "x-api-key: inbound-key-must-not-leak\r\n",
+      "x-api-key: endpoint-client-token\r\n",
       "content-type: application/json\r\n",
       "content-length: ",
       Integer.to_string(byte_size(body)),
