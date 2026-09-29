@@ -108,6 +108,76 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     assert Enum.count(body["data"], &(&1["id"] == "dual/shared")) == 1
   end
 
+  test "provider model IDs containing slashes retain their exact routable slugs" do
+    create_target("slash-provider", "vendor/family/model")
+    body = listing()
+
+    assert data_entry(body, "slash-provider/vendor/family/model")
+    assert Enum.any?(body["models"], &(&1["slug"] == "slash-provider/vendor/family/model"))
+
+    assert {:ok, provider, "vendor/family/model"} =
+             ModelResolver.resolve(:openai, "slash-provider/vendor/family/model")
+
+    assert provider.name == "slash-provider"
+  end
+
+  test "provider catalog growth does not add one query per model to the listing" do
+    target = create_target("catalog", "model-0")
+    assert :ok = ModelAlias.add_provider("catalog")
+    {initial, initial_queries} = listing_with_query_count()
+    assert length(initial["data"]) == 2
+
+    for index <- 1..12 do
+      {:ok, model} =
+        ProviderModel.create(%{
+          provider_id: target.provider.id,
+          model: "model-#{index}",
+          source: :manual
+        })
+
+      {:ok, _surface} =
+        ProviderModelSurface.create(%{
+          provider_model_id: model.id,
+          provider_api_id: target.api.id
+        })
+    end
+
+    {expanded, expanded_queries} = listing_with_query_count()
+    assert length(expanded["data"]) == 26
+    assert expanded_queries == initial_queries
+  end
+
+  test "provider aliases select OpenAI first, then configured provider order" do
+    create_target("a-anthropic", "shared",
+      api_surface: :anthropic,
+      metadata: %{"context_window" => 111}
+    )
+
+    fallback = create_target("b-openai", "shared", metadata: %{"context_window" => 222})
+    selected = create_target("c-openai", "shared", metadata: %{"context_window" => 333})
+
+    for name <- ["a-anthropic", "c-openai", "b-openai"] do
+      assert :ok = ModelAlias.add_provider(name)
+    end
+
+    entry = listing() |> data_entry("shared")
+    assert entry["owned_by"] == "a-anthropic"
+    assert entry["metadata"]["context_window"] == 333
+
+    create_target("custom", "custom-only", metadata: %{"context_window" => 444})
+    assert {:ok, _alias} = ModelAlias.put("shared", "custom-only")
+    custom_entry = listing() |> data_entry("shared")
+    assert custom_entry["owned_by"] == "backplane"
+    assert custom_entry["metadata"]["context_window"] == 444
+
+    assert {:ok, _alias} = ModelAlias.delete("shared")
+    assert {:ok, _} = ProviderModelSurface.update(selected.surface, %{enabled: false})
+    assert data_entry(listing(), "shared")["metadata"]["context_window"] == 222
+
+    assert {:ok, _} = ProviderModelSurface.update(fallback.surface, %{enabled: false})
+    assert data_entry(listing(), "shared")["metadata"]["context_window"] == 111
+  end
+
   test "Codex slugs preserve provider prefixes and aliases and resolve to Responses targets" do
     create_target("responses", "reasoner",
       metadata: %{"context_window" => 32768},
@@ -138,6 +208,8 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
   test "auto and custom aliases inherit the resolver's selected target, not a fallback" do
     selected = create_target("first", "selected", metadata: %{"context_window" => 4096})
     fallback = create_target("second", "fallback", metadata: %{"context_window" => 65536})
+    create_target("alias-provider", "fast", metadata: %{"context_window" => 1234})
+    assert :ok = ModelAlias.add_provider("alias-provider")
     route = AutoModelRoute.get_by_model_and_surface("fast", :openai)
 
     for {target, priority} <- [{selected, 0}, {fallback, 1}] do
@@ -304,6 +376,36 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     body = Jason.decode!(response.resp_body)
     assert body["object"] == "list"
     body
+  end
+
+  defp listing_with_query_count do
+    handler_id = {__MODULE__, make_ref()}
+    caller = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:backplane, :repo, :query],
+        fn _event, _measurements, _metadata, _config ->
+          if self() == caller, do: send(caller, {handler_id, :query})
+        end,
+        nil
+      )
+
+    try do
+      body = listing()
+      {body, drain_query_count(handler_id, 0)}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_query_count(handler_id, count) do
+    receive do
+      {^handler_id, :query} -> drain_query_count(handler_id, count + 1)
+    after
+      0 -> count
+    end
   end
 
   defp data_entry(body, id), do: Enum.find(body["data"], &(&1["id"] == id))

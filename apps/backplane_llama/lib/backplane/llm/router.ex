@@ -590,6 +590,13 @@ defmodule Backplane.LLM.Router do
       Provider.list()
       |> Enum.filter(& &1.enabled)
 
+    auto_models = AutoModel.list_configurations()
+    custom_aliases = ModelAlias.list()
+    provider_alias_names = ModelAlias.provider_names()
+
+    resolver_names =
+      MapSet.new(Enum.map(auto_models, & &1.name) ++ Enum.map(custom_aliases, & &1.alias))
+
     provider_entries =
       for provider <- providers,
           model <- provider.models,
@@ -605,7 +612,7 @@ defmodule Backplane.LLM.Router do
       end
 
     auto_model_entries =
-      for auto_model <- AutoModel.list_configurations(),
+      for auto_model <- auto_models,
           auto_model.enabled do
         %{
           "id" => auto_model.name,
@@ -616,7 +623,7 @@ defmodule Backplane.LLM.Router do
       end
 
     custom_alias_entries =
-      for model_alias <- ModelAlias.list() do
+      for model_alias <- custom_aliases do
         %{
           "id" => model_alias.alias,
           "object" => "model",
@@ -627,7 +634,7 @@ defmodule Backplane.LLM.Router do
 
     provider_alias_entries =
       for provider <- providers,
-          provider.name in ModelAlias.provider_names(),
+          provider.name in provider_alias_names,
           model <- provider.models,
           model.enabled do
         %{
@@ -640,6 +647,35 @@ defmodule Backplane.LLM.Router do
         }
       end
 
+    # Build both namespaced and configured provider-alias targets from the
+    # preloaded catalog. Later OpenAI targets take precedence over Anthropic.
+    available_targets =
+      for api_surface <- [:anthropic, :openai],
+          provider <- providers,
+          api <- provider.apis,
+          api.enabled and api.api_surface == api_surface,
+          model <- provider.models,
+          model.enabled,
+          surface <- model.surfaces,
+          surface.enabled and surface.provider_api_id == api.id do
+        {provider, model, surface, api}
+      end
+
+    provider_targets =
+      Map.new(available_targets, fn {provider, model, _surface, _api} = target ->
+        {"#{provider.name}/#{model.model}", target}
+      end)
+
+    provider_alias_targets =
+      for api_surface <- [:anthropic, :openai],
+          provider_name <- Enum.reverse(provider_alias_names),
+          target <- available_targets,
+          {provider, model, _surface, api} = target,
+          provider.name == provider_name and api.api_surface == api_surface,
+          into: %{} do
+        {model.model, target}
+      end
+
     entries =
       (provider_entries ++ auto_model_entries ++ custom_alias_entries ++ provider_alias_entries)
       |> Enum.uniq_by(& &1["id"])
@@ -647,7 +683,14 @@ defmodule Backplane.LLM.Router do
 
     resolved_entries =
       for entry <- entries,
-          target = selected_model_target(providers, entry["id"]),
+          target =
+            selected_model_target(
+              providers,
+              provider_targets,
+              provider_alias_targets,
+              resolver_names,
+              entry["id"]
+            ),
           not is_nil(target) do
         {provider, model, surface, _api} = target
         raw_metadata = Map.merge(model.metadata || %{}, surface.metadata || %{})
@@ -670,7 +713,26 @@ defmodule Backplane.LLM.Router do
     {Enum.map(resolved_entries, &elem(&1, 0)), models}
   end
 
-  defp selected_model_target(providers, id) do
+  defp selected_model_target(
+         providers,
+         provider_targets,
+         provider_alias_targets,
+         resolver_names,
+         id
+       )
+       when is_binary(id) do
+    case String.split(id, "/", parts: 2) do
+      [_provider_name, _raw_model] ->
+        Map.get(provider_targets, id)
+
+      [_alias_name] ->
+        if MapSet.member?(resolver_names, id),
+          do: selected_alias_target(providers, id),
+          else: Map.get(provider_alias_targets, id)
+    end
+  end
+
+  defp selected_alias_target(providers, id) do
     Enum.find_value([:openai, :anthropic], fn api_surface ->
       with {:ok, resolved_provider, raw_model} <- ModelResolver.resolve(api_surface, id),
            %Provider{} = provider <- Enum.find(providers, &(&1.id == resolved_provider.id)),

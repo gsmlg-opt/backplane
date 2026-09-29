@@ -304,8 +304,25 @@ defmodule Backplane.LLM.RouterTest do
       end
     end
 
-    test "PAT, legacy, and open modes retain full LLM access" do
-      {_client, pat} = pat_fixture!(scopes: ["unrelated::scope"])
+    test "PAT scopes apply while legacy and open modes retain full LLM access" do
+      {_client, unrelated_pat} = pat_fixture!(scopes: ["unrelated::scope"])
+
+      denied_models = public_authenticated_llm_request(:get, "/v1/models", unrelated_pat)
+      assert denied_models.status == 403
+      assert json_body(denied_models) == %{"error" => "insufficient_scope"}
+
+      denied_invoke =
+        public_authenticated_llm_request(
+          :post,
+          "/v1/responses",
+          unrelated_pat,
+          %{"model" => "unknown/model", "input" => "hi"}
+        )
+
+      assert denied_invoke.status == 403
+      assert json_body(denied_invoke) == %{"error" => "insufficient_scope"}
+
+      {_client, pat} = pat_fixture!(scopes: ["llm::*"])
 
       assert public_authenticated_llm_request(:get, "/v1/models", pat).status == 200
 

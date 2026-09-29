@@ -25,6 +25,140 @@ defmodule Backplane.ClientsTest do
       assert :error = Clients.verify_token(token)
     end
 
+    test "memoizes repeated successful and failed bcrypt checks without storing plaintext" do
+      {_client, token} = insert_client(token: "memoized-token")
+      missing = "memoized-missing-token"
+
+      assert_bcrypt_calls(1, fn ->
+        assert {:ok, _client} = Clients.verify_token(token)
+      end)
+
+      assert_digest_only_cache_entry(token, :client)
+      assert_bcrypt_calls(1, fn -> assert :error = Clients.verify_token(missing) end)
+      assert_digest_only_cache_entry(missing, :miss)
+
+      assert_bcrypt_calls(0, fn ->
+        assert {:ok, _client} = Clients.verify_token(token)
+        assert :error = Clients.verify_token(missing)
+      end)
+    end
+
+    test "a cached miss becomes a match when a new client is created" do
+      token = "new-client-token"
+      assert :error = Clients.verify_token(token)
+
+      {client, ^token} = insert_client(token: token)
+
+      assert {:ok, verified} = Clients.verify_token(token)
+      assert verified.id == client.id
+    end
+
+    test "expired verification entries run bcrypt again" do
+      {_client, token} = insert_client(token: "expiring-token")
+      assert {:ok, _verified} = Clients.verify_token(token)
+
+      entry = assert_digest_only_cache_entry(token, :client)
+
+      :ets.insert(
+        :backplane_client_token_verifications,
+        put_elem(entry, 3, System.monotonic_time(:millisecond) - 1)
+      )
+
+      assert_bcrypt_calls(1, fn ->
+        assert {:ok, _verified} = Clients.verify_token(token)
+      end)
+    end
+
+    test "a late cache insertion from an older generation cannot revive a miss" do
+      token = "late-client-token"
+      assert :error = Clients.verify_token(token)
+
+      {_slot, _key, old_generation, _expires_at, :miss} =
+        assert_digest_only_cache_entry(token, :miss)
+
+      assert {:ok, client} =
+               Clients.create_client(%{
+                 name: "late-client",
+                 token: token,
+                 scopes: ["*"]
+               })
+
+      digest = :crypto.hash(:sha256, token)
+      fingerprint = :erlang.phash2([{client.id, client.token_hash}])
+      key = {self(), digest, fingerprint}
+      slot = :erlang.phash2(key, 1_024)
+
+      :ets.insert(
+        :backplane_client_token_verifications,
+        {slot, key, old_generation, System.monotonic_time(:millisecond) + 60_000, :miss}
+      )
+
+      assert {:ok, verified} = Clients.verify_token(token)
+      assert verified.id == client.id
+    end
+
+    test "production verification uses bounded digest slots and rejects a late miss" do
+      previous_env = Application.get_env(:backplane, :env)
+      Application.put_env(:backplane, :env, :prod)
+      on_exit(fn -> Application.put_env(:backplane, :env, previous_env) end)
+
+      assert :ok = Clients.refresh_cache()
+      token = "production-late-client-token"
+      assert :error = Clients.verify_token(token)
+
+      digest = :crypto.hash(:sha256, token)
+      slot = :erlang.phash2(digest, 1_024)
+
+      assert [{^slot, ^digest, old_generation, _expires_at, :miss}] =
+               :ets.lookup(:backplane_client_token_verifications, slot)
+
+      assert {:ok, client} =
+               Clients.create_client(%{
+                 name: "production-late-client",
+                 token: token,
+                 scopes: ["*"]
+               })
+
+      :ets.insert(
+        :backplane_client_token_verifications,
+        {slot, digest, old_generation, System.monotonic_time(:millisecond) + 60_000, :miss}
+      )
+
+      assert_bcrypt_calls(1, fn ->
+        assert {:ok, verified} = Clients.verify_token(token)
+        assert verified.id == client.id
+      end)
+
+      assert_bcrypt_calls(0, fn ->
+        assert {:ok, _verified} = Clients.verify_token(token)
+      end)
+
+      assert :ets.info(:backplane_client_token_verifications, :size) <= 1_025
+    end
+
+    test "cached matches follow scope edits, deactivation, rotation and deletion" do
+      {client, token} = insert_client(token: "changing-client-token", scopes: ["docs::*"])
+      assert {:ok, verified} = Clients.verify_token(token)
+      assert verified.scopes == ["docs::*"]
+
+      assert {:ok, edited} = Clients.update_client(client, %{scopes: ["git::*"]})
+      assert {:ok, verified} = Clients.verify_token(token)
+      assert verified.scopes == ["git::*"]
+
+      assert {:ok, inactive} = Clients.update_client(edited, %{active: false})
+      assert :error = Clients.verify_token(token)
+
+      assert {:ok, active} = Clients.update_client(inactive, %{active: true})
+      assert {:ok, _verified} = Clients.verify_token(token)
+
+      assert {:ok, rotated} = Clients.update_client(active, %{token: "replacement-token"})
+      assert :error = Clients.verify_token(token)
+      assert {:ok, _verified} = Clients.verify_token("replacement-token")
+
+      assert {:ok, _deleted} = Clients.delete_client(rotated)
+      assert :error = Clients.verify_token("replacement-token")
+    end
+
     test "refresh_cache marks inactive-only client rows as configured" do
       old_flag = :persistent_term.get(:backplane_clients_exist, false)
       on_exit(fn -> :persistent_term.put(:backplane_clients_exist, old_flag) end)
@@ -162,6 +296,71 @@ defmodule Backplane.ClientsTest do
 
       reloaded = Backplane.Repo.get!(Backplane.Clients.Client, client.id)
       assert reloaded.last_seen_at != nil
+    end
+  end
+
+  defp assert_digest_only_cache_entry(token, expected) do
+    digest = :crypto.hash(:sha256, token)
+
+    assert {_slot, {pid, ^digest, _fingerprint}, _generation, _expires_at, result} =
+             entry =
+             :backplane_client_token_verifications
+             |> :ets.tab2list()
+             |> Enum.find(fn
+               {_slot, {pid, ^digest, _fingerprint}, _generation, _expires_at, _result} ->
+                 pid == self()
+
+               _other ->
+                 false
+             end)
+
+    assert pid == self()
+    assert if(expected == :miss, do: result, else: elem(result, 0)) == expected
+    refute inspect(result) =~ token
+    entry
+  end
+
+  defp assert_bcrypt_calls(expected, fun) do
+    parent = self()
+    tracer = spawn(fn -> forward_trace(parent) end)
+    :erlang.trace_pattern({Bcrypt, :verify_pass, 2}, true, [])
+    :erlang.trace(self(), true, [:call, {:tracer, tracer}])
+
+    try do
+      fun.()
+      reference = :erlang.trace_delivered(self())
+      assert_receive {:trace_delivered, _pid, ^reference}
+      send(tracer, {:flush, self()})
+      assert_receive {:bcrypt_trace_flushed, ^tracer}
+      assert traced_bcrypt_calls() == expected
+    after
+      :erlang.trace(self(), false, [:call])
+      :erlang.trace_pattern({Bcrypt, :verify_pass, 2}, false, [])
+      send(tracer, :stop)
+    end
+  end
+
+  defp forward_trace(parent) do
+    receive do
+      :stop ->
+        :ok
+
+      {:flush, caller} ->
+        send(caller, {:bcrypt_trace_flushed, self()})
+        forward_trace(parent)
+
+      message ->
+        send(parent, {:bcrypt_trace, message})
+        forward_trace(parent)
+    end
+  end
+
+  defp traced_bcrypt_calls(count \\ 0) do
+    receive do
+      {:bcrypt_trace, {:trace, _pid, :call, {Bcrypt, :verify_pass, _args}}} ->
+        traced_bcrypt_calls(count + 1)
+    after
+      0 -> count
     end
   end
 

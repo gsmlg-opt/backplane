@@ -13,6 +13,9 @@ defmodule Backplane.Clients do
   alias Backplane.Repo
 
   @cache_table :backplane_clients_cache
+  @verification_table :backplane_client_token_verifications
+  @verification_slots 1_024
+  @verification_ttl_ms 60_000
 
   # --- ETS Cache ---
 
@@ -26,6 +29,22 @@ defmodule Backplane.Clients do
           :public,
           read_concurrency: true
         ])
+
+      _ref ->
+        :ok
+    end
+
+    case :ets.whereis(@verification_table) do
+      :undefined ->
+        :ets.new(@verification_table, [
+          :named_table,
+          :set,
+          :public,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+        :ets.insert(@verification_table, {:generation, 0})
 
       _ref ->
         :ok
@@ -63,17 +82,31 @@ defmodule Backplane.Clients do
   end
 
   defp publish_client_state(clients, any_client_rows?) do
-    if any_client_rows? do
-      :persistent_term.put(:backplane_clients_exist, true)
-    end
+    # Readers cache only at a stable, even generation. A refresh invalidates
+    # both old hits and misses before replacing the active-client snapshot.
+    advance_verification_generation()
 
-    replace_cached_clients(clients)
+    try do
+      if any_client_rows? do
+        :persistent_term.put(:backplane_clients_exist, true)
+      end
 
-    unless any_client_rows? do
-      :persistent_term.put(:backplane_clients_exist, false)
+      replace_cached_clients(clients)
+
+      unless any_client_rows? do
+        :persistent_term.put(:backplane_clients_exist, false)
+      end
+    after
+      advance_verification_generation()
     end
 
     :ok
+  end
+
+  defp advance_verification_generation do
+    if :ets.whereis(@verification_table) != :undefined do
+      :ets.update_counter(@verification_table, :generation, 1)
+    end
   end
 
   defp replace_cached_clients(clients) do
@@ -105,31 +138,125 @@ defmodule Backplane.Clients do
   # --- Token Verification ---
 
   @doc """
-  Verify a bearer token against all active clients.
-  Uses ETS-cached client list to avoid DB round-trip.
+  Verify a bearer token against all active clients. Successful and failed
+  bcrypt checks are memoized briefly by token digest and client generation.
   """
   @spec verify_token(String.t()) :: {:ok, Client.t()} | :error
   def verify_token(token) when is_binary(token) do
-    clients =
-      if Application.get_env(:backplane, :env) == :test do
-        # In test, read from DB sandbox for isolation
-        Client |> where(active: true) |> Repo.all()
-      else
-        cached_active_clients()
-      end
+    generation = verification_generation()
+    clients = active_clients_for_verification()
+    digest = :crypto.hash(:sha256, token)
+    key = verification_key(digest, clients)
 
+    case cached_verification(key, generation, clients) do
+      {:ok, client} ->
+        touch_last_seen(client)
+        {:ok, client}
+
+      :miss ->
+        :error
+
+      :uncached ->
+        verify_and_cache(token, key, generation, clients)
+    end
+  end
+
+  def verify_token(_), do: :error
+
+  defp active_clients_for_verification do
+    if Application.get_env(:backplane, :env) == :test do
+      Client |> where(active: true) |> Repo.all()
+    else
+      cached_active_clients()
+    end
+  end
+
+  defp verification_key(digest, clients) do
+    if Application.get_env(:backplane, :env) == :test do
+      # Tests can mutate sandbox rows directly. The fingerprint invalidates a
+      # miss after such a mutation; self() isolates parallel sandbox owners.
+      fingerprint =
+        clients
+        |> Enum.map(&{&1.id, &1.token_hash})
+        |> Enum.sort()
+        |> :erlang.phash2()
+
+      {self(), digest, fingerprint}
+    else
+      digest
+    end
+  end
+
+  defp verify_and_cache(token, key, generation, clients) do
     case Enum.find(clients, fn client -> Bcrypt.verify_pass(token, client.token_hash) end) do
       nil ->
         Bcrypt.no_user_verify()
+        cache_verification(key, generation, :miss)
         :error
 
       client ->
+        cache_verification(key, generation, {:client, client.id, client.token_hash})
         touch_last_seen(client)
         {:ok, client}
     end
   end
 
-  def verify_token(_), do: :error
+  defp cached_verification(_key, generation, _clients)
+       when not is_integer(generation) or rem(generation, 2) != 0,
+       do: :uncached
+
+  defp cached_verification(key, generation, clients) do
+    slot = :erlang.phash2(key, @verification_slots)
+
+    case :ets.lookup(@verification_table, slot) do
+      [{^slot, ^key, ^generation, expires_at, result}] ->
+        if expires_at > System.monotonic_time(:millisecond) and
+             verification_generation() == generation do
+          resolve_cached_verification(result, clients)
+        else
+          :uncached
+        end
+
+      _other ->
+        :uncached
+    end
+  rescue
+    ArgumentError -> :uncached
+  end
+
+  defp resolve_cached_verification(:miss, _clients), do: :miss
+
+  defp resolve_cached_verification({:client, id, token_hash}, clients) do
+    case Enum.find(clients, &(&1.id == id and &1.token_hash == token_hash)) do
+      nil -> :uncached
+      client -> {:ok, client}
+    end
+  end
+
+  defp cache_verification(_key, generation, _result)
+       when not is_integer(generation) or rem(generation, 2) != 0,
+       do: :ok
+
+  defp cache_verification(key, generation, result) do
+    if verification_generation() == generation do
+      slot = :erlang.phash2(key, @verification_slots)
+      expires_at = System.monotonic_time(:millisecond) + @verification_ttl_ms
+      :ets.insert(@verification_table, {slot, key, generation, expires_at, result})
+    end
+
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp verification_generation do
+    case :ets.lookup(@verification_table, :generation) do
+      [{:generation, generation}] -> generation
+      _other -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
 
   defp touch_last_seen(%Client{id: id}) do
     Task.start(fn ->
