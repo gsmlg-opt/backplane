@@ -1,0 +1,79 @@
+{
+  "schema": "backplane.codex-tools.profile-fixtures/v2",
+  "artifact": {
+    "package": "backplane_agent_runtime",
+    "version_observed": "1.9.0",
+    "source_revision": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+    "same_artifact_required": true
+  },
+  "profiles": [
+    {
+      "id": "empty-tools",
+      "selected_families": [],
+      "required_backends": [],
+      "expected_startup": "no registration, workspace access, subprocess, service, or database"
+    },
+    {
+      "id": "pinned-local",
+      "selected_families": ["local"],
+      "required_backends": ["host-selected workspace, command adapter, resource registry, and plan"],
+      "expected_startup": "only configured tools are admitted with exact host grants"
+    },
+    {
+      "id": "interactive",
+      "selected_families": ["interactive"],
+      "required_backends": ["host interaction, permission, environment, and context providers as selected"],
+      "expected_startup": "configured control tools execute through Conversation and host callbacks"
+    },
+    {
+      "id": "collaboration-v1",
+      "selected_families": ["collaboration_v1"],
+      "required_backends": ["host-configured MultiAgent child Conversation runtime"],
+      "expected_startup": "V1 names are admitted separately and child runs are supervised"
+    },
+    {
+      "id": "collaboration-v2",
+      "selected_families": ["collaboration_v2"],
+      "required_backends": ["host-configured MultiAgent child Conversation runtime"],
+      "expected_startup": "V2 names are admitted separately and child runs are supervised"
+    },
+    {
+      "id": "extensions-ephemeral",
+      "selected_families": ["extensions"],
+      "required_backends": ["scoped ExtensionRuntime reference backend"],
+      "expected_startup": "27 concrete tools are callable; state and restart recovery are explicitly ephemeral"
+    },
+    {
+      "id": "dynamic-mcp",
+      "selected_families": ["dynamic"],
+      "required_backends": ["DynamicRuntime and selected MCP/plugin adapters"],
+      "expected_startup": "configured resource, search, and plugin tools are admitted; publication applies next turn"
+    },
+    {
+      "id": "code-mode-only",
+      "selected_families": ["code_mode"],
+      "required_backends": ["Deno, ResourceRegistry, and admitted nested Conversation dispatcher"],
+      "expected_startup": "exec and wait are visible; nested tools remain hidden and dispatch through Conversation"
+    },
+    {
+      "id": "service-compat",
+      "selected_families": ["services"],
+      "required_backends": ["host web/image adapters, allowlists, and credentials as selected"],
+      "expected_startup": "only configured services are admitted with exact host grants"
+    },
+    {
+      "id": "provider-hosted-web-search",
+      "selected_families": ["provider_hosted"],
+      "required_backends": ["provider capability negotiation and observation adapter"],
+      "expected_startup": "web_search is projected only in hosted_tools and never registered as local execution"
+    },
+    {
+      "id": "configured",
+      "selected_families": ["interactive", "collaboration_v2", "extensions", "dynamic", "code_mode", "services"],
+      "required_backends": ["all selected family runtimes and adapters"],
+      "expected_startup": "explicit families compose into one duplicate-free admitted catalog"
+    }
+  ],
+  "status": "callable_profiles_verified_with_reference_or_injected_backends",
+  "blocking_note": "Native Codex wire parity, live providers/services, durable extension recovery, and Linux LocalCommand behavior on macOS remain unverified."
+}

@@ -1,0 +1,541 @@
+{
+  "schema": "backplane.codex-tools.source-inventory/v1",
+  "codex_commit": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+  "registration_entrypoint": "codex-rs/core/src/tools/spec_plan.rs::build_tool_router",
+  "registration_audit": {
+    "source_path": "codex-rs/core/src/tools/spec_plan.rs",
+    "source_sha256": "849ef21d4e5c83febdc31eacd7609911d43e3f69a35168fe02ae899273b5ef3e",
+    "method": "reviewed table with source substring assertions; constructors are not executed"
+  },
+  "entries": [
+    {
+      "public_name": "exec_command",
+      "source_path": "codex-rs/core/src/tools/handlers/shell_spec.rs",
+      "constructor_or_registration": "create_exec_command_tool",
+      "source_sha256": "da7cffc9d6d82bc08b537fec6bddf3cd1906a05ba4ab193ecd50325ae3744e04",
+      "exposure_conditions": "environment and configured shell mode",
+      "classification": "production"
+    },
+    {
+      "public_name": "write_stdin",
+      "source_path": "codex-rs/core/src/tools/handlers/shell_spec.rs",
+      "constructor_or_registration": "create_write_stdin_tool",
+      "source_sha256": "da7cffc9d6d82bc08b537fec6bddf3cd1906a05ba4ab193ecd50325ae3744e04",
+      "exposure_conditions": "resumable command mode",
+      "classification": "production"
+    },
+    {
+      "public_name": "request_permissions",
+      "source_path": "codex-rs/core/src/tools/handlers/shell_spec.rs",
+      "constructor_or_registration": "create_request_permissions_tool",
+      "source_sha256": "da7cffc9d6d82bc08b537fec6bddf3cd1906a05ba4ab193ecd50325ae3744e04",
+      "exposure_conditions": "RequestPermissionsTool and environment",
+      "classification": "production"
+    },
+    {
+      "public_name": "apply_patch",
+      "source_path": "codex-rs/core/src/tools/handlers/apply_patch_spec.rs",
+      "constructor_or_registration": "create_apply_patch_freeform_tool",
+      "source_sha256": "d024ebb925f64bcc34420d4db8376798c8e8bc4518e220bce47a7ebee44a345f",
+      "exposure_conditions": "environment and model apply-patch support",
+      "classification": "production"
+    },
+    {
+      "public_name": "update_plan",
+      "source_path": "codex-rs/core/src/tools/handlers/plan_spec.rs",
+      "constructor_or_registration": "create_update_plan_tool",
+      "source_sha256": "ecbd36a78158967384269e1fb50f19991fd8f76c8d880cae536b5da105e0b197",
+      "exposure_conditions": "update_plan_enabled",
+      "classification": "production"
+    },
+    {
+      "public_name": "view_image",
+      "source_path": "codex-rs/core/src/tools/handlers/view_image_spec.rs",
+      "constructor_or_registration": "create_view_image_tool",
+      "source_sha256": "a54cb2ee992c34f6993c993c8efd16d5b91aa49bff8c5737bb4ffb64e977d413",
+      "exposure_conditions": "ViewImage and environment",
+      "classification": "production"
+    },
+    {
+      "public_name": "new_context",
+      "source_path": "codex-rs/core/src/tools/handlers/new_context_window_spec.rs",
+      "constructor_or_registration": "create_new_context_window_tool",
+      "source_sha256": "a8ae795a800d353ace35ed1366ee6917717066dd83f441cde60f78dc1cabd749",
+      "exposure_conditions": "TokenBudget; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "get_context_remaining",
+      "source_path": "codex-rs/core/src/tools/handlers/get_context_remaining_spec.rs",
+      "constructor_or_registration": "create_get_context_remaining_tool",
+      "source_sha256": "7568f8f622bfb3e13d81e0d38279735f33a6d0d28ed1639e3607f68280d43c82",
+      "exposure_conditions": "TokenBudget",
+      "classification": "production"
+    },
+    {
+      "public_name": "request_user_input",
+      "source_path": "codex-rs/core/src/tools/handlers/request_user_input_spec.rs",
+      "constructor_or_registration": "create_request_user_input_tool",
+      "source_sha256": "86ef5b005211ea6cc14c5a99821357a4484cccbb4756c911bbeba3913315d16f",
+      "exposure_conditions": "experimental_request_user_input_enabled; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "request_user_input_async",
+      "source_path": "codex-rs/core/src/tools/handlers/request_user_input_async.rs",
+      "constructor_or_registration": "request_user_input_async",
+      "source_sha256": "16be7e521e3f91aaede5bd233a52671e0cd5454ef4d8a4a67eeb71908ab06096",
+      "exposure_conditions": "root agent and model support; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "send_message_to_user_async",
+      "source_path": "codex-rs/core/src/tools/handlers/send_message_to_user_async.rs",
+      "constructor_or_registration": "send_message_to_user_async",
+      "source_sha256": "819223bc5ea44af5858f9d53c6b179506c0e67ad731b5e3c9177d83f0ab0bb18",
+      "exposure_conditions": "root agent and feature/model support; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "wait_for_environment",
+      "source_path": "codex-rs/core/src/tools/handlers/wait_for_environment.rs",
+      "constructor_or_registration": "wait_for_environment",
+      "source_sha256": "c63f7312f5d9f62094f6596e0373fdfdf9d6f468fac6cabd8e13de3b92e7dd06",
+      "exposure_conditions": "DeferredExecutor",
+      "classification": "production"
+    },
+    {
+      "public_name": "clock::curr_time",
+      "source_path": "codex-rs/core/src/tools/handlers/current_time.rs",
+      "constructor_or_registration": "curr_time",
+      "source_sha256": "88d6d3ae56c0d6ac9a58d8a6505c80a683834b9b6d995e0ea5c997a7bade7d2e",
+      "exposure_conditions": "CurrentTimeReminder or model clock support",
+      "classification": "production"
+    },
+    {
+      "public_name": "clock::sleep",
+      "source_path": "codex-rs/core/src/tools/handlers/sleep.rs",
+      "constructor_or_registration": "create_sleep_tool",
+      "source_sha256": "210525e50e0463170e43c53e42b6abcac03d41ffcc515b9e109a9c40b09a3c9e",
+      "exposure_conditions": "SleepTool and configured mode; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "list_mcp_resources",
+      "source_path": "codex-rs/core/src/tools/handlers/mcp_resource_spec.rs",
+      "constructor_or_registration": "create_list_mcp_resources_tool",
+      "source_sha256": "f68f97ae8dc14f0272c333cd332863b76064d4c04a8e7c9f1431a6eb1d084109",
+      "exposure_conditions": "configured MCP server",
+      "classification": "production"
+    },
+    {
+      "public_name": "list_mcp_resource_templates",
+      "source_path": "codex-rs/core/src/tools/handlers/mcp_resource_spec.rs",
+      "constructor_or_registration": "create_list_mcp_resource_templates_tool",
+      "source_sha256": "f68f97ae8dc14f0272c333cd332863b76064d4c04a8e7c9f1431a6eb1d084109",
+      "exposure_conditions": "configured MCP server",
+      "classification": "production"
+    },
+    {
+      "public_name": "read_mcp_resource",
+      "source_path": "codex-rs/core/src/tools/handlers/mcp_resource_spec.rs",
+      "constructor_or_registration": "create_read_mcp_resource_tool",
+      "source_sha256": "f68f97ae8dc14f0272c333cd332863b76064d4c04a8e7c9f1431a6eb1d084109",
+      "exposure_conditions": "configured MCP server",
+      "classification": "production"
+    },
+    {
+      "public_name": "multi_agent_v1::spawn_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_spawn_agent_tool_v1",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V1",
+      "classification": "production"
+    },
+    {
+      "public_name": "multi_agent_v1::send_input",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_send_input_tool_v1",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V1",
+      "classification": "production"
+    },
+    {
+      "public_name": "multi_agent_v1::resume_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_resume_agent_tool",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V1",
+      "classification": "production"
+    },
+    {
+      "public_name": "multi_agent_v1::close_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_close_agent_tool_v1",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V1",
+      "classification": "production"
+    },
+    {
+      "public_name": "multi_agent_v1::wait_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_wait_agent_tool_v1",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V1",
+      "classification": "production"
+    },
+    {
+      "public_name": "spawn_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_spawn_agent_tool_v2",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V2; plain or host-configured namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "send_message",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_send_message_tool",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V2 direct messaging",
+      "classification": "production"
+    },
+    {
+      "public_name": "followup_task",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_followup_task_tool",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V2 direct messaging",
+      "classification": "production"
+    },
+    {
+      "public_name": "interrupt_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_interrupt_agent_tool_v2",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V2",
+      "classification": "production"
+    },
+    {
+      "public_name": "list_agents",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_list_agents_tool",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "collaboration V2",
+      "classification": "production"
+    },
+    {
+      "public_name": "wait_agent",
+      "source_path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "constructor_or_registration": "create_wait_agent_tool_v2",
+      "source_sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd",
+      "exposure_conditions": "configured collaboration V2 wait; plain or host-configured namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "exec",
+      "source_path": "codex-rs/core/src/tools/code_mode/execute_spec.rs",
+      "constructor_or_registration": "create_code_mode_tool",
+      "source_sha256": "40f06a09be0edd11faaeeac9b4d3fb162d05548ee0e8ecb4289c0e0a5c50c58c",
+      "exposure_conditions": "CodeMode or CodeModeOnly",
+      "classification": "production"
+    },
+    {
+      "public_name": "wait",
+      "source_path": "codex-rs/core/src/tools/code_mode/wait_spec.rs",
+      "constructor_or_registration": "create_wait_tool",
+      "source_sha256": "91de44630fc14ba2fe8b9c3a45af8e51d638aa7b5e8fde95b22e250e99d3a15f",
+      "exposure_conditions": "CodeMode continuation",
+      "classification": "production"
+    },
+    {
+      "public_name": "tool_search",
+      "source_path": "codex-rs/core/src/tools/handlers/tool_search_spec.rs",
+      "constructor_or_registration": "create_tool_search_tool",
+      "source_sha256": "06e8e03deb3d4a2da2fc36bc6660b399f3d8e54dee76b0557658ee55abed93de",
+      "exposure_conditions": "search support plus deferred tools",
+      "classification": "production"
+    },
+    {
+      "public_name": "list_available_plugins_to_install",
+      "source_path": "codex-rs/core/src/tools/handlers/list_available_plugins_to_install_spec.rs",
+      "constructor_or_registration": "create_list_available_plugins_to_install_tool",
+      "source_sha256": "950a85c21c857af23f4d1c99aaa33cbddd6a9b7ee0e6e04b346e7fc4f39c77e0",
+      "exposure_conditions": "ToolSuggest list presentation",
+      "classification": "production"
+    },
+    {
+      "public_name": "request_plugin_install",
+      "source_path": "codex-rs/core/src/tools/handlers/request_plugin_install_spec.rs",
+      "constructor_or_registration": "create_request_plugin_install_tool",
+      "source_sha256": "f0a731499469a4ed581b9550d1a45d5881b01b508f9cb70036b78b0670f45023",
+      "exposure_conditions": "ToolSuggest candidates",
+      "classification": "production"
+    },
+    {
+      "public_name": "test_sync_tool",
+      "source_path": "codex-rs/core/src/tools/handlers/test_sync_spec.rs",
+      "constructor_or_registration": "create_test_sync_tool",
+      "source_sha256": "bad6053ef800b01e74998e22354f850bd42ffdfc77865ff259ffd448b81cc0dd",
+      "exposure_conditions": "experimental_supported_tools contains test_sync_tool",
+      "classification": "test_only"
+    },
+    {
+      "public_name": "image_gen::imagegen",
+      "source_path": "codex-rs/ext/image-generation/src/tool.rs",
+      "constructor_or_registration": "imagegen_tool_spec",
+      "source_sha256": "1aa00a3013fdabf547f890b43cc3ff3a0217df6240fb9989a6fe6a03e9272fe7",
+      "exposure_conditions": "ImageGeneration, provider auth/capability, namespace tools, image modality",
+      "classification": "production"
+    },
+    {
+      "public_name": "web::run",
+      "source_path": "codex-rs/ext/web-search/src/tool.rs",
+      "constructor_or_registration": "fn spec",
+      "source_sha256": "9a10c0e2b6a3a065a3ce2c5b6aafa52dfee3aa5b975408cf9f5aa8d237233a50",
+      "exposure_conditions": "StandaloneWebSearch or Responses Lite plus provider search capability",
+      "classification": "production"
+    },
+    {
+      "public_name": "web_search",
+      "source_path": "codex-rs/core/src/tools/hosted_spec.rs",
+      "constructor_or_registration": "create_web_search_tool",
+      "source_sha256": "add42354c1662ced395898ba4b8bac9b4546ee5b5963cd40bc3f542fc950765c",
+      "exposure_conditions": "provider hosted web_search and non-lite response mode",
+      "classification": "production"
+    },
+    {
+      "public_name": "get_goal",
+      "source_path": "codex-rs/ext/goal/src/spec.rs",
+      "constructor_or_registration": "create_get_goal_tool",
+      "source_sha256": "db48400d291ecb642b0d1189c73eea81a412f4b13bc9f7d917dc0dbd3f7828ea",
+      "exposure_conditions": "goal extension installed",
+      "classification": "production"
+    },
+    {
+      "public_name": "create_goal",
+      "source_path": "codex-rs/ext/goal/src/spec.rs",
+      "constructor_or_registration": "create_create_goal_tool",
+      "source_sha256": "db48400d291ecb642b0d1189c73eea81a412f4b13bc9f7d917dc0dbd3f7828ea",
+      "exposure_conditions": "goal extension installed",
+      "classification": "production"
+    },
+    {
+      "public_name": "update_goal",
+      "source_path": "codex-rs/ext/goal/src/spec.rs",
+      "constructor_or_registration": "create_update_goal_tool",
+      "source_sha256": "db48400d291ecb642b0d1189c73eea81a412f4b13bc9f7d917dc0dbd3f7828ea",
+      "exposure_conditions": "goal extension installed",
+      "classification": "production"
+    },
+    {
+      "public_name": "memories::add_ad_hoc_note",
+      "source_path": "codex-rs/ext/memories/src/tools/ad_hoc_note.rs",
+      "constructor_or_registration": "AddAdHocNoteTool",
+      "source_sha256": "b1107010c398f20906d7de2238416a9ecdb6923f84a98ff90df17231e28fa877",
+      "exposure_conditions": "MemoryTool and memories enabled with dedicated tools",
+      "classification": "production"
+    },
+    {
+      "public_name": "memories::list",
+      "source_path": "codex-rs/ext/memories/src/tools/list.rs",
+      "constructor_or_registration": "ListTool",
+      "source_sha256": "10c8dc974345c23a8edd068cceafd9681c032ad8f112d8d228903a5cc134cd93",
+      "exposure_conditions": "MemoryTool and memories enabled with dedicated tools",
+      "classification": "production"
+    },
+    {
+      "public_name": "memories::read",
+      "source_path": "codex-rs/ext/memories/src/tools/read.rs",
+      "constructor_or_registration": "ReadTool",
+      "source_sha256": "eae78b7bf9a43e91bf0bd5bd1bbc4698d9bfdfca26c9c81bc06cd735ebd97fd6",
+      "exposure_conditions": "MemoryTool and memories enabled with dedicated tools",
+      "classification": "production"
+    },
+    {
+      "public_name": "memories::search",
+      "source_path": "codex-rs/ext/memories/src/tools/search.rs",
+      "constructor_or_registration": "SearchTool",
+      "source_sha256": "7bae232492141f4ba539c9b46a373b90825a9aaef193e56c84bf325a3c7d1fb6",
+      "exposure_conditions": "MemoryTool and memories enabled with dedicated tools",
+      "classification": "production"
+    },
+    {
+      "public_name": "skills::list",
+      "source_path": "codex-rs/ext/skills/src/tools/list.rs",
+      "constructor_or_registration": "ListTool",
+      "source_sha256": "2dd371168ef11553312bb53fe1913b38d4133669b7cae00c115feb253061eb5d",
+      "exposure_conditions": "skills extension configured with visible catalog",
+      "classification": "production"
+    },
+    {
+      "public_name": "skills::read",
+      "source_path": "codex-rs/ext/skills/src/tools/read.rs",
+      "constructor_or_registration": "ReadTool",
+      "source_sha256": "a2ea79bd486de695512483fe194d77bb9de366d10419ada364b8e20eff589ece",
+      "exposure_conditions": "skills extension configured with visible catalog",
+      "classification": "production"
+    },
+    {
+      "public_name": "history::list_windows",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "HistoryListWindows",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "history::list_items",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "HistoryListItems",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "history::read_item",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "HistoryReadItem",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "history::search_contents",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "HistorySearchContents",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "notes::list_files_by_prefix",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "NotesListFilesByPrefix",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "notes::read_file",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "NotesReadFile",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "notes::search_contents",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "NotesSearchContents",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "notes::append_to_file",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "NotesAppendToFile",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "notes::write_file",
+      "source_path": "codex-rs/ext/history-notes/src/tools.rs",
+      "constructor_or_registration": "NotesWriteFile",
+      "source_sha256": "d5866ac0ef06863c310dbbbc10eeddea6e2aede794ebc9a6edc6c1daff98bddb",
+      "exposure_conditions": "history-notes extension, Codex backend auth, token budget configuration; direct model only",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::create_channel",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "create_channel",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::get_channels",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "get_channels",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::list_threads",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "list_threads",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::search_posts",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "search_posts",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::read_thread",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "read_thread",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::read_post",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "read_post",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::subscribe",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "subscribe",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::unsubscribe",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "unsubscribe",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "<board-namespace-or-plain>::post",
+      "source_path": "codex-rs/ext/agent-message-board/src/tools/spec.rs",
+      "constructor_or_registration": "post",
+      "source_sha256": "078dbdd0ff8cc796e555b1248de6dc63781dedfdfa664e08299acf50ae4386c5",
+      "exposure_conditions": "message-board backend available; host-configured optional namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "dynamic::<host-defined>",
+      "source_path": "codex-rs/core/src/tools/spec_plan.rs",
+      "constructor_or_registration": "append_dynamic_tool_runtimes",
+      "source_sha256": "849ef21d4e5c83febdc31eacd7609911d43e3f69a35168fe02ae899273b5ef3e",
+      "exposure_conditions": "host dynamic function or namespace",
+      "classification": "production"
+    },
+    {
+      "public_name": "mcp::<server-defined>",
+      "source_path": "codex-rs/core/src/tools/spec_plan.rs",
+      "constructor_or_registration": "apply_mcp_tool_exposure_policy",
+      "source_sha256": "849ef21d4e5c83febdc31eacd7609911d43e3f69a35168fe02ae899273b5ef3e",
+      "exposure_conditions": "authorized MCP catalog; direct/deferred/code-mode policy",
+      "classification": "production"
+    }
+  ],
+  "authority": "Reviewed exact-source records, not generated behavioral contracts. Availability and parity remain separate claims."
+}

@@ -19,7 +19,15 @@ run beside it. See [EMBEDDING.md](EMBEDDING.md) for contracts and an example,
 from a consumer with `mix run examples/embedded.exs` after installing this package
 (or run the file from the extracted artifact). It makes no network requests.
 
-This is not a completed Sigma migration. Collaboration spawn, delegate, send,
-wait, cancel and ask-user wrappers still return explicit unsupported results.
-Conversation interaction resolution is a local host-adapter boundary, not an
-implementation of those collaboration operations.
+This is not a completed Sigma migration. Codex profiles are explicit, opt-in
+host integrations; selecting no profile starts no command worker, extension
+runtime, collaboration tree, network client, or provider-hosted capability.
+
+The local, interaction/context, collaboration V1/V2, stateful extension,
+dynamic MCP/plugin, Code Mode, service-backed, and composed Codex profiles are
+documented in [CODEX.md](CODEX.md). Model-callable tools use the strict catalog
+and `Conversation -> Execution` path. Provider-hosted tools are negotiated and
+projected separately and never become local registry entries. The implementation
+is assessed compatibility, not unqualified Codex parity; platform, durable
+backend, provider-wire, and live-service limits are recorded in the coverage
+ledger under `docs/agent-runtime/codex-tools/`.

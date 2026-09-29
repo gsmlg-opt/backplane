@@ -1,0 +1,898 @@
+defmodule Backplane.AgentRuntime.Codex.MultiAgent do
+  @moduledoc """
+  Supervised Codex V1/V2 collaboration runtime.
+
+  The process owns only collaboration state and waiters. Child work is executed by
+  real `Conversation` processes under a `DynamicSupervisor`.
+  """
+
+  use GenServer
+
+  alias Backplane.AgentRuntime.{Conversation, Error}
+
+  @default_wait_timeout_ms 30_000
+  @maximum_wait_timeout_ms 3_600_000
+  @v1_namespace "multi_agent_v1"
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) when is_list(opts),
+    do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
+
+  @spec contracts(:v1 | :v2, pid(), keyword()) :: [map()]
+  def contracts(profile, runtime, opts \\ []) when profile in [:v1, :v2] and is_pid(runtime) do
+    runtime_wait = GenServer.call(runtime, :wait_options)
+
+    wait = %{
+      default: Keyword.get(opts, :default_wait_timeout_ms, runtime_wait.default_wait_timeout_ms),
+      min: Keyword.get(opts, :min_wait_timeout_ms, runtime_wait.min_wait_timeout_ms),
+      max: Keyword.get(opts, :max_wait_timeout_ms, runtime_wait.max_wait_timeout_ms)
+    }
+
+    case profile do
+      :v1 -> v1_contracts(runtime, wait)
+      :v2 -> v2_contracts(runtime, wait)
+    end
+  end
+
+  @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
+  def call(%{backend_context: %{runtime: runtime, profile: profile}} = operation)
+      when is_pid(runtime) and profile in [:v1, :v2] do
+    GenServer.call(runtime, {:tool, profile, operation}, :infinity)
+  catch
+    :exit, reason ->
+      {:error,
+       Error.new(:execution_failure, "collaboration runtime is unavailable", cause: reason)}
+  end
+
+  def call(_operation),
+    do: {:error, Error.new(:unsupported_capability, "collaboration runtime is unavailable")}
+
+  @impl true
+  def init(opts) do
+    with {:ok, parent_run_id} <- required_binary(opts, :parent_run_id),
+         {:ok, parent_name} <- required_binary(opts, :parent_name),
+         {:ok, authority} <- required_map(opts, :parent_authority),
+         {:ok, child_options} <- required_callback(opts, :child_options, 3),
+         {:ok, supervisor} <- DynamicSupervisor.start_link(strategy: :one_for_one) do
+      {:ok,
+       %{
+         parent_run_id: parent_run_id,
+         parent_name: normalize_root(parent_name),
+         parent_authority: authority,
+         child_options: child_options,
+         child_supervisor: supervisor,
+         subscriber: Keyword.get(opts, :subscriber),
+         min_wait_timeout_ms: Keyword.get(opts, :min_wait_timeout_ms, 10_000),
+         max_wait_timeout_ms: Keyword.get(opts, :max_wait_timeout_ms, @maximum_wait_timeout_ms),
+         default_wait_timeout_ms:
+           Keyword.get(opts, :default_wait_timeout_ms, @default_wait_timeout_ms),
+         max_agents: Keyword.get(opts, :max_agents, 16),
+         sequence: 0,
+         agents: %{},
+         run_index: %{},
+         monitors: %{},
+         updates: MapSet.new(),
+         waiters: %{}
+       }}
+    end
+  end
+
+  @impl true
+  def handle_call(:wait_options, _from, state) do
+    {:reply,
+     Map.take(state, [
+       :default_wait_timeout_ms,
+       :min_wait_timeout_ms,
+       :max_wait_timeout_ms
+     ]), state}
+  end
+
+  def handle_call({:tool, profile, operation}, from, state) do
+    with {:ok, caller} <- authenticate(operation, state),
+         {:ok, action} <- action(profile, operation.tool_name) do
+      dispatch(action, operation.arguments, from, caller, state)
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:agent_runtime, run_id, event}, state) when is_map(event) do
+    state = update_from_event(state, run_id, event)
+    {:noreply, wake_waiters(state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.pop(state.monitors, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {name, monitors} ->
+        state = put_in(state, [:agents, name, :status], {:errored, inspect(reason)})
+        state = %{state | monitors: monitors, updates: MapSet.put(state.updates, name)}
+        {:noreply, wake_waiters(state)}
+    end
+  end
+
+  def handle_info({:wait_timeout, token}, state) do
+    case Map.pop(state.waiters, token) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {%{from: from, profile: :v1}, waiters} ->
+        GenServer.reply(from, {:ok, %{status: %{}, timed_out: true}})
+        {:noreply, %{state | waiters: waiters}}
+
+      {%{from: from, profile: :v2}, waiters} ->
+        GenServer.reply(
+          from,
+          {:ok, %{message: "Timed out waiting for agent updates.", timed_out: true}}
+        )
+
+        {:noreply, %{state | waiters: waiters}}
+    end
+  end
+
+  def handle_info(_, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    Enum.each(state.waiters, fn {_token, waiter} ->
+      if waiter.timer, do: Process.cancel_timer(waiter.timer)
+    end)
+
+    if Process.alive?(state.child_supervisor),
+      do: Supervisor.stop(state.child_supervisor, :shutdown)
+
+    :ok
+  end
+
+  defp dispatch(:spawn, arguments, _from, caller, state) do
+    with :ok <- capacity(state),
+         {:ok, request} <- spawn_request(arguments),
+         {:ok, name} <- child_name(caller, request.task_name),
+         :ok <- unique_name(state, name),
+         run_id = child_run_id(name, state.sequence + 1),
+         parent = caller_metadata(caller),
+         {:ok, opts} <- state.child_options.(request, run_id, parent),
+         :ok <- child_authority(opts, caller.authority),
+         opts = Keyword.put(opts, :subscriber, self()),
+         {:ok, pid} <- start_child(state.child_supervisor, opts),
+         {:ok, _receipt} <- Conversation.prompt(pid, request.message) do
+      ref = Process.monitor(pid)
+
+      agent = %{
+        name: name,
+        run_id: run_id,
+        pid: pid,
+        monitor: ref,
+        status: :running,
+        final: nil,
+        opts: opts,
+        message: request.message,
+        profile: request.profile,
+        parent: caller.name,
+        authority: Keyword.get(opts, :authority, %{})
+      }
+
+      state = %{
+        state
+        | sequence: state.sequence + 1,
+          agents: Map.put(state.agents, name, agent),
+          run_index: Map.put(state.run_index, run_id, name),
+          monitors: Map.put(state.monitors, ref, name)
+      }
+
+      result =
+        if request.profile == :v1,
+          do: %{agent_id: run_id, nickname: nil},
+          else: %{task_name: name, nickname: nil}
+
+      {:reply, {:ok, result}, state}
+    else
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, Error.new(:execution_failure, "child failed to start", cause: reason)},
+         state}
+    end
+  end
+
+  defp dispatch(:list, arguments, _from, _caller, state) do
+    prefix = arguments["path_prefix"]
+
+    agents =
+      state.agents
+      |> Map.values()
+      |> Enum.reject(&(&1.status == :shutdown))
+      |> Enum.filter(&(is_nil(prefix) or String.starts_with?(&1.name, prefix)))
+      |> Enum.sort_by(& &1.name)
+      |> Enum.map(&%{agent_name: &1.name, agent_status: public_status(&1)})
+
+    {:reply, {:ok, %{agents: agents}}, state}
+  end
+
+  defp dispatch(:wait_v2, arguments, from, caller, state) do
+    case ready_names(state, nil) do
+      [] -> wait(:v2, [], arguments, from, caller, state)
+      names -> {:reply, {:ok, v2_wait_result(names)}, consume_updates(state, names)}
+    end
+  end
+
+  defp dispatch(:wait_v1, arguments, from, caller, state) do
+    targets = arguments["targets"] || []
+
+    with true <-
+           (is_list(targets) and targets != []) or validation("targets must be a non-empty list"),
+         {:ok, names} <- resolve_targets(state, targets) do
+      case ready_names(state, names) do
+        [] -> wait(:v1, names, arguments, from, caller, state)
+        ready -> {:reply, {:ok, v1_wait_result(state, ready)}, consume_updates(state, ready)}
+      end
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp dispatch(action, arguments, _from, _caller, state)
+       when action in [:message, :followup] do
+    target = arguments["target"]
+    message = arguments["message"]
+
+    with true <-
+           (is_binary(message) and String.trim(message) != "") or
+             validation("message is required"),
+         {:ok, name, agent} <- resolve_target(state, target),
+         :ok <- deliver(agent, action, message) do
+      state = %{state | updates: MapSet.put(state.updates, name)}
+      {:reply, {:ok, %{accepted: true}}, wake_waiters(state)}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp dispatch(:send_input, arguments, _from, _caller, state) do
+    message = arguments["message"] || input_items_text(arguments["items"])
+    action = if arguments["interrupt"] == true, do: :interrupt_message, else: :followup
+
+    with true <-
+           (is_binary(message) and String.trim(message) != "") or
+             validation("message or items is required"),
+         {:ok, _name, agent} <- resolve_target(state, arguments["target"]),
+         :ok <- deliver(agent, action, message) do
+      {:reply, {:ok, %{submission_id: unique_id("submission")}}, state}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp dispatch(action, arguments, _from, _caller, state) when action in [:interrupt, :close] do
+    with {:ok, name, agent} <- resolve_target(state, arguments["target"]),
+         previous = public_status(agent),
+         {:ok, state} <- cancel_owned_tree(state, name, action) do
+      next_status = if action == :close, do: :shutdown, else: :interrupted
+      {:reply, {:ok, %{previous_status: previous, status: next_status}}, wake_waiters(state)}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp dispatch(:resume, arguments, _from, _caller, state) do
+    with {:ok, name, agent} <- resolve_target(state, arguments["id"]),
+         true <- agent.status == :shutdown or validation("agent is not closed"),
+         {:ok, pid} <- start_child(state.child_supervisor, agent.opts),
+         {:ok, _} <- Conversation.prompt(pid, agent.message) do
+      ref = Process.monitor(pid)
+      resumed = %{agent | pid: pid, monitor: ref, status: :running, final: nil}
+
+      state = %{
+        state
+        | agents: Map.put(state.agents, name, resumed),
+          monitors: Map.put(state.monitors, ref, name)
+      }
+
+      {:reply, {:ok, %{status: :running}}, state}
+    else
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, Error.new(:execution_failure, "child failed to resume", cause: reason)},
+         state}
+    end
+  end
+
+  defp wait(profile, names, arguments, from, caller, state) do
+    with {:ok, timeout} <- wait_timeout(arguments["timeout_ms"], state),
+         :ok <- reject_wait_cycle(profile, caller.name, names, state) do
+      token = make_ref()
+      timer = Process.send_after(self(), {:wait_timeout, token}, timeout)
+      waiter = %{from: from, profile: profile, names: names, timer: timer, caller: caller.name}
+      {:noreply, put_in(state, [:waiters, token], waiter)}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp wake_waiters(state) do
+    {state, consumed} =
+      Enum.reduce(Map.to_list(state.waiters), {state, MapSet.new()}, fn {token, waiter},
+                                                                        {acc, consumed} ->
+        names = ready_names(state, if(waiter.names == [], do: nil, else: waiter.names))
+
+        if names == [] do
+          {acc, consumed}
+        else
+          Process.cancel_timer(waiter.timer)
+
+          result =
+            if waiter.profile == :v1,
+              do: v1_wait_result(state, names),
+              else: v2_wait_result(names)
+
+          GenServer.reply(waiter.from, {:ok, result})
+
+          {%{acc | waiters: Map.delete(acc.waiters, token)},
+           Enum.reduce(names, consumed, &MapSet.put(&2, &1))}
+        end
+      end)
+
+    consume_updates(state, MapSet.to_list(consumed))
+  end
+
+  defp update_from_event(state, run_id, %{type: type} = event)
+       when type in [:run_completed, :run_failed, :run_cancelled] do
+    case Map.fetch(state.run_index, run_id) do
+      :error ->
+        state
+
+      {:ok, name} ->
+        agent = Map.fetch!(state.agents, name)
+
+        status =
+          case {type, agent.status} do
+            {:run_completed, _status} -> :completed
+            {:run_cancelled, status} when status in [:interrupted, :shutdown] -> status
+            {_type, _status} -> {:errored, event_error(event)}
+          end
+
+        final = terminal_message(agent.pid, event)
+        notify(state, %{type: :agent_updated, agent_name: name, status: status})
+
+        state
+        |> put_in([:agents, name, :status], status)
+        |> put_in([:agents, name, :final], final)
+        |> Map.update!(:updates, &MapSet.put(&1, name))
+    end
+  end
+
+  defp update_from_event(state, _run_id, _event), do: state
+
+  defp terminal_message(pid, event) do
+    case Conversation.status(pid) do
+      %{messages: messages} ->
+        messages
+        |> Enum.reverse()
+        |> Enum.find_value(fn
+          %{role: :assistant, content: content} -> content
+          %{role: "assistant", content: content} -> content
+          _ -> nil
+        end) || inspect(Map.get(event, :outcome))
+
+      _ ->
+        inspect(Map.get(event, :outcome))
+    end
+  catch
+    :exit, _ -> inspect(Map.get(event, :outcome))
+  end
+
+  defp deliver(%{status: :running, pid: pid}, :interrupt_message, message) do
+    with :ok <- cancel_agent(%{pid: pid}),
+         {:error, %Error{}} <- Conversation.steer(pid, message) do
+      {:error, Error.new(:resource_conflict, "agent was interrupted and cannot accept input")}
+    else
+      {:ok, _} -> :ok
+      :ok -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp deliver(%{status: :running, pid: pid}, :message, message),
+    do: normalize_delivery(Conversation.steer(pid, message))
+
+  defp deliver(%{status: :running, pid: pid}, :followup, message),
+    do: normalize_delivery(Conversation.follow_up(pid, message))
+
+  defp deliver(_agent, _action, _message),
+    do: {:error, Error.new(:resource_conflict, "agent is not accepting input")}
+
+  defp normalize_delivery({:ok, _}), do: :ok
+  defp normalize_delivery({:error, %Error{} = error}), do: {:error, error}
+
+  defp cancel_agent(%{pid: pid}) when is_pid(pid) do
+    case Conversation.cancel(pid) do
+      :ok -> :ok
+      {:error, %Error{class: :resource_conflict}} -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp cancel_owned_tree(state, name, action) do
+    names = [name | descendant_names(state, name)]
+    next_status = if action == :close, do: :shutdown, else: :interrupted
+
+    Enum.reduce_while(names, {:ok, state}, fn child_name, {:ok, acc} ->
+      agent = Map.fetch!(acc.agents, child_name)
+
+      case cancel_agent(agent) do
+        :ok ->
+          acc = put_in(acc, [:agents, child_name, :status], next_status)
+          {:cont, {:ok, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
+
+        {:error, %Error{} = error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp descendant_names(state, name) do
+    direct =
+      state.agents
+      |> Enum.filter(fn {_child_name, agent} -> agent.parent == name end)
+      |> Enum.map(&elem(&1, 0))
+
+    direct ++ Enum.flat_map(direct, &descendant_names(state, &1))
+  end
+
+  defp authenticate(%{run_id: run_id}, state) do
+    cond do
+      run_id == state.parent_run_id ->
+        {:ok,
+         %{
+           name: state.parent_name,
+           run_id: state.parent_run_id,
+           authority: state.parent_authority
+         }}
+
+      name = state.run_index[run_id] ->
+        agent = state.agents[name]
+        {:ok, %{name: name, run_id: run_id, authority: agent.authority}}
+
+      true ->
+        {:error, Error.new(:forbidden, "collaboration caller is not in this run tree")}
+    end
+  end
+
+  defp authenticate(_, _state),
+    do: {:error, Error.new(:forbidden, "collaboration caller is missing")}
+
+  defp action(:v2, name) do
+    case name do
+      "spawn_agent" -> {:ok, :spawn}
+      "send_message" -> {:ok, :message}
+      "followup_task" -> {:ok, :followup}
+      "interrupt_agent" -> {:ok, :interrupt}
+      "list_agents" -> {:ok, :list}
+      "wait_agent" -> {:ok, :wait_v2}
+      _ -> {:error, Error.new(:not_found, "unknown V2 collaboration tool")}
+    end
+  end
+
+  defp action(:v1, @v1_namespace <> "::spawn_agent"), do: {:ok, :spawn}
+  defp action(:v1, @v1_namespace <> "::send_input"), do: {:ok, :send_input}
+  defp action(:v1, @v1_namespace <> "::resume_agent"), do: {:ok, :resume}
+  defp action(:v1, @v1_namespace <> "::wait_agent"), do: {:ok, :wait_v1}
+  defp action(:v1, @v1_namespace <> "::close_agent"), do: {:ok, :close}
+  defp action(:v1, _), do: {:error, Error.new(:not_found, "unknown V1 collaboration tool")}
+
+  defp spawn_request(arguments) do
+    profile = if Map.has_key?(arguments, "task_name"), do: :v2, else: :v1
+    message = arguments["message"] || input_items_text(arguments["items"])
+    task_name = arguments["task_name"] || unique_id("agent")
+
+    with true <-
+           (is_binary(message) and String.trim(message) != "") or
+             validation("message is required"),
+         :ok <- validate_task_name(task_name, profile) do
+      {:ok, %{profile: profile, message: message, task_name: task_name, options: arguments}}
+    end
+  end
+
+  defp validate_task_name(name, :v2) when is_binary(name) do
+    if Regex.match?(~r/^[a-z0-9_]+$/, name), do: :ok, else: validation("invalid task_name")
+  end
+
+  defp validate_task_name(name, :v1) when is_binary(name) and name != "", do: :ok
+  defp validate_task_name(_, _), do: validation("invalid task_name")
+
+  defp child_name(caller, task_name), do: {:ok, caller.name <> "/" <> task_name}
+  defp child_run_id(name, sequence), do: name <> ":" <> Integer.to_string(sequence)
+
+  defp start_child(supervisor, opts) do
+    DynamicSupervisor.start_child(supervisor, {Conversation, opts})
+  end
+
+  defp child_authority(opts, parent_authority) do
+    child = Keyword.get(opts, :authority, %{})
+    parent_grants = MapSet.new(Map.get(parent_authority, :grants, []))
+    child_grants = MapSet.new(Map.get(child, :grants, []))
+
+    if MapSet.subset?(child_grants, parent_grants),
+      do: :ok,
+      else: {:error, Error.new(:forbidden, "child authority exceeds parent grants")}
+  end
+
+  defp capacity(state) do
+    live = Enum.count(state.agents, fn {_name, agent} -> agent.status != :shutdown end)
+
+    if live < state.max_agents,
+      do: :ok,
+      else: {:error, Error.new(:resource_conflict, "agent limit reached")}
+  end
+
+  defp unique_name(state, name) do
+    if Map.has_key?(state.agents, name),
+      do: validation("task_name is already in use"),
+      else: :ok
+  end
+
+  defp resolve_targets(state, targets) do
+    Enum.reduce_while(targets, {:ok, []}, fn target, {:ok, names} ->
+      case resolve_target(state, target) do
+        {:ok, name, _agent} -> {:cont, {:ok, [name | names]}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, names} -> {:ok, Enum.reverse(names)}
+      error -> error
+    end
+  end
+
+  defp resolve_target(state, target) when is_binary(target) do
+    name =
+      cond do
+        Map.has_key?(state.agents, target) -> target
+        Map.has_key?(state.run_index, target) -> state.run_index[target]
+        String.starts_with?(target, "/") -> target
+        true -> state.parent_name <> "/" <> target
+      end
+
+    case Map.fetch(state.agents, name) do
+      {:ok, agent} -> {:ok, name, agent}
+      :error -> {:error, Error.new(:not_found, "agent was not found")}
+    end
+  end
+
+  defp resolve_target(_state, _target), do: {:error, Error.new(:validation, "target is required")}
+
+  defp ready_names(state, nil), do: MapSet.to_list(state.updates)
+
+  defp ready_names(state, names) do
+    Enum.filter(names, fn name ->
+      MapSet.member?(state.updates, name) or terminal_status?(state.agents[name].status)
+    end)
+  end
+
+  defp terminal_status?(status),
+    do: status == :completed or status == :shutdown or match?({:errored, _}, status)
+
+  defp consume_updates(state, names),
+    do: %{state | updates: Enum.reduce(names, state.updates, &MapSet.delete(&2, &1))}
+
+  defp reject_wait_cycle(:v2, _caller, _names, _state), do: :ok
+
+  defp reject_wait_cycle(:v1, caller, names, state) do
+    graph =
+      state.waiters
+      |> Map.values()
+      |> Enum.filter(&(&1.profile == :v1))
+      |> Enum.reduce(%{}, fn waiter, acc ->
+        Map.update(
+          acc,
+          waiter.caller,
+          MapSet.new(waiter.names),
+          &MapSet.union(&1, MapSet.new(waiter.names))
+        )
+      end)
+      |> Map.update(caller, MapSet.new(names), &MapSet.union(&1, MapSet.new(names)))
+
+    if Enum.any?(names, &(&1 == caller or reachable?(graph, &1, caller, MapSet.new()))),
+      do:
+        {:error,
+         Error.new(:resource_conflict, "collaboration wait would create a dependency cycle")},
+      else: :ok
+  end
+
+  defp reachable?(_graph, node, target, _visited) when node == target, do: true
+
+  defp reachable?(graph, node, target, visited) do
+    if MapSet.member?(visited, node) do
+      false
+    else
+      graph
+      |> Map.get(node, MapSet.new())
+      |> Enum.any?(&reachable?(graph, &1, target, MapSet.put(visited, node)))
+    end
+  end
+
+  defp v1_wait_result(state, names) do
+    status =
+      Map.new(names, fn name -> {state.agents[name].run_id, public_status(state.agents[name])} end)
+
+    %{status: status, timed_out: false}
+  end
+
+  defp v2_wait_result(names) do
+    %{
+      message: "Agent updates are available for: " <> Enum.join(Enum.sort(names), ", "),
+      timed_out: false
+    }
+  end
+
+  defp public_status(%{status: :completed, final: final}), do: %{completed: final}
+  defp public_status(%{status: {:errored, reason}}), do: %{errored: reason}
+
+  defp public_status(%{status: status}) when status in [:running, :interrupted, :shutdown],
+    do: status
+
+  defp public_status(_), do: :pending_init
+
+  defp wait_timeout(nil, state), do: {:ok, state.default_wait_timeout_ms}
+
+  defp wait_timeout(value, state) when is_integer(value) do
+    if value >= state.min_wait_timeout_ms and value <= state.max_wait_timeout_ms,
+      do: {:ok, value},
+      else: {:error, Error.new(:validation, "timeout_ms is outside the configured bounds")}
+  end
+
+  defp wait_timeout(_, _state),
+    do: {:error, Error.new(:validation, "timeout_ms must be an integer")}
+
+  defp input_items_text(items) when is_list(items) do
+    items
+    |> Enum.map_join("\n", fn item -> item["text"] || item[:text] || inspect(item) end)
+    |> case do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp input_items_text(_), do: nil
+
+  defp caller_metadata(caller),
+    do: %{run_id: caller.run_id, name: caller.name, authority: caller.authority}
+
+  defp event_error(event), do: inspect(Map.get(event, :outcome, "agent stopped"))
+
+  defp notify(%{subscriber: pid}, event) when is_pid(pid),
+    do: send(pid, {:codex_collaboration, event})
+
+  defp notify(_state, _event), do: :ok
+
+  defp normalize_root("/" <> _ = name), do: String.trim_trailing(name, "/")
+  defp normalize_root(name), do: "/" <> String.trim(name, "/")
+
+  defp required_binary(opts, key) do
+    case Keyword.get(opts, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, Error.new(:validation, "#{key} is required")}
+    end
+  end
+
+  defp required_map(opts, key) do
+    case Keyword.get(opts, key) do
+      value when is_map(value) -> {:ok, value}
+      _ -> {:error, Error.new(:validation, "#{key} is required")}
+    end
+  end
+
+  defp required_callback(opts, key, arity) do
+    case Keyword.get(opts, key) do
+      value when is_function(value, arity) -> {:ok, value}
+      _ -> {:error, Error.new(:validation, "#{key} callback is required")}
+    end
+  end
+
+  defp unique_id(prefix),
+    do: prefix <> "_" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
+
+  defp validation(message), do: {:error, Error.new(:validation, message)}
+
+  defp v1_contracts(runtime, wait) do
+    [
+      contract(
+        @v1_namespace,
+        "spawn_agent",
+        "Spawn a new agent.",
+        spawn_schema(:v1),
+        runtime,
+        :v1
+      ),
+      contract(
+        @v1_namespace,
+        "send_input",
+        "Send input to an existing agent.",
+        send_input_schema(),
+        runtime,
+        :v1
+      ),
+      contract(
+        @v1_namespace,
+        "resume_agent",
+        "Resume a previously closed agent.",
+        required_string_schema("id"),
+        runtime,
+        :v1
+      ),
+      contract(
+        @v1_namespace,
+        "wait_agent",
+        "Wait for agents to reach a final status.",
+        wait_schema(:v1, wait),
+        runtime,
+        :v1
+      ),
+      contract(
+        @v1_namespace,
+        "close_agent",
+        "Close an agent and its owned descendants.",
+        required_string_schema("target"),
+        runtime,
+        :v1
+      )
+    ]
+  end
+
+  defp v2_contracts(runtime, wait) do
+    [
+      contract(
+        nil,
+        "spawn_agent",
+        "Spawn an agent to work on the specified task.",
+        spawn_schema(:v2),
+        runtime,
+        :v2
+      ),
+      contract(
+        nil,
+        "send_message",
+        "Send a message to an existing agent without triggering a new turn.",
+        target_message_schema(),
+        runtime,
+        :v2
+      ),
+      contract(
+        nil,
+        "followup_task",
+        "Send a follow-up task to an existing non-root agent.",
+        target_message_schema(),
+        runtime,
+        :v2
+      ),
+      contract(
+        nil,
+        "interrupt_agent",
+        "Interrupt an agent's current turn.",
+        required_string_schema("target"),
+        runtime,
+        :v2
+      ),
+      contract(
+        nil,
+        "list_agents",
+        "List live agents in the current root thread tree.",
+        optional_string_schema("path_prefix"),
+        runtime,
+        :v2
+      ),
+      contract(
+        nil,
+        "wait_agent",
+        "Wait for a mailbox update from any live agent.",
+        wait_schema(:v2, wait),
+        runtime,
+        :v2
+      )
+    ]
+  end
+
+  defp contract(namespace, name, description, schema, runtime, profile) do
+    %{
+      namespace: namespace,
+      name: name,
+      description: description,
+      schema: schema,
+      backend: Backplane.AgentRuntime.Codex.Backend,
+      backend_context: %{family: :collaboration, runtime: runtime, profile: profile},
+      revision: 1,
+      strict: false,
+      safety: %{
+        read_only: name in ["list_agents", "wait_agent"],
+        retry_safe: false,
+        parallel_safe: false
+      }
+    }
+  end
+
+  defp spawn_schema(:v2) do
+    object_schema(
+      %{
+        "task_name" => %{"type" => "string"},
+        "message" => %{"type" => "string"},
+        "agent_type" => %{"type" => "string"},
+        "fork_turns" => %{"type" => "string"},
+        "model" => %{"type" => "string"},
+        "reasoning_effort" => %{"type" => "string"}
+      },
+      ["task_name", "message"]
+    )
+  end
+
+  defp spawn_schema(:v1) do
+    object_schema(
+      %{
+        "message" => %{"type" => "string"},
+        "items" => %{"type" => "array", "items" => %{"type" => "object"}},
+        "agent_type" => %{"type" => "string"},
+        "fork_context" => %{"type" => "boolean"},
+        "model" => %{"type" => "string"},
+        "reasoning_effort" => %{"type" => "string"}
+      },
+      []
+    )
+  end
+
+  defp send_input_schema do
+    object_schema(
+      %{
+        "target" => %{"type" => "string"},
+        "message" => %{"type" => "string"},
+        "items" => %{"type" => "array", "items" => %{"type" => "object"}},
+        "interrupt" => %{"type" => "boolean"}
+      },
+      ["target"]
+    )
+  end
+
+  defp target_message_schema,
+    do:
+      object_schema(%{"target" => %{"type" => "string"}, "message" => %{"type" => "string"}}, [
+        "target",
+        "message"
+      ])
+
+  defp required_string_schema(name), do: object_schema(%{name => %{"type" => "string"}}, [name])
+  defp optional_string_schema(name), do: object_schema(%{name => %{"type" => "string"}}, [])
+
+  defp wait_schema(:v1, wait) do
+    object_schema(
+      %{
+        "targets" => %{"type" => "array", "items" => %{"type" => "string"}},
+        "timeout_ms" => timeout_schema(wait)
+      },
+      ["targets"]
+    )
+  end
+
+  defp wait_schema(:v2, wait), do: object_schema(%{"timeout_ms" => timeout_schema(wait)}, [])
+
+  defp timeout_schema(wait),
+    do: %{
+      "type" => "integer",
+      "minimum" => wait.min,
+      "maximum" => wait.max,
+      "default" => wait.default
+    }
+
+  defp object_schema(properties, required),
+    do: %{
+      "type" => "object",
+      "properties" => properties,
+      "required" => required,
+      "additionalProperties" => false
+    }
+end

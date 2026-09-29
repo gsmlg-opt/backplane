@@ -53,6 +53,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   @impl Backplane.AgentRuntime.Command
+  def write(command, _invocation, job, chars) do
+    GenServer.call(server(command), {:write, job, chars})
+  end
+
+  @impl Backplane.AgentRuntime.Command
   def cancel(command, invocation) do
     GenServer.call(server(command), {:cancel_owner, invocation.owner_run_id})
   end
@@ -159,6 +164,20 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             cleanup_error: current.cleanup_error,
             output_limit_exceeded?: current.status == :output_limit_exceeded
           }}, state}
+    end
+  end
+
+  def handle_call({:write, job, chars}, _from, state) do
+    case Map.get(state.active, job.port) do
+      nil ->
+        {:reply, {:error, Error.new(:not_found, "job not found")}, state}
+
+      _current ->
+        if Port.command(job.port, chars) do
+          {:reply, :ok, state}
+        else
+          {:reply, {:error, Error.new(:execution_failure, "command stdin write failed")}, state}
+        end
     end
   end
 

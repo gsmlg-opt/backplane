@@ -150,6 +150,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       limits: limits,
       commit: nil,
       effect: nil,
+      nested: nil,
       jobs: :queue.new(),
       interaction: nil,
       stopping: nil,
@@ -164,7 +165,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       bytes: 0,
       catalog: catalog,
       pending_catalog: nil,
-      catalog_receipts: []
+      catalog_receipts: [],
+      new_context_requested: false
     }
 
     {:ok, state}
@@ -246,7 +248,73 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_call({:request_new_context, token}, _from, s) do
+    if current_effect?(s, token) do
+      {:reply, :ok, %{s | new_context_requested: true}}
+    else
+      {:reply, {:error, Error.new(:resource_conflict, "stale context-window request")}, s}
+    end
+  end
+
+  def handle_call({:nested_tool, token, request}, from, s) do
+    case prepare_nested_tool(s, token, request) do
+      {:ok, invocation, catalog} ->
+        opts = [
+          registry: catalog.registry,
+          authority: catalog.authority,
+          ephemeral_tool_authority: true
+        ]
+
+        next = fn next_state, prepared ->
+          task =
+            Task.Supervisor.async_nolink(next_state.supervisor, fn ->
+              prepared = %{
+                prepared
+                | operation: Map.put(prepared.operation, :effective_authority, catalog.authority)
+              }
+
+              Execution.dispatch(
+                prepared,
+                Keyword.merge(next_state.opts,
+                  registry: catalog.registry,
+                  authority: catalog.authority
+                )
+              )
+            end)
+
+          timer =
+            Process.send_after(self(), {:nested_timeout, task.ref}, next_state.limits.effect)
+
+          %{
+            next_state
+            | nested: %{task: task, timer: timer, from: from, invocation: invocation}
+          }
+        end
+
+        {:noreply, commit(s, {:tool_invoked, now(), invocation}, %{}, opts, next)}
+
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, s}
+    end
+  end
+
   @impl true
+  def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
+    clear_task(nested)
+    normalized = normalize_nested_result(result)
+    completion = Map.put(nested.invocation, :result, tool_result(normalized))
+
+    next = fn next_state, _prepared ->
+      GenServer.reply(nested.from, normalized)
+      %{next_state | nested: nil}
+    end
+
+    pending = %{nested | task: nil, timer: nil}
+
+    {:noreply,
+     drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))}
+  end
+
   def handle_info({ref, result}, %{commit: %{task: %{ref: ref}} = entry} = s) do
     clear_task(entry)
     s = %{s | commit: nil}
@@ -321,6 +389,22 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_info({:nested_timeout, ref}, %{nested: %{task: %{ref: ref}} = nested} = s) do
+    Task.shutdown(nested.task, :brutal_kill)
+    error = Error.new(:timeout, "nested tool execution timed out")
+    completion = Map.put(nested.invocation, :result, tool_result({:error, error}))
+
+    next = fn next_state, _prepared ->
+      GenServer.reply(nested.from, {:error, error})
+      %{next_state | nested: nil}
+    end
+
+    pending = %{nested | task: nil, timer: nil}
+
+    {:noreply,
+     drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))}
+  end
+
   def handle_info(:deadline, s) do
     if s.phase in [:terminal, :storage_failed, :recovery_required],
       do: {:noreply, s},
@@ -334,6 +418,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect, do: kill_task(s.effect)
     if s.commit, do: kill_task(s.commit)
+    if s.nested && s.nested.task, do: kill_task(s.nested)
     if Process.alive?(s.supervisor), do: Supervisor.stop(s.supervisor)
   end
 
@@ -560,7 +645,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         messages: s.conversation.messages,
         turn_id: s.conversation.turn_id,
         catalog_revision: catalog.revision,
-        tools: catalog.tools
+        tools: catalog.tools ++ Keyword.get(s.opts, :hosted_tools, [])
       })
 
     opts = [adapter: Keyword.fetch!(s.opts, :provider)]
@@ -603,6 +688,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                  :tool_call_started,
                  :tool_call_arguments_delta,
                  :tool_call_completed,
+                 :provider_hosted_event,
                  :usage_updated
                ] ->
             case context.emit.(event) do
@@ -663,7 +749,8 @@ defmodule Backplane.AgentRuntime.Conversation do
          type: :tool_call_completed,
          tool_call: %{id: id, name: name, arguments: args} = tool
        })
-       when is_binary(id) and id != "" and is_binary(name) and name != "" and is_map(args) do
+       when is_binary(id) and id != "" and is_binary(name) and name != "" and
+              (is_map(args) or is_binary(args)) do
     if Enum.any?(acc.tools, &(&1.id == id)),
       do: {:error, "duplicate tool call id"},
       else: {:ok, %{acc | tools: acc.tools ++ [tool]}}
@@ -682,7 +769,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     registry = catalog.registry
 
     with {:ok, descriptor} <- ToolRegistry.lookup(registry, call.name),
-         {:ok, arguments} <- InputSchema.validate(descriptor.schema, call.arguments),
+         {:ok, arguments} <- validate_tool_arguments(descriptor, call.arguments),
          invocation =
            Map.merge(
              identity(s),
@@ -732,7 +819,14 @@ defmodule Backplane.AgentRuntime.Conversation do
             host_context:
               Map.merge(
                 prepared.host_context,
-                Map.take(context, [:interact, :emit, :stage_catalog])
+                Map.take(context, [
+                  :interact,
+                  :emit,
+                  :catalog_snapshot,
+                  :stage_catalog,
+                  :request_new_context,
+                  :nested_dispatch
+                ])
               )
         }
 
@@ -746,6 +840,16 @@ defmodule Backplane.AgentRuntime.Conversation do
       end)
     end)
   end
+
+  defp validate_tool_arguments(%{codex_input_kind: :custom}, arguments)
+       when is_binary(arguments),
+       do: {:ok, arguments}
+
+  defp validate_tool_arguments(%{codex_input_kind: :custom}, _arguments),
+    do: {:error, Error.new(:validation, "custom tool input must be a string")}
+
+  defp validate_tool_arguments(descriptor, arguments),
+    do: InputSchema.validate(descriptor.schema, arguments)
 
   defp append_tool_result(s, invocation, result, rest, catalog) do
     message = %{
@@ -768,6 +872,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       [message | rest] ->
         checkpoint(s, %{s.conversation | steering: rest}, &begin_prompt(&1, message, :steering))
 
+      [] when tools? and s.new_context_requested ->
+        start_new_context_window(s)
+
       [] when tools? ->
         start_provider(s)
 
@@ -776,6 +883,27 @@ defmodule Backplane.AgentRuntime.Conversation do
           hook(s, :stop, [s.conversation.messages, context], :stop)
         end)
     end
+  end
+
+  defp start_new_context_window(s) do
+    window = Map.get(s.conversation, :context_window, 1) + 1
+
+    conversation =
+      s.conversation
+      |> Map.put(:messages, [])
+      |> Map.put(:context_window, window)
+      |> Map.update(
+        :context_history,
+        [%{window: window, provenance: :new_context_tool}],
+        fn history ->
+          history ++ [%{window: window, provenance: :new_context_tool}]
+        end
+      )
+
+    checkpoint(%{s | new_context_requested: false}, conversation, fn next ->
+      emit(next, %{type: :context_window_started, window: window})
+      start_provider(next)
+    end)
   end
 
   defp finish_turn(s, outcome) do
@@ -870,12 +998,20 @@ defmodule Backplane.AgentRuntime.Conversation do
         GenServer.call(owner, {:interact, token, request}, :infinity)
       end)
       |> Map.put(:emit, fn event -> GenServer.call(owner, {:chunk, token, event}, :infinity) end)
+      |> Map.put(:request_new_context, fn ->
+        GenServer.call(owner, {:request_new_context, token}, :infinity)
+      end)
 
     context =
       case role do
         {:tool, _, _, _} ->
-          Map.put(context, :stage_catalog, fn update ->
+          context
+          |> Map.put(:catalog_snapshot, catalog_from_role(role))
+          |> Map.put(:stage_catalog, fn update ->
             GenServer.call(owner, {:stage_catalog, token, update}, :infinity)
+          end)
+          |> Map.put(:nested_dispatch, fn request ->
+            GenServer.call(owner, {:nested_tool, token, request}, :infinity)
           end)
 
         _ ->
@@ -903,8 +1039,15 @@ defmodule Backplane.AgentRuntime.Conversation do
        else: default
   end
 
+  defp catalog_from_role({:tool, _invocation, _rest, catalog}), do: catalog
+
   defp stop(s, reason) do
     if s.effect, do: kill_task(s.effect)
+
+    if s.nested do
+      if s.nested.task, do: kill_task(s.nested)
+      GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
+    end
 
     if s.interaction,
       do: GenServer.reply(s.interaction.from, {:error, Error.new(:cancelled, "run cancelled")})
@@ -917,10 +1060,12 @@ defmodule Backplane.AgentRuntime.Conversation do
     s = %{
       s
       | effect: nil,
+        nested: nil,
         interaction: nil,
         jobs: :queue.new(),
         callers: [],
         admission: nil,
+        new_context_requested: false,
         phase: :cancelling,
         cleanup_due: s.cleanup_due || System.monotonic_time(:millisecond) + s.limits.cleanup,
         stopping:
@@ -978,6 +1123,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp storage_failed(s, error) do
     if s.effect, do: kill_task(s.effect)
+    if s.nested && s.nested.task, do: kill_task(s.nested)
+    if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
     Enum.each(s.callers, &GenServer.reply(&1, {:error, error}))
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
@@ -988,6 +1135,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       s
       | phase: :storage_failed,
         effect: nil,
+        nested: nil,
         stopping: nil,
         jobs: :queue.new(),
         callers: [],
@@ -1243,6 +1391,66 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp id(prefix),
     do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+
+  defp prepare_nested_tool(
+         %{effect: %{token: token, role: {:tool, outer, _rest, catalog}}, nested: nil},
+         token,
+         request
+       )
+       when is_map(request) do
+    name = Map.get(request, :tool_name)
+
+    arguments =
+      if Map.get(request, :input_kind) == :custom,
+        do: Map.get(request, :raw_input),
+        else: Map.get(request, :arguments)
+
+    with :ok <- nested_name(name, outer.tool_name),
+         {:ok, descriptor} <- ToolRegistry.lookup(catalog.registry, name),
+         {:ok, arguments} <- validate_tool_arguments(descriptor, arguments),
+         :ok <- nested_approval(descriptor),
+         invocation =
+           outer
+           |> Map.take([:run_id, :incarnation, :step_id, :attempt_id, :turn_id])
+           |> Map.merge(%{
+             invocation_id: id("nested_invocation"),
+             tool_call_id: id("nested_call"),
+             tool_name: name,
+             tool_revision: descriptor.tool_revision,
+             catalog_revision: catalog.revision,
+             arguments: arguments
+           }),
+         {:ok, _authorization} <- Policy.authorize_tool(catalog.authority, descriptor, invocation) do
+      {:ok, invocation, catalog}
+    end
+  end
+
+  defp prepare_nested_tool(%{nested: nested}, _token, _request) when not is_nil(nested),
+    do: {:error, Error.new(:resource_conflict, "a nested tool call is already active")}
+
+  defp prepare_nested_tool(_s, _token, _request),
+    do: {:error, Error.new(:resource_conflict, "stale nested tool request")}
+
+  defp nested_name(name, outer_name) when is_binary(name) and name != "" do
+    if name == outer_name,
+      do: {:error, Error.new(:resource_conflict, "code mode cannot invoke itself")},
+      else: :ok
+  end
+
+  defp nested_name(_, _), do: {:error, Error.new(:validation, "nested tool name is required")}
+
+  defp nested_approval(%{safety: %{requires_approval: true}}),
+    do: {:error, Error.new(:approval_required, "nested tool requires interactive approval")}
+
+  defp nested_approval(_descriptor), do: :ok
+
+  defp normalize_nested_result({:ok, [result]}), do: {:ok, result}
+  defp normalize_nested_result({:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_nested_result(other),
+    do:
+      {:error,
+       Error.new(:malformed_result, "nested execution returned invalid data", cause: other)}
 
   defp digest(arguments),
     do: :crypto.hash(:sha256, :erlang.term_to_binary(arguments)) |> Base.encode16(case: :lower)

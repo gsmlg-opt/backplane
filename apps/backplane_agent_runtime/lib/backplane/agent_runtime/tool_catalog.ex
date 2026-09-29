@@ -209,7 +209,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
              tool_name: name,
              run_id: Map.get(authority, :run_id)
            }) do
-      case InputSchema.validate_schema(Map.get(descriptor, :schema)) do
+      case validate_descriptor_input(descriptor) do
         :ok ->
           {:ok, %{name: name, revision: revision, descriptor: descriptor, status: :accepted}}
 
@@ -261,7 +261,11 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   defp validate_supplied_tools(nil, _accepted), do: :ok
 
   defp validate_supplied_tools(tools, accepted) when is_list(tools) do
-    accepted_names = MapSet.new(Enum.map(accepted, & &1.name))
+    accepted_names =
+      accepted
+      |> Enum.filter(&provider_visible?/1)
+      |> MapSet.new(& &1.name)
+
     supplied_names = Enum.map(tools, &candidate_name(&1, :name))
 
     cond do
@@ -269,11 +273,10 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
           MapSet.new(supplied_names) != accepted_names ->
         {:error, validation_error("provider tools must match the admitted registry")}
 
-      Enum.any?(accepted, fn entry ->
+      Enum.any?(Enum.filter(accepted, &provider_visible?/1), fn entry ->
         tool = Enum.find(tools, &(candidate_name(&1, :name) == entry.name))
 
-        not is_map(tool) or
-            Map.get(tool, :parameters, Map.get(tool, "parameters")) != entry.descriptor.schema
+        not is_map(tool) or not provider_definition_matches?(tool, entry.descriptor)
       end) ->
         {:error,
          Error.new(
@@ -298,24 +301,41 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
     end)
   end
 
-  defp provider_definitions(entries, nil), do: {:ok, Enum.map(entries, &provider_definition/1)}
+  defp provider_definitions(entries, nil),
+    do: {:ok, entries |> Enum.filter(&provider_visible?/1) |> Enum.map(&provider_definition/1)}
 
   defp provider_definitions(entries, supplied) do
     by_name =
       Map.new(supplied, fn tool -> {candidate_name(tool, :name), tool} end)
 
     {:ok,
-     Enum.map(entries, fn entry ->
+     entries
+     |> Enum.filter(&provider_visible?/1)
+     |> Enum.map(fn entry ->
        Map.fetch!(by_name, entry.name) |> normalize_provider_definition(entry)
      end)}
   end
 
+  defp provider_visible?(%{descriptor: descriptor}),
+    do: Map.get(descriptor, :codex_exposure, :direct) == :direct
+
   defp normalize_provider_definition(tool, entry) do
-    %{
-      name: entry.name,
-      description: Map.get(tool, :description, Map.get(tool, "description", "")),
-      parameters: entry.descriptor.schema
-    }
+    if custom_descriptor?(entry.descriptor) do
+      %{
+        type: "custom",
+        name: entry.name,
+        description: Map.get(tool, :description, Map.get(tool, "description", "")),
+        format: Map.get(entry.descriptor, :codex_format)
+      }
+    else
+      %{
+        name: entry.name,
+        description: Map.get(tool, :description, Map.get(tool, "description", "")),
+        parameters: entry.descriptor.schema
+      }
+      |> maybe_put_function_type(entry.descriptor)
+      |> maybe_put_output_schema(entry.descriptor)
+    end
   end
 
   defp candidate_name(value), do: candidate_name(value, :tool_name)
@@ -325,12 +345,58 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp candidate_name(_value, _key), do: nil
 
-  defp provider_definition(entry),
-    do: %{
-      name: entry.name,
-      description: Map.get(entry.descriptor, :description, ""),
-      parameters: entry.descriptor.schema
-    }
+  defp provider_definition(entry) do
+    if custom_descriptor?(entry.descriptor) do
+      %{
+        type: "custom",
+        name: entry.name,
+        description: Map.get(entry.descriptor, :description, ""),
+        format: Map.get(entry.descriptor, :codex_format)
+      }
+    else
+      %{
+        name: entry.name,
+        description: Map.get(entry.descriptor, :description, ""),
+        parameters: entry.descriptor.schema
+      }
+      |> maybe_put_function_type(entry.descriptor)
+      |> maybe_put_output_schema(entry.descriptor)
+    end
+  end
+
+  defp provider_definition_matches?(tool, descriptor) do
+    if custom_descriptor?(descriptor) do
+      field(tool, :type) == "custom" and field(tool, :format) == descriptor.codex_format
+    else
+      field(tool, :type) in [nil, "function"] and field(tool, :parameters) == descriptor.schema and
+        field(tool, :output_schema) == Map.get(descriptor, :codex_output_schema)
+    end
+  end
+
+  defp validate_descriptor_input(descriptor) do
+    if custom_descriptor?(descriptor) do
+      case Map.get(descriptor, :codex_format) do
+        %{} -> :ok
+        _ -> validation_error("custom tool format is required")
+      end
+    else
+      InputSchema.validate_schema(Map.get(descriptor, :schema))
+    end
+  end
+
+  defp custom_descriptor?(descriptor), do: Map.get(descriptor, :codex_input_kind) == :custom
+
+  defp maybe_put_function_type(definition, %{codex_input_kind: :function}),
+    do: Map.put(definition, :type, "function")
+
+  defp maybe_put_function_type(definition, _descriptor), do: definition
+
+  defp maybe_put_output_schema(definition, descriptor) do
+    case Map.get(descriptor, :codex_output_schema) do
+      nil -> definition
+      schema -> Map.put(definition, :output_schema, schema)
+    end
+  end
 
   defp narrowed_authority(authority, accepted) do
     names = Enum.map(accepted, & &1.name)
@@ -491,11 +557,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
     tools
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {name, descriptor} ->
-      %{
-        name: name,
-        description: Map.get(descriptor, :description, ""),
-        parameters: Map.get(descriptor, :schema)
-      }
+      provider_definition(%{name: name, descriptor: descriptor})
     end)
   end
 
@@ -528,7 +590,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   defp validate_tool(tool, descriptor, authority, run_id) when is_map(descriptor) do
     with :ok <- descriptor_metadata(descriptor),
          :ok <- exact_schema(tool, descriptor),
-         :ok <- InputSchema.validate_schema(Map.get(descriptor, :schema)),
+         :ok <- validate_descriptor_input(descriptor),
          :ok <- available_backend(descriptor),
          {:ok, _} <-
            Policy.authorize_tool(authority, descriptor, %{
@@ -581,8 +643,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       else: forbidden("catalog authority belongs to another run")
   end
 
-  defp exact_schema(%{parameters: schema}, descriptor) do
-    if schema == Map.get(descriptor, :schema),
+  defp exact_schema(tool, descriptor) do
+    if provider_definition_matches?(tool, descriptor),
       do: :ok,
       else: conflict("provider tool schema differs from its registered descriptor")
   end
@@ -613,9 +675,33 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp provider_tool(tool) when is_map(tool) do
     with {:ok, name} <- required_binary(tool, :name, "provider tool name"),
-         {:ok, description} <- required_string(tool, :description, "provider tool description"),
-         {:ok, parameters} <- required_map(tool, :parameters, "provider tool parameters") do
-      {:ok, %{name: name, description: description, parameters: parameters}}
+         {:ok, description} <- required_string(tool, :description, "provider tool description") do
+      case field(tool, :type) do
+        "custom" ->
+          with {:ok, format} <- required_map(tool, :format, "provider tool format") do
+            {:ok, %{type: "custom", name: name, description: description, format: format}}
+          end
+
+        type when type in [nil, "function"] ->
+          with {:ok, parameters} <-
+                 required_map(tool, :parameters, "provider tool parameters") do
+            definition = %{name: name, description: description, parameters: parameters}
+
+            case field(tool, :output_schema) do
+              nil ->
+                {:ok, definition}
+
+              output_schema when is_map(output_schema) ->
+                {:ok, Map.put(definition, :output_schema, output_schema)}
+
+              _ ->
+                validation("provider tool output schema must be a map")
+            end
+          end
+
+        _ ->
+          validation("provider tool type is unsupported")
+      end
     end
   end
 

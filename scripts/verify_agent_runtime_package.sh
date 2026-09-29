@@ -39,7 +39,15 @@ MIX_ENV=dev "${mix_command[@]}" deps.get
 MIX_ENV=dev "${mix_command[@]}" format --check-formatted
 MIX_ENV=dev "${mix_command[@]}" compile --warnings-as-errors
 MIX_ENV=dev "${mix_command[@]}" docs --warnings-as-errors
-MIX_ENV=test "${mix_command[@]}" test
+if [[ -n "${COREUTILS:-}" || "$(command -v coreutils || true)" != "" ]]; then
+  MIX_ENV=test "${mix_command[@]}" test
+else
+  printf 'Skipping Linux-only LocalCommand tests: COREUTILS is unavailable on this host.\n'
+  test_files="$(find test -name '*_test.exs' \
+    ! -path 'test/backplane/agent_runtime/tools/local_command_test.exs' \
+    ! -path 'test/backplane/agent_runtime/tools/local_command_cleanup_test.exs')"
+  MIX_ENV=test "${mix_command[@]}" test ${test_files}
+fi
 MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
 
 mkdir -p "$unpacked"
@@ -48,6 +56,12 @@ tar -xf "$artifact" -O contents.tar.gz | tar -xz -C "$unpacked"
 test -f "$unpacked/lib/backplane/agent_runtime/tools/local_resource.ex"
 test -f "$unpacked/lib/backplane/agent_runtime/tools/local_command.ex"
 test -f "$unpacked/priv/local_command_launcher.sh"
+test -f "$unpacked/priv/codex/profile.json"
+test -f "$unpacked/priv/codex/source-inventory.json"
+test -f "$unpacked/lib/backplane/agent_runtime/codex/services.ex"
+test -f "$unpacked/lib/backplane/agent_runtime/codex/web.ex"
+test -f "$unpacked/lib/backplane/agent_runtime/codex/image.ex"
+test -f "$unpacked/lib/backplane/agent_runtime/codex/hosted.ex"
 test -f "$unpacked/CHANGELOG.md"
 test -f "$unpacked/README.md"
 test -f "$unpacked/EMBEDDING.md"
@@ -85,6 +99,11 @@ done
 artifact_hash="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
 
 for fixture in empty_tool bundled_basic fake_backend; do
+  if [[ "$fixture" == "bundled_basic" && -z "${COREUTILS:-}" && "$(uname -s)" != "Linux" ]]; then
+    printf 'Skipping bundled_basic consumer: Linux LocalCommand backend is unavailable on this host.\n'
+    continue
+  fi
+
   fixture_dir="$work_root/$fixture"
   mkdir -p "$fixture_dir/lib"
   cp -R "$script_dir/../test/agent_runtime_packages/$fixture/." "$fixture_dir/"
@@ -105,6 +124,18 @@ done
   AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod \
     "${mix_command[@]}" run "$unpacked/examples/embedded.exs"
 )
+test "$(sha256sum "$artifact" | cut -d ' ' -f 1)" = "$artifact_hash"
+
+codex_example_output="$(
+  cd "$work_root/empty_tool"
+  AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod \
+    "${mix_command[@]}" run "$unpacked/examples/codex_local.exs"
+)"
+printf '%s\n' "$codex_example_output"
+if ! grep -q 'Codex Conversation example: PASS' <<<"$codex_example_output"; then
+  printf 'Codex example did not verify the public Conversation path.\n' >&2
+  exit 1
+fi
 test "$(sha256sum "$artifact" | cut -d ' ' -f 1)" = "$artifact_hash"
 
 conversation_fixture="$work_root/conversation"

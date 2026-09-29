@@ -1,0 +1,33 @@
+{
+  "schema": "backplane.codex-tools.source-lock/v1",
+  "backplane": {
+    "repository": "gsmlg-opt/backplane",
+    "required_commit": "7e3d81e18ddd612e20a8e11b60f3e1ad7d3bcb6d",
+    "required_relationship": "ancestor_of_current_head",
+    "observed_commit": "7e3d81e18ddd612e20a8e11b60f3e1ad7d3bcb6d",
+    "observed_cleanliness": "dirty_unrelated_files",
+    "scope": "apps/backplane_agent_runtime plus owning Backplane domain APIs"
+  },
+  "codex": {
+    "repository": "openai/codex",
+    "required_commit": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+    "source_access": "available_exact_pin",
+    "observed_checkout_commit": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+    "observed_checkout_is_authoritative": true,
+    "inventory": "apps/backplane_agent_runtime/priv/codex/source-inventory.json",
+    "reproducible_input": "CODEX_SOURCE_ROOT must point to a checkout at required_commit; no absolute checkout path is persisted.",
+    "required_evidence_before_claiming_parity": [
+      "git object or archive identified by required_commit",
+      "source file manifest and hashes extracted from that object",
+      "constructor/registration records for every inventoried family",
+      "contract fixtures linked to the exact source revision"
+    ]
+  },
+  "extraction_contract": {
+    "procedure": "docs/agent-runtime/codex-tools/extraction-procedure.md",
+    "script": "scripts/codex_tools_inventory.rb",
+    "local_manifest": "docs/agent-runtime/codex-tools/local-source-manifest.json",
+    "ledger": "docs/agent-runtime/codex-tools/coverage-ledger.json",
+    "authority_boundary": "The source inventory records exact pinned constructors and registrations. Runtime availability and behavioral parity remain separate coverage claims."
+  }
+}

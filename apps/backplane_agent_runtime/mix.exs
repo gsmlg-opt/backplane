@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.MixProject do
   use Mix.Project
 
-  @version "1.7.0"
+  @version "1.9.0"
 
   def project do
     [
@@ -34,7 +34,14 @@ defmodule Backplane.AgentRuntime.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "EMBEDDING.md", "PERSISTENCE.md", "SCHEMAS.md", "CHANGELOG.md"]
+      extras: [
+        "README.md",
+        "CODEX.md",
+        "EMBEDDING.md",
+        "PERSISTENCE.md",
+        "SCHEMAS.md",
+        "CHANGELOG.md"
+      ]
     ]
   end
 

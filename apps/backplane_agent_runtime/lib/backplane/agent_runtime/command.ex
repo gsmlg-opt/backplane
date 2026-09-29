@@ -18,6 +18,10 @@ defmodule Backplane.AgentRuntime.Command do
 
   @callback read(map(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
 
+  @callback write(map(), map(), map(), binary()) :: :ok | {:error, Error.t()}
+
+  @optional_callbacks write: 4
+
   @callback cancel(map(), map()) :: :ok | {:error, Error.t()}
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
@@ -70,6 +74,23 @@ defmodule Backplane.AgentRuntime.Command do
       command.adapter.read(command, invocation, job, Keyword.put(opts, :cursor, cursor))
     end
   end
+
+  @spec write(t(), map(), map(), binary()) :: :ok | {:error, Error.t()}
+  def write(command, invocation, job, chars)
+      when is_map(command) and is_map(invocation) and is_map(job) and is_binary(chars) do
+    with {:ok, owner_run_id} <- require_binary(invocation, :owner_run_id, "owner run"),
+         {:ok, _} <- validate_job_owner(job, owner_run_id) do
+      if function_exported?(command.adapter, :write, 4) do
+        command.adapter.write(command, invocation, job, chars)
+      else
+        {:error,
+         Error.new(:unsupported_capability, "command backend does not support stdin writes")}
+      end
+    end
+  end
+
+  def write(_command, _invocation, _job, _chars),
+    do: {:error, Error.new(:validation, "command write arguments are malformed")}
 
   defp reject_shell_string(executable) do
     if String.contains?(executable, " ") do

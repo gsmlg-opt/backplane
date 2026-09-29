@@ -581,7 +581,7 @@ defmodule Backplane.AgentRuntime.Kernel do
     with {:ok, _} <- identity(input, @tool_identity, "tool"),
          {:ok, _} <- required(input, :tool_name, "tool name"),
          {:ok, _} <- required(input, :tool_revision, "tool revision"),
-         {:ok, _} <- required_map(input, :arguments, "tool arguments") do
+         {:ok, _} <- required_tool_arguments(input) do
       {:ok, input}
     end
   end
@@ -613,6 +613,13 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp validate_command_input(:cleanup_settled, input) do
     with {:ok, _} <- cleanup_certainty(input), do: {:ok, input}
+  end
+
+  defp required_tool_arguments(input) do
+    case fetch_field(input, :arguments) do
+      {:ok, arguments} when is_map(arguments) or is_binary(arguments) -> {:ok, arguments}
+      _ -> validation_error("tool arguments must be a map or string")
+    end
   end
 
   defp identity(input, keys, kind) do

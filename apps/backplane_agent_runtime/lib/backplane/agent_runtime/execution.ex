@@ -210,7 +210,7 @@ defmodule Backplane.AgentRuntime.Execution do
     with {:ok, registry} <- required_registry(opts),
          {:ok, descriptor} <- ToolRegistry.lookup(registry, tool_name),
          :ok <- exact_tool_revision(descriptor, input),
-         {:ok, arguments} <- InputSchema.validate(Map.get(descriptor, :schema), arguments),
+         {:ok, arguments} <- validate_tool_arguments(descriptor, arguments),
          {:ok, authority} <- required_map(opts, :authority, "host authority"),
          {:ok, authorization} <- Policy.authorize_tool(authority, descriptor, input),
          :ok <- approval(descriptor, input, arguments, opts),
@@ -308,6 +308,16 @@ defmodule Backplane.AgentRuntime.Execution do
 
   defp descriptor_backend(_descriptor),
     do: {:error, Error.new(:unsupported_capability, "registered tool backend is unavailable")}
+
+  defp validate_tool_arguments(%{codex_input_kind: :custom}, arguments)
+       when is_binary(arguments),
+       do: {:ok, arguments}
+
+  defp validate_tool_arguments(%{codex_input_kind: :custom}, _arguments),
+    do: {:error, Error.new(:validation, "custom tool input must be a string")}
+
+  defp validate_tool_arguments(descriptor, arguments),
+    do: InputSchema.validate(Map.get(descriptor, :schema), arguments)
 
   defp required_registry(opts) do
     case Keyword.get(opts, :registry) do

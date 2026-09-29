@@ -198,6 +198,9 @@ The new lazy-stream adapter is additive. Durable adapters now need atomic
 incarnation fencing to claim durable conformance; missing support fails explicitly.
 Schemas are checked recursively, including unused branches, so previously ignored
 unsupported nested constraints now fail before invocation. No published protocol,
-production durable adapter, full Sigma migration, or collaboration implementation
-is implied by local artifact tests. Incremental subscriber events are transient;
-Sigma retains its ProtocolSubscription backpressure, cursor and replay policies.
+production durable adapter, full Sigma migration, production provider/service
+conformance, or native Codex wire parity is implied by local artifact tests.
+The opt-in Codex collaboration profiles supervise child `Conversation` processes;
+they do not imply integration with Sigma's persistent peers or scheduler.
+Incremental subscriber events are transient; Sigma retains its
+ProtocolSubscription backpressure, cursor and replay policies.

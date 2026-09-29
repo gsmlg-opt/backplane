@@ -1,0 +1,113 @@
+{
+  "schema": "backplane.agent-runtime.codex-profile/v2",
+  "package": "backplane_agent_runtime",
+  "package_version_observed": "1.9.0",
+  "source_revision": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+  "entrypoint": "Backplane.AgentRuntime.Codex.profile/4",
+  "profiles": {
+    "pinned_local": {
+      "required_backends": [
+        "host workspace, command adapter, resource registry, and plan as selected"
+      ],
+      "tools": [
+        "exec_command",
+        "write_stdin",
+        "apply_patch",
+        "update_plan",
+        "view_image",
+        "clock::curr_time",
+        "clock::sleep"
+      ]
+    },
+    "interactive": {
+      "required_backends": [
+        "host interaction, permission, environment, and context providers as selected"
+      ],
+      "tools": [
+        "request_permissions",
+        "request_user_input",
+        "request_user_input_async",
+        "send_message_to_user_async",
+        "wait_for_environment",
+        "new_context",
+        "get_context_remaining"
+      ]
+    },
+    "collaboration_v1": {
+      "required_backends": ["host-configured Codex.MultiAgent child Conversation runtime"],
+      "tools": [
+        "multi_agent_v1::spawn_agent",
+        "multi_agent_v1::send_input",
+        "multi_agent_v1::resume_agent",
+        "multi_agent_v1::close_agent",
+        "multi_agent_v1::wait_agent"
+      ]
+    },
+    "collaboration_v2": {
+      "required_backends": ["host-configured Codex.MultiAgent child Conversation runtime"],
+      "tools": [
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "interrupt_agent",
+        "list_agents",
+        "wait_agent"
+      ]
+    },
+    "extensions": {
+      "required_backends": ["scoped Codex.ExtensionRuntime reference state or host adapter"],
+      "tool_count": 27,
+      "families": ["goal", "memories", "skills", "history", "notes", "message_board"],
+      "persistence": "ephemeral_reference_unless_host_adapter"
+    },
+    "dynamic": {
+      "required_backends": ["Codex.DynamicRuntime and selected MCP/plugin adapters"],
+      "tools": [
+        "tool_search",
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+        "list_available_plugins_to_install",
+        "request_plugin_install"
+      ]
+    },
+    "code_mode": {
+      "variants": ["code_mode", "code_mode_only", "mixed"],
+      "required_backends": ["Deno, Codex.ResourceRegistry, and admitted nested dispatcher"],
+      "tools": ["exec", "wait"]
+    },
+    "service_compat": {
+      "required_backends": ["host web/image adapters, allowlists, and credentials as selected"],
+      "tools": [
+        "web::run",
+        "image_gen::imagegen",
+        "web::fetch",
+        "web::search",
+        "web::x_search"
+      ],
+      "compatibility_tools": ["web::fetch", "web::search", "web::x_search"]
+    },
+    "configured": {
+      "families": [
+        "local",
+        "interactive",
+        "collaboration_v1",
+        "collaboration_v2",
+        "extensions",
+        "dynamic",
+        "code_mode",
+        "services"
+      ],
+      "exposure": "only explicitly selected, configured, uniquely named, and exactly granted tools are admitted"
+    }
+  },
+  "provider_hosted": {
+    "tools": ["web_search"],
+    "projection": "profile.hosted_tools",
+    "registry_membership": false,
+    "required_backends": ["provider capability negotiation and observation adapter"]
+  },
+  "backplane_compatibility_aliases": ["clock", "wait", "image::generate"],
+  "authority": "Profiles describe available routes; hosts still admit grants and configure every backend.",
+  "parity": "adapted"
+}

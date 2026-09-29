@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## 1.9.0
 
+- Add pinned, opt-in Codex profiles for local execution, interaction/context,
+  supervised collaboration V1/V2, scoped extensions, dynamic MCP/plugin tools,
+  Code Mode, service adapters, provider-hosted declarations, and explicit
+  multi-family composition. All model-callable operations use the existing
+  `Conversation -> Execution` admission and commit boundary.
+- Add owner-bound command, interaction, collaboration, extension, discovery,
+  and continuation resources with run/incarnation fencing and conservative
+  cleanup. The bundled extension backend remains explicitly ephemeral.
+- Package an exact 66-entry source inventory for Codex revision
+  `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`, independently classified
+  compatibility evidence, a real local command/patch example, and isolated
+  artifact consumer verification. Native wire, live provider/service, macOS
+  process-group/PTY, and durable extension parity remain outside the claim.
 - Scope provider output accounting to each provider response so multi-step tool
   conversations do not consume one cumulative turn limit. Include the limit,
   observed size, and accounting scope when an event stream exceeds its bound.
