@@ -896,6 +896,13 @@ defmodule Backplane.LLM.RouterTest do
           "router-anthropic-cred"
         )
 
+      create_provider_model(
+        "plain-provider",
+        :anthropic,
+        "claude-sonnet",
+        "router-anthropic-cred"
+      )
+
       assert :ok = ModelAlias.add_provider(provider.name)
 
       conn = llm_request(:get, "/v1/models")
@@ -903,6 +910,20 @@ defmodule Backplane.LLM.RouterTest do
 
       ids = Enum.map(body["data"], & &1["id"])
       assert "claude-haiku" in ids
+      refute "provider-aliases/claude-haiku" in ids
+      assert "plain-provider/claude-sonnet" in ids
+      refute "claude-sonnet" in ids
+
+      assert {:ok, resolved_provider, "claude-haiku"} =
+               ModelResolver.resolve(:anthropic, "provider-aliases/claude-haiku")
+
+      assert resolved_provider.name == provider.name
+
+      assert :ok = ModelAlias.remove_provider(provider.name)
+
+      conn = llm_request(:get, "/v1/models")
+      ids = conn |> json_body() |> Map.fetch!("data") |> Enum.map(& &1["id"])
+      refute "claude-haiku" in ids
       assert "provider-aliases/claude-haiku" in ids
     end
 

@@ -5,6 +5,11 @@
 Listing reads persisted discovery data; it does not poll providers during the
 public request.
 
+Providers configured with unqualified model aliases expose their model IDs
+without the provider prefix in this listing. Other providers retain prefixed
+IDs. Prefixed IDs for configured providers remain routable when requested
+directly.
+
 ## OpenAI-compatible listing
 
 Every `data` entry has a `metadata` object. Known fields are normalized to:

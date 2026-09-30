@@ -124,7 +124,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     target = create_target("catalog", "model-0")
     assert :ok = ModelAlias.add_provider("catalog")
     {initial, initial_queries} = listing_with_query_count()
-    assert length(initial["data"]) == 2
+    assert length(initial["data"]) == 1
 
     for index <- 1..12 do
       {:ok, model} =
@@ -142,7 +142,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     end
 
     {expanded, expanded_queries} = listing_with_query_count()
-    assert length(expanded["data"]) == 26
+    assert length(expanded["data"]) == 13
     assert expanded_queries == initial_queries
   end
 
@@ -159,7 +159,12 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
       assert :ok = ModelAlias.add_provider(name)
     end
 
-    entry = listing() |> data_entry("shared")
+    body = listing()
+    entry = data_entry(body, "shared")
+
+    refute data_entry(body, "a-anthropic/shared")
+    refute data_entry(body, "b-openai/shared")
+    refute data_entry(body, "c-openai/shared")
     assert entry["owned_by"] == "a-anthropic"
     assert entry["metadata"]["context_window"] == 333
 

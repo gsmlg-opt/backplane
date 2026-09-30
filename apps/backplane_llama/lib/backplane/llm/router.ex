@@ -601,6 +601,7 @@ defmodule Backplane.LLM.Router do
 
     provider_entries =
       for provider <- providers,
+          provider.name not in provider_alias_names,
           model <- provider.models,
           model.enabled do
         %{
