@@ -97,20 +97,10 @@ defmodule Backplane.ClientsTest do
       assert verified.id == client.id
     end
 
-    test "production verification uses bounded digest slots and rejects a late miss" do
-      previous_env = Application.get_env(:backplane, :env)
-      Application.put_env(:backplane, :env, :prod)
-      on_exit(fn -> Application.put_env(:backplane, :env, previous_env) end)
-
+    test "production verification does not retain misses or require a global test flag" do
       assert :ok = Clients.refresh_cache()
       token = "production-late-client-token"
-      assert :error = Clients.verify_token(token)
-
-      digest = :crypto.hash(:sha256, token)
-      slot = :erlang.phash2(digest, 1_024)
-
-      assert [{^slot, ^digest, old_generation, _expires_at, :miss}] =
-               :ets.lookup(:backplane_client_token_verifications, slot)
+      assert :error = Backplane.Clients.AuthCache.verify(token)
 
       assert {:ok, client} =
                Clients.create_client(%{
@@ -119,21 +109,10 @@ defmodule Backplane.ClientsTest do
                  scopes: ["*"]
                })
 
-      :ets.insert(
-        :backplane_client_token_verifications,
-        {slot, digest, old_generation, System.monotonic_time(:millisecond) + 60_000, :miss}
-      )
-
-      assert_bcrypt_calls(1, fn ->
-        assert {:ok, verified} = Clients.verify_token(token)
-        assert verified.id == client.id
-      end)
-
-      assert_bcrypt_calls(0, fn ->
-        assert {:ok, _verified} = Clients.verify_token(token)
-      end)
-
-      assert :ets.info(:backplane_client_token_verifications, :size) <= 1_025
+      assert {:ok, verified} = Backplane.Clients.AuthCache.verify(token)
+      assert verified.id == client.id
+      assert {:ok, _verified} = Backplane.Clients.AuthCache.verify(token)
+      assert Backplane.Clients.AuthCache.stats().positives <= 4_096
     end
 
     test "cached matches follow scope edits, deactivation, rotation and deletion" do
@@ -178,7 +157,7 @@ defmodule Backplane.ClientsTest do
 
       on_exit(fn ->
         :persistent_term.put(:backplane_clients_exist, old_flag)
-        :ets.delete(:backplane_clients_cache, client.id)
+        Backplane.Clients.AuthCache.mutate({:delete, client.id})
       end)
 
       assert [{client_id, _cached}] = :ets.lookup(:backplane_clients_cache, client.id)
@@ -253,7 +232,7 @@ defmodule Backplane.ClientsTest do
         send(first_refresh.pid, :publish_older_snapshot)
         :telemetry.detach(handler_id)
         :persistent_term.put(:backplane_clients_exist, old_flag)
-        :ets.delete(:backplane_clients_cache, client.id)
+        Backplane.Clients.AuthCache.mutate({:delete, client.id})
       end)
 
       send(first_refresh.pid, :start_refresh)
@@ -290,12 +269,36 @@ defmodule Backplane.ClientsTest do
       {client, token} = insert_client(token: "my-secret-token")
       assert is_nil(client.last_seen_at)
 
+      :ok = Clients.refresh_cache()
+
+      Ecto.Adapters.SQL.Sandbox.allow(
+        Backplane.Repo,
+        self(),
+        Process.whereis(Backplane.Clients.Activity)
+      )
+
       assert {:ok, _verified} = Clients.verify_token(token)
 
-      Process.sleep(100)
+      assert :ok = Backplane.Clients.Activity.flush()
 
       reloaded = Backplane.Repo.get!(Backplane.Clients.Client, client.id)
       assert reloaded.last_seen_at != nil
+    end
+
+    test "activity writes never move an existing timestamp backwards" do
+      {client, token} = insert_client(token: "monotonic-activity-token")
+      future = DateTime.utc_now() |> DateTime.add(300, :second) |> DateTime.truncate(:second)
+
+      from(client in Backplane.Clients.Client, where: client.id == ^client.id)
+      |> Repo.update_all(set: [last_seen_at: future])
+
+      :ok = Clients.refresh_cache()
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), Process.whereis(Backplane.Clients.Activity))
+      assert {:ok, _} = Clients.verify_token(token)
+      assert :ok = Backplane.Clients.Activity.flush()
+
+      assert DateTime.compare(Repo.get!(Backplane.Clients.Client, client.id).last_seen_at, future) ==
+               :eq
     end
   end
 

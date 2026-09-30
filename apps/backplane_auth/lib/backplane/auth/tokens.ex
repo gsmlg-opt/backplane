@@ -200,6 +200,24 @@ defmodule Backplane.Auth.Tokens do
   end
 
   defp verify_jwt(token) do
+    if compact_jwt?(token), do: verify_compact_jwt(token), else: {:error, :invalid_token}
+  end
+
+  defp compact_jwt?(token) do
+    with true <- Backplane.Clients.token_size_valid?(token),
+         [header, payload, signature] <- String.split(token, ".", parts: 4),
+         true <- signature != "" and Regex.match?(~r/\A[A-Za-z0-9_-]+\z/, signature),
+         {:ok, header_json} <- Base.url_decode64(header, padding: false),
+         {:ok, payload_json} <- Base.url_decode64(payload, padding: false),
+         {:ok, %{} = _header} <- Jason.decode(header_json),
+         {:ok, %{} = _claims} <- Jason.decode(payload_json) do
+      true
+    else
+      _invalid -> false
+    end
+  end
+
+  defp verify_compact_jwt(token) do
     jwks()
     |> Map.fetch!("keys")
     |> Enum.find_value(fn jwk ->

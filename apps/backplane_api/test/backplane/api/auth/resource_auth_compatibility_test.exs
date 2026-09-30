@@ -118,8 +118,8 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     end
   end
 
-  test "PAT scopes still filter MCP tools without restricting v1" do
-    {client, pat} = pat_fixture!(scopes: ["compat::allowed"])
+  test "PAT scopes filter MCP tools and permit explicitly granted v1 operations" do
+    {client, pat} = pat_fixture!(scopes: ["compat::allowed", "llm::models", "llm::invoke"])
 
     tools =
       client
@@ -230,7 +230,8 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
         v1_request(:get, "/v1/models", pat)
       end)
 
-    assert models.status == 200
+    assert models.status == 403
+    assert Jason.decode!(models.resp_body) == %{"error" => "insufficient_scope"}
   end
 
   test "removing the last assignment restores legacy policy without OAuth metadata" do
@@ -282,32 +283,10 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     updated
   end
 
-  defp pat_request(client, request) when is_function(request, 0) do
-    previous_last_seen = Clients.get_client(client.id).last_seen_at
+  defp pat_request(_client, request) when is_function(request, 0) do
     result = request.()
-    await_pat_touch!(client.id, previous_last_seen)
+    assert :ok = Backplane.Clients.Activity.flush()
     result
-  end
-
-  defp await_pat_touch!(client_id, previous_last_seen) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    do_await_pat_touch!(client_id, previous_last_seen, deadline)
-  end
-
-  defp do_await_pat_touch!(client_id, previous_last_seen, deadline) do
-    current_last_seen = Clients.get_client(client_id).last_seen_at
-
-    cond do
-      current_last_seen != previous_last_seen ->
-        current_last_seen
-
-      System.monotonic_time(:millisecond) < deadline ->
-        Process.sleep(5)
-        do_await_pat_touch!(client_id, previous_last_seen, deadline)
-
-      true ->
-        flunk("PAT last_seen_at did not change within 1000ms for client #{client_id}")
-    end
   end
 
   defp post_mcp(token, method, params, path \\ "/mcp") do

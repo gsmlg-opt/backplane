@@ -11,6 +11,7 @@ defmodule BackplaneSystem.Application do
       [
         Backplane.Repo,
         {Phoenix.PubSub, name: Backplane.PubSub},
+        Backplane.Clients.AuthSupervisor,
         Backplane.Settings.TokenCache,
         Backplane.Settings.Credentials.Vault,
         Backplane.Settings.OAuthStateStore,

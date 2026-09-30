@@ -60,6 +60,9 @@ defmodule Backplane.Auth.ResourceAuthPlug do
         else
           reject_supplied(conn, resource, opts)
         end
+
+      {:error, reason} when reason in [:unavailable, :overloaded] ->
+        unavailable(conn, opts)
     end
   end
 
@@ -144,12 +147,18 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
   defp compatibility_reject(conn, opts), do: send_auth_error(conn, opts, 401, "Unauthorized")
 
+  defp unavailable(conn, opts) do
+    conn
+    |> put_resp_header("retry-after", "1")
+    |> send_auth_error(opts, 503, "Authentication temporarily unavailable")
+  end
+
   defp send_auth_error(conn, %{error_format: :google}, status, message) do
     body = %{
       "error" => %{
         "code" => status,
         "message" => message,
-        "status" => "UNAUTHENTICATED"
+        "status" => if(status == 503, do: "UNAVAILABLE", else: "UNAUTHENTICATED")
       }
     }
 
@@ -206,8 +215,11 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
       api_key != [] ->
         case api_key do
-          [token] when is_binary(token) and token != "" -> {:ok, token}
-          _ -> :invalid
+          [token] when is_binary(token) ->
+            if Clients.token_size_valid?(token), do: {:ok, token}, else: :invalid
+
+          _ ->
+            :invalid
         end
 
       true ->
@@ -216,11 +228,19 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   defp parse_bearer(header) when is_binary(header) do
+    if byte_size(header) <= Backplane.Clients.AuthCache.options()[:max_token_bytes] + 7 do
+      parse_bounded_bearer(header)
+    else
+      :invalid
+    end
+  end
+
+  defp parse_bounded_bearer(header) do
     case String.split(header, " ", parts: 2) do
       [scheme, token] ->
         token = String.trim(token)
 
-        if String.downcase(scheme) == "bearer" and token != "" do
+        if String.downcase(scheme) == "bearer" and Clients.token_size_valid?(token) do
           {:ok, token}
         else
           :invalid

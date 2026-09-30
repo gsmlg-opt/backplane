@@ -9,6 +9,28 @@ defmodule Backplane.Auth.TokensTest do
   alias Backplane.Repo
   alias Boruta.Ecto.Token
 
+  test "opaque and malformed compact tokens never load signing keys" do
+    parent = self()
+    handler = "opaque-preflight-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:backplane, :repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        if metadata.source == "auth_signing_keys", do: send(parent, :signing_key_query)
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    for token <- ["opaque", "existing.opaque.token", "a..b", String.duplicate("a", 16_385)] do
+      assert :not_oauth = Auth.Tokens.verify_resource_access_token(token, :mcp)
+    end
+
+    refute_receive :signing_key_query
+  end
+
   test "publishes an active signing key as JWKS" do
     assert {:ok, %SigningKey{} = key} = Auth.Tokens.ensure_active_signing_key()
 

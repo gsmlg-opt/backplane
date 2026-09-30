@@ -2,17 +2,18 @@ defmodule Backplane.Clients do
   @moduledoc """
   Context module for managing MCP client identities and scoped tool access.
 
-  Token verification caches active clients in ETS to avoid per-request DB
-  round-trips. The `any_clients?` check uses `persistent_term` for O(1) reads.
-  Both are refreshed on any mutation.
+  Verification evidence and current authorization snapshots live in supervised
+  ETS tables. Warm checks avoid database queries and client enumeration;
+  mutations invalidate authority before writing and periodic refresh bounds
+  cross-node freshness independently of reusable verification evidence.
   """
 
   import Ecto.Query
 
   alias Backplane.Clients.Client
+  alias Backplane.Clients.{Activity, AuthCache}
   alias Backplane.Repo
 
-  @cache_table :backplane_clients_cache
   @verification_table :backplane_client_token_verifications
   @verification_slots 1_024
   @verification_ttl_ms 60_000
@@ -21,105 +22,26 @@ defmodule Backplane.Clients do
 
   @doc "Initialize the clients ETS cache. Called during application startup."
   def init_cache do
-    case :ets.whereis(@cache_table) do
-      :undefined ->
-        :ets.new(@cache_table, [
-          :named_table,
-          :set,
-          :public,
-          read_concurrency: true
-        ])
-
-      _ref ->
-        :ok
-    end
-
-    case :ets.whereis(@verification_table) do
-      :undefined ->
-        :ets.new(@verification_table, [
-          :named_table,
-          :set,
-          :public,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-
-        :ets.insert(@verification_table, {:generation, 0})
-
-      _ref ->
-        :ok
-    end
-
     refresh_cache()
   end
 
   @doc "Refresh the ETS cache from the database."
   def refresh_cache do
-    case :global.trans({@cache_table, self()}, &do_refresh_cache/0) do
+    case :global.trans({{__MODULE__, :refresh, node()}, self()}, &do_refresh_cache/0, [node()]) do
       :aborted -> fail_closed()
       result -> result
     end
   end
 
   defp do_refresh_cache do
-    case load_client_state() do
-      {:ok, clients, any_client_rows?} ->
-        publish_client_state(clients, any_client_rows?)
+    case AuthCache.refresh() do
+      :ok ->
+        :persistent_term.put(:backplane_clients_exist, AuthCache.any_clients?())
+        :ok
 
-      :error ->
+      _unavailable ->
         fail_closed()
     end
-  rescue
-    ArgumentError -> fail_closed()
-  end
-
-  defp load_client_state do
-    clients = Repo.all(Client)
-    active_clients = Enum.filter(clients, & &1.active)
-    {:ok, active_clients, clients != []}
-  rescue
-    _error -> :error
-  end
-
-  defp publish_client_state(clients, any_client_rows?) do
-    # Readers cache only at a stable, even generation. A refresh invalidates
-    # both old hits and misses before replacing the active-client snapshot.
-    advance_verification_generation()
-
-    try do
-      if any_client_rows? do
-        :persistent_term.put(:backplane_clients_exist, true)
-      end
-
-      replace_cached_clients(clients)
-
-      unless any_client_rows? do
-        :persistent_term.put(:backplane_clients_exist, false)
-      end
-    after
-      advance_verification_generation()
-    end
-
-    :ok
-  end
-
-  defp advance_verification_generation do
-    if :ets.whereis(@verification_table) != :undefined do
-      :ets.update_counter(@verification_table, :generation, 1)
-    end
-  end
-
-  defp replace_cached_clients(clients) do
-    rows = Enum.map(clients, fn c -> {c.id, c} end)
-
-    new_ids = MapSet.new(rows, fn {id, _} -> id end)
-    :ets.insert(@cache_table, rows)
-
-    @cache_table
-    |> :ets.tab2list()
-    |> Enum.each(fn {id, _} ->
-      unless MapSet.member?(new_ids, id), do: :ets.delete(@cache_table, id)
-    end)
   end
 
   defp fail_closed do
@@ -127,22 +49,27 @@ defmodule Backplane.Clients do
     :ok
   end
 
-  defp cached_active_clients do
-    @cache_table
-    |> :ets.tab2list()
-    |> Enum.map(fn {_id, client} -> client end)
-  rescue
-    ArgumentError -> []
-  end
-
   # --- Token Verification ---
 
   @doc """
-  Verify a bearer token against all active clients. Successful and failed
-  bcrypt checks are memoized briefly by token digest and client generation.
+  Verify a bounded bearer credential. Warm evidence is checked against current
+  authorization; cold legacy bcrypt scans are bounded and coalesced per node.
   """
-  @spec verify_token(String.t()) :: {:ok, Client.t()} | :error
+  @spec verify_token(String.t()) ::
+          {:ok, Client.t()} | :error | {:error, :unavailable | :overloaded}
   def verify_token(token) when is_binary(token) do
+    cond do
+      not token_size_valid?(token) -> :error
+      Application.get_env(:backplane, :env) == :test -> sandbox_verify_token(token)
+      true -> AuthCache.verify(token)
+    end
+  end
+
+  def verify_token(_), do: :error
+
+  def token_size_valid?(token), do: AuthCache.token_size_valid?(token)
+
+  defp sandbox_verify_token(token) do
     generation = verification_generation()
     clients = active_clients_for_verification()
     digest = :crypto.hash(:sha256, token)
@@ -161,14 +88,8 @@ defmodule Backplane.Clients do
     end
   end
 
-  def verify_token(_), do: :error
-
   defp active_clients_for_verification do
-    if Application.get_env(:backplane, :env) == :test do
-      Client |> where(active: true) |> Repo.all()
-    else
-      cached_active_clients()
-    end
+    Client |> where(active: true) |> Repo.all()
   end
 
   defp verification_key(digest, clients) do
@@ -190,7 +111,6 @@ defmodule Backplane.Clients do
   defp verify_and_cache(token, key, generation, clients) do
     case Enum.find(clients, fn client -> Bcrypt.verify_pass(token, client.token_hash) end) do
       nil ->
-        Bcrypt.no_user_verify()
         cache_verification(key, generation, :miss)
         :error
 
@@ -259,11 +179,7 @@ defmodule Backplane.Clients do
   end
 
   defp touch_last_seen(%Client{id: id}) do
-    Task.start(fn ->
-      Client
-      |> where(id: ^id)
-      |> Repo.update_all(set: [last_seen_at: DateTime.utc_now()])
-    end)
+    Activity.record(id)
   end
 
   # --- Scope Matching ---
@@ -319,50 +235,44 @@ defmodule Backplane.Clients do
   def create_client(attrs) when is_map(attrs) do
     attrs = hash_token_in_attrs(attrs)
 
-    result =
+    mutate_client(%Client{}, :put, fn ->
       %Client{}
       |> Client.changeset(attrs)
       |> Repo.insert()
-
-    if match?({:ok, _}, result), do: refresh_cache()
-    result
+    end)
   end
 
   @spec update_client(Client.t(), map()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
   def update_client(%Client{} = client, attrs) do
     attrs = hash_token_in_attrs(attrs)
 
-    result =
-      client
+    mutate_client(client, :put, fn ->
+      Repo.get!(Client, client.id)
       |> Client.changeset(attrs)
       |> Repo.update()
-
-    if match?({:ok, _}, result), do: refresh_cache()
-    result
+    end)
   end
 
   @spec delete_client(Client.t()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
   def delete_client(%Client{} = client) do
-    result = Repo.delete(client)
-    if match?({:ok, _}, result), do: refresh_cache()
-    result
+    mutate_client(client, :delete, fn -> Repo.delete(client) end)
   end
 
   @doc """
   Check if any clients exist.
 
   In test environment, queries the DB directly (sandbox-isolated).
-  In production, reads from persistent_term (O(1), no DB hit).
+  In production, reads the fresh authorization lease (O(1), no DB hit).
   """
   @spec any_clients?() :: boolean()
   def any_clients? do
     if Application.get_env(:backplane, :env) == :test do
       Repo.exists?(Client)
     else
-      :persistent_term.get(:backplane_clients_exist, false)
+      AuthCache.any_clients?()
     end
   rescue
-    _ -> false
+    _ -> true
   end
 
   # --- Config Upsert ---
@@ -371,7 +281,7 @@ defmodule Backplane.Clients do
   def upsert_from_config(%{name: name, token: token, scopes: scopes}) do
     token_hash = Bcrypt.hash_pwd_salt(token)
 
-    result =
+    mutate_client(%Client{}, :put, fn ->
       case get_client_by_name(name) do
         nil ->
           %Client{}
@@ -383,12 +293,62 @@ defmodule Backplane.Clients do
           |> Client.changeset(%{token_hash: token_hash, scopes: scopes})
           |> Repo.update()
       end
-
-    if match?({:ok, _}, result), do: refresh_cache()
-    result
+    end)
   end
 
   # --- Helpers ---
+
+  defp mutate_client(client, operation, write) do
+    :global.trans(
+      {{__MODULE__, :mutation, node()}, self()},
+      fn ->
+        :ok = AuthCache.begin_mutation()
+
+        try do
+          result = write.()
+
+          case result do
+            {:ok, _client} ->
+              propagate_mutation(result, operation)
+
+            _failure ->
+              AuthCache.abort_mutation()
+              refresh_cache()
+          end
+
+          result
+        rescue
+          exception ->
+            AuthCache.abort_mutation()
+            refresh_cache()
+            reraise exception, __STACKTRACE__
+        end
+      end,
+      [node()]
+    )
+  catch
+    :exit, _reason ->
+      {:error,
+       client
+       |> Ecto.Changeset.change()
+       |> Ecto.Changeset.add_error(:base, "authentication cache unavailable")}
+  end
+
+  defp propagate_mutation({:ok, client}, operation) do
+    change = if operation == :put, do: {:put, client}, else: {:delete, client.id}
+    AuthCache.mutate(change)
+
+    Phoenix.PubSub.broadcast(
+      Backplane.PubSub,
+      "client_auth:invalidations",
+      {:client_auth_invalidated, node(), client.id}
+    )
+
+    if Application.get_env(:backplane, :env) == :test, do: refresh_cache()
+    :ok
+  end
+
+  defp propagate_mutation(_result, _operation), do: :ok
 
   defp hash_token_in_attrs(attrs) do
     token = attrs[:token] || attrs["token"]
