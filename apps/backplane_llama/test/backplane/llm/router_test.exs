@@ -399,9 +399,20 @@ defmodule Backplane.LLM.RouterTest do
       body = json_body(conn)
       ids = Enum.map(body["data"], & &1["id"])
 
+      assert Map.keys(body) |> Enum.sort() == ["data", "object"]
       assert body["object"] == "list"
       assert "anthropic-prod/claude-sonnet" in ids
       assert "openai-prod/gpt-4o" in ids
+    end
+
+    test "returns the OpenAI list envelope when no models are exposed" do
+      conn = public_llm_request(:get, "/v1/models")
+
+      assert conn.status == 200
+      body = json_body(conn)
+
+      assert Map.keys(body) |> Enum.sort() == ["data", "object"]
+      assert body == %{"object" => "list", "data" => []}
     end
   end
 
@@ -846,9 +857,8 @@ defmodule Backplane.LLM.RouterTest do
 
       assert conn.status == 200
       body = json_body(conn)
-      assert body["object"] == "list"
+      assert Map.keys(body) |> Enum.sort() == ["data", "object"]
       assert is_list(body["data"])
-      assert body["models"] == []
     end
 
     test "includes prefixed model ids" do

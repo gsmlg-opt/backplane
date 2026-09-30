@@ -69,8 +69,7 @@ defmodule Backplane.LLM.Router do
   end
 
   get "/v1/models" do
-    {data, models} = build_model_list()
-    send_json(conn, 200, %{"object" => "list", "data" => data, "models" => models})
+    send_json(conn, 200, %{"object" => "list", "data" => build_model_list()})
   end
 
   get "/v1/codex/models" do
@@ -698,22 +697,10 @@ defmodule Backplane.LLM.Router do
         {provider, model, surface, _api} = target
         raw_metadata = Map.merge(model.metadata || %{}, surface.metadata || %{})
         metadata = ModelMetadata.normalize(provider.preset_key, raw_metadata)
-        {Map.put(entry, "metadata", metadata), target}
+        Map.put(entry, "metadata", metadata)
       end
 
-    models =
-      for {{entry, {provider, model, _surface, api}}, priority} <-
-            Enum.with_index(resolved_entries),
-          api.api_surface == :openai,
-          :openai_responses in api.native_protocols,
-          provider.preset_key != "openai-codex" do
-        ModelMetadata.codex(entry["id"], model.display_name, entry["metadata"],
-          supported_in_api: true,
-          priority: priority
-        )
-      end
-
-    {Enum.map(resolved_entries, &elem(&1, 0)), models}
+    resolved_entries
   end
 
   defp selected_model_target(

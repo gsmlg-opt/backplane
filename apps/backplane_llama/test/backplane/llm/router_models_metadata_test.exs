@@ -113,7 +113,6 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     body = listing()
 
     assert data_entry(body, "slash-provider/vendor/family/model")
-    assert Enum.any?(body["models"], &(&1["slug"] == "slash-provider/vendor/family/model"))
 
     assert {:ok, provider, "vendor/family/model"} =
              ModelResolver.resolve(:openai, "slash-provider/vendor/family/model")
@@ -178,31 +177,18 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     assert data_entry(listing(), "shared")["metadata"]["context_window"] == 111
   end
 
-  test "Codex slugs preserve provider prefixes and aliases and resolve to Responses targets" do
-    create_target("responses", "reasoner",
-      metadata: %{"context_window" => 32768},
-      display_name: "Reasoner"
-    )
+  test "model entries preserve provider prefixes and aliases resolve to Responses targets" do
+    create_target("responses", "reasoner", metadata: %{"context_window" => 32768})
 
     {:ok, _alias} = ModelAlias.put("coding", "reasoner")
     body = listing()
 
-    assert Enum.map(body["models"], & &1["slug"]) == ["coding", "responses/reasoner"]
-    refute Enum.any?(body["models"], &(&1["slug"] == "reasoner"))
-
-    for descriptor <- body["models"] do
-      assert data_entry(body, descriptor["slug"])
-      assert {:ok, provider, "reasoner"} = ModelResolver.resolve(:openai, descriptor["slug"])
+    for id <- ["coding", "responses/reasoner"] do
+      assert data_entry(body, id)
+      assert {:ok, provider, "reasoner"} = ModelResolver.resolve(:openai, id)
       assert provider.name == "responses"
-      assert descriptor["supported_in_api"] == true
-      assert is_integer(descriptor["priority"])
-      assert descriptor["context_window"] == 32768
-      assert descriptor["supported_reasoning_levels"] == []
-      assert descriptor["support_verbosity"] == false
+      assert data_entry(body, id)["metadata"]["context_window"] == 32768
     end
-
-    assert Enum.find(body["models"], &(&1["slug"] == "responses/reasoner"))["display_name"] ==
-             "Reasoner"
   end
 
   test "auto and custom aliases inherit the resolver's selected target, not a fallback" do
@@ -228,7 +214,6 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
       assert {:ok, provider, "selected"} = ModelResolver.resolve(:openai, id)
       assert provider.id == selected.provider.id
       assert data_entry(body, id)["metadata"]["context_window"] == 4096
-      assert Enum.find(body["models"], &(&1["slug"] == id))["context_window"] == 4096
     end
 
     {:ok, _} = ProviderModelSurface.update(selected.surface, %{enabled: false})
@@ -241,7 +226,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     end
   end
 
-  test "Anthropic and chat-only entries remain in data but not in Codex models" do
+  test "Anthropic and chat-only entries remain in the model list" do
     create_target("anthropic", "claude",
       api_surface: :anthropic,
       metadata: %{"context_window" => 8192}
@@ -252,7 +237,6 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     {:ok, _alias} = ModelAlias.put("chatting", "chat-only")
     body = listing()
 
-    assert body["models"] == []
     assert data_entry(body, "anthropic/claude")["metadata"]["context_window"] == 8192
     assert data_entry(body, "writing")["metadata"]["context_window"] == 8192
     assert data_entry(body, "chat/chat-only")
@@ -277,7 +261,11 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     body = listing()
     assert data_entry(body, "fast")
     assert data_entry(body, "coding")
-    assert Enum.map(body["models"], & &1["slug"]) == ["responses/responses-only"]
+
+    for id <- ["fast", "coding"] do
+      assert {:ok, provider, "chat-only"} = ModelResolver.resolve(:openai, id)
+      assert provider.id == selected.provider.id
+    end
   end
 
   test "unknown model metadata preserves raw fields without invented context" do
@@ -286,7 +274,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     metadata = data_entry(body, "custom/vision-reasoner")["metadata"]
 
     assert metadata == %{"raw" => %{"unrecognized_limit" => 999}}
-    refute Map.has_key?(hd(body["models"]), "context_window")
+    refute Map.has_key?(metadata, "context_window")
   end
 
   test "disabled providers, models, surfaces and APIs exclude their models and aliases" do
@@ -306,7 +294,6 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     end
 
     assert listing()["data"] == []
-    assert listing()["models"] == []
   end
 
   test "disabled OpenAI surface falls back to enabled Anthropic metadata for data only" do
@@ -316,21 +303,18 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     {:ok, _alias} = ModelAlias.put("writing", "shared")
     body = listing()
 
-    assert body["models"] == []
-
     for id <- ["dual/shared", "writing"] do
       assert data_entry(body, id)["metadata"]["context_window"] == 8192
     end
   end
 
-  test "openai-codex preset is listed in generic data but never generic Codex models" do
+  test "openai-codex preset remains listed in generic model data" do
     target = create_target("codex", "gpt-codex", preset_key: "openai-codex")
     {:ok, _alias} = ModelAlias.put("coding", target.model.model)
     body = listing()
 
     assert data_entry(body, "codex/gpt-codex")
     assert data_entry(body, "coding")
-    assert body["models"] == []
   end
 
   test "provider-specific Codex models and Responses endpoints remain transparent" do
@@ -350,7 +334,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
 
     target = create_target("codex", "gpt-codex", preset_key: "openai-codex")
     {:ok, _api} = ProviderApi.update(target.api, %{base_url: backend_base_url})
-    assert listing()["models"] == []
+    assert data_entry(listing(), "codex/gpt-codex")
 
     models_response =
       conn(:get, "/v1/providers/codex/models")
@@ -374,6 +358,7 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
     response = Router.call(conn(:get, "/v1/models"), Router.init([]))
     assert response.status == 200
     body = Jason.decode!(response.resp_body)
+    assert Map.keys(body) |> Enum.sort() == ["data", "object"]
     assert body["object"] == "list"
     body
   end
