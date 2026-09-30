@@ -234,7 +234,7 @@ defmodule Backplane.ReleaseConfigTest do
     workflow = File.read!(".github/workflows/test.yml")
 
     assert workflow =~
-             "mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime"
+             ~s(mix "do" --app backplane_memory cmd mix test --exclude memory_qualification_runtime)
   end
 
   test "release qualification pins one main-branch SHA and validates semver before builds" do
