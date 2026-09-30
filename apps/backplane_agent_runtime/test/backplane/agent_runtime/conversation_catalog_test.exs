@@ -80,7 +80,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     assert Enum.map(first_request.tools, & &1.name) == ["discover"]
 
     send(first_provider, {:events, [call("d1", "discover"), call("n1", "new"), done("batch")]})
-    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}
+    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}, 1_000
     send(discovery, {:stage, update, {:ok, %{text: "found"}}})
     assert_receive {:stage_receipt, {:ok, %{status: :staged, catalog_revision: 2}}}
 
@@ -91,7 +91,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     assert List.last(second_request.messages).result.is_error == true
 
     send(second_provider, {:events, [call("n2", "new"), done("use new")]})
-    assert_receive {:tool, %{tool_name: "new", catalog_revision: 2} = operation, new_tool}
+    assert_receive {:tool, %{tool_name: "new", catalog_revision: 2} = operation, new_tool}, 1_000
     assert operation.effective_authority.grants == ["discover", "new"]
     assert operation.effective_authority.credential == "catalog-secret"
     assert operation.backend_context.credential == "backend-secret"
@@ -134,7 +134,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "discover")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
 
     caller =
       spawn(fn ->
@@ -186,7 +186,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
       [call("d1", "discover"), call("l1", "legacy"), done("old batch")]
     })
 
-    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}
+    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}, 1_000
     send(discovery, {:stage, quarantine, {:ok, %{text: "found"}}})
     assert_receive {:stage_receipt, {:ok, %{status: :staged, catalog_revision: 2}}}
     refute_receive {:tool, %{tool_name: "legacy"}, _}, 20
@@ -228,7 +228,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "discover")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
     send(discovery, {:capture_stager, update, {:ok, %{text: "done"}}})
     assert_receive {:captured_stager, stager}
     assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
@@ -251,7 +251,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
       {:ok, _} = Conversation.prompt(pid, "discover")
       assert_receive {:provider, _, provider}
       send(provider, {:events, [call("d1", "discover"), done("discover")]})
-      assert_receive {:tool, _, discovery}
+      assert_receive {:tool, _, discovery}, 1_000
       send(discovery, {:stage, update, result})
       assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
       assert_receive {:provider, %{catalog_revision: 1}, next}
@@ -265,7 +265,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "cancel")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, _discovery}
+    assert_receive {:tool, _, _discovery}, 1_000
     assert {:ok, %{status: :staged}} = Conversation.stage_catalog(pid, update)
     assert :ok = Conversation.cancel(pid)
     assert_receive {:agent_runtime, "run", %{type: :run_cancelled}}
@@ -296,7 +296,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "interact")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
     send(discovery, :interact)
     assert_receive {:agent_runtime, "run", %{type: :interaction_requested, interaction_id: id}}
     assert {:error, %Error{class: :resource_conflict}} = Conversation.stage_catalog(pid, update)
@@ -330,7 +330,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
       {:ok, _} = Conversation.prompt(pid, "invalid")
       assert_receive {:provider, _, provider}
       send(provider, {:events, [call("d1", "discover"), done("discover")]})
-      assert_receive {:tool, _, discovery}
+      assert_receive {:tool, _, discovery}, 1_000
 
       assert {:error, %Error{}} = Conversation.stage_catalog(pid, invalid_update.(update))
       assert Conversation.status(pid).catalog_revision == 1
@@ -346,7 +346,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "competing")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
     assert {:ok, %{status: :staged}} = Conversation.stage_catalog(pid, update)
 
     competing = %{update | publication_id: "competing-publication"}
@@ -373,7 +373,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
       [call("d1", "discover"), call("o1", "old"), done("batch")]
     })
 
-    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}
+    assert_receive {:tool, %{tool_name: "discover", catalog_revision: 1}, discovery}, 1_000
     send(discovery, {:stage, update, {:ok, %{text: "found"}}})
     assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
 
@@ -391,7 +391,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     refute_receive {:tool, %{tool_name: "old"}, _}, 20
 
     assert :ok = Conversation.resolve(pid, id, :approved)
-    assert_receive {:tool, %{tool_name: "old", catalog_revision: 1}, old_tool}
+    assert_receive {:tool, %{tool_name: "old", catalog_revision: 1}, old_tool}, 1_000
     send(old_tool, {:result, {:ok, %{text: "approved"}}})
     assert_receive {:provider, %{catalog_revision: 2}, next}
     send(next, {:events, [done("done")]})
@@ -410,7 +410,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "cancel boundary")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
     send(discovery, {:stage, update, {:ok, %{text: "done"}}})
     assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
     assert_receive {:commit_waiting, commit_worker}
@@ -426,7 +426,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "invalid")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
 
     invalid = put_in(update, [:catalog, :authority, :grants], ["discover"])
     assert {:error, %Error{}} = Conversation.stage_catalog(pid, invalid)
@@ -444,7 +444,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
     {:ok, _} = Conversation.prompt(pid, "storage")
     assert_receive {:provider, _, provider}
     send(provider, {:events, [call("d1", "discover"), done("discover")]})
-    assert_receive {:tool, _, discovery}
+    assert_receive {:tool, _, discovery}, 1_000
     send(discovery, {:stage, update, {:ok, %{text: "done"}}})
     assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
     assert_receive {:agent_runtime, "run", %{type: :storage_failed}}

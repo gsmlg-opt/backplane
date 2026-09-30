@@ -348,8 +348,6 @@ defmodule Backplane.Clients do
     :ok
   end
 
-  defp propagate_mutation(_result, _operation), do: :ok
-
   defp hash_token_in_attrs(attrs) do
     token = attrs[:token] || attrs["token"]
 

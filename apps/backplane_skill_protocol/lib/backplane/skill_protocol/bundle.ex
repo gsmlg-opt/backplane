@@ -679,13 +679,12 @@ defmodule Backplane.SkillProtocol.Bundle do
           Enum.reduce_while(entries, :ok, fn {name, bytes}, :ok ->
             archive_name = String.to_charlist(Path.join(root, name))
 
-            case :erl_tar.add(tar, {archive_name, bytes},
+            case :erl_tar.add(tar, bytes, archive_name,
                    mtime: 0,
                    atime: 0,
                    ctime: 0,
                    uid: 0,
-                   gid: 0,
-                   mode: 0o644
+                   gid: 0
                  ) do
               :ok -> {:cont, :ok}
               {:error, reason} -> {:halt, {:error, reason}}

@@ -37,6 +37,24 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
     await_stopped(os_pid, deadline)
   end
 
+  test "cleanup confirms an already reaped process without sending another signal" do
+    port =
+      Port.open({:spawn_executable, System.find_executable("sh")}, [
+        :binary,
+        :exit_status,
+        args: ["-c", "read -r command"]
+      ])
+
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    {:ok, stat} = File.read("/proc/#{os_pid}/stat")
+    [_, fields] = Regex.run(~r/^\d+ \(.*\) (.+)$/s, stat)
+    starttime = fields |> String.split() |> Enum.at(19)
+
+    assert Port.command(port, "release\n")
+    assert_receive {^port, {:exit_status, 0}}, 2_000
+    assert :ok = CodeMode.Worker.cleanup_identity(%{pid: os_pid, starttime: starttime})
+  end
+
   defp await_worker(supervisor, deadline) do
     case DynamicSupervisor.which_children(supervisor) do
       [{_, pid, _, _}] ->

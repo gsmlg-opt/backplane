@@ -303,7 +303,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp antigravity_model_groups(%Provider{apis: apis, models: models}) do
-    if Enum.any?(apis || [], &(&1.api_surface == :antigravity)) do
+    if Enum.any?(apis, &(&1.api_surface == :antigravity)) do
       models
       |> List.wrap()
       |> Enum.reject(&hidden_stale_discovered_model?/1)

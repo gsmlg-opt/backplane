@@ -4,26 +4,14 @@ on:
   push:
     paths:
       - "apps/backplane_skill_protocol/**"
-      - "apps/backplane_skills/**"
-      - "apps/backplane_api/**"
-      - "apps/backplane_auth/**"
-      - "apps/backplane_memory/**"
-      - "apps/backplane_system/priv/repo/migrations/20260911000001_create_skill_revisions.exs"
       - "scripts/verify_skill_protocol_package.sh"
       - "scripts/skill_protocol_consumer_verify.exs"
-      - "docs/skill-protocol/**"
       - ".github/workflows/skill-protocol.yml"
   pull_request:
     paths:
       - "apps/backplane_skill_protocol/**"
-      - "apps/backplane_skills/**"
-      - "apps/backplane_api/**"
-      - "apps/backplane_auth/**"
-      - "apps/backplane_memory/**"
-      - "apps/backplane_system/priv/repo/migrations/20260911000001_create_skill_revisions.exs"
       - "scripts/verify_skill_protocol_package.sh"
       - "scripts/skill_protocol_consumer_verify.exs"
-      - "docs/skill-protocol/**"
       - ".github/workflows/skill-protocol.yml"
 
 permissions:

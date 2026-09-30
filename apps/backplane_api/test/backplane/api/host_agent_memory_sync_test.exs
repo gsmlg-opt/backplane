@@ -205,6 +205,16 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                [Ecto.UUID.dump!(first_id)]
              ).rows
 
+    budget = budget + 16
+
+    assert [[marked_size]] =
+             Repo.query!(
+               "SELECT octet_length(bpm_memory_edge_payload(jsonb_populate_record(m, jsonb_build_object('metadata', jsonb_set(m.metadata, '{host_memory_command_revision}', to_jsonb($2::text), true))))::text) FROM bpm_memories m WHERE id = $1",
+               [Ecto.UUID.dump!(first_id), Ecto.UUID.generate()]
+             ).rows
+
+    assert marked_size > budget
+
     Repo.query!(
       "INSERT INTO system_settings (key,value,value_type,updated_at) VALUES ('memory.host_sync_max_item_bytes',jsonb_build_object('v',$1::integer),'integer',now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
       [budget]
@@ -215,6 +225,11 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
     assert second_id != first_id
     assert is_integer(revision) and revision > 0
+
+    refute Map.has_key?(
+             Repo.get!(MemorySchema, second_id).metadata,
+             "host_memory_command_revision"
+           )
 
     assert %{revision: ^revision, op: "upsert"} =
              Repo.one!(

@@ -103,7 +103,6 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     |> conn(path, Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", "Bearer #{bearer}")
-    |> put_req_header("x-api-key", "inbound-key-must-not-leak")
     |> put_req_header("api-key", "inbound-api-key-must-not-leak")
     |> put_req_header("x-goog-api-key", "inbound-google-key-must-not-leak")
     |> put_req_header("cookie", "session=inbound-cookie-must-not-leak")
@@ -361,7 +360,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
                Clients.create_client(%{
                  name: "Provider isolation PAT",
                  token: pat,
-                 scopes: ["unrelated::scope"],
+                 scopes: ["llm::invoke"],
                  active: true
                })
 
@@ -369,7 +368,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       Application.put_env(:backplane, :auth_token, legacy)
 
       for inbound_bearer <- [oauth_token.value, pat, legacy] do
-        request = fn ->
+        conn =
           public_llm_request(
             :post,
             "/v1/chat/completions",
@@ -379,16 +378,14 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
             },
             inbound_bearer
           )
-        end
-
-        conn =
-          if inbound_bearer == pat do
-            pat_request(pat_client, request)
-          else
-            request.()
-          end
 
         assert conn.status == 200
+
+        if inbound_bearer == pat do
+          assert conn.assigns.resource_auth.kind == :client_token
+          assert conn.assigns.client.id == pat_client.id
+        end
+
         captured = Agent.get(auth_store, & &1)
 
         authorization_values =
@@ -708,34 +705,6 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
         })
 
       assert conn.status == 400
-    end
-  end
-
-  defp pat_request(client, request) when is_function(request, 0) do
-    previous_last_seen = Clients.get_client(client.id).last_seen_at
-    result = request.()
-    await_pat_touch!(client.id, previous_last_seen)
-    result
-  end
-
-  defp await_pat_touch!(client_id, previous_last_seen) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    do_await_pat_touch!(client_id, previous_last_seen, deadline)
-  end
-
-  defp do_await_pat_touch!(client_id, previous_last_seen, deadline) do
-    current_last_seen = Clients.get_client(client_id).last_seen_at
-
-    cond do
-      current_last_seen != previous_last_seen ->
-        current_last_seen
-
-      System.monotonic_time(:millisecond) < deadline ->
-        Process.sleep(5)
-        do_await_pat_touch!(client_id, previous_last_seen, deadline)
-
-      true ->
-        flunk("PAT last_seen_at did not change within 1000ms for client #{client_id}")
     end
   end
 

@@ -30,17 +30,18 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
   defmodule StatefulMapper do
     def init(status, headers, owner) do
       send(owner, {:mapper_init, status, headers})
-      {:ok, owner}
+      {:ok, %{owner: owner, chunks: []}}
     end
 
-    def feed(owner, chunk) do
-      send(owner, {:mapper_feed, chunk})
-      {:ok, owner, [String.upcase(chunk)]}
+    def feed(state, chunk) do
+      send(state.owner, {:mapper_feed, chunk})
+      {:ok, %{state | chunks: [chunk | state.chunks]}, [String.upcase(chunk)]}
     end
 
-    def finish(owner, reason) do
-      send(owner, {:mapper_finish, reason})
-      {:ok, owner, ["<done>"]}
+    def finish(state, reason) do
+      send(state.owner, {:mapper_finish, reason})
+      send(state.owner, {:mapper_chunks, Enum.reverse(state.chunks)})
+      {:ok, state, ["<done>"]}
     end
   end
 
@@ -290,8 +291,8 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
         HttpPlug.call(conn, upstream, response_stream_mapper: {StatefulMapper, self()})
 
       assert result.resp_body == "CHUNK1CHUNK2<done>"
-      assert_received {:mapper_feed, "chunk1"}
-      assert_received {:mapper_feed, "chunk2"}
+      assert_received {:mapper_chunks, chunks}
+      assert IO.iodata_to_binary(chunks) == "chunk1chunk2"
       assert_received {:mapper_finish, :eof}
     end
 

@@ -24,7 +24,7 @@ defmodule Backplane.LLM.ModelResponseTest do
   test "restores the requested alias in SSE data events" do
     chunk =
       ": keepalive\n\n" <>
-        "data: {\"id\":\"chat_1\",\"model\":\"gpt-5.6-terra\",\"choices\":[]}\n\n" <>
+        ~s(data: {"id":"chat_1","model":"gpt-5.6-terra","choices":[]}\n\n) <>
         "data: {malformed}\n\n" <>
         "data: [DONE]\n\n"
 
@@ -40,7 +40,7 @@ defmodule Backplane.LLM.ModelResponseTest do
   test "restores the requested alias in Responses nested SSE events" do
     chunk =
       ": keepalive\n\n" <>
-        "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5.6-terra\"}}\n\n" <>
+        ~s(data: {"type":"response.created","response":{"model":"gpt-5.6-terra"}}\n\n) <>
         "data: {malformed}\n\n" <>
         "data: [DONE]\n\n"
 
@@ -55,7 +55,7 @@ defmodule Backplane.LLM.ModelResponseTest do
   test "restores Responses aliases when SSE data is fragmented across transport chunks" do
     stream =
       ": keepalive\r\n\r\n" <>
-        "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5.6-terra\"}}\r\n\r\n" <>
+        ~s(data: {"type":"response.created","response":{"model":"gpt-5.6-terra"}}\r\n\r\n) <>
         "data: {malformed}\n\n" <>
         "data: [DONE]\n\n"
 

@@ -328,8 +328,7 @@ defmodule Relayixir.Proxy.HttpPlug do
         upstream,
         status,
         response_headers,
-        chunks,
-        completeness,
+        {chunks, completeness},
         opts,
         stream_mapper
       )
@@ -346,8 +345,7 @@ defmodule Relayixir.Proxy.HttpPlug do
          upstream,
          status,
          response_headers,
-         chunks,
-         completeness,
+         {chunks, completeness},
          opts,
          stream_mapper
        ) do
