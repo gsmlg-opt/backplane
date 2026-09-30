@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Repair Codex patch hunk matching, contextual anchors, EOF handling and
+  rename-with-edit; preserve partial mutations and uncertain-write evidence.
+- Preserve supervised Code Mode cells across provider turns and rebind nested
+  dispatch to the current invocation. Decode bounded NDJSON incrementally in
+  Deno and Elixir, including fragmented UTF-8 and explicit EOF failures.
+- Separate stable collaboration identities from execution runs, retaining
+  committed history, remaining quotas, and authority without replaying work.
+- Separate command response truncation from host output hard limits and apply
+  response budgets to stdin polling, retaining cleanup and truncation evidence.
+- Track command resources before launch, clean resources on every run terminal
+  path, and retain uncertain cleanup for reconciliation. Add optional command
+  adapter `cancel_confirmed/3`; a cancellation request alone is not confirmation.
+- Keep the Codex compatibility revision pinned to
+  `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. These repairs do not establish
+  complete native-wire parity, durable session recovery, or live-service parity.
+
 ## 1.9.0
 
 - Add pinned, opt-in Codex profiles for local execution, interaction/context,

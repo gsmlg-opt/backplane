@@ -12,6 +12,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   @default_wait_timeout_ms 30_000
   @maximum_wait_timeout_ms 3_600_000
+  @settlement_wait_ms 5_000
   @v1_namespace "multi_agent_v1"
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -107,10 +108,17 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       {nil, _} ->
         {:noreply, state}
 
-      {name, monitors} ->
-        state = put_in(state, [:agents, name, :status], {:errored, inspect(reason)})
-        state = %{state | monitors: monitors, updates: MapSet.put(state.updates, name)}
-        {:noreply, wake_waiters(state)}
+      {{name, run_id}, monitors} ->
+        state = %{state | monitors: monitors}
+
+        if get_in(state, [:agents, name, :run_id]) == run_id and
+             get_in(state, [:agents, name, :status]) not in [:shutdown, :interrupted, :completed] do
+          state = put_in(state, [:agents, name, :status], {:errored, inspect(reason)})
+          state = %{state | updates: MapSet.put(state.updates, name)}
+          {:noreply, wake_waiters(state)}
+        else
+          {:noreply, state}
+        end
     end
   end
 
@@ -163,12 +171,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
       agent = %{
         name: name,
+        id: run_id,
         run_id: run_id,
         pid: pid,
         monitor: ref,
         status: :running,
         final: nil,
         opts: opts,
+        request: request,
         message: request.message,
         profile: request.profile,
         parent: caller.name,
@@ -180,7 +190,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         | sequence: state.sequence + 1,
           agents: Map.put(state.agents, name, agent),
           run_index: Map.put(state.run_index, run_id, name),
-          monitors: Map.put(state.monitors, ref, name)
+          monitors: Map.put(state.monitors, ref, {name, run_id})
       }
 
       result =
@@ -244,7 +254,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
            (is_binary(message) and String.trim(message) != "") or
              validation("message is required"),
          {:ok, name, agent} <- resolve_target(state, target),
-         :ok <- deliver(agent, action, message) do
+         {:ok, state} <- deliver(state, name, agent, action, message) do
       state = %{state | updates: MapSet.put(state.updates, name)}
       {:reply, {:ok, %{accepted: true}}, wake_waiters(state)}
     else
@@ -259,8 +269,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     with true <-
            (is_binary(message) and String.trim(message) != "") or
              validation("message or items is required"),
-         {:ok, _name, agent} <- resolve_target(state, arguments["target"]),
-         :ok <- deliver(agent, action, message) do
+         {:ok, name, agent} <- resolve_target(state, arguments["target"]),
+         {:ok, state} <- deliver(state, name, agent, action, message) do
       {:reply, {:ok, %{submission_id: unique_id("submission")}}, state}
     else
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
@@ -268,30 +278,30 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp dispatch(action, arguments, _from, _caller, state) when action in [:interrupt, :close] do
-    with {:ok, name, agent} <- resolve_target(state, arguments["target"]),
-         previous = public_status(agent),
-         {:ok, state} <- cancel_owned_tree(state, name, action) do
-      next_status = if action == :close, do: :shutdown, else: :interrupted
-      {:reply, {:ok, %{previous_status: previous, status: next_status}}, wake_waiters(state)}
-    else
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    case resolve_target(state, arguments["target"]) do
+      {:ok, name, agent} ->
+        previous = public_status(agent)
+
+        case cancel_owned_tree(state, name, action) do
+          {:ok, state} ->
+            next_status = if action == :close, do: :shutdown, else: :interrupted
+
+            {:reply, {:ok, %{previous_status: previous, status: next_status}},
+             wake_waiters(state)}
+
+          {:error, %Error{} = error, state} ->
+            {:reply, {:error, error}, wake_waiters(state)}
+        end
+
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, state}
     end
   end
 
   defp dispatch(:resume, arguments, _from, _caller, state) do
     with {:ok, name, agent} <- resolve_target(state, arguments["id"]),
          true <- agent.status == :shutdown or validation("agent is not closed"),
-         {:ok, pid} <- start_child(state.child_supervisor, agent.opts),
-         {:ok, _} <- Conversation.prompt(pid, agent.message) do
-      ref = Process.monitor(pid)
-      resumed = %{agent | pid: pid, monitor: ref, status: :running, final: nil}
-
-      state = %{
-        state
-        | agents: Map.put(state.agents, name, resumed),
-          monitors: Map.put(state.monitors, ref, name)
-      }
-
+         {:ok, state} <- replace_agent(state, name, agent, nil) do
       {:reply, {:ok, %{status: :running}}, state}
     else
       {:error, %Error{} = error} ->
@@ -350,20 +360,24 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       {:ok, name} ->
         agent = Map.fetch!(state.agents, name)
 
-        status =
-          case {type, agent.status} do
-            {:run_completed, _status} -> :completed
-            {:run_cancelled, status} when status in [:interrupted, :shutdown] -> status
-            {_type, _status} -> {:errored, event_error(event)}
-          end
+        if agent.run_id != run_id or agent.status in [:shutdown, :interrupted] do
+          state
+        else
+          status =
+            case {type, agent.status} do
+              {:run_completed, _status} -> :completed
+              {:run_cancelled, status} when status in [:interrupted, :shutdown] -> status
+              {_type, _status} -> {:errored, event_error(event)}
+            end
 
-        final = terminal_message(agent.pid, event)
-        notify(state, %{type: :agent_updated, agent_name: name, status: status})
+          final = terminal_message(agent.pid, event)
+          notify(state, %{type: :agent_updated, agent_name: name, status: status})
 
-        state
-        |> put_in([:agents, name, :status], status)
-        |> put_in([:agents, name, :final], final)
-        |> Map.update!(:updates, &MapSet.put(&1, name))
+          state
+          |> put_in([:agents, name, :status], status)
+          |> put_in([:agents, name, :final], final)
+          |> Map.update!(:updates, &MapSet.put(&1, name))
+        end
     end
   end
 
@@ -387,28 +401,183 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     :exit, _ -> inspect(Map.get(event, :outcome))
   end
 
-  defp deliver(%{status: :running, pid: pid}, :interrupt_message, message) do
-    with :ok <- cancel_agent(%{pid: pid}),
-         {:error, %Error{}} <- Conversation.steer(pid, message) do
-      {:error, Error.new(:resource_conflict, "agent was interrupted and cannot accept input")}
-    else
-      {:ok, _} -> :ok
-      :ok -> :ok
-      {:error, %Error{} = error} -> {:error, error}
+  defp deliver(state, name, agent, :interrupt_message, message) do
+    with :ok <- cancel_agent(agent),
+         {:ok, state} <- replace_agent(state, name, agent, message) do
+      {:ok, state}
     end
   end
 
-  defp deliver(%{status: :running, pid: pid}, :message, message),
-    do: normalize_delivery(Conversation.steer(pid, message))
+  defp deliver(state, _name, %{status: :running, pid: pid}, :message, message),
+    do: normalize_delivery(state, Conversation.steer(pid, message))
 
-  defp deliver(%{status: :running, pid: pid}, :followup, message),
-    do: normalize_delivery(Conversation.follow_up(pid, message))
+  defp deliver(state, _name, %{status: :running, pid: pid}, :followup, message),
+    do: normalize_delivery(state, Conversation.follow_up(pid, message))
 
-  defp deliver(_agent, _action, _message),
+  defp deliver(state, name, %{status: status} = agent, :followup, message)
+       when status in [:completed, :interrupted],
+       do: replace_agent(state, name, agent, message)
+
+  defp deliver(_state, _name, _agent, _action, _message),
     do: {:error, Error.new(:resource_conflict, "agent is not accepting input")}
 
-  defp normalize_delivery({:ok, _}), do: :ok
-  defp normalize_delivery({:error, %Error{} = error}), do: {:error, error}
+  defp normalize_delivery(state, {:ok, _}), do: {:ok, state}
+  defp normalize_delivery(_state, {:error, %Error{} = error}), do: {:error, error}
+
+  defp replace_agent(state, name, agent, message) do
+    with {:ok, snapshot} <- settled_snapshot(agent),
+         :ok <- safe_replacement(snapshot),
+         run_id = child_run_id(name, state.sequence + 1),
+         parent = parent_metadata(state, agent),
+         {:ok, opts} <- state.child_options.(agent.request, run_id, parent),
+         :ok <- child_authority(opts, parent.authority),
+         :ok <- child_authority(opts, agent.authority),
+         {:ok, opts} <- carry_limits(opts, snapshot.run),
+         opts =
+           opts
+           |> Keyword.put(:run_id, run_id)
+           |> Keyword.put(:messages, snapshot.messages)
+           |> Keyword.put(:subscriber, self()),
+         {:ok, pid} <- start_replacement_child(state.child_supervisor, opts, message) do
+      ref = Process.monitor(pid)
+      if agent.monitor, do: Process.demonitor(agent.monitor, [:flush])
+      if agent.pid, do: DynamicSupervisor.terminate_child(state.child_supervisor, agent.pid)
+
+      replacement = %{
+        agent
+        | run_id: run_id,
+          pid: pid,
+          monitor: ref,
+          opts: opts,
+          authority: Keyword.get(opts, :authority, %{}),
+          status: :running,
+          final: nil
+      }
+
+      {:ok,
+       %{
+         state
+         | sequence: state.sequence + 1,
+           agents: Map.put(state.agents, name, replacement),
+           run_index: Map.put(state.run_index, run_id, name),
+           monitors: state.monitors |> Map.delete(agent.monitor) |> Map.put(ref, {name, run_id})
+       }}
+    else
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, Error.new(:execution_failure, "child failed to start", cause: reason)}
+    end
+  end
+
+  defp start_replacement_child(supervisor, opts, message) do
+    with {:ok, pid} <- start_child(supervisor, opts) do
+      case maybe_prompt(pid, message) do
+        :ok ->
+          {:ok, pid}
+
+        {:error, %Error{} = error} ->
+          _ = DynamicSupervisor.terminate_child(supervisor, pid)
+          {:error, error}
+      end
+    end
+  end
+
+  defp carry_limits(opts, run) do
+    remaining_work = run.execution_budget.quota - run.execution_budget.used
+    remaining_time = run.deadline - System.system_time(:millisecond)
+
+    cond do
+      remaining_work <= 0 ->
+        {:error, Error.new(:budget_exceeded, "agent work quota is exhausted")}
+
+      remaining_time <= 0 ->
+        {:error, Error.new(:timeout, "agent deadline has expired")}
+
+      true ->
+        {:ok,
+         opts
+         |> Keyword.put(:work, min(Keyword.get(opts, :work, remaining_work), remaining_work))
+         |> Keyword.put(
+           :run_timeout,
+           min(Keyword.get(opts, :run_timeout, remaining_time), remaining_time)
+         )}
+    end
+  end
+
+  defp parent_metadata(state, agent) do
+    if agent.parent == state.parent_name do
+      %{run_id: state.parent_run_id, name: state.parent_name, authority: state.parent_authority}
+    else
+      parent = state.agents[agent.parent]
+      %{run_id: parent.run_id, name: parent.name, authority: parent.authority}
+    end
+  end
+
+  defp settled_snapshot(%{snapshot: snapshot}) when is_map(snapshot), do: {:ok, snapshot}
+
+  defp settled_snapshot(%{pid: pid}) when is_pid(pid) do
+    deadline = System.monotonic_time(:millisecond) + @settlement_wait_ms
+    await_settlement(pid, deadline)
+  end
+
+  defp await_settlement(pid, deadline) do
+    case Conversation.status(pid) do
+      %{phase: :terminal} = snapshot ->
+        {:ok, snapshot}
+
+      %{phase: :storage_failed} ->
+        {:error, Error.new(:unknown_outcome, "agent store settlement is uncertain")}
+
+      %{phase: :recovery_required} ->
+        {:error, Error.new(:unknown_outcome, "agent requires host recovery")}
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(5)
+          await_settlement(pid, deadline)
+        else
+          {:error, Error.new(:unknown_outcome, "agent termination is not settled")}
+        end
+    end
+  catch
+    :exit, _ -> {:error, Error.new(:unknown_outcome, "agent snapshot is unavailable")}
+  end
+
+  defp safe_replacement(%{run: run, resource_cleanup: :confirmed}) do
+    active_tools = Map.get(run, :active_tools, %{})
+
+    cond do
+      map_size(active_tools) > 0 ->
+        {:error, Error.new(:unknown_outcome, "agent has unreconciled tool effects")}
+
+      run.state == :unknown_outcome and is_nil(Map.get(run, :active_provider)) ->
+        {:error, Error.new(:unknown_outcome, "agent has unreconciled execution")}
+
+      # The cancelled provider response is discarded; no tool was dispatched.
+      run.state == :unknown_outcome ->
+        :ok
+
+      run.state in [:completed, :failed, :cancelled, :timed_out] ->
+        :ok
+
+      true ->
+        {:error, Error.new(:resource_conflict, "agent run is not settled")}
+    end
+  end
+
+  defp safe_replacement(_snapshot),
+    do: {:error, Error.new(:unknown_outcome, "agent resource cleanup is not confirmed")}
+
+  defp maybe_prompt(_pid, nil), do: :ok
+
+  defp maybe_prompt(pid, message) do
+    case Conversation.prompt(pid, message) do
+      {:ok, _} -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
 
   defp cancel_agent(%{pid: pid}) when is_pid(pid) do
     case Conversation.cancel(pid) do
@@ -429,13 +598,37 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
       case cancel_agent(agent) do
         :ok ->
-          acc = put_in(acc, [:agents, child_name, :status], next_status)
-          {:cont, {:ok, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
+          case maybe_close_child(acc, agent, action) do
+            {:ok, agent} ->
+              acc = put_in(acc, [:agents, child_name], %{agent | status: next_status})
+
+              {:cont,
+               {:ok,
+                %{
+                  acc
+                  | monitors: Map.delete(acc.monitors, agent.monitor),
+                    updates: MapSet.put(acc.updates, child_name)
+                }}}
+
+            {:error, %Error{} = error} ->
+              acc = put_in(acc, [:agents, child_name, :status], :interrupted)
+              {:halt, {:error, error, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
+          end
 
         {:error, %Error{} = error} ->
-          {:halt, {:error, error}}
+          {:halt, {:error, error, acc}}
       end
     end)
+  end
+
+  defp maybe_close_child(_state, agent, :interrupt), do: {:ok, agent}
+
+  defp maybe_close_child(state, agent, :close) do
+    with {:ok, snapshot} <- settled_snapshot(agent) do
+      Process.demonitor(agent.monitor, [:flush])
+      _ = DynamicSupervisor.terminate_child(state.child_supervisor, agent.pid)
+      {:ok, agent |> Map.put(:pid, nil) |> Map.put(:monitor, nil) |> Map.put(:snapshot, snapshot)}
+    end
   end
 
   defp descendant_names(state, name) do
@@ -459,7 +652,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
       name = state.run_index[run_id] ->
         agent = state.agents[name]
-        {:ok, %{name: name, run_id: run_id, authority: agent.authority}}
+
+        if agent.run_id == run_id and agent.status == :running,
+          do: {:ok, %{name: name, run_id: run_id, authority: agent.authority}},
+          else: {:error, Error.new(:forbidden, "stale collaboration run")}
 
       true ->
         {:error, Error.new(:forbidden, "collaboration caller is not in this run tree")}
@@ -621,7 +817,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp v1_wait_result(state, names) do
     status =
-      Map.new(names, fn name -> {state.agents[name].run_id, public_status(state.agents[name])} end)
+      Map.new(names, fn name -> {state.agents[name].id, public_status(state.agents[name])} end)
 
     %{status: status, timed_out: false}
   end

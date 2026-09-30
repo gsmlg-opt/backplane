@@ -73,7 +73,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                authority: operation.effective_authority,
                catalog_revision: operation.catalog_revision
              },
-             incarnation: operation.incarnation
+             incarnation: operation.incarnation,
+             owner_pid: operation.backend_context[:resource_owner_pid]
            ),
          {:ok, result} <- execute(registry, owner, code, opts) do
       {:ok, public_result(result)}
@@ -89,7 +90,17 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         with {:ok, _} <- cancel(registry, handle, owner),
              do: {:ok, %{cell_id: arguments["cell_id"], status: :terminated}}
       else
-        with {:ok, result} <- resume(registry, handle, nil, owner: owner),
+        with {:ok, nested_dispatch} <- nested_dispatch(operation),
+             {:ok, result} <-
+               resume(registry, handle, nil,
+                 owner: owner,
+                 dispatcher: fn request, _execution_context -> nested_dispatch.(request) end,
+                 execution_context: %{
+                   run_id: owner,
+                   authority: operation.effective_authority,
+                   catalog_revision: operation.catalog_revision
+                 }
+               ),
              do: {:ok, public_result(result)}
       end
     end
@@ -105,10 +116,22 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          :ok <- validate_code(code, opts),
          {:ok, context} <- execution_context(owner, opts),
          {:ok, dispatcher} <- dispatcher(opts),
+         {:ok, supervisor} <- ResourceRegistry.worker_supervisor(registry),
          {:ok, worker} <-
-           __MODULE__.Worker.start_link(worker_opts(code, context, dispatcher, opts)),
-         result <- __MODULE__.Worker.begin(worker),
-         {:ok, result} <- register_or_stop(registry, owner, worker, result, opts) do
+           DynamicSupervisor.start_child(
+             supervisor,
+             {__MODULE__.Worker, worker_opts(code, context, dispatcher, opts)}
+           ),
+         {:ok, os_identity} <- __MODULE__.Worker.os_identity(worker),
+         {:ok, handle} <-
+           ResourceRegistry.register(registry, owner, :continuation, worker,
+             incarnation: Keyword.get(opts, :incarnation, 1),
+             owner_pid: Keyword.get(opts, :owner_pid) || self(),
+             cleanup: fn -> safe_stop(worker, os_identity) end
+           ),
+         :ok <- __MODULE__.Worker.adopt(worker),
+         result <- begin_worker(worker),
+         {:ok, result} <- settle_execution(registry, owner, handle, result) do
       {:ok, result}
     end
   end
@@ -118,10 +141,21 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     owner = Keyword.get(opts, :owner)
 
     with {:ok, owner} <- validate_resume_owner(owner),
-         {:ok, worker} <- ResourceRegistry.fetch(registry, handle, owner),
-         {:ok, result} <- __MODULE__.Worker.resume(worker, value),
-         {:ok, result} <- settle_resume(registry, handle, owner, result, opts) do
-      {:ok, result}
+         {:ok, worker} <- ResourceRegistry.fetch(registry, handle, owner) do
+      case resume_worker(worker, value, opts) do
+        {:ok, result} ->
+          settle_resume(registry, handle, owner, result, opts)
+
+        {:error, %Error{class: class} = error}
+        when class in [:budget_exceeded, :resource_conflict] ->
+          {:error, error}
+
+        {:error, %Error{} = error} ->
+          case ResourceRegistry.release(registry, handle, owner) do
+            {:ok, _} -> {:error, error}
+            {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
+          end
+      end
     end
   end
 
@@ -130,43 +164,88 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     ResourceRegistry.release(registry, handle, owner)
   end
 
-  defp register_or_stop(registry, owner, worker, {:ok, %{status: :yielded} = result}, opts) do
-    case ResourceRegistry.register(registry, owner, :continuation, worker,
-           incarnation: Keyword.get(opts, :incarnation, 1),
-           owner_pid: self(),
-           cleanup: fn -> safe_stop(worker) end
-         ) do
-      {:ok, handle} ->
-        {:ok, Map.put(result, :handle, handle)}
-
-      {:error, %Error{} = error} ->
-        safe_stop(worker)
-        {:error, error}
+  defp resume_worker(worker, value, opts) do
+    try do
+      __MODULE__.Worker.resume(
+        worker,
+        value,
+        Keyword.get(opts, :dispatcher),
+        Keyword.get(opts, :execution_context)
+      )
+    catch
+      :exit, reason ->
+        {:error,
+         Error.new(:unknown_outcome, "code mode worker stopped before continuation settled",
+           cause: reason
+         )}
     end
   end
 
-  defp register_or_stop(_registry, _owner, _worker, {:error, %Error{} = error}, _opts) do
-    {:error, error}
+  defp begin_worker(worker) do
+    try do
+      __MODULE__.Worker.begin(worker)
+    catch
+      :exit, reason ->
+        {:error,
+         Error.new(:unknown_outcome, "code mode worker stopped before execution settled",
+           cause: reason
+         )}
+    end
   end
 
-  defp register_or_stop(_registry, _owner, _worker, {:ok, result}, _opts) do
-    {:ok, result}
+  defp settle_execution(_registry, _owner, handle, {:ok, %{status: :yielded} = result}),
+    do: {:ok, Map.put(result, :handle, handle)}
+
+  defp settle_execution(registry, owner, handle, {:ok, result}) do
+    with {:ok, _} <- ResourceRegistry.release(registry, handle, owner), do: {:ok, result}
   end
 
-  defp register_or_stop(_registry, _owner, worker, result, _opts) do
-    safe_stop(worker)
+  defp settle_execution(registry, owner, handle, {:error, %Error{} = error}) do
+    case ResourceRegistry.release(registry, handle, owner) do
+      {:ok, _} -> {:error, error}
+      {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
+    end
+  end
+
+  defp settle_execution(registry, owner, handle, result) do
+    _ = ResourceRegistry.release(registry, handle, owner)
 
     {:error,
      Error.new(:malformed_result, "code mode worker returned an invalid result", cause: result)}
   end
 
-  defp safe_stop(worker) do
-    Process.unlink(worker)
+  defp safe_stop(worker, os_identity) do
+    worker_result =
+      if Process.alive?(worker) do
+        ref = Process.monitor(worker)
 
-    try do
-      __MODULE__.Worker.stop(worker)
-    catch
-      :exit, _ -> :ok
+        _result =
+          try do
+            __MODULE__.Worker.stop(worker)
+          catch
+            :exit, _ -> {:uncertain, :worker_stop_failed}
+          end
+
+        worker_down =
+          receive do
+            {:DOWN, ^ref, :process, ^worker, _} -> :ok
+          after
+            2_000 ->
+              Process.demonitor(ref, [:flush])
+              {:uncertain, :worker_still_alive}
+          end
+
+        if worker_down == :ok, do: :ok, else: worker_down
+      else
+        :ok
+      end
+
+    os_result = __MODULE__.Worker.cleanup_identity(os_identity)
+
+    case {worker_result, os_result} do
+      {:ok, :ok} -> :ok
+      {{:uncertain, reason}, _} -> {:uncertain, reason}
+      {_, {:uncertain, reason}} -> {:uncertain, reason}
     end
   end
 
@@ -185,7 +264,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       output_limit: Keyword.get(opts, :output_limit, @default_output_limit),
       tool_limit: Keyword.get(opts, :tool_limit, @default_tool_limit),
       code_limit: Keyword.get(opts, :code_limit, @default_code_limit),
-      deno_path: Keyword.get(opts, :deno_path)
+      deno_path: Keyword.get(opts, :deno_path),
+      creator_pid: self()
     ]
   end
 
@@ -283,13 +363,20 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     use GenServer
 
     @max_line 1_048_576
+    @term_wait_ms 150
+    @kill_wait_ms 350
 
     alias Backplane.AgentRuntime.Error
 
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def begin(pid), do: GenServer.call(pid, :begin, :infinity)
-    def resume(pid, value), do: GenServer.call(pid, {:resume, value}, :infinity)
-    def stop(pid), do: GenServer.stop(pid, :shutdown)
+
+    def resume(pid, value, dispatcher, context),
+      do: GenServer.call(pid, {:resume, value, dispatcher, context}, :infinity)
+
+    def stop(pid), do: GenServer.call(pid, :stop, 3_000)
+    def adopt(pid), do: GenServer.call(pid, :adopt)
+    def os_identity(pid), do: GenServer.call(pid, :os_identity)
 
     @impl true
     def init(opts) do
@@ -297,11 +384,19 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
       with {:ok, deno} <- deno_path(Keyword.get(opts, :deno_path)),
            {:ok, task_supervisor} <- Task.Supervisor.start_link(),
-           {:ok, port} <- open_port(deno, opts) do
+           {:ok, port} <- open_port(deno, opts),
+           {:ok, identity} <- capture_os_identity(port) do
         {:ok,
          %{
            port: port,
+           os_identity: identity,
+           os_cleanup_status: nil,
            task_supervisor: task_supervisor,
+           creator_ref:
+             case Keyword.get(opts, :creator_pid) do
+               pid when is_pid(pid) -> Process.monitor(pid)
+               _ -> nil
+             end,
            code: Keyword.fetch!(opts, :code),
            context: Keyword.fetch!(opts, :context),
            dispatcher: Keyword.fetch!(opts, :dispatcher),
@@ -321,19 +416,31 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     end
 
     @impl true
+    def handle_call(:os_identity, _from, state),
+      do: {:reply, {:ok, state.os_identity}, state}
+
+    def handle_call(:stop, _from, state) do
+      status = cleanup_os(state)
+      {:stop, :normal, status, %{state | os_cleanup_status: status}}
+    end
+
+    def handle_call(:adopt, _from, state) do
+      if state.creator_ref, do: Process.demonitor(state.creator_ref, [:flush])
+      {:reply, :ok, %{state | creator_ref: nil}}
+    end
+
     def handle_call(:begin, from, state) do
       send_command(state.port, %{type: "execute", code: state.code})
       {:noreply, arm(state, from)}
     end
 
-    def handle_call({:resume, _value}, _from, %{from: nil, awaiting_resume: false} = state),
-      do:
-        {:reply,
-         {:error, Error.new(:resource_conflict, "code mode is not awaiting a continuation")},
-         state}
-
-    def handle_call({:resume, value}, from, state) do
+    def handle_call(
+          {:resume, value, dispatcher, context},
+          from,
+          %{from: nil, awaiting_resume: true} = state
+        ) do
       if bounded_term?(value, state.output_limit) do
+        state = rebind(state, dispatcher, context)
         send_command(state.port, %{type: "resume", value: value})
         {:noreply, arm(%{state | from: from, awaiting_resume: false}, from)}
       else
@@ -343,16 +450,37 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       end
     end
 
+    def handle_call({:resume, _value, _dispatcher, _context}, _from, state),
+      do:
+        {:reply,
+         {:error, Error.new(:resource_conflict, "code mode is not awaiting a continuation")},
+         state}
+
+    defp rebind(state, nil, nil), do: state
+
+    defp rebind(state, dispatcher, context) when is_function(dispatcher, 2) and is_map(context),
+      do: %{state | dispatcher: dispatcher, context: context}
+
     @impl true
+    def handle_info({:DOWN, ref, :process, _pid, _reason}, %{creator_ref: ref} = state),
+      do: {:stop, :normal, state}
+
     def handle_info({port, {:data, chunk}}, %{port: port} = state) when is_binary(chunk) do
       consume_data(state, state.buffer <> chunk)
     end
 
-    def handle_info({port, {:data, {:eol, line}}}, %{port: port} = state),
-      do: handle_line(line, state)
+    def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+      error =
+        if state.buffer == "" do
+          Error.new(:execution_failure, "code mode worker exited",
+            details: %{exit_status: status}
+          )
+        else
+          Error.new(:malformed_result, "incomplete code mode record at EOF")
+        end
 
-    def handle_info({port, {:data, {:noeol, chunk}}}, %{port: port} = state),
-      do: consume_data(state, state.buffer <> chunk)
+      fail(state, error)
+    end
 
     def handle_info({ref, result}, %{active_tool: %{ref: ref}} = state) do
       Process.demonitor(ref, [:flush])
@@ -399,13 +527,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     @impl true
     def terminate(_reason, state) do
-      if is_port(state.port) do
-        try do
-          Port.close(state.port)
-        catch
-          :error, :badarg -> :ok
-        end
-      end
+      if state.os_cleanup_status != :ok, do: cleanup_os(state)
 
       if is_pid(state.task_supervisor), do: Supervisor.stop(state.task_supervisor, :shutdown)
       :ok
@@ -482,7 +604,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     defp normalize_dispatch_result({:ok, value}, context), do: {:ok, value, context}
 
     defp normalize_dispatch_result({:ok, value, next_context}, _context)
-         when is_map(next_context), do: {:ok, value, next_context}
+         when is_map(next_context),
+         do: {:ok, value, next_context}
 
     defp normalize_dispatch_result({:error, %Error{} = error}, _context), do: {:error, error}
 
@@ -493,13 +616,23 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            cause: other
          )}
 
-    defp finish(%{from: nil} = state, _result),
-      do: fail(state, Error.new(:resource_conflict, "unexpected code mode completion"))
+    defp finish(%{from: nil} = state, _result), do: {:stop, :normal, state}
 
     defp finish(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
+      status = cleanup_os(state)
+
+      result =
+        if status == :ok,
+          do: result,
+          else:
+            {:error,
+             Error.new(:unknown_outcome, "code mode OS worker cleanup is unconfirmed",
+               cause: status
+             )}
+
       GenServer.reply(state.from, result)
-      {:stop, :normal, %{state | from: nil, awaiting_resume: false}}
+      {:stop, :normal, %{state | from: nil, awaiting_resume: false, os_cleanup_status: status}}
     end
 
     defp pause(%{from: nil} = state, _result),
@@ -521,11 +654,135 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           timer: Process.send_after(self(), :deadline, state.timeout)
       }
 
+    defp capture_os_identity(port) do
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} when is_integer(pid) and pid > 0 ->
+          case proc_identity(pid) do
+            {:ok, %{starttime: starttime}} -> {:ok, %{pid: pid, starttime: starttime}}
+            _ -> {:ok, nil}
+          end
+
+        _ ->
+          {:ok, nil}
+      end
+    end
+
+    defp cleanup_os(state) do
+      close_port(state.port)
+      cleanup_identity(state.os_identity)
+    end
+
+    def cleanup_identity(nil), do: {:uncertain, :os_process_identity_unavailable}
+
+    def cleanup_identity(%{pid: pid, starttime: starttime} = identity)
+        when is_integer(pid) and is_binary(starttime) do
+      case probe_identity(identity) do
+        :gone ->
+          :ok
+
+        :running ->
+          case signal_and_wait(identity, "-TERM", @term_wait_ms) do
+            :ok ->
+              :ok
+
+            {:uncertain, :still_running} ->
+              signal_and_wait(identity, "-KILL", @kill_wait_ms)
+
+            other ->
+              other
+          end
+
+        {:uncertain, reason} ->
+          {:uncertain, reason}
+      end
+    end
+
+    defp signal_and_wait(%{pid: pid} = identity, signal, wait_ms) do
+      case signal_pid(pid, signal) do
+        :ok ->
+          await_absence(identity, wait_ms)
+
+        {:uncertain, _} = error ->
+          if probe_identity(identity) == :gone, do: :ok, else: error
+      end
+    end
+
+    defp close_port(port) when is_port(port) do
+      try do
+        Port.close(port)
+      catch
+        :error, :badarg -> :ok
+      end
+    end
+
+    defp signal_pid(pid, signal) do
+      case System.find_executable("kill") do
+        nil ->
+          {:uncertain, :kill_executable_unavailable}
+
+        executable ->
+          case System.cmd(executable, [signal, "--", Integer.to_string(pid)],
+                 stderr_to_stdout: true
+               ) do
+            {_output, 0} -> :ok
+            {_output, _status} -> {:uncertain, :os_signal_failed}
+          end
+      end
+    rescue
+      _ -> {:uncertain, :os_signal_failed}
+    end
+
+    defp await_absence(identity, wait_ms) do
+      deadline = System.monotonic_time(:millisecond) + wait_ms
+      await_absence_until(identity, deadline)
+    end
+
+    defp await_absence_until(identity, deadline) do
+      case probe_identity(identity) do
+        :gone ->
+          :ok
+
+        :running ->
+          if System.monotonic_time(:millisecond) >= deadline do
+            {:uncertain, :still_running}
+          else
+            Process.sleep(10)
+            await_absence_until(identity, deadline)
+          end
+
+        {:uncertain, reason} ->
+          {:uncertain, reason}
+      end
+    end
+
+    defp probe_identity(%{pid: pid, starttime: starttime}) do
+      case proc_identity(pid) do
+        {:ok, %{starttime: ^starttime, state: state}} when state in ["Z", "X"] -> :gone
+        {:ok, %{starttime: ^starttime}} -> :running
+        {:ok, _other} -> :gone
+        {:error, :enoent} -> :gone
+        {:error, reason} -> {:uncertain, {:proc_probe_failed, reason}}
+      end
+    end
+
+    defp proc_identity(pid) do
+      with {:ok, stat} <- File.read("/proc/#{pid}/stat"),
+           [_, fields] <- Regex.run(~r/^\d+ \(.*\) (.+)$/s, stat),
+           parts <- String.split(fields),
+           state when is_binary(state) <- Enum.at(parts, 0),
+           starttime when is_binary(starttime) <- Enum.at(parts, 19) do
+        {:ok, %{state: state, starttime: starttime}}
+      else
+        {:error, reason} -> {:error, reason}
+        _ -> {:error, :malformed_proc_stat}
+      end
+    end
+
     defp send_command(port, command), do: Port.command(port, JSON.encode!(command) <> "\n")
 
     defp open_port(deno, _opts) do
       args = [
-        "eval",
+        "run",
         "--no-config",
         "--quiet",
         "--deny-read",
@@ -537,14 +794,13 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         "--deny-ffi",
         "--deny-import",
         "--ext=js",
-        wrapper()
+        "data:application/javascript;base64," <> Base.encode64(wrapper())
       ]
 
       port =
         Port.open({:spawn_executable, deno}, [
           :binary,
           :exit_status,
-          {:line, @max_line},
           {:args, args}
         ])
 
@@ -561,25 +817,24 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     defp bounded_term?(value, limit), do: :erlang.external_size(value) <= limit
 
-    defp consume_data(state, data) when byte_size(data) > @max_line,
-      do:
-        fail(
-          state,
-          Error.new(:budget_exceeded, "code mode protocol line exceeds the configured bound")
-        )
-
     defp consume_data(state, data) do
-      case String.split(data, "\n", parts: 2) do
-        [line] ->
-          {:noreply, %{state | buffer: line}}
+      case :binary.match(data, "\n") do
+        :nomatch when byte_size(data) <= @max_line ->
+          {:noreply, %{state | buffer: data}}
 
-        [line, rest] ->
-          next = handle_line(String.trim_trailing(line, "\r"), %{state | buffer: ""})
+        {length, 1} when length <= @max_line ->
+          <<line::binary-size(length), _newline, rest::binary>> = data
 
-          case next do
+          case handle_line(String.trim_trailing(line, "\r"), %{state | buffer: ""}) do
             {:noreply, next_state} -> consume_data(next_state, rest)
             other -> other
           end
+
+        _ ->
+          fail(
+            state,
+            Error.new(:budget_exceeded, "code mode protocol line exceeds the configured bound")
+          )
       end
     end
 
@@ -597,48 +852,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     defp decode_error(_), do: Error.new(:execution_failure, "JavaScript execution failed")
 
-    defp wrapper do
-      ~S"""
-      const D = Deno;
-      const enc = new TextEncoder();
-      const out = value => D.stdout.writeSync(enc.encode(JSON.stringify(value) + "\n"));
-      const pending = new Map();
-      let iterator = null, nextId = 0, waiting = false;
-      const fail = message => { throw new Error(message); };
-      const call = (name, value, rawInput) => {
-        if (typeof name !== "string" || name.length === 0) return Promise.reject(new Error("tool name is required"));
-        if (pending.size > 0) return Promise.reject(new Error("concurrent nested calls are rejected"));
-        const id = String(++nextId);
-        out({type:"tool_call", id, name, arguments: rawInput === undefined ? value : undefined, rawInput});
-        return new Promise((resolve, reject) => pending.set(id, {resolve, reject}));
-      };
-      const codex = Object.freeze({tool: (name, args) => call(name, args), custom: (name, raw) => call(name, undefined, raw)});
-      globalThis.console = Object.freeze({log:()=>{}, info:()=>{}, warn:()=>{}, error:()=>{}, debug:()=>{}});
-      globalThis.fetch = () => Promise.reject(new Error("network access is disabled"));
-      try { Object.defineProperty(globalThis, "Deno", {value: undefined, configurable: false}); } catch (_) {}
-      const advance = async value => {
-        try {
-          const result = await iterator.next(value);
-          if (result.done) out({type:"complete", value: result.value});
-          else out({type:"yield", value: result.value});
-        } catch (error) { out({type:"error", error:{class:"execution_failure", message:String(error && error.message || error)}}); }
-      };
-      const lines = D.stdin.readable.pipeThrough(new TextDecoderStream()).pipeThrough(new TransformStream({
-        transform(chunk, controller) { for (const line of chunk.split("\n")) if (line.trim()) controller.enqueue(line); }
-      }));
-      for await (const line of lines) {
-        let command;
-        try { command = JSON.parse(line); } catch (_) { out({type:"error", error:{class:"malformed_result", message:"invalid command"}}); continue; }
-        if (command.type === "execute") {
-          try { const F = Object.getPrototypeOf(async function*(){}).constructor; iterator = new F("codex", command.code)(codex); advance(undefined); }
-          catch (error) { out({type:"error", error:{class:"execution_failure", message:String(error && error.message || error)}}); }
-        } else if (command.type === "resume" && iterator) advance(command.value);
-        else if (command.type === "tool_result") {
-          const item = pending.get(command.id); if (!item) continue; pending.delete(command.id);
-          command.ok ? item.resolve(command.value) : item.reject(new Error(command.error && command.error.message || "nested tool failed"));
-        }
-      }
-      """
-    end
+    @external_resource Path.expand("../../../../priv/codex/code_mode_worker.js", __DIR__)
+    @worker_source File.read!(@external_resource)
+    defp wrapper, do: @worker_source
   end
 end

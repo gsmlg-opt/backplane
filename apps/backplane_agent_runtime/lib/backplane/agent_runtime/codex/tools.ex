@@ -74,14 +74,30 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp exec_command(%{command: command, caller: caller} = context, args) do
     with :ok <- reject_unsupported_exec_options(args),
          {:ok, invocation} <- command_args(args, caller, context),
-         {:ok, job} <-
-           Command.start(command, invocation,
+         {:ok, session_id} <- reserve_command_session(context, command, invocation) do
+      case Command.start(command, invocation,
              deadline_limit: command.deadline_limit,
-             output_limit: output_limit(args, command)
-           ),
-         {:ok, result} <- poll(command, invocation, job, 0, yield_time(args, false)),
-         {:ok, output} <- command_output(context, command, invocation, job, result) do
-      {:ok, output}
+             output_limit: command.output_limit
+           ) do
+        {:ok, job} ->
+          with :ok <- bind_command_session(context, session_id, invocation, job),
+               {:ok, result} <- poll(command, invocation, job, 0, yield_time(args, false)),
+               :ok <- settle_command_session(context, session_id, invocation, job, result) do
+            {:ok, budget_response(format_command_result(result, session_id), args)}
+          else
+            {:error, %Error{} = error} ->
+              case release_command_session(context, session_id, invocation) do
+                {:ok, _} -> {:error, error}
+                {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
+              end
+          end
+
+        {:error, %Error{} = error} ->
+          case release_command_session(context, session_id, invocation) do
+            {:ok, _} -> {:error, error}
+            {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
+          end
+      end
     end
   end
 
@@ -89,14 +105,16 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
 
   defp write_stdin(
-         %{command: command, caller: caller, session_registry: registry},
+         %{command: command, caller: caller, session_registry: registry} = context,
          %{"session_id" => session_id} = args
        )
        when is_pid(registry) and is_integer(session_id) do
     caller_run_id = Map.get(caller, :run_id)
-    invocation = %{owner_run_id: caller_run_id}
+    incarnation = Map.get(context, :incarnation, 1)
+    invocation = %{owner_run_id: caller_run_id, incarnation: incarnation}
 
-    with {:ok, session} <- ResourceRegistry.fetch_session(registry, session_id, caller_run_id),
+    with {:ok, session} <-
+           ResourceRegistry.fetch_session(registry, session_id, caller_run_id, incarnation),
          :ok <- write_chars(command, invocation, session.job, Map.get(args, "chars", "")),
          {:ok, result} <-
            poll(
@@ -106,8 +124,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
              session.cursor,
              yield_time(args, Map.get(args, "chars", "") != "")
            ),
-         :ok <- settle_session(registry, session_id, caller_run_id, session, result) do
-      {:ok, format_command_result(result, session_id)}
+         :ok <- settle_session(registry, session_id, caller_run_id, incarnation, session, result) do
+      {:ok, budget_response(format_command_result(result, session_id), args)}
     end
   end
 
@@ -118,7 +136,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
     with true <- is_map(job) or {:error, Error.new(:validation, "session_id is required")},
          {:ok, result} <- Command.read(command, invocation, job, cursor: 0) do
-      {:ok, format_command_result(result, nil)}
+      {:ok, budget_response(format_command_result(result, nil), args)}
     end
   end
 
@@ -211,7 +229,9 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
          arguments: [shell_flag, cmd],
          workspace: workspace,
          environment: %{},
-         owner_run_id: Map.get(caller, :run_id)
+         owner_run_id: Map.get(caller, :run_id),
+         incarnation: Map.get(context, :incarnation, 1),
+         owner_pid: Map.get(context, :owner_pid)
        }}
     else
       false -> {:error, Error.new(:validation, "cmd is required")}
@@ -232,40 +252,79 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     end
   end
 
-  defp output_limit(args, command) do
-    case Map.get(args, "max_output_tokens") do
-      value when is_integer(value) and value > 0 -> min(value * 4, command.output_limit)
-      _ -> command.output_limit
+  # The response budget is an estimate in bytes, independent of the host-owned
+  # backend hard cap. The backend cursor consumes the entire observed batch;
+  # omitted bytes are deliberately discarded, never replayed on the next poll.
+  defp budget_response(result, args) do
+    tokens = Map.get(args, "max_output_tokens", 10_000)
+    limit = if is_number(tokens) and tokens > 0, do: trunc(tokens * 4), else: 40_000
+    output = result.output
+    prefix = binary_part(output, 0, min(byte_size(output), limit))
+    prefix = valid_utf8_prefix(prefix)
+    omitted = byte_size(output) - byte_size(prefix)
+
+    Map.merge(result, %{
+      output: prefix,
+      output_truncated: omitted > 0,
+      omitted_output_bytes: omitted,
+      output_budget_unit: :estimated_token_bytes
+    })
+  end
+
+  defp valid_utf8_prefix(bytes) do
+    case :unicode.characters_to_binary(bytes) do
+      binary when is_binary(binary) -> binary
+      {_reason, prefix, _rest} -> prefix
     end
   end
 
-  defp command_output(
-         %{session_registry: registry} = context,
-         command,
-         invocation,
-         job,
-         %{status: :running} = result
-       )
+  defp reserve_command_session(%{session_registry: registry} = context, command, invocation)
        when is_pid(registry) do
     owner = invocation.owner_run_id
-
-    cleanup = fn -> Command.cancel(command, %{owner_run_id: owner}) end
+    timeout = Map.get(context, :cleanup_timeout, 4_000)
+    cleanup = fn -> Command.cancel_confirmed(command, %{owner_run_id: owner}, timeout) end
     owner_pid = Map.get(context, :owner_pid)
-    resource_opts = [cleanup: cleanup] |> maybe_put_owner(owner_pid)
 
-    with {:ok, session_id} <-
-           ResourceRegistry.register_session(
-             registry,
-             owner,
-             %{job: job, cursor: result.cursor},
-             resource_opts
-           ) do
-      {:ok, format_command_result(result, session_id)}
-    end
+    resource_opts =
+      [cleanup: cleanup, incarnation: invocation.incarnation] |> maybe_put_owner(owner_pid)
+
+    ResourceRegistry.register_session(registry, owner, %{job: nil, cursor: 0}, resource_opts)
   end
 
-  defp command_output(_context, _command, _invocation, _job, result),
-    do: {:ok, format_command_result(result, nil)}
+  defp reserve_command_session(_context, _command, _invocation), do: {:ok, nil}
+
+  defp bind_command_session(%{session_registry: registry}, id, invocation, job)
+       when is_pid(registry) and is_integer(id) do
+    ResourceRegistry.update_session(
+      registry,
+      id,
+      invocation.owner_run_id,
+      %{job: job, cursor: 0},
+      invocation.incarnation
+    )
+  end
+
+  defp bind_command_session(_context, _id, _invocation, _job), do: :ok
+
+  defp settle_command_session(%{session_registry: registry}, id, invocation, job, result)
+       when is_pid(registry) and is_integer(id) do
+    session = %{job: job, cursor: result.cursor}
+    settle_session(registry, id, invocation.owner_run_id, invocation.incarnation, session, result)
+  end
+
+  defp settle_command_session(_context, _id, _invocation, _job, _result), do: :ok
+
+  defp release_command_session(%{session_registry: registry}, id, invocation)
+       when is_pid(registry) and is_integer(id) do
+    ResourceRegistry.release_session(
+      registry,
+      id,
+      invocation.owner_run_id,
+      invocation.incarnation
+    )
+  end
+
+  defp release_command_session(_context, _id, _invocation), do: {:ok, :not_tracked}
 
   defp maybe_put_owner(opts, owner_pid) when is_pid(owner_pid),
     do: Keyword.put(opts, :owner_pid, owner_pid)
@@ -281,7 +340,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     with {:ok, result} <- Command.read(command, invocation, job, cursor: cursor) do
       elapsed = System.monotonic_time(:millisecond) - started
 
-      if result.status == :running and elapsed < wait_ms do
+      if (result.status == :running or Map.get(result, :cleanup_status) == :pending) and
+           elapsed < wait_ms do
         Process.sleep(min(10, wait_ms - elapsed))
         poll_until(command, invocation, job, cursor, started, wait_ms)
       else
@@ -295,24 +355,64 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp write_chars(command, invocation, job, chars),
     do: Command.write(command, invocation, job, chars)
 
-  defp settle_session(registry, session_id, owner, session, %{status: :running} = result) do
+  defp settle_session(
+         registry,
+         session_id,
+         owner,
+         incarnation,
+         session,
+         %{status: :running} = result
+       ) do
     ResourceRegistry.update_session(
       registry,
       session_id,
       owner,
-      %{session | cursor: result.cursor}
+      %{session | cursor: result.cursor},
+      incarnation
     )
   end
 
-  defp settle_session(registry, session_id, owner, _session, _result),
-    do: ResourceRegistry.forget_session(registry, session_id, owner)
+  defp settle_session(
+         registry,
+         session_id,
+         owner,
+         incarnation,
+         session,
+         %{cleanup_status: status} = result
+       )
+       when status in [:pending, :uncertain] do
+    with :ok <-
+           ResourceRegistry.update_session(
+             registry,
+             session_id,
+             owner,
+             %{session | cursor: result.cursor},
+             incarnation
+           ) do
+      if status == :uncertain,
+        do: {:error, Error.new(:unknown_outcome, "command cleanup is unconfirmed")},
+        else: :ok
+    end
+  end
+
+  defp settle_session(registry, session_id, owner, incarnation, _session, _result),
+    do: ResourceRegistry.forget_session(registry, session_id, owner, incarnation)
 
   defp format_command_result(result, session_id) do
     %{
       output: output_text(result.output),
+      status: result.status,
+      termination_status: Map.get(result, :termination_status),
+      cleanup_status: Map.get(result, :cleanup_status),
+      cleanup_error: Map.get(result, :cleanup_error),
+      output_limit_exceeded?: Map.get(result, :output_limit_exceeded?),
       wall_time_seconds: Map.get(result, :wall_time_seconds, 0.0),
       exit_code: Map.get(result, :exit_status),
-      session_id: if(result.status == :running, do: session_id)
+      session_id:
+        if(
+          result.status == :running or Map.get(result, :cleanup_status) in [:pending, :uncertain],
+          do: session_id
+        )
     }
     |> compact()
   end

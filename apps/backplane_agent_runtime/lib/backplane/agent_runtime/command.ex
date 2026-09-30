@@ -22,6 +22,9 @@ defmodule Backplane.AgentRuntime.Command do
 
   @optional_callbacks write: 4
 
+  @callback cancel_confirmed(map(), map(), pos_integer()) :: :ok | {:error, Error.t()}
+  @optional_callbacks cancel_confirmed: 3
+
   @callback cancel(map(), map()) :: :ok | {:error, Error.t()}
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
@@ -105,6 +108,24 @@ defmodule Backplane.AgentRuntime.Command do
   def cancel(command, invocation) when is_map(command) and is_map(invocation) do
     with {:ok, _owner_run_id} <- require_binary(invocation, :owner_run_id, "owner run") do
       command.adapter.cancel(command, invocation)
+    end
+  end
+
+  @spec cancel_confirmed(t(), map(), pos_integer()) :: :ok | {:error, Error.t()}
+  def cancel_confirmed(command, invocation, timeout)
+      when is_map(command) and is_map(invocation) and is_integer(timeout) and timeout > 0 do
+    with {:ok, _} <- require_binary(invocation, :owner_run_id, "owner run") do
+      if function_exported?(command.adapter, :cancel_confirmed, 3) do
+        command.adapter.cancel_confirmed(command, invocation, timeout)
+      else
+        case cancel(command, invocation) do
+          :ok ->
+            {:error, Error.new(:unknown_outcome, "command backend did not confirm termination")}
+
+          error ->
+            error
+        end
+      end
     end
   end
 

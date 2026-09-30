@@ -101,7 +101,7 @@ end
 def source_files
   roots = [ROOT.join("apps/backplane_agent_runtime/lib"), ROOT.join("apps/backplane_agent_runtime/priv")]
   roots.flat_map { |root| root.exist? ? root.find.select(&:file?) : [] }
-       .select { |path| %w[.ex .exs .sh].include?(path.extname) }
+       .select { |path| %w[.ex .exs .sh .js].include?(path.extname) }
        .sort
 end
 

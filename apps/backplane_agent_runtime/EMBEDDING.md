@@ -204,3 +204,71 @@ The opt-in Codex collaboration profiles supervise child `Conversation` processes
 they do not imply integration with Sigma's persistent peers or scheduler.
 Incremental subscriber events are transient; Sigma retains its
 ProtocolSubscription backpressure, cursor and replay policies.
+
+## Codex run resources and cleanup
+
+Codex command sessions and Code Mode cells belong to the executing Conversation,
+not its short-lived effect Task. The runtime supplies that owner through trusted
+backend context; model arguments cannot change it. Cells are supervised by the
+resource registry's worker supervisor. A resumed cell retains its identity and
+nested-call counter, but receives the current wait invocation's dispatcher,
+authority, incarnation and catalog snapshot. The previous effect token is never
+made valid again.
+
+Run completion, cancellation, deadlines, provider failure and storage failure
+initiate bounded cleanup even if the Conversation remains alive. Command ownership
+is registered before launch/polling. A host selecting a Codex profile must not
+assume returned sessions survive completion of their run. This repair introduces
+no implicit session-lifetime extension.
+
+Numeric command sessions are bound to the trusted invocation incarnation as well
+as the run owner. A replacement incarnation cannot poll or release an old session
+by reusing its numeric ID; host reconciliation remains responsible for old work.
+
+`Conversation.status/1` includes process-local `resource_cleanup` evidence.
+Failed cleanup prevents a confirmed terminal outcome; failed or lost storage
+acknowledgement remains `:storage_failed` even if the OS processes were stopped.
+Registry `owner_status/2` and `cleanup_status/3` expose reconciliation evidence;
+they are not a durable resource store. Cleanup tasks execute outside the registry
+server and are bounded independently of other resource operations. Conversation
+requests all owned registries concurrently under its cleanup deadline and
+acknowledges cancellation before waiting for those outcomes.
+
+Command adapters can implement the optional `cancel_confirmed/3` callback
+(command, invocation, timeout). Return `:ok` only after verifying owned resources
+are stopped. Existing `cancel/2` keeps its request-acknowledgement contract; it
+alone cannot prove cleanup. Adapters without confirmation leave Codex cleanup
+uncertain. Linux `LocalCommand` implements confirmation for its supported process
+groups; descendants that establish a new session are outside that guarantee.
+
+## Continuing a Codex child agent
+
+Collaboration preserves a stable agent identity while completed or interrupted
+work uses a fresh run ID. A replacement receives canonical committed messages,
+including tool results, through the additive trusted `Conversation` `:messages`
+option. It does not resubmit the original prompt. Remaining work and deadline
+bounds carry forward, and replacement authority cannot exceed either the current
+parent or the prior child authority. Exhausted agents cannot gain another quota
+by closing, resuming, or following up.
+
+Close/resume and interrupt/send require settled execution. Restored nonterminal
+runs remain inspection-only; uncertain mutations and unacknowledged storage need
+host reconciliation. An interrupted provider-only response may be explicitly
+discarded after confirmed cleanup; this admits new input without replaying that
+response or its original prompt. The collaboration manager's identity/history coordination
+is process-local and is not a new durable session implementation.
+
+Resource cleanup callbacks confirm release only with `:ok`, legacy `:done`, or
+`{:ok, :confirmed | :released | :done}`. Explicit errors and exceptions retain
+failed records. Uncertain, unexpected, pending/requested replies and callback
+timeouts retain uncertain records. Hosts using arbitrary callback return values
+must migrate to an explicit confirmation after checking the resource. Repeated
+release requests join existing cleanup or return retained evidence; they do not
+blindly retry callbacks. Confirmed-release receipts have bounded retention.
+
+Upgrade hosts by settling/reconciling existing runs and restarting the affected
+Conversation, ResourceRegistry, MultiAgent and LocalCommand supervision trees;
+these changed in-memory states do not provide a hot-upgrade migration. Existing
+non-Codex consumers need no new profile or command callback. Real Deno process
+termination is verified on Linux using the captured process identity; other
+platforms do not acquire a confirmed-cleanup guarantee from these tests.

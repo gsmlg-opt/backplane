@@ -11,6 +11,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     ToolRegistry
   }
 
+  alias Backplane.AgentRuntime.Codex.ResourceRegistry
+
   alias Backplane.AgentRuntime.Kernel, as: RunKernel
 
   @default_output_limit 1_048_576
@@ -166,7 +168,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       catalog: catalog,
       pending_catalog: nil,
       catalog_receipts: [],
-      new_context_requested: false
+      new_context_requested: false,
+      resource_registries: resource_registries(catalog.registry),
+      resource_cleanup: :not_requested
     }
 
     {:ok, state}
@@ -185,7 +189,8 @@ defmodule Backplane.AgentRuntime.Conversation do
          catalog_revision: s.catalog.revision,
          catalog_publication: catalog_publication(s.catalog, :published),
          pending_catalog_publication:
-           catalog_publication(s.pending_catalog && s.pending_catalog.catalog, :staged)
+           catalog_publication(s.pending_catalog && s.pending_catalog.catalog, :staged),
+         resource_cleanup: s.resource_cleanup
        }, s}
 
   def handle_call({:stage_catalog, token, update}, _from, s) do
@@ -199,7 +204,12 @@ defmodule Backplane.AgentRuntime.Conversation do
       when phase in [:terminal, :recovery_required, :storage_failed],
       do: {:reply, {:error, Error.new(:resource_conflict, "run is not active")}, s}
 
-  def handle_call(:cancel, _from, s), do: {:reply, :ok, stop(s, :cancelled)}
+  def handle_call(:cancel, from, s) do
+    # Acknowledge acceptance before bounded resource cleanup. This server cannot
+    # process another effect callback until stop/2 has fenced and cleared it.
+    GenServer.reply(from, :ok)
+    {:noreply, stop(s, :cancelled)}
+  end
 
   def handle_call({:input, mode, content}, from, s) do
     cond do
@@ -805,6 +815,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp invoke_tool(s, invocation, _descriptor, rest, catalog, approval) do
+    resource_owner_pid = self()
+
     opts =
       [registry: catalog.registry, authority: catalog.authority, ephemeral_tool_authority: true] ++
         approval
@@ -828,6 +840,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                   :nested_dispatch
                 ])
               )
+              |> Map.put(:resource_owner_pid, resource_owner_pid)
         }
 
         case Execution.dispatch(
@@ -920,16 +933,22 @@ defmodule Backplane.AgentRuntime.Conversation do
           checkpoint(s, %{s.conversation | follow_up: rest}, &begin_prompt(&1, message, :new))
 
         [] ->
-          input = Map.merge(identity(s), %{status: outcome, outcome: turn})
+          s = cleanup_resources(s)
 
-          commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
-            emit(s, %{
-              type: if(outcome == :completed, do: :run_completed, else: :run_failed),
-              outcome: turn
-            })
+          if s.resource_cleanup == :confirmed do
+            input = Map.merge(identity(s), %{status: outcome, outcome: turn})
 
-            %{s | phase: :terminal}
-          end)
+            commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
+              emit(s, %{
+                type: if(outcome == :completed, do: :run_completed, else: :run_failed),
+                outcome: turn
+              })
+
+              %{s | phase: :terminal}
+            end)
+          else
+            stop(s, :uncertain)
+          end
       end
     end)
   end
@@ -1042,7 +1061,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp catalog_from_role({:tool, _invocation, _rest, catalog}), do: catalog
 
   defp stop(s, reason) do
-    if s.effect, do: kill_task(s.effect)
+    task_stop = if s.effect, do: kill_task(s.effect), else: :ok
 
     if s.nested do
       if s.nested.task, do: kill_task(s.nested)
@@ -1055,7 +1074,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     Enum.each(s.callers, &GenServer.reply(&1, {:error, Error.new(:cancelled, "run stopped")}))
     reject_jobs(s.jobs)
 
-    s = discard_pending_catalog(s)
+    s = s |> discard_pending_catalog() |> cleanup_resources()
 
     s = %{
       s
@@ -1073,7 +1092,9 @@ defmodule Backplane.AgentRuntime.Conversation do
             %{
               reason: reason,
               uncertain:
-                map_size(Map.get(s.run, :active_tools, %{})) > 0 or
+                task_stop != :ok or
+                  s.resource_cleanup != :confirmed or
+                  map_size(Map.get(s.run, :active_tools, %{})) > 0 or
                   not is_nil(Map.get(s.run, :active_provider))
             }
     }
@@ -1129,7 +1150,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
 
-    s = discard_pending_catalog(s)
+    s = s |> discard_pending_catalog() |> cleanup_resources()
 
     %{
       s
@@ -1353,9 +1374,73 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{
       s
       | catalog: pending.catalog,
+        resource_registries:
+          Enum.uniq(s.resource_registries ++ resource_registries(pending.catalog.registry)),
         pending_catalog: nil,
         catalog_receipts: remember_receipt(s.catalog_receipts, pending.update, receipt)
     }
+  end
+
+  defp resource_registries(%ToolRegistry{tools: tools}) do
+    tools
+    |> Map.values()
+    |> Enum.flat_map(fn descriptor ->
+      case get_in(descriptor, [:backend_context, :context]) do
+        context when is_map(context) ->
+          [:resource_registry, :session_registry]
+          |> Enum.map(&Map.get(context, &1))
+          |> Enum.filter(&is_pid/1)
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp resource_registries(_), do: []
+
+  defp cleanup_resources(%{resource_cleanup: status} = s) when status != :not_requested,
+    do: s
+
+  defp cleanup_resources(s) do
+    # Run all registry requests concurrently under one run cleanup deadline.
+    # Killing a waiter on timeout does not assert that external cleanup finished;
+    # the registry keeps its own supervised work and reconciliation evidence.
+    tasks =
+      Enum.map(s.resource_registries, fn registry ->
+        Task.Supervisor.async_nolink(s.supervisor, fn ->
+          try do
+            ResourceRegistry.cancel_owner(registry, s.run.run_id)
+          catch
+            :exit, reason -> {:error, inspect(reason)}
+          end
+        end)
+      end)
+
+    results =
+      tasks
+      |> Task.yield_many(s.limits.cleanup)
+      |> Enum.map(fn
+        {_task, {:ok, result}} ->
+          result
+
+        {_task, {:exit, reason}} ->
+          {:error, inspect(reason)}
+
+        {task, nil} ->
+          Task.shutdown(task, :brutal_kill)
+          {:error, :cleanup_deadline_exceeded}
+      end)
+
+    confirmed? =
+      Enum.all?(results, fn
+        {:ok, entries} -> Enum.all?(entries, &match?({:ok, _}, &1))
+        _ -> false
+      end)
+
+    status = if confirmed?, do: :confirmed, else: {:uncertain, results}
+    %{s | resource_cleanup: status}
   end
 
   defp catalog_publication(nil, _status), do: nil
@@ -1369,7 +1454,16 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp kill_task(entry) do
     clear_task(entry)
+    ref = Process.monitor(entry.task.pid)
     Process.exit(entry.task.pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      100 ->
+        Process.demonitor(ref, [:flush])
+        :uncertain
+    end
   end
 
   defp emit(s, event) do

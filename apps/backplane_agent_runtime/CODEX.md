@@ -102,3 +102,47 @@ Compatibility remains adapted rather than unqualified full parity:
   event/wire differential coverage remain incomplete.
 - Production MCP, web/image services, and provider-hosted tools were not tested
   against live backends.
+
+## Command response budgets
+
+`exec_command.max_output_tokens` and `write_stdin.max_output_tokens` bound the
+output returned by each call, independently of `Command.output_limit`, which is
+a host-owned backend hard limit. The response uses a four-bytes-per-token
+estimate (default 10,000); it is not tokenizer accounting. Results expose
+`output_budget_unit: :estimated_token_bytes`, `output_truncated`, and
+`omitted_output_bytes`. A poll advances past the entire observed backend batch,
+including intentionally omitted bytes; the next poll does not repeat that batch.
+UTF-8 prefixes are not cut inside a character.
+
+Results retain backend `status`, exit status when available, termination and
+cleanup evidence, and `output_limit_exceeded?`. A hard-limit termination is not
+a successful command merely because an exit code is missing. LocalCommand keeps
+its bounded output buffer and Linux process-group cleanup; descendants that
+create a separate session remain outside that backend's cleanup guarantee.
+
+## Worker framing
+
+The packaged Deno worker runs with explicit denied ambient permissions using
+`deno run` and a data URL. Its stdin protocol is bounded NDJSON: UTF-8 decoding
+is streaming, only newline-terminated records are parsed, and a record is limited
+to 1 MiB before buffering. Malformed JSON, invalid UTF-8, oversized records, and
+incomplete records at EOF produce an explicit protocol error and exit the worker.
+The Elixir port also assembles bounded records independently of pipe read sizes.
+`codex_framing_test.exs` deterministically splits raw records and UTF-8 bytes in
+the actual packaged JavaScript source; separate tests exercise the real
+`CodeMode.execute` worker with large source and nested results. Those framing
+tests alone are not evidence of cross-provider-turn continuation behavior.
+
+## Patch results
+
+`apply_patch` parses operations and ordered line hunks before modifying files.
+Anchors, EOF constraints, whitespace/punctuation matching, additions and
+rename-with-edit follow the pinned parser/application semantics while preserving
+workspace and symlink checks. Move destinations may create parent directories.
+The legacy direct-call move form remains a Backplane compatibility extension.
+
+Patches are not whole-patch atomic. Successful operations appear in `files`;
+on a later failure they remain in `Error.details.files`. A failed write can
+leave uncertain content and reports `:unknown_outcome` with `uncertain_files`.
+Callers must inspect this evidence rather than treating an error as proof that
+nothing changed. Malformed bodies are rejected before executing any operation.

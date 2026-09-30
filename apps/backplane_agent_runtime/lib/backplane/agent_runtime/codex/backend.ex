@@ -12,8 +12,18 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
     Error
   }
 
-  def execute(%{backend_context: %{family: :local, context: context}} = operation),
-    do: Tools.call(context, operation.tool_name, operation.arguments)
+  def execute(
+        %{backend_context: %{family: :local, context: context} = backend_context} = operation
+      ) do
+    context =
+      case Map.get(backend_context, :resource_owner_pid) do
+        pid when is_pid(pid) -> Map.put(context, :owner_pid, pid)
+        _ -> context
+      end
+      |> Map.put(:incarnation, Map.get(operation, :incarnation, 1))
+
+    Tools.call(context, operation.tool_name, operation.arguments)
+  end
 
   def execute(%{backend_context: %{family: :service, context: context}} = operation),
     do: Services.call(context, operation.tool_name, operation.arguments)

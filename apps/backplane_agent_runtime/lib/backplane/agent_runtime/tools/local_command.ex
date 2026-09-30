@@ -62,6 +62,17 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     GenServer.call(server(command), {:cancel_owner, invocation.owner_run_id})
   end
 
+  @impl Backplane.AgentRuntime.Command
+  def cancel_confirmed(command, invocation, timeout) do
+    with :ok <- cancel(command, invocation) do
+      await_owner_cleanup(
+        server(command),
+        invocation.owner_run_id,
+        System.monotonic_time(:millisecond) + timeout
+      )
+    end
+  end
+
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -75,6 +86,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          pending: %{},
          workspaces: MapSet.new(),
          owned_groups: %{},
+         cancelled_launchers: %{},
          cleanup_supervisor: cleanup_supervisor,
          cleanup_timeout: config.cleanup_timeout,
          shutdown_timeout: config.shutdown_timeout,
@@ -96,50 +108,56 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl GenServer
   def handle_call({:start, request}, from, state) do
-    if active_workspace?(state, request.workspace) do
-      {:reply,
-       {:error,
-        Error.new(:resource_conflict, "workspace already has an active command",
-          details: %{workspace: request.workspace}
-        )}, state}
+    if is_pid(Map.get(request, :owner_pid)) and not Process.alive?(request.owner_pid) do
+      {:reply, {:error, Error.new(:cancelled, "command owner is no longer alive")}, state}
     else
-      nonce = nonce()
-      environment = isolated_environment(request.environment)
+      if active_workspace?(state, request.workspace) do
+        {:reply,
+         {:error,
+          Error.new(:resource_conflict, "workspace already has an active command",
+            details: %{workspace: request.workspace}
+          )}, state}
+      else
+        nonce = nonce()
+        environment = isolated_environment(request.environment)
 
-      spawn_opts = [
-        :use_stdio,
-        :stderr_to_stdout,
-        :hide,
-        :exit_status,
-        {:line, 1024},
-        {:args,
-         ["--fork", "--wait", sh_path!(), state.launcher_script, nonce, request.executable] ++
-           List.wrap(request.arguments)},
-        {:env, environment},
-        {:cd, request.workspace}
-      ]
+        spawn_opts = [
+          :use_stdio,
+          :stderr_to_stdout,
+          :hide,
+          :exit_status,
+          {:line, 1024},
+          {:args,
+           ["--fork", "--wait", sh_path!(), state.launcher_script, nonce, request.executable] ++
+             List.wrap(request.arguments)},
+          {:env, environment},
+          {:cd, request.workspace}
+        ]
 
-      port = Port.open({:spawn_executable, setsid_path!()}, spawn_opts)
-      {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
+        port = Port.open({:spawn_executable, setsid_path!()}, spawn_opts)
+        {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
 
-      startup_limit = min(state.startup_timeout, request.deadline_limit)
-      timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
+        startup_limit = min(state.startup_timeout, request.deadline_limit)
+        timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
 
-      pending = %{
-        from: from,
-        request: request,
-        nonce: nonce,
-        launcher_pid: launcher_pid,
-        started_at: System.monotonic_time(:millisecond),
-        timer: timer
-      }
+        pending = %{
+          from: from,
+          request: request,
+          nonce: nonce,
+          launcher_pid: launcher_pid,
+          started_at: System.monotonic_time(:millisecond),
+          timer: timer,
+          owner_monitor_ref:
+            if(is_pid(Map.get(request, :owner_pid)), do: Process.monitor(request.owner_pid))
+        }
 
-      {:noreply,
-       %{
-         state
-         | pending: Map.put(state.pending, port, pending),
-           workspaces: MapSet.put(state.workspaces, request.workspace)
-       }}
+        {:noreply,
+         %{
+           state
+           | pending: Map.put(state.pending, port, pending),
+             workspaces: MapSet.put(state.workspaces, request.workspace)
+         }}
+      end
     end
   end
 
@@ -207,12 +225,54 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {:reply, :ok, state}
   end
 
+  def handle_call({:owner_cleanup_status, owner_run_id}, _from, state) do
+    {launchers, cancelled_launchers} =
+      state.cancelled_launchers
+      |> Map.get(owner_run_id, MapSet.new())
+      |> Enum.split_with(&File.exists?("/proc/#{&1}"))
+      |> then(fn {alive, _gone} ->
+        {alive, Map.put(state.cancelled_launchers, owner_run_id, MapSet.new(alive))}
+      end)
+
+    state = %{state | cancelled_launchers: cancelled_launchers}
+
+    pending? =
+      Enum.any?(state.pending, fn {_port, pending} ->
+        pending.request.owner_run_id == owner_run_id
+      end)
+
+    active = Enum.filter(state.active, fn {_port, job} -> job.owner_run_id == owner_run_id end)
+
+    owned =
+      Enum.filter(state.owned_groups, fn {_port, group} -> group.owner_run_id == owner_run_id end)
+
+    failed? =
+      Enum.any?(state.completed, fn {_port, job} ->
+        job.owner_run_id == owner_run_id and job.cleanup_status == :uncertain
+      end)
+
+    status =
+      cond do
+        failed? or Enum.any?(active, fn {_port, job} -> job.cleanup_status == :uncertain end) ->
+          :uncertain
+
+        active != [] or pending? or owned != [] or launchers != [] ->
+          :pending
+
+        true ->
+          :confirmed
+      end
+
+    {:reply, status, state}
+  end
+
   @impl GenServer
   def handle_info({port, {:data, {:eol, line}}}, state) when is_map_key(state.pending, port) do
     pending = Map.fetch!(state.pending, port)
 
     with {:ok, pid} <- parse_handshake(line, pending.nonce),
          :ok <- validate_process_identity(pid, pending.launcher_pid),
+         :ok <- alive_owner(pending.request),
          {:ok, remaining} <- remaining_deadline(pending),
          true <- Port.command(port, acknowledgement(pending.nonce, pid)) do
       Process.cancel_timer(pending.timer)
@@ -220,6 +280,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
       job = %{
         port: port,
+        owner_monitor_ref: pending.owner_monitor_ref,
         process_group_id: pid,
         owner_run_id: pending.request.owner_run_id,
         workspace: pending.request.workspace,
@@ -266,7 +327,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
            owned_groups:
              Map.put(state.owned_groups, port, %{
                process_group_id: pid,
-               workspace: pending.request.workspace
+               workspace: pending.request.workspace,
+               owner_run_id: pending.request.owner_run_id
              })
        }}
     else
@@ -393,17 +455,28 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
-    case active_cleanup_by_ref(state, ref) do
-      {port, %{cleanup_task_pid: ^pid}} ->
-        error =
-          Error.new(:resource_conflict, "local command cleanup worker exited before settlement",
-            details: %{reason: inspect(reason)}
-          )
+    case owner_by_ref(state, ref) do
+      {:pending, port} ->
+        {:noreply, fail_pending(port, Error.new(:cancelled, "command owner stopped"), state)}
 
-        {:noreply, settle_job(port, {:error, error}, state)}
+      {:active, port} ->
+        {:noreply, request_cleanup(port, :cancelled, state)}
 
-      _other ->
-        {:noreply, state}
+      nil ->
+        case active_cleanup_by_ref(state, ref) do
+          {port, %{cleanup_task_pid: ^pid}} ->
+            error =
+              Error.new(
+                :resource_conflict,
+                "local command cleanup worker exited before settlement",
+                details: %{reason: inspect(reason)}
+              )
+
+            {:noreply, settle_job(port, {:error, error}, state)}
+
+          _other ->
+            {:noreply, state}
+        end
     end
   end
 
@@ -487,14 +560,40 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
       {pending, pending_by_port} ->
         Process.cancel_timer(pending.timer)
+        if pending.owner_monitor_ref, do: Process.demonitor(pending.owner_monitor_ref, [:flush])
         close_port(port)
         GenServer.reply(pending.from, {:error, error})
 
         %{
           state
           | pending: pending_by_port,
+            cancelled_launchers:
+              Map.update(
+                state.cancelled_launchers,
+                pending.request.owner_run_id,
+                MapSet.new([pending.launcher_pid]),
+                &MapSet.put(&1, pending.launcher_pid)
+              ),
             workspaces: MapSet.delete(state.workspaces, pending.request.workspace)
         }
+    end
+  end
+
+  defp await_owner_cleanup(server, owner, deadline) do
+    case GenServer.call(server, {:owner_cleanup_status, owner}) do
+      :confirmed ->
+        :ok
+
+      :uncertain ->
+        {:error, Error.new(:unknown_outcome, "local command process-group cleanup is uncertain")}
+
+      :pending ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, Error.new(:unknown_outcome, "local command cleanup confirmation timed out")}
+        else
+          Process.sleep(10)
+          await_owner_cleanup(server, owner, deadline)
+        end
     end
   end
 
@@ -544,6 +643,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         state
 
       {job, active} ->
+        if job.owner_monitor_ref, do: Process.demonitor(job.owner_monitor_ref, [:flush])
         Process.cancel_timer(job.timer)
         cancel_timer(job.settle_timer)
         cancel_timer(job.cleanup_timer)
@@ -592,6 +692,28 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 else: state.workspaces
               )
         }
+    end
+  end
+
+  defp alive_owner(%{owner_pid: pid}) when is_pid(pid) do
+    if Process.alive?(pid),
+      do: :ok,
+      else: {:error, Error.new(:cancelled, "command owner stopped during launch")}
+  end
+
+  defp alive_owner(_), do: :ok
+
+  defp owner_by_ref(state, ref) do
+    cond do
+      pending =
+          Enum.find(state.pending, fn {_port, launch} -> launch.owner_monitor_ref == ref end) ->
+        {:pending, elem(pending, 0)}
+
+      active = Enum.find(state.active, fn {_port, job} -> job.owner_monitor_ref == ref end) ->
+        {:active, elem(active, 0)}
+
+      true ->
+        nil
     end
   end
 

@@ -43,6 +43,20 @@ defmodule Backplane.AgentRuntime.CodexToolsTest do
     def cancel(command, _invocation) do
       Agent.update(command.server, &Map.put(&1, :status, :cancelled))
     end
+
+    def cancel_confirmed(command, invocation, _timeout) do
+      with :ok <- cancel(command, invocation),
+           :cancelled <- Agent.get(command.server, & &1.status) do
+        :ok
+      else
+        _ ->
+          {:error,
+           Backplane.AgentRuntime.Error.new(
+             :unknown_outcome,
+             "fake command cancellation unconfirmed"
+           )}
+      end
+    end
   end
 
   @tag :tmp_dir

@@ -92,3 +92,21 @@ equivalent of `Store.fence/6`, reconstruct the budget and outstanding effects,
 and pass unresolved effect evidence to `Recovery.recover/2`. It should publish
 runtime terminal/history projections into Sigma only after the runtime commit;
 it must not regenerate a mutation from conversational JSONL alone.
+
+## Codex resource reconciliation
+
+Run-owned OS commands and Deno cells are cleaned when the run ends, independently
+of Conversation PID lifetime. Cleanup initiation and Task termination are not
+confirmation of an external outcome. Registry callback failures, exceptions,
+timeouts and uncertain backend acknowledgements retain process-local evidence;
+uncertain run settlement uses the existing `unknown_outcome` boundary. Storage
+failure still requires loading/reconciling the store, including when a commit
+succeeded but its acknowledgement was lost.
+
+Resource registries and collaboration managers remain ephemeral. Hosts needing
+restart reconciliation must retain serializable resource/run identities and
+backend-specific evidence in their own recovery system. Never serialize registry
+values, PIDs, ports, cleanup functions, dispatch closures, credentials or grants.
+A replacement child run uses a fresh storage aggregate and committed history;
+it never automatically replays a restored nonterminal run or a completed tool
+mutation. The old run's revision history remains distinct from the replacement.

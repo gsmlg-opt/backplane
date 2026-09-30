@@ -38,7 +38,10 @@ defmodule Backplane.AgentRuntime.CodexResourceRegistryTest do
     assert {:ok, handle} =
              ResourceRegistry.register(registry, "run", :continuation, :live,
                owner_pid: owner,
-               cleanup: fn -> send(parent, :owner_cleaned) end
+               cleanup: fn ->
+                 send(parent, :owner_cleaned)
+                 :ok
+               end
              )
 
     Process.exit(owner, :kill)
@@ -66,5 +69,125 @@ defmodule Backplane.AgentRuntime.CodexResourceRegistryTest do
 
     assert {:error, %Error{class: :not_found}} =
              ResourceRegistry.fetch_session(registry, session_id, "run-a")
+  end
+
+  test "cleanup errors retain observable reconciliation evidence" do
+    {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 100)
+
+    assert {:ok, handle} =
+             ResourceRegistry.register(registry, "failed-run", :command, :live,
+               cleanup: fn -> {:error, :cannot_stop} end
+             )
+
+    assert {:error, %Error{class: :unknown_outcome}} =
+             ResourceRegistry.release(registry, handle, "failed-run")
+
+    assert {:ok, %{status: :failed, reason: :cannot_stop}} =
+             ResourceRegistry.cleanup_status(registry, handle, "failed-run")
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             ResourceRegistry.fetch(registry, handle, "failed-run")
+  end
+
+  test "a blocked cleanup times out without blocking another resource" do
+    {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 80)
+    parent = self()
+
+    assert {:ok, blocked} =
+             ResourceRegistry.register(registry, "blocked", :command, :live,
+               cleanup: fn ->
+                 Process.flag(:trap_exit, true)
+                 send(parent, :cleanup_started)
+                 receive do: (:never -> :ok)
+               end
+             )
+
+    caller = Task.async(fn -> ResourceRegistry.release(registry, blocked, "blocked") end)
+    assert_receive :cleanup_started
+
+    assert {:ok, fast} =
+             ResourceRegistry.register(registry, "fast", :command, :live, cleanup: fn -> :ok end)
+
+    assert {:ok, :ok} = ResourceRegistry.release(registry, fast, "fast")
+    assert {:error, %Error{class: :unknown_outcome}} = Task.await(caller)
+
+    assert {:ok, %{status: :uncertain}} =
+             ResourceRegistry.cleanup_status(registry, blocked, "blocked")
+  end
+
+  test "exceptions, exits, and asynchronous acknowledgement remain unresolved" do
+    {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 100)
+
+    for {name, callback} <- [
+          {"raise", fn -> raise "cleanup exploded" end},
+          {"exit", fn -> exit(:cleanup_exited) end},
+          {"pending", fn -> {:ok, :pending} end}
+        ] do
+      assert {:ok, handle} =
+               ResourceRegistry.register(registry, name, :command, :live, cleanup: callback)
+
+      assert {:error, %Error{class: :unknown_outcome}} =
+               ResourceRegistry.release(registry, handle, name)
+
+      assert {:ok, %{status: status}} = ResourceRegistry.cleanup_status(registry, handle, name)
+      assert status in [:failed, :uncertain]
+
+      assert {:error, %Error{class: :unknown_outcome}} =
+               ResourceRegistry.release(registry, handle, name)
+    end
+  end
+
+  test "concurrent release and owner death invoke cleanup once" do
+    {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 500)
+    parent = self()
+    owner = spawn(fn -> receive do: (:never -> :ok) end)
+
+    assert {:ok, handle} =
+             ResourceRegistry.register(registry, "race", :continuation, :live,
+               owner_pid: owner,
+               cleanup: fn ->
+                 send(parent, {:cleanup_started, self()})
+                 receive do: (:release -> :ok)
+               end
+             )
+
+    release = Task.async(fn -> ResourceRegistry.release(registry, handle, "race") end)
+    assert_receive {:cleanup_started, worker}
+    Process.exit(owner, :kill)
+    send(worker, :release)
+
+    assert {:ok, :ok} = Task.await(release)
+    refute_receive {:cleanup_started, _}, 50
+
+    assert {:ok, %{status: :confirmed}} =
+             ResourceRegistry.cleanup_status(registry, handle, "race")
+  end
+
+  test "late and duplicate cleanup replies do not reopen settled handles" do
+    {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 500)
+    parent = self()
+
+    assert {:ok, handle} =
+             ResourceRegistry.register(registry, "late", :continuation, :live,
+               cleanup: fn ->
+                 send(parent, {:cleanup_started, self()})
+                 receive do: (:release -> :ok)
+               end
+             )
+
+    release = Task.async(fn -> ResourceRegistry.release(registry, handle, "late") end)
+    assert_receive {:cleanup_started, worker}
+    ref = :sys.get_state(registry).resources[handle.resource_id].task.ref
+    send(worker, :release)
+    assert {:ok, :ok} = Task.await(release)
+    send(registry, {ref, {:error, :late_failure}})
+    send(registry, {ref, {:ok, :late_success}})
+    assert {:ok, :ok} = ResourceRegistry.release(registry, handle, "late")
+
+    assert {:ok, %{status: :confirmed}} =
+             ResourceRegistry.cleanup_status(registry, handle, "late")
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             ResourceRegistry.release(registry, %{handle | incarnation: 2}, "late")
   end
 end

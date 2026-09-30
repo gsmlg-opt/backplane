@@ -211,7 +211,8 @@ defmodule Backplane.AgentRuntime.Codex.Extensions do
   @spec unsubscribe(map(), map(), String.t()) :: {:ok, map()} | {:error, Error.t()}
   def unsubscribe(state, scope, id) when is_binary(id) do
     with :ok <- valid_scope(scope),
-         {:ok, sub} <- Map.fetch(state.subscriptions, id) |> fetch_error("subscription not found"),
+         {:ok, sub} <-
+           Map.fetch(state.subscriptions, id) |> fetch_error("subscription not found"),
          :ok <- same_scope(sub.scope, scope) do
       {:ok,
        %{
@@ -331,7 +332,8 @@ defmodule Backplane.AgentRuntime.Codex.Extensions do
   defp same_scope?(a, b), do: scope_key(a) == scope_key(b)
 
   defp valid_delivery_key?({subscription_id, message_id}, subscription_id)
-       when is_binary(message_id), do: true
+       when is_binary(message_id),
+       do: true
 
   defp valid_delivery_key?(_, _), do: false
 
