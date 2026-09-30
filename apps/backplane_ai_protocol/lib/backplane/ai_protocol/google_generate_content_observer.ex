@@ -35,10 +35,12 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
 
   defstruct framer: nil,
             operation: :generate,
-            max_total_bytes: @default_max_total_bytes,
-            max_events: @default_max_events,
-            max_parse_time_us: @default_max_parse_time_us,
-            max_diagnostics: @default_max_diagnostics,
+            limits: %{
+              total_bytes: @default_max_total_bytes,
+              events: @default_max_events,
+              parse_time_us: @default_max_parse_time_us,
+              diagnostics: @default_max_diagnostics
+            },
             bytes_seen: 0,
             events_seen: 0,
             parse_time_us: 0,
@@ -79,13 +81,14 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
         |> Keyword.put_new(:max_buffer_bytes, @default_max_buffer_bytes)
         |> SSE.new(),
       operation: normalize_operation(Keyword.get(opts, :operation, :generate)),
-      max_total_bytes:
-        positive_limit(Keyword.get(opts, :max_total_bytes), @default_max_total_bytes),
-      max_events: positive_limit(Keyword.get(opts, :max_events), @default_max_events),
-      max_parse_time_us:
-        positive_limit(Keyword.get(opts, :max_parse_time_us), @default_max_parse_time_us),
-      max_diagnostics:
-        positive_limit(Keyword.get(opts, :max_diagnostics), @default_max_diagnostics)
+      limits: %{
+        total_bytes:
+          positive_limit(Keyword.get(opts, :max_total_bytes), @default_max_total_bytes),
+        events: positive_limit(Keyword.get(opts, :max_events), @default_max_events),
+        parse_time_us:
+          positive_limit(Keyword.get(opts, :max_parse_time_us), @default_max_parse_time_us),
+        diagnostics: positive_limit(Keyword.get(opts, :max_diagnostics), @default_max_diagnostics)
+      }
     }
   end
 
@@ -95,7 +98,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
   def feed(%__MODULE__{parse_budget_exhausted: true} = state, chunk) when is_binary(chunk) do
     bytes_seen = state.bytes_seen + byte_size(chunk)
 
-    if bytes_seen > state.max_total_bytes do
+    if bytes_seen > state.limits.total_bytes do
       state
       |> Map.put(:bytes_seen, bytes_seen)
       |> Map.put(:input_truncated, true)
@@ -108,7 +111,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
   def feed(%__MODULE__{} = state, chunk) when is_binary(chunk) do
     bytes_seen = state.bytes_seen + byte_size(chunk)
 
-    if bytes_seen > state.max_total_bytes do
+    if bytes_seen > state.limits.total_bytes do
       state
       |> Map.put(:bytes_seen, bytes_seen)
       |> Map.put(:input_truncated, true)
@@ -141,7 +144,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
 
     state =
       cond do
-        byte_size(body) > state.max_total_bytes ->
+        byte_size(body) > state.limits.total_bytes ->
           state
           |> Map.put(:bytes_seen, byte_size(body))
           |> Map.put(:input_truncated, true)
@@ -158,7 +161,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
           state
           |> Map.put(:bytes_seen, byte_size(body))
           |> measure_parse(fn state ->
-            case Serialization.from_json(body, max_encoded_bytes: state.max_total_bytes) do
+            case Serialization.from_json(body, max_encoded_bytes: state.limits.total_bytes) do
               {:ok, document} when is_map(document) -> observe_document(state, document)
               _ -> incomplete(state, "invalid_json")
             end
@@ -266,7 +269,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
   end
 
   defp reduce_event(state, event) do
-    if state.events_seen >= state.max_events do
+    if state.events_seen >= state.limits.events do
       {:halt, incomplete(state, "parse_event_budget_exceeded")}
     else
       state = %{state | events_seen: state.events_seen + 1}
@@ -617,7 +620,7 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
     parse_time_us = state.parse_time_us + elapsed
     next = %{next | parse_time_us: parse_time_us}
 
-    if parse_time_us > state.max_parse_time_us do
+    if parse_time_us > state.limits.parse_time_us do
       next
       |> Map.put(:parse_budget_exhausted, true)
       |> incomplete("parse_time_budget_exceeded")
@@ -633,11 +636,11 @@ defmodule Backplane.AiProtocol.GoogleGenerateContentObserver do
       diagnostic in state.diagnostics ->
         state
 
-      length(state.diagnostics) < state.max_diagnostics ->
+      length(state.diagnostics) < state.limits.diagnostics ->
         %{state | diagnostics: [diagnostic | state.diagnostics]}
 
       true ->
-        retained = state.diagnostics |> Enum.reverse() |> Enum.take(state.max_diagnostics - 1)
+        retained = state.diagnostics |> Enum.reverse() |> Enum.take(state.limits.diagnostics - 1)
 
         %{
           state

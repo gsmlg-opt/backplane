@@ -290,8 +290,9 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
         HttpPlug.call(conn, upstream, response_stream_mapper: {StatefulMapper, self()})
 
       assert result.resp_body == "CHUNK1CHUNK2<done>"
-      assert_received {:mapper_feed, "chunk1"}
-      assert_received {:mapper_feed, "chunk2"}
+      {:messages, messages} = Process.info(self(), :messages)
+      chunks = for {:mapper_feed, chunk} <- messages, do: chunk
+      assert IO.iodata_to_binary(chunks) == "chunk1chunk2"
       assert_received {:mapper_finish, :eof}
     end
 

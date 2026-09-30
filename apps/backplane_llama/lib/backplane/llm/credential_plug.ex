@@ -140,7 +140,9 @@ defmodule Backplane.LLM.CredentialPlug do
         {:error, :not_found}
 
       %{metadata: metadata} ->
-        if (metadata || %{})["auth_type"] in [nil, "api_key"],
+        auth_type = Map.get(metadata || %{}, "auth_type")
+
+        if auth_type in [nil, "api_key"],
           do: resolve_credential(provider),
           else: {:error, :unsupported_google_auth_type}
     end
@@ -153,7 +155,9 @@ defmodule Backplane.LLM.CredentialPlug do
         {:error, :not_found}
 
       %{metadata: metadata} ->
-        if (metadata || %{})["auth_type"] == "google_oauth",
+        auth_type = Map.get(metadata || %{}, "auth_type")
+
+        if auth_type == "google_oauth",
           do: resolve_credential(provider),
           else: {:error, :unsupported_antigravity_auth_type}
     end

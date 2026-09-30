@@ -351,7 +351,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   end
 
   defp get_google_model_pages(api, headers) do
-    do_get_google_model_pages(api, headers, nil, MapSet.new(), [], 0)
+    do_get_google_model_pages(api, headers, nil, %{}, [], 0)
   end
 
   defp post_antigravity_models(api, auth_headers, request) do
@@ -413,6 +413,14 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp antigravity_model_detail(_id, _metadata, _api), do: nil
 
+  @spec do_get_google_model_pages(
+          ProviderApi.t(),
+          term(),
+          String.t() | nil,
+          map(),
+          [ModelDetail.t()],
+          non_neg_integer()
+        ) :: {:ok, [ModelDetail.t()]} | {:error, term()}
   defp do_get_google_model_pages(_api, _headers, _token, _seen, _details, @max_google_pages),
     do: {:error, :too_many_model_pages}
 
@@ -436,7 +444,7 @@ defmodule Backplane.LLM.ModelDiscovery do
                 api,
                 headers,
                 token,
-                MapSet.put(seen, token),
+                Map.put(seen, token, true),
                 details,
                 page_count + 1
               )
@@ -448,9 +456,6 @@ defmodule Backplane.LLM.ModelDiscovery do
 
       {:error, reason} ->
         {:error, reason}
-
-      _response ->
-        {:error, :invalid_model_list}
     end
   end
 
@@ -493,6 +498,8 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp google_model_detail(_model, _api), do: nil
 
+  @spec google_next_page_token(map(), map()) ::
+          {:ok, String.t() | nil} | {:error, atom()}
   defp google_next_page_token(body, seen) do
     case body["nextPageToken"] do
       nil ->
@@ -502,7 +509,7 @@ defmodule Backplane.LLM.ModelDiscovery do
         {:ok, nil}
 
       token when is_binary(token) ->
-        if MapSet.member?(seen, token),
+        if Map.has_key?(seen, token),
           do: {:error, :repeated_page_token},
           else: {:ok, token}
 

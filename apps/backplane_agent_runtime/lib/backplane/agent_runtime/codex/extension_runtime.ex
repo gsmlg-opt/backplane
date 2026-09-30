@@ -440,8 +440,10 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     posts =
       reference.posts
       |> Map.values()
-      |> Enum.filter(&(is_nil(channel) or &1.channel_name == channel))
-      |> Enum.filter(&String.contains?(String.downcase(&1.text), query))
+      |> Enum.filter(fn post ->
+        (is_nil(channel) or post.channel_name == channel) and
+          String.contains?(String.downcase(post.text), query)
+      end)
       |> Enum.sort_by(& &1.created_at_ms, :desc)
       |> Enum.take(bounded_limit(arguments["limit"], 20))
 

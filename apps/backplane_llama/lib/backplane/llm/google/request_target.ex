@@ -36,7 +36,6 @@ defmodule Backplane.LLM.Google.RequestTarget do
       [_single] -> {:error, :unsupported_route}
       parts when is_list(parts) -> {:error, :invalid_model}
       {:error, reason} -> {:error, reason}
-      _ -> {:error, :unsupported_route}
     end
   end
 

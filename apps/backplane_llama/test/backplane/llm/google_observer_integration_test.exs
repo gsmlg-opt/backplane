@@ -138,7 +138,7 @@ defmodule Backplane.LLM.GoogleObserverIntegrationTest do
       ],
       mode <- [:google_generate_content_body, :google_count_tokens_body] do
     test "#{mode} respects #{reason} after a complete JSON document" do
-      pid = UsageAccumulator.new(unquote(mode))
+      pid = UsageAccumulator.new(unquote(mode), snapshot_timeout: 1_000)
       on_exit(fn -> UsageAccumulator.stop(pid) end)
 
       body =

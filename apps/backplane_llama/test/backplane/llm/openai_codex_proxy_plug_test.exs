@@ -268,7 +268,6 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
       |> conn("/v1/providers/#{provider.name}/responses", "raw-body")
       |> Map.put(:req_headers, [
         {"authorization", "Bearer #{access_token.value}"},
-        {"x-api-key", "client-api-key"},
         {"ChatGPT-Account-ID", "client-account"},
         {"X-OpenAI-FedRAMP", "client-fedramp"}
       ])
@@ -281,6 +280,22 @@ defmodule Backplane.LLM.OpenAICodexProxyPlugTest do
     refute headers["x-api-key"]
     refute headers["x-openai-fedramp"]
     assert headers["originator"] == "codex_cli_rs"
+  end
+
+  test "rejects ambiguous bearer and API key credentials", %{provider: provider} do
+    user = auth_user_fixture!()
+    client = oauth_client_fixture!(resources: [:v1], scopes: ["llm::invoke"])
+    access_token = resource_access_token_fixture!(user, client, ["llm::invoke"], :v1)
+
+    conn =
+      :post
+      |> conn("/v1/providers/#{provider.name}/responses", "raw-body")
+      |> put_req_header("authorization", "Bearer #{access_token.value}")
+      |> put_req_header("x-api-key", "client-api-key")
+      |> OpenAICodexProxyPlug.call([])
+
+    assert conn.status == 401
+    assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_token"}
   end
 
   test "preserves client metadata headers and client originator", %{provider: provider} do

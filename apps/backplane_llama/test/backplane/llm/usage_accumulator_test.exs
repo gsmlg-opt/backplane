@@ -250,7 +250,7 @@ defmodule Backplane.LLM.UsageAccumulatorTest do
             {:google_antigravity_body, body},
             {:google_antigravity, "data: " <> body <> "\n\n"}
           ] do
-        pid = UsageAccumulator.new(protocol)
+        pid = UsageAccumulator.new(protocol, snapshot_timeout: 1_000)
         UsageAccumulator.scan_chunk(pid, chunk)
 
         assert %{

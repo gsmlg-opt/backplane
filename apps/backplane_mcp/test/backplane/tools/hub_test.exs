@@ -246,19 +246,20 @@ end
 # ---------------------------------------------------------------------------
 # Separate module for DB rescue branches.
 #
-# These tests verify the rescue branches in Hub status functions by using
-# Mox to stub Repo.all/1 to raise, avoiding sandbox mode manipulation
-# which causes flakiness in the full test suite.
 # ---------------------------------------------------------------------------
 defmodule Backplane.Tools.HubDbRescueTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Tools.Hub
 
+  setup do
+    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Backplane.Repo, shared: false)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
+    :ok
+  end
+
   test "hub::status returns empty lists when DB queries fail" do
     # Use a bare process (no sandbox checkout) to trigger rescue branches.
-    # Without DataCase, the spawned process can't acquire a DB connection,
-    # causing Repo.all to raise and hit the rescue branches.
     caller = self()
 
     pid =

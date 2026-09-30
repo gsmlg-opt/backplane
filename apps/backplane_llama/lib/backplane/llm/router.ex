@@ -170,8 +170,7 @@ defmodule Backplane.LLM.Router do
             conn,
             upstream,
             provider,
-            model_string,
-            raw_model,
+            {model_string, raw_model},
             rewritten_body,
             client_protocol,
             api_type,
@@ -420,13 +419,11 @@ defmodule Backplane.LLM.Router do
          conn,
          upstream,
          provider,
-         requested_model,
-         raw_model,
+         {requested_model, raw_model},
          rewritten_body,
          client_protocol,
          api_type,
-         access,
-         extra_opts \\ []
+         access
        ) do
     stream? = is_stream_request?(rewritten_body)
 
@@ -454,7 +451,6 @@ defmodule Backplane.LLM.Router do
         end
       end)
       |> response_model_mapping(client_protocol, requested_model, raw_model, stream?)
-      |> Keyword.merge(extra_opts)
 
     conn = strip_client_authentication(conn)
 

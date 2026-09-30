@@ -51,10 +51,9 @@ defmodule Backplane.AgentRuntime.Codex.Dynamic do
       results =
         state.entries
         |> Map.values()
-        |> Enum.filter(&owner_visible?(&1, owner))
-        |> Enum.filter(&(&1.status == :discovered))
         |> Enum.filter(fn entry ->
-          query == "" or String.contains?(entry.contract.tool_name, query)
+          owner_visible?(entry, owner) and entry.status == :discovered and
+            (query == "" or String.contains?(entry.contract.tool_name, query))
         end)
         |> Enum.sort_by(& &1.contract.tool_name)
         |> Enum.take(limit)

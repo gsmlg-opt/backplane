@@ -43,7 +43,8 @@ defmodule BackplaneLlama.MixProject do
       {:telemetry_poller, "~> 1.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+      {:bypass, "~> 2.1", only: :test}
     ]
   end
 end

@@ -121,9 +121,9 @@ defmodule Backplane.Admin.ApiUsageLive do
   defp account_params(params) do
     params = Map.take(params, @fields)
 
-    if params["provider"] not in ["openrouter", "exa"],
-      do: Map.put(params, "management_credential_name", nil),
-      else: params
+    if params["provider"] in ["openrouter", "exa"],
+      do: params,
+      else: Map.put(params, "management_credential_name", nil)
   end
 
   defp account_form(changeset) do
